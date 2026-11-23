@@ -1,5 +1,6 @@
 import {
   GetRepositoryCommand,
+  GetRepositoryTriggersCommand,
   ListTagsForResourceCommand,
   RepositoryDoesNotExistException,
   type RepositoryMetadata,
@@ -12,6 +13,9 @@ import type {
   ResourceNotFound,
 } from '../../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../../types/resource.js';
+import { triggersToCfn } from './shared.js';
+import { isPermissionDenial } from '../../identity-read-denied.js';
+import { safeMsg } from '../../../utils/display-safe.js';
 
 /**
  * Read the currently-deployed properties for `cdkd drift`.
@@ -22,6 +26,8 @@ import { RESOURCE_NOT_FOUND } from '../../../types/resource.js';
  *   - `repositoryDescription` -> `RepositoryDescription` (placeholder `''`)
  *   - `kmsKeyId`              -> `KmsKeyId`
  *   - `ListTagsForResource`   -> `Tags` (CFn `[{Key, Value}]` list)
+ *   - `GetRepositoryTriggers` -> `Triggers` (CFn `[{Name, DestinationArn,
+ *     CustomData?, Branches, Events}]`, go-to-k/cdkd#6854)
  *
  * Every user-controllable top-level key `update()` can mutate is emitted
  * ALWAYS — with a `?? ''` / `?? []` placeholder when AWS returns the field
@@ -70,17 +76,40 @@ export async function readCurrentState(
   // the ARN is somehow absent so `Tags` is always emitted. A repo deleted
   // between the two reads throws NotFound here — report it as gone instead
   // of letting one racing delete abort the run.
+  // The trigger read runs beside the tag read (go-to-k/cdkd#6854).
+  const arn = metadata.Arn;
+  const repositoryName = metadata.repositoryName ?? physicalId;
+  // Any failure of the trigger read but a gone repository (a denied
+  // `codecommit:GetRepositoryTriggers`, a throttle) leaves `Triggers` out of
+  // this read instead of failing it, so the rest is still read as before the
+  // trigger read existed; `canonicalizeDriftPair` then leaves the key
+  // uncompared.
   let tags: Array<{ Key: string; Value: string }> = [];
-  if (metadata.Arn) {
-    try {
-      const tagsResp = await this.getClient().send(
-        new ListTagsForResourceCommand({ resourceArn: metadata.Arn })
-      );
-      tags = normalizeAwsTagsToCfn(tagsResp.tags);
-    } catch (err) {
-      if (err instanceof RepositoryDoesNotExistException) return RESOURCE_NOT_FOUND;
-      throw err;
-    }
+  let triggers: Array<Record<string, unknown>> | undefined;
+  try {
+    const [tagsResp, triggersResp] = await Promise.all([
+      arn
+        ? this.getClient().send(new ListTagsForResourceCommand({ resourceArn: arn }))
+        : Promise.resolve(undefined),
+      this.getClient()
+        .send(new GetRepositoryTriggersCommand({ repositoryName }))
+        .catch((err: unknown) => {
+          if (err instanceof RepositoryDoesNotExistException) throw err;
+          const name = (err as { name?: unknown } | null)?.name;
+          const errorClass =
+            typeof name === 'string' && /^[A-Za-z0-9]{1,64}$/.test(name) ? name : 'an error';
+          const hint = isPermissionDenial(err) ? '; allow codecommit:GetRepositoryTriggers' : '';
+          this.logger.warn(
+            safeMsg`CodeCommit repository ${repositoryName}: Triggers not read (${errorClass}${hint}), so they are not compared.`
+          );
+          return undefined;
+        }),
+    ]);
+    if (tagsResp) tags = normalizeAwsTagsToCfn(tagsResp.tags);
+    if (triggersResp) triggers = triggersToCfn(triggersResp.triggers);
+  } catch (err) {
+    if (err instanceof RepositoryDoesNotExistException) return RESOURCE_NOT_FOUND;
+    throw err;
   }
 
   return {
@@ -92,6 +121,7 @@ export async function readCurrentState(
     // always-emit convention for this mutable field regardless.
     KmsKeyId: metadata.kmsKeyId ?? '',
     Tags: tags,
+    ...(triggers !== undefined && { Triggers: triggers }),
   };
 }
 

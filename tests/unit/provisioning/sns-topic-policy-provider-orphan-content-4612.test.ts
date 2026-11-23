@@ -207,6 +207,23 @@ describe('SNSTopicPolicyProvider: a failed create orphan is reset by content (go
     expect(sets().map(([t]) => t)).toEqual([T1]);
   });
 
+  // go-to-k/cdkd#6854: the root ARN is the topic ARN's partition. SNS refuses
+  // a root ARN of another partition (InvalidParameter, measured us-east-1,
+  // 2026-11-23), so an attempt naming one never is what the topic holds.
+  it.each([
+    [T1, 'arn:aws-cn:iam::123456789012:root', 'arn:aws:iam::123456789012:root', false],
+    [T1, '123456789012', 'arn:aws-cn:iam::123456789012:root', false],
+    ['arn:aws-cn:sns:cn-north-1:123456789012:topic-cn', '123456789012', 'arn:aws-cn:iam::123456789012:root', true],
+    ['arn:aws-cn:sns:cn-north-1:123456789012:topic-cn', '123456789012', 'arn:aws:iam::123456789012:root', false],
+    [T1, '123456789012', 'arn:aws:iam::123456789012:root', true],
+  ])('topic %s: attempted principal %s against stored %s resets: %s (go-to-k/cdkd#6854)', async (topic, sentPrincipal, storedPrincipal, resets) => {
+    const statement = (aws: string) => ({ Sid: 'P', Effect: 'Allow', Principal: { AWS: aws }, Action: 'sns:Publish' });
+    routeSend({ [topic]: JSON.stringify({ Version: '2012-10-17', Statement: [statement(storedPrincipal)] }) });
+    const result = await del(topic, { PolicyDocument: { Version: '2012-10-17', Statement: [statement(sentPrincipal)] } });
+    expect(sets().map(([t]) => t)).toEqual(resets ? [topic] : []);
+    expect(result).toEqual(resets ? undefined : { outcome: 'deleted', leftInPlace: TOPIC_POLICY_MISMATCH_LEFT_REASON });
+  });
+
   it.each([
     ['a reference', '{{resolve:secretsmanager:s}}'],
     ['the state mask', '***'],

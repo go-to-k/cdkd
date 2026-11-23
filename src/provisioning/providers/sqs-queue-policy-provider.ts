@@ -40,6 +40,7 @@ import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { markRedactedCause } from '../../deployment/retryable-errors.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { attemptedPolicyDocument, policyContentKey } from '../policy-document-content.js';
+import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import {
   declaredPolicyDocument,
   OWN_WRITE_REREAD_DELAYS_MS,
@@ -405,8 +406,10 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
       return { outcome: 'deleted', leftInPlace: QUEUE_POLICY_NOT_COMPARED_LEFT_REASON };
     }
     // IAM-equivalent spellings folded: SQS stores a bare account-id principal
-    // as its root ARN, for one.
-    const reference = policyContentKey(sentPolicyDocument(attempted.document));
+    // as its root ARN, for one; in the queue's partition, as SQS refuses a
+    // root ARN of another (go-to-k/cdkd#6854).
+    const sent = sentPolicyDocument(attempted.document);
+    const sqsRegion = await this.sqsClient.config.region();
     // A queue a QueuePolicy of this very deploy wrote: a read may still return
     // the failed create's document (SQS propagates in up to 60 seconds), so it
     // is never read back here.
@@ -458,7 +461,11 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
         this.logger.warn(
           safeMsg`Could not read the policy of queue ${queueUrl} (${current.reason}), so it is not cleared: it may still carry the policy of ${logicalId}.`
         );
-      } else if (current.kind === 'none' || policyContentKey(current.policy) === reference) {
+      } else if (
+        current.kind === 'none' ||
+        policyContentKey(current.policy, queuePartition(queueUrl, sqsRegion)) ===
+          policyContentKey(sent, queuePartition(queueUrl, sqsRegion))
+      ) {
         // No policy read back is cleared too: right after the create wrote
         // it (the automatic rollback) a stale read can still show the empty
         // policy from before, and clearing an empty queue changes nothing.
@@ -946,6 +953,15 @@ function policyReference(document: unknown): string | undefined {
   if (typeof document === 'string' && document.length > 0) return canonicalPolicy(document);
   if (document !== null && typeof document === 'object') return canonicalJson(document);
   return undefined;
+}
+
+/**
+ * The partition of the region a queue URL names (`sqs.<region>.amazonaws.com`,
+ * `<region>.queue.amazonaws.com`), else of the client's region.
+ */
+function queuePartition(queueUrl: string, clientRegion: string): string {
+  const m = /^https?:\/\/(?:sqs\.)?([a-z]{2}(?:-[a-z]+)+-\d+)\./.exec(queueUrl);
+  return derivePartitionAndUrlSuffix(m?.[1] ?? clientRegion).partition;
 }
 
 /** The queue URLs a physical id names. */

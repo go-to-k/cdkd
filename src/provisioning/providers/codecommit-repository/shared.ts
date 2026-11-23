@@ -232,3 +232,64 @@ export function readRepoList(kind: RepoListKind, value: unknown, side: RepoListS
       Array.isArray(value) && value.every((e) => isWellFormedRepoEntry(kind, e, side, true)),
   };
 }
+
+/**
+ * CodeCommit's triggers in the CFn shape, in the order CodeCommit returns
+ * them, which is the order they were put (measured us-east-1, 2026-11-23:
+ * the trigger list, `branches` and `events` all read back as sent).
+ * `Branches` is always emitted (`[]` means every branch, and CodeCommit
+ * refuses a trigger without the list); `CustomData` only when CodeCommit
+ * returns it (an omitted one reads back absent, `''` as `''`).
+ */
+export function triggersToCfn(
+  triggers: readonly RepositoryTrigger[] | undefined
+): Array<Record<string, unknown>> {
+  return (triggers ?? []).map((t) => ({
+    Name: t.name ?? '',
+    DestinationArn: t.destinationArn ?? '',
+    ...(t.customData !== undefined && { CustomData: t.customData }),
+    Branches: [...(t.branches ?? [])],
+    Events: [...(t.events ?? [])],
+  }));
+}
+
+/**
+ * A drift side's `Triggers` in the form cdkd sends them ({@link toSdkTriggers})
+ * and CodeCommit reads them back: an omitted `Branches` is `[]` (cdkd sends
+ * `[]` as CodeCommit refuses a null list, and `[]` is every branch, as
+ * CloudFormation documents for an omitted list); a number or boolean is its
+ * string and any other non-string `Name` / `DestinationArn` / list member is
+ * `''`, as is a `Branches` / `Events` that is not a list; a `null`
+ * `CustomData` is omitted and a non-scalar one is `''`. The readback is
+ * already in this form, so it is unchanged. A `Triggers` that is not a list,
+ * or an entry that is not an object, is compared as written.
+ */
+export function canonicalizeTriggers(properties: Record<string, unknown>): Record<string, unknown> {
+  const list = properties['Triggers'];
+  if (!Array.isArray(list)) return properties;
+  // As toSdkTriggers sends them: a list that is not one is `[]`.
+  const asStrings = (v: unknown): string[] =>
+    Array.isArray(v) ? v.map((m) => scalarToString(m)) : [];
+  let changed = false;
+  const next = list.map((entry: unknown) => {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return entry;
+    const t = entry as Record<string, unknown>;
+    const out: Record<string, unknown> = { ...t };
+    for (const key of ['Name', 'DestinationArn']) {
+      if (key in t && typeof t[key] !== 'string') out[key] = scalarToString(t[key]);
+    }
+    if (t['CustomData'] === null) delete out['CustomData'];
+    else if (t['CustomData'] !== undefined && typeof t['CustomData'] !== 'string') {
+      out['CustomData'] = scalarToString(t['CustomData']);
+    }
+    out['Branches'] = asStrings(t['Branches']);
+    out['Events'] = asStrings(t['Events']);
+    const same =
+      Object.keys(out).length === Object.keys(t).length &&
+      Object.keys(out).every((k) => JSON.stringify(out[k]) === JSON.stringify(t[k]));
+    if (same) return entry;
+    changed = true;
+    return out;
+  });
+  return changed ? { ...properties, Triggers: next } : properties;
+}

@@ -1,6 +1,8 @@
 import {
   CodeCommitClient,
   GetRepositoryCommand,
+  GetRepositoryTriggersCommand,
+  RepositoryDoesNotExistException,
   type RepositoryMetadata,
   type RepositoryTrigger,
 } from '@aws-sdk/client-codecommit';
@@ -21,6 +23,7 @@ import type {
   UpdateContext,
   ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
@@ -49,6 +52,7 @@ import {
   proceedUnconfirmed,
 } from './codecommit-repository/delete.js';
 import { readCurrentState, importImpl } from './codecommit-repository/read-state.js';
+import { canonicalizeTriggers } from './codecommit-repository/shared.js';
 import type { CfnCode, RepoListKind } from './codecommit-repository/shared.js';
 
 export { RECORDED_IDENTITY_DELETE_GUARD } from './codecommit-repository/shared.js';
@@ -368,15 +372,109 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
    * `Code` is create-only S3-zip seed content unpacked into the initial
    * commit — there is no read-back to compare against (the commit is git
    * history, not a repository attribute), so it can never meaningfully drift.
-   * `Triggers` IS wired on the write side (create + update via
-   * `PutRepositoryTriggers`), but `readCurrentState` does not yet fetch
-   * `GetRepositoryTriggers`, so comparing a state that carries `Triggers`
-   * against an `observedProperties` that omits it would be a guaranteed false
-   * positive. Both are therefore excluded here; a follow-up can add
-   * `GetRepositoryTriggers` read-back and drop `Triggers` from this list.
+   * `Triggers` is read back (`GetRepositoryTriggers`) and compared
+   * (go-to-k/cdkd#6854). A baseline captured before that lacks the key, and
+   * the comparator walks only the baseline's keys, so such a record compares
+   * no triggers until its next capture instead of drifting.
    */
   getDriftUnknownPaths(_resourceType: string): string[] {
-    return ['Code', 'Triggers'];
+    return ['Code'];
+  }
+
+  /** See {@link canonicalizeTriggers}: an omitted `Branches` is `[]`. */
+  canonicalizeDriftProperties(
+    _resourceType: string,
+    properties: Record<string, unknown>
+  ): Record<string, unknown> {
+    return canonicalizeTriggers(properties);
+  }
+
+  /**
+   * `Triggers` around a read that could not see it (go-to-k/cdkd#6854):
+   *
+   * - A readback without `Triggers` (its read failed, see `readCurrentState`)
+   *   takes the baseline's, so the key is not compared on that read.
+   * - A baseline without `Triggers` (captured, or accepted, by a read that
+   *   failed, or recorded before the key was read) takes the template's when
+   *   the template declares it and the readback holds it, so the key is
+   *   compared against what the deploy sent. With no declared `Triggers`, a
+   *   baseline lacking the key compares none until its next capture.
+   *
+   * `drift --revert` passes its desired bag through here too; it then sends
+   * the template's triggers only where `Triggers` drifted.
+   */
+  canonicalizeDriftPair(
+    _resourceType: string,
+    baseline: Record<string, unknown>,
+    aws: Record<string, unknown>,
+    properties: Record<string, unknown> = {}
+  ): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }> {
+    const inAws = Object.hasOwn(aws, 'Triggers');
+    const inBaseline = Object.hasOwn(baseline, 'Triggers');
+    if (!inAws && inBaseline) {
+      return Promise.resolve({ baseline, aws: { ...aws, Triggers: baseline['Triggers'] } });
+    }
+    if (inAws && !inBaseline && Array.isArray(properties['Triggers'])) {
+      const declared = canonicalizeTriggers({ Triggers: properties['Triggers'] })['Triggers'];
+      return Promise.resolve({ baseline: { ...baseline, Triggers: declared }, aws });
+    }
+    return Promise.resolve({ baseline, aws });
+  }
+
+  /**
+   * An unsettled `Triggers` stays unsettled while its read fails: `--accept`
+   * and `--revert` clear every name this does not return, and a read that
+   * cannot see the triggers proves nothing about a half-applied set. Any
+   * other name is never in transition. A gone repository answers nothing.
+   */
+  async unsettledInTransition(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string,
+    names: ReadonlySet<string>
+  ): Promise<ReadonlySet<string>> {
+    if (!names.has('Triggers')) return new Set();
+    try {
+      await this.getClient().send(new GetRepositoryTriggersCommand({ repositoryName: physicalId }));
+      return new Set();
+    } catch (err) {
+      if (err instanceof RepositoryDoesNotExistException) return new Set();
+      return new Set(['Triggers']);
+    }
+  }
+
+  /**
+   * The unsettled-update read: `readCurrentState`, except that a read leaving
+   * `Triggers` out (its read failed) FAILS when `Triggers` is unsettled. The
+   * convergence would otherwise take the missing key as "AWS holds none",
+   * drop it from the previous side and then prove it settled, leaving the
+   * live triggers in place behind a record that no longer names them. The
+   * failure refuses the update before any write, as any unreadable resource.
+   */
+  async readUnsettled(
+    physicalId: string,
+    logicalId: string,
+    resourceType: string,
+    names: ReadonlySet<string>
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    const live = await this.readCurrentState(physicalId, logicalId, resourceType);
+    if (
+      names.has('Triggers') &&
+      live !== undefined &&
+      live !== RESOURCE_NOT_FOUND &&
+      !Object.hasOwn(live, 'Triggers')
+    ) {
+      throw new Error(`the Triggers of CodeCommit repository ${logicalId} could not be read`);
+    }
+    return live;
+  }
+
+  /** The same fold for the unsettled-update check's template-vs-live compare. */
+  canonicalizeUnsettledProperties(
+    _resourceType: string,
+    properties: Record<string, unknown>
+  ): Record<string, unknown> {
+    return canonicalizeTriggers(properties);
   }
 
   import(input: ResourceImportInput): Promise<ResourceImportResult | null> {

@@ -435,8 +435,9 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
       this.logger.debug(safeMsg`${logicalId} set no policy of its own; nothing to reset`);
       return;
     }
-    // IAM-equivalent spellings folded (a bare account id and its root ARN).
-    const reference = policyContentKey(sentPolicyDocument(document));
+    // IAM-equivalent spellings folded (a bare account id and its root ARN in
+    // the topic's partition, go-to-k/cdkd#6854).
+    const sent = sentPolicyDocument(document);
     // A topic a TopicPolicy of this very deploy wrote: a read may still
     // return the failed create's document, so it is never read back here.
     const fresh = new Set(
@@ -486,7 +487,10 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
         );
         continue;
       }
-      const live = current.kind === 'none' ? undefined : policyContentKey(current.policy);
+      const partition = arnPartition(topicArn);
+      const reference = policyContentKey(sent, partition);
+      const live =
+        current.kind === 'none' ? undefined : policyContentKey(current.policy, partition);
       // No policy read back is reset too: right after the create wrote it
       // (the automatic rollback) a stale read can still show nothing, and the
       // reset writes only the default.
@@ -507,7 +511,7 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
         continue;
       }
       const defaultPolicy = defaultTopicPolicy(topicArn);
-      if (defaultPolicy !== undefined && live === policyContentKey(defaultPolicy)) {
+      if (defaultPolicy !== undefined && live === policyContentKey(defaultPolicy, partition)) {
         this.logger.debug(safeMsg`Topic ${topicArn} already carries its default policy`);
         continue;
       }
@@ -936,6 +940,15 @@ function canonicalJson(value: unknown): string {
     return v;
   };
   return JSON.stringify(sortKeys(value));
+}
+
+/**
+ * The partition an ARN names (`arn:<partition>:...`), or `undefined` for text
+ * that is no ARN: the policy key then compares no partition.
+ */
+function arnPartition(arn: string): string | undefined {
+  const m = /^arn:([a-z-]+):/.exec(arn);
+  return m ? m[1] : undefined;
 }
 
 /**

@@ -14,8 +14,8 @@ For every SDK provider type and every top-level property its `handledProperties`
 
 - SDK provider types: **147** (without a readback, reported as `drift unknown`: **2**)
 - Handled properties classified: **1565**
-- Named on the readback path: **1413**
-- Declared unreadable by `getDriftUnknownPaths`: **129**
+- Named on the readback path: **1414**
+- Declared unreadable by `getDriftUnknownPaths`: **128**
 - In the committed baseline (does NOT block CI): **23**
 - Classified though the schema capture does not list them: **12**
 - **Gaps (blocks CI): 0**
@@ -92,7 +92,7 @@ For every SDK provider type and every top-level property its `handledProperties`
 | `AWS::CloudWatch::Alarm` | `CloudWatchAlarmProvider` | ActionConfiguration, ActionsEnabled, AlarmActions, AlarmDescription, AlarmName, ComparisonOperator, DatapointsToAlarm, Dimensions, EvaluateLowSampleCountPercentile, EvaluationCriteria, EvaluationInterval, EvaluationPeriods, EvaluationWindow, ExtendedStatistic, InsufficientDataActions, MetricName, Metrics, Namespace, OKActions, Period, Statistic, Tags, Threshold, ThresholdMetricId, TreatMissingData, Unit, WarmUpConfiguration |  |
 | `AWS::CloudWatch::AnomalyDetector` | `CloudWatchAnomalyDetectorProvider` | Configuration, Dimensions, MetricCharacteristics, MetricMathAnomalyDetector, MetricName, Namespace, SingleMetricAnomalyDetector, Stat |  |
 | `AWS::CodeBuild::Project` | `CodeBuildProvider` | Artifacts, AutoRetryLimit, BadgeEnabled, BuildBatchConfig, Cache, ConcurrentBuildLimit, Description, EncryptionKey, Environment, FileSystemLocations, LogsConfig, Name, QueuedTimeoutInMinutes, ResourceAccessRole, SecondaryArtifacts, SecondarySources, SecondarySourceVersions, ServiceRole, Source, SourceVersion, Tags, TimeoutInMinutes, Visibility, VpcConfig | Triggers |
-| `AWS::CodeCommit::Repository` | `CodeCommitRepositoryProvider` | KmsKeyId, RepositoryDescription, RepositoryName, Tags | Code, Triggers |
+| `AWS::CodeCommit::Repository` | `CodeCommitRepositoryProvider` | KmsKeyId, RepositoryDescription, RepositoryName, Tags, Triggers | Code |
 | `AWS::Cognito::UserPool` | `CognitoUserPoolProvider` | AccountRecoverySetting, AdminCreateUserConfig, AliasAttributes, AutoVerifiedAttributes, DcrConfiguration, DeletionProtection, DeviceConfiguration, EmailAuthenticationMessage, EmailAuthenticationSubject, EmailConfiguration, EmailVerificationMessage, EmailVerificationSubject, EnabledMfas, IssuerConfiguration, KeyConfiguration, LambdaConfig, MfaConfiguration, Policies, Schema, SmsAuthenticationMessage, SmsConfiguration, SmsVerificationMessage, UserAttributeUpdateSettings, UsernameAttributes, UsernameConfiguration, UserPoolAddOns, UserPoolName, UserPoolTags, UserPoolTier, VerificationMessageTemplate, WebAuthnFactorConfiguration, WebAuthnRelyingPartyID, WebAuthnUserVerification |  |
 | `AWS::DLM::LifecyclePolicy` | `DLMLifecyclePolicyProvider` | Description, ExecutionRoleArn, State, Tags | CopyTags, CreateInterval, CrossRegionCopyTargets, DefaultPolicy, Exclusions, ExtendDeletion, PolicyDetails, RetainInterval |
 | `AWS::DocDB::DBCluster` | `DocDBProvider` | BackupRetentionPeriod, CopyTagsToSnapshot, DBClusterIdentifier, DBClusterParameterGroupName, DBSubnetGroupName, DeletionProtection, EnableCloudwatchLogsExports, EngineVersion, KmsKeyId, ManageMasterUserPassword, MasterUsername, NetworkType, Port, PreferredBackupWindow, PreferredMaintenanceWindow, ServerlessV2ScalingConfiguration, StorageEncrypted, StorageType, Tags, VpcSecurityGroupIds | AvailabilityZones, GlobalClusterIdentifier, MasterUserSecretKmsKeyId, RestoreToTime, RestoreType, RotateMasterUserPassword, SnapshotIdentifier, SourceDBClusterIdentifier, UseLatestRestorableTime |

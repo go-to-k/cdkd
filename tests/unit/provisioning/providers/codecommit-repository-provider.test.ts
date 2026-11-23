@@ -66,6 +66,7 @@ import {
   CreateRepositoryCommand,
   DeleteRepositoryCommand,
   GetRepositoryCommand,
+  GetRepositoryTriggersCommand,
   ListTagsForResourceCommand,
   PutRepositoryTriggersCommand,
   TagResourceCommand,
@@ -77,6 +78,8 @@ import {
 } from '@aws-sdk/client-codecommit';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { ProvisioningError } from '../../../../src/utils/error-handler.js';
+import { settleUnsettledPrevious } from '../../../../src/deployment/unsettled-convergence.js';
+import { settleUnsettled } from '../../../../src/cli/commands/drift/report-json.js';
 import { calculateResourceDrift } from '../../../../src/analyzer/drift-calculator.js';
 
 const REPO_ARN = 'arn:aws:codecommit:us-east-1:123456789012:my-repo';
@@ -1098,7 +1101,8 @@ describe('CodeCommitRepositoryProvider', () => {
             kmsKeyId: 'arn:aws:kms:us-east-1:123456789012:key/k1',
           }),
         }) // GetRepository
-        .mockResolvedValueOnce({ tags: { env: 'test', 'aws:cdk:path': 'MyStack/MyRepo/Resource' } }); // ListTagsForResource
+        .mockResolvedValueOnce({ tags: { env: 'test', 'aws:cdk:path': 'MyStack/MyRepo/Resource' } }) // ListTagsForResource
+        .mockResolvedValueOnce({ triggers: [] }); // GetRepositoryTriggers
 
       const current = await provider.readCurrentState(
         'my-repo',
@@ -1116,6 +1120,7 @@ describe('CodeCommitRepositoryProvider', () => {
         KmsKeyId: 'arn:aws:kms:us-east-1:123456789012:key/k1',
         // `aws:cdk:path` is dropped by normalizeAwsTagsToCfn.
         Tags: [{ Key: 'env', Value: 'test' }],
+        Triggers: [],
       });
     });
 
@@ -1124,7 +1129,8 @@ describe('CodeCommitRepositoryProvider', () => {
         .mockResolvedValueOnce({
           repositoryMetadata: metadata({ repositoryDescription: 'aws-side desc' }),
         })
-        .mockResolvedValueOnce({ tags: {} });
+        .mockResolvedValueOnce({ tags: {} })
+        .mockResolvedValueOnce({ triggers: [] }); // GetRepositoryTriggers
 
       const current = bagOf(await provider.readCurrentState(
         'my-repo',
@@ -1147,7 +1153,8 @@ describe('CodeCommitRepositoryProvider', () => {
         .mockResolvedValueOnce({
           repositoryMetadata: metadata({ repositoryDescription: 'same' }),
         })
-        .mockResolvedValueOnce({ tags: { env: 'test' } });
+        .mockResolvedValueOnce({ tags: { env: 'test' } })
+        .mockResolvedValueOnce({ triggers: [] }); // GetRepositoryTriggers
 
       const current = bagOf(await provider.readCurrentState(
         'my-repo',
@@ -1170,7 +1177,8 @@ describe('CodeCommitRepositoryProvider', () => {
     it('a tag re-order between state and AWS-current is NOT phantom drift', async () => {
       mockSend
         .mockResolvedValueOnce({ repositoryMetadata: metadata() })
-        .mockResolvedValueOnce({ tags: { b: '2', a: '1' } }); // AWS order differs
+        .mockResolvedValueOnce({ tags: { b: '2', a: '1' } }) // AWS order differs
+        .mockResolvedValueOnce({ triggers: [] }); // GetRepositoryTriggers
 
       const current = bagOf(await provider.readCurrentState(
         'my-repo',
@@ -1195,7 +1203,8 @@ describe('CodeCommitRepositoryProvider', () => {
     it('does NOT surface create-only Code as drift (getDriftUnknownPaths)', async () => {
       mockSend
         .mockResolvedValueOnce({ repositoryMetadata: metadata() })
-        .mockResolvedValueOnce({ tags: {} });
+        .mockResolvedValueOnce({ tags: {} })
+        .mockResolvedValueOnce({ triggers: [] }); // GetRepositoryTriggers
 
       const current = bagOf(await provider.readCurrentState(
         'my-repo',
@@ -1214,10 +1223,7 @@ describe('CodeCommitRepositoryProvider', () => {
         { ignorePaths: provider.getDriftUnknownPaths('AWS::CodeCommit::Repository') }
       );
       expect(drifts).toEqual([]);
-      expect(provider.getDriftUnknownPaths('AWS::CodeCommit::Repository')).toEqual([
-        'Code',
-        'Triggers',
-      ]);
+      expect(provider.getDriftUnknownPaths('AWS::CodeCommit::Repository')).toEqual(['Code']);
     });
 
     it('emits placeholders for every user-controllable top-level key on AWS minimum response', async () => {
@@ -1231,7 +1237,8 @@ describe('CodeCommitRepositoryProvider', () => {
             // no repositoryDescription, no kmsKeyId, no clone URLs
           },
         }) // GetRepository
-        .mockResolvedValueOnce({ tags: {} }); // ListTagsForResource
+        .mockResolvedValueOnce({ tags: {} }) // ListTagsForResource
+        .mockResolvedValueOnce({ triggers: [] }); // GetRepositoryTriggers
 
       const result = bagOf(await provider.readCurrentState(
         'my-repo',
@@ -1240,18 +1247,21 @@ describe('CodeCommitRepositoryProvider', () => {
       ));
 
       expect(Object.keys(result ?? {}).sort()).toEqual(
-        ['KmsKeyId', 'RepositoryDescription', 'RepositoryName', 'Tags'].sort()
+        ['KmsKeyId', 'RepositoryDescription', 'RepositoryName', 'Tags', 'Triggers'].sort()
       );
       expect(result?.RepositoryName).toBe('my-repo');
       expect(result?.RepositoryDescription).toBe(''); // string placeholder
       expect(result?.KmsKeyId).toBe(''); // string placeholder
       expect(result?.Tags).toEqual([]); // array placeholder
+      expect(result?.Triggers).toEqual([]); // array placeholder
     });
 
     it('emits Tags: [] even when the ARN is absent (never omits the key)', async () => {
-      mockSend.mockResolvedValueOnce({
-        repositoryMetadata: { repositoryName: 'my-repo' }, // no Arn -> no ListTagsForResource
-      });
+      mockSend
+        .mockResolvedValueOnce({
+          repositoryMetadata: { repositoryName: 'my-repo' }, // no Arn -> no ListTagsForResource
+        })
+        .mockResolvedValueOnce({ triggers: [] }); // GetRepositoryTriggers
 
       const result = bagOf(await provider.readCurrentState(
         'my-repo',
@@ -1259,14 +1269,16 @@ describe('CodeCommitRepositoryProvider', () => {
         'AWS::CodeCommit::Repository'
       ));
 
-      expect(mockSend).toHaveBeenCalledTimes(1); // no ListTagsForResource call
+      expect(mockSend).toHaveBeenCalledTimes(2); // GetRepositoryTriggers only, no ListTagsForResource
+      expect(mockSend.mock.calls[1][0]).toBeInstanceOf(GetRepositoryTriggersCommand);
       expect(result?.Tags).toEqual([]);
     });
 
     it('detects drift on a changed tag value', async () => {
       mockSend
         .mockResolvedValueOnce({ repositoryMetadata: metadata() })
-        .mockResolvedValueOnce({ tags: { env: 'prod' } }); // AWS has env=prod
+        .mockResolvedValueOnce({ tags: { env: 'prod' } }) // AWS has env=prod
+        .mockResolvedValueOnce({ triggers: [] }); // GetRepositoryTriggers
 
       const current = bagOf(await provider.readCurrentState(
         'my-repo',
@@ -1315,7 +1327,8 @@ describe('CodeCommitRepositoryProvider', () => {
     it('reports a repo deleted BETWEEN GetRepository and ListTagsForResource as RESOURCE_NOT_FOUND', async () => {
       mockSend
         .mockResolvedValueOnce({ repositoryMetadata: metadata() }) // GetRepository succeeds
-        .mockRejectedValueOnce(notFound()); // ListTagsForResource: repo gone mid-read
+        .mockRejectedValueOnce(notFound()) // ListTagsForResource: repo gone mid-read
+        .mockResolvedValueOnce({ triggers: [] }); // GetRepositoryTriggers
 
       const current = await provider.readCurrentState(
         'my-repo',
@@ -1325,6 +1338,213 @@ describe('CodeCommitRepositoryProvider', () => {
 
       // Must not abort the whole drift run — reported as gone.
       expect(current).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    // go-to-k/cdkd#6854: Triggers are read back and compared.
+    describe('Triggers (go-to-k/cdkd#6854)', () => {
+      const TOPIC = 'arn:aws:sns:us-east-1:123456789012:t';
+      const live = (triggers: unknown[]) => {
+        mockSend
+          .mockResolvedValueOnce({ repositoryMetadata: metadata() })
+          .mockResolvedValueOnce({ tags: {} })
+          .mockResolvedValueOnce({ triggers });
+        return provider.readCurrentState('my-repo', 'MyRepo', 'AWS::CodeCommit::Repository');
+      };
+      const drift = (baseline: Record<string, unknown>, aws: Record<string, unknown>) => {
+        const type = 'AWS::CodeCommit::Repository';
+        return calculateResourceDrift(
+          provider.canonicalizeDriftProperties(type, baseline),
+          provider.canonicalizeDriftProperties(type, aws),
+          { ignorePaths: provider.getDriftUnknownPaths(type), resourceType: type }
+        ).map((d) => d.path);
+      };
+
+      it('reads GetRepositoryTriggers by name into the CFn shape, order kept, CustomData only when returned', async () => {
+        const result = bagOf(
+          await live([
+            { name: 'z', destinationArn: TOPIC, customData: 'cd', branches: ['main', 'dev'], events: ['updateReference', 'createReference'] },
+            { name: 'a', destinationArn: TOPIC, branches: [], events: ['all'] },
+          ])
+        );
+        const triggersCmd = mockSend.mock.calls[2][0];
+        expect(triggersCmd).toBeInstanceOf(GetRepositoryTriggersCommand);
+        expect(triggersCmd.input).toEqual({ repositoryName: 'my-repo' });
+        expect(result?.Triggers).toEqual([
+          { Name: 'z', DestinationArn: TOPIC, CustomData: 'cd', Branches: ['main', 'dev'], Events: ['updateReference', 'createReference'] },
+          { Name: 'a', DestinationArn: TOPIC, Branches: [], Events: ['all'] },
+        ]);
+      });
+
+      it('a declared trigger without Branches equals the [] CodeCommit holds (every branch); any branch list does not', async () => {
+        const aws = bagOf(await live([{ name: 'n', destinationArn: TOPIC, branches: [], events: ['all'] }]))!;
+        expect(drift({ Triggers: [{ Name: 'n', DestinationArn: TOPIC, Events: ['all'] }] }, aws)).toEqual([]);
+        expect(drift({ Triggers: [{ Name: 'n', DestinationArn: TOPIC, Events: ['all'], Branches: ['main'] }] }, aws)).toEqual(['Triggers']);
+      });
+
+      it.each([
+        ['an added trigger', [{ name: 'n', destinationArn: TOPIC, branches: [], events: ['all'] }, { name: 'm', destinationArn: TOPIC, branches: [], events: ['all'] }]],
+        ['a removed trigger', []],
+        ['another event', [{ name: 'n', destinationArn: TOPIC, branches: [], events: ['createReference'] }]],
+        ['another destination', [{ name: 'n', destinationArn: `${TOPIC}2`, branches: [], events: ['all'] }]],
+        ['CustomData added', [{ name: 'n', destinationArn: TOPIC, customData: 'x', branches: [], events: ['all'] }]],
+      ])('%s out of band is drift', async (_what, triggers) => {
+        const aws = bagOf(await live(triggers))!;
+        expect(drift({ Triggers: [{ Name: 'n', DestinationArn: TOPIC, Branches: [], Events: ['all'] }] }, aws)).toEqual(['Triggers']);
+      });
+
+      it('a declared value in the spelling cdkd sends equals the readback; another value does not', async () => {
+        const aws = bagOf(await live([{ name: '42', destinationArn: TOPIC, branches: ['1'], events: ['all'] }]))!;
+        expect(drift({ Triggers: [{ Name: 42, DestinationArn: TOPIC, CustomData: null, Branches: [1], Events: ['all'] }] }, aws)).toEqual([]);
+        expect(drift({ Triggers: [{ Name: 43, DestinationArn: TOPIC, Branches: [1], Events: ['all'] }] }, aws)).toEqual(['Triggers']);
+        expect(drift({ Triggers: [{ Name: 42, DestinationArn: TOPIC, CustomData: 'x', Branches: [1], Events: ['all'] }] }, aws)).toEqual(['Triggers']);
+        expect(drift({ Triggers: [{ Name: 42, DestinationArn: TOPIC, Branches: [2], Events: ['all'] }] }, aws)).toEqual(['Triggers']);
+      });
+
+      it('a baseline captured before Triggers were read (no key) compares none, so it does not drift', async () => {
+        const aws = bagOf(await live([{ name: 'n', destinationArn: TOPIC, branches: [], events: ['all'] }]))!;
+        expect(drift({ RepositoryName: 'my-repo' }, aws)).toEqual([]);
+      });
+
+      it('the unsettled-update check folds Branches the same way', () => {
+        const type = 'AWS::CodeCommit::Repository';
+        expect(provider.canonicalizeUnsettledProperties(type, { Triggers: [{ Name: 'n', Events: ['all'] }] })).toEqual({
+          Triggers: [{ Name: 'n', Branches: [], Events: ['all'] }],
+        });
+        const bag = { Triggers: [{ Name: 'n', Branches: ['main'], Events: ['all'] }] };
+        expect(provider.canonicalizeUnsettledProperties(type, bag)).toBe(bag);
+      });
+
+      it('a repository deleted before the trigger read is RESOURCE_NOT_FOUND', async () => {
+        mockSend
+          .mockResolvedValueOnce({ repositoryMetadata: metadata() })
+          .mockResolvedValueOnce({ tags: {} })
+          .mockRejectedValueOnce(notFound());
+        expect(await provider.readCurrentState('my-repo', 'MyRepo', 'AWS::CodeCommit::Repository')).toBe(
+          RESOURCE_NOT_FOUND
+        );
+      });
+
+      it.each([
+        ['AccessDeniedException', 'allow codecommit:GetRepositoryTriggers'],
+        ['ThrottlingException', ''],
+      ])('a %s on the trigger read leaves Triggers out of the read, warns, and the rest is still read', async (name, hint) => {
+        mockSend
+          .mockResolvedValueOnce({ repositoryMetadata: metadata({ repositoryDescription: 'd' }) })
+          .mockResolvedValueOnce({ tags: { env: 'dev' } })
+          .mockRejectedValueOnce(Object.assign(new Error('secret aws text'), { name }));
+        const warn = vi.spyOn(provider.logger, 'warn');
+        const result = bagOf(await provider.readCurrentState('my-repo', 'MyRepo', 'AWS::CodeCommit::Repository'));
+        expect(result).toEqual({
+          RepositoryName: 'my-repo',
+          RepositoryDescription: 'd',
+          KmsKeyId: expect.any(String),
+          Tags: [{ Key: 'env', Value: 'dev' }],
+        });
+        const line = warn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(line).toContain(`Triggers not read (${name}`);
+        expect(line).not.toContain('secret aws text');
+        if (hint) expect(line).toContain(hint);
+        else expect(line).not.toContain('allow ');
+        warn.mockRestore();
+      });
+
+      it('the unsettled-update read refuses a read that left an unsettled Triggers out, and passes otherwise', async () => {
+        const type = 'AWS::CodeCommit::Repository';
+        const denied = () =>
+          mockSend
+            .mockResolvedValueOnce({ repositoryMetadata: metadata() })
+            .mockResolvedValueOnce({ tags: {} })
+            .mockRejectedValueOnce(Object.assign(new Error('x'), { name: 'AccessDeniedException' }));
+        denied();
+        await expect(provider.readUnsettled('my-repo', 'MyRepo', type, new Set(['Triggers']))).rejects.toThrow(
+          'could not be read'
+        );
+        denied();
+        const other = bagOf(await provider.readUnsettled('my-repo', 'MyRepo', type, new Set(['RepositoryDescription'])));
+        expect(other?.RepositoryDescription).toBeDefined();
+        mockSend
+          .mockResolvedValueOnce({ repositoryMetadata: metadata() })
+          .mockResolvedValueOnce({ tags: {} })
+          .mockResolvedValueOnce({ triggers: [] });
+        expect(bagOf(await provider.readUnsettled('my-repo', 'MyRepo', type, new Set(['Triggers'])))?.Triggers).toEqual([]);
+      });
+
+      it('end to end: a denied trigger read refuses the convergence of an unsettled Triggers before any write', async () => {
+        // unsettledInTransition's own trigger read answers first.
+        mockSend.mockRejectedValueOnce(Object.assign(new Error('x'), { name: 'AccessDeniedException' }));
+        await expect(
+          settleUnsettledPrevious({
+            provider,
+            logicalId: 'MyRepo',
+            physicalId: 'my-repo',
+            resourceType: 'AWS::CodeCommit::Repository',
+            recordedProperties: {},
+            names: new Set(['Triggers']),
+            previous: { Triggers: [{ Name: 'n', DestinationArn: TOPIC, Branches: [], Events: ['all'] }] },
+          })
+        ).rejects.toThrow('left Triggers unsettled');
+        expect(mockSend.mock.calls.some((c) => c[0] instanceof PutRepositoryTriggersCommand)).toBe(false);
+      });
+
+      it('a baseline without Triggers (a denied capture or accept) takes the declared ones, so a later readable drift reports a change', async () => {
+        const type = 'AWS::CodeCommit::Repository';
+        const declared = [{ Name: 'n', DestinationArn: TOPIC, Events: ['all'] }]; // no Branches, as CDK emits
+        const pairDrift = async (baseline: Record<string, unknown>, aws: Record<string, unknown>, properties: Record<string, unknown>) => {
+          const b = provider.canonicalizeDriftProperties(type, baseline);
+          const a = provider.canonicalizeDriftProperties(type, aws);
+          const pair = await provider.canonicalizeDriftPair(type, b, a, properties);
+          return calculateResourceDrift(pair.baseline, pair.aws, { ignorePaths: provider.getDriftUnknownPaths(type), resourceType: type }).map((d) => d.path);
+        };
+        const baseline = { RepositoryName: 'my-repo' }; // what the denied capture recorded
+        const changed = bagOf(await live([{ name: 'n', destinationArn: TOPIC, branches: [], events: ['createReference'] }]))!;
+        expect(await pairDrift(baseline, changed, { Triggers: declared })).toEqual(['Triggers']);
+        const same = bagOf(await live([{ name: 'n', destinationArn: TOPIC, branches: [], events: ['all'] }]))!;
+        expect(await pairDrift(baseline, same, { Triggers: declared })).toEqual([]);
+        // Undeclared: stays uncompared, as any undeclared key with an empty baseline.
+        expect(await pairDrift(baseline, changed, {})).toEqual([]);
+      });
+
+      it('under a denied read the pair fabricates no Triggers: nothing for --accept to record wrongly', async () => {
+        const type = 'AWS::CodeCommit::Repository';
+        const aws = { RepositoryName: 'my-repo' }; // Triggers unread
+        const bare = { RepositoryName: 'my-repo' };
+        const out = await provider.canonicalizeDriftPair(type, bare, aws, { Triggers: [{ Name: 'n' }] });
+        expect(out.baseline).toBe(bare);
+        expect(out.aws).toBe(aws);
+        const held = { RepositoryName: 'my-repo', Triggers: [{ Name: 'kept' }] };
+        expect((await provider.canonicalizeDriftPair(type, held, aws, {})).aws['Triggers']).toEqual([{ Name: 'kept' }]);
+      });
+
+      it('an unsettled Triggers stays in transition while its read fails; --accept keeps it unsettled', async () => {
+        const type = 'AWS::CodeCommit::Repository';
+        mockSend.mockRejectedValueOnce(Object.assign(new Error('x'), { name: 'AccessDeniedException' }));
+        expect([...(await provider.unsettledInTransition('my-repo', 'MyRepo', type, new Set(['Triggers', 'Tags'])))]).toEqual(['Triggers']);
+        mockSend.mockResolvedValueOnce({ triggers: [] });
+        expect((await provider.unsettledInTransition('my-repo', 'MyRepo', type, new Set(['Triggers']))).size).toBe(0);
+        mockSend.mockRejectedValueOnce(notFound());
+        expect((await provider.unsettledInTransition('my-repo', 'MyRepo', type, new Set(['Triggers']))).size).toBe(0);
+        const calls = mockSend.mock.calls.length;
+        expect((await provider.unsettledInTransition('my-repo', 'MyRepo', type, new Set(['Tags']))).size).toBe(0);
+        expect(mockSend.mock.calls.length).toBe(calls); // no read without Triggers
+        mockSend.mockRejectedValueOnce(Object.assign(new Error('x'), { name: 'AccessDeniedException' }));
+        const record = { resourceType: type, physicalId: 'my-repo', properties: {}, attributes: {}, unsettledProperties: ['Triggers'] };
+        const settled = await settleUnsettled(record as never, 'MyRepo', () => provider);
+        expect((settled as { unsettledProperties?: string[] }).unsettledProperties).toEqual(['Triggers']);
+      });
+
+      it('an unread Triggers is not compared: no phantom removal against a baseline holding triggers', async () => {
+        const type = 'AWS::CodeCommit::Repository';
+        const baseline = { RepositoryName: 'my-repo', Triggers: [{ Name: 'n', DestinationArn: TOPIC, Branches: [], Events: ['all'] }] };
+        const aws = { RepositoryName: 'my-repo' };
+        const pair = await provider.canonicalizeDriftPair(type, baseline, aws);
+        expect(pair.baseline).toBe(baseline); // never dropped: --revert sends it, and a missing Triggers clears them
+        expect(drift(pair.baseline, pair.aws)).toEqual([]);
+        // A read that HAS Triggers is compared as is.
+        const read = { RepositoryName: 'my-repo', Triggers: [] };
+        const same = await provider.canonicalizeDriftPair(type, baseline, read);
+        expect(same.aws).toBe(read);
+        expect(drift(same.baseline, same.aws)).toEqual(['Triggers']);
+      });
     });
 
     it('propagates non-NotFound errors', async () => {

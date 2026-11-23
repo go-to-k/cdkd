@@ -230,6 +230,32 @@ describe('SQSQueuePolicyProvider: a failed create orphan is cleared by content (
     expect(cleared()).toEqual([Q1]);
   });
 
+  // go-to-k/cdkd#6854: the root ARN is the client partition's. SQS refuses a
+  // root ARN of another partition (InvalidAttributeValue, measured us-east-1,
+  // 2026-11-23), so an attempt naming one never is what the queue holds.
+  const QCN = 'https://sqs.cn-north-1.amazonaws.com.cn/123456789012/queue-cn';
+  const QLEGACY = 'https://cn-north-1.queue.amazonaws.com.cn/123456789012/queue-cn';
+  const QBARE = 'https://queue.amazonaws.com/123456789012/queue-1';
+  it.each([
+    ['us-east-1', Q1, 'arn:aws-cn:iam::123456789012:root', 'arn:aws:iam::123456789012:root', false],
+    ['us-east-1', Q1, '123456789012', 'arn:aws-cn:iam::123456789012:root', false],
+    ['us-east-1', Q1, '123456789012', 'arn:aws:iam::123456789012:root', true],
+    // The queue URL's region decides, not the client's.
+    ['us-east-1', QCN, '123456789012', 'arn:aws-cn:iam::123456789012:root', true],
+    ['us-east-1', QCN, '123456789012', 'arn:aws:iam::123456789012:root', false],
+    ['us-east-1', QLEGACY, '123456789012', 'arn:aws-cn:iam::123456789012:root', true],
+    // A URL naming no region falls back to the client's.
+    ['cn-north-1', QBARE, '123456789012', 'arn:aws-cn:iam::123456789012:root', true],
+    ['cn-north-1', QBARE, '123456789012', 'arn:aws:iam::123456789012:root', false],
+  ])('client in %s, queue %s: attempted principal %s against stored %s clears: %s (go-to-k/cdkd#6854)', async (region, queue, sentPrincipal, storedPrincipal, clears) => {
+    mockRegion.mockImplementation(() => Promise.resolve(region));
+    const statement = (aws: string) => ({ Sid: 'P', Effect: 'Allow', Principal: { AWS: aws }, Action: 'sqs:SendMessage' });
+    routeAws({ [queue]: JSON.stringify({ Version: '2012-10-17', Statement: [statement(storedPrincipal)] }) });
+    const result = await orphanDelete(queue, { PolicyDocument: { Version: '2012-10-17', Statement: [statement(sentPrincipal)] } });
+    expect(cleared()).toEqual(clears ? [queue] : []);
+    expect(result).toEqual(clears ? undefined : { outcome: 'deleted', leftInPlace: QUEUE_POLICY_MISMATCH_LEFT_REASON });
+  });
+
   it.each([
     ['a reference', '{{resolve:ssm-secure:p}}'],
     ['the state mask', '***'],

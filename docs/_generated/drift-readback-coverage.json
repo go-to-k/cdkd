@@ -3,8 +3,8 @@
     "types": 147,
     "noReadback": 2,
     "properties": 1565,
-    "read": 1413,
-    "unknown": 129,
+    "read": 1414,
+    "unknown": 128,
     "baseline": 23,
     "gap": 0,
     "outsideSchema": 12
@@ -1692,7 +1692,7 @@
         },
         {
           "property": "Triggers",
-          "status": "unknown"
+          "status": "read"
         }
       ],
       "unresolved": []

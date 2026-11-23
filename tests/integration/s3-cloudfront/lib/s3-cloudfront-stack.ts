@@ -121,7 +121,25 @@ export class S3CloudFrontStack extends cdk.Stack {
     // (issue #1371) — before that fix, ANY update failed with "WebACLId is
     // missing for the resource" because the template config was sent
     // verbatim instead of merged over the live one.
+    // go-to-k/cdkd#6854: standard logging to LogBucket. verify.sh switches the
+    // live Logging.Bucket to AltLogBucket out of band and asserts drift names
+    // it (it was skipped from drift on a premise CloudFront does not bear out:
+    // it reads the bucket domain back verbatim). Both buckets are ACL-enabled,
+    // which CloudFront standard logging requires, and stay empty: the
+    // distribution serves no traffic.
+    const logBucketProps: s3.BucketProps = {
+      objectOwnership: s3.ObjectOwnership.OBJECT_WRITER,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: false,
+    };
+    const logBucket = new s3.Bucket(this, 'LogBucket', logBucketProps);
+    const altLogBucket = new s3.Bucket(this, 'AltLogBucket', logBucketProps);
+
     const distribution = new cloudfront.Distribution(this, 'Distribution', {
+      enableLogging: true,
+      logBucket,
       defaultBehavior: {
         origin: originGroup,
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
@@ -181,6 +199,11 @@ export class S3CloudFrontStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'BucketArn', {
       value: bucket.bucketArn,
       description: 'S3 bucket ARN',
+    });
+
+    new cdk.CfnOutput(this, 'LogBucketDomain', { value: logBucket.bucketRegionalDomainName });
+    new cdk.CfnOutput(this, 'AltLogBucketDomain', {
+      value: altLogBucket.bucketRegionalDomainName,
     });
 
     new cdk.CfnOutput(this, 'OACId', {

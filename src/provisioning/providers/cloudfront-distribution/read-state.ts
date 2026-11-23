@@ -107,10 +107,14 @@ export async function readCurrentState(
  *   required rather than merely convenient. `convertToCfnFormat` already
  *   drops it from the AWS side; declaring it here also excludes it from
  *   the observed-baseline side.
- * - `DistributionConfig.Logging.Bucket`: CloudFront normalizes the S3
- *   logging bucket to its `<bucket>.s3.amazonaws.com` regional domain on
- *   read, which never matches the bare bucket domain a template may
- *   carry; treat it as drift-unknown to avoid a guaranteed mismatch.
+ *
+ * `DistributionConfig.Logging.Bucket` is compared (go-to-k/cdkd#6854): it
+ * was skipped on the premise that CloudFront rewrites the domain on read,
+ * but CloudFront returns it verbatim — `<bucket>.s3.us-east-1.amazonaws.com`
+ * (CDK's `bucketRegionalDomainName`), `<bucket>.s3.amazonaws.com` and
+ * `<bucket>.s3-us-east-1.amazonaws.com` each read back as sent, and a bare
+ * bucket name is refused (measured us-east-1, 2026-11-23). Skipping it hid
+ * an out-of-band switch of the log bucket.
  *
  * NOTE: `DistributionConfig.OriginGroups` is NO LONGER suppressed (issue
  * #873). The earlier suppression worked around `convertToCfnFormat`
@@ -125,7 +129,7 @@ export function getDriftUnknownPaths(
   resourceType: string
 ): string[] {
   if (resourceType !== 'AWS::CloudFront::Distribution') return [];
-  return ['DistributionConfig.CallerReference', 'DistributionConfig.Logging.Bucket'];
+  return ['DistributionConfig.CallerReference'];
 }
 
 /**
