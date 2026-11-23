@@ -1389,6 +1389,14 @@ describe('CodeCommitRepositoryProvider', () => {
         expect(drift({ Triggers: [{ Name: 'n', DestinationArn: TOPIC, Branches: [], Events: ['all'] }] }, aws)).toEqual(['Triggers']);
       });
 
+      it('a declared value in the spelling cdkd sends equals the readback; another value does not', async () => {
+        const aws = bagOf(await live([{ name: '42', destinationArn: TOPIC, branches: ['1'], events: ['all'] }]))!;
+        expect(drift({ Triggers: [{ Name: 42, DestinationArn: TOPIC, CustomData: null, Branches: [1], Events: ['all'] }] }, aws)).toEqual([]);
+        expect(drift({ Triggers: [{ Name: 43, DestinationArn: TOPIC, Branches: [1], Events: ['all'] }] }, aws)).toEqual(['Triggers']);
+        expect(drift({ Triggers: [{ Name: 42, DestinationArn: TOPIC, CustomData: 'x', Branches: [1], Events: ['all'] }] }, aws)).toEqual(['Triggers']);
+        expect(drift({ Triggers: [{ Name: 42, DestinationArn: TOPIC, Branches: [2], Events: ['all'] }] }, aws)).toEqual(['Triggers']);
+      });
+
       it('a baseline captured before Triggers were read (no key) compares none, so it does not drift', async () => {
         const aws = bagOf(await live([{ name: 'n', destinationArn: TOPIC, branches: [], events: ['all'] }]))!;
         expect(drift({ RepositoryName: 'my-repo' }, aws)).toEqual([]);
@@ -1396,10 +1404,10 @@ describe('CodeCommitRepositoryProvider', () => {
 
       it('the unsettled-update check folds Branches the same way', () => {
         const type = 'AWS::CodeCommit::Repository';
-        expect(provider.canonicalizeUnsettledProperties(type, { Triggers: [{ Name: 'n' }] })).toEqual({
-          Triggers: [{ Name: 'n', Branches: [] }],
+        expect(provider.canonicalizeUnsettledProperties(type, { Triggers: [{ Name: 'n', Events: ['all'] }] })).toEqual({
+          Triggers: [{ Name: 'n', Branches: [], Events: ['all'] }],
         });
-        const bag = { Triggers: [{ Name: 'n', Branches: ['main'] }] };
+        const bag = { Triggers: [{ Name: 'n', Branches: ['main'], Events: ['all'] }] };
         expect(provider.canonicalizeUnsettledProperties(type, bag)).toBe(bag);
       });
 

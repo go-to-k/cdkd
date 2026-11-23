@@ -111,10 +111,15 @@ us-east-1 on 2026-11-23, each deleted afterwards.
 | Triggers | `codecommit-repository/shared.ts` `triggersEqual` | Serialized in order (stricter than AWS). | A reordered branch list is a change. | `triggers compare in order...` | Keep |
 | `Code` is skipped | `codecommit-repository-provider.ts` `getDriftUnknownPaths` | Create-only seed content with no read-back (git history, not a repository attribute). | Only `Code`. | `does NOT surface create-only Code as drift` | Keep |
 | `Triggers` was skipped | `codecommit-repository-provider.ts` `getDriftUnknownPaths`; now read by `codecommit-repository/read-state.ts` `readCurrentState` | It was readable (`GetRepositoryTriggers`) but not read. Measured: CodeCommit returns the trigger list, `branches` and `events` in the order put, `customData` only when sent (`''` as `''`), and refuses a trigger without `branches` or a duplicate name. The read runs beside `ListTagsForResource`, so the deploy's observed capture (created / updated resources only, off the critical path) gains one parallel call. | Compared in order, every field. A baseline captured before the read lacks the key and compares none (no phantom drift) until its next capture. | `Triggers (go-to-k/cdkd#6854)` cases in `codecommit-repository-provider.test.ts`; integ `codecommit` changes the events out of band | Tightened: read and compared (maintainer decision, 2026-11-23). |
-| An omitted trigger `Branches` is `[]` | `codecommit-repository/shared.ts` `canonicalizeTriggerBranches`, via `canonicalizeDriftProperties` and `canonicalizeUnsettledProperties` | cdkd sends an omitted list as `[]` (CodeCommit refuses a null one), CodeCommit stores `[]`, and `[]` is every branch, CloudFormation's documented meaning of an omitted list. | Any declared list, `[]` included, is compared as written. | `a declared trigger without Branches...`, `the unsettled-update check folds Branches the same way` | Keep (new) |
+| A declared trigger in the form cdkd sends it (an omitted `Branches` is `[]`, a scalar is its string, a `null` `CustomData` is omitted) | `codecommit-repository/shared.ts` `canonicalizeTriggers`, via `canonicalizeDriftProperties` and `canonicalizeUnsettledProperties` | cdkd sends an omitted list as `[]` (CodeCommit refuses a null one), CodeCommit stores `[]`, and `[]` is every branch, CloudFormation's documented meaning of an omitted list. | Only the coercions `toSdkTriggers` applies; any other value is compared. | `a declared trigger without Branches...`, `a declared value in the spelling cdkd sends...`, `the unsettled-update check folds Branches the same way` | Keep (new) |
 
 ## Residuals
 
+- A repository whose template declares no `Triggers` and had none at capture
+  records `Triggers: []`, which the comparator skips as an undeclared empty
+  key (`undeclaredEmptyObservedKeys`), so a trigger added there out of band is
+  not reported. Adding `Triggers` to that table's exceptions needs its own
+  measurement.
 - **Policy-key callers without a partition.** `s3-bucket-policy-provider.ts`
   (lane A) and `settle-after-own-write.ts` (outside the lanes) call
   `policyContentKey` / `accountKey` without the resource's partition, so for

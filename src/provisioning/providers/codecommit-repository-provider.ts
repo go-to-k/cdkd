@@ -49,7 +49,7 @@ import {
   proceedUnconfirmed,
 } from './codecommit-repository/delete.js';
 import { readCurrentState, importImpl } from './codecommit-repository/read-state.js';
-import { canonicalizeTriggerBranches } from './codecommit-repository/shared.js';
+import { canonicalizeTriggers } from './codecommit-repository/shared.js';
 import type { CfnCode, RepoListKind } from './codecommit-repository/shared.js';
 
 export { RECORDED_IDENTITY_DELETE_GUARD } from './codecommit-repository/shared.js';
@@ -378,12 +378,12 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
     return ['Code'];
   }
 
-  /** See {@link canonicalizeTriggerBranches}: an omitted `Branches` is `[]`. */
+  /** See {@link canonicalizeTriggers}: an omitted `Branches` is `[]`. */
   canonicalizeDriftProperties(
     _resourceType: string,
     properties: Record<string, unknown>
   ): Record<string, unknown> {
-    return canonicalizeTriggerBranches(properties);
+    return canonicalizeTriggers(properties);
   }
 
   /** The same fold for the unsettled-update check's template-vs-live compare. */
@@ -391,7 +391,7 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
     _resourceType: string,
     properties: Record<string, unknown>
   ): Record<string, unknown> {
-    return canonicalizeTriggerBranches(properties);
+    return canonicalizeTriggers(properties);
   }
 
   import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
