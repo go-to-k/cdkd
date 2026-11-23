@@ -127,7 +127,7 @@ const BARE_ACCOUNT_ID = /^\d{12}$/;
  * partition are the only pair that can meet here (`policyContentKey` reads it
  * the same way).
  */
-const ACCOUNT_ROOT_PRINCIPAL = /^arn:aws[a-z-]*:iam::(\d{12}):root$/;
+const ACCOUNT_ROOT_PRINCIPAL = /^arn:aws(?:-[a-z]+)*:iam::(\d{12}):root$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -163,6 +163,7 @@ function unwrapOneElementList(value: unknown): unknown {
  * `normalizeAccountPrincipal` folds the same pair (under every principal key).
  */
 function accountPrincipalForm(value: unknown): unknown {
+  // The NUL-prefixed form cannot meet a real principal: IAM refuses a NUL in one.
   if (typeof value !== 'string') return value;
   if (BARE_ACCOUNT_ID.test(value)) return `\u0000account:${value}`;
   const root = ACCOUNT_ROOT_PRINCIPAL.exec(value);
@@ -230,6 +231,19 @@ function statementFieldForm(field: readonly string[], value: unknown): unknown {
   return value;
 }
 
+/**
+ * `rest` (a dotted path below one statement) as field segments. A Condition
+ * KEY may itself hold dots (`token.actions.githubusercontent.com:sub`), so
+ * everything after the operator is one segment; no other statement position
+ * the folds read has a dotted name.
+ */
+function statementFieldSegments(rest: string): string[] {
+  const segments = rest.split('.');
+  return segments[0] === 'Condition' && segments.length > 3
+    ? [segments[0], segments[1]!, segments.slice(2).join('.')]
+    : segments;
+}
+
 /** {@link canonicalPolicyFoldForm}'s answer for a path outside every policy statement. */
 export const NOT_A_POLICY_PATH: unique symbol = Symbol('not a policy path');
 
@@ -253,7 +267,10 @@ export function canonicalPolicyFoldForm(
         : statementFieldForm([], value);
     }
     if (path.startsWith(`${statementPath}.`)) {
-      return statementFieldForm(path.slice(statementPath.length + 1).split('.'), value);
+      return statementFieldForm(
+        statementFieldSegments(path.slice(statementPath.length + 1)),
+        value
+      );
     }
   }
   return NOT_A_POLICY_PATH;

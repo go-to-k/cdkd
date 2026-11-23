@@ -184,6 +184,50 @@ describe.each(SHAPES)('M4 Condition number / boolean vs its String() form (%s)',
   });
 });
 
+describe('the measured shape: object statement in the template, one-element list live', () => {
+  it('folds M1 and M2 across the two statement shapes', () => {
+    const tmpl = trust({ Effect: 'Allow', Action: ['sts:AssumeRole'], Principal: { AWS: ACCOUNT } });
+    const live = trust([
+      { Effect: 'Allow', Action: 'sts:AssumeRole', Principal: { AWS: `arn:aws:iam::${ACCOUNT}:root` } },
+    ]);
+    expect(sameBothWays(ROLE, tmpl, live)).toBe(true);
+  });
+  it('reports a real change across the two statement shapes', () => {
+    const tmpl = trust({ Effect: 'Allow', Action: ['sts:AssumeRole'], Principal: { AWS: ACCOUNT } });
+    const live = trust([
+      { Effect: 'Allow', Action: 'sts:AssumeRole', Principal: { AWS: `arn:aws:iam::${OTHER_ACCOUNT}:root` } },
+    ]);
+    expect(differsBothWays(ROLE, tmpl, live)).toBe(true);
+  });
+});
+
+describe('a Condition key holding dots', () => {
+  const KEY = 'token.actions.githubusercontent.com:sub';
+  const cond = (dotted: unknown, other: unknown) =>
+    policy({ ...base, Condition: { NumericLessThan: { [KEY]: dotted, k2: other } } });
+  it('folds M4 at the dotted key while a sibling key really changed', () => {
+    expect(drifts(BUCKET_POLICY, cond(1.2, 'a'), cond('1.2', 'b'))).toEqual([
+      { path: 'PolicyDocument.Statement.Condition.NumericLessThan.k2', stateValue: 'a', awsValue: 'b' },
+    ]);
+  });
+  it('keeps a one-element list vs scalar strict at the dotted key', () => {
+    expect(drifts(BUCKET_POLICY, cond('x', 'a'), cond(['x'], 'b')).map((d) => d.path)).toEqual([
+      `PolicyDocument.Statement.Condition.NumericLessThan.${KEY}`,
+      'PolicyDocument.Statement.Condition.NumericLessThan.k2',
+    ]);
+  });
+});
+
+describe('partition spelling of a root ARN', () => {
+  const p = (v: string) => trust({ Effect: 'Allow', Action: 'sts:AssumeRole', Principal: { AWS: v } });
+  it.each(['aws', 'aws-cn', 'aws-us-gov', 'aws-iso-b'])('folds the %s partition', (part) => {
+    expect(sameBothWays(ROLE, p(ACCOUNT), p(`arn:${part}:iam::${ACCOUNT}:root`))).toBe(true);
+  });
+  it.each(['awsx', 'aws-', 'AWS', 'gcp'])('does not fold a made-up partition %s', (part) => {
+    expect(differsBothWays(ROLE, p(ACCOUNT), p(`arn:${part}:iam::${ACCOUNT}:root`))).toBe(true);
+  });
+});
+
 describe('preserved as sent: kept strict (measured 2026-11-23)', () => {
   it.each([
     ['Action order', { ...base, Action: ['a:A', 'a:B'] }, { ...base, Action: ['a:B', 'a:A'] }],
