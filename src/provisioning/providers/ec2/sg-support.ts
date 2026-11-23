@@ -1,6 +1,8 @@
 import { type IpPermission, type SecurityGroupRule } from '@aws-sdk/client-ec2';
 import { requireConfigString } from '../../config-shape.js';
 import { canonicalizeIpProtocolValue } from '../../../utils/ip-protocol.js';
+import { canonicalizeIpv4Cidr } from '../../../utils/ipv4-cidr.js';
+import { canonicalizeIpv6Cidr } from '../../../utils/ipv6-cidr.js';
 import type { ResourceState } from '../../../types/state.js';
 import { isRedactedRecordedValue } from '../../redacted-delete-address.js';
 import { THROTTLING_ERROR_NAMES } from '../../../deployment/retryable-errors.js';
@@ -577,8 +579,10 @@ export function securityGroupRuleMatchesCfnIngress(
   // case), protocol + ports alone decide, and the caller's "exactly one match"
   // rule still refuses an ambiguous answer.
   const sources: Array<[unknown, unknown]> = [
-    [properties['CidrIp'], rule.CidrIpv4],
-    [properties['CidrIpv6'], rule.CidrIpv6],
+    // go-to-k/cdkd#6854: a CIDR as EC2 stores it (sgCidrKey), so a template
+    // spelled with host bits finds its own rule.
+    [sgCidrKey(properties['CidrIp']), sgCidrKey(rule.CidrIpv4)],
+    [sgCidrKey(properties['CidrIpv6']), sgCidrKey(rule.CidrIpv6)],
     [properties['SourceSecurityGroupId'], rule.ReferencedGroupInfo?.GroupId],
     [properties['SourcePrefixListId'], rule.PrefixListId],
   ];
@@ -586,6 +590,49 @@ export function securityGroupRuleMatchesCfnIngress(
     if (declared !== undefined && declared !== null && declared !== actual) return false;
   }
   return true;
+}
+
+/**
+ * go-to-k/cdkd#6854: a security-group rule CIDR as EC2 stores it, for rule
+ * identity. EC2 clears host bits and writes IPv6 compressed and lower-cased
+ * (`10.0.0.5/24` is stored as `10.0.0.0/24`, `2001:DB8:0:2:0:0:0:5/64` as
+ * `2001:db8:0:2::/64`), and refuses a second rule at another spelling of one
+ * network as `InvalidPermission.Duplicate` (all measured us-east-1,
+ * 2026-11-23), so two spellings with one key are one rule. A spelling EC2
+ * refuses as malformed (a leading zero in an octet or a prefix, a prefix with
+ * no digits) or anything that is not a CIDR is keyed as written, never folded
+ * onto a valid network. Not a string: returned as it is.
+ */
+export function sgCidrKey(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  const ipv4 = /^(0|[1-9]\d{0,2})(\.(0|[1-9]\d{0,2})){3}\/(0|[1-9]\d?)$/.test(value)
+    ? canonicalizeIpv4Cidr(value)
+    : undefined;
+  if (ipv4 !== undefined) return ipv4;
+  const slash = value.lastIndexOf('/');
+  if (value.includes(':') && /^(0|[1-9]\d{0,2})$/.test(value.slice(slash + 1))) {
+    return canonicalizeIpv6Cidr(value) ?? value;
+  }
+  return value;
+}
+
+/**
+ * A live rule paired with a recorded one by {@link sgRuleKey}, in the
+ * record's CIDR spelling (go-to-k/cdkd#6854): the keys proved both CIDRs are
+ * the network EC2 stores, and the drift comparison is textual, so AWS's
+ * `10.0.0.0/24` against a record's `10.0.0.5/24` would read as drift on every
+ * run, with `--revert` revoking and re-authorizing the same rule.
+ */
+export function withRecordedCidrSpelling(
+  live: CfnSgRule,
+  recorded: Record<string, unknown>
+): CfnSgRule {
+  let out = live;
+  for (const key of ['CidrIp', 'CidrIpv6'] as const) {
+    const spelled = recorded[key];
+    if (typeof spelled === 'string' && spelled !== out[key]) out = { ...out, [key]: spelled };
+  }
+  return out;
 }
 
 /**
@@ -616,8 +663,10 @@ export function sgRuleKey(rule: CfnSgRule, direction: SgDirection): string {
     p: sgProtocolKey(rule['IpProtocol']),
     f: rule['FromPort'] ?? null,
     t: rule['ToPort'] ?? null,
-    c4: rule['CidrIp'] ?? null,
-    c6: rule['CidrIpv6'] ?? null,
+    // go-to-k/cdkd#6854: as EC2 stores it, so two spellings of one rule key
+    // alike and two different rules never do.
+    c4: sgCidrKey(rule['CidrIp']) ?? null,
+    c6: sgCidrKey(rule['CidrIpv6']) ?? null,
     peer: peerKey ?? null,
     peerOwner: peerOwner ?? null,
     pl: prefixKey ?? null,
@@ -650,7 +699,7 @@ export function reconcileSgRules(
     const key = sgRuleKey(sr, direction);
     const idx = remaining.findIndex((ar) => sgRuleKey(ar, direction) === key);
     if (idx >= 0) {
-      reordered.push(remaining.splice(idx, 1)[0]!);
+      reordered.push(withRecordedCidrSpelling(remaining.splice(idx, 1)[0]!, sr));
     }
   }
   return [...reordered, ...remaining];

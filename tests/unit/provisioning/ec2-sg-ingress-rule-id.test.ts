@@ -387,6 +387,24 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
         expect(result.attributes).toEqual({ Id: 'sgr-all' });
       });
 
+      // go-to-k/cdkd#6854: EC2 stores a CIDR with its host bits cleared
+      // (measured), so a template spelled with host bits names that rule...
+      it('matches a CIDR the template spells with host bits to the network AWS stores', async () => {
+        withExistingRules([decoy({ SecurityGroupRuleId: 'sgr-net' })]);
+        const result = await createAsRerun({ ...PROPS, CidrIp: '10.0.5.5/16' });
+        expect(result.attributes).toEqual({ Id: 'sgr-net' });
+      });
+
+      // ...but another network, another prefix, or a spelling EC2 refuses never does.
+      it.each([['10.1.0.0/16'], ['10.0.0.0/17'], ['10.0.0.0/'], ['010.0.0.0/16']])(
+        'rejects a rule whose network differs from the template CIDR %s',
+        async (cidr) => {
+          withExistingRules([decoy({})]);
+          const result = await createAsRerun({ ...PROPS, CidrIp: cidr });
+          expect(result.attributes).toEqual({});
+        }
+      );
+
       it('matches a NUMERIC protocol against the canonical name AWS reports (#1643)', async () => {
         // The `sgProtocolKey` fold on BOTH sides, which every other row here
         // leaves unfenced by spelling the protocol identically on each side.
