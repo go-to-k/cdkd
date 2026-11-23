@@ -310,6 +310,37 @@ describe('S3BucketPolicyProvider.readCurrentState', () => {
     expect(mockSend).toHaveBeenCalledTimes(2);
   });
 
+  it('on a drift read, keeps the answer before a re-read that fails', async () => {
+    mockSend
+      .mockResolvedValueOnce({ Policy: oaiPolicy({ AWS: 'AIDAIBJOSOJSBZ753XCAW' }) })
+      .mockRejectedValueOnce(Object.assign(new Error('Rate exceeded'), { name: 'SlowDown' }));
+    Object.assign(provider, { transientUniqueIdRereadDelaysMs: [0, 0, 0], sleep: async () => {} });
+
+    const result = (await provider.readCurrentState(
+      'my-bucket',
+      'L',
+      'AWS::S3::BucketPolicy',
+      templateProps
+    )) as Record<string, unknown> | undefined;
+
+    const stmt = (result!['PolicyDocument'] as { Statement: Record<string, unknown>[] }).Statement[0]!;
+    expect(stmt['Principal']).toEqual({ AWS: 'AIDAIBJOSOJSBZ753XCAW' });
+    expect(mockSend).toHaveBeenCalledTimes(2);
+  });
+
+  it('right after its own write, folds on the first read and never waits out the transient form', async () => {
+    mockSend.mockResolvedValue({ Policy: oaiPolicy({ AWS: 'AIDAIBJOSOJSBZ753XCAW' }) });
+    const sleep = vi.fn(async () => {});
+    Object.assign(provider, { ownWriteRereadDelaysMs: [], sleep });
+
+    await provider.readCurrentState('my-bucket', 'L', 'AWS::S3::BucketPolicy', templateProps, {
+      afterOwnWrite: true,
+    });
+
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
   it('on a drift read, never re-reads a policy with no template-claimed bare unique id', async () => {
     mockSend.mockResolvedValueOnce({ Policy: oaiPolicy({ AWS: 'AIDAIBJOSOJSBZ753XCAW' }) });
     const sleep = vi.fn(async () => {});

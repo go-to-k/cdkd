@@ -727,8 +727,9 @@ export class S3BucketPolicyProvider implements ResourceProvider {
     const delaysMs = this.ownWriteRereadDelaysMs;
     const options = { logicalId, properties, context, delaysMs, logger: this.logger };
     let first = await read();
-    if (context?.afterOwnWrite !== true)
+    if (context?.afterOwnWrite !== true) {
       first = await this.outwaitTransientUniqueId(first, read, properties);
+    }
     return settleBucketPolicyRead(first, read, options);
   }
 
@@ -737,7 +738,10 @@ export class S3BucketPolicyProvider implements ResourceProvider {
    * shows a bare unique id a template statement would claim: within seconds of
    * any `PutBucketPolicy` that is the OAI's transient form, which then reads as
    * its user ARN. An id still there after the schedule (a deleted IAM user's)
-   * is returned as read and compared. Other reads cost nothing extra.
+   * is returned as read and compared. Other reads cost nothing extra. A
+   * re-read that fails or answers no policy text ends the schedule on the
+   * answer before it, the way a create's re-check does; a deleted policy or
+   * bucket is returned.
    */
   private async outwaitTransientUniqueId(
     first: Record<string, unknown> | ResourceNotFound | undefined,
@@ -753,7 +757,14 @@ export class S3BucketPolicyProvider implements ResourceProvider {
         return answer;
       }
       await this.sleep(delayMs);
-      answer = await read();
+      let next: Record<string, unknown> | ResourceNotFound | undefined;
+      try {
+        next = await read();
+      } catch {
+        return answer;
+      }
+      if (next === undefined) return answer;
+      answer = next;
     }
     return answer;
   }
