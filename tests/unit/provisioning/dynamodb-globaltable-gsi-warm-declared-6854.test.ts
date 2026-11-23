@@ -152,6 +152,25 @@ describe('GlobalTable per-index WarmThroughput declaration gate (#6854)', () => 
 
   it('a template baseline declaring a quoted number equals the same live number', async () => {
     const quoted = template({ ReadUnitsPerSecond: '12000' });
+    // The `properties` fallback baseline IS the template, quoted string included.
+    expect(
+      await driftPaths(
+        { GlobalSecondaryIndexes: [gsi({ ReadUnitsPerSecond: '12000' })] },
+        { GlobalSecondaryIndexes: [gsi(COMPUTED)] },
+        quoted
+      )
+    ).toEqual([]);
+    expect(
+      await driftPaths(
+        { GlobalSecondaryIndexes: [gsi({ ReadUnitsPerSecond: '12000' })] },
+        { GlobalSecondaryIndexes: [gsi(GROWN)] },
+        quoted
+      )
+    ).toEqual(['GlobalSecondaryIndexes']);
+  });
+
+  it('an observed baseline of a quoted declaration equals the same live number', async () => {
+    const quoted = template({ ReadUnitsPerSecond: '12000' });
     expect(
       await driftPaths(
         { GlobalSecondaryIndexes: [gsi({ ReadUnitsPerSecond: 12000 })] },

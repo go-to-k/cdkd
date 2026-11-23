@@ -170,9 +170,19 @@ export function canonicalizeIndexWarmThroughput(
           : new Set<string>();
       const block = entry[member];
       if (sent.size > 0 && isPlainCapacityBlock(block)) {
+        // A quoted number reads as the number create() and update() send
+        // (`coerceWarmThroughput`), so a template baseline declaring '12000'
+        // equals a live 12000; a `{{resolve}}` stand-in stays as recorded.
+        const coerced = coerceWarmThroughput(block).spec;
         const kept: Record<string, unknown> = {};
-        for (const key of Object.keys(block)) if (sent.has(key)) kept[key] = block[key];
-        if (Object.keys(kept).length === Object.keys(block).length) return element;
+        let rewritten = false;
+        for (const key of Object.keys(block)) {
+          if (!sent.has(key)) continue;
+          const numeric = coerced?.[key as keyof typeof coerced];
+          kept[key] = numeric ?? block[key];
+          if (kept[key] !== block[key]) rewritten = true;
+        }
+        if (!rewritten && Object.keys(kept).length === Object.keys(block).length) return element;
         changed = true;
         const copy = { ...entry };
         if (Object.keys(kept).length > 0) copy[member] = kept;
