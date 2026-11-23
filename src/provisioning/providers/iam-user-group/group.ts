@@ -46,6 +46,7 @@ import { stateOrphanRecordRemedy } from '../../state-orphan-remedy.js';
 import { heldText, isStackOwnHolder, stackOwnHolders } from '../../stack-own-holders.js';
 import { clearOwnWriteRemovals, recordOwnWriteRemoval } from '../../own-write-removals.js';
 import { verifyOwnIdentityBeforeUpdate } from '../iam-policy/principal-identity.js';
+import { planInlinePolicyNames } from '../iam-role/update.js';
 
 /**
  * go-to-k/cdkd#6609: each removal an update makes is noted once its call
@@ -850,6 +851,21 @@ export async function updateGroupInlinePolicies(
   const { value: v } = log;
   const newMap = new Map((newPolicies || []).map((p) => [p.PolicyName, p.PolicyDocument]));
   const oldMap = new Map((oldPolicies || []).map((p) => [p.PolicyName, p.PolicyDocument]));
+  const plan = planInlinePolicyNames(newMap.keys(), oldMap.keys());
+
+  // go-to-k/cdkd#6874: a name respelled only in case is the same policy;
+  // its old spelling goes first, as CloudFormation does, so the put below
+  // lists the new one.
+  for (const policyName of plan.respelled) {
+    try {
+      await this.iamClient.send(
+        new DeleteGroupPolicyCommand({ GroupName: groupName, PolicyName: policyName })
+      );
+    } catch (error) {
+      if (!(error instanceof NoSuchEntityException)) throw error;
+    }
+    log.debug(`Deleted inline policy ${v(policyName)} before re-putting it in another case`);
+  }
 
   // Add or update policies
   for (const [policyName, policyDoc] of newMap) {
@@ -869,28 +885,26 @@ export async function updateGroupInlinePolicies(
   // this group in the same run is not removed. Set by a rollback revert,
   // where the policy that took this name over may have been put back
   // before this principal's own revert drops it.
-  for (const policyName of oldMap.keys()) {
-    if (!newMap.has(policyName)) {
-      if (claimed?.('group', groupName, policyName) === true) {
-        log.debug(
-          `Kept inline policy ${v(policyName)} on group ${v(groupName)}: another resource of this deploy or rollback wrote it`
-        );
-        continue;
-      }
-      try {
-        await this.iamClient.send(
-          new DeleteGroupPolicyCommand({
-            GroupName: groupName,
-            PolicyName: policyName,
-          })
-        );
-        log.debug(`Deleted inline policy ${v(policyName)} from group ${v(groupName)}`);
-      } catch (error) {
-        if (!(error instanceof NoSuchEntityException)) {
-          throw error;
-        }
-      }
-      recordOwnWriteRemoval(GROUP_TYPE, groupName, 'Policies', policyName);
+  for (const policyName of plan.removed) {
+    if (claimed?.('group', groupName, policyName) === true) {
+      log.debug(
+        `Kept inline policy ${v(policyName)} on group ${v(groupName)}: another resource of this deploy or rollback wrote it`
+      );
+      continue;
     }
+    try {
+      await this.iamClient.send(
+        new DeleteGroupPolicyCommand({
+          GroupName: groupName,
+          PolicyName: policyName,
+        })
+      );
+      log.debug(`Deleted inline policy ${v(policyName)} from group ${v(groupName)}`);
+    } catch (error) {
+      if (!(error instanceof NoSuchEntityException)) {
+        throw error;
+      }
+    }
+    recordOwnWriteRemoval(GROUP_TYPE, groupName, 'Policies', policyName);
   }
 }

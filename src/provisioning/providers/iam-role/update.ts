@@ -13,6 +13,7 @@ import {
   UntagRoleCommand,
   PutRolePermissionsBoundaryCommand,
   DeleteRolePermissionsBoundaryCommand,
+  NoSuchEntityException,
 } from '@aws-sdk/client-iam';
 import { safeStringify } from '../../../utils/aws-failure-text.js';
 import {
@@ -520,6 +521,35 @@ export async function updateManagedPolicies(
 }
 
 /**
+ * go-to-k/cdkd#6874: how an inline-policy name change reaches IAM, which
+ * holds ONE inline policy per name ignoring case on a principal and keeps the
+ * spelling it was first put under (measured us-east-1, 2026-11-23: a
+ * `PutRolePolicy` of `casepol` over `CasePol` replaces the document and
+ * `CasePol` stays listed). A recorded name the desired list holds only in
+ * another case is that same policy, so it is never a removal: deleting it
+ * after the put deleted the policy just written. CloudFormation deletes the
+ * old spelling FIRST and then puts the new one, so the new spelling is listed
+ * (CloudTrail, same A/B); `respelled` are those old spellings, deleted before
+ * the puts, and `removed` the recorded names no desired name matches in any
+ * case.
+ */
+export function planInlinePolicyNames(
+  desired: Iterable<string>,
+  recorded: Iterable<string>
+): { respelled: string[]; removed: string[] } {
+  const desiredExact = new Set(desired);
+  const desiredFolded = new Set([...desiredExact].map((name) => name.toLowerCase()));
+  const respelled: string[] = [];
+  const removed: string[] = [];
+  for (const name of recorded) {
+    if (desiredExact.has(name)) continue;
+    if (desiredFolded.has(name.toLowerCase())) respelled.push(name);
+    else removed.push(name);
+  }
+  return { respelled, removed };
+}
+
+/**
  * Update inline policies
  */
 export async function updateInlinePolicies(
@@ -533,6 +563,21 @@ export async function updateInlinePolicies(
   const { value: v } = log;
   const newMap = new Map((newPolicies || []).map((p) => [p.PolicyName, p.PolicyDocument]));
   const oldMap = new Map((oldPolicies || []).map((p) => [p.PolicyName, p.PolicyDocument]));
+  const plan = planInlinePolicyNames(newMap.keys(), oldMap.keys());
+
+  // go-to-k/cdkd#6874: a name respelled only in case is the same policy;
+  // its old spelling goes first, as CloudFormation does, so the put below
+  // lists the new one.
+  for (const policyName of plan.respelled) {
+    try {
+      await this.iamClient.send(
+        new DeleteRolePolicyCommand({ RoleName: roleName, PolicyName: policyName })
+      );
+    } catch (error) {
+      if (!(error instanceof NoSuchEntityException)) throw error;
+    }
+    log.debug(`Deleted inline policy ${v(policyName)} before re-putting it in another case`);
+  }
 
   // Add or update policies
   for (const [policyName, policyDoc] of newMap) {
@@ -553,23 +598,21 @@ export async function updateInlinePolicies(
   // this role in the same run is not removed. Set by a rollback revert,
   // where the policy that took this name over may have been put back
   // before this principal's own revert drops it.
-  for (const policyName of oldMap.keys()) {
-    if (!newMap.has(policyName)) {
-      if (claimed?.('role', roleName, policyName) === true) {
-        log.debug(
-          `Kept inline policy ${v(policyName)} on role ${v(roleName)}: another resource of this deploy or rollback wrote it`
-        );
-        continue;
-      }
-      await this.iamClient.send(
-        new DeleteRolePolicyCommand({
-          RoleName: roleName,
-          PolicyName: policyName,
-        })
+  for (const policyName of plan.removed) {
+    if (claimed?.('role', roleName, policyName) === true) {
+      log.debug(
+        `Kept inline policy ${v(policyName)} on role ${v(roleName)}: another resource of this deploy or rollback wrote it`
       );
-      recordOwnWriteRemoval(ROLE_TYPE, roleName, 'Policies', policyName);
-      log.debug(`Deleted inline policy ${v(policyName)}`);
+      continue;
     }
+    await this.iamClient.send(
+      new DeleteRolePolicyCommand({
+        RoleName: roleName,
+        PolicyName: policyName,
+      })
+    );
+    recordOwnWriteRemoval(ROLE_TYPE, roleName, 'Policies', policyName);
+    log.debug(`Deleted inline policy ${v(policyName)}`);
   }
 }
 

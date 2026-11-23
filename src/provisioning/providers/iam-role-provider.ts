@@ -303,23 +303,48 @@ const STANDALONE_POLICY_SIBLINGS: Record<
  * @param attachmentField   Which sibling field to inspect: `'Roles'`,
  *                          `'Users'`, or `'Groups'`.
  * @returns Set of `PolicyName` values to exclude. Empty when no
- *          sibling matches OR when context is undefined.
+ *          sibling matches OR when context is undefined. Its `has` ignores
+ *          case, as IAM does (go-to-k/cdkd#6874): a principal holds one
+ *          inline policy per name in any case, and keeps the spelling it was
+ *          first put under, so a sibling's case-only rename reads back under
+ *          the old spelling. The principal match ignores case too (IAM
+ *          principal names are unique ignoring case).
  */
+/**
+ * A set of IAM names whose `has` ignores case; iteration yields each name as
+ * added (go-to-k/cdkd#6874).
+ */
+class CaseFoldedNameSet extends Set<string> {
+  private readonly folded = new Set<string>();
+
+  override add(name: string): this {
+    this.folded.add(name.toLowerCase());
+    return super.add(name);
+  }
+
+  override has(name: string): boolean {
+    return this.folded.has(name.toLowerCase());
+  }
+}
+
 export function collectInlinePolicyNamesManagedBySiblings(
   targetPhysicalId: string,
   context: import('../../types/resource.js').ReadCurrentStateContext | undefined,
   attachmentField: 'Roles' | 'Users' | 'Groups'
 ): Set<string> {
-  const result = new Set<string>();
+  const result = new CaseFoldedNameSet();
   const siblings = context?.siblings;
   if (!siblings) return result;
+  const target = targetPhysicalId.toLowerCase();
+  const isTarget = (value: unknown): boolean =>
+    typeof value === 'string' && value.toLowerCase() === target;
   // go-to-k/cdkd#4821: a standalone `AWS::IAM::RolePolicy` / `UserPolicy` /
   // `GroupPolicy` manages its ONE name on the principal its scalar field names.
   const standalone = STANDALONE_POLICY_SIBLINGS[attachmentField];
   for (const sibling of Object.values(siblings)) {
     if (sibling.resourceType === standalone.type) {
       const name = sibling.properties['PolicyName'];
-      if (sibling.properties[standalone.field] === targetPhysicalId && typeof name === 'string') {
+      if (isTarget(sibling.properties[standalone.field]) && typeof name === 'string') {
         result.add(name);
       }
       continue;
@@ -327,7 +352,7 @@ export function collectInlinePolicyNamesManagedBySiblings(
     if (sibling.resourceType !== 'AWS::IAM::Policy') continue;
     const attachments = sibling.properties[attachmentField];
     if (!Array.isArray(attachments)) continue;
-    if (!attachments.some((a) => a === targetPhysicalId)) continue;
+    if (!attachments.some(isTarget)) continue;
     const name = sibling.properties['PolicyName'];
     if (typeof name === 'string') result.add(name);
   }
