@@ -171,6 +171,7 @@ echo "    Triggers entry applied via PutRepositoryTriggers"
 # --- Phase 1b: drift detection (readCurrentState) ----------------------
 # The provider's readCurrentState maps GetRepository + ListTagsForResource
 # back to the flat CFn RepositoryDescription / KmsKeyId / Tags cdkd stores.
+# Triggers are read too (GetRepositoryTriggers, #6854).
 # A freshly-deployed repo must report ZERO drift; a direct AWS-side mutation
 # must be detected as drift (exit 1). Revert afterwards so Phase 2's
 # template-vs-state UPDATE assertions stay consistent.
@@ -195,6 +196,28 @@ drift_rc=0
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" || drift_rc=$?
 [ "${drift_rc}" -eq 0 ] || { echo "FAIL: expected zero drift after reverting the description, drift exited ${drift_rc}" >&2; exit 1; }
 echo "    drift clean again after revert"
+
+# go-to-k/cdkd#6854: Triggers are read back and compared. Narrow the trigger's
+# events out of band, expect drift naming Triggers, then put the set back.
+echo "==> Phase 1b: change the trigger's events on AWS, expect Triggers drift (#6854)"
+ORIG_TRIGGERS="$(aws codecommit get-repository-triggers --repository-name "${REPO}" \
+  --region "${REGION}" --query 'triggers' --output json)"
+[ "$(printf '%s' "${ORIG_TRIGGERS}" | jq -r '[.[].events[]] | join(",")')" = "all" ] || {
+  echo "FAIL: #6854 premise: expected one trigger on event 'all', got ${ORIG_TRIGGERS}" >&2; exit 1; }
+aws codecommit put-repository-triggers --repository-name "${REPO}" --region "${REGION}" \
+  --triggers "$(printf '%s' "${ORIG_TRIGGERS}" | jq -c '[.[] | .events = ["createReference"]]')" >/dev/null
+drift_rc=0
+DRIFT_JSON="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json 2>/dev/null)" || drift_rc=$?
+[ "${drift_rc}" -eq 1 ] || { echo "FAIL: expected drift (exit 1) after out-of-band trigger change, drift exited ${drift_rc}" >&2; exit 1; }
+TRIGGER_DRIFT="$(printf '%s' "${DRIFT_JSON}" | jq '[.[].drifted[] | select(.type == "AWS::CodeCommit::Repository") | .changes[] | select(.path | test("^Triggers"))] | length')"
+[ "${TRIGGER_DRIFT}" -ge 1 ] || { echo "FAIL: cdkd drift did not report Triggers after the out-of-band trigger change (#6854)" >&2; printf '%s' "${DRIFT_JSON}" | jq '.[].drifted' >&2; exit 1; }
+echo "    out-of-band trigger change detected as Triggers drift"
+aws codecommit put-repository-triggers --repository-name "${REPO}" --region "${REGION}" \
+  --triggers "$(printf '%s' "${ORIG_TRIGGERS}" | jq -c '.')" >/dev/null
+drift_rc=0
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" || drift_rc=$?
+[ "${drift_rc}" -eq 0 ] || { echo "FAIL: expected zero drift after restoring the triggers, drift exited ${drift_rc}" >&2; exit 1; }
+echo "    drift clean again after restoring the triggers"
 
 # --- Phase 2: UPDATE (rename + description + tags) ----------------------
 echo "==> Phase 2: re-deploy with rename + description change + tag change/removal (UPDATE)"

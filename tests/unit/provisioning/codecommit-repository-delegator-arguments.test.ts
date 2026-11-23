@@ -85,8 +85,9 @@ describe('CodeCommitRepositoryProvider delegators hand every argument to the mov
     // The class's own non-delegator methods stay in the class.
     expect(Object.getOwnPropertyNames(CodeCommitRepositoryProvider.prototype).length).toBe(
       // constructor, getClient, getCreateClient, getS3Client, toAttributes,
-      // wrapCaughtError, getAttribute, getDriftUnknownPaths, getRepositoryMetadata
-      own.length + 9
+      // wrapCaughtError, getAttribute, getDriftUnknownPaths, getRepositoryMetadata,
+      // canonicalizeDriftProperties, canonicalizeUnsettledProperties
+      own.length + 11
     );
     expect(own.sort()).toEqual(DELEGATORS.map(([name]) => name).sort());
   });

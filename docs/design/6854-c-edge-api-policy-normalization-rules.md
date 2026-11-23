@@ -109,14 +109,12 @@ us-east-1 on 2026-11-23, each deleted afterwards.
 | `ServiceAttributes` scalars as strings | `servicediscovery/read-state.ts` `normalizeServiceAttributes` | Cloud Map attributes are strings; a number or boolean is sent as its string. Write-side shaping, not a drift fold. | A non-scalar is dropped, not stringified. | — | Keep |
 | Tag maps | `codecommit-repository/shared.ts` `tagMapsEqual` | A map has no order. | A value, an added or a removed key is a change. | `tag maps compare as maps...` | Keep |
 | Triggers | `codecommit-repository/shared.ts` `triggersEqual` | Serialized in order (stricter than AWS). | A reordered branch list is a change. | `triggers compare in order...` | Keep |
-| `Code`, `Triggers` are skipped | `codecommit-repository-provider.ts` `getDriftUnknownPaths` | `Code` is create-only seed content with no read-back. `Triggers` IS readable (`GetRepositoryTriggers`) but is not read: comparing it needs a read the deploy's observed capture would also make. | — | — | Residual (see below) |
+| `Code` is skipped | `codecommit-repository-provider.ts` `getDriftUnknownPaths` | Create-only seed content with no read-back (git history, not a repository attribute). | Only `Code`. | `does NOT surface create-only Code as drift` | Keep |
+| `Triggers` was skipped | `codecommit-repository-provider.ts` `getDriftUnknownPaths`; now read by `codecommit-repository/read-state.ts` `readCurrentState` | It was readable (`GetRepositoryTriggers`) but not read. Measured: CodeCommit returns the trigger list, `branches` and `events` in the order put, `customData` only when sent (`''` as `''`), and refuses a trigger without `branches` or a duplicate name. The read runs beside `ListTagsForResource`, so the deploy's observed capture (created / updated resources only, off the critical path) gains one parallel call. | Compared in order, every field. A baseline captured before the read lacks the key and compares none (no phantom drift) until its next capture. | `Triggers (go-to-k/cdkd#6854)` cases in `codecommit-repository-provider.test.ts`; integ `codecommit` changes the events out of band | Tightened: read and compared (maintainer decision, 2026-11-23). |
+| An omitted trigger `Branches` is `[]` | `codecommit-repository/shared.ts` `canonicalizeTriggerBranches`, via `canonicalizeDriftProperties` and `canonicalizeUnsettledProperties` | cdkd sends an omitted list as `[]` (CodeCommit refuses a null one), CodeCommit stores `[]`, and `[]` is every branch, CloudFormation's documented meaning of an omitted list. | Any declared list, `[]` included, is compared as written. | `a declared trigger without Branches...`, `the unsettled-update check folds Branches the same way` | Keep (new) |
 
 ## Residuals
 
-- **CodeCommit `Triggers` drift is skipped although AWS can return it.** Closing
-  it needs a `GetRepositoryTriggers` call in `readCurrentState`, which the
-  deploy's observed-property capture also runs, so it adds an AWS call to a
-  deploy. Left for the maintainer's decision.
 - **Policy-key callers without a partition.** `s3-bucket-policy-provider.ts`
   (lane A) and `settle-after-own-write.ts` (outside the lanes) call
   `policyContentKey` / `accountKey` without the resource's partition, so for

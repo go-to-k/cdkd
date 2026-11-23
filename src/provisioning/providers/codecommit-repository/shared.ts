@@ -232,3 +232,44 @@ export function readRepoList(kind: RepoListKind, value: unknown, side: RepoListS
       Array.isArray(value) && value.every((e) => isWellFormedRepoEntry(kind, e, side, true)),
   };
 }
+
+/**
+ * CodeCommit's triggers in the CFn shape, in the order CodeCommit returns
+ * them, which is the order they were put (measured us-east-1, 2026-11-23:
+ * the trigger list, `branches` and `events` all read back as sent).
+ * `Branches` is always emitted (`[]` means every branch, and CodeCommit
+ * refuses a trigger without the list); `CustomData` only when CodeCommit
+ * returns it (an omitted one reads back absent, `''` as `''`).
+ */
+export function triggersToCfn(
+  triggers: readonly RepositoryTrigger[] | undefined
+): Array<Record<string, unknown>> {
+  return (triggers ?? []).map((t) => ({
+    Name: t.name ?? '',
+    DestinationArn: t.destinationArn ?? '',
+    ...(t.customData !== undefined && { CustomData: t.customData }),
+    Branches: [...(t.branches ?? [])],
+    Events: [...(t.events ?? [])],
+  }));
+}
+
+/**
+ * A drift side's `Triggers` with an absent `Branches` as `[]`: cdkd sends a
+ * declared trigger without `Branches` as `[]` (CodeCommit refuses a null
+ * list), which reads back `[]`, every branch, as CloudFormation documents
+ * for an omitted list. Any other value is compared as written.
+ */
+export function canonicalizeTriggerBranches(
+  properties: Record<string, unknown>
+): Record<string, unknown> {
+  const list = properties['Triggers'];
+  if (!Array.isArray(list)) return properties;
+  let changed = false;
+  const next = list.map((entry: unknown) => {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return entry;
+    if ((entry as Record<string, unknown>)['Branches'] !== undefined) return entry;
+    changed = true;
+    return { ...(entry as Record<string, unknown>), Branches: [] };
+  });
+  return changed ? { ...properties, Triggers: next } : properties;
+}

@@ -3589,6 +3589,7 @@
     "--transit-gateway-id",
     "--transition-default-minimum-object-size",
     "--tree",
+    "--triggers",
     "--trust",
     "--trust-for-lookup",
     "--type",

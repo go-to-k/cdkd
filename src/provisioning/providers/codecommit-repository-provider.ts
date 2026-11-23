@@ -49,6 +49,7 @@ import {
   proceedUnconfirmed,
 } from './codecommit-repository/delete.js';
 import { readCurrentState, importImpl } from './codecommit-repository/read-state.js';
+import { canonicalizeTriggerBranches } from './codecommit-repository/shared.js';
 import type { CfnCode, RepoListKind } from './codecommit-repository/shared.js';
 
 export { RECORDED_IDENTITY_DELETE_GUARD } from './codecommit-repository/shared.js';
@@ -368,15 +369,29 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
    * `Code` is create-only S3-zip seed content unpacked into the initial
    * commit — there is no read-back to compare against (the commit is git
    * history, not a repository attribute), so it can never meaningfully drift.
-   * `Triggers` IS wired on the write side (create + update via
-   * `PutRepositoryTriggers`), but `readCurrentState` does not yet fetch
-   * `GetRepositoryTriggers`, so comparing a state that carries `Triggers`
-   * against an `observedProperties` that omits it would be a guaranteed false
-   * positive. Both are therefore excluded here; a follow-up can add
-   * `GetRepositoryTriggers` read-back and drop `Triggers` from this list.
+   * `Triggers` is read back (`GetRepositoryTriggers`) and compared
+   * (go-to-k/cdkd#6854). A baseline captured before that lacks the key, and
+   * the comparator walks only the baseline's keys, so such a record compares
+   * no triggers until its next capture instead of drifting.
    */
   getDriftUnknownPaths(_resourceType: string): string[] {
-    return ['Code', 'Triggers'];
+    return ['Code'];
+  }
+
+  /** See {@link canonicalizeTriggerBranches}: an omitted `Branches` is `[]`. */
+  canonicalizeDriftProperties(
+    _resourceType: string,
+    properties: Record<string, unknown>
+  ): Record<string, unknown> {
+    return canonicalizeTriggerBranches(properties);
+  }
+
+  /** The same fold for the unsettled-update check's template-vs-live compare. */
+  canonicalizeUnsettledProperties(
+    _resourceType: string,
+    properties: Record<string, unknown>
+  ): Record<string, unknown> {
+    return canonicalizeTriggerBranches(properties);
   }
 
   import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
