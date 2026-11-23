@@ -93,13 +93,46 @@ const isIdLike = (s: unknown): boolean =>
  *   path, so the order decides which file the function runs. `GetFunction`
  *   returns the layers in that configured order, so both baselines (the
  *   deploy-time readback and the template) already hold it.
+ * - A container's argument vector (go-to-k/cdkd#6852): `Command`,
+ *   `EntryPoint` and `Args` are passed to the process in list order, so two
+ *   ARN arguments swapped are a different invocation. The ECS and Batch
+ *   registry schemas mark these lists `insertionOrder: true`; Lambda's
+ *   `ImageConfig` and EMR's step arguments are the same exec-form vectors.
+ *   The services store the vector as sent, so no baseline holds another order.
  *
- * Entries use the {@link matchesPathPrefix} rule. Add a type here only for a
- * list AWS documents as ordered; an entry on a set brings back the phantom
- * reorder drift the sort exists to remove.
+ * Entries use the {@link matchesPathPrefix} rule, and an array element inherits
+ * its parent's path (`ContainerDefinitions.Command` is the `Command` of every
+ * container). Add a type here only for a list AWS documents as ordered; an
+ * entry on a set brings back the phantom reorder drift the sort exists to
+ * remove.
  */
 const ORDER_SIGNIFICANT_ID_ARRAY_PATHS: Readonly<Record<string, readonly string[]>> = {
-  'AWS::Lambda::Function': ['Layers'],
+  'AWS::Lambda::Function': ['Layers', 'ImageConfig.Command', 'ImageConfig.EntryPoint'],
+  'AWS::ECS::TaskDefinition': [
+    'ContainerDefinitions.Command',
+    'ContainerDefinitions.EntryPoint',
+    'ContainerDefinitions.HealthCheck.Command',
+  ],
+  'AWS::Batch::JobDefinition': [
+    'ContainerProperties.Command',
+    'EcsProperties.TaskProperties.Containers.Command',
+    'EksProperties.PodProperties.Containers.Command',
+    'EksProperties.PodProperties.Containers.Args',
+    'EksProperties.PodProperties.InitContainers.Command',
+    'EksProperties.PodProperties.InitContainers.Args',
+    'NodeProperties.NodeRangeProperties.Container.Command',
+    'NodeProperties.NodeRangeProperties.EcsProperties.TaskProperties.Containers.Command',
+    'NodeProperties.NodeRangeProperties.EksProperties.PodProperties.Containers.Command',
+    'NodeProperties.NodeRangeProperties.EksProperties.PodProperties.Containers.Args',
+    'NodeProperties.NodeRangeProperties.EksProperties.PodProperties.InitContainers.Command',
+    'NodeProperties.NodeRangeProperties.EksProperties.PodProperties.InitContainers.Args',
+  ],
+  'AWS::EMR::Step': ['HadoopJarStep.Args'],
+  'AWS::EMR::Cluster': [
+    'Steps.HadoopJarStep.Args',
+    'BootstrapActions.ScriptBootstrapAction.Args',
+    'Applications.Args',
+  ],
 };
 
 /**

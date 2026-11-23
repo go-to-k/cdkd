@@ -124,8 +124,12 @@ describe('order-significant id/ARN lists (go-to-k/cdkd#6761)', () => {
     VpcConfig: { SubnetIds: subnetIds },
   });
 
-  it('declares Lambda Layers and nothing for an unknown or absent type', () => {
-    expect(orderSignificantIdArrayPaths('AWS::Lambda::Function')).toEqual(['Layers']);
+  it('declares Lambda Layers (and its image argv, #6852) and nothing for an unknown or absent type', () => {
+    expect(orderSignificantIdArrayPaths('AWS::Lambda::Function')).toEqual([
+      'Layers',
+      'ImageConfig.Command',
+      'ImageConfig.EntryPoint',
+    ]);
     expect(orderSignificantIdArrayPaths('AWS::EC2::Instance')).toEqual([]);
     expect(orderSignificantIdArrayPaths('__proto__')).toEqual([]);
     expect(orderSignificantIdArrayPaths(undefined)).toEqual([]);
