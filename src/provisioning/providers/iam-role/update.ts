@@ -537,13 +537,16 @@ export function planInlinePolicyNames(
   desired: Iterable<string>,
   recorded: Iterable<string>
 ): { respelled: string[]; removed: string[] } {
+  // A malformed (non-string) name is compared as is, as before: the put or
+  // delete that carries it fails on AWS's side.
+  const fold = (name: unknown): unknown => (typeof name === 'string' ? name.toLowerCase() : name);
   const desiredExact = new Set(desired);
-  const desiredFolded = new Set([...desiredExact].map((name) => name.toLowerCase()));
+  const desiredFolded = new Set([...desiredExact].map(fold));
   const respelled: string[] = [];
   const removed: string[] = [];
   for (const name of recorded) {
     if (desiredExact.has(name)) continue;
-    if (desiredFolded.has(name.toLowerCase())) respelled.push(name);
+    if (desiredFolded.has(fold(name))) respelled.push(name);
     else removed.push(name);
   }
   return { respelled, removed };

@@ -310,29 +310,20 @@ const STANDALONE_POLICY_SIBLINGS: Record<
  *          the old spelling. The principal match ignores case too (IAM
  *          principal names are unique ignoring case).
  */
-/**
- * A set of IAM names whose `has` ignores case; iteration yields each name as
- * added (go-to-k/cdkd#6874).
- */
-class CaseFoldedNameSet extends Set<string> {
-  private readonly folded = new Set<string>();
-
-  override add(name: string): this {
-    this.folded.add(name.toLowerCase());
-    return super.add(name);
-  }
-
-  override has(name: string): boolean {
-    return this.folded.has(name.toLowerCase());
-  }
-}
-
 export function collectInlinePolicyNamesManagedBySiblings(
   targetPhysicalId: string,
   context: import('../../types/resource.js').ReadCurrentStateContext | undefined,
   attachmentField: 'Roles' | 'Users' | 'Groups'
 ): Set<string> {
-  const result = new CaseFoldedNameSet();
+  // Iteration yields each name as written; `has` ignores case.
+  const result = new Set<string>();
+  const folded = new Set<string>();
+  const add = result.add.bind(result);
+  result.add = (name: string) => {
+    folded.add(name.toLowerCase());
+    return add(name);
+  };
+  result.has = (name: string) => typeof name === 'string' && folded.has(name.toLowerCase());
   const siblings = context?.siblings;
   if (!siblings) return result;
   const target = targetPhysicalId.toLowerCase();

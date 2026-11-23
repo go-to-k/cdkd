@@ -34,6 +34,9 @@
 #   2c-rollback. The 2c hand-off with a failing queue after it: the rollback
 #       must leave every name with its FIRST owner (go-to-k/cdkd#4225), the
 #       name a rolled-back create took over included (go-to-k/cdkd#4408).
+#   2d. Respell the role's own inline policy only in case and back: it must
+#       survive each time, held under the new spelling with the new document,
+#       and drift stays clean (go-to-k/cdkd#6874).
 #   2c. Hand inline policy names between resources on the role in ONE deploy
 #       (go-to-k/cdkd#4156): a swap of two policies' names, a delete beside a
 #       create of the same name, and a rename away from a name the role's own
@@ -491,6 +494,41 @@ fi
 echo "    DeclaredInline kept"
 # The renamed policy is still a sibling the role's drift read filters out.
 assert_no_role_drift "after rename" true
+
+# --- Phase 2d: a case-only rename of the role's own inline policy (go-to-k/cdkd#6874)
+# IAM holds one inline policy per name ignoring case. cdkd used to put the new
+# spelling (replacing the document) and then delete the old one: the policy it
+# had just written. It now deletes the old spelling first, as CloudFormation
+# does, so the new spelling is held with the new document; the deploy back
+# (the rollback direction) does the same the other way.
+inline_action() { # usage: inline_action <exact-name> -> the first statement's action, or empty
+  aws iam get-role-policy --role-name "${ROLE_NAME}" --policy-name "$1" --region "${REGION}" \
+    --query 'PolicyDocument.Statement[0].Action' --output text 2>/dev/null || true
+}
+case_rename_check() { # usage: case_rename_check <want-name> <gone-name> <want-action> <label>
+  local ok=0
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    if has_policy "$1" && ! has_policy "$2" && [ "$(inline_action "$1")" = "$3" ]; then
+      ok=1
+      break
+    fi
+    sleep 5
+  done
+  if [ "${ok}" -ne 1 ]; then
+    echo "FAIL [6874]: $4: the role holds '$(role_policies)' (action of $1: '$(inline_action "$1")'); want $1 with $3 and not $2" >&2
+    exit 1
+  fi
+  echo "    $4: the role holds $1 with $3"
+}
+echo "==> Phase 2d: respell DeclaredInline only in case; the policy must survive with the new document"
+env -u CDKD_TEST_HANDOFF CDKD_TEST_RENAME=true CDKD_TEST_CASE_RENAME=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+case_rename_check declaredinline DeclaredInline sqs:ChangeMessageVisibility "after the case-only rename"
+assert_no_role_drift "after the case-only rename" true
+env -u CDKD_TEST_HANDOFF -u CDKD_TEST_CASE_RENAME CDKD_TEST_RENAME=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+case_rename_check DeclaredInline declaredinline sqs:GetQueueAttributes "after renaming it back"
+assert_no_role_drift "after renaming it back" true
 
 # --- Phase 2c: hand inline policy names over in one deploy (go-to-k/cdkd#4156)
 # Each name must end up held, with the RECEIVING resource's document (its own
