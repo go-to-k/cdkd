@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-11-23T03:32:55.787Z",
+  "generatedAt": "2026-11-23T15:11:22.814Z",
   "summary": {
     "tier1Count": 147,
-    "tier2Count": 1670,
+    "tier2Count": 1683,
     "tier3Count": 324,
-    "totalCount": 2141
+    "totalCount": 2154
   },
   "tier1": [
     "AWS::ApiGateway::Account",
@@ -162,6 +162,18 @@
     "AWS::ACMPCA::CertificateAuthorityActivation",
     "AWS::ACMPCA::Permission",
     "AWS::AIOps::InvestigationGroup",
+    "AWS::APIPortal::DiscoveryConfiguration",
+    "AWS::APIPortal::DiscoveryEnablement",
+    "AWS::APIPortal::ManagedApi",
+    "AWS::APIPortal::OrganizationDiscoveryConfiguration",
+    "AWS::APIPortal::Portal",
+    "AWS::APIPortal::PortalPublication",
+    "AWS::APIPortal::Product",
+    "AWS::APIPortal::ProductApiPage",
+    "AWS::APIPortal::ProductDisplayOrder",
+    "AWS::APIPortal::ProductManagedApiAssociation",
+    "AWS::APIPortal::ProductPage",
+    "AWS::APIPortal::ProductSharingPolicy",
     "AWS::APS::AnomalyDetector",
     "AWS::APS::ResourcePolicy",
     "AWS::APS::RuleGroupsNamespace",
@@ -1081,6 +1093,7 @@
     "AWS::Kendra::Thesaurus",
     "AWS::KendraRanking::ExecutionPlan",
     "AWS::Kinesis::Channel",
+    "AWS::Kinesis::Queue",
     "AWS::Kinesis::ResourcePolicy",
     "AWS::KinesisAnalyticsV2::Application",
     "AWS::KinesisAnalyticsV2::Snapshot",
