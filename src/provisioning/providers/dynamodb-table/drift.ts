@@ -109,9 +109,10 @@ export function getDriftUnorderedPaths(
  * `AWS::DynamoDB::Table` accepts an explicit `WarmThroughput` and a real
  * change to one must stay visible. Known residual on that declared arm
  * (issue #1768): AWS may GROW a declared value, which is reported as drift —
- * correctly, cdkd holds a value AWS no longer has — but `--revert` then
- * issues a decrease AWS rejects, surfacing as a per-resource revert failure
- * rather than as a silent wrong answer.
+ * correctly, cdkd holds a value AWS no longer has. `--revert` then SKIPS the
+ * decrease AWS would reject (`skipWarmThroughputDecrease`, which warns), so
+ * the revert does not fail and the drift stays reported until the template
+ * catches up.
  *
  * This declaration is the OTHER half: a state record written by an earlier
  * binary already carries the computed value in `observedProperties`, so the

@@ -33,6 +33,14 @@ import { policyContentKey } from '../policy-document-content.js';
 import { isS3BucketName, ownPolicyHolder } from '../s3-bucket-policy-helpers.js';
 import { OWN_WRITE_REREAD_DELAYS_MS } from '../settle-after-own-write.js';
 import { settleBucketPolicyRead } from './s3-bucket-policy-own-write.js';
+import {
+  IAM_UNIQUE_ID_RE,
+  OAI_USER_ARN_RE,
+  buildSiblingOaiCanonicalMap,
+  extractStatements,
+  findTemplateCanonicalUser,
+  hasTemplateMatchedUniqueId,
+} from './s3-bucket-policy-oai.js';
 import { markNotGone } from '../not-gone.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { logicalIdShown } from '../composite-id.js';
@@ -45,27 +53,6 @@ import {
   VALUE_NOT_SHOWN,
 } from '../import-helpers.js';
 import { cdkdRemedy, commandHole, proseQuoted } from '../../utils/pasteable-command.js';
-
-/**
- * Matches a CloudFront Origin Access Identity (OAI) principal ARN, e.g.
- * `arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity E1UREC9EUJDVG5`.
- * The capture group is the OAI id, which resolves to the OAI's S3 canonical
- * user id via `GetCloudFrontOriginAccessIdentity`.
- */
-const OAI_USER_ARN_RE =
-  /^arn:aws[a-z-]*:iam::cloudfront:user\/CloudFront Origin Access Identity ([A-Z0-9]+)$/;
-
-/**
- * Matches a bare IAM USER unique id (e.g. `AIDAIBJOSOJSBZ753XCAW`). S3
- * returns an OAI grant's principal in this transient form immediately after
- * `PutBucketPolicy` (before it settles to the friendly cloudfront-user ARN);
- * an OAI is a CloudFront IAM user, so the id carries the `AIDA` user prefix.
- * It carries no recoverable link back to the OAI, so it can only be
- * canonicalized by matching against the template's `{ CanonicalUser }` form.
- * Any other prefix (a role's `AROA`, ...) is never an OAI and is left alone
- * (go-to-k/cdkd#6109).
- */
-const IAM_UNIQUE_ID_RE = /^AIDA[A-Z0-9]{12,}$/;
 
 /**
  * Process-lifetime cache of OAI id -> S3 canonical user id (or `null` when the
@@ -93,65 +80,6 @@ export function clearOaiCanonicalUserIdCacheForTest(): void {
   oaiCanonicalUserIdCache.clear();
 }
 
-/**
- * Build an `oaiId -> S3CanonicalUserId` map from the same-stack sibling
- * `AWS::CloudFront::CloudFrontOriginAccessIdentity` resources in the read
- * context. The OAI's `S3CanonicalUserId` is a readOnly attribute cdkd already
- * resolved at deploy time (the bucket-policy grant `Fn::GetAtt`s it), so this
- * lets the bucket-policy drift read reconcile the OAI principal forms with zero
- * extra AWS calls (and no `cloudfront:GetCloudFrontOriginAccessIdentity` IAM
- * grant) whenever the OAI lives in the same stack. The OAI resource's
- * `physicalId` IS the OAI id embedded in the cloudfront-user ARN.
- */
-function buildSiblingOaiCanonicalMap(context?: ReadCurrentStateContext): Map<string, string> {
-  const map = new Map<string, string>();
-  for (const sib of Object.values(context?.siblings ?? {})) {
-    if (sib.resourceType !== 'AWS::CloudFront::CloudFrontOriginAccessIdentity') continue;
-    const canonical = sib.attributes?.['S3CanonicalUserId'];
-    if (sib.physicalId && typeof canonical === 'string') {
-      map.set(sib.physicalId, canonical);
-    }
-  }
-  return map;
-}
-
-/**
- * Pull the `Statement` array out of a parsed policy document, tolerating both
- * the single-object and array shapes (and a non-object input). Returns the live
- * statement objects so callers can mutate their `Principal` in place.
- */
-function extractStatements(policyDoc: unknown): Record<string, unknown>[] {
-  if (!policyDoc || typeof policyDoc !== 'object') return [];
-  const stmt = (policyDoc as Record<string, unknown>)['Statement'];
-  const arr = Array.isArray(stmt) ? stmt : stmt ? [stmt] : [];
-  return arr.filter(
-    (s): s is Record<string, unknown> => !!s && typeof s === 'object' && !Array.isArray(s)
-  );
-}
-
-/**
- * Find the `CanonicalUser` principal of the template statement that matches a
- * given AWS-side statement by Effect / Action / Resource, used to canonicalize
- * the unresolvable transient `{ AWS: <IAM-unique-id> }` OAI form. Returns
- * `undefined` when no single matching template statement carries one.
- */
-function findTemplateCanonicalUser(
-  awsStmt: Record<string, unknown>,
-  templateStmts: Record<string, unknown>[]
-): string | undefined {
-  // S3 reads a one-element `Action` / `Resource` list back as its scalar
-  // (go-to-k/cdkd#6109), so both sides compare unwrapped.
-  const one = (v: unknown): unknown => (Array.isArray(v) && v.length === 1 ? v[0] : v);
-  const key = (s: Record<string, unknown>): string =>
-    JSON.stringify([s['Effect'], one(s['Action']), one(s['Resource'])]);
-  const want = key(awsStmt);
-  const matches = templateStmts.filter((t) => key(t) === want);
-  if (matches.length !== 1) return undefined;
-  const principal = matches[0]!['Principal'];
-  if (!principal || typeof principal !== 'object' || Array.isArray(principal)) return undefined;
-  const canonical = (principal as Record<string, unknown>)['CanonicalUser'];
-  return typeof canonical === 'string' ? canonical : undefined;
-}
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -176,6 +104,13 @@ export class S3BucketPolicyProvider implements ResourceProvider {
   private logger = getLogger().child('S3BucketPolicyProvider');
   /** Re-read schedule of the post-write baseline capture; tests set it to zeros. */
   protected ownWriteRereadDelaysMs: readonly number[] = OWN_WRITE_REREAD_DELAYS_MS;
+  /**
+   * Re-read schedule of a read that is NOT right after cdkd's own write while
+   * it shows a bare unique id a template statement would claim (go-to-k/cdkd#6854):
+   * S3 showed a fresh OAI grant that way for about 6 s after `PutBucketPolicy`
+   * (measured us-east-1, 2026-11-23). Tests set it to zeros.
+   */
+  protected transientUniqueIdRereadDelaysMs: readonly number[] = [2000, 3000, 4000];
   /** The wait between policy re-reads; replaced by tests. */
   sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -652,7 +587,9 @@ export class S3BucketPolicyProvider implements ResourceProvider {
   ): Promise<boolean> {
     if (
       ownAttemptMayHaveLanded &&
-      (await this.livePolicyKey(livePolicy, policyDoc)) === policyContentKey(policyDoc)
+      // Right after this create's own write attempt: the OAI's transient
+      // bare-id form is expected.
+      (await this.livePolicyKey(livePolicy, policyDoc, true)) === policyContentKey(policyDoc)
     ) {
       this.logger.debug(
         safeMsg`S3 bucket policy ${logicalId}: an earlier attempt of this create attached the policy; re-sending it`
@@ -672,7 +609,11 @@ export class S3BucketPolicyProvider implements ResourceProvider {
     for (const bag of attempts) {
       const attempted = sentPolicyDocument(bag['PolicyDocument']);
       if (bag['Bucket'] !== bucketName || attempted == null) continue;
-      if ((await this.livePolicyKey(livePolicy, attempted)) === policyContentKey(attempted)) {
+      // An earlier deploy's attempt: its transient form is long over, so a
+      // bare id here is a deleted IAM user's and compares as is (#6854).
+      if (
+        (await this.livePolicyKey(livePolicy, attempted, false)) === policyContentKey(attempted)
+      ) {
         this.logger.info(
           safeMsg`S3 bucket policy ${logicalId}: the policy on bucket ${bucketShown} is the one this stack's rollback journal shows an earlier deploy of it attempted; replacing it`
         );
@@ -690,7 +631,11 @@ export class S3BucketPolicyProvider implements ResourceProvider {
    * form first, the way {@link readCurrentState} does, with the same-stack
    * OAI records as siblings.
    */
-  private async livePolicyKey(livePolicy: string, reference: unknown): Promise<string> {
+  private async livePolicyKey(
+    livePolicy: string,
+    reference: unknown,
+    afterOwnWrite: boolean
+  ): Promise<string> {
     let live: unknown;
     let ref: unknown = reference;
     try {
@@ -708,7 +653,7 @@ export class S3BucketPolicyProvider implements ResourceProvider {
         ...(record.attributes !== undefined && { attributes: record.attributes }),
       };
     }
-    await this.normalizeOaiPrincipals(live, { PolicyDocument: ref }, { siblings });
+    await this.normalizeOaiPrincipals(live, { PolicyDocument: ref }, { siblings }, afterOwnWrite);
     return policyContentKey(live);
   }
 
@@ -781,7 +726,47 @@ export class S3BucketPolicyProvider implements ResourceProvider {
     const read = () => this.readPolicyOnce(physicalId, properties, context);
     const delaysMs = this.ownWriteRereadDelaysMs;
     const options = { logicalId, properties, context, delaysMs, logger: this.logger };
-    return settleBucketPolicyRead(await read(), read, options);
+    let first = await read();
+    if (context?.afterOwnWrite !== true) {
+      first = await this.outwaitTransientUniqueId(first, read, properties);
+    }
+    return settleBucketPolicyRead(first, read, options);
+  }
+
+  /**
+   * On a read that does not follow cdkd's own write, re-read while the policy
+   * shows a bare unique id a template statement would claim: within seconds of
+   * any `PutBucketPolicy` that is the OAI's transient form, which then reads as
+   * its user ARN. An id still there after the schedule (a deleted IAM user's)
+   * is returned as read and compared. Other reads cost nothing extra. A
+   * re-read that fails or answers no policy text ends the schedule on the
+   * answer before it, the way a create's re-check does; a deleted policy or
+   * bucket is returned.
+   */
+  private async outwaitTransientUniqueId(
+    first: Record<string, unknown> | ResourceNotFound | undefined,
+    read: () => Promise<Record<string, unknown> | ResourceNotFound | undefined>,
+    properties: Record<string, unknown> | undefined
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    let answer = first;
+    for (const delayMs of this.transientUniqueIdRereadDelaysMs) {
+      if (
+        typeof answer !== 'object' ||
+        !hasTemplateMatchedUniqueId(answer['PolicyDocument'], properties)
+      ) {
+        return answer;
+      }
+      await this.sleep(delayMs);
+      let next: Record<string, unknown> | ResourceNotFound | undefined;
+      try {
+        next = await read();
+      } catch {
+        return answer;
+      }
+      if (next === undefined) return answer;
+      answer = next;
+    }
+    return answer;
   }
 
   /** One read of {@link readCurrentState}, the answer taken as AWS gives it. */
@@ -821,7 +806,14 @@ export class S3BucketPolicyProvider implements ResourceProvider {
 
     // Issue #872: every recognizable CloudFront OAI grant principal back to the
     // template's canonical user id form (the three unstable forms are below).
-    await this.normalizeOaiPrincipals(policyDoc, properties, context);
+    // A bare unique id is read as the OAI's transient form only right after
+    // cdkd's own write (go-to-k/cdkd#6854); anywhere else it is compared as is.
+    await this.normalizeOaiPrincipals(
+      policyDoc,
+      properties,
+      context,
+      context?.afterOwnWrite === true
+    );
     result['PolicyDocument'] = policyDoc;
     return result;
   }
@@ -838,11 +830,13 @@ export class S3BucketPolicyProvider implements ResourceProvider {
    *   - `{ AWS: <bare-IAM-unique-id> }` -> the transient post-PutBucketPolicy
    *     rendering, which carries no recoverable link to the OAI. Canonicalize
    *     it only by matching the corresponding template statement (same Effect /
-   *     Action / Resource) carrying a `{ CanonicalUser }` principal. A user
-   *     cannot author a bare IAM unique id as a bucket-policy principal, so
-   *     adopting the template form here only fires for AWS's transient
-   *     rendering; a repoint seen only during that transient phase is
-   *     reported by the next drift run, once the ARN form shows.
+   *     Action / Resource) carrying a `{ CanonicalUser }` principal, and only
+   *     when `afterOwnWrite` says the read follows cdkd's own write. S3 also
+   *     renders a DELETED IAM user's grant as its bare `AIDA…` id, and keeps
+   *     it (measured us-east-1, 2026-11-23, go-to-k/cdkd#6854), so on any
+   *     other read (drift, `state refresh-observed`, import) the id is
+   *     compared as is: adopting the template form there reported a grant to
+   *     a deleted user as the template's OAI grant.
    * Statements whose principal is not a single-string `AWS` OAI form (e.g. a
    * wildcard, a service principal, a normal role ARN, or an `AWS` ARRAY of
    * principals) are left untouched — skipping is safe (it can only leave a
@@ -851,8 +845,9 @@ export class S3BucketPolicyProvider implements ResourceProvider {
    */
   private async normalizeOaiPrincipals(
     policyDoc: unknown,
-    templateProps?: Record<string, unknown>,
-    context?: ReadCurrentStateContext
+    templateProps: Record<string, unknown> | undefined,
+    context: ReadCurrentStateContext | undefined,
+    afterOwnWrite: boolean
   ): Promise<void> {
     const stmts = extractStatements(policyDoc);
     if (stmts.length === 0) return;
@@ -876,7 +871,7 @@ export class S3BucketPolicyProvider implements ResourceProvider {
         continue;
       }
 
-      if (IAM_UNIQUE_ID_RE.test(awsPrincipal)) {
+      if (afterOwnWrite && IAM_UNIQUE_ID_RE.test(awsPrincipal)) {
         const tmplCanonical = findTemplateCanonicalUser(stmt, templateStmts);
         if (tmplCanonical) stmt['Principal'] = { CanonicalUser: tmplCanonical };
       }

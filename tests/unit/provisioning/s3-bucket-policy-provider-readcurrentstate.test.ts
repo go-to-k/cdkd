@@ -41,6 +41,9 @@ describe('S3BucketPolicyProvider.readCurrentState', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // A persistent `mockResolvedValue` must not reach the next test.
+    mockSend.mockReset();
+    mockCloudFrontSend.mockReset();
     clearOaiCanonicalUserIdCacheForTest();
     provider = new S3BucketPolicyProvider();
   });
@@ -206,11 +209,13 @@ describe('S3BucketPolicyProvider.readCurrentState', () => {
       },
     };
 
+    Object.assign(provider, { ownWriteRereadDelaysMs: [] });
     const result = (await provider.readCurrentState(
       'my-bucket',
       'L',
       'AWS::S3::BucketPolicy',
-      ambiguousTemplate
+      ambiguousTemplate,
+      { afterOwnWrite: true }
     )) as Record<string, unknown> | undefined;
 
     const stmt = (result!['PolicyDocument'] as { Statement: Record<string, unknown>[] }).Statement[0]!;
@@ -233,8 +238,65 @@ describe('S3BucketPolicyProvider.readCurrentState', () => {
     expect(cfInput.input.Id).toBe('E1UREC9EUJDVG5');
   });
 
-  it('normalizes the transient bare IAM-unique-id principal via the matching template statement', async () => {
+  it('normalizes the transient bare IAM-unique-id principal via the matching template statement, right after its own write', async () => {
     mockSend.mockResolvedValueOnce({ Policy: oaiPolicy({ AWS: 'AIDAIBJOSOJSBZ753XCAW' }) });
+    Object.assign(provider, { ownWriteRereadDelaysMs: [] });
+
+    const result = (await provider.readCurrentState(
+      'my-bucket',
+      'L',
+      'AWS::S3::BucketPolicy',
+      templateProps,
+      { afterOwnWrite: true }
+    )) as Record<string, unknown> | undefined;
+
+    const stmt = (result!['PolicyDocument'] as { Statement: Record<string, unknown>[] }).Statement[0]!;
+    expect(stmt['Principal']).toEqual({ CanonicalUser: CANONICAL });
+    // No CloudFront call needed for the template-match path.
+    expect(mockCloudFrontSend).not.toHaveBeenCalled();
+  });
+
+  // go-to-k/cdkd#6854: S3 also renders a DELETED IAM user's grant as its bare
+  // `AIDA...` id, permanently (measured). On a drift read that id must stay
+  // as read, or a grant moved to a since-deleted user compares equal to the
+  // template's OAI grant.
+  it('leaves a bare IAM-unique-id principal as read on a drift read once the re-reads still show it', async () => {
+    mockSend.mockResolvedValue({ Policy: oaiPolicy({ AWS: 'AIDAIBJOSOJSBZ753XCAW' }) });
+    const sleeps: number[] = [];
+    Object.assign(provider, {
+      transientUniqueIdRereadDelaysMs: [1, 2],
+      sleep: async (ms: number) => {
+        sleeps.push(ms);
+      },
+    });
+    for (const context of [undefined, {}, { afterOwnWrite: false }]) {
+      mockSend.mockClear();
+      sleeps.length = 0;
+      const result = (await provider.readCurrentState(
+        'my-bucket',
+        'L',
+        'AWS::S3::BucketPolicy',
+        templateProps,
+        context
+      )) as Record<string, unknown> | undefined;
+
+      const stmt = (result!['PolicyDocument'] as { Statement: Record<string, unknown>[] })
+        .Statement[0]!;
+      expect(stmt['Principal']).toEqual({ AWS: 'AIDAIBJOSOJSBZ753XCAW' });
+      // One read plus one per delay: the transient OAI form would have settled.
+      expect(mockSend).toHaveBeenCalledTimes(3);
+      expect(sleeps).toEqual([1, 2]);
+    }
+  });
+
+  it('on a drift read, re-reads a bare unique id a template statement claims until S3 shows the OAI user ARN', async () => {
+    mockSend
+      .mockResolvedValueOnce({ Policy: oaiPolicy({ AWS: 'AIDAIBJOSOJSBZ753XCAW' }) })
+      .mockResolvedValueOnce({ Policy: oaiPolicy({ AWS: OAI_ARN }) });
+    mockCloudFrontSend.mockResolvedValueOnce({
+      CloudFrontOriginAccessIdentity: { Id: 'E1UREC9EUJDVG5', S3CanonicalUserId: CANONICAL },
+    });
+    Object.assign(provider, { transientUniqueIdRereadDelaysMs: [0, 0, 0], sleep: async () => {} });
 
     const result = (await provider.readCurrentState(
       'my-bucket',
@@ -245,14 +307,67 @@ describe('S3BucketPolicyProvider.readCurrentState', () => {
 
     const stmt = (result!['PolicyDocument'] as { Statement: Record<string, unknown>[] }).Statement[0]!;
     expect(stmt['Principal']).toEqual({ CanonicalUser: CANONICAL });
-    // No CloudFront call needed for the template-match path.
-    expect(mockCloudFrontSend).not.toHaveBeenCalled();
+    expect(mockSend).toHaveBeenCalledTimes(2);
+  });
+
+  it('on a drift read, keeps the answer before a re-read that fails', async () => {
+    mockSend
+      .mockResolvedValueOnce({ Policy: oaiPolicy({ AWS: 'AIDAIBJOSOJSBZ753XCAW' }) })
+      .mockRejectedValueOnce(Object.assign(new Error('Rate exceeded'), { name: 'SlowDown' }));
+    Object.assign(provider, { transientUniqueIdRereadDelaysMs: [0, 0, 0], sleep: async () => {} });
+
+    const result = (await provider.readCurrentState(
+      'my-bucket',
+      'L',
+      'AWS::S3::BucketPolicy',
+      templateProps
+    )) as Record<string, unknown> | undefined;
+
+    const stmt = (result!['PolicyDocument'] as { Statement: Record<string, unknown>[] }).Statement[0]!;
+    expect(stmt['Principal']).toEqual({ AWS: 'AIDAIBJOSOJSBZ753XCAW' });
+    expect(mockSend).toHaveBeenCalledTimes(2);
+  });
+
+  it('right after its own write, folds on the first read and never waits out the transient form', async () => {
+    mockSend.mockResolvedValue({ Policy: oaiPolicy({ AWS: 'AIDAIBJOSOJSBZ753XCAW' }) });
+    const sleep = vi.fn(async () => {});
+    Object.assign(provider, { ownWriteRereadDelaysMs: [], sleep });
+
+    await provider.readCurrentState('my-bucket', 'L', 'AWS::S3::BucketPolicy', templateProps, {
+      afterOwnWrite: true,
+    });
+
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('on a drift read, never re-reads a policy with no template-claimed bare unique id', async () => {
+    mockSend.mockResolvedValueOnce({ Policy: oaiPolicy({ AWS: 'AIDAIBJOSOJSBZ753XCAW' }) });
+    const sleep = vi.fn(async () => {});
+    Object.assign(provider, { sleep });
+
+    await provider.readCurrentState('my-bucket', 'L', 'AWS::S3::BucketPolicy');
+
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
   });
 
   it('leaves the bare IAM-unique-id principal unchanged when no matching template statement exists', async () => {
-    mockSend.mockResolvedValueOnce({ Policy: oaiPolicy({ AWS: 'AIDAIBJOSOJSBZ753XCAW' }) });
+    mockSend.mockResolvedValue({ Policy: oaiPolicy({ AWS: 'AIDAIBJOSOJSBZ753XCAW' }) });
+    Object.assign(provider, { ownWriteRereadDelaysMs: [] });
+    const otherAction = {
+      Bucket: 'my-bucket',
+      PolicyDocument: {
+        Version: '2012-10-17',
+        Statement: [
+          { Effect: 'Allow', Principal: { CanonicalUser: CANONICAL }, Action: 's3:ListBucket', Resource: 'arn:aws:s3:::b' },
+        ],
+      },
+    };
 
-    const result = (await provider.readCurrentState('my-bucket', 'L', 'AWS::S3::BucketPolicy')) as Record<string, unknown> | undefined;
+    const result = (await provider.readCurrentState('my-bucket', 'L', 'AWS::S3::BucketPolicy', otherAction, {
+      afterOwnWrite: true,
+    })) as Record<string, unknown> | undefined;
 
     const stmt = (result!['PolicyDocument'] as { Statement: Record<string, unknown>[] }).Statement[0]!;
     expect(stmt['Principal']).toEqual({ AWS: 'AIDAIBJOSOJSBZ753XCAW' });

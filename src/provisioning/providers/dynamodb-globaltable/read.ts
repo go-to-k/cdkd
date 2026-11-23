@@ -8,6 +8,8 @@ import {
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { normalizeAwsTagsToCfn } from '../../import-helpers.js';
 import { WARM_THROUGHPUT_MEMBERS, coerceWarmThroughput } from '../../dynamodb-warm-throughput.js';
+import { desiredIndexEntriesByName } from '../dynamodb-table/indexes.js';
+import { readbackWarmThroughput } from '../dynamodb-table/warm-throughput.js';
 import { readbackVectorIndexes } from '../../dynamodb-vector-indexes.js';
 import {
   RESOURCE_NOT_FOUND,
@@ -713,31 +715,20 @@ export async function readCurrentState(
         // user-settable sub-fields, the same shape the sibling
         // `AWS::DynamoDB::Table` readback takes for the table-level member.
         //
-        // Dropping `Status` would ordinarily strand every ALREADY-WRITTEN
-        // `observedProperties` record (the #1760 lesson: the baseline still
-        // carries the member the readback stopped emitting, and the
-        // comparator compares `GlobalSecondaryIndexes` wholesale). It does
-        // not here, because `canonicalizeDriftProperties` below strips the
-        // WHOLE `WarmThroughput` member from BOTH comparison sides — an old
-        // record and this readback converge on having no member at all. The
-        // two halves ship together for that reason; do not land one alone.
+        // An already-written baseline needs no healing here: the drift pair
+        // hook (`canonicalizeIndexWarmThroughput`) strips the member from both
+        // sides unless the template declares it, and compares only the
+        // declared members otherwise (#6854).
         //
-        // That convergence is BOUNDED to records written by a post-#1420
-        // binary. An `observedProperties` bag written before the #1420 CFn
-        // reverse map holds the raw `GlobalSecondaryIndexDescription[]`
-        // (`IndexArn` / `IndexStatus` / `ItemCount` / `IndexSizeBytes` /
-        // `Backfilling`), which a one-member strip cannot converge — those
-        // records were already drifting on five other members and are
-        // outside what this closes.
+        // go-to-k/cdkd#5606, as on `AWS::DynamoDB::Table`: while a raise is
+        // UPDATING, AWS still reports the old value, so a declared value reads
+        // as where it is moving and a live value above it stands.
         if (gsi.WarmThroughput) {
-          const warm: Record<string, unknown> = {};
-          if (gsi.WarmThroughput.ReadUnitsPerSecond !== undefined) {
-            warm['ReadUnitsPerSecond'] = gsi.WarmThroughput.ReadUnitsPerSecond;
-          }
-          if (gsi.WarmThroughput.WriteUnitsPerSecond !== undefined) {
-            warm['WriteUnitsPerSecond'] = gsi.WarmThroughput.WriteUnitsPerSecond;
-          }
-          if (Object.keys(warm).length > 0) entry['WarmThroughput'] = warm;
+          const declaredWarm = desiredIndexEntriesByName(
+            properties?.['GlobalSecondaryIndexes']
+          ).get(gsi.IndexName)?.['WarmThroughput'];
+          const warm = readbackWarmThroughput(gsi.WarmThroughput, undefined, declaredWarm);
+          if (warm !== undefined) entry['WarmThroughput'] = warm;
         }
 
         const replicaEntry: Record<string, unknown> = { IndexName: gsi.IndexName };

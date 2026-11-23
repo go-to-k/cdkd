@@ -109,7 +109,6 @@ import { TAGS_BASELINE_REREAD_DELAYS_MS } from '../tags-own-write-baseline.js';
 import {
   getDriftUnknownPaths,
   getDriftUnorderedPaths,
-  canonicalizeDriftProperties,
   canonicalizeDesiredProperties,
   canonicalizeDriftPair,
   getDriftAbsentMeansDefaultKeys,
@@ -676,10 +675,6 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
 
   getDriftUnorderedPaths(...args: Parameters<typeof getDriftUnorderedPaths>) {
     return getDriftUnorderedPaths.call(this, ...args);
-  }
-
-  canonicalizeDriftProperties(...args: Parameters<typeof canonicalizeDriftProperties>) {
-    return canonicalizeDriftProperties.call(this, ...args);
   }
 
   canonicalizeDesiredProperties(...args: Parameters<typeof canonicalizeDesiredProperties>) {

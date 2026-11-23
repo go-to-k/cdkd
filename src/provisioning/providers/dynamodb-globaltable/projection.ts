@@ -15,8 +15,8 @@ export function isTableName(id: string): boolean {
 }
 
 /**
- * The CLOSED path table {@link DynamoDBGlobalTableProvider.canonicalizeDriftProperties}
- * strips from BOTH drift comparison sides (issue #1742).
+ * The CLOSED path table `canonicalizeIndexWarmThroughput` (`drift.ts`) reads
+ * against the declaration on BOTH drift comparison sides (issue #1742, #6854).
  *
  * One entry today: the AWS-computed `GlobalSecondaryIndexes[].WarmThroughput`.
  * A table rather than an inline check so a second per-array-element member

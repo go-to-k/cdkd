@@ -154,10 +154,10 @@ dsql	2026-11-04T06:43:31Z	PASS	180	verify.sh	rc ok, orph clean, own state bucket
 dynamic-ref-cross-region	2026-11-04T21:18:15Z	PASS	175	verify.sh	rc 0, us-east-1+us-west-2, orphans clean in both
 dynamodb-autoscaling	2026-11-19T14:40:15Z	PASS	153	verify.sh	#6626 HEAD 341ad3edc: rc ok, destroy 0 errors, orph clean
 dynamodb-fix-forward-orphan	2026-11-20T19:36:46Z	PASS	172	verify.sh	PR6691 84afba18c; rc ok, orph clean; own bucket
-dynamodb-globaltable	2026-11-22T05:45:00Z	PASS	2463	verify.sh	PR6814 2ae78b7f6, us-east-1, rc ok, orph clean, CDKD_INTEG_MULTI_REGION=1
-dynamodb-globaltable-implied-stream	2026-11-06T16:08:16Z	PASS	335	verify.sh	post-hoc on main after #5839 split; rc ok, orph clean
-dynamodb-globaltable-replica-settings	2026-11-20T11:50:48Z	PASS	3875	verify.sh	PR6652 be63cc056, us-west-2 (second us-east-1); rc 0, revert-identity kept identity x2, orph clean
-dynamodb-gsi-update	2026-11-20T11:50:48Z	PASS	4442	verify.sh	PR6652 be63cc056, us-west-2; rc 0, revert-identity kept identity x1, orph clean
+dynamodb-globaltable	2026-11-23T10:10:37Z	PASS	2359	verify.sh	PR6863 dac3948ef, us-east-1 CDKD_INTEG_MULTI_REGION=1 own state bucket, rc 0, orph clean
+dynamodb-globaltable-implied-stream	2026-11-23T10:10:37Z	PASS	343	verify.sh	PR6863 dac3948ef, us-east-1 own state bucket, rc 0, orph clean
+dynamodb-globaltable-replica-settings	2026-11-23T10:10:37Z	PASS	3827	verify.sh	PR6863 dac3948ef, us-west-2 own state bucket, rc 0, orph clean
+dynamodb-gsi-update	2026-11-23T10:10:37Z	PASS	4794	verify.sh	PR6863 dac3948ef, us-west-2 own state bucket, rc 0, orph clean
 dynamodb-ondemand	2026-11-21T13:51:47Z	PASS	485	verify.sh	rc ok, orph clean; #6778 insights transient
 dynamodb-sse	2026-10-29T16:45:21Z	PASS	53	verify.sh	rc ok, orph clean; #5514 table gone straight after destroy, probe without wait RED
 dynamodb-stream-filter	2026-11-23T08:26:12Z	PASS	164	verify.sh	PR6859 11e38d61f us-east-1 rc ok, orph clean
@@ -453,8 +453,8 @@ route53-drift-import	2026-11-20T11:22:10Z	PASS	130	verify.sh	PR6652 be63cc056, u
 s3-analytics-inventory	2026-11-04T08:31:11Z	PASS	135	verify.sh	verify.sh rc 0, destroy clean, orph clean (own state bucket)
 s3-asset-deploy	2026-10-30T00:18:42Z	PASS	65	verify.sh	rc ok, orph clean
 s3-autodelete-objects-disable	2026-11-16T12:12:46Z	PASS	95	verify.sh	rc ok, orph clean (#6422)
-s3-bucket-policy-existing	2026-11-20T11:22:10Z	PASS	115	verify.sh	PR6652 be63cc056, us-east-1, revert-identity kept, orph clean
-s3-cloudfront	2026-11-22T05:45:00Z	PASS	270	verify.sh	PR6814 2ae78b7f6, us-east-1, rc ok, orph clean
+s3-bucket-policy-existing	2026-11-23T10:10:37Z	PASS	117	verify.sh	PR6863 dac3948ef, us-east-1 own state bucket, rc 0, orph clean
+s3-cloudfront	2026-11-23T10:10:37Z	PASS	252	verify.sh	PR6863 dac3948ef, us-east-1 own state bucket, rc 0, orph clean
 s3-directory-bucket	2026-11-06T20:40:04Z	PASS	261	verify.sh	#5914 s3-directory-bucket split head; rc ok, orph clean
 s3-event-notification	2026-11-20T11:22:10Z	PASS	310	verify.sh	PR6652 be63cc056, us-east-1, revert-identity kept, orph clean
 s3-fix-forward-orphan	2026-10-29T15:53:44Z	PASS	273	verify.sh	rc 0, 0 orphans; #5511 at ef3ea089e (src same as 230a2ce27)
