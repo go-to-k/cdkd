@@ -205,9 +205,7 @@ function statementFieldForm(field: readonly string[], value: unknown): unknown {
   }
   if (POLICY_PRINCIPAL_KEYS.has(head)) {
     if (second === undefined) {
-      return isRecord(value)
-        ? mapRecord(value, (k, v) => statementFieldForm([head, k], v))
-        : value;
+      return isRecord(value) ? mapRecord(value, (k, v) => statementFieldForm([head, k], v)) : value;
     }
     if (third !== undefined) return value;
     const unwrapped = unwrapOneElementList(value);
@@ -218,7 +216,9 @@ function statementFieldForm(field: readonly string[], value: unknown): unknown {
   }
   if (head === 'Condition') {
     if (second === undefined) {
-      return isRecord(value) ? mapRecord(value, (op, v) => statementFieldForm([head, op], v)) : value;
+      return isRecord(value)
+        ? mapRecord(value, (op, v) => statementFieldForm([head, op], v))
+        : value;
     }
     if (third === undefined) {
       return isRecord(value)
