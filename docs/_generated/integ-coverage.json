@@ -7840,6 +7840,7 @@
         "codedeploy-lambda-deployment-group",
         "cognito-lambda-triggers",
         "composite-stack",
+        "cross-stack-export-in-use",
         "custom-resource-getatt-data",
         "custom-resource-masked-service-token",
         "custom-resource-noecho-nested",
@@ -8028,6 +8029,9 @@
         "composite-stack": [
           "l2",
           "literal"
+        ],
+        "cross-stack-export-in-use": [
+          "l2"
         ],
         "custom-resource-getatt-data": [
           "l2"

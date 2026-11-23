@@ -395,7 +395,10 @@ describe('refuseUnsafePlan refuses an in-use export change (go-to-k/cdkd#6088)',
     const healed = await refuseUnsafePlan(engine, {
       ...plan(new Map([['Q', replacingChange]]), exportingRef),
       ssmNameHeals: healOf('Q'),
-    }).catch((e: unknown) => e as Error);
+    }).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
     expect(healed?.message).toContain('re-spells the recorded name of SSM parameter Q');
     expect(healed?.message).toContain('deploy them\ntogether with this stack');
     const plain = await refusal(engine, new Map([['Q', replacingChange]]));
@@ -404,7 +407,10 @@ describe('refuseUnsafePlan refuses an in-use export change (go-to-k/cdkd#6088)',
     const unrelated = await refuseUnsafePlan(engine, {
       ...plan(new Map([['Q', replacingChange]]), exportingRef),
       ssmNameHeals: healOf('Other'),
-    }).catch((e: unknown) => e as Error);
+    }).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
     expect(unrelated?.message).not.toContain('re-spells');
     // Nor beside an unreadable record alone, where no consumer was refused.
     const unreadableOnly = engineDouble({
@@ -413,14 +419,20 @@ describe('refuseUnsafePlan refuses an in-use export change (go-to-k/cdkd#6088)',
     const unread = await refuseUnsafePlan(unreadableOnly.engine, {
       ...plan(new Map([['Q', replacingChange]]), exportingRef),
       ssmNameHeals: healOf('Q'),
-    }).catch((e: unknown) => e as Error);
+    }).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
     expect(unread?.message).toContain('could not be read');
     expect(unread?.message).not.toContain('re-spells');
     // Nor when the export reads only the Arn, which the re-spelling keeps.
     const arnOnly = await refuseUnsafePlan(engine, {
       ...plan(new Map([['Q', replacingChange]])),
       ssmNameHeals: healOf('Q'),
-    }).catch((e: unknown) => e as Error);
+    }).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
     expect(arnOnly).toBeInstanceOf(ExportInUseError);
     expect(arnOnly?.message).not.toContain('re-spells');
   });
@@ -680,7 +692,7 @@ describe('refuseDeferredExportChanges (#6865)', () => {
     const message = (error as Error).message;
     expect(message).toContain('imports ');
     expect(message).toContain('which this deploy would change');
-    expect(message).toContain('so this deploy fails and is rolled back (with --no-rollback, run cdkd rollback)');
+    expect(message).toContain('so this deploy fails and is rolled back (with --no-rollback, run cdkd rollback Producer)');
     expect(message).not.toContain('Nothing was changed');
   });
 

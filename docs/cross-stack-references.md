@@ -131,6 +131,13 @@ Cannot deploy stack 'ProducerStack' (us-east-1): this deploy would change or rem
   - ConsumerStack (us-east-1): imports export 'ProducerStack:ExportsOutputFnGetAttQueueArn', which this deploy would change
 ```
 
+An export that reads a custom resource the deploy updates in place is checked
+after that update instead, as CloudFormation checks it: only the handler knows
+what it returns. If the handler returns the published value, the deploy goes
+through. If the value changed, the deploy fails with the same refusal and is
+rolled back, which re-runs the handler with the previous properties. Under
+`--no-rollback` the update stays; `cdkd rollback` reverts it.
+
 Without the refusal, the consumer would keep a value naming a resource the
 deploy had deleted. `cdkd drift` cannot see that, because the consumer still
 matches its own state.

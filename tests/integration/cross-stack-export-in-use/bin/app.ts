@@ -1,6 +1,13 @@
 #!/usr/bin/env node
 import * as cdk from 'aws-cdk-lib';
-import { ConsumerStack, EmbraceConsumerStack, EmbraceProducerStack, ProducerStack } from '../lib/stacks.ts';
+import {
+  ConsumerStack,
+  CrConsumerStack,
+  CrProducerStack,
+  EmbraceConsumerStack,
+  EmbraceProducerStack,
+  ProducerStack,
+} from '../lib/stacks.ts';
 
 const app = new cdk.App();
 const env = { region: process.env.CDK_DEFAULT_REGION ?? process.env.AWS_REGION ?? 'us-east-1' };
@@ -17,3 +24,8 @@ new EmbraceConsumerStack(app, 'CdkdExportInUseEmbraceCons', {
   env,
   bucketName: embraceProducer.bucket?.bucketName,
 });
+
+// go-to-k/cdkd#6865: the consumer imports by name, so the producer deploys
+// alone; `addDependency` keeps `--all`'s order.
+const crProducer = new CrProducerStack(app, 'CdkdExportInUseCrProd', { env });
+new CrConsumerStack(app, 'CdkdExportInUseCrCons', { env }).addDependency(crProducer);

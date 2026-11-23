@@ -1,8 +1,10 @@
 import * as cdk from 'aws-cdk-lib';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
+import * as cr from 'aws-cdk-lib/custom-resources';
 import type { Construct } from 'constructs';
 
 interface PhaseProps extends cdk.StackProps {
@@ -68,6 +70,55 @@ export class EmbraceConsumerStack extends cdk.Stack {
     new ssm.StringParameter(this, 'BucketName', {
       parameterName: '/cdkd-integ/export-in-use/embrace-bucket',
       stringValue: props.bucketName ?? 'inlined',
+    });
+  }
+}
+
+/**
+ * go-to-k/cdkd#6865: a custom resource re-run on every deploy (a fresh
+ * `Timestamp`) whose returned `Value` is exported. `CDKD_TEST_CR_VALUE` picks
+ * what the handler returns (`v1` by default).
+ */
+export class CrProducerStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props: cdk.StackProps) {
+    super(scope, id, props);
+    const onEvent = new lambda.Function(this, 'OnEvent', {
+      functionName: 'cdkd-integ-eiu-cr-on-event',
+      runtime: lambda.Runtime.PYTHON_3_12,
+      handler: 'index.handler',
+      code: lambda.Code.fromInline(`
+def handler(event, context):
+    props = event.get('ResourceProperties', {})
+    print('REQUEST ' + event.get('RequestType', '') + ' ' + str(props.get('Timestamp')) + ' ' + str(props.get('Ret')))
+    return {'PhysicalResourceId': 'cdkd-integ-eiu-cr', 'Data': {'Value': props.get('Ret', '')}}
+`),
+      timeout: cdk.Duration.seconds(30),
+    });
+    const provider = new cr.Provider(this, 'Provider', {
+      onEventHandler: onEvent,
+      providerFunctionName: 'cdkd-integ-eiu-cr-provider',
+    });
+    const resource = new cdk.CustomResource(this, 'Cr', {
+      serviceToken: provider.serviceToken,
+      properties: {
+        Timestamp: Date.now().toString(),
+        Ret: process.env.CDKD_TEST_CR_VALUE ?? 'v1',
+      },
+    });
+    new cdk.CfnOutput(this, 'CrValue', {
+      value: resource.getAttString('Value'),
+      exportName: 'CdkdExportInUseCrValue',
+    });
+  }
+}
+
+/** Imports the custom resource's exported value into an SSM parameter. */
+export class CrConsumerStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props: cdk.StackProps) {
+    super(scope, id, props);
+    new ssm.StringParameter(this, 'CrValue', {
+      parameterName: '/cdkd-integ/export-in-use/cr-value',
+      stringValue: cdk.Fn.importValue('CdkdExportInUseCrValue'),
     });
   }
 }

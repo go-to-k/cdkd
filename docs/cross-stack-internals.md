@@ -937,11 +937,24 @@ in the plan checks, after the diff and before any provider call, in two halves:
    with the template's outputs and the plan: a removed name, an output
    reading a created, deleted or replaced resource, an attribute an in-place
    update may move (the diff's promotion rule), or a resolved value that
-   differs. A stack that exports nothing returns at once.
+   differs. A stack that exports nothing returns at once. An output reading a
+   custom resource updated in place is `deferred`
+   ([#6865](https://github.com/go-to-k/cdkd/issues/6865)), unless its
+   published value is a `***` mask, it holds a dynamic reference, or it already
+   resolves differently.
 2. Only when that list is non-empty does it call `scanActiveConsumers`, the
    same O(N) scan destroy uses. A consumer in `DeployEngineOptions.inRunStacks`
    (every stack this `cdkd deploy` deploys) is exempt. Unlike destroy, a
    record the scan cannot read refuses the deploy: it may hold an importer.
+
+A deferred export is judged by `refuseDeferredExportChanges`
+(`deploy-flow/plan-checks.ts`), which `execute.ts` calls after the create /
+update phase and before any DELETE. It resolves the output against the
+updated records. Only a value that moved (or no longer resolves) triggers the
+consumer scan. The refusal is thrown inside the deploy's failure path, so the
+automatic rollback re-sends each custom resource's previous properties and
+`--no-rollback` journals the update. This is CloudFormation's order, measured:
+update the custom resource, compare the export, roll back on a change.
 
 Not seen: a replacement decided only while provisioning (an update AWS
 refuses, replaced instead), and a change inside a dynamic reference's text,
