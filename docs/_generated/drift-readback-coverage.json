@@ -2,8 +2,8 @@
   "summary": {
     "types": 147,
     "noReadback": 2,
-    "properties": 1565,
-    "read": 1424,
+    "properties": 1566,
+    "read": 1425,
     "unknown": 118,
     "baseline": 23,
     "gap": 0,
@@ -7556,6 +7556,10 @@
       "className": "WAFv2WebACLProvider",
       "hasReadback": true,
       "properties": [
+        {
+          "property": "AnalyticsConfig",
+          "status": "read"
+        },
         {
           "property": "ApplicationConfig",
           "status": "read"

@@ -61,6 +61,7 @@ export class WAFv2WebACLProvider implements ResourceProvider {
         'OnSourceDDoSProtectionConfig',
         'ApplicationConfig',
         'MonetizationConfig',
+        'AnalyticsConfig',
       ]),
     ],
   ]);

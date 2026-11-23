@@ -33,6 +33,9 @@ import * as apigateway from 'aws-cdk-lib/aws-apigateway';
  *   unchanged member must still be re-sent.
  * - `CDKD_TEST_WAF_REMOVAL=true` drops both from the template.
  *
+ * PR #6884 adds `AnalyticsConfig` to the same three phases: CROSS_REGION,
+ * then DISABLED, then removed.
+ *
  * `ApplicationConfig` is NOT exercised here (unit tests only). AWS refuses
  * arbitrary attribute names and publishes no allowed set. Measured
  * 2026-10-30: the create was refused with a 400 `WAFInvalidParameterException`
@@ -193,6 +196,18 @@ export class Wafv2Stack extends cdk.Stack {
         },
       ],
     });
+
+    // PR #6884: `AnalyticsConfig` (security analytics). Set through an
+    // override, since the fixture's aws-cdk-lib predates the member: CROSS_REGION
+    // first, DISABLED on the update phase (a change), and dropped on the removal
+    // phase, where UpdateWebACL without it resets the mode to the scope default
+    // (GetWebACL then reports no member). No traffic reaches the web ACL, so
+    // CROSS_REGION transfers no request logs here.
+    if (!removalPhase) {
+      webAcl.addPropertyOverride('AnalyticsConfig', {
+        Mode: updatePhase ? 'DISABLED' : 'CROSS_REGION',
+      });
+    }
 
     // API Gateway REST API (minimal, for WebACL association)
     const api = new apigateway.RestApi(this, 'TestApi', {

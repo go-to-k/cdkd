@@ -13,8 +13,8 @@ For every SDK provider type and every top-level property its `handledProperties`
 ## Summary
 
 - SDK provider types: **147**
-- Handled properties classified: **1561**
-- Read on the update path: **1140**
+- Handled properties classified: **1562**
+- Read on the update path: **1141**
 - Replacement: **400**
 - Allow-listed (does NOT block CI): **21**
 - Handled names outside the schema's writable properties (not classified): **13**
@@ -196,5 +196,5 @@ For every SDK provider type and every top-level property its `handledProperties`
 | `AWS::SQS::QueuePolicy` | `SQSQueuePolicyProvider` | PolicyDocument, Queues |  |
 | `AWS::SSM::Parameter` | `SSMParameterProvider` | AllowedPattern, DataType, Description, Policies, Tags, Tier, Type, Value | Name |
 | `AWS::StepFunctions::StateMachine` | `StepFunctionsProvider` | Definition, DefinitionS3Location, DefinitionString, DefinitionSubstitutions, EncryptionConfiguration, LoggingConfiguration, RoleArn, Tags, TracingConfiguration | StateMachineName, StateMachineType |
-| `AWS::WAFv2::WebACL` | `WAFv2WebACLProvider` | ApplicationConfig, AssociationConfig, CaptchaConfig, ChallengeConfig, CustomResponseBodies, DataProtectionConfig, DefaultAction, Description, MonetizationConfig, OnSourceDDoSProtectionConfig, Rules, Tags, TokenDomains, VisibilityConfig | Name, Scope |
+| `AWS::WAFv2::WebACL` | `WAFv2WebACLProvider` | AnalyticsConfig, ApplicationConfig, AssociationConfig, CaptchaConfig, ChallengeConfig, CustomResponseBodies, DataProtectionConfig, DefaultAction, Description, MonetizationConfig, OnSourceDDoSProtectionConfig, Rules, Tags, TokenDomains, VisibilityConfig | Name, Scope |
 

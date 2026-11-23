@@ -29,9 +29,6 @@
     ],
     "AWS::Lambda::MicrovmImage": [
       "KmsKeyIdentifier"
-    ],
-    "AWS::WAFv2::WebACL": [
-      "AnalyticsConfig"
     ]
   },
   "bogusTolerated": {

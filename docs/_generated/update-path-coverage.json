@@ -1,8 +1,8 @@
 {
   "summary": {
     "types": 147,
-    "properties": 1561,
-    "update": 1140,
+    "properties": 1562,
+    "update": 1141,
     "replacement": 400,
     "allowListed": 21,
     "gap": 0,
@@ -7948,6 +7948,10 @@
       "file": "src/provisioning/providers/wafv2-provider.ts",
       "className": "WAFv2WebACLProvider",
       "properties": [
+        {
+          "property": "AnalyticsConfig",
+          "status": "update"
+        },
         {
           "property": "ApplicationConfig",
           "status": "update"

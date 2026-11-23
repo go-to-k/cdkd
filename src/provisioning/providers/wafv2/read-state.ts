@@ -100,6 +100,14 @@ export async function readCurrentState(
   if (webACL.MonetizationConfig) {
     result['MonetizationConfig'] = webACL.MonetizationConfig as unknown as Record<string, unknown>;
   }
+  // `AnalyticsConfig` reads back verbatim, and only when AWS reports one:
+  // GetWebACL returns no member for a web ACL whose template never set it
+  // (either scope, measured live), so a template omitting it compares equal,
+  // while an out-of-band `Mode` shows as drift that `--revert` clears by
+  // omitting it again (UpdateWebACL resets an omitted member to the default).
+  if (webACL.AnalyticsConfig) {
+    result['AnalyticsConfig'] = webACL.AnalyticsConfig as unknown as Record<string, unknown>;
+  }
 
   // Tags via ListTagsForResource (the WebACL ARN is the physicalId).
   try {

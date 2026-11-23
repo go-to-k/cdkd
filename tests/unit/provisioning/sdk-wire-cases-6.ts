@@ -413,6 +413,7 @@ const ACL_FULL: Bag = {
     },
     CurrencyMode: 'TEST',
   },
+  AnalyticsConfig: { Mode: 'DISABLED' },
   Tags: TAGS,
 };
 

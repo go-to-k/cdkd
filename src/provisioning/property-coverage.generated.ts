@@ -3703,6 +3703,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::WAFv2::WebACL',
     {
       handled: new Set<string>([
+        'AnalyticsConfig',
         'ApplicationConfig',
         'AssociationConfig',
         'CaptchaConfig',
@@ -3720,7 +3721,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'TokenDomains',
         'VisibilityConfig',
       ]),
-      sdkUnwired: new Map<string, string>([['AnalyticsConfig', 'not yet implemented by cdkd']]),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn', 'Capacity', 'Id', 'LabelNamespace']),
       primaryIdentifier: new Set<string>(['Id', 'Name', 'Scope']),
