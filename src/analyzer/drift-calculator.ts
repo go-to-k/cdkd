@@ -34,7 +34,12 @@ import {
   orderSignificantIdArrayPaths,
 } from './drift-normalize.js';
 import { hasPlainPrototype } from '../utils/own-keys.js';
-import { isOmittedVersionDefault, isVerbatimStatementPath } from './drift-verbatim-paths.js';
+import {
+  NOT_A_POLICY_PATH,
+  canonicalPolicyFoldForm,
+  isOmittedVersionDefault,
+  isVerbatimStatementPath,
+} from './drift-verbatim-paths.js';
 
 /**
  * A single property-level drift between state and AWS-current.
@@ -255,6 +260,13 @@ function diffAt(
     awsForm = asStatementList(awsForm, stateForm);
   }
   if (deepEqual(stateForm, awsForm)) return;
+  // go-to-k/cdkd#6852: inside a verbatim-echo document's `Statement`, the
+  // spellings a service returns for what the template sent (a one-element
+  // list as its scalar, an account id as its root ARN, `Effect` case, a
+  // Condition number as its string) are one value. Folded for this
+  // comparison only: on a difference the walk below continues over the
+  // original forms, so a report and `--revert` carry what each side holds.
+  if (policyFoldsEqual(path, stateForm, awsForm, unionWalkPaths)) return;
 
   // FALLBACK for a state leaf whose `{{resolve:...}}` dynamic reference could
   // not be resolved (GHSA fix: cdkd persists the expression, not the resolved
@@ -564,6 +576,21 @@ function asStatementList(statement: unknown, other: unknown): unknown {
   return isPlainObject(statement) && !Array.isArray(statement) && Array.isArray(other)
     ? [statement]
     : statement;
+}
+
+/**
+ * True when `path` lies in a verbatim-echo policy statement and the two values
+ * are equal under the measured policy folds (`canonicalPolicyFoldForm`).
+ */
+function policyFoldsEqual(
+  path: string,
+  stateForm: unknown,
+  awsForm: unknown,
+  verbatimKeys: readonly string[]
+): boolean {
+  const state = canonicalPolicyFoldForm(path, stateForm, verbatimKeys);
+  if (state === NOT_A_POLICY_PATH) return false;
+  return deepEqual(state, canonicalPolicyFoldForm(path, awsForm, verbatimKeys));
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
