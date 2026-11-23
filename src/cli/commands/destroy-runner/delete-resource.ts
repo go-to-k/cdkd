@@ -785,7 +785,8 @@ export async function deleteStackResource(
       const protectionHint = protectionRefusalHint(
         error,
         resource.resourceType,
-        ctx.removeProtection
+        ctx.removeProtection,
+        resource.physicalId
       );
       if (protectionHint) logger.error(safeMsg`    ${protectionHint}`);
       result.errorCount++;

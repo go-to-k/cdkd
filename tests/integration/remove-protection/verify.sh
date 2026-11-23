@@ -377,9 +377,11 @@ echo "[verify] step 3 ok: bare destroy rejected (exit ${rc})"
 echo "[verify] step 3a: each protected resource's failure names --remove-protection (#6855)"
 PROTECTION_HINT='AWS refused the delete because deletion protection is on for this resource.'
 for prefix in ProtectedLogGroup ProtectedTable ProtectedUserPool ProtectedInstance ProtectedAlb ProtectedNlb ProtectedAsg; do
-  # The line after this resource's failure line, ANSI colour stripped.
-  next_line="$(sed -e 's/\x1b\[[0-9;]*m//g' "${DESTROY_3_LOG}" \
-    | awk -v p="Failed to delete ${prefix}" 'found { print; exit } index($0, p) { found = 1 }')"
+  # The line after this resource's failure line, ANSI colour stripped. One awk
+  # reading the file: a pipe into an early-exiting awk can SIGPIPE the writer.
+  next_line="$(awk -v p="Failed to delete ${prefix}" \
+    '{ gsub(/\033\[[0-9;]*m/, "") } found { print; exit } index($0, p) { found = 1 }' \
+    "${DESTROY_3_LOG}")"
   if ! grep -qF "Failed to delete ${prefix}" "${DESTROY_3_LOG}"; then
     echo "[verify] FAIL (#6855): no failure line for ${prefix} in step 3's destroy"
     exit 1

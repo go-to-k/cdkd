@@ -43,6 +43,18 @@ const DDB = awsError(
   'ResourceInUseException',
   'Resource cannot be deleted as it is currently protected against deletion. Disable deletion protection first.'
 );
+// Measured: DeleteLogGroup on a protected log group.
+const LOG_GROUP = awsError(
+  'InvalidParameterException',
+  'LogGroup has delete protection enabled. Disable delete protection before attempting to delete the resource.'
+);
+// EMR's TerminateJobFlows refusal (a ValidationException, per the provider).
+const EMR = awsError(
+  'ValidationException',
+  'Could not shut down one or more job flows since they are termination protected.'
+);
+// A reason code spelled with underscores.
+const UNDERSCORED = awsError('ConflictException', 'DELETION_PROTECTION_ENABLED');
 
 describe('protectionRefusalHint (issue #6855)', () => {
   it.each([
@@ -50,6 +62,9 @@ describe('protectionRefusalHint (issue #6855)', () => {
     ['AWS::ElasticLoadBalancingV2::LoadBalancer', ALB],
     ['AWS::EC2::Instance', EC2],
     ['AWS::DynamoDB::Table', DDB],
+    ['AWS::Logs::LogGroup', LOG_GROUP],
+    ['AWS::EMR::Cluster', EMR],
+    ['AWS::SMSVOICE::ProtectConfiguration', UNDERSCORED],
   ])('names the protection and --remove-protection for a refused %s delete', (type, cause) => {
     const hint = protectionRefusalHint(wrapped(type, 'R', cause), type, undefined);
     expect(hint).toContain('deletion protection is on');
@@ -102,6 +117,21 @@ describe('isProtectionRefusal (issue #6855)', () => {
 
   it('needs the separator, so a joined identifier echoed by AWS does not match', () => {
     expect(isProtectionRefusal(awsError('ValidationException', 'Table DeletionProtectionTable failed'))).toBe(false);
+  });
+
+  it('ignores the resource name AWS echoes back, in the physical id or an ARN', () => {
+    const table = awsError(
+      'ResourceInUseException',
+      'Table is being updated: deletion-protection-demo'
+    );
+    expect(isProtectionRefusal(table, 'deletion-protection-demo')).toBe(false);
+    const alb = awsError(
+      'ResourceInUseException',
+      "Load balancer 'arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/deletion-protection-alb/abc' is in use"
+    );
+    expect(isProtectionRefusal(alb)).toBe(false);
+    // The ARN is removed, the refusal phrase around it is still read.
+    expect(isProtectionRefusal(ALB)).toBe(true);
   });
 
   it('is false for a non-Error value', () => {

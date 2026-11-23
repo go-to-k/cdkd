@@ -334,6 +334,7 @@ const DESTROY_RUNNER_ORDER = [
   'under-lock.ts',
   'under-lock-steps.ts',
   'delete-resource.ts',
+  'protection-refusal-hint.ts',
   'state-and-receiver.ts',
 ] as const;
 /** The modules under `destroy-runner/`, the directory read recursively. */
