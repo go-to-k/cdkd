@@ -134,7 +134,7 @@ destroy-manifest-deps	2026-11-11T17:17:53Z	PASS	246	verify.sh	rc ok, orph clean,
 destroy-nested-cross-region	2026-11-12T11:22:31Z	PASS	296	verify.sh	rc ok, orph clean; #6140 (us-east-1)
 diff-fail-on-destructive	2026-11-21T06:02:26Z	PASS	95	verify.sh	rc ok, orph clean (#6713 plan)
 diff-intrinsic-target-change	2026-11-10T15:28:15Z	PASS	75	verify.sh	rc ok, orph clean
-dlm-lifecycle-policy	2026-10-30T06:31:51Z	PASS	106	verify.sh	rc ok, orph clean; #5546 Description removal arm; pre-fix probe red at phase 2b
+dlm-lifecycle-policy	2026-11-23T13:34:11Z	PASS	170	verify.sh	rc ok, orph clean
 docdb-fix-forward-orphan	2026-11-02T01:39:49Z	PASS	1820	verify.sh	#5611 final @77ac0cf: rc ok, 0 orphans, watchdog 0
 docdb-global-cluster	2026-11-22T02:46:37Z	PASS	245	verify.sh	rc ok, orph clean, sha 3116c9288 (#6813 sub-read errors)
 docdb-neptune	2026-11-07T20:39:51Z	PASS	5818	verify.sh	rc 0, destroy 0 errors, 0 orphans, own bucket (#6031)
@@ -190,7 +190,7 @@ efs-standalone	2026-11-22T03:31:56Z	PASS	323	verify.sh	d2646a6f6 #6759 part a, r
 elasticache-replicationgroup-getatt	2026-11-05T07:34:57Z	PASS	1193	verify.sh	rc ok, PrimaryEndPoint.Address real endpoint verified, destroy 0 errors, orph clean (own temp state bucket, deleted)
 elasticache-snapshot-arns	2026-11-06T20:58:31Z	PASS	692	verify.sh	#5915 elasticache split head; rc ok, orph clean
 elbv2-same-name-replacement	2026-11-16T08:22:27Z	PASS	95	verify.sh	rc ok, orph clean (#6374 sweep)
-emr-cluster	2026-11-23T11:24:40Z	PASS	2042	verify.sh	rc ok, orph clean (#6857 6852 normalization audit)
+emr-cluster	2026-11-23T13:13:13Z	PASS	2136	verify.sh	rc ok, orph clean, clusters terminated
 emr-instance-configs	2026-11-22T06:33:25Z	PASS	1995	verify.sh	#6810 rerun at 9430853b6 (probe fix); rc ok, orph clean (us-east-1)
 emr-instance-fleets	2026-11-22T05:59:15Z	PASS	1516	verify.sh	#6810 run at b9718f87f; rc ok, orph clean (us-east-1)
 event-driven	2026-11-04T05:26:26Z	PASS	52	standard	batch 3 (rc=0, destroy 19 deleted 0 errors); account clean
