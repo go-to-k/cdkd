@@ -533,6 +533,24 @@ case_rename_check() { # usage: case_rename_check <want-name> <gone-name> <want-a
   fi
   echo "    $4: the role holds $1 with $3"
 }
+assert_no_renamed_policy_drift() { # usage: assert_no_renamed_policy_drift <label>
+  local out err rc=0
+  err="$(mktemp)"
+  out="$(env -u CDKD_TEST_HANDOFF CDKD_TEST_RENAME=true node "${LOCAL_DIST}" drift "${STACK}" \
+    --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json 2>"${err}")" || rc=$?
+  if [ "${rc}" -ne 0 ] && [ "${rc}" -ne 1 ]; then
+    echo "FAIL [6874]: cdkd drift exited ${rc} ($1)" >&2
+    cat "${err}" >&2
+    exit 1
+  fi
+  local hits
+  hits="$(printf '%s' "${out}" | jq -c '[.[].drifted[] | select(.logicalId | test("^RenamedPolicy")) | .changes[].path]')"
+  if [ "${hits}" != "[]" ]; then
+    echo "FAIL [6874]: cdkd drift reported RenamedPolicy (AWS::IAM::Policy) drift ($1): ${hits}" >&2
+    exit 1
+  fi
+  echo "    $1: no RenamedPolicy drift"
+}
 echo "==> Phase 2d: respell DeclaredInline only in case; the policy must survive with the new document"
 env -u CDKD_TEST_HANDOFF CDKD_TEST_RENAME=true CDKD_TEST_CASE_RENAME=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
@@ -541,11 +559,13 @@ case_rename_check declaredinline DeclaredInline sqs:ChangeMessageVisibility "aft
 # follow-up): the role must hold the new spelling with the new document.
 case_rename_check cdkd-iam-drift-clean-RENAMED-new "${NEW_POLICY}" sqs:ListQueueTags "after the policy's case-only rename"
 assert_no_role_drift "after the case-only rename" true
+assert_no_renamed_policy_drift "after the case-only rename"
 env -u CDKD_TEST_HANDOFF -u CDKD_TEST_CASE_RENAME CDKD_TEST_RENAME=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 case_rename_check DeclaredInline declaredinline sqs:GetQueueAttributes "after renaming it back"
 case_rename_check "${NEW_POLICY}" cdkd-iam-drift-clean-RENAMED-new sqs:GetQueueUrl "after renaming the policy back"
 assert_no_role_drift "after renaming it back" true
+assert_no_renamed_policy_drift "after renaming it back"
 
 # --- Phase 2c: hand inline policy names over in one deploy (go-to-k/cdkd#4156)
 # Each name must end up held, with the RECEIVING resource's document (its own

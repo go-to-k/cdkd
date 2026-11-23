@@ -21,6 +21,7 @@ import {
   verifyInlinePolicyPrincipals,
 } from './principal-identity.js';
 import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
+import { holdsSecretDerivedEntry } from '../../iam-policy-targets.js';
 
 /**
  * Update an IAM inline policy
@@ -384,13 +385,23 @@ export async function update(
         try {
           await put(name, newPolicyName);
         } catch (error) {
-          for (const policyName of respell) {
-            try {
-              if (previousDoc === undefined) throw new Error('no recorded document');
-              await put(name, policyName, previousDoc);
-            } catch {
+          // One spelling is put back (IAM holds one policy for all of them),
+          // and only a recorded document that is what AWS held: a
+          // `{{resolve:` reference or a mask kept in state is not.
+          const restoreName = respell[0];
+          if (restoreName !== undefined) {
+            let restored = false;
+            if (previousDoc !== undefined && !holdsSecretDerivedEntry(recordedDocument)) {
+              try {
+                await put(name, restoreName, previousDoc);
+                restored = true;
+              } catch {
+                // warned below
+              }
+            }
+            if (!restored) {
               log.warn(
-                `Could not put inline policy ${v(policyName)} back on ${kind} ${v(name)} after its re-put as ${v(newPolicyName)} failed; it is absent until the next deploy or ${proseQuoted(cdkdRemedy('cdkd drift', '--revert'))}`
+                `Could not put inline policy ${v(restoreName)} back on ${kind} ${v(name)} after its re-put as ${v(newPolicyName)} failed; it is absent until the next deploy or ${proseQuoted(cdkdRemedy('cdkd drift', '--revert'))}`
               );
             }
           }

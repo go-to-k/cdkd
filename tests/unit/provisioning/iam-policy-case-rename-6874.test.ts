@@ -154,6 +154,40 @@ describe('AWS::IAM::Policy case-only PolicyName rename (go-to-k/cdkd#6874)', () 
     expect(JSON.parse(String(restore.input['PolicyDocument']))).toEqual(DOC_A);
   });
 
+  it.each([
+    ['a {{resolve:}} reference', '{{resolve:secretsmanager:vpce:SecretString:id}}'],
+    ['the mask', '***'],
+  ])('a recorded document holding %s is not put back after a failed put (warned instead)', async (_what, secret) => {
+    mockSend.mockImplementation(async (command: Cmd) => {
+      calls.push({ op: command.constructor.name.replace(/Command$/, ''), input: command.input });
+      if (command.constructor.name === 'PutRolePolicyCommand' && command.input['PolicyName'] === 'casepol') {
+        throw new Error('Throttling');
+      }
+      return {};
+    });
+    const recorded = {
+      Version: '2012-10-17',
+      Statement: [
+        {
+          Effect: 'Allow',
+          Action: 's3:*',
+          Resource: '*',
+          Condition: { StringNotEquals: { 'aws:SourceVpce': secret } },
+        },
+      ],
+    };
+    await expect(
+      new IAMPolicyProvider().update(
+        'P',
+        'CasePol',
+        TYPE,
+        { PolicyName: 'casepol', PolicyDocument: DOC_B, Roles: ['r'] },
+        { PolicyName: 'CasePol', PolicyDocument: recorded, Roles: ['r'] }
+      )
+    ).rejects.toThrow(/Throttling/);
+    expect(ops()).toEqual(['DeleteRolePolicy r CasePol', 'PutRolePolicy r casepol']);
+  });
+
   it('an old spelling already gone (NoSuchEntity) still gets the new one put', async () => {
     const { NoSuchEntityException } = await import('@aws-sdk/client-iam');
     mockSend.mockImplementation(async (command: Cmd) => {
