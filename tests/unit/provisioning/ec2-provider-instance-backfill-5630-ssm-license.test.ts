@@ -944,6 +944,8 @@ describe('AWS::EC2::Instance SsmAssociations update (#5630)', () => {
       await remove();
       expect(ssmWrites()).toEqual([]);
       expect(warn.mock.calls.flat().join('\n')).toMatch(/cdkd leaves it in place/);
+      // No document name (it can be secret-derived) and no AWS text.
+      expect(warn.mock.calls.flat().join('\n')).not.toMatch(/Custom-Doc|not authorized/);
     });
 
     it('applies on the instance delete too', async () => {

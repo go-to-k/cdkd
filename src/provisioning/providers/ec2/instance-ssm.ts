@@ -139,7 +139,8 @@ export async function listInstanceSsmAssociations(
   const out = all.filter((a) => documentNames.some((d) => sameSsmDocument(d, a.Name)));
   if (options?.forDelete !== true) return out;
   for (const declared of documentNames) {
-    if (!declared.startsWith('arn:') || out.some((a) => sameSsmDocument(declared, a.Name))) continue;
+    if (!declared.startsWith('arn:') || out.some((a) => sameSsmDocument(declared, a.Name)))
+      continue;
     const bare = ssmDocumentName(declared);
     const byName = all.filter((a) => a.Name === bare && !out.includes(a));
     if (byName.length === 0 || !(await this.noOwnSsmDocumentNamed(bare))) continue;
@@ -162,7 +163,9 @@ export async function noOwnSsmDocumentNamed(this: EC2Provider, name: string): Pr
   } catch (error) {
     if (isNamedError(error, INVALID_DOCUMENT_NAMES)) return true;
     this.logger.warn(
-      safeMsg`Could not tell whether the SSM association of document ${name} is a shared document's (DescribeDocument failed: ${describeAwsFailure(error).detail}); cdkd leaves it in place.`
+      // Neither the name nor AWS's text: a document name can be secret-derived,
+      // and this lookup has no masker. The error's class is cdkd-safe.
+      safeMsg`Could not tell whether an SSM association declared by a shared document's ARN is the one listed under its bare name (DescribeDocument failed: ${error instanceof Error ? error.name : 'unknown error'}); cdkd leaves it in place.`
     );
     return false;
   }
