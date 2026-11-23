@@ -1,9 +1,5 @@
 import { applyStackTagsToTemplate } from '../../../provisioning/stack-tag-targets.js';
-import { childStackTags, literalRowTags } from '../../../provisioning/stack-tags.js';
-import {
-  expectedNestedStackTags,
-  nestedRowsNeedingTagRun,
-} from '../../../deployment/nested-stack-tags.js';
+import { childStackTags } from '../../../provisioning/stack-tags.js';
 import { hintSidesOf, rollbackOrphanIds } from '../../../analyzer/refactor-hints.js';
 import type { CreateRouteOf } from '../../../deployment/deploy-engine/update-policy.js';
 import { displayIdent, displayStackName } from '../../../utils/display-safe.js';
@@ -305,11 +301,6 @@ export async function buildDiffTree(args: {
     refusalRecovery
   );
   const template = await stackTagged;
-  // go-to-k/cdkd#6871: the rows whose child's effective stack tags changed.
-  const stackTagChildRuns = nestedRowsNeedingTagRun(
-    expectedNestedStackTags(template, stackTags),
-    state
-  );
   // go-to-k/cdkd#3869: `computeStackDiff` binds each heal's printing bag over
   // the records it diffs; this node's child-parameter pass binds its own below.
   const attributeHealer = unboundHealer;
@@ -396,7 +387,7 @@ export async function buildDiffTree(args: {
         previewMaskedInputs: !isNestedChild,
         ...(ssmNameHeal && { ssmNameHeal }),
         ...(nestedSsmCheck && { forcedNestedChildRuns: nestedSsmCheck.forcedRows }),
-        ...(stackTagChildRuns.size > 0 && { stackTagChildRuns }),
+        ...(stackTags && { stackTags }),
         nestedTemplates,
       }
     );
@@ -693,14 +684,9 @@ export async function buildDiffTree(args: {
         ...(refusalRecovery && { refusalRecovery }),
         ...(childReferenceProvenance && { inheritedReferenceProvenance: childReferenceProvenance }),
         ...(childSecretTokens.size > 0 && { inheritedSecretTokens: childSecretTokens }),
-        // go-to-k/cdkd#6871: a row's non-literal Tags are known only once the
-        // deploy resolves them; the preview applies the parent's tags alone.
-        stackTags: childStackTags(
-          stackTags,
-          literalRowTags(
-            (resource as { Properties?: Record<string, unknown> }).Properties?.['Tags']
-          )
-        ),
+        // go-to-k/cdkd#6871: the row's child tags as the diff resolved them;
+        // a row whose Tags it could not read gets the parent's alone.
+        stackTags: stackDiff.childStackTags?.get(logicalId) ?? childStackTags(stackTags, {}),
       });
     node.children.push(
       await (hasMaskableValues(childDerivedNames)

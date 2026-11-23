@@ -24,6 +24,7 @@ import { safeMsg } from '../utils/display-safe.js';
 import { scheduleDescribeType } from './describe-type.js';
 import { hasOwnKey } from '../utils/own-keys.js';
 import { PROPERTY_SHAPES } from './property-shape.generated.js';
+import { CREATE_ONLY_PATHS_SNAPSHOT } from './create-only-snapshot.generated.js';
 import {
   applyStackTags,
   nonEmptyStackTags,
@@ -85,6 +86,13 @@ export function stackTagTargetFromSchema(resourceType: string, schema: unknown):
     return { kind: 'unknown', reason: 'its tag property is not a top-level property' };
   }
   const property = match[1]!;
+  // A create-only tag property cannot take a stack tag without a
+  // replacement, which CloudFormation never does for one; such a type is
+  // `tagUpdatable: false` as well wherever it was surveyed.
+  const createOnly = schema['createOnlyProperties'];
+  if (Array.isArray(createOnly) && createOnly.includes(`/properties/${property}`)) {
+    return { kind: 'skip' };
+  }
   const properties = isRecord(schema['properties']) ? schema['properties'] : {};
   const definition = hasOwnKey(properties, property)
     ? deref(schema, properties[property])
@@ -132,6 +140,16 @@ export function stackTagTargetFromSchema(resourceType: string, schema: unknown):
 
 /** The bundled property-shape table's answer for a type whose schema could not be read. */
 function fallbackTarget(resourceType: string, detail: string): StackTagTarget {
+  // The shape table carries no tagging flags: a type whose `Tags` is
+  // create-only (`AWS::Kinesis::StreamConsumer`, `tagUpdatable: false` live)
+  // would otherwise be tagged, and so REPLACED, on the fallback path only.
+  if (
+    CREATE_ONLY_PATHS_SNAPSHOT.get(resourceType)?.some(
+      (path) => path.length === 1 && path[0] === 'Tags'
+    ) === true
+  ) {
+    return { kind: 'skip' };
+  }
   const row = PROPERTY_SHAPES.get(resourceType);
   if (row !== undefined) {
     try {

@@ -1,8 +1,4 @@
-import {
-  expectedNestedStackTags,
-  nestedRowsNeedingTagRun,
-  nestedStackTagsField,
-} from '../nested-stack-tags.js';
+import { nestedStackTagsField } from '../nested-stack-tags.js';
 import { armSignalReceiver, ensureSignalReceiver, settledAfter } from './signal-receiver-run.js';
 import { readRefactorMarker } from '../../state/refactor-marker.js';
 import { seedPersistedNoEchoAttributes } from './noecho.js';
@@ -586,9 +582,6 @@ export async function doDeployWithPrefetch(
       !Object.values(orphanPlan.adopted).some(
         (r) => r.resourceType === 'AWS::CloudFormation::Stack'
       );
-    // go-to-k/cdkd#6871: each nested row's child effective stack tags; a row
-    // whose tags differ from those its child was deployed with updates.
-    const expectedChildTags = expectedNestedStackTags(effectiveTemplate, engine.options.stackTags);
     // go-to-k/cdkd#6705: a stack declaring a CreationPolicy signal or cfn-init
     // metadata has a CloudFormation signal receiver, found or created here,
     // before the diff, so `AWS::StackId` resolves to its real ARN everywhere.
@@ -598,16 +591,18 @@ export async function doDeployWithPrefetch(
       effectiveTemplate,
       currentState
     );
-    const { diffResolverContext, maskedInputs, changes } = await calculateDeployDiff(engine, {
-      stackName,
-      currentState,
-      effectiveTemplate,
-      parameterValues,
-      conditions,
-      clock,
-      forcedNestedChildRuns: nestedCheck?.forcedRows,
-      stackTagChildRuns: nestedRowsNeedingTagRun(expectedChildTags, currentState),
-    });
+    const { diffResolverContext, maskedInputs, changes, expectedChildTags } =
+      await calculateDeployDiff(engine, {
+        stackName,
+        currentState,
+        effectiveTemplate,
+        parameterValues,
+        conditions,
+        clock,
+        forcedNestedChildRuns: nestedCheck?.forcedRows,
+        // go-to-k/cdkd#6871: a nested row whose child's tags differ updates.
+        stackTags: engine.options.stackTags,
+      });
     clock.lap('diff');
     // The diff was the prefetch's only consumer: withdraw what it did not
     // need, so it stops spending the account's DescribeType quota that the

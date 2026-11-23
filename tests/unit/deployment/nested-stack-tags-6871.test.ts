@@ -128,3 +128,54 @@ describe('stackInstanceIdCarriedFrom carries nestedStackTags (go-to-k/cdkd#6871)
     expect(stackInstanceIdCarriedFrom({})).toEqual({});
   });
 });
+
+describe('settleStackTagChildRuns (go-to-k/cdkd#6871, code review M2)', () => {
+  const changesFor = () =>
+    new Map<string, ResourceChange>([
+      ['Child', { logicalId: 'Child', changeType: 'NO_CHANGE', resourceType: ROW }],
+    ]);
+  const refTags = [{ Key: 'env', Value: { Ref: 'Env' } }];
+
+  it('resolves a non-literal row Tags with the diff resolver, so an unchanged row is not re-run', async () => {
+    const { settleStackTagChildRuns } = await import('../../../src/deployment/nested-stack-tags.js');
+    const changes = changesFor();
+    const expected = await settleStackTagChildRuns({
+      changes,
+      template: template(refTags),
+      stackTags: undefined,
+      state: recorded({ Child: { env: 'prod' } }),
+      resolve: async () => [{ Key: 'env', Value: 'prod' }],
+    });
+    expect(expected.get('Child')).toEqual({ env: 'prod' });
+    expect(changes.get('Child')?.changeType).toBe('NO_CHANGE');
+  });
+
+  it('runs the row when the resolved value moved', async () => {
+    const { settleStackTagChildRuns } = await import('../../../src/deployment/nested-stack-tags.js');
+    const changes = changesFor();
+    await settleStackTagChildRuns({
+      changes,
+      template: template(refTags),
+      stackTags: undefined,
+      state: recorded({ Child: { env: 'prod' } }),
+      resolve: async () => [{ Key: 'env', Value: 'dev' }],
+    });
+    expect(changes.get('Child')).toMatchObject({ changeType: 'UPDATE', nestedStackTagsChanged: true });
+  });
+
+  it('keeps a row it cannot resolve unknowable: it runs', async () => {
+    const { settleStackTagChildRuns } = await import('../../../src/deployment/nested-stack-tags.js');
+    const changes = changesFor();
+    const expected = await settleStackTagChildRuns({
+      changes,
+      template: template(refTags),
+      stackTags: undefined,
+      state: recorded({ Child: { env: 'prod' } }),
+      resolve: async () => {
+        throw new Error('unresolvable');
+      },
+    });
+    expect(expected.get('Child')).toBeUndefined();
+    expect(changes.get('Child')?.changeType).toBe('UPDATE');
+  });
+});

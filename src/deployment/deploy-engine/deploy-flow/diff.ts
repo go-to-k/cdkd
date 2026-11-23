@@ -1,4 +1,4 @@
-import { markStackTagChildRuns } from '../../nested-stack-tags.js';
+import { settleStackTagChildRuns } from '../../nested-stack-tags.js';
 import { freshNoEchoParametersWithDeclared, noEchoDiffComparison } from '../noecho.js';
 import { diffLogMasker, redactParametersForDiff } from '../masking.js';
 import { makeCanonicalizePropertiesFn } from '../../../provisioning/canonicalize-properties.js';
@@ -25,7 +25,7 @@ export async function calculateDeployDiff(
     conditions,
     clock,
     forcedNestedChildRuns,
-    stackTagChildRuns,
+    stackTags,
   }: {
     stackName: string;
     currentState: StackState;
@@ -35,8 +35,8 @@ export async function calculateDeployDiff(
     clock: PhaseClock;
     /** go-to-k/cdkd#6282: see `DiffCalculator.calculateDiff`'s parameter. */
     forcedNestedChildRuns?: ReadonlySet<string> | undefined;
-    /** go-to-k/cdkd#6871: rows whose child's effective stack tags changed. */
-    stackTagChildRuns?: ReadonlySet<string> | undefined;
+    /** go-to-k/cdkd#6871: this stack's effective stack tags, for the nested rows. */
+    stackTags?: Readonly<Record<string, string>> | undefined;
   }
 ) {
   // 5. Calculate diff
@@ -202,6 +202,12 @@ export async function calculateDeployDiff(
   );
   // go-to-k/cdkd#6871: a row whose child's stack tags changed updates so the
   // child's engine runs (`cdkd diff` marks the same rows).
-  if (stackTagChildRuns !== undefined) markStackTagChildRuns(changes, stackTagChildRuns);
-  return { diffResolverContext, maskedInputs, changes };
+  const expectedChildTags = await settleStackTagChildRuns({
+    changes,
+    template: effectiveTemplate,
+    stackTags,
+    state: currentState,
+    resolve: diffResolveFn,
+  });
+  return { diffResolverContext, maskedInputs, changes, expectedChildTags };
 }

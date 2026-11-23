@@ -149,6 +149,14 @@ describe('getStackTagTarget / applyStackTagsToTemplate (go-to-k/cdkd#6871)', () 
     expect(schedule.mock.calls.filter((c) => c[0] === 'AWS::SQS::Queue')).toHaveLength(2);
   });
 
+  it('skips a create-only tag property, live and on the fallback (StreamConsumer, review M1)', async () => {
+    expect(
+      stackTagTargetFromSchema('AWS::X::Y', { ...sqs, createOnlyProperties: ['/properties/Tags'] })
+    ).toEqual({ kind: 'skip' });
+    schedule.mockRejectedValue(new Error('AccessDenied'));
+    expect(await getStackTagTarget('AWS::Kinesis::StreamConsumer')).toEqual({ kind: 'skip' });
+  });
+
   it('answers unknown, naming DescribeType, for a failed lookup with no fallback row', async () => {
     schedule.mockRejectedValue(new Error('AccessDenied'));
     const target = await getStackTagTarget('AWS::Not::InTheTable');

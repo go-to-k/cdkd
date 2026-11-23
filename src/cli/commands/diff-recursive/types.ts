@@ -156,6 +156,11 @@ export interface StackDiffResult {
   /** Per-resource changes, including `NO_CHANGE` entries. */
   changes: Map<string, ResourceChange>;
   /**
+   * go-to-k/cdkd#6871: per nested-stack row, its child's effective stack tags
+   * (`undefined` when its `Tags` could not be read), as the deploy computes them.
+   */
+  childStackTags?: ReadonlyMap<string, Record<string, string> | undefined>;
+  /**
    * `--fail-on=broadening` (go-to-k/cdkd#4601): this stack's security diff,
    * computed only when called. It reads the UNMASKED changes (the verdict
    * must see what the deploy sends) and renders through this node's printing
@@ -306,11 +311,12 @@ export interface ComputeStackDiffOptions {
    */
   forcedNestedChildRuns?: ReadonlySet<string>;
   /**
-   * go-to-k/cdkd#6871: the nested-stack rows the deploy updates so their
-   * child's engine applies changed effective stack tags
-   * (`nestedRowsNeedingTagRun`).
+   * go-to-k/cdkd#6871: this node's effective stack tags. The nested-stack
+   * rows the deploy updates so their child's engine applies changed tags are
+   * marked from them (`settleStackTagChildRuns`), and the result carries each
+   * row's child tags (`childStackTags`).
    */
-  stackTagChildRuns?: ReadonlySet<string>;
+  stackTags?: Readonly<Record<string, string>>;
   parameters?: Record<string, unknown>;
   /**
    * Same per-type normalization the deploy engine applies (issue #1591).

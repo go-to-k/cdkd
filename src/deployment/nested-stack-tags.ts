@@ -137,3 +137,37 @@ export function markStackTagChildRuns(
     if (change.changeType === 'UPDATE') change.nestedStackTagsChanged = true;
   }
 }
+
+/**
+ * The diff-time step both `cdkd deploy` and `cdkd diff` run once the
+ * calculator is done: each row's expected child tags (a row whose `Tags` are
+ * not literal resolved with the DIFF's resolver, which leaves a secret
+ * reference as its expression, the spelling the provider hands the child),
+ * the rows they force marked, and the expected map returned for the record
+ * (deploy) and the child walk (diff). A row whose tags still cannot be read
+ * stays unknowable: it runs every deploy and is not recorded.
+ */
+export async function settleStackTagChildRuns(args: {
+  changes: Map<string, ResourceChange>;
+  template: CloudFormationTemplate;
+  stackTags: Readonly<Record<string, string>> | undefined;
+  state: Pick<StackState, 'nestedStackTags'> & { resources?: Record<string, ResourceState> };
+  resolve: ((value: unknown) => Promise<unknown>) | undefined;
+}): Promise<Map<string, Record<string, string> | undefined>> {
+  const expected = expectedNestedStackTags(args.template, args.stackTags);
+  const resources = isRecord(args.template.Resources) ? args.template.Resources : {};
+  for (const [logicalId, tags] of expected) {
+    if (tags !== undefined || args.resolve === undefined) continue;
+    const resource = resources[logicalId];
+    const properties = isRecord(resource) ? resource['Properties'] : undefined;
+    try {
+      const resolved = await args.resolve(isRecord(properties) ? properties['Tags'] : undefined);
+      const rowTags = literalRowTags(resolved);
+      if (rowTags !== undefined) expected.set(logicalId, childStackTags(args.stackTags, rowTags));
+    } catch {
+      // Unresolvable at diff time: the row stays unknowable and runs.
+    }
+  }
+  markStackTagChildRuns(args.changes, nestedRowsNeedingTagRun(expected, args.state));
+  return expected;
+}

@@ -1,4 +1,4 @@
-import { markStackTagChildRuns } from '../../../deployment/nested-stack-tags.js';
+import { settleStackTagChildRuns } from '../../../deployment/nested-stack-tags.js';
 import { stripControlChars, stripForDisplay } from '../../../utils/regexp.js';
 import {
   findUpdatePolicyReplacementRefusals,
@@ -554,9 +554,13 @@ export async function computeStackDiff(
     options.updatePolicy === true
   );
   // go-to-k/cdkd#6871: the rows the deploy updates for their child's tags.
-  if (options.stackTagChildRuns !== undefined) {
-    markStackTagChildRuns(changes, options.stackTagChildRuns);
-  }
+  const childStackTags = await settleStackTagChildRuns({
+    changes,
+    template: effectiveTemplate,
+    stackTags: options.stackTags,
+    state: stateForDiff,
+    resolve: resolveFn,
+  });
   // go-to-k/cdkd#6146: a property whose recorded NoEcho value MACs prove the
   // value moved is a change, as the deploy sends it. No KMS call unless a
   // record carries MACs; none in a nested child.
@@ -957,6 +961,7 @@ export async function computeStackDiff(
 
   return {
     changes: shownChanges,
+    childStackTags,
     securityDiff: () =>
       diffSecurity({
         stackName,
