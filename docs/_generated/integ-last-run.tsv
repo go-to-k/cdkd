@@ -370,7 +370,7 @@ nested-stack-3level	2026-11-16T12:51:14Z	PASS	559	verify.sh	rc ok, orph clean (#
 nested-stack-deep	2026-11-16T12:51:14Z	PASS	132	verify.sh	rc ok, orph clean (#6398)
 nested-stack-replace-guard	2026-11-16T12:51:14Z	PASS	85	verify.sh	rc ok, orph clean (#6398)
 nested-stack-rollback	2026-11-21T12:35:54Z	PASS	95	verify.sh	rc ok, orph clean (#6762 run)
-nested-stack-secret	2026-11-04T20:57:58Z	PASS	297	verify.sh	rc 0, destroy 0 errors, 0 surviving state versions, orph clean (state keys, live resources, no leaked log groups); own temp state bucket
+nested-stack-secret	2026-11-23T19:53:15Z	PASS	381	verify.sh	rc ok, orph clean; #6893 short row-tag secret framed + tagged nested row accepted
 nested-stack-transform	2026-11-16T09:13:05Z	PASS	150	verify.sh	rc ok, orph clean
 nlb-quic-server-id	2026-11-10T17:00:47Z	PASS	241	verify.sh	rc ok, orph clean
 nlb-source-nat	2026-11-21T21:07:36Z	PASS	350	verify.sh	rc ok, orph clean (PR 6795 0162f3918)
