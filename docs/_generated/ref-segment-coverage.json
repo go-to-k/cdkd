@@ -3,11 +3,11 @@
   "summary": {
     "types": 342,
     "mapped": 62,
-    "compound": 200,
+    "compound": 201,
     "no-ref": 40,
     "not-a-segment": 7,
-    "unverified": 31,
-    "gap": 2
+    "unverified": 32,
+    "gap": 0
   },
   "types": [
     {
@@ -771,7 +771,8 @@
         "UserPoolId",
         "CIMDPolicyId"
       ],
-      "status": "gap"
+      "status": "compound",
+      "detail": "measured, CloudFormation stack cdkd-probe-6851 (us-east-1, 2026-11-23): `<UserPoolId>|<CIMDPolicyId>`"
     },
     {
       "resourceType": "AWS::Cognito::IdentityPoolPrincipalTag",
@@ -2588,7 +2589,8 @@
         "DomainName",
         "PeerDomainArn"
       ],
-      "status": "gap"
+      "status": "unverified",
+      "detail": "docs: no page published yet (2026-11-23); not measured (needs two OpenSearch domains)"
     },
     {
       "resourceType": "AWS::PCAConnectorAD::ServicePrincipalName",

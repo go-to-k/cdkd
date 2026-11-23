@@ -14,11 +14,11 @@ Every Cloud Control-routable type whose `primaryIdentifier` has more than one fi
 
 - Compound-id types: **342**
 - Mapped by `cfnRefValueFromPhysicalId`: **62**
-- `Ref` is the joined id too: **200**
+- `Ref` is the joined id too: **201**
 - No `Ref` documented: **40**
 - `Ref` is no segment of the id: **7**
-- Unverified (does NOT block CI): **31**
-- **Gaps (blocks CI): 2**
+- Unverified (does NOT block CI): **32**
+- **Gaps (blocks CI): 0**
 
 | Type | Tier | primaryIdentifier | Status | Mechanism / source |
 | --- | --- | --- | --- | --- |
@@ -96,7 +96,7 @@ Every Cloud Control-routable type whose `primaryIdentifier` has more than one fi
 | `AWS::CodeDeploy::DeploymentGroup` | 2 | ApplicationName, DeploymentGroupName | mapped | REF_RETURNS_SEGMENT_AFTER_PIPE |
 | `AWS::CodePipeline::CustomActionType` | 2 | Category, Provider, Version | not-a-segment | docs Return values: Ref returns a generated name such as `custo-MyCus-A1BCDEFGHIJ2` |
 | `AWS::CodeStarConnections::SyncConfiguration` | 2 | ResourceName, SyncType | unverified | docs Return values: Ref returns the ARN (no segment holds it); not measured (needs an AVAILABLE connection, an OAuth handshake) |
-| `AWS::Cognito::CIMDPolicy` | 2 | UserPoolId, CIMDPolicyId | gap |  |
+| `AWS::Cognito::CIMDPolicy` | 2 | UserPoolId, CIMDPolicyId | compound | measured, CloudFormation stack cdkd-probe-6851 (us-east-1, 2026-11-23): `<UserPoolId>\|<CIMDPolicyId>` |
 | `AWS::Cognito::IdentityPoolPrincipalTag` | 2 | IdentityPoolId, IdentityProviderName | compound | docs Return values: Ref returns `<identityPoolId>\|graph.facebook.com` |
 | `AWS::Cognito::ManagedLoginBranding` | 2 | UserPoolId, ManagedLoginBrandingId | compound | measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<UserPoolId>\|<ManagedLoginBrandingId>` (the docs say the style id) |
 | `AWS::Cognito::Terms` | 2 | UserPoolId, TermsId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
@@ -274,7 +274,7 @@ Every Cloud Control-routable type whose `primaryIdentifier` has more than one fi
 | `AWS::OpenSearchServerless::Index` | 2 | IndexName, CollectionEndpoint | compound | docs Return values: Ref returns `index name\|endpoint` |
 | `AWS::OpenSearchServerless::LifecyclePolicy` | 2 | Type, Name | compound | measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<Type>\|<Name>` |
 | `AWS::OpenSearchServerless::SecurityPolicy` | 2 | Type, Name | compound | measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<Type>\|<Name>` (the docs say the policy name) |
-| `AWS::OpenSearchService::ReplicationPeer` | 2 | DomainName, PeerDomainArn | gap |  |
+| `AWS::OpenSearchService::ReplicationPeer` | 2 | DomainName, PeerDomainArn | unverified | docs: no page published yet (2026-11-23); not measured (needs two OpenSearch domains) |
 | `AWS::PCAConnectorAD::ServicePrincipalName` | 2 | ConnectorArn, DirectoryRegistrationArn | no-ref | docs: the page has no Return values section |
 | `AWS::PCAConnectorAD::TemplateGroupAccessControlEntry` | 2 | GroupSecurityIdentifier, TemplateArn | no-ref | docs: the page has no Return values section |
 | `AWS::Panorama::PackageVersion` | 2 | PackageId, PackageVersion, PatchVersion | no-ref | docs: the page has no Return values section |

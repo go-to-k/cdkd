@@ -447,6 +447,10 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   // A data-automation library carries encryption at rest over the entity
   // definitions and extractions it accumulates.
   'AWS::Bedrock::DataAutomationLibrary',
+  // An OpenSearch memory space stores the agent events and the memories
+  // extracted from them (`EventExpiryDays`, `MemoryExpiryDays`), written at
+  // runtime and never re-derivable from the template.
+  'AWS::OpenSearchMemory::Space',
 
   // Object / file / image stores with no SDK provider.
   'AWS::Lightsail::Bucket',
