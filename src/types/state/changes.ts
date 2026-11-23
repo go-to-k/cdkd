@@ -45,6 +45,15 @@ export interface ResourceChange {
   nestedChildHeal?: true;
 
   /**
+   * go-to-k/cdkd#6871: an `AWS::CloudFormation::Stack` row updated so its
+   * child's engine runs and applies the child's changed effective stack tags
+   * (this stack's tags plus the row's own `Tags`), though no property changed.
+   * The engine calls the provider for it (no no-change skip), and `cdkd diff`
+   * names why the row updates.
+   */
+  nestedStackTagsChanged?: true;
+
+  /**
    * go-to-k/cdkd#6509: the provider carries this UPDATE out by re-creating the
    * resource inside its own `update()` (an SNS subscription's delete-first
    * replacement), with the reason why. Display and approval only: the engine

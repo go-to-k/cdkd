@@ -483,6 +483,22 @@ export interface StackState {
   nestedSsmNamesChecked?: true;
 
   /**
+   * Per nested-stack row (its logical id), the effective stack tags its child
+   * stack was last deployed with: this stack's own stack tags merged with the
+   * row's literal `Tags` (go-to-k/cdkd#6871, `src/deployment/nested-stack-tags.ts`).
+   * A row whose tags differ from the recorded ones (an absent row is `{}`) is
+   * updated so its child's engine runs and re-tags the child's resources, as
+   * CloudFormation updates a nested stack on a stack-tag change. Written by a
+   * successful deploy; rows with no tags are omitted, and the field with them.
+   *
+   * Additive, NO schema bump (the `nestedSsmNamesChecked` precedent): an older
+   * binary ignores it and drops it on its next save, so the next deploy by
+   * this one runs each tagged child once more. Carried by every non-deploy
+   * writer through `stackInstanceIdCarriedFrom`.
+   */
+  nestedStackTags?: Record<string, Record<string, string>>;
+
+  /**
    * The StackId of this stack's CloudFormation signal receiver
    * (go-to-k/cdkd#6705, `src/deployment/deploy-engine/signal-receiver.ts`):
    * `AWS::StackId` resolves to it, so a grant on it (CDK's `init` /

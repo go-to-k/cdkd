@@ -10,6 +10,18 @@ const stack = new TagsPropagationStack(app, 'CdkdTagsPropagationExample', {
   env: {
     region: process.env.CDK_DEFAULT_REGION ?? process.env.AWS_REGION ?? 'us-east-1',
   },
+  // go-to-k/cdkd#6871: `StackProps.tags` reach the cloud assembly manifest
+  // only, never a resource's `Tags`; cdkd merges them into every taggable
+  // resource as CloudFormation does. `CdkdTagShared` is also declared by the
+  // queue and the parameter themselves (the stack lib), whose own value must
+  // win. Phase 2 (`CDKD_TEST_STACK_TAGS=2`) changes `CdkdStackTag` and drops
+  // `CdkdTagShared` from the stack: an in-place update that untags the
+  // dropped key everywhere but where a resource declares it. verify.sh
+  // duplicates these strings -- keep them in sync.
+  tags:
+    process.env.CDKD_TEST_STACK_TAGS === '2'
+      ? { CdkdStackTag: 'from-stackprops-2' }
+      : { CdkdStackTag: 'from-stackprops', CdkdTagShared: 'from-stack' },
 });
 
 // STACK-LEVEL tags applied at the App scope so they propagate to EVERY

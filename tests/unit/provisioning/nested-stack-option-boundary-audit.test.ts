@@ -106,6 +106,7 @@ const AUDITED_MEMBERS = [
   'requireApproval', // a run-wide level naming no stack: a child asks for its own changes
   'approveDeployment', // the CLI's prompt; the request it receives names the child stack
   'terminationProtection', // the ROOT stack's setting: a child engine ignores it (`parentStackInfo`)
+  'stackTags', // overwritten by the spread site with THIS child's effective tags (parent's + the row's own, #6871)
 ];
 
 /** The interface body, sliced once and shared by the parse and the fail-closed scan. */

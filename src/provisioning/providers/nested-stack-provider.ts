@@ -223,7 +223,8 @@ export class NestedStackProvider implements ResourceProvider {
     childRegion: string,
     childTemplate: CloudFormationTemplate,
     childParameters: Record<string, string>,
-    grandchildTemplates: Record<string, string>
+    grandchildTemplates: Record<string, string>,
+    rowTags?: unknown
   ): Promise<number> {
     return runChildDeploy.call(
       this,
@@ -233,7 +234,8 @@ export class NestedStackProvider implements ResourceProvider {
       childRegion,
       childTemplate,
       childParameters,
-      grandchildTemplates
+      grandchildTemplates,
+      rowTags
     );
   }
 

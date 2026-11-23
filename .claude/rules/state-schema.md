@@ -25,21 +25,22 @@ interface StackState {
   orphans?: StackOrphanRecord[]; // no bump: rollback-orphaned Retain resources (the discarded ResourceState verbatim); re-adopted on legacy stacks only
   supersededResources?: SupersededResourceRecord[]; // no bump: a replacement's old resource whose delete was deferred (its ResourceState verbatim, scrubbed as orphans are); retried by every deploy's cleanup, deleted by destroy, dropped once a record holds its id (#5111)
   conditionVerdicts?: Record<string, { verdict: boolean; fingerprint: string }>; // no bump: see below
-  parentStack?: string; // v6+: nested-stack CHILD records only (undefined = top-level); child key is cdkd/{parentStack}~{parentLogicalId}/{region}/state.json
-  parentLogicalId?: string; // v6+: the child's AWS::CloudFormation::Stack logical id in the parent
+  parentStack?: string; // v6+: nested-stack CHILD records only (absent = top-level); key cdkd/{parentStack}~{parentLogicalId}/{region}/state.json
+  parentLogicalId?: string; // v6+: the child's row logical id in the parent
   parentRegion?: string; // v6+: = `region`
   outputReferenceProvenance?: Record<string, Record<string, ReferenceProvenance>>; // v12+: key -> token
-  stackInstanceId?: string; // v13+: this lifetime's id; absent = legacy, forever
+  stackInstanceId?: string; // v13+: this lifetime's id; absent = legacy
   stackIdFromInstance?: true; // v16+: see stackIdTailOf
-  retiredNameGenerations?: Record<string, number>; // v13+: logical id -> generation it left at
-  pendingMovesOut?: PendingMoveOut[]; // no bump: an unfinished `cdkd refactor` move out (ids only); deploy/destroy refuse while present (#5212)
-  terminationProtection?: true; // no bump: each deploy writes it from synth (root only); destroy / state destroy refuse while present (#5238)
+  retiredNameGenerations?: Record<string, number>; // v13+: logical id -> generation at exit
+  pendingMovesOut?: PendingMoveOut[]; // no bump: unfinished `cdkd refactor` move out (ids); deploy/destroy refuse (#5212)
+  terminationProtection?: true; // no bump: written from synth (root only); destroy / state destroy refuse (#5238)
   nestedSsmNamesChecked?: true; // no bump: children checked for a pre-#6272 SSM name (#6282)
-  signalReceiverStackId?: string; // no bump: the CFn signal receiver's StackId; AWS::StackId resolves to it; destroy deletes it (#6705)
+  nestedStackTags?: Record<string, Record<string, string>>; // no bump: row -> child's applied stack tags (#6871)
+  signalReceiverStackId?: string; // no bump: CFn signal receiver's StackId, AWS::StackId's value; destroy deletes it (#6705)
   lastModified: number;
 }
 
-// sourceRegion is load-bearing (the producer's state key); REDACTED fields may hold a {{resolve:}} expression a MATCH must handle
+// sourceRegion is load-bearing (the producer's state key); REDACTED fields may hold a {{resolve:}} a MATCH must handle
 interface StateImportEntry { sourceStack: string; sourceRegion: string; exportName: string /* REDACTED */ }
 interface StateOutputReadEntry { sourceStack: string /* REDACTED */; sourceRegion: string; outputName: string /* Outputs.<Name>, NOT Export.Name; REDACTED */ }
 

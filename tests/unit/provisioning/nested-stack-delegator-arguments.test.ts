@@ -95,7 +95,7 @@ const DELEGATORS: ReadonlyArray<readonly [string, string, string, number]> = [
   ['revertFromChildJournal', 'create-update', 'revertFromChildJournal', 3],
   ['delete', 'delete', 'deleteImpl', 5],
   ['getAttribute', 'outputs', 'getAttribute', 3],
-  ['runChildDeploy', 'child-deploy', 'runChildDeploy', 7],
+  ['runChildDeploy', 'child-deploy', 'runChildDeploy', 8],
   ['readChildOutputsAsAttributes', 'outputs', 'readChildOutputsAsAttributes', 3],
   ['requireContext', 'shared', 'requireContext', 0],
   ['requireDeployContext', 'shared', 'requireDeployContext', 2],

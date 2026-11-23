@@ -206,6 +206,8 @@ export async function provisionUpdate(
   const mayTakeNoChangeSkip =
     unchangedApartFromHeal &&
     change.nestedChildHeal !== true &&
+    // go-to-k/cdkd#6871: nor one updated so its child applies changed stack tags.
+    change.nestedStackTagsChanged !== true &&
     !(change.providerReplacement !== undefined && change.propertyChanges?.length === 0);
   // ...unless it reads a redacted value all the same (the check's prediction
   // missed): sending it would take the #2274 refusal below, failing a deploy

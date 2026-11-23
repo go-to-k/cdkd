@@ -152,6 +152,14 @@ export interface DeployEngineOptions {
    */
   terminationProtection?: boolean;
   /**
+   * This stack's effective stack tags (go-to-k/cdkd#6871): the root stack's
+   * `StackProps.tags`, or for a nested child its parent's merged with the
+   * parent row's own `Tags`. Merged into every taggable resource before the
+   * diff (`applyStackTagsToTemplate`). Always overwritten for a child, never
+   * inherited as is. Absent or empty: nothing is merged and no lookup runs.
+   */
+  stackTags?: Readonly<Record<string, string>>;
+  /**
    * Every stack this `cdkd deploy` run deploys, as `inRunStackKey` keys
    * (go-to-k/cdkd#6088). A consumer in this set is exempt from the in-use
    * export refusal: it deploys in the same run, after its producer when it

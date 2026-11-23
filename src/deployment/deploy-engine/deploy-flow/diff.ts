@@ -1,3 +1,4 @@
+import { settleStackTagChildRuns } from '../../nested-stack-tags.js';
 import { freshNoEchoParametersWithDeclared, noEchoDiffComparison } from '../noecho.js';
 import { diffLogMasker, redactParametersForDiff } from '../masking.js';
 import { makeCanonicalizePropertiesFn } from '../../../provisioning/canonicalize-properties.js';
@@ -196,5 +197,15 @@ export async function calculateDeployDiff(
     // go-to-k/cdkd#6437: an `AutoScalingReplacingUpdate` replaces at plan time.
     engine.options.updatePolicy === true
   );
-  return { diffResolverContext, maskedInputs, changes };
+  // go-to-k/cdkd#6871: a row whose child's stack tags changed updates so the
+  // child's engine runs (`cdkd diff` marks the same rows).
+  const expectedChildTags = await settleStackTagChildRuns({
+    changes,
+    template: effectiveTemplate,
+    stackTags: engine.options.stackTags,
+    state: currentState,
+    resolve: diffResolveFn,
+    secrets: diffResolverContext.recordedSecretValues,
+  });
+  return { diffResolverContext, maskedInputs, changes, expectedChildTags };
 }

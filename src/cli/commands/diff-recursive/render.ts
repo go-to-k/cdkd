@@ -303,6 +303,9 @@ export function renderChangeLines(
             '      - [nested stack deployed to re-spell an SSM parameter name; go-to-k/cdkd#6282]'
           );
         }
+        if (change.nestedStackTagsChanged === true) {
+          logFn('      - [nested stack deployed to apply its changed stack tags]');
+        }
         break;
       }
       case 'DELETE':

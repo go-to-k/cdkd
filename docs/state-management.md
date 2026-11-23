@@ -271,6 +271,7 @@ resource, keyed by its logical ID from the template.
 | `stackInstanceId` | The id of the stack's [current lifetime](state-management-schema-versions.md#stackinstanceid-the-lifetime-of-a-stack); absent on a stack created before the field existed |
 | `retiredNameGenerations` | For each logical ID whose resource left the stack, the [name generation](state-management-schema-versions.md#name-generations-a-new-name-for-each-replacement) it left at; only on a stack with a `stackInstanceId` |
 | `nestedSsmNamesChecked` | `true` once a deploy has checked the stack's nested stacks for an SSM parameter name an older cdkd recorded with a leading `/`, and fixed each one; after that, deploys skip the check |
+| `nestedStackTags` | For each nested stack, the [stack tags](cli-deploy.md#stack-tags) its resources were last deployed with; absent when no nested stack has any |
 | `lastModified` | Time of the last write, in Unix milliseconds |
 
 Four of these fields change what a command does:
@@ -303,6 +304,10 @@ Four of these fields change what a command does:
 
 `nestedSsmNamesChecked` changes no command's outcome: it only tells a deploy
 it can skip reading the nested stacks' records for that one-time check.
+`nestedStackTags` only decides when a deploy updates a nested stack whose
+template did not change: one whose stack tags differ from the recorded ones
+is updated, so its resources get the new tags. A record without the field
+updates each tagged nested stack once.
 
 An `outputs` value is not always a string. Where CloudFormation defines an
 attribute as a list, such as a Route 53 hosted zone's `NameServers`, the

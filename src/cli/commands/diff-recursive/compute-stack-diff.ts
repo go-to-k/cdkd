@@ -1,3 +1,4 @@
+import { settleStackTagChildRuns } from '../../../deployment/nested-stack-tags.js';
 import { stripControlChars, stripForDisplay } from '../../../utils/regexp.js';
 import {
   findUpdatePolicyReplacementRefusals,
@@ -523,11 +524,7 @@ export async function computeStackDiff(
     // `Fn::If`; an unknown one masks the whole leaf.
     noEchoComparisonForTemplate(
       effectiveTemplate,
-      conditions === undefined
-        ? undefined
-        : Object.fromEntries(
-            Object.entries(conditions).filter(([name]) => !stillUnknown.includes(name))
-          ),
+      namingConditions,
       mergedParameters,
       stateForDiff.resources,
       new Set([region, stackName]),
@@ -552,6 +549,15 @@ export async function computeStackDiff(
     // go-to-k/cdkd#6437: the deploy's diff takes the same flag.
     options.updatePolicy === true
   );
+  // go-to-k/cdkd#6871: the rows the deploy updates for their child's tags.
+  const childStackTags = await settleStackTagChildRuns({
+    changes,
+    template: effectiveTemplate,
+    stackTags: options.stackTags,
+    state: stateForDiff,
+    resolve: resolveFn,
+    secrets: diffSecrets,
+  });
   // go-to-k/cdkd#6146: a property whose recorded NoEcho value MACs prove the
   // value moved is a change, as the deploy sends it. No KMS call unless a
   // record carries MACs; none in a nested child.
@@ -952,6 +958,7 @@ export async function computeStackDiff(
 
   return {
     changes: shownChanges,
+    childStackTags,
     securityDiff: () =>
       diffSecurity({
         stackName,
@@ -976,12 +983,7 @@ export async function computeStackDiff(
     namingSecretsFor: noEchoJudge,
     resolvedParameters: mergedParameters,
     conditions,
-    knownConditions:
-      conditions === undefined
-        ? undefined
-        : Object.fromEntries(
-            Object.entries(conditions).filter(([name]) => !stillUnknown.includes(name))
-          ),
+    knownConditions,
     trust: {
       parameters: trustedParameters,
       conditions: trustedConditions,
