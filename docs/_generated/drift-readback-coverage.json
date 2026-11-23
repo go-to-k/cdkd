@@ -3,8 +3,8 @@
     "types": 147,
     "noReadback": 2,
     "properties": 1565,
-    "read": 1414,
-    "unknown": 128,
+    "read": 1424,
+    "unknown": 118,
     "baseline": 23,
     "gap": 0,
     "outsideSchema": 12
@@ -1846,19 +1846,19 @@
       "properties": [
         {
           "property": "CopyTags",
-          "status": "unknown"
+          "status": "read"
         },
         {
           "property": "CreateInterval",
-          "status": "unknown"
+          "status": "read"
         },
         {
           "property": "CrossRegionCopyTargets",
-          "status": "unknown"
+          "status": "read"
         },
         {
           "property": "DefaultPolicy",
-          "status": "unknown"
+          "status": "read"
         },
         {
           "property": "Description",
@@ -1866,7 +1866,7 @@
         },
         {
           "property": "Exclusions",
-          "status": "unknown"
+          "status": "read"
         },
         {
           "property": "ExecutionRoleArn",
@@ -1874,15 +1874,15 @@
         },
         {
           "property": "ExtendDeletion",
-          "status": "unknown"
+          "status": "read"
         },
         {
           "property": "PolicyDetails",
-          "status": "unknown"
+          "status": "read"
         },
         {
           "property": "RetainInterval",
-          "status": "unknown"
+          "status": "read"
         },
         {
           "property": "State",
@@ -3692,7 +3692,7 @@
         },
         {
           "property": "AutoTerminationPolicy",
-          "status": "unknown"
+          "status": "read"
         },
         {
           "property": "BootstrapActions",
@@ -3740,7 +3740,7 @@
         },
         {
           "property": "ManagedScalingPolicy",
-          "status": "unknown"
+          "status": "read"
         },
         {
           "property": "MonitoringConfiguration",

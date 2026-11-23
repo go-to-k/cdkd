@@ -230,6 +230,13 @@ export async function glueReadCurrentState(
  * readback for it (and fabricating a placeholder would itself fire false
  * drift). Declaring it here keeps the drift comparator from false-positiving
  * on a state-recorded `OpenTableFormatInput` that the readback never surfaces.
+ * Re-measured for go-to-k/cdkd#6854 (us-east-1, 2026-11-23): an Iceberg table
+ * created with `IcebergInput: { MetadataOperation: CREATE, Version: '2' }`
+ * reads back from `GetTable` with only `Parameters.table_type: ICEBERG` and a
+ * `metadata_location` S3 key, and no `IcebergTableMetadata`; the format
+ * version lives only in that S3 metadata file. Nothing cdkd sends on update
+ * can change it either, so the skip hides no change `drift --revert` could
+ * restore.
  *
  * `AWS::Glue::Database` declares `DatabaseInput.CreateTableDefaultPermissions`
  * PER RESOURCE (the issue #1602 seam), and only for a database whose template

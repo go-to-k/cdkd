@@ -58,6 +58,65 @@ import {
 } from './ambiguous-create.js';
 import { orphanCommandRegionArg, reportPossibleOrphans } from './orphan-report.js';
 import { safeMsg } from '../../utils/display-safe.js';
+import {
+  filledDefaultsFrom,
+  projectDeclaredDriftPair,
+  undeclaredDriftKeys,
+} from '../drift-declared-projection.js';
+
+/**
+ * A default policy's configuration fields: top-level in the template and in
+ * `CreateLifecyclePolicy` / `UpdateLifecyclePolicy`, inside `PolicyDetails`
+ * in `GetLifecyclePolicy` (go-to-k/cdkd#6854).
+ */
+const DEFAULT_POLICY_SHORTHAND_KEYS = [
+  'CreateInterval',
+  'RetainInterval',
+  'CopyTags',
+  'ExtendDeletion',
+  'CrossRegionCopyTargets',
+  'Exclusions',
+] as const;
+
+/**
+ * The members DLM fills into `PolicyDetails` (and a default policy's
+ * shorthand fields) when the template omits them, each with the values it
+ * fills (go-to-k/cdkd#6854). Only an undeclared member holding one of these is
+ * left out of the comparison; any other undeclared member (a schedule's
+ * `FastRestoreRule` / `ShareRules` / `CrossRegionCopyRules` added out of band,
+ * which the next update's whole `PolicyDetails` would wipe) is reported.
+ *
+ * Measured us-east-1, 2026-11-23: a custom policy gains `ResourceLocations:
+ * [CLOUD]`, `PolicyLanguage: STANDARD`, a schedule's `CopyTags: false`, a
+ * create rule's `Location: CLOUD` and a count retain rule's `Interval: 0`; a
+ * default policy gains `PolicyType`, `PolicyLanguage: SIMPLIFIED`,
+ * `ResourceType` (its `DefaultPolicy`, which cannot change in place) and an
+ * exclusion's empty `ExcludeVolumeTypes` / `ExcludeTags`. The default policy's
+ * remaining fields take DLM's documented defaults (`CreateInterval` 1,
+ * `RetainInterval` 7, `CopyTags` / `ExtendDeletion` / `ExcludeBootVolumes`
+ * false): a wrong entry reports drift, it never hides a change.
+ */
+const DLM_FILLED_DEFAULTS = filledDefaultsFrom({
+  ResourceLocations: [['CLOUD']],
+  PolicyLanguage: ['STANDARD', 'SIMPLIFIED'],
+  PolicyType: ['EBS_SNAPSHOT_MANAGEMENT'],
+  ResourceType: ['VOLUME', 'INSTANCE'],
+  CopyTags: [false],
+  Location: ['CLOUD'],
+  Interval: [0],
+  ExcludeVolumeTypes: [[]],
+  ExcludeTags: [[]],
+  CreateInterval: [1],
+  RetainInterval: [7],
+  ExtendDeletion: [false],
+  ExcludeBootVolumes: [false],
+});
+
+/** The configuration keys drift compares as declared only (go-to-k/cdkd#6854). */
+const DLM_CONFIGURATION_KEYS: readonly string[] = [
+  'PolicyDetails',
+  ...DEFAULT_POLICY_SHORTHAND_KEYS,
+];
 
 /**
  * Issue #5546: the properties `UpdateLifecyclePolicy` is not sent once the
@@ -539,6 +598,21 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
       );
     }
 
+    // `UpdateLifecyclePolicy` takes a default policy's fields in the request
+    // body or in `PolicyDetails`, not both (go-to-k/cdkd#6854): refuse a bag
+    // holding both before any call rather than send conflicting values.
+    const shorthandSent = DEFAULT_POLICY_SHORTHAND_KEYS.filter((key) => properties[key] != null);
+    if (properties['PolicyDetails'] != null && shorthandSent.length > 0) {
+      throw new ProvisioningError(
+        `Failed to update DLM Lifecycle Policy ${logicalId}: PolicyDetails and ` +
+          `${shorthandSent.join(', ')} are both set; DLM takes a default policy's ` +
+          `fields either at the top level or inside PolicyDetails, not both`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+
     this.logger.debug(`Updating DLM Lifecycle Policy ${logicalId} (${physicalId})`);
 
     try {
@@ -735,25 +809,32 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
 
   /**
    * Drift read-back. Surfaces `Description`, `State`, `ExecutionRoleArn`,
-   * and `Tags` (DLM tag map -> CFn list via `normalizeAwsTagsToCfn`).
+   * and `Tags` (DLM tag map -> CFn list via `normalizeAwsTagsToCfn`), plus
+   * the policy configuration from the same `GetLifecyclePolicy` answer
+   * (go-to-k/cdkd#6854): a custom policy's `PolicyDetails`, and a default
+   * policy's shorthand fields (`CreateInterval` / `RetainInterval` /
+   * `CopyTags` / `ExtendDeletion` / `CrossRegionCopyTargets` / `Exclusions`),
+   * which DLM returns inside `PolicyDetails` rather than at the top level:
+   * lifted to the top level unless the record declares `PolicyDetails`, one
+   * form only (see below).
    *
-   * `PolicyDetails` is intentionally NOT surfaced (see
-   * `getDriftUnknownPaths`): the service normalizes the stored details —
-   * filling `PolicyType` / `ResourceTypes` / per-schedule defaults the
-   * template omitted — and the drift comparator's positional array equality
-   * would flag those AWS-added defaults as phantom drift on every clean run.
-   * The default-policy shorthand fields (`CreateInterval` / `RetainInterval`
-   * / `CopyTags` / `ExtendDeletion` / `CrossRegionCopyTargets` /
-   * `Exclusions`) are folded into the normalized `PolicyDetails` by the
-   * service (GetLifecyclePolicy does not return them at the top level), so
-   * they are excluded for the same reason.
+   * DLM returns what was sent verbatim, in the order sent (schedules, target
+   * tags, times), plus members the template omitted filled with defaults
+   * (`ResourceLocations`, `PolicyLanguage`, a schedule's `CopyTags`, a
+   * create rule's `Location`, a retain rule's `Interval: 0`, an exclusion's
+   * empty lists; measured us-east-1, 2026-11-23). `canonicalizeDriftPair`
+   * projects both sides onto the template's declaration, dropping an
+   * undeclared member only where it holds a filled default
+   * (`DLM_FILLED_DEFAULTS`), and an undeclared top-level key stays skipped
+   * (`getDriftUnknownPaths`).
    *
    * Returns `RESOURCE_NOT_FOUND` when the policy is gone (ResourceNotFoundException).
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
-    _resourceType: string
+    _resourceType: string,
+    properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     try {
       const response = await this.getClient().send(
@@ -762,12 +843,34 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
       const policy = response.Policy;
       if (!policy) return undefined;
 
+      const details = policy.PolicyDetails as Record<string, unknown> | undefined;
+      // A default policy's template carries its fields either at the top
+      // level or inside `PolicyDetails`, and DLM takes one form per request,
+      // never both. The readback emits the form the record declares (the
+      // top-level one when it declares no `PolicyDetails`), so a revert
+      // overlaid on it sends one form. `DefaultPolicy` is the template's
+      // `VOLUME` / `INSTANCE` (DLM's `ResourceType`), so `update()`'s
+      // in-place refusal sees the same value on a revert's previous side.
+      const configuration: Record<string, unknown> = {};
+      const isDefault = details !== undefined && policy.DefaultPolicy === true;
+      if (details !== undefined && (!isDefault || properties?.['PolicyDetails'] != null)) {
+        configuration['PolicyDetails'] = details;
+      } else if (isDefault) {
+        for (const key of DEFAULT_POLICY_SHORTHAND_KEYS) {
+          if (details[key] !== undefined) configuration[key] = details[key];
+        }
+      }
+      if (isDefault && typeof details['ResourceType'] === 'string') {
+        configuration['DefaultPolicy'] = details['ResourceType'];
+      }
+
       return {
         ...(policy.Description !== undefined && { Description: policy.Description }),
         ...(policy.State !== undefined && { State: policy.State }),
         ...(policy.ExecutionRoleArn !== undefined && {
           ExecutionRoleArn: policy.ExecutionRoleArn,
         }),
+        ...configuration,
         Tags: normalizeAwsTagsToCfn(policy.Tags),
       };
     } catch (error) {
@@ -777,20 +880,53 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
   }
 
   /**
-   * State property paths the provider deliberately does not read back from
-   * AWS — see `readCurrentState` for the rationale.
+   * Paths the drift comparison skips. `DefaultPolicy` always: it cannot
+   * change in place (`update()` refuses a change), and DLM reports it as a
+   * boolean beside `PolicyDetails.ResourceType`, not in the template's
+   * spelling. The policy configuration keys (go-to-k/cdkd#6854) only when the
+   * template does not declare them, or when no recorded properties are passed
+   * (the type-level answer): DLM fills the undeclared ones with defaults, so
+   * they have no template value to compare. A declared one is compared,
+   * projected onto its declaration (`canonicalizeDriftPair`).
    */
-  getDriftUnknownPaths(_resourceType: string): string[] {
-    return [
-      'PolicyDetails',
-      'CreateInterval',
-      'RetainInterval',
-      'CopyTags',
-      'ExtendDeletion',
-      'CrossRegionCopyTargets',
-      'Exclusions',
-      'DefaultPolicy',
-    ];
+  getDriftUnknownPaths(_resourceType: string, properties?: Record<string, unknown>): string[] {
+    return [...undeclaredDriftKeys(DLM_CONFIGURATION_KEYS, properties), 'DefaultPolicy'];
+  }
+
+  /**
+   * go-to-k/cdkd#6854: each declared configuration key compared as its
+   * declared members only (see {@link projectDeclaredDriftPair}). A baseline
+   * captured before the readback emitted these keys takes the declared value.
+   */
+  canonicalizeDriftPair(
+    _resourceType: string,
+    baseline: Record<string, unknown>,
+    aws: Record<string, unknown>,
+    properties?: Record<string, unknown>
+  ): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }> {
+    const pair = projectDeclaredDriftPair(
+      DLM_CONFIGURATION_KEYS,
+      baseline,
+      aws,
+      properties,
+      DLM_FILLED_DEFAULTS
+    );
+    // A baseline captured before the readback emitted `DefaultPolicy` lacks
+    // it, while the readback (a revert's previous side) now holds it: give it
+    // the recorded value, or `update()` refuses the revert as a change of
+    // `DefaultPolicy`. Skipped by the comparison either way.
+    const declaredDefault = properties?.['DefaultPolicy'];
+    if (
+      declaredDefault !== undefined &&
+      declaredDefault !== null &&
+      !Object.hasOwn(pair.baseline, 'DefaultPolicy')
+    ) {
+      return Promise.resolve({
+        baseline: { ...pair.baseline, DefaultPolicy: declaredDefault },
+        aws: pair.aws,
+      });
+    }
+    return Promise.resolve(pair);
   }
 
   /**

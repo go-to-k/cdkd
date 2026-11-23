@@ -31,6 +31,7 @@ import type {
   ResourceIdentityVerdict,
 } from '../../types/resource.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { projectDeclaredDriftPair, undeclaredDriftKeys } from '../drift-declared-projection.js';
 import {
   DEFAULT_MAX_WAIT_MS,
   DEFAULT_POLL_INTERVAL_MS,
@@ -75,6 +76,7 @@ import {
   importImpl,
   describeClusterOrUndefined,
   readCurrentState,
+  readUnsettled,
   listInstanceGroups,
   listInstanceFleets,
   reverseInstancesToCfn,
@@ -85,6 +87,12 @@ export {
   resetEMRClusterCreateRetryStateForTests,
   emrClusterProtectionSite,
 } from './emr-cluster/shared.js';
+
+/** The policies drift reads and compares when declared (go-to-k/cdkd#6854). */
+const EMR_DECLARED_POLICY_KEYS: readonly string[] = [
+  'AutoTerminationPolicy',
+  'ManagedScalingPolicy',
+];
 
 /**
  * SDK Provider for `AWS::EMR::Cluster` (EMR on EC2).
@@ -442,9 +450,43 @@ export class EMRClusterProvider implements ResourceProvider {
   readCurrentState(
     physicalId: string,
     _logicalId: string,
-    _resourceType: string
+    _resourceType: string,
+    properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    return readCurrentState.call(this, physicalId, _logicalId, _resourceType);
+    return readCurrentState.call(this, physicalId, _logicalId, _resourceType, properties);
+  }
+
+  /** See `emr-cluster/read-state.ts` `readUnsettled` (go-to-k/cdkd#6854). */
+  readUnsettled(
+    physicalId: string,
+    logicalId: string,
+    resourceType: string,
+    names: ReadonlySet<string>,
+    recordedProperties?: Record<string, unknown>
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    return readUnsettled.call(this, physicalId, logicalId, resourceType, names, recordedProperties);
+  }
+
+  /**
+   * go-to-k/cdkd#6854: a declared `AutoTerminationPolicy` /
+   * `ManagedScalingPolicy` compared as its declared members only (see
+   * {@link projectDeclaredDriftPair}). EMR fills no member, so every
+   * undeclared member the readback holds (one added out of band) is compared.
+   * A baseline captured before the readback emitted these keys, or by a read
+   * whose `Get*Policy` failed, takes the declared value (what the deploy
+   * sent); a readback whose `Get*Policy` failed takes the baseline's, so the
+   * key is not compared on that read.
+   */
+  canonicalizeDriftPair(
+    _resourceType: string,
+    baseline: Record<string, unknown>,
+    aws: Record<string, unknown>,
+    properties?: Record<string, unknown>
+  ): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }> {
+    return Promise.resolve(
+      // A removed policy reads as `{}`, so a missing key is an unread one.
+      projectDeclaredDriftPair(EMR_DECLARED_POLICY_KEYS, baseline, aws, properties, undefined, true)
+    );
   }
 
   /**
@@ -470,15 +512,18 @@ export class EMRClusterProvider implements ResourceProvider {
    * so an element sub-field cannot be path-targeted); Master/Core groups and
    * fleets are single objects, so their lossy sub-fields are targeted directly.
    */
-  getDriftUnknownPaths(_resourceType: string): string[] {
+  getDriftUnknownPaths(_resourceType: string, properties?: Record<string, unknown>): string[] {
     return [
+      // go-to-k/cdkd#6854: read (`Get*Policy`) and compared when the template
+      // declares them; skipped when it does not, or when no recorded
+      // properties are passed (the type-level answer).
+      ...undeclaredDriftKeys(EMR_DECLARED_POLICY_KEYS, properties),
       'AdditionalInfo',
       // Returned by readCurrentState for a richer observedProperties baseline,
       // but skipped by the comparator: AWS augments each entry with a resolved
       // `Version`/`AdditionalInfo` the template usually omits, which would fire
       // false-positive drift on the `properties`-fallback path.
       'Applications',
-      'AutoTerminationPolicy',
       'BootstrapActions',
       'Configurations',
       // Top-level Instances fields readCurrentState cannot reconstruct.
@@ -504,7 +549,6 @@ export class EMRClusterProvider implements ResourceProvider {
       'Instances.TaskInstanceFleets',
       'Instances.TaskInstanceGroups',
       'KerberosAttributes',
-      'ManagedScalingPolicy',
       // Create-only, and no EMR API changes either after RunJobFlow, so
       // neither can drift; and AWS may fill members the template omits
       // (go-to-k/cdkd#5824).

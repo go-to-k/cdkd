@@ -547,6 +547,46 @@ if [ "${IDLE_P1}" != "3600" ]; then
 fi
 echo "    baseline StepConcurrencyLevel=1, AutoTerminationPolicy IdleTimeout=3600"
 
+# --- Phase 1a: declared AutoTerminationPolicy drift (issue #6854) ---------
+# AutoTerminationPolicy used to be skipped whole by drift. It is now read
+# (GetAutoTerminationPolicy) and compared when declared. Only this cluster's
+# AutoTerminationPolicy paths are asserted (the stack's other drift is not
+# this arm's subject): none before, one after an out-of-band
+# PutAutoTerminationPolicy, none again once it is put back.
+atp_drift_paths() {
+  local out err rc=0
+  err="$(mktemp)"
+  out="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json 2>"${err}")" || rc=$?
+  if [ "${rc}" -ne 0 ] && [ "${rc}" -ne 1 ]; then
+    echo "FAIL [6854]: cdkd drift exited ${rc}" >&2
+    cat "${err}" >&2
+    return 1
+  fi
+  printf '%s' "${out}" | jq -c --arg id "$(cluster_logical_id)" \
+    '[.[].drifted[] | select(.logicalId == $id) | .changes[].path | select(test("^AutoTerminationPolicy"))]'
+}
+echo "==> Phase 1a: out-of-band AutoTerminationPolicy change is drift (#6854)"
+ATP_BEFORE="$(atp_drift_paths)" || exit 1
+if [ "${ATP_BEFORE}" != "[]" ]; then
+  echo "FAIL [6854]: AutoTerminationPolicy reported as drift on the freshly-deployed cluster: ${ATP_BEFORE}" >&2
+  exit 1
+fi
+aws emr put-auto-termination-policy --cluster-id "${CID_P1}" --region "${REGION}" \
+  --auto-termination-policy IdleTimeout=5400
+ATP_AFTER="$(atp_drift_paths)" || exit 1
+if [ "${ATP_AFTER}" != '["AutoTerminationPolicy.IdleTimeout"]' ]; then
+  echo "FAIL [6854]: expected drift at AutoTerminationPolicy.IdleTimeout after the out-of-band change, got ${ATP_AFTER}" >&2
+  exit 1
+fi
+aws emr put-auto-termination-policy --cluster-id "${CID_P1}" --region "${REGION}" \
+  --auto-termination-policy IdleTimeout=3600
+ATP_RESTORED="$(atp_drift_paths)" || exit 1
+if [ "${ATP_RESTORED}" != "[]" ]; then
+  echo "FAIL [6854]: AutoTerminationPolicy still reported after restoring IdleTimeout 3600: ${ATP_RESTORED}" >&2
+  exit 1
+fi
+echo "    out-of-band IdleTimeout 5400 reported at AutoTerminationPolicy.IdleTimeout; clean once restored"
+
 # Fn::GetAtt MasterPublicDNS output must match the AWS-side value.
 if [ -z "${DNS_OUT}" ] || [ "${DNS_OUT}" != "${DNS_AWS}" ]; then
   echo "FAIL: MasterPublicDns output '${DNS_OUT}' does not match AWS MasterPublicDnsName '${DNS_AWS}'" >&2

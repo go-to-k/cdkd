@@ -516,15 +516,15 @@ describe('DLMLifecyclePolicyProvider readCurrentState / drift', () => {
 
     const state = await provider.readCurrentState(POLICY_ID, 'MyPolicy', RESOURCE_TYPE);
 
+    // go-to-k/cdkd#6854: PolicyDetails is surfaced from the same answer;
+    // drift compares only its declared members (canonicalizeDriftPair).
     expect(state).toEqual({
       Description: 'daily snapshots',
       State: 'ENABLED',
       ExecutionRoleArn: 'arn:aws:iam::123456789012:role/dlm-role',
+      PolicyDetails: POLICY_DETAILS,
       Tags: [{ Key: 'env', Value: 'test' }],
     });
-    // PolicyDetails is deliberately not surfaced — the service normalizes it
-    // and positional array comparison would fire phantom drift.
-    expect(state).not.toHaveProperty('PolicyDetails');
   });
 
   it('returns RESOURCE_NOT_FOUND when the policy is gone', async () => {
@@ -551,7 +551,7 @@ describe('DLMLifecyclePolicyProvider readCurrentState / drift', () => {
     );
   });
 
-  it('declares the non-read-back paths as drift-unknown', () => {
+  it('declares the configuration paths drift-unknown at the type level (no recorded properties)', () => {
     const paths = provider.getDriftUnknownPaths(RESOURCE_TYPE);
     expect(paths).toContain('PolicyDetails');
     expect(paths).toContain('CreateInterval');
