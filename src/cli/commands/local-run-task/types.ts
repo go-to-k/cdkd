@@ -15,6 +15,7 @@ export interface LocalRunTaskOptions {
   caBundle?: string;
   roleArn?: string;
   context?: string[];
+  lookups?: boolean;
   cluster: string;
   envVars?: string;
   containerHost: string;

@@ -186,6 +186,7 @@ earlier S3 versions of that file; see
 | `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json` | S3 bucket that holds the state files. |
 | `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. |
 | `-c`, `--context <key=value...>` | — | Context values, repeatable. |
+| `--lookups`, `--no-lookups` | `cdk.json` `"lookups"`, then on | With `--no-lookups`, synthesis fails when the app needs a context lookup, instead of calling AWS. |
 | `--profile <profile>` | — | AWS profile. |
 | `--role-arn <arn>` | `CDKD_ROLE_ARN` | IAM role to assume for AWS API calls. |
 | `-y`, `--yes` | off | Accepted so scripts can pass it to every command. Scrub never prompts, so it changes nothing. |

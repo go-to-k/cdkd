@@ -79,6 +79,7 @@ export async function destroyCommand(
     purgeEvents?: boolean;
     verbose: boolean;
     context?: string[];
+    lookups?: boolean;
     allowUnsupportedTypes?: string[];
     resourceWarnAfter?: ResourceTimeoutOption;
     resourceTimeout?: ResourceTimeoutOption;

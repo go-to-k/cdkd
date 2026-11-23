@@ -88,6 +88,7 @@ synthesize.
 | `-a`, `--app <command>` | `CDKD_APP`, then `cdk.json` | The CDK app command, or a path to a synthesized assembly directory. |
 | `--output <path>` | `cdk.out` | Directory to synthesize into. |
 | `-c`, `--context <key=value...>` | | Context values. Repeatable. |
+| `--lookups`, `--no-lookups` | `cdk.json` `"lookups"`, then on | With `--no-lookups`, synthesis fails when the app needs a context lookup, instead of calling AWS. |
 
 Commands that read or write state also take:
 

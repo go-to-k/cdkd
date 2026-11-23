@@ -37,6 +37,7 @@ export interface ImportOptions {
   force: boolean;
   verbose: boolean;
   context?: string[];
+  lookups?: boolean;
   /**
    * Retire the named CloudFormation stack: inject `DeletionPolicy: Retain` +
    * `UpdateReplacePolicy: Retain` on every resource via UpdateStack, write cdkd state from the physical ids

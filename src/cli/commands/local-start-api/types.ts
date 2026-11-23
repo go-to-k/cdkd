@@ -49,6 +49,7 @@ export interface LocalStartApiOptions {
   caBundle?: string;
   roleArn?: string;
   context?: string[];
+  lookups?: boolean;
   /** Bind port (default 0 = auto-allocate). */
   port: string;
   /** Bind host (default 127.0.0.1). */

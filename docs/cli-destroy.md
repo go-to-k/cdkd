@@ -234,6 +234,7 @@ listing the bucket's prefixes.
 | `--profile <profile>` | — | AWS profile. |
 | `--role-arn <arn>` | `CDKD_ROLE_ARN` | IAM role to assume for AWS API calls. |
 | `-c`, `--context <key=value...>` | — | Context values, repeatable. |
+| `--lookups`, `--no-lookups` | `cdk.json` `"lookups"`, then on | With `--no-lookups`, synthesis fails when the app needs a context lookup, instead of calling AWS. |
 | `--verbose` | off | Verbose logging. |
 
 The two `--resource-*` flags share their syntax with `cdkd deploy`; see

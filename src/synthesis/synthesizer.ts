@@ -148,6 +148,14 @@ export interface SynthesisOptions {
    * (go-to-k/cdkd#5805).
    */
   failedLookupsCheckedByCaller?: boolean;
+
+  /**
+   * `--lookups` / `--no-lookups` (go-to-k/cdkd#6883). Unset falls back to the
+   * `lookups` key of cdk.json, then of ~/.cdk.json, then `true`, as in the AWS
+   * CDK CLI. Disabled, an app that reports missing context fails synthesis
+   * before any context-provider call, and cdk.context.json is not written.
+   */
+  lookups?: boolean;
 }
 
 /**
@@ -235,6 +243,8 @@ export class Synthesizer {
     const cdkJson = loadCdkJson();
     const cdkJsonContext = (cdkJson?.context as Record<string, unknown>) ?? {};
     const cliContext = (options.context as Record<string, unknown>) ?? {};
+    // The AWS CDK CLI's `canLookup`: CLI > cdk.json > ~/.cdk.json > true.
+    const lookups = !!(options.lookups ?? cdkJson?.lookups ?? userCdkJson?.lookups ?? true);
 
     // CDK CLI injects these context values by default for framework compatibility
     const cdkDefaults: Record<string, unknown> = {
@@ -328,6 +338,7 @@ export class Synthesizer {
       // that assembly.
       if (manifest.missing && manifest.missing.length > 0) {
         const missingKeys = new Set(manifest.missing.map((m) => m.key));
+        if (!lookups) throw lookupsDisabledError(missingKeys);
         if (!previousMissingKeys || !setsEqual(missingKeys, previousMissingKeys)) {
           previousMissingKeys = missingKeys;
           this.logger.debug(`Missing context: ${manifest.missing.length} value(s)`);
@@ -613,6 +624,18 @@ function setsEqual<T>(a: Set<T>, b: Set<T>): boolean {
     if (!b.has(item)) return false;
   }
   return true;
+}
+
+/**
+ * The `--no-lookups` refusal, worded as the AWS CDK CLI's
+ * `ContextLookupsDisabled`. Each key is sanitized SEPARATELY, as above.
+ */
+function lookupsDisabledError(missingKeys: ReadonlySet<string>): SynthesisError {
+  return new SynthesisError(
+    'Context lookups have been disabled. ' +
+      "Make sure all necessary context is already in 'cdk.context.json' by running 'cdkd synth' on a machine with sufficient AWS credentials and committing the result. " +
+      `Missing context keys: '${[...missingKeys].map((k) => displaySafe(k)).join(', ')}'`
+  );
 }
 
 /** A failed lookup's `$providerError` text, as `ContextProviderRegistry` stores it. */

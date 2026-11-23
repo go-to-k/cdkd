@@ -130,6 +130,60 @@ describe('Synthesizer', () => {
       expect(mockContextStoreSave).toHaveBeenCalledTimes(1);
     });
 
+    describe('--no-lookups (go-to-k/cdkd#6883)', () => {
+      const disabled =
+        "Context lookups have been disabled. Make sure all necessary context is already in 'cdk.context.json'";
+
+      it('refuses missing context without a lookup or a cdk.context.json write', async () => {
+        mockReadManifest.mockReturnValue(manifestMissing([ssmKey, 'b']));
+
+        await expect(
+          synthesizer.synthesize({ app: 'node app.ts', lookups: false })
+        ).rejects.toThrow(disabled);
+        await expect(
+          synthesizer.synthesize({ app: 'node app.ts', lookups: false })
+        ).rejects.toThrow(`Missing context keys: '${ssmKey}, b'`);
+        expect(mockResolve).not.toHaveBeenCalled();
+        expect(mockContextStoreSave).not.toHaveBeenCalled();
+      });
+
+      it('passes an app that reports nothing missing', async () => {
+        mockAssemblyStacks.mockReturnValue([{ stackName: 'App' }]);
+
+        const result = await synthesizer.synthesize({ app: 'node app.ts', lookups: false });
+
+        expect(result.stacks).toEqual([{ stackName: 'App' }]);
+      });
+
+      it('reads cdk.json "lookups": false when the flag is unset', async () => {
+        mockReadManifest.mockReturnValue(manifestMissing([ssmKey]));
+        mockLoadCdkJson.mockReturnValue({ lookups: false });
+
+        await expect(synthesizer.synthesize({ app: 'node app.ts' })).rejects.toThrow(disabled);
+        expect(mockResolve).not.toHaveBeenCalled();
+      });
+
+      it('reads ~/.cdk.json "lookups": false below cdk.json', async () => {
+        mockReadManifest.mockReturnValue(manifestMissing([ssmKey]));
+        mockLoadUserCdkJson.mockReturnValue({ lookups: false });
+
+        await expect(synthesizer.synthesize({ app: 'node app.ts' })).rejects.toThrow(disabled);
+
+        mockLoadCdkJson.mockReturnValue({ lookups: true });
+        await synthesizer.synthesize({ app: 'node app.ts' });
+        expect(mockResolve).toHaveBeenCalledTimes(1);
+      });
+
+      it('lets --lookups override cdk.json "lookups": false', async () => {
+        mockReadManifest.mockReturnValue(manifestMissing([ssmKey]));
+        mockLoadCdkJson.mockReturnValue({ lookups: false });
+
+        await synthesizer.synthesize({ app: 'node app.ts', lookups: true });
+
+        expect(mockResolve).toHaveBeenCalledTimes(1);
+      });
+    });
+
     it('keeps resolving while the missing keys change', async () => {
       mockReadManifest
         .mockReturnValueOnce(manifestMissing(['a']))

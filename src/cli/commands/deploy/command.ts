@@ -302,6 +302,7 @@ export async function deployCommand(
       ...(options.region && { region: options.region }),
       ...(options.profile && { profile: options.profile }),
       ...(Object.keys(context).length > 0 && { context }),
+      ...(options.lookups !== undefined && { lookups: options.lookups }),
       // stateBucket is set below once statePrepPromise resolves — only the
       // DEFERRED macro-expander (post-synth, for the > 51,200-byte template
       // upload path, Issue #463) consumes it, so synthesize() does not need it.

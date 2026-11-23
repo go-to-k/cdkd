@@ -25,6 +25,7 @@ export interface ExportOptions {
   yes: boolean;
   verbose: boolean;
   context?: string[];
+  lookups?: boolean;
   /**
    * Allow proceeding when the user passed CLI `-c key=value` overrides
    * that are not persisted to cdk.json / cdk.context.json. The default

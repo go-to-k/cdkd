@@ -42,6 +42,7 @@ which template reaches stdout and which stack cdkd checks for annotations.
 | `-a`, `--app <command>` | `CDKD_APP`, then `cdk.json` | The CDK app command, or a path to a synthesized assembly directory. |
 | `--output <path>` | `cdk.out` | Directory to synthesize into. |
 | `-c`, `--context <key=value...>` | | Context values. Repeatable. |
+| `--lookups`, `--no-lookups` | `cdk.json` `"lookups"`, then on | With `--no-lookups`, synthesis fails when the app needs a context lookup, instead of calling AWS. Use it in CI to check that `cdk.context.json` is complete. |
 | `--profile <profile>` | | AWS profile. |
 | `--role-arn <arn>` | `CDKD_ROLE_ARN` | Role to assume before any AWS call. |
 | `--verbose` | `false` | Debug-level logging. Also writes `<stackName>.template.json` into `--output` for each selected stack (`<stackName>.<region>.template.json` when two selected stacks share a physical name). |
@@ -125,7 +126,7 @@ the command reads the assembly and reports on it.
 `cdkd synth` deploys nothing, but it does call AWS:
 
 - Synthesis resolves the account through STS and runs the app's context
-  lookups.
+  lookups, unless `--no-lookups` is given.
 - A template that uses CloudFormation macros is expanded for real, because
   the output is the expanded template.
 

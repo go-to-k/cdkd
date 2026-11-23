@@ -32,6 +32,7 @@ export interface DeployCommandOptions {
   yes: boolean;
   verbose: boolean;
   context?: string[];
+  lookups?: boolean;
   allowUnsupportedTypes?: string[];
   preferSdkRoute?: string[];
   /** Deprecated alias for `preferSdkRoute` (issue go-to-k/cdkd#3000). */

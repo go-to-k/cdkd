@@ -195,6 +195,7 @@ interface OrphanOptions {
   dryRun: boolean;
   verbose: boolean;
   context?: string[];
+  lookups?: boolean;
 }
 
 /**
@@ -327,6 +328,7 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
       app: appCmd,
       output: options.output || 'cdk.out',
       ...(Object.keys(context).length > 0 && { context }),
+      ...(options.lookups !== undefined && { lookups: options.lookups }),
       // Threaded so the macro-expander has a real state bucket for
       // the > 51,200-byte template upload path (Issue #463).
       stateBucket,

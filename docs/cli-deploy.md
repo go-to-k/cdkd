@@ -132,7 +132,7 @@ these.
 
 | Flag | Description |
 | --- | --- |
-| `-a`, `--app`, `--output`, `-c`, `--context` | Where the CDK app is and how it is synthesized. |
+| `-a`, `--app`, `--output`, `-c`, `--context`, `--lookups`, `--no-lookups` | Where the CDK app is and how it is synthesized. |
 | `--state-bucket`, `--state-prefix` | Where state is stored. |
 | `--profile`, `--role-arn`, `-y`, `--yes`, `--verbose` | Shared by every command. |
 
