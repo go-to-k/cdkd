@@ -21,6 +21,7 @@ import type {
   UpdateContext,
   ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
@@ -402,6 +403,32 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
       return Promise.resolve({ baseline, aws });
     }
     return Promise.resolve({ baseline, aws: { ...aws, Triggers: baseline['Triggers'] } });
+  }
+
+  /**
+   * The unsettled-update read: `readCurrentState`, except that a read leaving
+   * `Triggers` out (its read failed) FAILS when `Triggers` is unsettled. The
+   * convergence would otherwise take the missing key as "AWS holds none",
+   * drop it from the previous side and then prove it settled, leaving the
+   * live triggers in place behind a record that no longer names them. The
+   * failure refuses the update before any write, as any unreadable resource.
+   */
+  async readUnsettled(
+    physicalId: string,
+    logicalId: string,
+    resourceType: string,
+    names: ReadonlySet<string>
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    const live = await this.readCurrentState(physicalId, logicalId, resourceType);
+    if (
+      names.has('Triggers') &&
+      live !== undefined &&
+      live !== RESOURCE_NOT_FOUND &&
+      !Object.hasOwn(live, 'Triggers')
+    ) {
+      throw new Error(`the Triggers of CodeCommit repository ${logicalId} could not be read`);
+    }
+    return live;
   }
 
   /** The same fold for the unsettled-update check's template-vs-live compare. */

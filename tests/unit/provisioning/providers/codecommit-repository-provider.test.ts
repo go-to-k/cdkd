@@ -78,6 +78,7 @@ import {
 } from '@aws-sdk/client-codecommit';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { ProvisioningError } from '../../../../src/utils/error-handler.js';
+import { settleUnsettledPrevious } from '../../../../src/deployment/unsettled-convergence.js';
 import { calculateResourceDrift } from '../../../../src/analyzer/drift-calculator.js';
 
 const REPO_ARN = 'arn:aws:codecommit:us-east-1:123456789012:my-repo';
@@ -1444,6 +1445,46 @@ describe('CodeCommitRepositoryProvider', () => {
         if (hint) expect(line).toContain(hint);
         else expect(line).not.toContain('allow ');
         warn.mockRestore();
+      });
+
+      it('the unsettled-update read refuses a read that left an unsettled Triggers out, and passes otherwise', async () => {
+        const type = 'AWS::CodeCommit::Repository';
+        const denied = () =>
+          mockSend
+            .mockResolvedValueOnce({ repositoryMetadata: metadata() })
+            .mockResolvedValueOnce({ tags: {} })
+            .mockRejectedValueOnce(Object.assign(new Error('x'), { name: 'AccessDeniedException' }));
+        denied();
+        await expect(provider.readUnsettled('my-repo', 'MyRepo', type, new Set(['Triggers']))).rejects.toThrow(
+          'could not be read'
+        );
+        denied();
+        const other = bagOf(await provider.readUnsettled('my-repo', 'MyRepo', type, new Set(['RepositoryDescription'])));
+        expect(other?.RepositoryDescription).toBeDefined();
+        mockSend
+          .mockResolvedValueOnce({ repositoryMetadata: metadata() })
+          .mockResolvedValueOnce({ tags: {} })
+          .mockResolvedValueOnce({ triggers: [] });
+        expect(bagOf(await provider.readUnsettled('my-repo', 'MyRepo', type, new Set(['Triggers'])))?.Triggers).toEqual([]);
+      });
+
+      it('end to end: a denied trigger read refuses the convergence of an unsettled Triggers before any write', async () => {
+        mockSend
+          .mockResolvedValueOnce({ repositoryMetadata: metadata() })
+          .mockResolvedValueOnce({ tags: {} })
+          .mockRejectedValueOnce(Object.assign(new Error('x'), { name: 'AccessDeniedException' }));
+        await expect(
+          settleUnsettledPrevious({
+            provider,
+            logicalId: 'MyRepo',
+            physicalId: 'my-repo',
+            resourceType: 'AWS::CodeCommit::Repository',
+            recordedProperties: {},
+            names: new Set(['Triggers']),
+            previous: { Triggers: [{ Name: 'n', DestinationArn: TOPIC, Branches: [], Events: ['all'] }] },
+          })
+        ).rejects.toThrow('left Triggers unsettled');
+        expect(mockSend.mock.calls.some((c) => c[0] instanceof PutRepositoryTriggersCommand)).toBe(false);
       });
 
       it('an unread Triggers is not compared: no phantom removal against a baseline holding triggers', async () => {
