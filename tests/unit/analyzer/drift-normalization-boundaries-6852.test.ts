@@ -37,6 +37,36 @@ const ARN_A = 'arn:aws:sns:us-east-1:123456789012:a';
 const ARN_B = 'arn:aws:sns:us-east-1:123456789012:b';
 const ARN_C = 'arn:aws:sns:us-east-1:123456789012:c';
 
+/** The CFn list segments on the ordered paths: each holds one element here. */
+const LIST_SEGMENTS = new Set([
+  'ContainerDefinitions',
+  'Containers',
+  'InitContainers',
+  'NodeRangeProperties',
+  'Steps',
+  'BootstrapActions',
+  'Applications',
+]);
+
+/** A bag holding `value` at dotted `path`, a list segment wrapping one element. */
+function bagAt(path: string, value: unknown): Bag {
+  const segments = path.split('.');
+  let node: unknown = value;
+  for (let i = segments.length - 1; i > 0; i--) {
+    node = { [segments[i]!]: node };
+    if (LIST_SEGMENTS.has(segments[i - 1]!)) node = [node];
+  }
+  return { [segments[0]!]: node };
+}
+
+const ORDERED_TYPES = [
+  'AWS::Lambda::Function',
+  'AWS::ECS::TaskDefinition',
+  'AWS::Batch::JobDefinition',
+  'AWS::EMR::Step',
+  'AWS::EMR::Cluster',
+];
+
 describe('tag lists ({Key,...}[]): a reorder is one value, any other change is not', () => {
   const tags = (...pairs: Array<[string, string]>) => ({
     Tags: pairs.map(([Key, Value]) => ({ Key, Value })),
@@ -75,13 +105,6 @@ describe('id / ARN lists: a set, except where the type acts on the order', () =>
 
   // A container's argument vector is passed to the process in list order.
   // Every declared path, so an entry deleted from the table goes red here.
-  const ORDERED_TYPES = [
-    'AWS::Lambda::Function',
-    'AWS::ECS::TaskDefinition',
-    'AWS::Batch::JobDefinition',
-    'AWS::EMR::Step',
-    'AWS::EMR::Cluster',
-  ];
   const EXPECTED_ORDERED_PATH_COUNT = 22;
   const ordered = ORDERED_TYPES.flatMap((type) =>
     orderSignificantIdArrayPaths(type).map((path) => [type, path] as const)
@@ -90,26 +113,7 @@ describe('id / ARN lists: a set, except where the type acts on the order', () =>
     expect(ordered).toHaveLength(EXPECTED_ORDERED_PATH_COUNT);
   });
   it.each(ordered)('%s %s: an out-of-band reorder of two ARN arguments is drift', (type, path) => {
-    const at = (list: string[]): Bag => {
-      // Build the bag along `path`; a segment that is a list in CFn holds one
-      // element.
-      const LISTS = new Set([
-        'ContainerDefinitions',
-        'Containers',
-        'InitContainers',
-        'NodeRangeProperties',
-        'Steps',
-        'BootstrapActions',
-        'Applications',
-      ]);
-      const segments = path.split('.');
-      let value: unknown = list;
-      for (let i = segments.length - 1; i > 0; i--) {
-        value = { [segments[i]!]: value };
-        if (LISTS.has(segments[i - 1]!)) value = [value];
-      }
-      return { [segments[0]!]: value };
-    };
+    const at = (list: string[]): Bag => bagAt(path, list);
     expect(same(at([ARN_A, ARN_B]), at([ARN_B, ARN_A]), { resourceType: type })).toBe(false);
     expect(same(at([ARN_A, ARN_B]), at([ARN_A, ARN_B]), { resourceType: type })).toBe(true);
   });
@@ -357,13 +361,16 @@ describe('diff valuesEqual: key order aside, strict', () => {
 });
 
 /**
- * Property-style: random JSON-shaped values and random mutations of them. For
- * every pair the comparator calls equal, an independent oracle — which knows
- * only the documented equivalences (an undefined key is an absent one; a tag
- * list and an id / ARN list are multisets outside the type's ordered paths) —
- * must call them equal too. A seeded generator keeps a failure reproducible.
+ * Property-style: random JSON-shaped values and random mutations of them, half
+ * of them carrying an ARN argument list at one of a type's order-significant
+ * paths. An independent oracle knows only the documented equivalences: an
+ * undefined key is an absent one; a tag list is a multiset; an id / ARN list is
+ * a multiset except at the type's ordered paths. Both directions must hold:
+ * "no drift" implies oracle-equal (no hidden difference), and oracle-equal
+ * implies "no drift" (no phantom drift). A seeded generator keeps a failure
+ * reproducible.
  */
-describe('property: "no drift" implies equality under the documented equivalences', () => {
+describe('property: "no drift" if and only if equal under the documented equivalences', () => {
   function rng(seed: number): () => number {
     let s = seed >>> 0;
     return () => {
@@ -375,14 +382,19 @@ describe('property: "no drift" implies equality under the documented equivalence
     };
   }
   const LEAVES = ['a', 'b', 'A', '', '1', 1, 0, true, false, null, ARN_A, ARN_B, 'sg-0abc123'];
+  const pick = <T>(r: () => number, list: readonly T[]): T => list[Math.floor(r() * list.length)]!;
+  function arnList(r: () => number): string[] {
+    const list = [ARN_A, ARN_B, ARN_C].slice(0, 1 + Math.floor(r() * 3));
+    return r() < 0.5 ? list.reverse() : list;
+  }
   function gen(r: () => number, depth: number): unknown {
     const k = r();
-    if (depth <= 0 || k < 0.4) return LEAVES[Math.floor(r() * LEAVES.length)];
+    if (depth <= 0 || k < 0.4) return pick(r, LEAVES);
     if (k < 0.55) {
       const n = 1 + Math.floor(r() * 3);
       return Array.from({ length: n }, (_, i) => ({ Key: `k${i}`, Value: gen(r, 0) }));
     }
-    if (k < 0.7) return [ARN_A, ARN_B, ARN_C].slice(0, 1 + Math.floor(r() * 3));
+    if (k < 0.7) return arnList(r);
     if (k < 0.85) return Array.from({ length: Math.floor(r() * 3) }, () => gen(r, depth - 1));
     const out: Bag = {};
     for (const key of ['X', 'Y', 'Z']) if (r() < 0.6) out[key] = gen(r, depth - 1);
@@ -393,28 +405,34 @@ describe('property: "no drift" implies equality under the documented equivalence
     if (Array.isArray(v)) {
       if (v.length > 1 && k < 0.3) return [...v].reverse();
       if (k < 0.5) return v.slice(1);
-      if (k < 0.7) return [...v, LEAVES[Math.floor(r() * LEAVES.length)]];
+      if (k < 0.7) return [...v, pick(r, LEAVES)];
       return v.map((el) => (r() < 0.5 ? mutate(r, el) : el));
     }
     if (v && typeof v === 'object') {
       const out: Bag = { ...(v as Bag) };
       const keys = Object.keys(out);
-      if (keys.length > 0 && k < 0.3) delete out[keys[Math.floor(r() * keys.length)]!];
-      else if (k < 0.45) out['W'] = LEAVES[Math.floor(r() * LEAVES.length)];
+      if (keys.length > 0 && k < 0.3) delete out[pick(r, keys)];
+      else if (k < 0.45) out['W'] = pick(r, LEAVES);
       else for (const key of keys) if (r() < 0.5) out[key] = mutate(r, out[key]);
       return out;
     }
-    return k < 0.5 ? v : LEAVES[Math.floor(r() * LEAVES.length)];
+    return k < 0.5 ? v : pick(r, LEAVES);
   }
-  const isArn = (s: unknown) => typeof s === 'string' && /^(arn:|[a-z][a-z0-9]*-[0-9a-f]{6,}$)/.test(s);
-  /** The oracle's canonical form: only the documented equivalences. */
-  function canon(v: unknown): string {
+  const isArn = (s: unknown) =>
+    typeof s === 'string' && /^(arn:|[a-z][a-z0-9]*-[0-9a-f]{6,}$)/.test(s);
+  const underOrdered = (path: string, ordered: readonly string[]) =>
+    ordered.some((e) => path === e || path.startsWith(`${e}.`));
+  /**
+   * The oracle's canonical form: only the documented equivalences. An array
+   * element takes its parent's path, as the comparator's walk gives it.
+   */
+  function canon(v: unknown, path: string, ordered: readonly string[]): string {
     if (Array.isArray(v)) {
-      const parts = v.map(canon);
+      const parts = v.map((el) => canon(el, path, ordered));
       const tagList =
         v.length > 0 &&
         v.every((el) => el && typeof el === 'object' && typeof (el as Bag)['Key'] === 'string');
-      const idList = v.length > 1 && v.every(isArn);
+      const idList = v.length > 1 && v.every(isArn) && !underOrdered(path, ordered);
       if (tagList || idList) parts.sort();
       return `[${parts.join(',')}]`;
     }
@@ -423,7 +441,10 @@ describe('property: "no drift" implies equality under the documented equivalence
       return `{${Object.keys(bag)
         .filter((key) => bag[key] !== undefined)
         .sort()
-        .map((key) => `${JSON.stringify(key)}:${canon(bag[key])}`)
+        .map(
+          (key) =>
+            `${JSON.stringify(key)}:${canon(bag[key], path === '' ? key : `${path}.${key}`, ordered)}`
+        )
         .join(',')}}`;
     }
     return JSON.stringify(v);
@@ -433,17 +454,33 @@ describe('property: "no drift" implies equality under the documented equivalence
     const r = rng(seed);
     let equalPairs = 0;
     let differingPairs = 0;
+    let orderedReorders = 0;
     for (let i = 0; i < 400; i++) {
-      const state = { P: gen(r, 3) };
-      const aws = r() < 0.3 ? { P: structuredClone(state.P) } : { P: mutate(r, state.P) };
-      const noDrift = same(state, aws, { unionWalkObjects: true });
-      const oracleEqual = canon(state) === canon(aws);
-      if (noDrift) {
-        expect(oracleEqual, JSON.stringify({ state, aws })).toBe(true);
-        equalPairs++;
-      } else {
-        differingPairs++;
+      const type = pick(r, ORDERED_TYPES);
+      const ordered = orderSignificantIdArrayPaths(type);
+      const state: Bag = { P: gen(r, 3) };
+      // Half the pairs also carry an ARN list at one of the type's ordered
+      // paths (top-level keys never collide with `P`).
+      const orderedPath = r() < 0.5 ? pick(r, ordered) : undefined;
+      const orderedList = arnList(r);
+      if (orderedPath !== undefined) Object.assign(state, bagAt(orderedPath, orderedList));
+      // Mutate below the top level only: a top-level key only AWS holds is
+      // never compared (CloudFormation parity), which the oracle does not model.
+      const aws: Bag = {};
+      for (const [key, value] of Object.entries(state))
+        aws[key] = r() < 0.3 ? structuredClone(value) : mutate(r, value);
+      // Some pairs differ ONLY in the order of the ordered-path list.
+      if (orderedPath !== undefined && orderedList.length > 1 && r() < 0.3) {
+        aws['P'] = structuredClone(state['P']);
+        Object.assign(aws, bagAt(orderedPath, [...orderedList].reverse()));
       }
+      const noDrift = same(state, aws, { unionWalkObjects: true, resourceType: type });
+      const oracleEqual = canon(state, '', ordered) === canon(aws, '', ordered);
+      const label = JSON.stringify({ type, state, aws });
+      expect(noDrift, `no drift <=> oracle-equal: ${label}`).toBe(oracleEqual);
+      if (noDrift) equalPairs++;
+      else differingPairs++;
+      if (!noDrift && canon(state, '', []) === canon(aws, '', [])) orderedReorders++;
       // diff's comparator: equal only for an equal value, key order aside.
       const calc = new DiffCalculator();
       if (calc.valuesEqual(state, aws)) {
@@ -452,9 +489,12 @@ describe('property: "no drift" implies equality under the documented equivalence
         );
       }
     }
-    // Both arms must be reached, or the property holds vacuously.
+    // Every arm must be reached, or the property holds vacuously: equal pairs,
+    // differing pairs, and pairs that differ ONLY by the order of a list on an
+    // ordered path (equal if that list were a set).
     expect(equalPairs).toBeGreaterThan(50);
     expect(differingPairs).toBeGreaterThan(50);
+    expect(orderedReorders).toBeGreaterThan(5);
   });
 
   function sortKeys(v: unknown): unknown {
