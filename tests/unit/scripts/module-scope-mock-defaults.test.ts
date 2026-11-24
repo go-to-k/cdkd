@@ -389,17 +389,14 @@ describe('module-scope mock-default checker', () => {
     it('still sees the population: floors on files and safe sites', () => {
       // FLOORS, as literals the checker does not read: a collapsed walk reads
       // as "0 violations". They sit far below the measured counts (see the PR)
-      // because step 2's migration moves refused sites to safe ones. Each
-      // refusal reason is pinned by its synthetic case above, not here.
+      // because step 2's migration moves refused sites to safe ones. There is
+      // no per-reason floor on the real tree: each reason's count falls to zero
+      // as #6928 empties the allow-list, so each refusal reason is pinned by
+      // its synthetic case above instead.
       const report = real();
       expect(report.filesScanned).toBeGreaterThan(2000);
       expect(report.totals.safe).toBeGreaterThan(10_000);
       expect(report.totals.unresolved).toBeGreaterThan(0);
-      const byReason = report.totals.byReason;
-      if (Object.keys(readAllowList().files).length > 0) {
-        expect(byReason['vi.mock-factory'] ?? 0).toBeGreaterThan(0);
-        expect(byReason['module-scope'] ?? 0).toBeGreaterThan(0);
-      }
     }, CONTENDED_CASE_TIMEOUT_MS);
   });
 
