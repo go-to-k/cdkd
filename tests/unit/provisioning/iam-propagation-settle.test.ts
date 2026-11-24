@@ -120,7 +120,9 @@ describe('deferIamPropagationSettle', () => {
 });
 
 describe('the wait line names IAM propagation, not --no-wait', () => {
-  function runWith(info: ReturnType<typeof vi.fn>, debug: ReturnType<typeof vi.fn>) {
+  type LogFn = (message: string, ...args: unknown[]) => void;
+
+  function runWith(info: LogFn, debug: LogFn) {
     const run = new DeferredReadinessRun({
       logger: { info, debug },
       region: 'us-east-1',
@@ -144,8 +146,8 @@ describe('the wait line names IAM propagation, not --no-wait', () => {
   }
 
   it('prints one line for the settles a custom resource starts, naming each', async () => {
-    const info = vi.fn();
-    const debug = vi.fn();
+    const info = vi.fn<LogFn>();
+    const debug = vi.fn<LogFn>();
     const run = runWith(info, debug);
     await run.awaitAll(
       ['HandlerRole', 'Unrelated', 'HandlerPolicy'],
@@ -164,8 +166,8 @@ describe('the wait line names IAM propagation, not --no-wait', () => {
   });
 
   it('prints nothing for settles an earlier consumer already started', async () => {
-    const info = vi.fn();
-    const run = runWith(info, vi.fn());
+    const info = vi.fn<LogFn>();
+    const run = runWith(info, vi.fn<LogFn>());
     await run.awaitAll(['HandlerRole', 'HandlerPolicy'], 'custom resource First is invoked after it');
     info.mockClear();
     await run.awaitAll(['HandlerRole', 'HandlerPolicy'], 'custom resource Second is invoked after it');
