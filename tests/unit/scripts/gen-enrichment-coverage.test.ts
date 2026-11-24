@@ -416,9 +416,12 @@ describe('enrichment through a shared attribute helper (#6242)', () => {
         'Arn',
         'DBClusterResourceId',
         'StorageEncryptionType',
+        'StorageThroughput',
+        'MasterUserSecret.SecretArn',
       ])
     );
     expect(byType.get('AWS::RDS::DBInstance')).toContain('DBInstanceStatus');
+    expect(byType.get('AWS::RDS::DBInstance')).toContain('MasterUserSecret.SecretArn');
     expect(byType.get('AWS::RDS::DBInstance')).toContain('Endpoint.HostedZoneId');
   });
 
