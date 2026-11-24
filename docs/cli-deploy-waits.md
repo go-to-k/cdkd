@@ -37,6 +37,21 @@ pays for that wait. When no value comes, the reference is refused with the
 cause rather than answered with the gateway's ID: the gateway stayed
 `pending`, it failed, or AWS reports none, as for a regional gateway's `EniId`.
 
+### VPC endpoint
+
+An Interface endpoint is `pending` for 30 to 50 seconds after the create call
+returns. Resources that need only its ID, its DNS names or its network
+interfaces are created at once: all three are in the create call's answer. A
+resource that calls the service through the endpoint during the deploy, such
+as a custom resource in the VPC that reads a secret, can fail until it is
+`available`.
+
+An update that changes the subnets, security groups, policy, private DNS,
+DNS options or IP address type returns the endpoint to `pending`. A
+`Fn::GetAtt` of `DnsEntries` or `NetworkInterfaceIds` after such an update
+waits for it to become available, up to 10 minutes, and then reads the value
+from AWS.
+
 ### EC2 instance
 
 cdkd normally checks that the instance's `IamInstanceProfile` was attached.
@@ -363,6 +378,7 @@ A wait that runs out fails the update.
 | Resource | Wait |
 | --- | --- |
 | NAT gateway | Until `deleted` |
+| VPC endpoint | Until it is gone (an Interface endpoint about 2 minutes) |
 | CloudFront distribution | Disable, then wait |
 | Kinesis stream, Firehose delivery stream | Until the stream is gone |
 | Lambda network connector | Until the connector is gone |
@@ -382,6 +398,9 @@ Each wait is there for a reason:
   out, or the runtime cannot be read, cdkd sends the delete anyway.
 - A NAT gateway that is still `deleting` blocks the deletes of its subnet,
   internet gateway and VPC with `DependencyViolation`.
+- A VPC endpoint that is still `deleting` keeps its network interfaces, which
+  block the deletes of its subnets, security groups and VPC with
+  `DependencyViolation`.
 - The CloudFront API requires a distribution to be disabled before it can be
   deleted.
 - A Kinesis or Firehose stream keeps its name while it is `DELETING`, so a

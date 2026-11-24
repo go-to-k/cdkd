@@ -66,6 +66,7 @@ export function registerAllProviders(registry: ProviderRegistry, classes: Provid
     EventBridgeArchiveProvider,
     ConnectInstanceProvider,
     EC2Provider,
+    EC2VPCEndpointProvider,
     ApiGatewayProvider,
     ApiGatewayV2Provider,
     CloudFrontOAIProvider,
@@ -203,6 +204,7 @@ export function registerAllProviders(registry: ProviderRegistry, classes: Provid
   registry.register('AWS::EC2::NetworkAcl', ec2Provider);
   registry.register('AWS::EC2::NetworkAclEntry', ec2Provider);
   registry.register('AWS::EC2::SubnetNetworkAclAssociation', ec2Provider);
+  registry.register('AWS::EC2::VPCEndpoint', new EC2VPCEndpointProvider());
 
   // API Gateway
   const apigwProvider = new ApiGatewayProvider();

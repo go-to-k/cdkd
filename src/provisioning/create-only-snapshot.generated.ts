@@ -184,6 +184,19 @@ export const CREATE_ONLY_PATHS_SNAPSHOT: ReadonlyMap<
     'AWS::EC2::VPC',
     [['CidrBlock'], ['Ipv4IpamPoolId'], ['Ipv4NetmaskLength'], ['VpcEncryptionControl']],
   ],
+  [
+    'AWS::EC2::VPCEndpoint',
+    [
+      ['DnsOptions', 'PrivateDnsPreference'],
+      ['DnsOptions', 'PrivateDnsSpecifiedDomains'],
+      ['ResourceConfigurationArn'],
+      ['ServiceName'],
+      ['ServiceNetworkArn'],
+      ['ServiceRegion'],
+      ['VpcEndpointType'],
+      ['VpcId'],
+    ],
+  ],
   ['AWS::EC2::VPCGatewayAttachment', [['VpcId']]],
   [
     'AWS::ECR::Repository',

@@ -543,6 +543,12 @@ export const DELETE_BLOCKER_INVENTORY: readonly DeleteBlockerRow[] = [
     perms('ec2:DetachInternetGateway, ec2:DetachVpnGateway (the delete itself)')
   ),
   none('AWS::EC2::NatGateway', perms('ec2:DeleteNatGateway, ec2:DescribeNatGateways')),
+  none(
+    'AWS::EC2::VPCEndpoint',
+    perms(
+      'ec2:DeleteVpcEndpoints, ec2:DescribeVpcEndpoints, ec2:DeleteTags (the endpoint is deleted with its network interfaces and route-table entries; the handler, like delete(), waits until it is gone)'
+    )
+  ),
   none('AWS::EC2::RouteTable', perms('ec2:DeleteRouteTable')),
   none('AWS::EC2::Route', perms('ec2:DeleteRoute')),
   none(

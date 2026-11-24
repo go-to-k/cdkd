@@ -1,7 +1,7 @@
 {
   "summary": {
-    "classifiedCount": 99,
-    "wrapped": 91,
+    "classifiedCount": 100,
+    "wrapped": 92,
     "noAws": 8,
     "gap": 0,
     "unguardedWrap": 0,
@@ -228,6 +228,14 @@
     {
       "file": "ec2-provider.ts",
       "className": "EC2Provider",
+      "bucket": "wrapped",
+      "unwrappedSendMethods": [],
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
+    },
+    {
+      "file": "ec2-vpc-endpoint-provider.ts",
+      "className": "EC2VPCEndpointProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
       "unguardedWrapMethods": [],

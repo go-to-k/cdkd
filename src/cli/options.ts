@@ -218,7 +218,7 @@ export function guardStackRegionOptions(cmd: Command): void {
 /**
  * Skip waiting for async-stabilization resources (RDS, ElastiCache,
  * NAT Gateway, EC2 Instance, ELBv2 LoadBalancer, Lambda MicroVM Image,
- * Bedrock AgentCore Runtime `READY` (go-to-k/cdkd#6490), EventBridge Archive leaving `CREATING` / `UPDATING`, Connect Instance `ACTIVE` after it accepts dependent calls (go-to-k/cdkd#6912; a `Fn::GetAtt` of its `ServiceRole` still waits), ECS Service steady state, the Auto Scaling instance refresh an
+ * Bedrock AgentCore Runtime `READY` (go-to-k/cdkd#6490), EventBridge Archive leaving `CREATING` / `UPDATING`, Connect Instance `ACTIVE` after it accepts dependent calls (go-to-k/cdkd#6912; a `Fn::GetAtt` of its `ServiceRole` still waits), VPC Endpoint `available` (go-to-k/cdkd#6939; a `Fn::GetAtt` of its `DnsEntries` / `NetworkInterfaceIds` after a modify still waits), ECS Service steady state, the Auto Scaling instance refresh an
  * `--update-policy` rolling update starts, go-to-k/cdkd#6437) on deploy.
  * NOT the wait of an `AutoScalingReplacingUpdate` for its new group's
  * instances, which runs whatever the flag says: deleting the old group
@@ -236,8 +236,8 @@ export function guardStackRegionOptions(cmd: Command): void {
  * ECS Service joined it with go-to-k/cdkd#5571: its steady-state wait is
  * the default now, because a failing rollout surfaces only there.
  *
- * Deploy-only. NAT Gateway destroy always waits regardless (a
- * still-`deleting` gateway blocks downstream Subnet / IGW / VPC
+ * Deploy-only. NAT Gateway and VPC Endpoint destroy always wait regardless (a
+ * still-`deleting` gateway or endpoint blocks downstream Subnet / IGW / VPC
  * delete with DependencyViolation), RDS / ElastiCache destroy paths
  * don't wait to begin with, and CloudFront's destroy-side
  * disable-then-wait is an API requirement no flag may skip — so
@@ -245,7 +245,7 @@ export function guardStackRegionOptions(cmd: Command): void {
  */
 export const noWaitOption = new Option(
   '--no-wait',
-  'Skip waiting for async resources to stabilize (RDS, ElastiCache, NAT Gateway, EC2 Instance, ELBv2 LoadBalancer, Lambda MicroVM Image, Bedrock AgentCore Runtime, EventBridge Archive, Connect Instance, ECS Service steady state, Auto Scaling instance refresh under --update-policy; an AutoScalingReplacingUpdate still waits for its new instances, and a Lambda alias CodeDeploy deployment for its traffic shift)'
+  'Skip waiting for async resources to stabilize (RDS, ElastiCache, NAT Gateway, EC2 Instance, ELBv2 LoadBalancer, Lambda MicroVM Image, Bedrock AgentCore Runtime, EventBridge Archive, Connect Instance, VPC Endpoint, ECS Service steady state, Auto Scaling instance refresh under --update-policy; an AutoScalingReplacingUpdate still waits for its new instances, and a Lambda alias CodeDeploy deployment for its traffic shift)'
 );
 
 /**

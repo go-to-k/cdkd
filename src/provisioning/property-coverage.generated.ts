@@ -1546,6 +1546,32 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     },
   ],
   [
+    'AWS::EC2::VPCEndpoint',
+    {
+      handled: new Set<string>([
+        'DnsOptions',
+        'IpAddressType',
+        'PolicyDocument',
+        'PrivateDnsEnabled',
+        'ResourceConfigurationArn',
+        'RouteTableIds',
+        'SecurityGroupIds',
+        'ServiceName',
+        'ServiceNetworkArn',
+        'ServiceRegion',
+        'SubnetIds',
+        'Tags',
+        'VpcEndpointType',
+        'VpcId',
+      ]),
+      sdkUnwired: new Map<string, string>(),
+      createOnlyDrops: new Set<string>(),
+      readOnly: new Set<string>(['CreationTimestamp', 'DnsEntries', 'Id', 'NetworkInterfaceIds']),
+      primaryIdentifier: new Set<string>(['Id']),
+      ccRouteUnavailable: false,
+    },
+  ],
+  [
     'AWS::EC2::VPCGatewayAttachment',
     {
       handled: new Set<string>(['InternetGatewayId', 'VpcId', 'VpnGatewayId']),

@@ -1,0 +1,218 @@
+{
+  "resourceType": "AWS::EC2::VPCEndpoint",
+  "generatedAt": "2026-11-24",
+  "properties": [
+    "CreationTimestamp",
+    "DnsEntries",
+    "DnsOptions",
+    "Id",
+    "IpAddressType",
+    "NetworkInterfaceIds",
+    "PolicyDocument",
+    "PrivateDnsEnabled",
+    "ResourceConfigurationArn",
+    "RouteTableIds",
+    "SecurityGroupIds",
+    "ServiceName",
+    "ServiceNetworkArn",
+    "ServiceRegion",
+    "SubnetIds",
+    "Tags",
+    "VpcEndpointType",
+    "VpcId"
+  ],
+  "readOnlyProperties": [
+    "CreationTimestamp",
+    "DnsEntries",
+    "Id",
+    "NetworkInterfaceIds"
+  ],
+  "createOnlyProperties": [
+    "ResourceConfigurationArn",
+    "ServiceName",
+    "ServiceNetworkArn",
+    "ServiceRegion",
+    "VpcEndpointType",
+    "VpcId"
+  ],
+  "createOnlyPropertyPaths": [
+    [
+      "DnsOptions",
+      "PrivateDnsPreference"
+    ],
+    [
+      "DnsOptions",
+      "PrivateDnsSpecifiedDomains"
+    ],
+    [
+      "ResourceConfigurationArn"
+    ],
+    [
+      "ServiceName"
+    ],
+    [
+      "ServiceNetworkArn"
+    ],
+    [
+      "ServiceRegion"
+    ],
+    [
+      "VpcEndpointType"
+    ],
+    [
+      "VpcId"
+    ]
+  ],
+  "primaryIdentifier": [
+    "Id"
+  ],
+  "nestedProperties": {
+    "DnsOptions": [
+      "DnsRecordIpType",
+      "PrivateDnsOnlyForInboundResolverEndpoint",
+      "PrivateDnsPreference",
+      "PrivateDnsSpecifiedDomains"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "DnsOptions": [
+      "DnsRecordIpType",
+      "PrivateDnsOnlyForInboundResolverEndpoint",
+      "PrivateDnsPreference",
+      "PrivateDnsSpecifiedDomains"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "Id": "scalar",
+      "CreationTimestamp": "scalar",
+      "DnsEntries": "array",
+      "NetworkInterfaceIds": "array",
+      "PolicyDocument": "mixed",
+      "PrivateDnsEnabled": "scalar",
+      "RouteTableIds": "array",
+      "SecurityGroupIds": "array",
+      "ServiceName": "scalar",
+      "SubnetIds": "array",
+      "VpcEndpointType": "scalar",
+      "VpcId": "scalar",
+      "ServiceNetworkArn": "scalar",
+      "ResourceConfigurationArn": "scalar",
+      "IpAddressType": "scalar",
+      "DnsOptions": "object",
+      "Tags": "array",
+      "ServiceRegion": "scalar"
+    },
+    "DnsOptionsSpecification": {
+      "DnsRecordIpType": "scalar",
+      "PrivateDnsOnlyForInboundResolverEndpoint": "scalar",
+      "PrivateDnsPreference": "scalar",
+      "PrivateDnsSpecifiedDomains": "array"
+    },
+    "Tag": {
+      "Key": "scalar",
+      "Value": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "VpcId"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedRequired": {
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "propertyShapes": {
+    "DnsEntries": "array",
+    "DnsOptions": "object",
+    "DnsOptions.PrivateDnsSpecifiedDomains": "array",
+    "NetworkInterfaceIds": "array",
+    "RouteTableIds": "array",
+    "SecurityGroupIds": "array",
+    "SubnetIds": "array",
+    "Tags": "array",
+    "Tags[]": "object"
+  },
+  "propertyTypes": {
+    "CreationTimestamp": "string",
+    "DnsEntries": "array",
+    "DnsEntries[]": "string",
+    "DnsOptions": "object",
+    "DnsOptions.DnsRecordIpType": "string",
+    "DnsOptions.PrivateDnsOnlyForInboundResolverEndpoint": "string",
+    "DnsOptions.PrivateDnsPreference": "string",
+    "DnsOptions.PrivateDnsSpecifiedDomains": "array",
+    "DnsOptions.PrivateDnsSpecifiedDomains[]": "string",
+    "Id": "string",
+    "IpAddressType": "string",
+    "NetworkInterfaceIds": "array",
+    "NetworkInterfaceIds[]": "string",
+    "PolicyDocument": "object|string",
+    "PrivateDnsEnabled": "boolean",
+    "ResourceConfigurationArn": "string",
+    "RouteTableIds": "array",
+    "RouteTableIds[]": "string",
+    "SecurityGroupIds": "array",
+    "SecurityGroupIds[]": "string",
+    "ServiceName": "string",
+    "ServiceNetworkArn": "string",
+    "ServiceRegion": "string",
+    "SubnetIds": "array",
+    "SubnetIds[]": "string",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Tags[].Key": "string",
+    "Tags[].Value": "string",
+    "VpcEndpointType": "string",
+    "VpcId": "string"
+  },
+  "propertyEnums": {
+    "DnsOptions.DnsRecordIpType": [
+      "dualstack",
+      "ipv4",
+      "ipv6",
+      "not-specified",
+      "service-defined"
+    ],
+    "DnsOptions.PrivateDnsOnlyForInboundResolverEndpoint": [
+      "AllResolvers",
+      "NotSpecified",
+      "OnlyInboundResolver"
+    ],
+    "DnsOptions.PrivateDnsPreference": [
+      "ALL_DOMAINS",
+      "SPECIFIED_DOMAINS_ONLY",
+      "VERIFIED_DOMAINS_AND_SPECIFIED_DOMAINS",
+      "VERIFIED_DOMAINS_ONLY"
+    ],
+    "IpAddressType": [
+      "dualstack",
+      "ipv4",
+      "ipv6",
+      "not-specified"
+    ],
+    "VpcEndpointType": [
+      "Gateway",
+      "GatewayLoadBalancer",
+      "Interface",
+      "Resource",
+      "ServiceNetwork",
+      "Tunnel"
+    ]
+  }
+}

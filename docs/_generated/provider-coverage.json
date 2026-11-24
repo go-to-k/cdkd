@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-11-24T07:02:46.976Z",
+  "generatedAt": "2026-11-24T14:49:14.921Z",
   "summary": {
-    "tier1Count": 148,
-    "tier2Count": 1682,
+    "tier1Count": 149,
+    "tier2Count": 1681,
     "tier3Count": 324,
     "totalCount": 2154
   },
@@ -66,6 +66,7 @@
     "AWS::EC2::SubnetNetworkAclAssociation",
     "AWS::EC2::SubnetRouteTableAssociation",
     "AWS::EC2::VPC",
+    "AWS::EC2::VPCEndpoint",
     "AWS::EC2::VPCGatewayAttachment",
     "AWS::ECR::Repository",
     "AWS::ECS::Cluster",
@@ -783,7 +784,6 @@
     "AWS::EC2::VPCCidrBlock",
     "AWS::EC2::VPCDHCPOptionsAssociation",
     "AWS::EC2::VPCEncryptionControl",
-    "AWS::EC2::VPCEndpoint",
     "AWS::EC2::VPCEndpointConnectionNotification",
     "AWS::EC2::VPCEndpointService",
     "AWS::EC2::VPCEndpointServicePermissions",

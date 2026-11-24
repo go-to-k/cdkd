@@ -1,9 +1,9 @@
 {
   "summary": {
-    "types": 148,
-    "properties": 1571,
-    "update": 1145,
-    "replacement": 405,
+    "types": 149,
+    "properties": 1585,
+    "update": 1153,
+    "replacement": 411,
     "allowListed": 21,
     "gap": 0,
     "outsideSchema": 13
@@ -3103,6 +3103,77 @@
           "property": "VpcEncryptionControl",
           "status": "replacement",
           "via": "rule"
+        }
+      ],
+      "outsideSchema": [],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EC2::VPCEndpoint",
+      "file": "src/provisioning/providers/ec2-vpc-endpoint-provider.ts",
+      "className": "EC2VPCEndpointProvider",
+      "properties": [
+        {
+          "property": "DnsOptions",
+          "status": "update"
+        },
+        {
+          "property": "IpAddressType",
+          "status": "update"
+        },
+        {
+          "property": "PolicyDocument",
+          "status": "update"
+        },
+        {
+          "property": "PrivateDnsEnabled",
+          "status": "update"
+        },
+        {
+          "property": "ResourceConfigurationArn",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "RouteTableIds",
+          "status": "update"
+        },
+        {
+          "property": "SecurityGroupIds",
+          "status": "update"
+        },
+        {
+          "property": "ServiceName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ServiceNetworkArn",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ServiceRegion",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SubnetIds",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "VpcEndpointType",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "VpcId",
+          "status": "replacement",
+          "via": "create-only"
         }
       ],
       "outsideSchema": [],

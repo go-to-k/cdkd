@@ -12,9 +12,9 @@ For every SDK provider type and every top-level property its `handledProperties`
 
 ## Summary
 
-- SDK provider types: **148** (without a readback, reported as `drift unknown`: **2**)
-- Handled properties classified: **1574**
-- Named on the readback path: **1431**
+- SDK provider types: **149** (without a readback, reported as `drift unknown`: **2**)
+- Handled properties classified: **1588**
+- Named on the readback path: **1445**
 - Declared unreadable by `getDriftUnknownPaths`: **119**
 - In the committed baseline (does NOT block CI): **24**
 - Classified though the schema capture does not list them: **12**
@@ -116,6 +116,7 @@ For every SDK provider type and every top-level property its `handledProperties`
 | `AWS::EC2::SubnetNetworkAclAssociation` | `EC2Provider` | NetworkAclId, SubnetId |  |
 | `AWS::EC2::SubnetRouteTableAssociation` | `EC2Provider` | RouteTableId, SubnetId |  |
 | `AWS::EC2::VPC` | `EC2Provider` | CidrBlock, EnableDnsHostnames, EnableDnsSupport, InstanceTenancy, Ipv4NetmaskLength, Tags, VpcEncryptionControl | Ipv4IpamPoolId |
+| `AWS::EC2::VPCEndpoint` | `EC2VPCEndpointProvider` | DnsOptions, IpAddressType, PolicyDocument, PrivateDnsEnabled, ResourceConfigurationArn, RouteTableIds, SecurityGroupIds, ServiceName, ServiceNetworkArn, ServiceRegion, SubnetIds, Tags, VpcEndpointType, VpcId |  |
 | `AWS::EC2::VPCGatewayAttachment` | `EC2Provider` | InternetGatewayId, VpcId, VpnGatewayId |  |
 | `AWS::ECR::Repository` | `ECRProvider` | EncryptionConfiguration, ImageScanningConfiguration, ImageTagMutability, ImageTagMutabilityExclusionFilters, LifecyclePolicy, RepositoryName, RepositoryPolicyText, Tags | EmptyOnDelete |
 | `AWS::ECS::Cluster` | `ECSProvider` | CapacityProviders, ClusterName, ClusterSettings, Configuration, DefaultCapacityProviderStrategy, ServiceConnectDefaults, Tags |  |

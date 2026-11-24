@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 148,
+    "classifiedCount": 149,
     "enriched": 50,
     "noComputedAttr": 18,
     "unenrichedGap": 0,
-    "sdkFallbackGap": 80,
-    "allowListedTypes": 90
+    "sdkFallbackGap": 81,
+    "allowListedTypes": 91
   },
   "types": [
     {
@@ -1467,6 +1467,42 @@
         "DefaultNetworkAcl",
         "DefaultSecurityGroup",
         "Ipv6CidrBlocks"
+      ]
+    },
+    {
+      "resourceType": "AWS::EC2::VPCEndpoint",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "CreationTimestamp",
+        "DnsEntries",
+        "Id",
+        "NetworkInterfaceIds"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "CreationTimestamp",
+          "status": "gap"
+        },
+        {
+          "name": "DnsEntries",
+          "status": "gap"
+        },
+        {
+          "name": "Id",
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
+        },
+        {
+          "name": "NetworkInterfaceIds",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "CreationTimestamp",
+        "DnsEntries",
+        "NetworkInterfaceIds"
       ]
     },
     {
