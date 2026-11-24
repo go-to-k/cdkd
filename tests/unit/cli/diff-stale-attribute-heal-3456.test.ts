@@ -68,7 +68,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 
 const mockSynthesize = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/synthesis/synthesizer.js', () => ({
-  Synthesizer: vi.fn().mockImplementation(() => ({
+  Synthesizer: vi.fn(() => ({
     synthesize: mockSynthesize,
     expandMacrosForStacks: vi.fn(async () => undefined),
   })),
@@ -85,7 +85,7 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
 }));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
-  AwsClients: vi.fn().mockImplementation((opts?: { region?: string; profile?: string }) => {
+  AwsClients: vi.fn((opts?: { region?: string; profile?: string }) => {
     clientRegions.push(opts?.region);
     clientProfiles.push(opts?.profile);
     return {
@@ -107,7 +107,7 @@ vi.mock('../../../src/utils/role-arn.js', () => ({
 }));
 
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({
+  S3StateBackend: vi.fn(() => ({
     destroyClient: vi.fn(),
     getState: vi.fn(async () =>
       stateForDiff.value ? { state: stateForDiff.value, etag: 'fake' } : null
@@ -127,7 +127,7 @@ vi.mock('../../../src/provisioning/register-providers.js', () => ({
 }));
 
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({
-  ProviderRegistry: vi.fn().mockImplementation(() => {
+  ProviderRegistry: vi.fn(() => {
     // The scope the registry was BUILT in: a provider takes its clients at
     // construction, so this is the region its reads would go to.
     const builtIn = currentScope.region;

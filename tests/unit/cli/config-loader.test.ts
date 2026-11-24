@@ -13,9 +13,8 @@ const loggerMock = {
   info: vi.fn(),
   warn: vi.fn(),
   error: vi.fn(),
-  child: vi.fn(),
+  child: vi.fn((): unknown => loggerMock),
 };
-loggerMock.child.mockImplementation(() => loggerMock);
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => loggerMock,
 }));

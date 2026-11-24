@@ -54,7 +54,7 @@ vi.mock('@aws-sdk/client-sts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-sts')>();
   return {
     ...actual,
-    STSClient: vi.fn().mockImplementation(() => ({
+    STSClient: vi.fn(() => ({
       config: { region: async (): Promise<string> => 'us-east-1' },
       destroy: vi.fn(),
     })),
@@ -62,7 +62,7 @@ vi.mock('@aws-sdk/client-sts', async (importOriginal) => {
 });
 
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
-  AwsClients: vi.fn().mockImplementation((config: { region?: string } = {}) => {
+  AwsClients: vi.fn((config: { region?: string } = {}) => {
     const region = async (): Promise<string> => config.region ?? 'us-east-1';
     return {
       get s3() {
@@ -79,7 +79,7 @@ vi.mock('../../../src/utils/aws-clients.ts', () => ({
 }));
 
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({
+  S3StateBackend: vi.fn(() => ({
     ...stateBackendMocks,
     destroyClient: vi.fn(),
   })),
@@ -89,7 +89,7 @@ vi.mock('@aws-sdk/client-s3', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-s3')>();
   return {
     ...actual,
-    S3Client: vi.fn().mockImplementation(() => ({ send: mockS3Send, destroy: vi.fn() })),
+    S3Client: vi.fn(() => ({ send: mockS3Send, destroy: vi.fn() })),
   };
 });
 
@@ -97,7 +97,7 @@ vi.mock('@aws-sdk/client-ecr', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-ecr')>();
   return {
     ...actual,
-    ECRClient: vi.fn().mockImplementation(() => ({ send: mockEcrSend, destroy: vi.fn() })),
+    ECRClient: vi.fn(() => ({ send: mockEcrSend, destroy: vi.fn() })),
   };
 });
 

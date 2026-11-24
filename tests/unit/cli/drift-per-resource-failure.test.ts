@@ -63,7 +63,7 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
 // file never reaches it.
 const mockIamSend = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
-  AwsClients: vi.fn().mockImplementation(() => ({
+  AwsClients: vi.fn(() => ({
     get s3() {
       return {};
     },
@@ -97,7 +97,7 @@ const mockSaveState =
     ) => Promise<string>
   >();
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({
+  S3StateBackend: vi.fn(() => ({
     destroyClient: vi.fn(),
     getState: mockGetState,
     listStacks: mockListStacks,
@@ -114,7 +114,7 @@ const mockAcquireLock = vi.fn<() => Promise<boolean>>();
 const mockGetLockInfo = vi.fn<() => Promise<unknown>>();
 const mockReleaseLock = vi.fn<() => Promise<void>>();
 vi.mock('../../../src/state/lock-manager.js', () => ({
-  LockManager: vi.fn().mockImplementation(() => ({
+  LockManager: vi.fn(() => ({
     acquireLock: mockAcquireLock,
     getLockInfo: mockGetLockInfo,
     releaseLock: mockReleaseLock,
@@ -122,20 +122,18 @@ vi.mock('../../../src/state/lock-manager.js', () => ({
 }));
 
 const mockRegistryGetProvider = vi.fn<(resourceType: string) => unknown>();
-const mockRegistryShouldSkip = vi.fn<(resourceType: string) => boolean>().mockReturnValue(false);
+const mockRegistryShouldSkip = vi.fn<(resourceType: string) => boolean>(() => false);
 const mockRegistrySetCustomBucket = vi.fn();
 // #614: drift's new code path uses `getProviderFor({resourceType, provisionedBy})`
 // instead of `getProvider(type)`. Wrap the existing `getProvider` mock so
 // the routing-decision shape is returned with `provisionedBy: 'sdk'`
 // (legacy default; the test fixtures don't set state.provisionedBy).
-const mockRegistryGetProviderFor = vi
-  .fn<(input: { resourceType: string }) => unknown>()
-  .mockImplementation((input) => ({
+const mockRegistryGetProviderFor = vi.fn<(input: { resourceType: string }) => unknown>((input) => ({
     provider: mockRegistryGetProvider(input.resourceType),
     provisionedBy: 'sdk',
   }));
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({
-  ProviderRegistry: vi.fn().mockImplementation(() => ({
+  ProviderRegistry: vi.fn(() => ({
     getProvider: mockRegistryGetProvider,
     getProviderFor: mockRegistryGetProviderFor,
     shouldSkipResource: mockRegistryShouldSkip,
@@ -153,10 +151,9 @@ vi.mock('../../../src/provisioning/register-providers.js', () => ({
 // tests can simulate "fallback returns undefined" (drift unknown) by
 // default; tests that exercise the fallback override per-call.
 const mockCcReadCurrentState = vi
-  .fn<(physicalId: string, logicalId: string, type: string) => Promise<Record<string, unknown> | undefined>>()
-  .mockResolvedValue(undefined);
+  .fn<(physicalId: string, logicalId: string, type: string) => Promise<Record<string, unknown> | undefined>>(async () => undefined);
 vi.mock('../../../src/provisioning/cloud-control-provider.js', () => ({
-  CloudControlProvider: vi.fn().mockImplementation(() => ({
+  CloudControlProvider: vi.fn(() => ({
     readCurrentState: mockCcReadCurrentState,
   })),
 }));
@@ -1389,7 +1386,7 @@ describe('a remediation run that compared nothing does not report no drift (#220
     exitSpy.mockRestore();
   });
 
-  const mockUpdate = vi.fn().mockResolvedValue({ physicalId: 'phys' });
+  const mockUpdate = vi.fn(async () => ({ physicalId: 'phys' }));
 
   /** Every read in the stack throws: the extreme case, where NOTHING was compared. */
   function everyReadThrows(): void {
@@ -1737,8 +1734,6 @@ describe('a remediation run that compared nothing does not report no drift (#220
  */
 describe('consecutive read failures stop reading the stack (#2207)', () => {
   let exitSpy: ReturnType<typeof vi.spyOn>;
-  // The file-level routing, put back after each case that re-routes a type.
-  const defaultGetProviderFor = mockRegistryGetProviderFor.getMockImplementation()!;
   const reads: string[] = [];
 
   beforeEach(() => {
@@ -1767,7 +1762,8 @@ describe('consecutive read failures stop reading the stack (#2207)', () => {
     exitSpy.mockRestore();
     ccRoutedTypes.clear();
     ccRoutedTypes.add(CC_ROUTED_TYPE);
-    mockRegistryGetProviderFor.mockImplementation(defaultGetProviderFor);
+    // The file-level routing (its vi.fn(impl) default), put back after each case that re-routes a type.
+    mockRegistryGetProviderFor.mockReset();
   });
 
   /**

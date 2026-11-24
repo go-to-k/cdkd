@@ -169,7 +169,7 @@ const mockListStacks = vi.fn<() => Promise<Array<{ stackName: string; region?: s
 const mockVerifyBucketExists = vi.fn<() => Promise<void>>();
 const mockSaveState = vi.fn<() => Promise<string>>();
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({
+  S3StateBackend: vi.fn(() => ({
     destroyClient: vi.fn(),
     getState: mockGetState,
     listStacks: mockListStacks,
@@ -181,22 +181,20 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
 const mockAcquireLock = vi.fn<() => Promise<boolean>>();
 const mockReleaseLock = vi.fn<() => Promise<void>>();
 vi.mock('../../../src/state/lock-manager.js', () => ({
-  LockManager: vi.fn().mockImplementation(() => ({
+  LockManager: vi.fn(() => ({
     acquireLock: mockAcquireLock,
     releaseLock: mockReleaseLock,
   })),
 }));
 
 const mockRegistryGetProvider = vi.fn<(resourceType: string) => unknown>();
-const mockRegistryShouldSkip = vi.fn<(resourceType: string) => boolean>().mockReturnValue(false);
-const mockRegistryGetProviderFor = vi
-  .fn<(input: { resourceType: string }) => unknown>()
-  .mockImplementation((input) => ({
+const mockRegistryShouldSkip = vi.fn<(resourceType: string) => boolean>(() => false);
+const mockRegistryGetProviderFor = vi.fn<(input: { resourceType: string }) => unknown>((input) => ({
     provider: mockRegistryGetProvider(input.resourceType),
     provisionedBy: 'sdk',
   }));
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({
-  ProviderRegistry: vi.fn().mockImplementation(() => ({
+  ProviderRegistry: vi.fn(() => ({
     getProvider: mockRegistryGetProvider,
     getProviderFor: mockRegistryGetProviderFor,
     shouldSkipResource: mockRegistryShouldSkip,
@@ -210,7 +208,7 @@ vi.mock('../../../src/provisioning/register-providers.js', () => ({
 }));
 
 vi.mock('../../../src/provisioning/cloud-control-provider.js', () => ({
-  CloudControlProvider: vi.fn().mockImplementation(() => ({
+  CloudControlProvider: vi.fn(() => ({
     readCurrentState: vi.fn(async () => undefined),
   })),
 }));

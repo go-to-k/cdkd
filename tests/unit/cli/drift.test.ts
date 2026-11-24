@@ -79,7 +79,7 @@ const awsScope = vi.hoisted(() => ({
   ccRegion: undefined as string | undefined,
 }));
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
-  AwsClients: vi.fn().mockImplementation((config?: { region?: string }) => ({
+  AwsClients: vi.fn((config?: { region?: string }) => ({
     configuredRegion: config?.region,
     get s3() {
       return {};
@@ -125,7 +125,7 @@ const mockSaveState =
     ) => Promise<string>
   >();
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({
+  S3StateBackend: vi.fn(() => ({
     destroyClient: vi.fn(),
     getState: mockGetState,
     listStacks: mockListStacks,
@@ -142,7 +142,7 @@ const mockAcquireLock = vi.fn<() => Promise<boolean>>();
 const mockGetLockInfo = vi.fn<() => Promise<unknown>>();
 const mockReleaseLock = vi.fn<() => Promise<void>>();
 vi.mock('../../../src/state/lock-manager.js', () => ({
-  LockManager: vi.fn().mockImplementation(() => ({
+  LockManager: vi.fn(() => ({
     acquireLock: mockAcquireLock,
     getLockInfo: mockGetLockInfo,
     releaseLock: mockReleaseLock,
@@ -150,15 +150,13 @@ vi.mock('../../../src/state/lock-manager.js', () => ({
 }));
 
 const mockRegistryGetProvider = vi.fn<(resourceType: string) => unknown>();
-const mockRegistryShouldSkip = vi.fn<(resourceType: string) => boolean>().mockReturnValue(false);
+const mockRegistryShouldSkip = vi.fn<(resourceType: string) => boolean>(() => false);
 const mockRegistrySetCustomBucket = vi.fn();
 // #614: drift's new code path uses `getProviderFor({resourceType, provisionedBy})`
 // instead of `getProvider(type)`. Wrap the existing `getProvider` mock so
 // the routing-decision shape is returned with `provisionedBy: 'sdk'`
 // (legacy default; the test fixtures don't set state.provisionedBy).
-const mockRegistryGetProviderFor = vi
-  .fn<(input: { resourceType: string }) => unknown>()
-  .mockImplementation((input) => ({
+const mockRegistryGetProviderFor = vi.fn<(input: { resourceType: string }) => unknown>((input) => ({
     provider: mockRegistryGetProvider(input.resourceType),
     provisionedBy: 'sdk',
   }));
@@ -166,7 +164,7 @@ vi.mock('../../../src/provisioning/provider-registry.js', () => ({
   // Each registry remembers the AWS scope region it was CONSTRUCTED in — a
   // provider takes its clients at construction (go-to-k/cdkd#4283) — and
   // publishes it as `awsScope.providerRegion` when it hands out a provider.
-  ProviderRegistry: vi.fn().mockImplementation(() => {
+  ProviderRegistry: vi.fn(() => {
     const constructedIn = awsScope.region;
     return {
       getProvider: mockRegistryGetProvider,
@@ -190,12 +188,11 @@ vi.mock('../../../src/provisioning/register-providers.js', () => ({
 // tests can simulate "fallback returns undefined" (drift unknown) by
 // default; tests that exercise the fallback override per-call.
 const mockCcReadCurrentState = vi
-  .fn<(physicalId: string, logicalId: string, type: string) => Promise<Record<string, unknown> | undefined>>()
-  .mockResolvedValue(undefined);
+  .fn<(physicalId: string, logicalId: string, type: string) => Promise<Record<string, unknown> | undefined>>(async () => undefined);
 // Each fallback records the AWS scope region it was CONSTRUCTED in
 // (go-to-k/cdkd#4283), published as `awsScope.ccRegion` when it reads.
 vi.mock('../../../src/provisioning/cloud-control-provider.js', () => ({
-  CloudControlProvider: vi.fn().mockImplementation(() => {
+  CloudControlProvider: vi.fn(() => {
     const constructedIn = awsScope.region;
     return {
       readCurrentState: (...args: Parameters<typeof mockCcReadCurrentState>) => {
@@ -209,8 +206,7 @@ vi.mock('../../../src/provisioning/cloud-control-provider.js', () => ({
 // go-to-k/cdkd#6485: the schema read-only lookup beside a Cloud Control read.
 // `undefined` (schema unreadable) is the default, the comparison before it.
 const mockReadOnlyPropertyPaths = vi
-  .fn<(resourceType: string) => Promise<readonly string[] | undefined>>()
-  .mockResolvedValue(undefined);
+  .fn<(resourceType: string) => Promise<readonly string[] | undefined>>(async () => undefined);
 vi.mock('../../../src/provisioning/read-only-properties.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../src/provisioning/read-only-properties.js')>()),
   getReadOnlyPropertyPaths: (resourceType: string) => mockReadOnlyPropertyPaths(resourceType),

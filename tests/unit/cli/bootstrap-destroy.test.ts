@@ -79,7 +79,7 @@ vi.mock('@aws-sdk/client-sts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-sts')>();
   return {
     ...actual,
-    STSClient: vi.fn().mockImplementation(() => ({
+    STSClient: vi.fn(() => ({
       config: {
         region: async (): Promise<string> => {
           if (!ambientRegion.value) throw new Error('Region is missing');
@@ -92,7 +92,7 @@ vi.mock('@aws-sdk/client-sts', async (importOriginal) => {
 });
 
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
-  AwsClients: vi.fn().mockImplementation((config: { region?: string } = {}) => {
+  AwsClients: vi.fn((config: { region?: string } = {}) => {
     // The SDK's contract, reproduced: a client CONSTRUCTED with a region
     // reports it; a region-less one resolves through the provider chain and
     // REJECTS when nothing answers (measured: `@smithy/config-resolver`'s
@@ -124,7 +124,7 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
   // does and does not buy today). The spy is still invoked on every read so
   // `mock.calls` (and `markerProbes()`) record it — the result is masked
   // afterwards, not skipped.
-  S3StateBackend: vi.fn().mockImplementation(() => ({
+  S3StateBackend: vi.fn(() => ({
     ...stateBackendMocks,
     // The probe backend releases its client through the backend itself.
     destroyClient: vi.fn(),
@@ -168,7 +168,7 @@ vi.mock('@aws-sdk/client-s3', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-s3')>();
   return {
     ...actual,
-    S3Client: vi.fn().mockImplementation(() => ({ send: mockS3Send, destroy: vi.fn() })),
+    S3Client: vi.fn(() => ({ send: mockS3Send, destroy: vi.fn() })),
   };
 });
 
@@ -178,7 +178,7 @@ vi.mock('@aws-sdk/client-ecr', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-ecr')>();
   return {
     ...actual,
-    ECRClient: vi.fn().mockImplementation(() => ({ send: mockEcrSend, destroy: vi.fn() })),
+    ECRClient: vi.fn(() => ({ send: mockEcrSend, destroy: vi.fn() })),
   };
 });
 

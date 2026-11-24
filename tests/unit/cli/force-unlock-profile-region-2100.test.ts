@@ -21,7 +21,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 
 const profile = vi.hoisted(() => ({ region: 'ap-northeast-1' as string | undefined }));
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation(() => ({
+  STSClient: vi.fn(() => ({
     config: {
       region: async (): Promise<string> => {
         if (!profile.region) throw new Error('Region is missing');
@@ -41,7 +41,7 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
 }));
 
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
-  AwsClients: vi.fn().mockImplementation(() => ({
+  AwsClients: vi.fn(() => ({
     get s3() {
       return {};
     },
@@ -52,7 +52,7 @@ vi.mock('../../../src/utils/aws-clients.ts', () => ({
 }));
 
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({
+  S3StateBackend: vi.fn(() => ({
     destroyClient: vi.fn(),
     listStacks: vi.fn(async () => []),
     stateExistsOwnedBy: vi.fn(async (_stack: string, region: string) =>
@@ -71,7 +71,7 @@ const locks = vi.hoisted(() => ({
   released: [] as unknown[],
 }));
 vi.mock('../../../src/state/lock-manager.js', () => ({
-  LockManager: vi.fn().mockImplementation(() => ({
+  LockManager: vi.fn(() => ({
     isLocked: vi.fn(async (_stack: string, region: string) => locks.regions.has(region)),
     getLockInfo: vi.fn(async () => null),
     forceReleaseLock: vi.fn(async (_stack: string, region?: string) => {

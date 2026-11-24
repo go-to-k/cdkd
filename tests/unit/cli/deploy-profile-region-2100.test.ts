@@ -29,7 +29,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 /** The region the AWS SDK's own chain answers (the profile's `region =`). */
 const profile = vi.hoisted(() => ({ region: 'ap-northeast-1' as string | undefined }));
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation(() => ({
+  STSClient: vi.fn(() => ({
     config: {
       region: async (): Promise<string> => {
         if (!profile.region) throw new Error('Region is missing');
@@ -70,7 +70,7 @@ const world = vi.hoisted(() => ({
   stateProbes: [] as string[][],
 }));
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({
+  S3StateBackend: vi.fn(() => ({
     prefix: 'cdkd',
     verifyBucketExists: vi.fn(async () => undefined),
     listStacks: vi.fn(async () => []),
@@ -99,7 +99,7 @@ type NestedCtx = { exportIndexStore: { removeStack(s: string, r: string): Promis
 /** The nested-stack context each stack's deploy ran under. */
 const nestedContexts = vi.hoisted(() => [] as NestedCtx[]);
 vi.mock('../../../src/state/export-index-store.js', () => ({
-  ExportIndexStore: vi.fn().mockImplementation((...args: unknown[]) => {
+  ExportIndexStore: vi.fn((...args: unknown[]) => {
     indexRegions.value.push(args[3] as string);
     return {
       indexRegion: args[3],
@@ -114,7 +114,7 @@ vi.mock('../../../src/state/export-index-store.js', () => ({
 }));
 
 vi.mock('../../../src/state/lock-manager.js', () => ({
-  LockManager: vi.fn().mockImplementation(() => ({
+  LockManager: vi.fn(() => ({
     acquireLock: vi.fn().mockResolvedValue(true),
     releaseLock: vi.fn(),
     settleDeferredPurges: vi.fn().mockResolvedValue(undefined),
@@ -122,7 +122,7 @@ vi.mock('../../../src/state/lock-manager.js', () => ({
 }));
 
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({
-  ProviderRegistry: vi.fn().mockImplementation(() => ({
+  ProviderRegistry: vi.fn(() => ({
     setCustomResourceResponseBucket: vi.fn(),
     getProvider: vi.fn(),
   })),
@@ -145,17 +145,17 @@ vi.mock('../../../src/provisioning/nested-stack-context.js', () => ({
 }));
 
 vi.mock('../../../src/analyzer/dag-builder.js', () => ({
-  DagBuilder: vi.fn().mockImplementation(() => ({})),
+  DagBuilder: vi.fn(() => ({})),
 }));
 
 vi.mock('../../../src/analyzer/diff-calculator.js', () => ({
-  DiffCalculator: vi.fn().mockImplementation(() => ({})),
+  DiffCalculator: vi.fn(() => ({})),
 }));
 
 /** Every asset region the run used: the marker read, and the publish nodes. */
 const assets = vi.hoisted(() => ({ modeRegions: [] as string[], publishRegions: [] as string[] }));
 vi.mock('../../../src/assets/asset-publisher.js', () => ({
-  AssetPublisher: vi.fn().mockImplementation(() => ({
+  AssetPublisher: vi.fn(() => ({
     addAssetsToGraph: vi.fn((_graph: unknown, _path: string, opts: { region: string }) => {
       assets.publishRegions.push(opts.region);
       return [] as string[];
@@ -165,7 +165,7 @@ vi.mock('../../../src/assets/asset-publisher.js', () => ({
 }));
 
 vi.mock('../../../src/assets/asset-storage.js', () => ({
-  AssetModeResolver: vi.fn().mockImplementation(() => ({
+  AssetModeResolver: vi.fn(() => ({
     resolve: vi.fn(async (region: string) => {
       assets.modeRegions.push(region);
       return { mode: 'legacy' };
@@ -196,7 +196,7 @@ const engineIndexRegions = vi.hoisted(() => new Map<string, string>());
 /** go-to-k/cdkd#6894: the SIGHUP listener count while a stack deploys. */
 const sighupDuringDeploy = vi.hoisted(() => ({ count: -1, names: [] as string[] }));
 vi.mock('../../../src/deployment/deploy-engine.js', () => ({
-  DeployEngine: vi.fn().mockImplementation((...args: unknown[]) => {
+  DeployEngine: vi.fn((...args: unknown[]) => {
     const engineRegion = args[6] as string;
     const indexRegion = (args[7] as { indexRegion?: string } | undefined)?.indexRegion;
     return {
@@ -225,7 +225,7 @@ vi.mock('../../../src/deployment/deploy-engine.js', () => ({
 
 const synthStacks = vi.hoisted(() => ({ value: [] as unknown[] }));
 vi.mock('../../../src/synthesis/synthesizer.js', () => ({
-  Synthesizer: vi.fn().mockImplementation(() => ({
+  Synthesizer: vi.fn(() => ({
     synthesize: vi.fn(async () => ({ stacks: synthStacks.value })),
     expandMacrosForStacks: vi.fn(async () => undefined),
   })),

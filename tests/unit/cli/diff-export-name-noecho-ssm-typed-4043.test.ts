@@ -29,7 +29,7 @@ vi.mock('@aws-sdk/client-cloudformation', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-cloudformation')>();
   return {
     ...actual,
-    CloudFormationClient: vi.fn().mockImplementation(() => ({
+    CloudFormationClient: vi.fn(() => ({
       send: async () => {
         throw Object.assign(new Error('not in this test'), { name: 'TypeNotFoundException' });
       },

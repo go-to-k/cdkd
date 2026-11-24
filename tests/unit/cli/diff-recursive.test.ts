@@ -43,22 +43,23 @@ vi.mock('../../../src/utils/aws-clients.js', async (importOriginal) => {
 // directly (not via aws-clients), so without this a template carrying an
 // Fn::ImportValue miss would attempt a live ListExports from a unit test.
 // Default: one known export + a does-not-exist DescribeStacks.
-const cfnMockSend = vi.hoisted(() => vi.fn());
+const cfnMockSend = vi.hoisted(() =>
+  vi.fn(async (cmd: { constructor: { name: string } }) => {
+    if (cmd.constructor.name === 'ListExportsCommand') {
+      return { Exports: [{ Name: 'CfnSideExport', Value: 'from-cfn' }] };
+    }
+    if (cmd.constructor.name === 'DescribeStacksCommand') {
+      throw Object.assign(new Error('Stack does not exist'), { name: 'ValidationError' });
+    }
+    throw new Error(`unexpected CloudFormation command: ${cmd.constructor.name}`);
+  })
+);
 vi.mock('@aws-sdk/client-cloudformation', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-cloudformation')>();
   return {
     ...actual,
-    CloudFormationClient: vi.fn().mockImplementation(() => ({ send: cfnMockSend })),
+    CloudFormationClient: vi.fn(() => ({ send: cfnMockSend })),
   };
-});
-cfnMockSend.mockImplementation(async (cmd: { constructor: { name: string } }) => {
-  if (cmd.constructor.name === 'ListExportsCommand') {
-    return { Exports: [{ Name: 'CfnSideExport', Value: 'from-cfn' }] };
-  }
-  if (cmd.constructor.name === 'DescribeStacksCommand') {
-    throw Object.assign(new Error('Stack does not exist'), { name: 'ValidationError' });
-  }
-  throw new Error(`unexpected CloudFormation command: ${cmd.constructor.name}`);
 });
 
 import { getLogger } from '../../../src/utils/logger.js';
