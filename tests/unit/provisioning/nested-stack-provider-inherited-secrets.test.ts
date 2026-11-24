@@ -35,7 +35,7 @@ vi.mock('../../../src/deployment/deploy-engine.js', async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
   return {
     ...actual,
-    DeployEngine: vi.fn().mockImplementation((...ctor: unknown[]) => {
+    DeployEngine: vi.fn((...ctor: unknown[]) => {
       ctorCalls.push(ctor);
       return {
         deploy: vi.fn(async (stackName: string) => ({

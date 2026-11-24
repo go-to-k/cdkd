@@ -9,7 +9,7 @@ const childLogger = vi.hoisted(() => ({
   info: vi.fn(),
   warn: vi.fn(),
   error: vi.fn(),
-  child: vi.fn().mockReturnThis(),
+  child: vi.fn(function (this: unknown) { return this; }),
 }));
 const loggedNoBaseline = (): boolean =>
   childLogger.debug.mock.calls.some((c) => String(c[0]).includes('No drift baseline captured'));

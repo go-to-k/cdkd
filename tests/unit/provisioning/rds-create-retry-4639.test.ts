@@ -9,9 +9,7 @@ import { vi } from 'vite-plus/test';
 vi.mock('@aws-sdk/client-rds', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-rds')>();
   const { sdkClientStandIn } = await import('./create-retry-4639-harness.js');
-  return { ...actual, RDSClient: vi
-      .fn()
-      .mockImplementation((cfg?: { region?: string; profile?: string }) =>
+  return { ...actual, RDSClient: vi.fn((cfg?: { region?: string; profile?: string }) =>
         sdkClientStandIn(cfg?.region ?? 'unset', cfg?.profile)
       ),
   };
@@ -23,7 +21,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

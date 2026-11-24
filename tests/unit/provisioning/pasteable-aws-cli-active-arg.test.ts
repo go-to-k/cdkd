@@ -21,16 +21,15 @@ const { rdsSend, schedulerSend, childLogger } = vi.hoisted(() => ({
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn(),
+    child: vi.fn((): unknown => childLogger),
   },
 }));
-childLogger.child.mockReturnValue(childLogger);
 
 vi.mock('@aws-sdk/client-rds', async () => {
   const actual = await vi.importActual<typeof import('@aws-sdk/client-rds')>('@aws-sdk/client-rds');
   return {
     ...actual,
-    RDSClient: vi.fn().mockImplementation(() => ({
+    RDSClient: vi.fn(() => ({
       send: rdsSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -43,7 +42,7 @@ vi.mock('@aws-sdk/client-scheduler', async () => {
   );
   return {
     ...actual,
-    SchedulerClient: vi.fn().mockImplementation(() => ({
+    SchedulerClient: vi.fn(() => ({
       send: schedulerSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),

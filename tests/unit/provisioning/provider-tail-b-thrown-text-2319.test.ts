@@ -25,7 +25,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return { getLogger: () => ({ child: () => childLogger }) };
 });
@@ -54,6 +54,9 @@ import { allowUnscopedCreateTokensForTests } from '../../../src/provisioning/pro
 import { awsSdkError } from '../_aws-sdk-error.js';
 
 type Sendable = { send: (...args: unknown[]) => unknown };
+// An own `send` set as `vi.fn(impl)` (a spy's reset would restore the real
+// method), put back in afterAll (go-to-k/cdkd#6928).
+const sendRestores: Array<() => void> = [];
 for (const C of [
   ElasticLoadBalancingV2Client,
   FirehoseClient,
@@ -62,10 +65,21 @@ for (const C of [
   CloudFrontClient,
   S3Client,
 ]) {
-  vi.spyOn(C.prototype as unknown as Sendable, 'send').mockImplementation(
-    (...args: unknown[]) => mockSend(...args) as unknown
-  );
+  const proto = C.prototype as unknown as Sendable;
+  const own = Object.getOwnPropertyDescriptor(proto, 'send');
+  Object.defineProperty(proto, 'send', {
+    value: vi.fn((...args: unknown[]) => mockSend(...args) as unknown),
+    configurable: true,
+    writable: true,
+  });
+  sendRestores.push(() => {
+    if (own) Object.defineProperty(proto, 'send', own);
+    else delete (proto as Partial<Sendable>).send;
+  });
 }
+afterAll(() => {
+  while (sendRestores.length > 0) sendRestores.pop()!();
+});
 
 // create() runs outside a withStackScope scope here, so the stack-scoped
 // create token (go-to-k/cdkd#4428) is opted out of its guard.

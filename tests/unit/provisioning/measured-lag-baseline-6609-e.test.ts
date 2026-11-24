@@ -40,7 +40,7 @@ const { ddbSend, regionalSend, smSend, childLogger } = vi.hoisted(() => ({
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn(),
+    child: vi.fn((): unknown => childLogger),
   },
 }));
 
@@ -57,7 +57,7 @@ vi.mock('@aws-sdk/client-dynamodb', async () => {
     await vi.importActual<typeof import('@aws-sdk/client-dynamodb')>('@aws-sdk/client-dynamodb');
   return {
     ...actual,
-    DynamoDBClient: vi.fn().mockImplementation((cfg: { region?: string } | undefined) => ({
+    DynamoDBClient: vi.fn((cfg: { region?: string } | undefined) => ({
       send: cfg?.region === 'eu-west-1' ? regionalSend : ddbSend,
       config: { region: () => Promise.resolve(cfg?.region ?? 'us-east-1') },
     })),
@@ -65,7 +65,6 @@ vi.mock('@aws-sdk/client-dynamodb', async () => {
 });
 
 vi.mock('../../../src/utils/logger.js', () => {
-  childLogger.child.mockReturnValue(childLogger);
   return {
     getLogger: () => ({
       child: () => childLogger,

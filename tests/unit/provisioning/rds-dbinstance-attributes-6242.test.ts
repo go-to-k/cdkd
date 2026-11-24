@@ -10,7 +10,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
 const { mockRdsSend } = vi.hoisted(() => ({ mockRdsSend: vi.fn() }));
 vi.mock('@aws-sdk/client-rds', async () => ({
   ...(await vi.importActual('@aws-sdk/client-rds')),
-  RDSClient: vi.fn().mockImplementation(() => ({ send: mockRdsSend })),
+  RDSClient: vi.fn(() => ({ send: mockRdsSend })),
 }));
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), child: () => fns };

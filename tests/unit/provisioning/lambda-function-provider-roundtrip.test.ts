@@ -27,7 +27,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({
@@ -47,7 +47,7 @@ vi.mock('@aws-sdk/client-lambda', async () => {
   );
   return {
     ...actual,
-    waitUntilFunctionUpdatedV2: vi.fn().mockResolvedValue({ state: 'SUCCESS' }),
+    waitUntilFunctionUpdatedV2: vi.fn(async () => ({ state: 'SUCCESS' })),
   };
 });
 

@@ -6,7 +6,7 @@ vi.mock('@aws-sdk/client-kms', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-kms')>();
   return {
     ...actual,
-    KMSClient: vi.fn().mockImplementation(() => ({
+    KMSClient: vi.fn(() => ({
       config: {
         region: () => Promise.resolve('us-east-1'),
         retryStrategy: () =>
@@ -27,7 +27,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

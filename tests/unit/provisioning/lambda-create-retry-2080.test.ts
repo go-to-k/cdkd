@@ -62,7 +62,7 @@ vi.mock('@aws-sdk/client-lambda', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-lambda')>();
   return {
     ...actual,
-    LambdaClient: vi.fn().mockImplementation((options: { region?: unknown }) => {
+    LambdaClient: vi.fn((options: { region?: unknown }) => {
       ctorArgs.push(options);
       return fakeClient(options.region);
     }),
@@ -82,7 +82,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: warnSpy,
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

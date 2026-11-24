@@ -33,7 +33,7 @@ vi.mock('@aws-sdk/client-sfn', async () => {
   const actual = await vi.importActual('@aws-sdk/client-sfn');
   return {
     ...actual,
-    SFNClient: vi.fn().mockImplementation(() => ({
+    SFNClient: vi.fn(() => ({
       send: sfnSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -44,7 +44,7 @@ vi.mock('@aws-sdk/client-ecr', async () => {
   const actual = await vi.importActual('@aws-sdk/client-ecr');
   return {
     ...actual,
-    ECRClient: vi.fn().mockImplementation(() => ({
+    ECRClient: vi.fn(() => ({
       send: ecrSend,
       config: { region: () => Promise.resolve('us-east-1') },
       middlewareStack: { add: vi.fn(), addRelativeTo: vi.fn() },

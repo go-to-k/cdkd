@@ -17,19 +17,19 @@ const { mockSend, debug, client } = vi.hoisted(() => {
 
 vi.mock('@aws-sdk/client-ecr', async (importOriginal) => ({
   ...((await importOriginal()) as object),
-  ECRClient: vi.fn().mockImplementation(client),
+  ECRClient: vi.fn(client),
 }));
 vi.mock('@aws-sdk/client-sfn', async (importOriginal) => ({
   ...((await importOriginal()) as object),
-  SFNClient: vi.fn().mockImplementation(client),
+  SFNClient: vi.fn(client),
 }));
 vi.mock('@aws-sdk/client-wafv2', async (importOriginal) => ({
   ...((await importOriginal()) as object),
-  WAFV2Client: vi.fn().mockImplementation(client),
+  WAFV2Client: vi.fn(client),
 }));
 vi.mock('@aws-sdk/client-codebuild', async (importOriginal) => ({
   ...((await importOriginal()) as object),
-  CodeBuildClient: vi.fn().mockImplementation(client),
+  CodeBuildClient: vi.fn(client),
 }));
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({ sqs: client(), sns: client(), sts: client() }),
@@ -41,7 +41,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return { getLogger: () => ({ ...childLogger, child: () => childLogger }) };
 });

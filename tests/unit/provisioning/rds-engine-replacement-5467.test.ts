@@ -17,7 +17,7 @@ vi.mock('@aws-sdk/client-rds', async () => {
   const actual = await vi.importActual('@aws-sdk/client-rds');
   return {
     ...actual,
-    RDSClient: vi.fn().mockImplementation(() => ({
+    RDSClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -61,12 +61,12 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
-  IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
-    getPhysicalIdFallbackCount: vi.fn().mockReturnValue(0),
+  IntrinsicFunctionResolver: vi.fn(() => ({
+    getPhysicalIdFallbackCount: vi.fn(() => 0),
     resetPhysicalIdFallbackCount: vi.fn(),
-    resolve: vi.fn().mockImplementation((props: unknown) => Promise.resolve(props)),
-    resolveParameters: vi.fn().mockResolvedValue({}),
-    evaluateConditions: vi.fn().mockResolvedValue({}),
+    resolve: vi.fn((props: unknown) => Promise.resolve(props)),
+    resolveParameters: vi.fn(async () => ({})),
+    evaluateConditions: vi.fn(async () => ({})),
   })),
 }));
 

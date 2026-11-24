@@ -29,7 +29,7 @@ import { STATE_RESOURCES_MALFORMED } from '../../../src/state/malformed-resource
 import { CdkdError } from '../../../src/utils/error-handler.js';
 
 vi.mock('../../../src/deployment/deploy-engine.js', () => ({
-  DeployEngine: vi.fn().mockImplementation(() => ({
+  DeployEngine: vi.fn(() => ({
     deploy: vi.fn(async (stackName: string) => ({
       stackName,
       created: 1,

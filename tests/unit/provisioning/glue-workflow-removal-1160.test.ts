@@ -25,7 +25,7 @@ vi.mock('@aws-sdk/client-glue', async () => {
     await vi.importActual<typeof import('@aws-sdk/client-glue')>('@aws-sdk/client-glue');
   return {
     ...actual,
-    GlueClient: vi.fn().mockImplementation(() => ({
+    GlueClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -33,8 +33,8 @@ vi.mock('@aws-sdk/client-glue', async () => {
 });
 
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation(() => ({
-    send: vi.fn().mockResolvedValue({ Account: '123456789012' }),
+  STSClient: vi.fn(() => ({
+    send: vi.fn(async () => ({ Account: '123456789012' })),
   })),
   GetCallerIdentityCommand: vi.fn(),
 }));
@@ -45,7 +45,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

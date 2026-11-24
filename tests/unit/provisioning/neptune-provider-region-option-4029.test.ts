@@ -14,7 +14,7 @@ vi.mock('@aws-sdk/client-neptune', async () => {
   const actual = await vi.importActual('@aws-sdk/client-neptune');
   return {
     ...actual,
-    NeptuneClient: vi.fn().mockImplementation((config: { region?: string }) => {
+    NeptuneClient: vi.fn((config: { region?: string }) => {
       clientRegions.push(config.region);
       return { send, config: { region: () => Promise.resolve(config.region ?? 'us-east-1') } };
     }),
@@ -27,7 +27,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return { getLogger: () => ({ child: () => child }) };
 });

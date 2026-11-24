@@ -55,7 +55,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     // a green suite (review probe: deleting the warn call reddened nothing).
     warn: warnSpy,
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({
