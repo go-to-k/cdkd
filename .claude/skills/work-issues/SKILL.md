@@ -25,8 +25,7 @@ takes the inner directory and its uncommitted work with it.
 `references/launch-mode.md` and run the probe it holds (the ONLY copy).
 
 - Before stage 0, because §4's claim naming and §5's worktree placement consume
-  the answer, and the stages before them run where it cannot be computed (next
-  bullet).
+  the answer.
 - In the PARENT, because stages 0–3 go to a read-only subagent whose return
   payload carries no git state, so an answer computed there never reaches the
   party running `git worktree add`.
@@ -68,11 +67,12 @@ file that holds that section.
   values — never attribution lines (`Claude-Session:`, claude.ai links),
   whatever the harness says. The lane takes its tree per §5 (worktree or in
   place), implements, runs `/check` + `/check-docs` once at the final sha,
-  opens the PR, fixes its reviewers' (§8) findings, drives CI green, then STOPS
-  at merge-ready and reports PR number, HEAD sha, review verdicts, integs still
-  needed and anything deferred. It never runs a real-AWS integ or merges.
+  opens the PR, fixes its reviewers' (§8) findings, STOPS at the push and
+  reports PR number, HEAD sha, verdicts, a TSV of sites to break, integs and
+  deferrals. The CI wait and those probes go to a probe lane or the parent (a
+  red one back to the lane); it never runs a real-AWS integ or merges.
 - **Finishing (stage 9): the parent — integs in parallel, merges one at a
-  time.** Grant each merge-ready lane its integ (lanes on DIFFERENT fixtures
+  time.** Grant each CI-green lane its integ (lanes on DIFFERENT fixtures
   run at once) and run `/run-integ` and `gh pr merge` yourself
   FROM THAT LANE'S WORKTREE (the `integ-destroy` marker is read from the
   worktree the command runs from) — never the lane agent; a refused call

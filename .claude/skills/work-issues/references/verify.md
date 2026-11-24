@@ -237,8 +237,8 @@ run AGENTS.md's leftover check, which the `deployments/` store survives.
 
 **The independent review round is the ORCHESTRATOR's; a LANE's own reviewers
 never substitute for it** (#2383) — they are its children and
-inherit its premise. The parent runs its round once the lane reports
-merge-ready, ONCE, on the final sha — brief each reviewer with the maintainer's
+inherit its premise. The parent runs its round once the lane's push
+is CI-green, ONCE, on the final sha — brief each reviewer with the maintainer's
 design answers and "what does this break that CFn or the CDK CLI accepts?" (a
 redaction slice adds: "sweep every helper that returns or mutates the ORIGINAL
 SDK error after the try — created-before-failure cleanup, orphan notes, retire
