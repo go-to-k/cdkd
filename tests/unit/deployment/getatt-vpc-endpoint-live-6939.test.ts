@@ -19,15 +19,21 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 
 import { DescribeVpcEndpointsCommand } from '@aws-sdk/client-ec2';
 import { IntrinsicFunctionResolver } from '../../../src/deployment/intrinsic-function-resolver.js';
+import { vpcEndpointAttributeWait } from '../../../src/deployment/intrinsic-resolver/getatt-construct-core.js';
 import type { ResolverContext } from '../../../src/deployment/intrinsic-resolver/support.js';
 import { IntrinsicResolutionRefusalError } from '../../../src/utils/error-handler.js';
+import {
+  disarmInterruptWatchForTests,
+  interruptWatchTestSeam,
+  isInterruptedWaitError,
+} from '../../../src/provisioning/interrupt-watch.js';
 
 const ID = 'vpce-0123456789abcdef0';
 
 /**
- * go-to-k/cdkd#6940: the wait for a `pending` endpoint is the deploy's shared
- * deferred readiness of it (the provider's --no-wait create / modify defers
- * it); `undefined` when this deploy skipped no wait for it.
+ * Without `awaitReady` the endpoint was not left pending by this deploy (an
+ * earlier --no-wait deploy's): the arm's own bounded wait. With it, the
+ * deploy's shared deferred readiness of the endpoint (go-to-k/cdkd#6940).
  */
 function context(
   attributes: Record<string, unknown> = { Id: ID },
@@ -69,34 +75,37 @@ const endpoint = (state: string) => ({
 });
 
 describe('Fn::GetAtt AWS::EC2::VPCEndpoint live arm (#6939)', () => {
-  const awaitReady = vi.fn((): Promise<void> | undefined => Promise.resolve());
+  const realWait = { ...vpcEndpointAttributeWait };
+  const sleep = vi.fn((_ms: number) => Promise.resolve());
   beforeEach(() => {
     mockEc2Send.mockReset();
-    awaitReady.mockClear();
+    sleep.mockClear();
+    Object.assign(vpcEndpointAttributeWait, { polls: 3, delayMs: 3_000, sleep });
+  });
+  afterEach(() => {
+    Object.assign(vpcEndpointAttributeWait, realWait);
   });
 
-  it("waits for a pending endpoint's deferred readiness, then serves NetworkInterfaceIds", async () => {
+  it('waits for a pending endpoint, then serves NetworkInterfaceIds', async () => {
     mockEc2Send
       .mockResolvedValueOnce(endpoint('pending'))
       .mockResolvedValueOnce(endpoint('available'));
     const resolver = new IntrinsicFunctionResolver();
     expect(
-      await resolver.resolve(
-        { 'Fn::GetAtt': ['Endpoint', 'NetworkInterfaceIds'] },
-        context(undefined, awaitReady)
-      )
+      await resolver.resolve({ 'Fn::GetAtt': ['Endpoint', 'NetworkInterfaceIds'] }, context())
     ).toEqual(['eni-1', 'eni-2']);
     expect(mockEc2Send.mock.calls[0]![0]).toBeInstanceOf(DescribeVpcEndpointsCommand);
-    expect(awaitReady).toHaveBeenCalledTimes(1);
+    expect(sleep).toHaveBeenCalledTimes(1);
   });
 
   it('serves DnsEntries in the CloudFormation <hosted zone>:<name> form', async () => {
     mockEc2Send.mockResolvedValue(endpoint('available'));
     const resolver = new IntrinsicFunctionResolver();
-    expect(
-      await resolver.resolve({ 'Fn::GetAtt': ['Endpoint', 'DnsEntries'] }, context(undefined, awaitReady))
-    ).toEqual(['Z7HUB:vpce-1.sts.us-east-1.vpce.amazonaws.com', 'Z0578:sts.us-east-1.amazonaws.com']);
-    expect(awaitReady).not.toHaveBeenCalled();
+    expect(await resolver.resolve({ 'Fn::GetAtt': ['Endpoint', 'DnsEntries'] }, context())).toEqual([
+      'Z7HUB:vpce-1.sts.us-east-1.vpce.amazonaws.com',
+      'Z0578:sts.us-east-1.amazonaws.com',
+    ]);
+    expect(sleep).not.toHaveBeenCalled();
   });
 
   it('serves a recorded value without a read, and Id from the physical id', async () => {
@@ -109,39 +118,24 @@ describe('Fn::GetAtt AWS::EC2::VPCEndpoint live arm (#6939)', () => {
     expect(mockEc2Send).not.toHaveBeenCalled();
   });
 
-  it('refuses, rather than answering the endpoint id, a pending endpoint whose wait was not skipped', async () => {
+  it('refuses, rather than answering the endpoint id, when the wait runs out', async () => {
     mockEc2Send.mockResolvedValue(endpoint('pending'));
     const resolver = new IntrinsicFunctionResolver();
     const error = await resolver
-      .resolve({ 'Fn::GetAtt': ['Endpoint', 'DnsEntries'] }, context(undefined, () => undefined))
+      .resolve({ 'Fn::GetAtt': ['Endpoint', 'DnsEntries'] }, context())
       .catch((e: unknown) => e);
     expect(error).toBeInstanceOf(IntrinsicResolutionRefusalError);
-    expect(String(error)).toMatch(/still pending/);
-    expect(mockEc2Send).toHaveBeenCalledTimes(1);
-  });
-
-  it("a deferred readiness that fails fails the reference with the endpoint's error", async () => {
-    mockEc2Send.mockResolvedValue(endpoint('pending'));
-    const failure = new Error('VPC endpoint Endpoint is failed');
-    const resolver = new IntrinsicFunctionResolver();
-    await expect(
-      resolver.resolve(
-        { 'Fn::GetAtt': ['Endpoint', 'DnsEntries'] },
-        context(undefined, () => Promise.reject(failure))
-      )
-    ).rejects.toBe(failure);
+    expect(String(error)).toMatch(/stayed pending/);
+    expect(mockEc2Send).toHaveBeenCalledTimes(4);
   });
 
   it('reads CreationTimestamp live without waiting on a pending endpoint', async () => {
     mockEc2Send.mockResolvedValue(endpoint('pending'));
     const resolver = new IntrinsicFunctionResolver();
     expect(
-      await resolver.resolve(
-        { 'Fn::GetAtt': ['Endpoint', 'CreationTimestamp'] },
-        context(undefined, awaitReady)
-      )
+      await resolver.resolve({ 'Fn::GetAtt': ['Endpoint', 'CreationTimestamp'] }, context())
     ).toBe('2026-11-24T14:28:20Z');
-    expect(awaitReady).not.toHaveBeenCalled();
+    expect(sleep).not.toHaveBeenCalled();
   });
 
   it('refuses an endpoint EC2 no longer lists', async () => {
@@ -152,18 +146,15 @@ describe('Fn::GetAtt AWS::EC2::VPCEndpoint live arm (#6939)', () => {
     ).rejects.toThrow(/reported no such endpoint/);
   });
 
-  it('a throttled read reads again after the deferred readiness, then refuses if it still fails', async () => {
+  it('keeps polling through throttles, then refuses when they outlast the wait', async () => {
     mockEc2Send.mockRejectedValue(
       Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' })
     );
     const resolver = new IntrinsicFunctionResolver();
     await expect(
-      resolver.resolve(
-        { 'Fn::GetAtt': ['Endpoint', 'NetworkInterfaceIds'] },
-        context(undefined, awaitReady)
-      )
-    ).rejects.toThrow(/was throttled or failing/);
-    expect(mockEc2Send).toHaveBeenCalledTimes(2);
+      resolver.resolve({ 'Fn::GetAtt': ['Endpoint', 'NetworkInterfaceIds'] }, context())
+    ).rejects.toThrow(/stayed throttled or failing past the attribute wait/);
+    expect(mockEc2Send).toHaveBeenCalledTimes(4);
   });
 
   it('refuses at once on a non-transient read failure, naming its class', async () => {
@@ -188,5 +179,75 @@ describe('Fn::GetAtt AWS::EC2::VPCEndpoint live arm (#6939)', () => {
     await expect(
       resolver.resolve({ 'Fn::GetAtt': ['Endpoint', 'CreationTimestamp'] }, context())
     ).rejects.toThrow(/reported no CreationTimestamp/);
+  });
+
+  describe('with the command owning interrupts', () => {
+    beforeEach(() => {
+      disarmInterruptWatchForTests();
+      interruptWatchTestSeam.commandOwnsInterrupts = () => true;
+    });
+    afterEach(() => {
+      disarmInterruptWatchForTests();
+      delete interruptWatchTestSeam.commandOwnsInterrupts;
+    });
+
+    it('stops the pending wait on Ctrl-C', async () => {
+      mockEc2Send.mockResolvedValue(endpoint('pending'));
+      vpcEndpointAttributeWait.sleep = () => {
+        process.emit('SIGINT');
+        return Promise.resolve();
+      };
+      const resolver = new IntrinsicFunctionResolver();
+      const error = await resolver
+        .resolve({ 'Fn::GetAtt': ['Endpoint', 'NetworkInterfaceIds'] }, context())
+        .catch((e: unknown) => e);
+      expect(isInterruptedWaitError(error)).toBe(true);
+      expect(mockEc2Send).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('an endpoint this deploy left pending (#6940)', () => {
+    it("waits through the deploy's deferred readiness, not the arm's own poll", async () => {
+      mockEc2Send
+        .mockResolvedValueOnce(endpoint('pending'))
+        .mockResolvedValueOnce(endpoint('available'));
+      const awaitReady = vi.fn(() => Promise.resolve());
+      const resolver = new IntrinsicFunctionResolver();
+      expect(
+        await resolver.resolve(
+          { 'Fn::GetAtt': ['Endpoint', 'NetworkInterfaceIds'] },
+          context(undefined, awaitReady)
+        )
+      ).toEqual(['eni-1', 'eni-2']);
+      expect(awaitReady).toHaveBeenCalledTimes(1);
+      expect(sleep).not.toHaveBeenCalled();
+    });
+
+    it('a deferred readiness that fails fails the reference with its error', async () => {
+      mockEc2Send.mockResolvedValue(endpoint('pending'));
+      const failure = new Error('VPC endpoint Endpoint is failed');
+      const resolver = new IntrinsicFunctionResolver();
+      await expect(
+        resolver.resolve(
+          { 'Fn::GetAtt': ['Endpoint', 'DnsEntries'] },
+          context(undefined, () => Promise.reject(failure))
+        )
+      ).rejects.toBe(failure);
+      expect(sleep).not.toHaveBeenCalled();
+    });
+
+    it('a pending endpoint this deploy did not defer keeps the bounded live wait', async () => {
+      mockEc2Send
+        .mockResolvedValueOnce(endpoint('pending'))
+        .mockResolvedValueOnce(endpoint('available'));
+      const resolver = new IntrinsicFunctionResolver();
+      expect(
+        await resolver.resolve(
+          { 'Fn::GetAtt': ['Endpoint', 'NetworkInterfaceIds'] },
+          context(undefined, () => undefined)
+        )
+      ).toEqual(['eni-1', 'eni-2']);
+      expect(sleep).toHaveBeenCalledTimes(1);
+    });
   });
 });

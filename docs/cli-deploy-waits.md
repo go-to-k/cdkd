@@ -100,9 +100,8 @@ An update that changes the subnets, security groups, policy, private DNS,
 DNS options or IP address type returns the endpoint to `pending`. A
 `Fn::GetAtt` of `DnsEntries` or `NetworkInterfaceIds` after such an update
 waits for it to become available, through the same shared wait, and then
-reads the value from AWS. An endpoint still `pending` that this deploy did not
-leave pending (an earlier `--no-wait` deploy's) is refused rather than waited
-for.
+reads the value from AWS. An endpoint an earlier `--no-wait` deploy left
+`pending` is waited for directly, up to 10 minutes.
 
 ### EC2 instance
 

@@ -2,6 +2,7 @@ import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { displayMasked, maskValueLeaves } from './masking-display.js';
+import { startInterruptWatch } from '../../provisioning/interrupt-watch.js';
 import type { ResourceState } from '../../types/state.js';
 import { IntrinsicResolutionRefusalError } from '../../utils/error-handler.js';
 import {
@@ -204,6 +205,19 @@ export async function constructAttributeForCoreTypes(
         if (ready !== undefined) {
           await ready;
           observed = await read();
+        } else {
+          // Not left pending by THIS deploy (an earlier --no-wait deploy's
+          // modify): the bounded live wait, as the NAT / Connect arms do.
+          const watch = startInterruptWatch(`VPC endpoint ${logicalId} attribute wait`);
+          try {
+            for (let poll = 0; poll < vpcEndpointAttributeWait.polls && pending(observed); poll++) {
+              if (watch.isInterrupted()) throw watch.onInterrupted();
+              await vpcEndpointAttributeWait.sleep(vpcEndpointAttributeWait.delayMs);
+              observed = await read();
+            }
+          } finally {
+            watch.dispose();
+          }
         }
       }
       const endpoint = observed.endpoint;
@@ -219,7 +233,7 @@ export async function constructAttributeForCoreTypes(
       if (observed.transient === true) {
         return refuseUnservedAttribute(resolver, {
           ...refusal,
-          observed: 'DescribeVpcEndpoints was throttled or failing',
+          observed: 'DescribeVpcEndpoints stayed throttled or failing past the attribute wait',
         });
       }
       if (endpoint === undefined) {
@@ -231,7 +245,7 @@ export async function constructAttributeForCoreTypes(
       if (pending(observed)) {
         return refuseUnservedAttribute(resolver, {
           ...refusal,
-          observed: 'the VPC endpoint is still pending, and this deploy did not skip its wait',
+          observed: 'the VPC endpoint stayed pending past the attribute wait',
         });
       }
       if (attributeName === 'DnsEntries') return dnsEntryStrings(endpoint);
@@ -698,3 +712,16 @@ export async function constructAttributeForCoreTypes(
   }
   return NOT_CONSTRUCTED;
 }
+
+/**
+ * How long `Fn::GetAtt [<EC2::VPCEndpoint>, DnsEntries | NetworkInterfaceIds]`
+ * waits for a `pending` endpoint this deploy did not leave pending
+ * (go-to-k/cdkd#6939; one this deploy left pending waits through its deferred
+ * readiness, go-to-k/cdkd#6940): 10 minutes in 3 s polls, against the 30-60 s
+ * an Interface endpoint measured. A mutable seam so tests do not sleep.
+ */
+export const vpcEndpointAttributeWait = {
+  polls: 200,
+  delayMs: 3_000,
+  sleep: (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms)),
+};
