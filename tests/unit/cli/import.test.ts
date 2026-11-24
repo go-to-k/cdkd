@@ -18,6 +18,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import type { StackState } from '../../../src/types/state.js';
 // Type-only import — erased at runtime, so it does NOT trigger the
 // `vi.mock('../../../src/cli/commands/retire-cfn-stack.js', ...)` factory
 // below. Re-typing the hoisted `mockGetCfnResourceTree` spy against the
@@ -332,7 +333,6 @@ import {
   expectedNestedStackTags,
   nestedRowsNeedingTagRun,
 } from '../../../src/deployment/nested-stack-tags.js';
-type StackStateLike = Record<string, unknown>;
 import { AwsClients } from '../../../src/utils/aws-clients.js';
 import { registerAllProviders } from '../../../src/provisioning/register-providers.js';
 import { stageLoadError } from '../../../src/synthesis/failed-stages.js';
@@ -8536,7 +8536,7 @@ describe('cdkd import', () => {
         expect(savedNestedStackTags('P')).toEqual({ Mid: { team: 'root', tier: 'mid' } });
         // Nothing changed since the migration, so the next deploy re-runs no row.
         const savedP = (
-          mockSaveState.mock.calls as unknown as [string, string, StackStateLike][]
+          mockSaveState.mock.calls as unknown as [string, string, StackState][]
         ).find((c) => c[0] === 'P')![2];
         expect(
           nestedRowsNeedingTagRun(
@@ -8549,7 +8549,7 @@ describe('cdkd import', () => {
               }),
               { team: 'root' }
             ),
-            savedP as never
+            savedP
           ).size
         ).toBe(0);
         expect(savedNestedStackTags('P~Mid')).toEqual({
