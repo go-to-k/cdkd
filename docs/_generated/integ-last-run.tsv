@@ -203,8 +203,8 @@ eventbridge-pipes	2026-11-06T22:52:11Z	PASS	235	verify.sh	#5925 pipes split head
 eventbridge-scheduler	2026-11-06T23:59:22Z	PASS	57	verify.sh	#5935 scheduler-schedule split head; rc ok, orph clean
 eventbus-policy	2026-11-21T11:33:31Z	PASS	173	verify.sh	rc 0, 0 orphans (PR #6763)
 eventsourcemapping-race	2026-11-06T20:37:27Z	PASS	109	verify.sh	#5913 lambda-eventsource split head; rc ok, orph clean
-export	2026-11-24T06:07:55Z	PASS	285	verify.sh	rc ok, orph clean; #6887 step 4a stack tags
-export-nested-stack	2026-11-24T06:07:55Z	PASS	216	verify.sh	rc ok, orph clean; #6887 step 10b root/child stack tags
+export	2026-11-24T06:59:47Z	PASS	280	verify.sh	rc ok, orph clean; #6887 step 4a, rebased on #6907
+export-nested-stack	2026-11-24T06:59:47Z	PASS	211	verify.sh	rc ok, orph clean; #6887 step 10b, rebased
 fallback-recreate-children	2026-11-04T20:04:01Z	PASS	100	verify.sh	rc ok, orph clean
 fifo-sqs-event-source	2026-11-20T11:22:10Z	PASS	196	verify.sh	PR6652 be63cc056, us-east-1, revert-identity kept, orph clean
 firehose-iceberg-destination	2026-11-22T02:46:37Z	PASS	186	verify.sh	rc ok, orph clean, sha 3116c9288 (#6813 sub-read errors)
@@ -259,7 +259,7 @@ import-lambda-url-attributes	2026-11-04T06:43:31Z	PASS	115	verify.sh	rc ok, orph
 import-migrate-appsync	2026-10-30T05:02:32Z	PASS	115	verify.sh	#5540 outputs = CFn (KeyArn/KeyRef/SchemaRef); rc ok, orph clean, versions swept
 import-migrate-pending-change	2026-11-22T21:43:53Z	PASS	176	verify.sh	rc ok, orph clean; PR #6844 aa10e2386
 import-migrate-vpc	2026-11-04T22:03:16Z	PASS	356	verify.sh	rc ok, orph clean; VPC confirmed gone; us-east-1; own temp state bucket
-import-nested-stack	2026-11-24T06:07:55Z	PASS	171	verify.sh	rc ok, orph clean; #6887 step 9b records hold stack tag
+import-nested-stack	2026-11-24T06:59:47Z	PASS	160	verify.sh	rc ok, orph clean; #6887 step 9b, rebased
 import-noecho-parameter	2026-11-04T20:04:01Z	PASS	126	verify.sh	rc ok, orph clean
 import-reimport-masked-attrs	2026-11-04T21:03:16Z	PASS	174	verify.sh	rc 0, destroy 0 errors, 0 surviving state versions, orph clean (state keys, live resources, no leaked log groups); own temp state bucket
 import-retain-destroy	2026-11-04T08:44:47Z	PASS	140	verify.sh	rc 0, destroy clean, retained Kept param removed by fixture, orph clean (own state bucket)
