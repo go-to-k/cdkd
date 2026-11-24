@@ -61,7 +61,9 @@ Run these sequentially and report results.
    shows no other run: an uncapped run beside a peer's has hung the host, so
    `vite.config.ts` caps a local run at half the CPUs (never fewer than 4).
    Prefer this over `vp run test`: nothing sits between the caller and the
-   verdict.
+   verdict. The suite takes minutes (225-715 s measured), past a shell tool's
+   default timeout: start the block below in the background (Claude Code:
+   `run_in_background`) and read the verdict when it exits.
 
    Read the summary's NUMBERS, not its colour, and read the `Errors` line, which
    is NOT `Type Errors`. `Test Files N passed (N)` is self-consistent over a
