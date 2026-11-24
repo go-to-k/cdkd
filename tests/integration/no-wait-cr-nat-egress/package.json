@@ -1,0 +1,20 @@
+{
+  "name": "cdkd-integ-no-wait-cr-nat-egress",
+  "version": "1.0.0",
+  "private": true,
+  "description": "cdkd --no-wait: a custom resource whose VPC handler calls out through a NAT gateway waits for the gateway the deploy did not wait for (#6940)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.1112.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

@@ -377,12 +377,22 @@ provisioned. `CreateFunctionUrlConfig`, `AddPermission` and
 invokes the function, waits for the function to report `Active` first,
 whatever this flag says.
 
+An edge whose dependent is upstream of a custom resource or a nested stack is
+kept, in every wait mode: the custom resource's handler (or one in the nested
+stack) runs during the deploy and may need the route, and the NAT gateway
+behind it, when it does. So a custom resource's VPC handler function is
+created after the subnet's default route, as CDK asked, and under `--no-wait`
+the custom resource also waits for that NAT gateway to be `available` before
+it is invoked. Every other function, role, URL and event source mapping is
+still created in parallel with the NAT gateway.
+
 ### When to opt out
 
-- **A custom resource invokes a VPC Lambda indirectly**, through SNS or as a
-  Step Functions task, and you want the NAT route up before the function is
-  hit. cdkd's own `Active` wait covers only a Lambda used directly as the
-  `ServiceToken`.
+- **A VPC Lambda is invoked during the deploy by something other than a
+  custom resource upstream of it**, such as an SNS topic or a Step Functions
+  task, and you want the NAT route up before the function is hit. cdkd keeps
+  the edge only for a function upstream of a custom resource or a nested
+  stack.
 - **You want to avoid a slow rollback.** Suppose a Lambda's network interface
   fails to provision after the deploy has started creating a distribution
   against its Function URL. The rollback then has to delete both, and deleting

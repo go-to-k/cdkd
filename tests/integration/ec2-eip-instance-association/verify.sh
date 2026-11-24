@@ -8,7 +8,7 @@
 # disassociates the EIP's own association after that refusal and releases.
 #
 # Phases:
-#   1. Deploy (no --no-wait: that skips the association). Assert the VPC is
+#   1. Deploy in the default mode. Assert the VPC is
 #      not the default one, the instance is running, the address is associated
 #      with it, and the EIP record is on the SDK route with the InstanceId the
 #      delete reads.
@@ -16,6 +16,12 @@
 #      fails on the InUse refusal, the address left allocated and associated),
 #      that cdkd disassociated its own association, and that the address is
 #      released, the instance terminated and the VPC and state record gone.
+#   3. Deploy again under --no-wait (go-to-k/cdkd#6940, rule 3): the instance's
+#      create returns while it is `pending`, and AWS refuses AssociateAddress
+#      for an instance that is not running, so the EIP's association waits for
+#      the instance's skipped `running` wait. Assert the deploy succeeds, the
+#      readiness-wait line names the instance and the EIP, and the address is
+#      associated with the instance. Destroy again and assert it gone.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -148,8 +154,7 @@ echo "==> Pre-run cleanup"
 cleanup
 
 # --- Phase 1: deploy ------------------------------------------------------
-# No --no-wait: under it cdkd skips the association (the instance is not yet
-# running), and the arm would destroy an unassociated address.
+# The default mode: Phase 3 covers --no-wait.
 echo "==> Phase 1: deploy"
 node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -293,8 +298,58 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
 
+# --- Phase 3: deploy under --no-wait (go-to-k/cdkd#6940, rule 3) ---------
+echo "==> Phase 3: deploy --no-wait"
+NO_WAIT_LOG="$(node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes --no-wait 2>&1)" || {
+  printf '%s\n' "${NO_WAIT_LOG}"
+  echo "FAIL: the --no-wait deploy failed" >&2
+  exit 1
+}
+printf '%s\n' "${NO_WAIT_LOG}"
+NO_WAIT_PLAIN="$(sed $'s/\x1b\\[[0-9;]*m//g' <<<"${NO_WAIT_LOG}")"
+if ! grep -qE '\(AWS::EC2::Instance\), whose readiness wait --no-wait skipped: Elastic IP [A-Za-z0-9]+ is associated with it' <<<"${NO_WAIT_PLAIN}"; then
+  echo "FAIL: no readiness-wait line for the instance before the EIP's association" >&2
+  exit 1
+fi
+if grep -qF 'was NOT associated with' <<<"${NO_WAIT_PLAIN}"; then
+  echo "FAIL: the EIP's association was skipped under --no-wait" >&2
+  exit 1
+fi
+echo "    OK: the EIP's association waited for the instance --no-wait had not waited for"
+STATE3="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
+INSTANCE3="$(jq -r '.outputs.InstanceId // empty' <<<"${STATE3}")"
+ALLOC3="$(jq -r '.outputs.AllocationId // empty' <<<"${STATE3}")"
+VPC3="$(jq -r '.outputs.VpcId // empty' <<<"${STATE3}")"
+if [ -z "${INSTANCE3}" ] || [ -z "${ALLOC3}" ] || [ -z "${VPC3}" ]; then
+  echo "FAIL: could not read InstanceId '${INSTANCE3}', AllocationId '${ALLOC3}' or VpcId '${VPC3}' after the --no-wait deploy" >&2
+  exit 1
+fi
+ADDR3_INSTANCE="$(aws ec2 describe-addresses --allocation-ids "${ALLOC3}" --region "${REGION}" \
+  --query 'Addresses[0].InstanceId' --output text)"
+if [ "${ADDR3_INSTANCE}" != "${INSTANCE3}" ]; then
+  echo "FAIL: after the --no-wait deploy EIP ${ALLOC3} is associated with '${ADDR3_INSTANCE}', expected ${INSTANCE3}" >&2
+  exit 1
+fi
+echo "    OK: EIP ${ALLOC3} is associated with ${INSTANCE3}"
+
+echo "==> Phase 3: destroy"
+node "${LOCAL_DIST}" destroy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --force
+assert_gone "EIP ${ALLOC3} is still allocated after the Phase 3 destroy" \
+  aws ec2 describe-addresses --allocation-ids "${ALLOC3}" --region "${REGION}"
+assert_gone "VPC ${VPC3} still exists after the Phase 3 destroy" \
+  aws ec2 describe-vpcs --vpc-ids "${VPC3}" --region "${REGION}"
+assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after the Phase 3 destroy" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
+echo "    OK: Phase 3 address, VPC and state gone"
+
 rm -f "${DESTROY_LOG}"
 trap - EXIT INT TERM
 
 echo ""
-echo "[verify] PASS — ec2-eip-instance-association: an EIP associated with a running instance in a non-default VPC was disassociated, released and its instance terminated on destroy (issue #6752)"
+echo "[verify] PASS — ec2-eip-instance-association: an EIP associated with a running instance in a non-default VPC was disassociated, released and its instance terminated on destroy (issue #6752), and under --no-wait the association waited for the instance (issue #6940)"

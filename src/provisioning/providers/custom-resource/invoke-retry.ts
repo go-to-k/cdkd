@@ -1,4 +1,5 @@
 import type { CustomResourceProvider } from '../custom-resource-provider.js';
+import { awaitUpstreamReadiness } from '../../deferred-readiness.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
@@ -121,6 +122,10 @@ export async function invokeCustomResourceWithRetry(
     // Once per call, never per attempt: a retry re-invokes the handler, not the
     // functions its properties name. Create / update only (delete passes none).
     if (referenced !== undefined) {
+      // go-to-k/cdkd#6940: the handler runs now, so what `--no-wait` left
+      // pending upstream of it (a NAT gateway its VPC reaches out through, a
+      // database it seeds) is waited for first. Nothing outside a deploy.
+      await awaitUpstreamReadiness(logicalId);
       await this.waitForReferencedLambdasActive(
         logicalId,
         serviceToken,

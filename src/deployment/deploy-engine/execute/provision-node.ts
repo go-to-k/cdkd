@@ -9,7 +9,11 @@ import { type ResourceChange } from '../../../types/state.js';
 import { DagExecutor } from '../../dag-executor.js';
 import { extractTemplateAttributes } from '../record-shape.js';
 import type { FailedOperation } from '../../rollback-executor.js';
-import { isRefusedBeforeApplying } from '../../prior-attempt-scope.js';
+import { isRefusedBeforeApplying, markRefusedBeforeApplying } from '../../prior-attempt-scope.js';
+import { isInterruptedWaitError } from '../../../provisioning/interrupt-watch.js';
+import { ProvisioningError } from '../../../utils/error-handler.js';
+import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
+import { markNonRetryable } from '../../retryable-errors.js';
 import { isReplacementNameRefusal } from '../name-collision.js';
 import { abandonedRequestOf } from '../../../provisioning/wait-abandoned.js';
 import {
@@ -21,6 +25,12 @@ import {
   collectCreatedResources,
 } from '../../../provisioning/created-resource-sink.js';
 import { provisionResource } from '../provision.js';
+import {
+  type DeferredReadinessScope,
+  currentDeferredReadinessScope,
+  withDeferredReadinessScope,
+} from '../../../provisioning/deferred-readiness.js';
+import { maskForResource } from '../masking.js';
 import { withNameGenerationReached } from '../../../state/name-generation.js';
 import {
   deadlineFiredFor,
@@ -104,6 +114,35 @@ export async function provisionCreateUpdateNode(
   // is saved (`settleReportedCreates`). Fresh per operation;
   // its retries share it, as they share the carried mark.
   const createdSink = new CreatedResourceSink(logicalId, change.resourceType);
+  // go-to-k/cdkd#6940: the readiness waits this operation skips under
+  // `--no-wait`, kept only if it succeeds; and, for a custom resource about to
+  // invoke its handler, the wait for those skipped upstream of it.
+  // A nested stack's child runs inside its parent row's scope: the child's
+  // custom resource also waits for what the PARENT deferred upstream of the row.
+  const parentScope = currentDeferredReadinessScope();
+  const readinessScope: DeferredReadinessScope = {
+    logicalId,
+    resourceType: change.resourceType,
+    deferred: new Map(),
+    awaitUpstreamReadinessRaw: async () => {
+      await awaitUpstreamWaits(run, logicalId);
+      // After this engine's own walk, the parent row's: its rejection is
+      // re-anchored on THIS resource below, never passed through under the
+      // parent row's id (a refusal mark behind a foreign link is not this one's).
+      await parentScope?.awaitUpstreamReadinessRaw();
+    },
+    awaitUpstreamReadiness: async () => {
+      try {
+        await readinessScope.awaitUpstreamReadinessRaw();
+      } catch (error) {
+        throw notInvokedError(run, logicalId, change.resourceType, error);
+      }
+    },
+    awaitDeferredResource: (physicalId, reason) => {
+      const owner = engine.deferredReadiness.logicalIdOf(physicalId);
+      return owner === undefined ? undefined : engine.deferredReadiness.awaitReady(owner, reason);
+    },
+  };
   run.inFlightCreatedSinks.set(logicalId, createdSink);
   // go-to-k/cdkd#6705: a CreationPolicy timeout counts from the create.
   const signalWaitStart = Date.now();
@@ -116,17 +155,19 @@ export async function provisionCreateUpdateNode(
         `resource ${change.changeType.toLowerCase()}`,
         () =>
           collectCreatedResources(createdSink, () =>
-            provisionResource(
-              engine,
-              logicalId,
-              change,
-              newResources,
-              stackName,
-              template,
-              parameterValues,
-              conditions,
-              actualCounts,
-              progress
+            withDeferredReadinessScope(readinessScope, () =>
+              provisionResource(
+                engine,
+                logicalId,
+                change,
+                newResources,
+                stackName,
+                template,
+                parameterValues,
+                conditions,
+                actualCounts,
+                progress
+              )
             )
           ),
         `${logicalId} ${change.resourceType}`
@@ -456,6 +497,12 @@ export async function provisionCreateUpdateNode(
       }),
   });
 
+  engine.deferredReadiness.record(
+    logicalId,
+    change.resourceType,
+    change.changeType as 'CREATE' | 'UPDATE',
+    readinessScope.deferred
+  );
   saveStateAfterResource(logicalId);
   if (engine.replacementRun.recreatedUnderSameId.has(logicalId))
     enqueueLostChildren(createUpdateExecutor);
@@ -491,4 +538,74 @@ function journaledUpdatePolicyField(
     resolved
   );
   return updatePolicy !== undefined ? { updatePolicy } : {};
+}
+
+/**
+ * go-to-k/cdkd#6940: before a custom resource's handler runs, wait for every
+ * resource upstream of it — through `DependsOn`, `Ref` and `Fn::GetAtt`,
+ * transitively, so its handler function and what that function reaches count
+ * too — whose readiness wait `--no-wait` skipped in this deploy. The handler
+ * is code running during the deploy, so it can reach them: a VPC handler
+ * calling out through a NAT gateway CDK wires only as the subnet's default
+ * route. Costs nothing when nothing was deferred; otherwise one walk of the
+ * in-memory graph upstream of this resource.
+ */
+export async function awaitUpstreamDeferredReadiness(
+  run: DeployRun,
+  logicalId: string,
+  resourceType: string
+): Promise<void> {
+  try {
+    await awaitUpstreamWaits(run, logicalId);
+  } catch (error) {
+    throw notInvokedError(run, logicalId, resourceType, error);
+  }
+}
+
+/** {@link awaitUpstreamDeferredReadiness}'s walk and waits, rejecting with the raw cause. */
+async function awaitUpstreamWaits(run: DeployRun, logicalId: string): Promise<void> {
+  const { engine } = run;
+  if (engine.deferredReadiness.isEmpty) return;
+  const upstream = engine.dagBuilder.getAllDependencies(run.dag, logicalId);
+  await engine.deferredReadiness.awaitAll(
+    upstream,
+    `custom resource ${logicalId} is invoked after it`
+  );
+}
+
+/**
+ * A custom resource's invoke refused because a resource upstream of it did
+ * not become ready (go-to-k/cdkd#6940): an interrupted wait as it is,
+ * otherwise an error of THIS resource, marked refused-before-applying (the
+ * handler never ran, so a rollback has nothing of it to revert) and
+ * non-retryable (no retry of the invoke makes the upstream ready). Masked
+ * with this resource's secrets and the upstream's: its message names that one.
+ */
+function notInvokedError(
+  run: DeployRun,
+  logicalId: string,
+  resourceType: string,
+  error: unknown
+): unknown {
+  if (isInterruptedWaitError(error)) return error;
+  const { engine } = run;
+  const upstreamId = (error as { logicalId?: unknown } | undefined)?.logicalId;
+  const text = `${logicalId} was not invoked: ${describeAwsFailure(error).summary}`;
+  return markNonRetryable(
+    markRefusedBeforeApplying(
+      new ProvisioningError(
+        maskForResource(
+          engine.secretsRun,
+          logicalId,
+          typeof upstreamId === 'string'
+            ? maskForResource(engine.secretsRun, upstreamId, text)
+            : text
+        ),
+        resourceType,
+        logicalId,
+        undefined,
+        error instanceof Error ? error : undefined
+      )
+    )
+  );
 }

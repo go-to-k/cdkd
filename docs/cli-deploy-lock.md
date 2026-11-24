@@ -102,7 +102,10 @@ adoption adds no entry to the diff.
 
 Second, cdkd resolves the stack's Outputs again. An attribute that the first
 deploy did not have yet is read from AWS at that point. Two attributes can
-still be missing when the first deploy used `--no-wait`.
+still be missing when the first deploy used `--no-wait`, and only when nothing
+in that first deploy referenced them: a reference in the deploy that created
+the resource waits for it to be ready and records the value (see
+[wait mode details](cli-deploy-waits.md#when-the-deploy-needs-a-resource-it-did-not-wait-for)).
 
 ### The public address of a `--no-wait` EC2 instance
 
@@ -136,9 +139,9 @@ Neptune `DBInstance`.
 
 - If the endpoint is available by then, cdkd uses the real endpoint and
   records it in state.
-- If the endpoint is still not available, the reference resolves to the
-  instance identifier, and cdkd warns. Nothing is recorded. Under
-  `--strict-getatt`, the deploy fails instead.
+- If the endpoint is still not available, cdkd refuses to resolve the
+  reference, and records nothing. The refusal has the same results as for the
+  EC2 instance's address above.
 
 ### An Output that cannot be resolved
 

@@ -26,6 +26,7 @@ import { markNotGone } from '../../not-gone.js';
 import type { ResourceCreateResult, SecretMasker } from '../../../types/resource.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../../auxiliary-failure.js';
 import { reportCreatedResource, retractCreatedResource } from '../../created-resource-sink.js';
+import { deferReadiness } from '../../deferred-readiness.js';
 import { refuseMalformedDesiredTags } from '../../tag-list.js';
 import {
   deleteWithProtectionCompensation,
@@ -178,6 +179,19 @@ export async function createLoadBalancer(
       } else {
         this.logger.debug(
           `LoadBalancer ${logicalId} created (skipping active-state wait per --no-wait)`
+        );
+        // go-to-k/cdkd#6940: the same wait, run later if the deploy needs it.
+        deferReadiness(logicalId, resourceType, lbArn, (signal) =>
+          waitUntilLoadBalancerAvailable(
+            {
+              client: this.getClient(),
+              maxWaitTime: 600,
+              minDelay: 5,
+              maxDelay: 10,
+              abortSignal: signal,
+            },
+            { LoadBalancerArns: [lbArn] }
+          )
         );
       }
 

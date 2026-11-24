@@ -9,6 +9,7 @@ import { enclosingDeadlineRemainingMs } from '../../../deployment/resource-deadl
 import { safeMsg } from '../../../utils/display-safe.js';
 import { isTerminalDbWaitStatus } from '../deletion-protection-compensation.js';
 import { CLUSTER_AVAILABLE_MAX_WAIT_MS, DEADLINE_MARGIN_MS, SETTLE_MAX_WAIT_MS } from './shared.js';
+import { abortableSleep, throwIfReadinessAborted } from '../../deferred-readiness.js';
 
 /**
  * Poll until a change AWS accepted reads back, so the observed baseline the
@@ -179,12 +180,14 @@ export async function waitForClusterAvailable(
   logicalId: string,
   dbClusterIdentifier: string,
   during = 'being created',
-  maxWaitMs = CLUSTER_AVAILABLE_MAX_WAIT_MS
+  maxWaitMs = CLUSTER_AVAILABLE_MAX_WAIT_MS,
+  signal?: AbortSignal
 ): Promise<void> {
   const startTime = Date.now();
   let delay = 5_000;
 
   while (Date.now() - startTime < maxWaitMs) {
+    throwIfReadinessAborted(signal);
     const cluster = await this.describeDBCluster(dbClusterIdentifier);
     const status = cluster?.Status;
 
@@ -198,7 +201,7 @@ export async function waitForClusterAvailable(
       );
     }
 
-    await this.sleep(delay);
+    await abortableSleep((ms) => this.sleep(ms), delay, signal);
     delay = Math.min(delay * 2, 10_000);
   }
 
@@ -250,12 +253,14 @@ export async function waitForInstanceAvailable(
   this: NeptuneProvider,
   logicalId: string,
   dbInstanceIdentifier: string,
-  maxWaitMs = 1_800_000
+  maxWaitMs = 1_800_000,
+  signal?: AbortSignal
 ): Promise<void> {
   const startTime = Date.now();
   let delay = 10_000;
 
   while (Date.now() - startTime < maxWaitMs) {
+    throwIfReadinessAborted(signal);
     const instance = await this.describeDBInstance(dbInstanceIdentifier);
     const status = instance?.DBInstanceStatus;
 
@@ -269,7 +274,7 @@ export async function waitForInstanceAvailable(
       );
     }
 
-    await this.sleep(delay);
+    await abortableSleep((ms) => this.sleep(ms), delay, signal);
     delay = Math.min(delay * 2, 10_000);
   }
 

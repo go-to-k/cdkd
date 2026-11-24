@@ -42,6 +42,7 @@ import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { reportCreatedResource } from '../created-resource-sink.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { markRedactedCause, relayedNameCollision } from '../../deployment/retryable-errors.js';
+import { abortableSleep, deferReadiness, throwIfReadinessAborted } from '../deferred-readiness.js';
 
 /**
  * AWS Lambda MicroVM Image Provider
@@ -224,6 +225,10 @@ export class LambdaMicrovmImageProvider implements ResourceProvider {
           `Skipping wait for MicroVM image ${logicalId} (CDKD_NO_WAIT=true). ` +
             `The build continues asynchronously; a CREATE_FAILED will not be observed here.`
         );
+        // go-to-k/cdkd#6940: the same wait, run later if the deploy needs it.
+        deferReadiness(logicalId, resourceType, imageArn, (signal) =>
+          this.waitForTerminalState(imageArn, logicalId, 'create', signal)
+        );
       }
 
       return {
@@ -360,6 +365,10 @@ export class LambdaMicrovmImageProvider implements ResourceProvider {
         this.logger.warn(
           `Skipping wait for MicroVM image ${logicalId} update (CDKD_NO_WAIT=true). ` +
             `The rebuild continues asynchronously.`
+        );
+        // go-to-k/cdkd#6940: the same wait, run later if the deploy needs it.
+        deferReadiness(logicalId, resourceType, physicalId, (signal) =>
+          this.waitForTerminalState(physicalId, logicalId, 'update', signal)
         );
       }
 
@@ -581,11 +590,13 @@ export class LambdaMicrovmImageProvider implements ResourceProvider {
   private async waitForTerminalState(
     imageArn: string,
     logicalId: string,
-    operation: 'create' | 'update'
+    operation: 'create' | 'update',
+    signal?: AbortSignal
   ): Promise<GetImageResult> {
     this.logger.debug(`Waiting for MicroVM image ${imageArn} to finish ${operation}...`);
 
     for (let attempt = 1; attempt <= this.maxPollAttempts; attempt++) {
+      throwIfReadinessAborted(signal);
       const resp = (await this.client.send(
         new GetMicrovmImageCommand({ imageIdentifier: imageArn })
       )) as GetImageResult;
@@ -605,7 +616,7 @@ export class LambdaMicrovmImageProvider implements ResourceProvider {
       this.logger.debug(
         `MicroVM image ${imageArn} state: ${state} (attempt ${attempt}/${this.maxPollAttempts})`
       );
-      await sleep(this.pollIntervalMs);
+      await abortableSleep(sleep, this.pollIntervalMs, signal);
     }
 
     // Names `--resource-timeout`, so the logical id and the ARN are shown only

@@ -2,6 +2,7 @@ import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { displayMasked, maskValueLeaves } from './masking-display.js';
+import { startInterruptWatch } from '../../provisioning/interrupt-watch.js';
 import type { ResourceState } from '../../types/state.js';
 import { IntrinsicResolutionRefusalError } from '../../utils/error-handler.js';
 import {
@@ -24,7 +25,6 @@ import {
   DescribeVpcsCommand,
   type VpcEndpoint,
 } from '@aws-sdk/client-ec2';
-import { startInterruptWatch } from '../../provisioning/interrupt-watch.js';
 import { isoTimestampAttribute } from '../../provisioning/attribute-timestamp.js';
 import { dnsEntryStrings } from '../../provisioning/vpc-endpoint-dns-entries.js';
 import {
@@ -157,7 +157,9 @@ export async function constructAttributeForCoreTypes(
   // `--no-wait` update records no `DnsEntries` / `NetworkInterfaceIds` while
   // `ModifyVpcEndpoint` has the endpoint `pending` (its interfaces are still
   // moving), so either is read live here and, while the endpoint is
-  // `pending`, WAITED for (bounded, Ctrl-C aware): only a REFERENCED value
+  // `pending`, WAITED for through the deploy's deferred readiness of the
+  // endpoint (go-to-k/cdkd#6940: one shared wait, bounded, Ctrl-C aware;
+  // the provider's --no-wait create and modify defer it): only a REFERENCED value
   // pays for the wait. `CreationTimestamp` is read live without one. Nothing
   // is ever answered with the endpoint id: a read that leaves no value is
   // refused.
@@ -196,15 +198,26 @@ export async function constructAttributeForCoreTypes(
           observed.endpoint?.State?.toLowerCase() === 'pending');
       let observed = await read();
       if (pending(observed)) {
-        const watch = startInterruptWatch(`VPC endpoint ${logicalId} attribute wait`);
-        try {
-          for (let poll = 0; poll < vpcEndpointAttributeWait.polls && pending(observed); poll++) {
-            if (watch.isInterrupted()) throw watch.onInterrupted();
-            await vpcEndpointAttributeWait.sleep(vpcEndpointAttributeWait.delayMs);
-            observed = await read();
+        const ready = context.deferredReadiness?.awaitReady(
+          logicalId,
+          `Fn::GetAtt ${displayMasked(resolver, attributeName, context)} needs a value it reports only once available`
+        );
+        if (ready !== undefined) {
+          await ready;
+          observed = await read();
+        } else {
+          // Not left pending by THIS deploy (an earlier --no-wait deploy's
+          // modify): the bounded live wait, as the NAT / Connect arms do.
+          const watch = startInterruptWatch(`VPC endpoint ${logicalId} attribute wait`);
+          try {
+            for (let poll = 0; poll < vpcEndpointAttributeWait.polls && pending(observed); poll++) {
+              if (watch.isInterrupted()) throw watch.onInterrupted();
+              await vpcEndpointAttributeWait.sleep(vpcEndpointAttributeWait.delayMs);
+              observed = await read();
+            }
+          } finally {
+            watch.dispose();
           }
-        } finally {
-          watch.dispose();
         }
       }
       const endpoint = observed.endpoint;
@@ -702,9 +715,10 @@ export async function constructAttributeForCoreTypes(
 
 /**
  * How long `Fn::GetAtt [<EC2::VPCEndpoint>, DnsEntries | NetworkInterfaceIds]`
- * waits for a `pending` endpoint (go-to-k/cdkd#6939): 10 minutes in 3 s
- * polls, against the 30-60 s an Interface endpoint measured. A mutable seam so
- * tests do not sleep.
+ * waits for a `pending` endpoint this deploy did not leave pending
+ * (go-to-k/cdkd#6939; one this deploy left pending waits through its deferred
+ * readiness, go-to-k/cdkd#6940): 10 minutes in 3 s polls, against the 30-60 s
+ * an Interface endpoint measured. A mutable seam so tests do not sleep.
  */
 export const vpcEndpointAttributeWait = {
   polls: 200,

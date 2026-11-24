@@ -76,6 +76,7 @@ import {
   waitForRuntimeSettledBeforeDelete,
   type RuntimeWaitDeps,
 } from './agentcore-runtime/wait.js';
+import { abortableSleep, deferReadiness } from '../deferred-readiness.js';
 
 /** The accepted shape of the Runtime's top-level `Tags`, named by a refusal. */
 const RUNTIME_TAGS_WHAT =
@@ -235,6 +236,18 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
     if (process.env['CDKD_NO_WAIT'] === 'true') {
       this.logger.debug(
         safeMsg`Skipping the READY wait for BedrockAgentCore Runtime ${logicalId} after ${operation} (CDKD_NO_WAIT=true)`
+      );
+      // go-to-k/cdkd#6940: the same wait, run later if the deploy needs it.
+      deferReadiness(logicalId, resourceType, agentRuntimeId, (signal) =>
+        waitForRuntimeReady(
+          // The deploy's abort stops the poll at its next sleep.
+          { ...this.waitDeps(), sleep: (ms) => abortableSleep((d) => this.sleep(d), ms, signal) },
+          agentRuntimeId,
+          logicalId,
+          resourceType,
+          operation,
+          mask
+        )
       );
       return responseStatus;
     }

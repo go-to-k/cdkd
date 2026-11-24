@@ -33,6 +33,10 @@ import {
 } from '../../../src/provisioning/interrupt-watch.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import {
+  withDeferredReadinessScope,
+  type DeferredReadinessScope,
+} from '../../../src/provisioning/deferred-readiness.js';
+import {
   ProvisioningError,
   ResourceUpdateNotSupportedError,
 } from '../../../src/utils/error-handler.js';
@@ -706,6 +710,97 @@ describe('EC2VPCEndpointProvider (#6939)', () => {
         expect(hasCreatedBeforeFailure(error)).toBe(true);
         expect(sent(DescribeVpcEndpointsCommand)).toHaveLength(1);
       });
+    });
+  });
+
+  // go-to-k/cdkd#6940: a skipped `available` wait is handed to the deploy, so
+  // a custom resource reaching a service through the endpoint, or a GetAtt of
+  // its network attributes after a modify, waits for it.
+  describe('deferred readiness (#6940)', () => {
+    const scope = (): DeferredReadinessScope => ({
+      logicalId: 'Endpoint',
+      resourceType: TYPE,
+      deferred: new Map(),
+      awaitUpstreamReadiness: async () => undefined,
+      awaitUpstreamReadinessRaw: async () => undefined,
+      awaitDeferredResource: () => undefined,
+    });
+    const describes = (): number => sent(DescribeVpcEndpointsCommand).length;
+
+    it('a --no-wait create defers the available wait, unstarted', async () => {
+      process.env['CDKD_NO_WAIT'] = 'true';
+      mockSend.mockResolvedValueOnce({ VpcEndpoint: endpoint() });
+      const s = scope();
+      const p = provider();
+      await withDeferredReadinessScope(s, () => p.create('Endpoint', TYPE, interfaceProps()));
+      expect(describes()).toBe(0);
+      expect([...s.deferred.keys()]).toStrictEqual([ID]);
+      mockSend.mockResolvedValue(described({ State: 'available' }));
+      await s.deferred.get(ID)!.wait(new AbortController().signal);
+      expect(describes()).toBeGreaterThan(0);
+    });
+
+    it('a --no-wait modify defers the available wait; a tag-only update defers nothing', async () => {
+      process.env['CDKD_NO_WAIT'] = 'true';
+      mockSend.mockImplementation((cmd: unknown) =>
+        Promise.resolve(cmd instanceof DescribeVpcEndpointsCommand ? described({ State: 'available' }) : {})
+      );
+      const modify = scope();
+      await withDeferredReadinessScope(modify, () =>
+        provider().update(
+          'Endpoint',
+          ID,
+          TYPE,
+          interfaceProps({ SubnetIds: ['subnet-a', 'subnet-b'] }),
+          interfaceProps()
+        )
+      );
+      expect([...modify.deferred.keys()]).toStrictEqual([ID]);
+      const tagOnly = scope();
+      await withDeferredReadinessScope(tagOnly, () =>
+        provider().update('Endpoint', ID, TYPE, interfaceProps({ Tags: [{ Key: 'team', Value: 'b' }] }), interfaceProps())
+      );
+      expect(tagOnly.deferred.size).toBe(0);
+    });
+
+    it('the default mode waits during the create and modify and defers nothing', async () => {
+      mockSend.mockImplementation((cmd: unknown) =>
+        Promise.resolve(
+          cmd instanceof CreateVpcEndpointCommand
+            ? { VpcEndpoint: endpoint() }
+            : cmd instanceof DescribeVpcEndpointsCommand
+              ? described({ State: 'available' })
+              : {}
+        )
+      );
+      const s = scope();
+      await withDeferredReadinessScope(s, async () => {
+        await provider().create('Endpoint', TYPE, interfaceProps());
+        await provider().update(
+          'Endpoint',
+          ID,
+          TYPE,
+          interfaceProps({ SubnetIds: ['subnet-a', 'subnet-b'] }),
+          interfaceProps()
+        );
+      });
+      expect(describes()).toBeGreaterThanOrEqual(2);
+      expect(s.deferred.size).toBe(0);
+    });
+
+    it('an aborted deferred wait stops polling', async () => {
+      process.env['CDKD_NO_WAIT'] = 'true';
+      mockSend.mockResolvedValueOnce({ VpcEndpoint: endpoint() });
+      const s = scope();
+      const p = new EC2VPCEndpointProvider();
+      p.endpointWait.pollIntervalMs = 10_000;
+      await withDeferredReadinessScope(s, () => p.create('Endpoint', TYPE, interfaceProps()));
+      mockSend.mockResolvedValue(described({ State: 'pending' }));
+      const controller = new AbortController();
+      const wait = s.deferred.get(ID)!.wait(controller.signal);
+      controller.abort();
+      await expect(wait).rejects.toThrow(/aborted/);
+      expect(describes()).toBe(0);
     });
   });
 });

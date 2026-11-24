@@ -298,6 +298,35 @@ export async function constructWithStaleRecordHeal(
   } catch (error) {
     if (!(error instanceof StaleAttributeMissSignal)) throw error;
   }
+  // go-to-k/cdkd#6940: a record this deploy wrote under `--no-wait` lacks
+  // what its resource reports only once ready. Wait for that readiness (one
+  // shared wait per resource), then read the record again. A resource that
+  // ends failed fails this resolution with the resource's own error, as the
+  // default mode's create would have failed: no value is substituted.
+  const ready = context.deferredReadiness?.awaitReady(
+    logicalId,
+    `Fn::GetAtt ${displayMasked(resolver, attributeName, context)} needs a value it reports only once ready`
+  );
+  if (ready !== undefined) {
+    await ready;
+    const readOutcome = await context.deferredReadiness!.readAfterReady(logicalId, resource);
+    const readValue = usableHealedAttribute(
+      resolver,
+      readOutcome,
+      attributeName,
+      resource.resourceType
+    );
+    if (readValue !== undefined) {
+      return serveHealedAttribute(resolver, logicalId, attributeName, readValue, context);
+    }
+    return constructGuardedAttribute(
+      resolver,
+      resource,
+      attributeName,
+      { ...context, staleAttributeHeal: { phase: 'settled', outcome: readOutcome } },
+      logicalId
+    );
+  }
   const outcome = (await healStaleAttributes(resolver, logicalId, resource, context)) ?? {
     kind: 'not-attempted' as const,
   };

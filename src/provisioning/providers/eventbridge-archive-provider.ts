@@ -44,6 +44,7 @@ import type {
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { definedAttributes } from '../attribute-map.js';
+import { abortableSleep, deferReadiness } from '../deferred-readiness.js';
 
 const RESOURCE_TYPE = 'AWS::Events::Archive';
 
@@ -355,9 +356,26 @@ export class EventBridgeArchiveProvider implements ResourceProvider {
           `Skipping the ${operation} wait for EventBridge archive ${logicalId} (CDKD_NO_WAIT=true)`
         )
       );
+      // go-to-k/cdkd#6940: the same wait, run later if the deploy needs it.
+      deferReadiness(logicalId, RESOURCE_TYPE, name, (signal) =>
+        this.pollUntilSettled(name, logicalId, operation, mask, signal)
+      );
       return undefined;
     }
-    const { pollIntervalMs, sleep } = this.stateWait;
+    return this.pollUntilSettled(name, logicalId, operation, mask);
+  }
+
+  /** {@link waitForSettled}'s poll, in every mode it runs in. */
+  private async pollUntilSettled(
+    name: string,
+    logicalId: string,
+    operation: 'create' | 'update',
+    mask: MaskerFn,
+    signal?: AbortSignal
+  ): Promise<string | undefined> {
+    const { pollIntervalMs } = this.stateWait;
+    // The deploy's abort of a deferred wait stops the poll at its next sleep.
+    const sleep = (ms: number): Promise<void> => abortableSleep(this.stateWait.sleep, ms, signal);
     const userTimeoutMs = resolvedResourceTimeoutMs(RESOURCE_TYPE);
     const timeoutMs =
       userTimeoutMs === undefined

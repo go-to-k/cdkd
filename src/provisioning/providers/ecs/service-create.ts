@@ -44,6 +44,11 @@ import {
   controllerSkipsWait,
   rolloutSupersededBy,
 } from './shared.js';
+import {
+  abortableSleep,
+  deferReadiness,
+  throwIfReadinessAborted,
+} from '../../deferred-readiness.js';
 
 // ─── AWS::ECS::Service ──────────────────────────────────────────
 
@@ -506,7 +511,9 @@ export async function settleService(
     );
     return;
   }
-  if (process.env['CDKD_NO_WAIT'] !== 'true') {
+  // The steady-state wait, run now in the default mode, or kept for the
+  // deploy to run later under `--no-wait` (go-to-k/cdkd#6940).
+  const waitSteady = async (signal?: AbortSignal): Promise<void> => {
     log.debug(`Waiting for ECS service ${logicalId} to reach steady state...`);
     // 600s matches Terraform's `aws_ecs_service` default create timeout, and
     // stays the floor on purpose even though the default now waits
@@ -524,6 +531,8 @@ export async function settleService(
     // place, which never stabilizes, and the wait would run to its cap.
     const client = this.getClient();
     const breakerVerdict = new AbortController();
+    // A deferred wait the deploy aborts (go-to-k/cdkd#6940) stops the waiter too.
+    signal?.addEventListener('abort', () => breakerVerdict.abort(), { once: true });
     let failedRollout: Deployment | undefined;
     const watchedClient = {
       send: async (command: DescribeServicesCommand) => {
@@ -577,6 +586,7 @@ export async function settleService(
     const rolloutDeadline = Date.now() + 120_000;
     let settledDeployment: Deployment | undefined;
     for (;;) {
+      throwIfReadinessAborted(signal);
       const settled = await this.getClient().send(
         new DescribeServicesCommand({
           cluster,
@@ -600,7 +610,7 @@ export async function settleService(
         );
         break;
       }
-      await settleRolloutDelays.sleep(3_000);
+      await abortableSleep(settleRolloutDelays.sleep, 3_000, signal);
     }
     const supersededBy = rolloutSupersededBy(requested, settledDeployment);
     if (supersededBy !== undefined) {
@@ -614,8 +624,12 @@ export async function settleService(
       );
     }
     log.debug(`ECS service ${logicalId} reached steady state`);
+  };
+  if (process.env['CDKD_NO_WAIT'] !== 'true') {
+    await waitSteady();
     return;
   }
+  deferReadiness(logicalId, 'AWS::ECS::Service', serviceRef, waitSteady);
 
   // `--no-wait`. Rendered through `pasteableAwsCommand` (issue #3136): the
   // cluster and the service name are TEMPLATE values, and the operation's

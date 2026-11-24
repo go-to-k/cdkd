@@ -51,6 +51,7 @@ import {
   type MaskingDeps,
 } from './deploy-engine/masking.js';
 import { AttributeHealer } from './deploy-engine/attribute-healer.js';
+import type { DeferredReadinessRun } from './deferred-readiness-run.js';
 import type { DeleteDeps } from './deploy-engine/delete.js';
 import { type ResolverContextDeps } from './deploy-engine/resolver-context.js';
 import { NoEchoRunState, type NoEchoDeps } from './deploy-engine/noecho.js';
@@ -551,6 +552,14 @@ export class DeployEngine {
    * @internal
    */
   attributeHealer: AttributeHealer;
+
+  /**
+   * go-to-k/cdkd#6940: the readiness waits this deploy's `--no-wait`
+   * operations skipped, run only where the deploy needs one. Replaced with
+   * {@link attributeHealer} by {@link rebaseline}.
+   * @internal
+   */
+  deferredReadiness!: DeferredReadinessRun;
 
   /**
    * Target region for this stack. Required — load-bearing for the

@@ -444,14 +444,16 @@ export class ElastiCacheProvider implements ResourceProvider {
     cacheClusterId: string,
     maxWaitMs?: number,
     expectedNodeType?: string,
-    removedNodeIds?: readonly string[]
+    removedNodeIds?: readonly string[],
+    signal?: AbortSignal
   ): Promise<void> {
     return waitForClusterAvailable.call(
       this,
       cacheClusterId,
       maxWaitMs,
       expectedNodeType,
-      removedNodeIds
+      removedNodeIds,
+      signal
     );
   }
 

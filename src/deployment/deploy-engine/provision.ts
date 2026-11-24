@@ -5,7 +5,6 @@ import {
   type ProvisionCounts,
   type ResourceOutcomeSignal,
 } from '../deploy-engine.js';
-import { slowCcOperationTimeoutMs } from '../../provisioning/slow-cc-operation-timeouts.js';
 import {
   maskForResource,
   noteSecretNamedReads,
@@ -21,8 +20,8 @@ import type { CloudFormationTemplate } from '../../types/resource.js';
 import type { ResourceChange, ResourceState } from '../../types/state.js';
 import { hasAddressablePhysicalId } from '../../state/malformed-resources-bag.js';
 import { ProvisioningError, ResourceTimeoutError } from '../../utils/error-handler.js';
+import { resourceDeadlineBudget } from './resource-budget.js';
 import { getLiveRenderer } from '../../utils/live-renderer.js';
-import { DEFAULT_RESOURCE_TIMEOUT_MS, DEFAULT_RESOURCE_WARN_AFTER_MS } from './options.js';
 import { isReplacementCeiling } from '../deploy-value-equality.js';
 import { withResourceDeadline } from '../resource-deadline.js';
 import {
@@ -162,21 +161,7 @@ export async function provisionResource(
   // `getMinResourceTimeoutMs`. The real routing decision (which can
   // promote a Tier 1 resource to Cloud Control under #614) happens
   // inside the provision arms via `getProviderFor`.
-  const provider = engine.providerRegistry.getProvider(resourceType);
-  const providerMinTimeoutMs = provider.getMinResourceTimeoutMs?.() ?? 0;
-  const warnAfterMs =
-    engine.options.resourceWarnAfterByType?.[resourceType] ??
-    engine.options.resourceWarnAfterMs ??
-    DEFAULT_RESOURCE_WARN_AFTER_MS;
-  const globalTimeoutMs = engine.options.resourceTimeoutMs ?? DEFAULT_RESOURCE_TIMEOUT_MS;
-  // Known-slow types (OpenSearch domains, RDS / Redshift / ElastiCache
-  // clusters) lift the outer deadline to match the CC inner poll cap so a
-  // slow CREATE / UPDATE is not aborted by the 30-min default. A per-type CLI
-  // override still wins (explicit escape hatch).
-  const slowTypeMinTimeoutMs = slowCcOperationTimeoutMs(resourceType, operationKind);
-  const timeoutMs =
-    engine.options.resourceTimeoutByType?.[resourceType] ??
-    Math.max(providerMinTimeoutMs, slowTypeMinTimeoutMs, globalTimeoutMs);
+  const { warnAfterMs, timeoutMs } = resourceDeadlineBudget(engine, resourceType, operationKind);
 
   // #808 best-effort event: per-resource op started. `provisionedBy`
   // is the routing inference used for the live label (same decision the

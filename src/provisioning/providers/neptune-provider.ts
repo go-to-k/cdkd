@@ -718,9 +718,17 @@ export class NeptuneProvider implements ResourceProvider {
     logicalId: string,
     dbClusterIdentifier: string,
     during = 'being created',
-    maxWaitMs = CLUSTER_AVAILABLE_MAX_WAIT_MS
+    maxWaitMs = CLUSTER_AVAILABLE_MAX_WAIT_MS,
+    signal?: AbortSignal
   ): Promise<void> {
-    return waitForClusterAvailable.call(this, logicalId, dbClusterIdentifier, during, maxWaitMs);
+    return waitForClusterAvailable.call(
+      this,
+      logicalId,
+      dbClusterIdentifier,
+      during,
+      maxWaitMs,
+      signal
+    );
   }
 
   waitForClusterDeleted(
@@ -734,9 +742,10 @@ export class NeptuneProvider implements ResourceProvider {
   waitForInstanceAvailable(
     logicalId: string,
     dbInstanceIdentifier: string,
-    maxWaitMs = 1_800_000
+    maxWaitMs = 1_800_000,
+    signal?: AbortSignal
   ): Promise<void> {
-    return waitForInstanceAvailable.call(this, logicalId, dbInstanceIdentifier, maxWaitMs);
+    return waitForInstanceAvailable.call(this, logicalId, dbInstanceIdentifier, maxWaitMs, signal);
   }
 
   waitForInstanceDeleted(dbInstanceIdentifier: string, maxWaitMs = 1_800_000): Promise<void> {

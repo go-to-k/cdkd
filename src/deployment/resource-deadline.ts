@@ -207,6 +207,16 @@ interface DeadlineControl {
 const deadlineScope = new AsyncLocalStorage<DeadlineControl>();
 
 /**
+ * Run `fn` outside every deadline enclosing the caller, so a deadline `fn`
+ * opens is its own: a readiness wait `--no-wait` deferred (go-to-k/cdkd#6940)
+ * runs in the async context of the operation that deferred it, whose deadline
+ * settled long ago and must not bound the wait.
+ */
+export function outsideEnclosingDeadlines<T>(fn: () => T): T {
+  return deadlineScope.exit(fn);
+}
+
+/**
  * Stop the clock of every deadline enclosing the caller while `fn` runs — an
  * operator answering a prompt inside a provider operation (a nested stack's
  * `--require-approval` question, asked inside the parent's row). Each enclosing

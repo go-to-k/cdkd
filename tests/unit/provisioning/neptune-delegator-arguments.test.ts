@@ -154,9 +154,9 @@ const DELEGATORS: ReadonlyArray<readonly [string, Module, string, number]> = [
   ['requireClusterWhileWaiting', 'waits', 'requireClusterWhileWaiting', 2],
   ['waitForSecurityGroupsApplied', 'waits', 'waitForSecurityGroupsApplied', 4],
   ['deleteAfterProtectionFlip', 'cluster-delete', 'deleteAfterProtectionFlip', 3],
-  ['waitForClusterAvailable', 'waits', 'waitForClusterAvailable', 4],
+  ['waitForClusterAvailable', 'waits', 'waitForClusterAvailable', 5],
   ['waitForClusterDeleted', 'waits', 'waitForClusterDeleted', 3],
-  ['waitForInstanceAvailable', 'waits', 'waitForInstanceAvailable', 3],
+  ['waitForInstanceAvailable', 'waits', 'waitForInstanceAvailable', 4],
   ['waitForInstanceDeleted', 'waits', 'waitForInstanceDeleted', 2],
   ['sleep', 'waits', 'sleep', 1],
   ['getDriftUnknownPaths', 'read-state', 'getDriftUnknownPaths', 1],
@@ -186,9 +186,9 @@ const DEFAULTED: ReadonlyArray<readonly [string, Module, number, readonly unknow
   ['warnKeptRemovals', 'cluster-update', 6, [true]],
   ['waitForMemberAfterSecurityGroupChange', 'waits', 2, [1_800_000]],
   ['waitForSecurityGroupsApplied', 'waits', 3, [1_800_000]],
-  ['waitForClusterAvailable', 'waits', 2, ['being created', 1_800_000]],
+  ['waitForClusterAvailable', 'waits', 2, ['being created', 1_800_000, undefined]],
   ['waitForClusterDeleted', 'waits', 2, [1_800_000]],
-  ['waitForInstanceAvailable', 'waits', 2, [1_800_000]],
+  ['waitForInstanceAvailable', 'waits', 2, [1_800_000, undefined]],
   ['waitForInstanceDeleted', 'waits', 1, [1_800_000]],
 ];
 

@@ -95,9 +95,17 @@ export class RDSProviderBase {
     logicalId: string,
     dbClusterIdentifier: string,
     maxWaitMs = 1_800_000,
-    doing = 'being created'
+    doing = 'being created',
+    signal?: AbortSignal
   ): Promise<void> {
-    return waitForClusterAvailable.call(this, logicalId, dbClusterIdentifier, maxWaitMs, doing);
+    return waitForClusterAvailable.call(
+      this,
+      logicalId,
+      dbClusterIdentifier,
+      maxWaitMs,
+      doing,
+      signal
+    );
   }
   waitForClusterDeleted(
     this: RDSProvider,
@@ -136,9 +144,17 @@ export class RDSProviderBase {
     logicalId: string,
     dbInstanceIdentifier: string,
     maxWaitMs = 1_800_000,
-    doing = 'being created'
+    doing = 'being created',
+    signal?: AbortSignal
   ): Promise<void> {
-    return waitForInstanceAvailable.call(this, logicalId, dbInstanceIdentifier, maxWaitMs, doing);
+    return waitForInstanceAvailable.call(
+      this,
+      logicalId,
+      dbInstanceIdentifier,
+      maxWaitMs,
+      doing,
+      signal
+    );
   }
   waitForInstanceDeleted(
     this: RDSProvider,

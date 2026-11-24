@@ -1935,6 +1935,7 @@
         "neptune-restore",
         "nlb-quic-server-id",
         "nlb-source-nat",
+        "no-wait-cr-nat-egress",
         "propagation-races-2",
         "rds-aurora",
         "rds-dbcluster-pitr-restore",
@@ -2179,6 +2180,9 @@
         "nlb-source-nat": [
           "l2"
         ],
+        "no-wait-cr-nat-egress": [
+          "l2"
+        ],
         "propagation-races-2": [
           "l2"
         ],
@@ -2333,6 +2337,7 @@
         "neptune-restore",
         "nlb-quic-server-id",
         "nlb-source-nat",
+        "no-wait-cr-nat-egress",
         "propagation-races-2",
         "rds-aurora",
         "rds-dbcluster-pitr-restore",
@@ -2562,6 +2567,10 @@
         ],
         "nlb-source-nat": [
           "l2"
+        ],
+        "no-wait-cr-nat-egress": [
+          "l2",
+          "literal"
         ],
         "propagation-races-2": [
           "l2"
@@ -2752,6 +2761,7 @@
         "neptune-restore",
         "nlb-quic-server-id",
         "nlb-source-nat",
+        "no-wait-cr-nat-egress",
         "propagation-races-2",
         "rds-aurora",
         "rds-dbcluster-pitr-restore",
@@ -2992,6 +3002,9 @@
         "nlb-source-nat": [
           "l2"
         ],
+        "no-wait-cr-nat-egress": [
+          "l2"
+        ],
         "propagation-races-2": [
           "l2"
         ],
@@ -3143,6 +3156,7 @@
         "neptune-restore",
         "nlb-quic-server-id",
         "nlb-source-nat",
+        "no-wait-cr-nat-egress",
         "propagation-races-2",
         "rds-aurora",
         "rds-dbcluster-pitr-restore",
@@ -3386,6 +3400,9 @@
         "nlb-source-nat": [
           "l2"
         ],
+        "no-wait-cr-nat-egress": [
+          "l2"
+        ],
         "propagation-races-2": [
           "l2"
         ],
@@ -3510,6 +3527,7 @@
         "local-start-alb-from-state",
         "multi-stack-deps",
         "nlb-source-nat",
+        "no-wait-cr-nat-egress",
         "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-additional-storage-volumes",
@@ -3667,6 +3685,9 @@
           "l2"
         ],
         "nlb-source-nat": [
+          "l2"
+        ],
+        "no-wait-cr-nat-egress": [
           "l2"
         ],
         "propagation-races-2": [
@@ -3862,6 +3883,8 @@
         "neptune-restore",
         "nlb-quic-server-id",
         "nlb-source-nat",
+        "no-wait-cr-nat-egress",
+        "no-wait-getatt-rds-endpoint",
         "orphan-getatt-takeover",
         "partial-create-handback",
         "propagation-races-2",
@@ -4134,6 +4157,12 @@
         "nlb-source-nat": [
           "l2"
         ],
+        "no-wait-cr-nat-egress": [
+          "l2"
+        ],
+        "no-wait-getatt-rds-endpoint": [
+          "l1"
+        ],
         "orphan-getatt-takeover": [
           "l1",
           "literal"
@@ -4313,6 +4342,7 @@
         "neptune-restore",
         "nlb-quic-server-id",
         "nlb-source-nat",
+        "no-wait-cr-nat-egress",
         "propagation-races-2",
         "rds-aurora",
         "rds-dbcluster-pitr-restore",
@@ -4544,6 +4574,9 @@
         "nlb-source-nat": [
           "l2"
         ],
+        "no-wait-cr-nat-egress": [
+          "l2"
+        ],
         "propagation-races-2": [
           "l2"
         ],
@@ -4704,6 +4737,8 @@
         "neptune-restore",
         "nlb-quic-server-id",
         "nlb-source-nat",
+        "no-wait-cr-nat-egress",
+        "no-wait-getatt-rds-endpoint",
         "orphan-getatt-takeover",
         "partial-create-handback",
         "propagation-races-2",
@@ -5005,6 +5040,12 @@
         "nlb-source-nat": [
           "l2"
         ],
+        "no-wait-cr-nat-egress": [
+          "l2"
+        ],
+        "no-wait-getatt-rds-endpoint": [
+          "l1"
+        ],
         "orphan-getatt-takeover": [
           "l1",
           "literal"
@@ -5204,6 +5245,7 @@
         "neptune-restore",
         "nlb-quic-server-id",
         "nlb-source-nat",
+        "no-wait-cr-nat-egress",
         "propagation-races-2",
         "rds-aurora",
         "rds-dbcluster-pitr-restore",
@@ -5443,6 +5485,9 @@
           "l2"
         ],
         "nlb-source-nat": [
+          "l2"
+        ],
+        "no-wait-cr-nat-egress": [
           "l2"
         ],
         "propagation-races-2": [
@@ -6997,6 +7042,8 @@
         "multi-resource",
         "multi-stack-deps",
         "nested-stack",
+        "no-wait-cr-nat-egress",
+        "no-wait-getatt-rds-endpoint",
         "noecho-parameter-masking",
         "orphan-getatt-takeover",
         "pipes-fix-forward-orphan",
@@ -7369,6 +7416,12 @@
           "l2"
         ],
         "nested-stack": [
+          "l2"
+        ],
+        "no-wait-cr-nat-egress": [
+          "l2"
+        ],
+        "no-wait-getatt-rds-endpoint": [
           "l2"
         ],
         "noecho-parameter-masking": [
@@ -8045,6 +8098,8 @@
         "multi-asset",
         "multi-resource",
         "multi-stack-deps",
+        "no-wait-cr-nat-egress",
+        "no-wait-getatt-rds-endpoint",
         "nodejs-function",
         "orphan-resource",
         "pipes-input-template-removal",
@@ -8456,6 +8511,12 @@
           "l2"
         ],
         "multi-stack-deps": [
+          "l2"
+        ],
+        "no-wait-cr-nat-egress": [
+          "l2"
+        ],
+        "no-wait-getatt-rds-endpoint": [
           "l2"
         ],
         "nodejs-function": [
@@ -8887,6 +8948,7 @@
         "logs-delivery",
         "logs-loggroup-fix-forward-orphan",
         "monitoring",
+        "no-wait-getatt-rds-endpoint",
         "orphan-getatt-takeover",
         "perf-cross-backend-check",
         "recreate-renamed-logs-delivery",
@@ -9013,6 +9075,9 @@
           "l1"
         ],
         "monitoring": [
+          "l2"
+        ],
+        "no-wait-getatt-rds-endpoint": [
           "l2"
         ],
         "orphan-getatt-takeover": [
@@ -9214,6 +9279,7 @@
       "resourceType": "AWS::RDS::DBInstance",
       "integs": [
         "getatt-rds-docdb-attributes",
+        "no-wait-getatt-rds-endpoint",
         "rds-aurora",
         "rds-dbinstance-additional-storage-volumes",
         "rds-dbinstance-backfill",
@@ -9228,6 +9294,10 @@
       ],
       "signals": {
         "getatt-rds-docdb-attributes": [
+          "l1",
+          "literal"
+        ],
+        "no-wait-getatt-rds-endpoint": [
           "l1",
           "literal"
         ],
@@ -9309,6 +9379,7 @@
         "getatt-rds-docdb-attributes",
         "import-attribute-readback-final",
         "list-parameters",
+        "no-wait-getatt-rds-endpoint",
         "rds-aurora",
         "rds-dbcluster-pitr-restore",
         "rds-dbinstance-additional-storage-volumes",
@@ -9336,6 +9407,9 @@
         "list-parameters": [
           "l1",
           "literal"
+        ],
+        "no-wait-getatt-rds-endpoint": [
+          "l1"
         ],
         "rds-aurora": [
           "l2"

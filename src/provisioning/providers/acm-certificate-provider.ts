@@ -274,9 +274,17 @@ export class ACMCertificateProvider implements ResourceProvider {
     certificateArn: string,
     logicalId: string,
     resourceType: string,
-    zones?: ReadonlyMap<string, string>
+    zones?: ReadonlyMap<string, string>,
+    signal?: AbortSignal
   ): Promise<void> {
-    return waitForCertificateIssued.call(this, certificateArn, logicalId, resourceType, zones);
+    return waitForCertificateIssued.call(
+      this,
+      certificateArn,
+      logicalId,
+      resourceType,
+      zones,
+      signal
+    );
   }
 
   writeValidationRecords(

@@ -53,6 +53,7 @@ import type {
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { definedAttributes } from '../attribute-map.js';
+import { abortableSleep, deferReadiness } from '../deferred-readiness.js';
 
 const RESOURCE_TYPE = 'AWS::Connect::Instance';
 
@@ -375,6 +376,10 @@ export class ConnectInstanceProvider implements ResourceProvider {
         this.logger.debug(
           mask(`Skipping the ACTIVE wait for Connect instance ${logicalId} (CDKD_NO_WAIT=true)`)
         );
+        // go-to-k/cdkd#6940: the ACTIVE wait, run later if the deploy needs it.
+        deferReadiness(logicalId, resourceType, arn, (signal) =>
+          this.waitForInstance(instanceId, logicalId, 'active', this.deadline(), mask, signal)
+        );
       } else {
         instance = await this.waitForInstance(instanceId, logicalId, 'active', deadline, mask);
         // A default that landed after its write would have overwritten it:
@@ -597,9 +602,13 @@ export class ConnectInstanceProvider implements ResourceProvider {
     logicalId: string,
     until: 'ready' | 'settled' | 'active',
     deadline: number,
-    mask: MaskerFn
+    mask: MaskerFn,
+    signal?: AbortSignal
   ): Promise<Instance | undefined> {
-    const { pollIntervalMs, sleep } = this.instanceWait;
+    const { pollIntervalMs } = this.instanceWait;
+    // The deploy's abort of a deferred wait stops the poll at its next sleep.
+    const sleep = (ms: number): Promise<void> =>
+      abortableSleep(this.instanceWait.sleep, ms, signal);
     const watch = startInterruptWatch(`Connect instance ${logicalId} ${until} wait`);
     let instance: Instance | undefined;
     try {

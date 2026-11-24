@@ -40,6 +40,18 @@ export interface DagBuilderOptions {
  * Builds a directed acyclic graph (DAG) of resource dependencies
  * based on Ref, Fn::GetAtt, and DependsOn
  */
+/**
+ * A resource whose deploy runs user code that can reach the network: a custom
+ * resource (its handler), or a nested stack (its child can hold one).
+ */
+function runsCodeDuringDeploy(type: string | undefined): boolean {
+  return (
+    type === 'AWS::CloudFormation::CustomResource' ||
+    type === 'AWS::CloudFormation::Stack' ||
+    (typeof type === 'string' && type.startsWith('Custom::'))
+  );
+}
+
 export class DagBuilder {
   private logger = getLogger().child('DagBuilder');
   private parser = new TemplateParser();
@@ -96,6 +108,10 @@ export class DagBuilder {
     // Add edges for dependencies
     let edgeCount = 0;
     let relaxedEdgeCount = 0;
+    let keptEdgeCount = 0;
+    // go-to-k/cdkd#6940: the CDK-defensive DependsOn edges relaxation would
+    // skip, decided once every other edge is in (below).
+    const relaxable: Array<{ from: string; to: string }> = [];
     for (const logicalId of resourceIds) {
       const resource = this.parser.getResource(template, logicalId);
       if (!resource) {
@@ -120,11 +136,8 @@ export class DagBuilder {
         : null;
 
       for (const depId of dependencies) {
-        if (skip?.has(depId)) {
-          relaxedEdgeCount++;
-          this.logger.debug(
-            `Skipped CDK-defensive DependsOn edge from ${displayIdent(depId)} to ${displayIdent(logicalId)} (default; opt out with --no-aggressive-vpc-parallel)`
-          );
+        if (skip?.has(depId) && graph.hasNode(depId)) {
+          relaxable.push({ from: depId, to: logicalId });
           continue;
         }
         // Only add edge if the dependency exists in the template
@@ -162,9 +175,51 @@ export class DagBuilder {
         }
       }
     }
+    // go-to-k/cdkd#6940: a relaxable edge whose dependent is upstream of code
+    // that runs during the deploy — a custom resource's handler, or a nested
+    // stack (whose child can hold one) — stays a real edge: that handler may
+    // need the route (and the NAT gateway behind it) when it runs, and only a
+    // real edge orders it without holding a --concurrency slot. Judged on the
+    // graph with every candidate edge in, so an upstream reached only through
+    // another candidate counts too. Every other one is relaxed as before.
+    //
+    // ORDER: this runs BEFORE the implicit edges added below
+    // (addCustomResourcePolicyEdges, addLambdaVpcEdges, the WaitCondition
+    // edges), so "upstream of a custom resource" sees only template edges.
+    // That is correct only because a custom resource's handler is always a
+    // Ref / Fn::GetAtt predecessor of it (its ServiceToken). Do not move this
+    // block below those without re-judging what counts as upstream.
+    if (relaxable.length > 0) {
+      for (const { from, to } of relaxable) graph.setEdge(from, to);
+      const upstreamOfCode = new Set<string>();
+      for (const id of resourceIds) {
+        if (!runsCodeDuringDeploy(this.parser.getResource(template, id)?.Type)) continue;
+        for (const dep of this.getAllDependencies(graph, id)) upstreamOfCode.add(dep);
+      }
+      for (const { from, to } of relaxable) {
+        if (upstreamOfCode.has(to)) {
+          keptEdgeCount++;
+          edgeCount++;
+          this.logger.debug(
+            safeMsg`Kept CDK-defensive DependsOn edge from ${from} to ${to}: ${to} is upstream of a custom resource or nested stack`
+          );
+          continue;
+        }
+        graph.removeEdge(from, to);
+        relaxedEdgeCount++;
+        this.logger.debug(
+          `Skipped CDK-defensive DependsOn edge from ${displayIdent(from)} to ${displayIdent(to)} (default; opt out with --no-aggressive-vpc-parallel)`
+        );
+      }
+    }
     if (relaxedEdgeCount > 0) {
       this.logger.info(
         `[DagBuilder] Relaxed ${relaxedEdgeCount} CDK-defensive DependsOn edge(s) (default; opt out with --no-aggressive-vpc-parallel)`
+      );
+    }
+    if (keptEdgeCount > 0) {
+      this.logger.debug(
+        safeMsg`[DagBuilder] Kept ${keptEdgeCount} CDK-defensive DependsOn edge(s) upstream of a custom resource or nested stack`
       );
     }
 

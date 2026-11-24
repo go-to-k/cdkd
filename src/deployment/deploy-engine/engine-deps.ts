@@ -16,6 +16,8 @@ import {
   type MaskingDeps,
 } from './masking.js';
 import { AttributeHealer } from './attribute-healer.js';
+import { DeferredReadinessRun } from '../deferred-readiness-run.js';
+import { resourceDeadlineBudget } from './resource-budget.js';
 import type { DeleteDeps } from './delete.js';
 import { guardedReplacementCreate } from './create.js';
 import { buildResolverContext, type ResolverContextDeps } from './resolver-context.js';
@@ -57,6 +59,15 @@ export function rebaseline(
     // Read at heal time: bound and captured after this rebaseline.
     namingSecrets: () => stateNamingSecrets(this.secretsRun),
     pinnedToCcApi: (stackName, logicalId) => isPinnedToCcApi(this.options, stackName, logicalId),
+  });
+  // go-to-k/cdkd#6940: per deploy, beside the healer that reads after it.
+  this.deferredReadiness = new DeferredReadinessRun({
+    logger: this.logger,
+    region: this.stackRegion,
+    budget: (resourceType, operation) => resourceDeadlineBudget(this, resourceType, operation),
+    interrupted: () => this.interrupted,
+    // Read at wait time: `secretsRun` is replaced per deploy.
+    mask: (logicalId, text) => maskForResource(this.secretsRun, logicalId, text),
   });
   return this.attributeHealer;
 }
@@ -206,6 +217,7 @@ export function resolverContextDeps(this: DeployEngine): ResolverContextDeps {
     noEchoRun: () => this.noEchoRun,
     healBaseline: () => this.healBaseline,
     attributeHealer: () => this.attributeHealer,
+    deferredReadiness: () => this.deferredReadiness,
     recordedImports: () => this.recordedImports,
     recordedOutputReads: () => this.recordedOutputReads,
     runProducerRegionEvidence: () => this.runProducerRegionEvidence,

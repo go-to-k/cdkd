@@ -19,6 +19,7 @@ import { pasteableAwsCommand, WITHHELD_AWS_COMMAND } from '../../replacement-pro
 import { safeMsg } from '../../../utils/display-safe.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../../auxiliary-failure.js';
 import { reportCreatedResource, retractCreatedResource } from '../../created-resource-sink.js';
+import { deferReadiness } from '../../deferred-readiness.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import {
   describedInstanceAttributes,
@@ -303,6 +304,19 @@ export async function createInstance(
       } else {
         this.logger.debug(
           `Instance ${instanceId} launched (skipping running-state wait per --no-wait)`
+        );
+        // go-to-k/cdkd#6940: the same wait, run later if the deploy needs it.
+        deferReadiness(logicalId, resourceType, instanceId, (signal) =>
+          waitUntilInstanceRunning(
+            {
+              client: this.ec2Client,
+              maxWaitTime: 300,
+              minDelay: 2,
+              maxDelay: 5,
+              abortSignal: signal,
+            },
+            { InstanceIds: [instanceId] }
+          )
         );
       }
 
