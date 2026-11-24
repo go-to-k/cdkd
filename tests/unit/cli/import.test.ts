@@ -8300,6 +8300,12 @@ describe('cdkd import', () => {
         nested: new Map(),
       });
     }
+    function savedNestedStackTags(stack: string): unknown {
+      const call = (mockSaveState.mock.calls as unknown as [string, string, { nestedStackTags?: unknown }][]).find(
+        (c) => c[0] === stack
+      )!;
+      return call[2].nestedStackTags;
+    }
     function savedTags(stack = 'S'): unknown {
       const call = (
         mockSaveState.mock.calls as unknown as [
@@ -8358,6 +8364,64 @@ describe('cdkd import', () => {
       );
       expect(mockSaveState).not.toHaveBeenCalled();
       expect(mockPrepareRetirement).not.toHaveBeenCalled();
+    });
+
+    it('drops a carried nestedStackTags field when the migrated nested stack has no tags (go-to-k/cdkd#6900)', async () => {
+      const tmpdirPath = mkdtempSync(join(tmpdir(), 'cdkd-import-stale-nested-tags-'));
+      try {
+        const childPath = join(tmpdirPath, 'Child.nested.template.json');
+        writeFileSync(childPath, JSON.stringify(topicTemplate()));
+        const tmpl = template({
+          Child: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'u' } },
+        });
+        mockSynthesize.mockResolvedValue({
+          stacks: [{ ...stackInfo('P', tmpl), nestedTemplates: { Child: childPath } }],
+        });
+        mockGetState.mockImplementation(async (stack: string) =>
+          stack === 'P'
+            ? {
+                state: {
+                  version: 13,
+                  stackName: 'P',
+                  region: 'us-east-1',
+                  resources: {},
+                  outputs: {},
+                  lastModified: 0,
+                  nestedStackTags: { Stale: { a: 'b' } },
+                },
+                etag: '"e"',
+              }
+            : null
+        );
+        mockHasProvider.mockImplementation((t: string) => t !== 'AWS::CloudFormation::Stack');
+        mockGetProvider.mockReturnValue({
+          import: vi.fn(async () => ({ physicalId: 'topic-arn', attributes: {} })),
+        });
+        const childArn = 'arn:aws:cloudformation:us-east-1:123:stack/Child/uuid';
+        mockGetCfnResourceTree.mockResolvedValue({
+          stackName: 'P',
+          physicalId: 'P',
+          resources: new Map([['Child', childArn]]),
+          nested: new Map([
+            [
+              'Child',
+              {
+                stackName: childArn,
+                physicalId: childArn,
+                resources: new Map([['Topic', 'topic-arn']]),
+                nested: new Map(),
+              },
+            ],
+          ]),
+        });
+
+        await runImport(['import', 'P', '--app', 'x', '--yes', '--force', '--migrate-from-cloudformation']);
+
+        expect(errorSpy.mock.calls.map((c) => String(c[0])).join('\n')).toBe('');
+        expect(savedNestedStackTags('P')).toBeUndefined();
+      } finally {
+        rmSync(tmpdirPath, { recursive: true, force: true });
+      }
     });
 
     it("threads each level's tags down: a grandchild records the middle row's tags too", async () => {
@@ -8440,6 +8504,10 @@ describe('cdkd import', () => {
           { Key: 'tier', Value: 'mid' },
           { Key: 'g', Value: '1' },
         ]);
+        expect(savedNestedStackTags('P')).toEqual({ Mid: { team: 'root', tier: 'mid' } });
+        expect(savedNestedStackTags('P~Mid')).toEqual({
+          Grand: { team: 'root', tier: 'mid', g: '1' },
+        });
       } finally {
         rmSync(tmpdirPath, { recursive: true, force: true });
       }
@@ -8515,6 +8583,10 @@ describe('cdkd import', () => {
           { Key: 'team', Value: 'parent' },
           { Key: 'row', Value: 'child' },
         ]);
+        // go-to-k/cdkd#6900: the parent records what the child was migrated
+        // with, so the next deploy does not re-run it for its tags.
+        expect(savedNestedStackTags('P')).toEqual({ Child: { team: 'parent', row: 'child' } });
+        expect(savedNestedStackTags('P~Child')).toBeUndefined();
       } finally {
         rmSync(tmpdirPath, { recursive: true, force: true });
       }

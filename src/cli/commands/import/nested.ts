@@ -45,7 +45,9 @@ import { resolveImportedProperties } from './resolve-properties.js';
 import {
   deployedPropertiesOf,
   overlayDeployedProperties,
+  migratedNestedStackTags,
   nestedChildStackTags,
+  withMigratedNestedStackTags,
   readDeployedTemplate,
   withDeployedDefinitions,
 } from './deployed-properties.js';
@@ -449,6 +451,11 @@ export async function importNestedStackChildrenRecursive(args: {
         childRecordTemplate,
         null,
         false
+      );
+      // go-to-k/cdkd#6900: what each grandchild row's child was migrated with.
+      withMigratedNestedStackTags(
+        childStackState,
+        migratedNestedStackTags(childStackTags, childDeployedTemplate, childTreeNode.nested.keys())
       );
       childStackState.parentStack = parentStackName;
       childStackState.parentLogicalId = childLogicalId;

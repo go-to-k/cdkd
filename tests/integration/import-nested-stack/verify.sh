@@ -287,6 +287,16 @@ for pair in "PARENT:ParentParam" "CHILD:ChildParam"; do
 done
 echo "[verify] step 9b ok: ParentParam and ChildParam record the stack tag"
 
+echo "[verify] step 9c: the parent records the child's migrated stack tags (go-to-k/cdkd#6900)"
+# Without it the first deploy reads the Child row as untagged and re-runs it.
+ROW_TAG="$(echo "${PARENT_STATE}" | python3 -c \
+  'import sys, json; print(json.load(sys.stdin).get("nestedStackTags", {}).get("Child", {}).get("cdkd-integ-stack-tag", ""))')"
+if [ "${ROW_TAG}" != "import-nested-6887" ]; then
+  echo "[verify] FAIL: parent nestedStackTags.Child.cdkd-integ-stack-tag is '${ROW_TAG}', expected 'import-nested-6887'"
+  exit 1
+fi
+echo "[verify] step 9c ok"
+
 echo "[verify] step 10: assert source CFn stacks are retired (parent + child both gone)"
 if ! gone_probe aws cloudformation describe-stacks --stack-name "${PARENT_STACK}" --region "${REGION}"; then
   # Still present at the first probe -- but the stack can finish deleting

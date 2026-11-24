@@ -307,7 +307,8 @@ it can skip reading the nested stacks' records for that one-time check.
 `nestedStackTags` only decides when a deploy updates a nested stack whose
 template did not change: one whose stack tags differ from the recorded ones
 is updated, so its resources get the new tags. A record without the field
-updates each tagged nested stack once.
+updates each tagged nested stack once. `cdkd import --migrate-from-cloudformation`
+writes the field from the tags each nested stack was migrated with.
 
 An `outputs` value is not always a string. Where CloudFormation defines an
 attribute as a list, such as a Route 53 hosted zone's `NameServers`, the
