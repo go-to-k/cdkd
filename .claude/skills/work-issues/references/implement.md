@@ -74,7 +74,9 @@ done                                                               # RIGHT
   A masking fix's population is every SINK the value reaches, each `warn` that
   names the error CLASS included (a test puts the secret IN the class), and the
   lane prompt NAMES each one (#5248).
-- A defect this lane is NOT fixing gets FILED (`filing.md`, §5-f).
+- A defect this lane is NOT fixing gets FILED (`filing.md`, §5-f) — a PR-body
+  "residual" or "not acted on" note is not filing: once merged it is never
+  read again (the #6871 run: four lanes, the parent filed #6891-#6893, #6902).
 
 ### 5-c. The fix itself
 
@@ -169,9 +171,13 @@ A subagent's Bash bypasses the PreToolUse hooks.
 **Guardrails every lane prompt must carry:**
 
 - **Name the §5-8 stage files and `/check` minus step 4, never your own
-  command list** — fix rounds too (#4561). **Forbid step 4, the FULL SUITE; run it yourself,
-  serially, and start ANY vitest of yours only while no lane's is running** —
-  concurrent suites trip the 600s watchdog in untouched files.
+  command list** — fix rounds too (#4561). **Forbid step 4, the FULL SUITE (a
+  bare `tests` / `tests/unit` directory included), to the lane AND to every
+  reviewer it dispatches — the lane copies the ban verbatim into each reviewer
+  prompt; run it yourself, serially, and start ANY vitest of yours only while
+  no lane's is running** — concurrent suites trip the 600s watchdog in
+  untouched files (#6871 run: a reviewer re-ran `tests/unit` in its extract
+  after a kill).
   Each runs `vp test run <its own suite>`, its files spelled out or inside
   `bash -c`: zsh passes an unquoted `$files` as ONE argument. In any shell an
   EMPTY list (a `$(ls <glob>)` matching nothing) runs the FULL suite: guard it.
