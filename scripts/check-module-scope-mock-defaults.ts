@@ -431,7 +431,6 @@ export function analyzeSource(fileName: string, text: string): FileAnalysis {
   // Resolve each helper to its WORST reference's context (refused, then
   // unresolved, then safe). A reference-less helper is unresolved here; an
   // importing file resolves it (`pendingByHelper`).
-  // here, and left for an importing file to resolve.
   const resolved = new Map<string, Resolution>();
   const resolving = new Set<string>();
   const resolveHelper = (name: string): Resolution => {
