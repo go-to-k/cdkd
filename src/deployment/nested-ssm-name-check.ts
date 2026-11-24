@@ -22,6 +22,11 @@ import { childTemplateLoader } from './nested-output-templates.js';
 import { healSlashedSsmParameterNames } from './ssm-slashed-name-heal.js';
 import { safeMsg } from '../utils/display-safe.js';
 import { SECRET_MASK } from './secret-redaction/pairs.js';
+import {
+  isMarkedCoordinate,
+  noEchoLeavesOf,
+  type NoEchoCoordinate,
+} from './secret-redaction/noecho-leaves.js';
 import type { ChildTemplateLoader } from './masked-property-fingerprints.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import type { ResourceState, StackState } from '../types/state.js';
@@ -54,12 +59,31 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** Whether `value` holds the stored mask anywhere (a bounded walk). */
-function holdsMask(value: unknown, depth = 0): boolean {
-  if (depth > 64) return true;
+/**
+ * Whether `value` holds the stored mask anywhere outside `marked` (a bounded
+ * walk). A mask at a `noEchoLeaves` coordinate stands for a `NoEcho`
+ * PARAMETER's value (go-to-k/cdkd#4043), which the update resolves afresh,
+ * so it reaches no redacted read: since go-to-k/cdkd#6896 a row's recorded
+ * `Tags` can hold one, and deferring for it left the heal undone for good
+ * (go-to-k/cdkd#6906). Any other mask (a masked attribute the row reads, an
+ * unmarked legacy record) still defers.
+ */
+function holdsUnmarkedMask(
+  value: unknown,
+  marked: readonly NoEchoCoordinate[],
+  path: (string | number)[] = []
+): boolean {
+  if (path.length > 64) return true;
+  if (marked.length > 0 && isMarkedCoordinate(path, marked)) return false;
   if (typeof value === 'string') return value.includes(SECRET_MASK);
-  if (Array.isArray(value)) return value.some((item) => holdsMask(item, depth + 1));
-  if (isObject(value)) return Object.values(value).some((item) => holdsMask(item, depth + 1));
+  if (Array.isArray(value)) {
+    return value.some((item, i) => holdsUnmarkedMask(item, marked, [...path, i]));
+  }
+  if (isObject(value)) {
+    return Object.entries(value).some(([key, item]) =>
+      holdsUnmarkedMask(item, marked, [...path, key])
+    );
+  }
   return false;
 }
 
@@ -99,8 +123,9 @@ async function checkLevel(
   const deferredRows = new Set<string>();
   let complete = true;
   const force = (logicalId: string): void => {
-    const properties = records?.[logicalId]?.properties;
-    (holdsMask(properties) ? deferredRows : forcedRows).add(logicalId);
+    const record = records?.[logicalId];
+    const marked = (record && noEchoLeavesOf(record)) ?? [];
+    (holdsUnmarkedMask(record?.properties, marked) ? deferredRows : forcedRows).add(logicalId);
   };
   await Promise.all(
     recordedNestedRows(template, records).rows.map(async (logicalId) => {
