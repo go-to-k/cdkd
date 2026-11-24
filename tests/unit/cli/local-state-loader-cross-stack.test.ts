@@ -59,7 +59,7 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
 }));
 
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation((...args: unknown[]) => {
+  S3StateBackend: vi.fn((...args: unknown[]) => {
     mocks.backendCtorMock(...args);
     return {
       verifyBucketExists: mocks.verifyBucketExistsMock,
@@ -70,7 +70,7 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
 }));
 
 vi.mock('../../../src/state/export-index-store.js', () => ({
-  ExportIndexStore: vi.fn().mockImplementation((...args: unknown[]) => {
+  ExportIndexStore: vi.fn((...args: unknown[]) => {
     mocks.exportIndexCtorMock(...args);
     return { lookup: mocks.lookupMock };
   }),
@@ -85,7 +85,7 @@ vi.mock('../../../src/utils/aws-clients.js', async () => {
   );
   return {
     ...actual,
-    AwsClients: vi.fn().mockImplementation((config: unknown) => {
+    AwsClients: vi.fn((config: unknown) => {
       mocks.awsClientsCtorMock(config);
       return { s3: {}, destroy: mocks.destroyMock };
     }),

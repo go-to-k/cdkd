@@ -27,7 +27,7 @@ const expandMacros = vi.hoisted(() => ({ calls: [] as string[][] }));
 const REACHED_EXPANSION = 'reached-macro-expansion';
 
 vi.mock('../../../../src/synthesis/synthesizer.js', () => ({
-  Synthesizer: vi.fn().mockImplementation(() => ({
+  Synthesizer: vi.fn(() => ({
     synthesize: vi.fn().mockImplementation((opts: unknown) => {
       synthResult.options.push(opts);
       return Promise.resolve({
@@ -50,7 +50,7 @@ vi.mock('../../../../src/cli/config-loader.js', () => ({
   resolveUseCdkBootstrapAssets: () => false,
 }));
 vi.mock('../../../../src/utils/aws-clients.js', () => ({
-  AwsClients: vi.fn().mockImplementation(() => ({ s3: {}, destroy: vi.fn() })),
+  AwsClients: vi.fn(() => ({ s3: {}, destroy: vi.fn() })),
   setAwsClients: vi.fn(),
 }));
 vi.mock('../../../../src/utils/role-arn.js', () => ({ applyRoleArnIfSet: vi.fn() }));

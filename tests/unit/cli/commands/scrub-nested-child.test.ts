@@ -74,7 +74,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
 
 const synthStacks = vi.hoisted(() => [] as unknown[]);
 vi.mock('../../../../src/synthesis/synthesizer.js', () => ({
-  Synthesizer: vi.fn().mockImplementation(() => ({
+  Synthesizer: vi.fn(() => ({
     synthesize: vi.fn().mockImplementation(() => Promise.resolve({ stacks: synthStacks })),
     expandMacrosForStacks: vi.fn().mockResolvedValue(undefined),
   })),
@@ -92,17 +92,17 @@ const stateBackend = vi.hoisted(() => ({
   prefix: 'cdkd',
   getState: vi.fn(),
   saveState: vi.fn(),
-  purgeNoncurrentVersions: vi.fn().mockResolvedValue(undefined),
+  purgeNoncurrentVersions: vi.fn(async (_keys: string[]): Promise<void> => undefined),
   // The post-migration check of a legacy key: gone.
-  getRawObject: vi.fn().mockResolvedValue(null),
+  getRawObject: vi.fn(async () => null),
   listStacks: vi.fn(),
 }));
 vi.mock('../../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => stateBackend),
+  S3StateBackend: vi.fn(() => stateBackend),
 }));
 const lockCalls = vi.hoisted(() => [] as string[]);
 vi.mock('../../../../src/state/lock-manager.js', () => ({
-  LockManager: vi.fn().mockImplementation(() => ({
+  LockManager: vi.fn(() => ({
     acquireLockWithRetry: vi.fn().mockImplementation((stack: string) => {
       lockCalls.push(stack);
       return Promise.resolve(undefined);
@@ -112,7 +112,7 @@ vi.mock('../../../../src/state/lock-manager.js', () => ({
 }));
 vi.mock('../../../../src/state/export-index-store.js', () => ({
   // No exports in these fixtures, so the region's index object does not exist.
-  ExportIndexStore: vi.fn().mockImplementation(() => ({
+  ExportIndexStore: vi.fn(() => ({
     readPersistedEntries: vi.fn().mockResolvedValue(undefined),
     patchEntry: vi.fn().mockResolvedValue(true),
   })),

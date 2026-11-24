@@ -42,14 +42,14 @@ const synthStacks = vi.hoisted(() => [] as unknown[]);
 const commandStateBackend = vi.hoisted(() => ({
   prefix: 'cdkd',
   getState: vi.fn(),
-  saveState: vi.fn().mockResolvedValue('etag-2'),
-  purgeNoncurrentVersions: vi.fn().mockResolvedValue(undefined),
+  saveState: vi.fn(async (..._args: unknown[]) => 'etag-2'),
+  purgeNoncurrentVersions: vi.fn(async (_keys: string[]): Promise<void> => undefined),
   // The nested-record listing (go-to-k/cdkd#2252): no `<stack>~` records here.
-  listStacks: vi.fn().mockResolvedValue([]),
+  listStacks: vi.fn(async (): Promise<unknown[]> => []),
 }));
 
 vi.mock('../../../../src/synthesis/synthesizer.js', () => ({
-  Synthesizer: vi.fn().mockImplementation(() => ({
+  Synthesizer: vi.fn(() => ({
     synthesize: vi.fn().mockImplementation(() => Promise.resolve({ stacks: synthStacks })),
     expandMacrosForStacks: vi.fn().mockResolvedValue(undefined),
   })),
@@ -60,15 +60,15 @@ vi.mock('../../../../src/cli/config-loader.js', () => ({
   resolveStateBucketWithDefault: () => Promise.resolve('cdkd-state-bucket'),
 }));
 vi.mock('../../../../src/utils/aws-clients.js', () => ({
-  AwsClients: vi.fn().mockImplementation(() => ({ s3: {} })),
+  AwsClients: vi.fn(() => ({ s3: {} })),
   setAwsClients: vi.fn(),
 }));
 vi.mock('../../../../src/utils/role-arn.js', () => ({ applyRoleArnIfSet: vi.fn() }));
 vi.mock('../../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => commandStateBackend),
+  S3StateBackend: vi.fn(() => commandStateBackend),
 }));
 vi.mock('../../../../src/state/lock-manager.js', () => ({
-  LockManager: vi.fn().mockImplementation(() => ({
+  LockManager: vi.fn(() => ({
     acquireLockWithRetry: vi.fn().mockResolvedValue(undefined),
     releaseLock: vi.fn().mockResolvedValue(undefined),
   })),
@@ -118,9 +118,7 @@ const indexFake = vi.hoisted(() => ({
 }));
 
 vi.mock('../../../../src/state/export-index-store.js', () => ({
-  ExportIndexStore: vi
-    .fn()
-    .mockImplementation((...args: unknown[]) => {
+  ExportIndexStore: vi.fn((...args: unknown[]) => {
       const region = args[3] as string;
       indexFake.ctorRegions.push(region);
       indexFake.ctorArgs.push(args);
@@ -178,7 +176,7 @@ vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', async () =>
   >('../../../../src/deployment/intrinsic-function-resolver.js');
   return {
     ...actual,
-    IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
+    IntrinsicFunctionResolver: vi.fn(() => ({
       resolveParameters: vi.fn().mockResolvedValue({}),
       evaluateConditions: vi.fn().mockResolvedValue({}),
       resolve: vi
@@ -1565,7 +1563,7 @@ describe('cdkd scrub - dropping an undeclared output key, end to end (go-to-k/cd
   });
   afterEach(() => {
     commandStateBackend.getState.mockReset();
-    commandStateBackend.listStacks.mockReset().mockResolvedValue([]);
+    commandStateBackend.listStacks.mockReset();
   });
 
   /** A scrubbed record plus one undeclared alias whose name embeds its own value. */

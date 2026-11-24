@@ -41,7 +41,7 @@ vi.mock('../../../src/utils/role-arn.js', () => ({
 }));
 
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
-  AwsClients: vi.fn().mockImplementation(() => ({
+  AwsClients: vi.fn(() => ({
     get s3() {
       return { send: mockS3Send, config: { region: async () => REGION }, destroy: vi.fn() };
     },
@@ -55,7 +55,7 @@ vi.mock('../../../src/utils/aws-clients.ts', () => ({
 }));
 
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => stateBackendMocks),
+  S3StateBackend: vi.fn(() => stateBackendMocks),
 }));
 
 // The store's classifier and key predicate stay REAL; only its S3 delete is
@@ -65,7 +65,7 @@ vi.mock('../../../src/provisioning/wait-condition-signal-store.js', async (impor
     await importOriginal<typeof import('../../../src/provisioning/wait-condition-signal-store.js')>();
   return {
     ...actual,
-    WaitConditionSignalStore: vi.fn().mockImplementation(() => ({
+    WaitConditionSignalStore: vi.fn(() => ({
       setBucket: vi.fn(),
       removeSignalObjects: mockRemove,
     })),
@@ -76,7 +76,7 @@ vi.mock('@aws-sdk/client-s3', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-s3')>();
   return {
     ...actual,
-    S3Client: vi.fn().mockImplementation(() => ({ send: mockS3Send, destroy: vi.fn() })),
+    S3Client: vi.fn(() => ({ send: mockS3Send, destroy: vi.fn() })),
   };
 });
 
@@ -84,7 +84,7 @@ vi.mock('@aws-sdk/client-ecr', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-ecr')>();
   return {
     ...actual,
-    ECRClient: vi.fn().mockImplementation(() => ({ send: mockEcrSend, destroy: vi.fn() })),
+    ECRClient: vi.fn(() => ({ send: mockEcrSend, destroy: vi.fn() })),
   };
 });
 
@@ -92,7 +92,7 @@ vi.mock('@aws-sdk/client-sts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-sts')>();
   return {
     ...actual,
-    STSClient: vi.fn().mockImplementation(() => ({
+    STSClient: vi.fn(() => ({
       send: mockStsSend,
       config: { region: async () => REGION },
       destroy: vi.fn(),

@@ -35,7 +35,7 @@ const provider = vi.hoisted(() => ({
   replacedSurvivorIdentity: vi.fn(),
 }));
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({
-  ProviderRegistry: vi.fn().mockImplementation(() => ({
+  ProviderRegistry: vi.fn(() => ({
     getProviderFor: () => ({ provider, provisionedBy: 'sdk' }),
     getProvider: () => provider,
     setCustomResourceResponseBucket: vi.fn(),
@@ -49,7 +49,7 @@ vi.mock('../../../src/cli/commands/deployment-events-run.js', () => ({
   }),
 }));
 vi.mock('../../../src/utils/aws-clients.js', () => ({
-  AwsClients: vi.fn().mockImplementation(() => ({ destroy: vi.fn() })),
+  AwsClients: vi.fn(() => ({ destroy: vi.fn() })),
   setAwsClients: vi.fn(),
   runWithStackAwsClients: (_c: unknown, fn: () => unknown) => fn(),
   getAwsClients: vi.fn(() => ({})),

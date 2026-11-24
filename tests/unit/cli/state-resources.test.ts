@@ -28,7 +28,7 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
 
 vi.mock('../../../src/utils/aws-clients.ts', () => {
   return {
-    AwsClients: vi.fn().mockImplementation(() => ({
+    AwsClients: vi.fn(() => ({
       get s3() {
         return {};
       },
@@ -46,7 +46,7 @@ const mockListStacks =
   vi.fn<() => Promise<Array<{ stackName: string; region?: string }>>>();
 const mockVerifyBucketExists = vi.fn<() => Promise<void>>();
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({
+  S3StateBackend: vi.fn(() => ({
     destroyClient: vi.fn(),
     getState: mockGetState,
     listStacks: mockListStacks,
@@ -56,7 +56,7 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
 
 // LockManager is imported by state.ts but unused for `state resources`.
 vi.mock('../../../src/state/lock-manager.js', () => ({
-  LockManager: vi.fn().mockImplementation(() => ({
+  LockManager: vi.fn(() => ({
     isLocked: vi.fn(),
   })),
 }));

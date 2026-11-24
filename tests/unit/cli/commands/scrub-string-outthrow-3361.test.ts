@@ -55,7 +55,7 @@ vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', async (impo
   // The non-class exports must survive the double: `scrub.ts` imports pure
   // helpers from this module (`carriesDynamicReference`, ...).
   ...(await importOriginal<typeof import('../../../../src/deployment/intrinsic-function-resolver.js')>()),
-  IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
+  IntrinsicFunctionResolver: vi.fn(() => ({
     resolveParameters: vi.fn().mockImplementation(() =>
       rx.rejectParameters ? Promise.reject(unconvertible()) : Promise.resolve({})
     ),
@@ -127,7 +127,7 @@ const indexStore = vi.hoisted(() => ({
   patchEntry: vi.fn(),
 }));
 vi.mock('../../../../src/synthesis/synthesizer.js', () => ({
-  Synthesizer: vi.fn().mockImplementation(() => ({
+  Synthesizer: vi.fn(() => ({
     synthesize: vi.fn().mockImplementation(() => Promise.resolve({ stacks: synthStacks })),
     expandMacrosForStacks: vi.fn().mockResolvedValue(undefined),
   })),
@@ -138,18 +138,18 @@ vi.mock('../../../../src/cli/config-loader.js', () => ({
   resolveStateBucketWithDefault: () => Promise.resolve('cdkd-state-bucket'),
 }));
 vi.mock('../../../../src/utils/aws-clients.js', () => ({
-  AwsClients: vi.fn().mockImplementation(() => ({ s3: {} })),
+  AwsClients: vi.fn(() => ({ s3: {} })),
   setAwsClients: vi.fn(),
 }));
 vi.mock('../../../../src/utils/role-arn.js', () => ({ applyRoleArnIfSet: vi.fn() }));
 vi.mock('../../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => commandStateBackend),
+  S3StateBackend: vi.fn(() => commandStateBackend),
 }));
 vi.mock('../../../../src/state/export-index-store.js', () => ({
-  ExportIndexStore: vi.fn().mockImplementation(() => indexStore),
+  ExportIndexStore: vi.fn(() => indexStore),
 }));
 vi.mock('../../../../src/state/lock-manager.js', () => ({
-  LockManager: vi.fn().mockImplementation(() => ({
+  LockManager: vi.fn(() => ({
     acquireLockWithRetry: vi.fn().mockResolvedValue(undefined),
     releaseLock: vi.fn().mockResolvedValue(undefined),
   })),

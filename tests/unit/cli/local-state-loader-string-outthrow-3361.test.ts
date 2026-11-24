@@ -44,7 +44,7 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
 }));
 
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({
+  S3StateBackend: vi.fn(() => ({
     getRawObject: mocks.getRawObjectMock,
     verifyBucketExists: mocks.verifyBucketExistsMock,
     listStacks: mocks.listStacksMock,
@@ -53,14 +53,14 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
 }));
 
 vi.mock('../../../src/state/export-index-store.js', () => ({
-  ExportIndexStore: vi.fn().mockImplementation(() => ({ lookup: mocks.lookupMock })),
+  ExportIndexStore: vi.fn(() => ({ lookup: mocks.lookupMock })),
 }));
 
 vi.mock('../../../src/utils/aws-clients.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/utils/aws-clients.js')>();
   return {
     ...actual,
-    AwsClients: vi.fn().mockImplementation(() => ({ s3: {}, destroy: vi.fn() })),
+    AwsClients: vi.fn(() => ({ s3: {}, destroy: vi.fn() })),
   };
 });
 

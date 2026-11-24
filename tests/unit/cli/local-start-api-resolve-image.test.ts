@@ -49,7 +49,7 @@ vi.mock('../../../src/local/ecr-puller.js', () => ({
   parseEcrUri: mocks.parseEcrUriMock,
 }));
 vi.mock('../../../src/assets/asset-manifest-loader.js', () => ({
-  AssetManifestLoader: vi.fn().mockImplementation(() => ({
+  AssetManifestLoader: vi.fn(() => ({
     loadStackManifest: mocks.loadManifestMock,
   })),
   getDockerImageBySourceHash: mocks.getDockerImageBySourceHashMock,

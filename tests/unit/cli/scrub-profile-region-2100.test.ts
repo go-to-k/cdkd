@@ -15,7 +15,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 const profile = vi.hoisted(() => ({ region: 'ap-northeast-1' as string | undefined }));
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation(() => ({
+  STSClient: vi.fn(() => ({
     config: {
       region: async (): Promise<string> => {
         if (!profile.region) throw new Error('Region is missing');
@@ -34,7 +34,7 @@ const synthStacks = vi.hoisted(() => ({
   full: undefined as undefined | Array<Record<string, unknown>>,
 }));
 vi.mock('../../../src/synthesis/synthesizer.js', () => ({
-  Synthesizer: vi.fn().mockImplementation(() => ({
+  Synthesizer: vi.fn(() => ({
     synthesize: vi.fn(async () => ({
       manifest: {},
       assemblyDir: '/tmp/cdk.out',
@@ -60,7 +60,7 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
   },
 }));
 vi.mock('../../../src/utils/aws-clients.js', () => ({
-  AwsClients: vi.fn().mockImplementation(() => ({ s3: {}, destroy: vi.fn() })),
+  AwsClients: vi.fn(() => ({ s3: {}, destroy: vi.fn() })),
   setAwsClients: vi.fn(),
 }));
 vi.mock('../../../src/utils/role-arn.js', () => ({ applyRoleArnIfSet: vi.fn() }));
@@ -69,7 +69,7 @@ vi.mock('../../../src/utils/role-arn.js', () => ({ applyRoleArnIfSet: vi.fn() })
 const held = vi.hoisted(() => ({ regions: new Set<string>() }));
 const backend = vi.hoisted(() => ({ getState: vi.fn(), stateExistsOwnedBy: vi.fn() }));
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({
+  S3StateBackend: vi.fn(() => ({
     destroyClient: vi.fn(),
     getState: backend.getState,
     stateExistsOwnedBy: backend.stateExistsOwnedBy,
@@ -78,7 +78,7 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
   })),
 }));
 vi.mock('../../../src/state/lock-manager.js', () => ({
-  LockManager: vi.fn().mockImplementation(() => ({
+  LockManager: vi.fn(() => ({
     acquireLockWithRetry: vi.fn(async () => undefined),
     releaseLock: vi.fn(async () => undefined),
   })),
@@ -87,7 +87,7 @@ vi.mock('../../../src/state/lock-manager.js', () => ({
 /** The region of each exports index the run opened (`ExportIndexStore`'s 4th argument). */
 const indexRegions = vi.hoisted(() => ({ value: [] as string[] }));
 vi.mock('../../../src/state/export-index-store.js', () => ({
-  ExportIndexStore: vi.fn().mockImplementation((...args: unknown[]) => {
+  ExportIndexStore: vi.fn((...args: unknown[]) => {
     indexRegions.value.push(args[3] as string);
     return {
       readPersistedEntries: vi.fn(async () => undefined),

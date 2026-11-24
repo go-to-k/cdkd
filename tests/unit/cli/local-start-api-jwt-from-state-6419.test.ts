@@ -222,18 +222,37 @@ const { createLocalStartApiCommand } = await import('../../../src/cli/commands/l
 
 const SIGNALS = ['SIGINT', 'SIGTERM', 'uncaughtException', 'unhandledRejection'];
 const writes: string[] = [];
-let exitSpy: ReturnType<typeof vi.spyOn>;
-let onSpy: ReturnType<typeof vi.spyOn>;
-let writeSpy: ReturnType<typeof vi.spyOn>;
+/**
+ * Replace `obj[key]` with `vi.fn(impl)` until `restoreStubs()`. A `vi.spyOn`
+ * stub would fall back to the REAL method after `mockReset` (go-to-k/cdkd#6928),
+ * while `vi.fn(impl)` keeps `impl`.
+ */
+const stubRestores: Array<() => void> = [];
+function stubMethod<T extends object>(obj: T, key: keyof T & string, impl: (...args: never[]) => unknown) {
+  const own = Object.getOwnPropertyDescriptor(obj, key);
+  const stub = vi.fn(impl as (...args: unknown[]) => unknown);
+  Object.defineProperty(obj, key, { value: stub, configurable: true, writable: true, enumerable: own?.enumerable ?? false });
+  stubRestores.push(() => {
+    if (own) Object.defineProperty(obj, key, own);
+    else delete (obj as Record<string, unknown>)[key];
+  });
+  return stub;
+}
+function restoreStubs(): void {
+  while (stubRestores.length > 0) stubRestores.pop()!();
+}
+let exitSpy: ReturnType<typeof stubMethod>;
+let onSpy: ReturnType<typeof stubMethod>;
+let writeSpy: ReturnType<typeof stubMethod>;
 
 beforeAll(async () => {
   const realOn = process.on.bind(process);
-  onSpy = vi.spyOn(process, 'on').mockImplementation(((event: string, fn: () => void) => {
+  onSpy = stubMethod(process, 'on', ((event: string, fn: () => void) => {
     if (SIGNALS.includes(event)) return process;
     return realOn(event, fn);
   }) as typeof process.on);
-  exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
-  writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string) => {
+  exitSpy = stubMethod(process, 'exit', (() => undefined) as never);
+  writeSpy = stubMethod(process.stdout, 'write', ((chunk: string) => {
     writes.push(String(chunk));
     return true;
   }) as typeof process.stdout.write);
@@ -248,9 +267,7 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
-  onSpy.mockRestore();
-  exitSpy.mockRestore();
-  writeSpy.mockRestore();
+  restoreStubs();
 });
 
 describe('local start-api --from-state: HttpUserPoolAuthorizer JWT (go-to-k/cdkd#6419)', () => {

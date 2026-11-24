@@ -121,7 +121,7 @@ const cfnSend = vi.hoisted(() =>
   vi.fn<(command: { input: { StackName?: string } }) => Promise<unknown>>()
 );
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
-  AwsClients: vi.fn().mockImplementation(() => ({
+  AwsClients: vi.fn(() => ({
     get s3() {
       return {};
     },
@@ -229,9 +229,7 @@ const mockGetState = vi.fn<
 >();
 const mockSaveState = vi.fn<(...args: unknown[]) => Promise<string>>();
 // go-to-k/cdkd#5064: the stack-instance id assigned on an import's first write.
-const mockStackInstanceIdForFirstWrite = vi
-  .fn<(...args: unknown[]) => Promise<string>>()
-  .mockResolvedValue('00000000-0000-4000-8000-000000000000');
+const mockStackInstanceIdForFirstWrite = vi.fn<(...args: unknown[]) => Promise<string>>(async () => '00000000-0000-4000-8000-000000000000');
 // go-to-k/cdkd#6170: the write-ahead sibling an import reads before resolving.
 const mockPeekStackInstanceSibling = vi.fn<
   (...args: unknown[]) => Promise<{ stackInstanceId: string; stackIdFromInstance: boolean } | null>
@@ -245,7 +243,7 @@ const registry = vi.hoisted(() => ({
   listTopLevelPrefixes: vi.fn(async () => [] as string[]),
 }));
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({
+  S3StateBackend: vi.fn(() => ({
     prefix: 'cdkd',
     destroyClient: vi.fn(),
     verifyBucketExists: mockVerifyBucketExists,
@@ -268,7 +266,7 @@ const mockAcquireLock = vi.fn<() => Promise<boolean>>();
 const mockGetLockInfo = vi.fn<() => Promise<unknown>>();
 const mockReleaseLock = vi.fn<() => Promise<void>>();
 vi.mock('../../../src/state/lock-manager.js', () => ({
-  LockManager: vi.fn().mockImplementation(() => ({
+  LockManager: vi.fn(() => ({
     acquireLock: mockAcquireLock,
     getLockInfo: mockGetLockInfo,
     releaseLock: mockReleaseLock,
@@ -277,7 +275,7 @@ vi.mock('../../../src/state/lock-manager.js', () => ({
 
 const mockSynthesize = vi.fn<() => Promise<unknown>>();
 vi.mock('../../../src/synthesis/synthesizer.js', () => ({
-  Synthesizer: vi.fn().mockImplementation(() => ({
+  Synthesizer: vi.fn(() => ({
     synthesize: mockSynthesize,
   })),
   synthesisStatusMessage: (_app: unknown, msg: string) => msg,
@@ -299,7 +297,7 @@ const mockGetProviderFor = vi.hoisted(() =>
   vi.fn<(input: { resourceType: string }) => unknown>()
 );
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({
-  ProviderRegistry: vi.fn().mockImplementation(() => ({
+  ProviderRegistry: vi.fn(() => ({
     hasProvider: mockHasProvider,
     getProvider: mockGetProvider,
     getProviderFor: mockGetProviderFor,
@@ -323,7 +321,7 @@ vi.mock('@aws-sdk/client-elastic-load-balancing-v2', async () => {
   const actual = await vi.importActual('@aws-sdk/client-elastic-load-balancing-v2');
   return {
     ...actual,
-    ElasticLoadBalancingV2Client: vi.fn().mockImplementation(() => ({
+    ElasticLoadBalancingV2Client: vi.fn(() => ({
       send: elbv2Send,
       config: { region: () => Promise.resolve('us-east-1') },
     })),

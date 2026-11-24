@@ -23,7 +23,7 @@ const provider = vi.hoisted(() => ({
   resourceIdentity: async () => 'created-token',
 }));
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({
-  ProviderRegistry: vi.fn().mockImplementation(() => ({
+  ProviderRegistry: vi.fn(() => ({
     getProviderFor: ({ resourceType }: { resourceType: string }) => ({
       // Real-shaped: only these types' providers read a creation identity.
       provider: [

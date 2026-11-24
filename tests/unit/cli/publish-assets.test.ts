@@ -6,7 +6,7 @@ import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 // Synthesizer — only synthesize() is called.
 const mockSynthesize = vi.fn();
 vi.mock('../../../src/synthesis/synthesizer.js', () => ({
-  Synthesizer: vi.fn().mockImplementation(() => ({
+  Synthesizer: vi.fn(() => ({
     synthesize: mockSynthesize,
   })),
   synthesisStatusMessage: (_app: unknown, msg: string) => msg,
@@ -21,7 +21,7 @@ vi.mock('../../../src/synthesis/synthesizer.js', () => ({
 const mockAddAssetsToGraph = vi.fn();
 const mockExecuteNode = vi.fn();
 vi.mock('../../../src/assets/asset-publisher.js', () => ({
-  AssetPublisher: vi.fn().mockImplementation(() => ({
+  AssetPublisher: vi.fn(() => ({
     addAssetsToGraph: mockAddAssetsToGraph,
     executeNode: mockExecuteNode,
   })),
@@ -49,11 +49,11 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
 const mockStsSend = vi.fn();
 const mockStsDestroy = vi.fn();
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation(() => ({
+  STSClient: vi.fn(() => ({
     send: mockStsSend,
     destroy: mockStsDestroy,
   })),
-  GetCallerIdentityCommand: vi.fn().mockImplementation((input) => ({
+  GetCallerIdentityCommand: vi.fn((input) => ({
     ...input,
     _type: 'GetCallerIdentity',
   })),
@@ -73,13 +73,13 @@ vi.mock('../../../src/assets/asset-redirect.js', async (importOriginal) => ({
   loadPublishableAssetManifest: (p: string) => mockLoadPublishableManifest(p),
 }));
 vi.mock('../../../src/assets/asset-storage.js', () => ({
-  AssetModeResolver: vi.fn().mockImplementation(() => ({ resolve: mockModeResolve })),
+  AssetModeResolver: vi.fn(() => ({ resolve: mockModeResolve })),
 }));
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({})),
+  S3StateBackend: vi.fn(() => ({})),
 }));
 vi.mock('../../../src/utils/aws-clients.js', () => ({
-  AwsClients: vi.fn().mockImplementation(() => ({ s3: {}, destroy: vi.fn() })),
+  AwsClients: vi.fn(() => ({ s3: {}, destroy: vi.fn() })),
   // The account-lookup STS client reads the ambient credential configuration
   // (issue #3588); an ambient with none degrades to plain awsClientDefaults().
   getAwsClients: vi.fn(() => ({})),

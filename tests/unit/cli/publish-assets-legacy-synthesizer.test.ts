@@ -10,7 +10,7 @@ import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 
 const synthesize = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/synthesis/synthesizer.js', () => ({
-  Synthesizer: vi.fn().mockImplementation(() => ({ synthesize })),
+  Synthesizer: vi.fn(() => ({ synthesize })),
   synthesisStatusMessage: (_app: unknown, msg: string) => msg,
 }));
 
@@ -18,7 +18,7 @@ const addAssetsToGraph = vi.hoisted(() => vi.fn());
 const addManifestToGraph = vi.hoisted(() => vi.fn());
 const executeNode = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock('../../../src/assets/asset-publisher.js', () => ({
-  AssetPublisher: vi.fn().mockImplementation(() => ({
+  AssetPublisher: vi.fn(() => ({
     addAssetsToGraph,
     addManifestToGraph,
     executeNode,
@@ -27,8 +27,8 @@ vi.mock('../../../src/assets/asset-publisher.js', () => ({
 
 const cfnSend = vi.hoisted(() => vi.fn());
 vi.mock('@aws-sdk/client-cloudformation', () => ({
-  CloudFormationClient: vi.fn().mockImplementation(() => ({ send: cfnSend, destroy: vi.fn() })),
-  DescribeStacksCommand: vi.fn().mockImplementation((input) => ({ ...input })),
+  CloudFormationClient: vi.fn(() => ({ send: cfnSend, destroy: vi.fn() })),
+  DescribeStacksCommand: vi.fn((input) => ({ ...input })),
 }));
 
 const resolveStateBucketWithDefault = vi.hoisted(() => vi.fn());
@@ -40,7 +40,7 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
 
 const profile = vi.hoisted(() => ({ region: 'ap-northeast-1' as string | undefined }));
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation(() => ({
+  STSClient: vi.fn(() => ({
     config: {
       region: async (): Promise<string> => {
         if (!profile.region) throw new Error('Region is missing');
@@ -50,7 +50,7 @@ vi.mock('@aws-sdk/client-sts', () => ({
     send: vi.fn(async () => ({ Account: '111111111111' })),
     destroy: vi.fn(),
   })),
-  GetCallerIdentityCommand: vi.fn().mockImplementation((input) => ({ ...input })),
+  GetCallerIdentityCommand: vi.fn((input) => ({ ...input })),
 }));
 
 // No publishable manifest by default, so no marker read; a case that sets
@@ -62,7 +62,7 @@ vi.mock('../../../src/assets/asset-redirect.js', async (importOriginal) => ({
 }));
 const mode = vi.hoisted(() => ({ value: { mode: 'legacy' } as unknown }));
 vi.mock('../../../src/assets/asset-storage.js', () => ({
-  AssetModeResolver: vi.fn().mockImplementation(() => ({
+  AssetModeResolver: vi.fn(() => ({
     resolve: vi.fn(async () => mode.value),
   })),
 }));
@@ -71,10 +71,10 @@ vi.mock('../../../src/assets/asset-storage.js', () => ({
 const held = vi.hoisted(() => ({ regions: new Set<string>() }));
 const stateExistsOwnedBy = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({ stateExistsOwnedBy })),
+  S3StateBackend: vi.fn(() => ({ stateExistsOwnedBy })),
 }));
 vi.mock('../../../src/utils/aws-clients.js', () => ({
-  AwsClients: vi.fn().mockImplementation(() => ({ s3: {}, destroy: vi.fn() })),
+  AwsClients: vi.fn(() => ({ s3: {}, destroy: vi.fn() })),
   getAwsClients: vi.fn(() => ({})),
 }));
 

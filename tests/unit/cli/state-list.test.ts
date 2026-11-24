@@ -35,7 +35,7 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
 // concrete client value is irrelevant.
 vi.mock('../../../src/utils/aws-clients.ts', () => {
   return {
-    AwsClients: vi.fn().mockImplementation(() => ({
+    AwsClients: vi.fn(() => ({
       get s3() {
         return {};
       },
@@ -69,7 +69,7 @@ const mockGetState =
   >();
 const mockVerifyBucketExists = vi.fn<() => Promise<void>>();
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({
+  S3StateBackend: vi.fn(() => ({
     destroyClient: vi.fn(),
     listStacks: mockListStacks,
     getState: mockGetState,
@@ -80,7 +80,7 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
 // Mock LockManager.
 const mockIsLocked = vi.fn<(stackName: string, region?: string) => Promise<boolean>>();
 vi.mock('../../../src/state/lock-manager.js', () => ({
-  LockManager: vi.fn().mockImplementation(() => ({
+  LockManager: vi.fn(() => ({
     isLocked: mockIsLocked,
   })),
 }));

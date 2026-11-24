@@ -29,7 +29,7 @@ vi.mock('../../../src/synthesis/synthesizer.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/synthesis/synthesizer.js')>();
   return {
     ...actual,
-    Synthesizer: vi.fn().mockImplementation(() => ({ synthesize: mockSynthesize })),
+    Synthesizer: vi.fn(() => ({ synthesize: mockSynthesize })),
   };
 });
 

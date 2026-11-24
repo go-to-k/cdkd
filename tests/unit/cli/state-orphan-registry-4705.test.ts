@@ -24,7 +24,7 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
   resolveStateBucketWithDefault: vi.fn(async () => 'test-bucket'),
 }));
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
-  AwsClients: vi.fn().mockImplementation(() => ({ get s3() { return {}; }, destroy: vi.fn() })),
+  AwsClients: vi.fn(() => ({ get s3() { return {}; }, destroy: vi.fn() })),
   setAwsClients: vi.fn(),
   runWithStackAwsClients: (_clients: unknown, fn: () => unknown) => fn(),
   getAwsClients: vi.fn(),
@@ -43,10 +43,10 @@ const backend = vi.hoisted(() => ({
   releaseRegistryMarker: vi.fn(async () => 'released' as const),
 }));
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => backend),
+  S3StateBackend: vi.fn(() => backend),
 }));
 vi.mock('../../../src/state/lock-manager.js', () => ({
-  LockManager: vi.fn().mockImplementation(() => ({
+  LockManager: vi.fn(() => ({
     isLocked: vi.fn(async () => false),
     forceReleaseLock: vi.fn(async () => undefined),
     getLockInfo: vi.fn(async () => null),

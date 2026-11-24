@@ -40,7 +40,7 @@ vi.mock('@aws-sdk/client-sts', async (importActual) => {
   const actual = await importActual<typeof import('@aws-sdk/client-sts')>();
   return {
     ...actual,
-    STSClient: vi.fn().mockImplementation(() => ({
+    STSClient: vi.fn(() => ({
       config: {
         region: async (): Promise<string> => {
           if (!profileRegion.value) throw new Error('Region is missing');
@@ -54,7 +54,7 @@ vi.mock('@aws-sdk/client-sts', async (importActual) => {
 
 const mockStsSend = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
-  AwsClients: vi.fn().mockImplementation(() => ({
+  AwsClients: vi.fn(() => ({
     sts: { send: mockStsSend },
     destroy: vi.fn(),
   })),
@@ -79,7 +79,7 @@ vi.mock('@aws-sdk/client-s3', async (importActual) => {
     // `config.region()` reports the region the client was constructed with, as
     // the real SDK client does. The destination bucket's policy derives its
     // ARN partition from it (issue #1794).
-    S3Client: vi.fn().mockImplementation((cfg?: { region?: string }) => ({
+    S3Client: vi.fn((cfg?: { region?: string }) => ({
       send: s3SendImpl,
       destroy: s3DestroySpy,
       config: { region: async () => cfg?.region ?? 'us-east-1' },

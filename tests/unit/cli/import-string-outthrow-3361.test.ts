@@ -80,7 +80,7 @@ vi.mock('../../../src/cli/commands/import/deployed-properties.js', async (import
 }));
 
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
-  AwsClients: vi.fn().mockImplementation(() => ({
+  AwsClients: vi.fn(() => ({
     get s3() {
       return {};
     },
@@ -125,11 +125,9 @@ vi.mock('../../../src/cli/commands/retire-cfn-stack.js', async () => {
 const mockGetState = vi.fn<(s: string, r: string) => Promise<unknown>>();
 const mockSaveState = vi.fn<(...args: unknown[]) => Promise<string>>();
 const mockMarkRollbackJournalImported = vi.fn<(...args: unknown[]) => Promise<string[]>>();
-const mockStackInstanceIdForFirstWrite = vi
-  .fn<(...args: unknown[]) => Promise<string>>()
-  .mockResolvedValue('00000000-0000-4000-8000-000000000000');
+const mockStackInstanceIdForFirstWrite = vi.fn<(...args: unknown[]) => Promise<string>>(async () => '00000000-0000-4000-8000-000000000000');
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({
+  S3StateBackend: vi.fn(() => ({
     destroyClient: vi.fn(),
     verifyBucketExists: vi.fn(async () => undefined),
     getState: mockGetState,
@@ -142,7 +140,7 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
 const mockAcquireLock = vi.fn<() => Promise<boolean>>();
 const mockReleaseLock = vi.fn<(stackName: string, region: string) => Promise<void>>();
 vi.mock('../../../src/state/lock-manager.js', () => ({
-  LockManager: vi.fn().mockImplementation(() => ({
+  LockManager: vi.fn(() => ({
     acquireLock: mockAcquireLock,
     getLockInfo: vi.fn(async () => null),
     releaseLock: mockReleaseLock,
@@ -151,7 +149,7 @@ vi.mock('../../../src/state/lock-manager.js', () => ({
 
 const mockSynthesize = vi.fn<() => Promise<unknown>>();
 vi.mock('../../../src/synthesis/synthesizer.js', () => ({
-  Synthesizer: vi.fn().mockImplementation(() => ({ synthesize: mockSynthesize })),
+  Synthesizer: vi.fn(() => ({ synthesize: mockSynthesize })),
   synthesisStatusMessage: (_app: unknown, msg: string) => msg,
 }));
 
@@ -163,7 +161,7 @@ vi.mock('../../../src/provisioning/register-providers.js', () => ({
 const mockHasProvider = vi.hoisted(() => vi.fn<(t: string) => boolean>());
 const mockGetProvider = vi.hoisted(() => vi.fn<(t: string) => unknown>());
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({
-  ProviderRegistry: vi.fn().mockImplementation(() => ({
+  ProviderRegistry: vi.fn(() => ({
     hasProvider: mockHasProvider,
     getProvider: mockGetProvider,
     getProviderFor: ({ resourceType }: { resourceType: string }) => ({

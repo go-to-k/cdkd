@@ -18,21 +18,17 @@ const stsConfigs: Array<Record<string, unknown>> = [];
 const activeWiring = vi.hoisted(() => ({ current: undefined as unknown }));
 
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation((config: Record<string, unknown>) => {
+  STSClient: vi.fn((config: Record<string, unknown>) => {
     stsConfigs.push(config);
     return { send: stsSendMock, destroy: vi.fn() };
   }),
-  AssumeRoleCommand: vi.fn().mockImplementation((input: unknown) => ({ kind: 'AssumeRole', input })),
-  GetCallerIdentityCommand: vi
-    .fn()
-    .mockImplementation((input: unknown) => ({ kind: 'GetCallerIdentity', input })),
+  AssumeRoleCommand: vi.fn((input: unknown) => ({ kind: 'AssumeRole', input })),
+  GetCallerIdentityCommand: vi.fn((input: unknown) => ({ kind: 'GetCallerIdentity', input })),
 }));
 
 vi.mock('cdk-local/internal', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  resolveHostDefaultCredentials: vi
-    .fn()
-    .mockResolvedValue({ accessKeyId: 'caller-key', secretAccessKey: 'caller-secret' }),
+  resolveHostDefaultCredentials: vi.fn(async () => ({ accessKeyId: 'caller-key', secretAccessKey: 'caller-secret' })),
 }));
 
 vi.mock('../../../src/local/local-aws-wiring.js', async (importOriginal) => {
@@ -55,31 +51,31 @@ vi.mock('../../../src/local/local-aws-wiring.js', async (importOriginal) => {
 
 vi.mock('../../../src/local/docker-runner.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  ensureDockerAvailable: vi.fn().mockResolvedValue(undefined),
+  ensureDockerAvailable: vi.fn(async () => undefined),
 }));
 vi.mock('../../../src/local/docker-version.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  resolveHostGatewayExtraHosts: vi.fn().mockResolvedValue([]),
+  resolveHostGatewayExtraHosts: vi.fn(async () => []),
 }));
 vi.mock('../../../src/cli/config-loader.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  resolveApp: vi.fn().mockReturnValue('node app.js'),
+  resolveApp: vi.fn(() => 'node app.js'),
 }));
 vi.mock('../../../src/synthesis/synthesizer.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  Synthesizer: vi.fn().mockImplementation(() => ({
+  Synthesizer: vi.fn(() => ({
     synthesize: vi.fn().mockResolvedValue({ stacks: [] }),
   })),
 }));
 vi.mock('../../../src/cli/commands/local-state-source.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  createLocalStateProvider: vi.fn().mockReturnValue(undefined),
+  createLocalStateProvider: vi.fn(() => undefined),
 }));
 vi.mock('../../../src/local/ecs-task-resolver.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  parseEcsTarget: vi.fn().mockReturnValue({ stackPattern: undefined }),
-  pickCandidateStack: vi.fn().mockReturnValue(undefined),
-  resolveEcsTaskTarget: vi.fn().mockReturnValue({
+  parseEcsTarget: vi.fn(() => ({ stackPattern: undefined })),
+  pickCandidateStack: vi.fn(() => undefined),
+  resolveEcsTaskTarget: vi.fn(() => ({
     stack: { stackName: 'CdkdUnitStack', region: 'us-east-1' },
     taskDefinitionLogicalId: 'TaskDef',
     family: 'cdkd-unit-family',
@@ -88,13 +84,13 @@ vi.mock('../../../src/local/ecs-task-resolver.js', async (importOriginal) => ({
       { name: 'web', environment: {}, image: { kind: 'cdk-asset' } },
     ],
     taskRoleArn: 'arn:aws:iam::${AWS::AccountId}:role/CdkdUnitTaskRole',
-  }),
-  detectEcsImageResolutionNeeds: vi.fn().mockReturnValue({ needsCrossStackResolver: false }),
+  })),
+  detectEcsImageResolutionNeeds: vi.fn(() => ({ needsCrossStackResolver: false })),
 }));
 vi.mock('../../../src/local/ecs-task-runner.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  createEcsRunState: vi.fn().mockReturnValue({ containers: [], entries: new Map() }),
-  cleanupEcsRun: vi.fn().mockResolvedValue(undefined),
+  createEcsRunState: vi.fn(() => ({ containers: [], entries: new Map() })),
+  cleanupEcsRun: vi.fn(async () => undefined),
   runEcsTask: runEcsTaskMock,
 }));
 

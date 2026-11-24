@@ -41,34 +41,32 @@ vi.mock('../../../src/local/dynamic-reference.js', async () =>
 // elsewhere, so a fixed set keeps it off the network.
 vi.mock('../../../src/cli/commands/local-start-api.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  resolveProfileCredentials: vi
-    .fn()
-    .mockResolvedValue({ accessKeyId: 'unit-akid-2056', secretAccessKey: 'unit-secret-2056' }),
+  resolveProfileCredentials: vi.fn(async () => ({ accessKeyId: 'unit-akid-2056', secretAccessKey: 'unit-secret-2056' })),
 }));
 
 vi.mock('../../../src/local/docker-runner.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  ensureDockerAvailable: vi.fn().mockResolvedValue(undefined),
+  ensureDockerAvailable: vi.fn(async () => undefined),
 }));
 
 vi.mock('../../../src/local/docker-version.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  resolveHostGatewayExtraHosts: vi.fn().mockResolvedValue([]),
+  resolveHostGatewayExtraHosts: vi.fn(async () => []),
 }));
 
 vi.mock('../../../src/utils/role-arn.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  applyRoleArnIfSet: vi.fn().mockResolvedValue(undefined),
+  applyRoleArnIfSet: vi.fn(async () => undefined),
 }));
 
 vi.mock('../../../src/cli/config-loader.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  resolveApp: vi.fn().mockReturnValue('node app.js'),
+  resolveApp: vi.fn(() => 'node app.js'),
 }));
 
 vi.mock('../../../src/synthesis/synthesizer.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  Synthesizer: vi.fn().mockImplementation(() => ({
+  Synthesizer: vi.fn(() => ({
     synthesize: vi.fn().mockResolvedValue({
       stacks: [
         {
@@ -86,7 +84,7 @@ vi.mock('../../../src/synthesis/synthesizer.js', async (importOriginal) => ({
 
 vi.mock('../../../src/cli/commands/local-state-source.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  createLocalStateProvider: vi.fn().mockReturnValue({
+  createLocalStateProvider: vi.fn(() => ({
     label: '--from-state',
     // The record the task's stack was loaded from lives in another region.
     load: vi.fn().mockResolvedValue({ region: 'ca-central-1', resources: {}, outputs: {} }),
@@ -95,23 +93,21 @@ vi.mock('../../../src/cli/commands/local-state-source.js', async (importOriginal
       resolveGetStackOutput: vi.fn().mockResolvedValue(TOKEN),
     }),
     dispose: vi.fn(),
-  }),
+  })),
 }));
 
 vi.mock('../../../src/local/ecs-task-resolver.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  parseEcsTarget: vi.fn().mockReturnValue({ stackPattern: null, isPath: false, pathOrId: 'TaskDef' }),
-  resolveEcsTaskTarget: vi.fn().mockReturnValue({
+  parseEcsTarget: vi.fn(() => ({ stackPattern: null, isPath: false, pathOrId: 'TaskDef' })),
+  resolveEcsTaskTarget: vi.fn(() => ({
     stack: { stackName: 'ConsumerStack', region: 'us-east-1' },
     taskDefinitionLogicalId: 'TaskDef',
     family: 'cdkd-unit-family',
     // A local CDK asset image: `--image-override` has nothing pinned to cover.
     containers: [{ name: 'app', environment: {}, image: { kind: 'cdk-asset' } }],
     taskRoleArn: undefined,
-  }),
-  detectEcsImageResolutionNeeds: vi
-    .fn()
-    .mockReturnValue({ needsCrossStackResolver: true, needsStateResources: true }),
+  })),
+  detectEcsImageResolutionNeeds: vi.fn(() => ({ needsCrossStackResolver: true, needsStateResources: true })),
   // The capture point: call the hook the command installed, as the real
   // post-pass does for a cross-stack value carrying a token.
   applyCrossStackResolverToTask: vi.fn(
@@ -133,8 +129,8 @@ vi.mock('../../../src/local/ecs-task-resolver.js', async (importOriginal) => ({
 
 vi.mock('../../../src/local/ecs-task-runner.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  createEcsRunState: vi.fn().mockReturnValue({ containers: [], entries: new Map() }),
-  cleanupEcsRun: vi.fn().mockResolvedValue(undefined),
+  createEcsRunState: vi.fn(() => ({ containers: [], entries: new Map() })),
+  cleanupEcsRun: vi.fn(async () => undefined),
   runEcsTask: h.runEcsTask,
 }));
 

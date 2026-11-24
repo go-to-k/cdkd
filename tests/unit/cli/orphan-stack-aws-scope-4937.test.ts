@@ -37,7 +37,7 @@ const mockGetState = vi.hoisted(() => vi.fn());
 const mockSaveState = vi.hoisted(() => vi.fn(async () => '"etag-2"'));
 const stackRegion = vi.hoisted(() => ({ value: 'us-west-2' as string | undefined }));
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation((s3: { config: { region: () => Promise<string> } }) => {
+  S3StateBackend: vi.fn((s3: { config: { region: () => Promise<string> } }) => {
     backendS3.push(s3);
     return {
       destroyClient: vi.fn(),
@@ -56,7 +56,7 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
 /** The S3 client the lock manager is handed: likewise the state bucket's. */
 const lockS3 = vi.hoisted(() => [] as { config: { region: () => Promise<string> } }[]);
 vi.mock('../../../src/state/lock-manager.js', () => ({
-  LockManager: vi.fn().mockImplementation((s3: { config: { region: () => Promise<string> } }) => {
+  LockManager: vi.fn((s3: { config: { region: () => Promise<string> } }) => {
     lockS3.push(s3);
     return {
       acquireLock: vi.fn(async () => true),
@@ -67,7 +67,7 @@ vi.mock('../../../src/state/lock-manager.js', () => ({
 }));
 const mockSynthesize = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/synthesis/synthesizer.js', () => ({
-  Synthesizer: vi.fn().mockImplementation(() => ({ synthesize: mockSynthesize })),
+  Synthesizer: vi.fn(() => ({ synthesize: mockSynthesize })),
   synthesisStatusMessage: (_app: unknown, msg: string) => msg,
 }));
 
@@ -84,7 +84,7 @@ vi.mock('../../../src/provisioning/register-providers.js', async () => {
 });
 const mockGetAttribute = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({
-  ProviderRegistry: vi.fn().mockImplementation(() => ({
+  ProviderRegistry: vi.fn(() => ({
     getProviderFor: () => ({ provider: { getAttribute: mockGetAttribute } }),
   })),
 }));

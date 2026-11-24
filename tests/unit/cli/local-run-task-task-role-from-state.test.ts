@@ -16,11 +16,9 @@ const stsSendMock = vi.fn();
 const stateLoadMock = vi.fn();
 
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation(() => ({ send: stsSendMock, destroy: vi.fn() })),
-  AssumeRoleCommand: vi.fn().mockImplementation((input: unknown) => ({ kind: 'AssumeRole', input })),
-  GetCallerIdentityCommand: vi
-    .fn()
-    .mockImplementation((input: unknown) => ({ kind: 'GetCallerIdentity', input })),
+  STSClient: vi.fn(() => ({ send: stsSendMock, destroy: vi.fn() })),
+  AssumeRoleCommand: vi.fn((input: unknown) => ({ kind: 'AssumeRole', input })),
+  GetCallerIdentityCommand: vi.fn((input: unknown) => ({ kind: 'GetCallerIdentity', input })),
 }));
 
 vi.mock('../../../src/local/local-aws-wiring.js', async (importOriginal) => ({
@@ -29,15 +27,15 @@ vi.mock('../../../src/local/local-aws-wiring.js', async (importOriginal) => ({
 }));
 vi.mock('../../../src/local/docker-runner.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  ensureDockerAvailable: vi.fn().mockResolvedValue(undefined),
+  ensureDockerAvailable: vi.fn(async () => undefined),
 }));
 vi.mock('../../../src/local/docker-version.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  resolveHostGatewayExtraHosts: vi.fn().mockResolvedValue([]),
+  resolveHostGatewayExtraHosts: vi.fn(async () => []),
 }));
 vi.mock('../../../src/cli/config-loader.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  resolveApp: vi.fn().mockReturnValue('node app.js'),
+  resolveApp: vi.fn(() => 'node app.js'),
 }));
 
 const STACK = {
@@ -67,7 +65,7 @@ const STACK = {
 
 vi.mock('../../../src/synthesis/synthesizer.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  Synthesizer: vi.fn().mockImplementation(() => ({
+  Synthesizer: vi.fn(() => ({
     synthesize: vi.fn().mockResolvedValue({ stacks: [STACK] }),
   })),
 }));
@@ -86,8 +84,8 @@ vi.mock('../../../src/cli/commands/local-state-source.js', async (importOriginal
 }));
 vi.mock('../../../src/local/ecs-task-runner.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  createEcsRunState: vi.fn().mockReturnValue({ containers: [], entries: new Map() }),
-  cleanupEcsRun: vi.fn().mockResolvedValue(undefined),
+  createEcsRunState: vi.fn(() => ({ containers: [], entries: new Map() })),
+  cleanupEcsRun: vi.fn(async () => undefined),
   runEcsTask: runEcsTaskMock,
 }));
 

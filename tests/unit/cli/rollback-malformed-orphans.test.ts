@@ -37,12 +37,12 @@ vi.mock('../../../src/provisioning/register-providers.js', () => ({
 }));
 
 const replayProvider = {
-  delete: vi.fn().mockResolvedValue(undefined),
-  update: vi.fn().mockResolvedValue({ physicalId: 'p' }),
-  create: vi.fn().mockResolvedValue({ physicalId: 'p' }),
+  delete: vi.fn(async () => undefined),
+  update: vi.fn(async () => ({ physicalId: 'p' })),
+  create: vi.fn(async () => ({ physicalId: 'p' })),
 };
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({
-  ProviderRegistry: vi.fn().mockImplementation(() => ({
+  ProviderRegistry: vi.fn(() => ({
     getProviderFor: () => ({ provider: replayProvider }),
     setCustomResourceResponseBucket: vi.fn(),
   })),
@@ -51,7 +51,7 @@ vi.mock('../../../src/cli/commands/deployment-events-run.js', () => ({
   startRunRecorder: () => ({ record: vi.fn(), finalize: vi.fn().mockResolvedValue(undefined) }),
 }));
 vi.mock('../../../src/utils/aws-clients.js', () => ({
-  AwsClients: vi.fn().mockImplementation(() => ({ destroy: vi.fn() })),
+  AwsClients: vi.fn(() => ({ destroy: vi.fn() })),
   setAwsClients: vi.fn(),
   runWithStackAwsClients: (_c: unknown, fn: () => unknown) => fn(),
   getAwsClients: vi.fn(() => ({})),

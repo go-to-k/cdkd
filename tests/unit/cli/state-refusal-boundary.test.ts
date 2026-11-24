@@ -62,7 +62,7 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
 
 const mockCloudControlSend = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
-  AwsClients: vi.fn().mockImplementation(() => ({
+  AwsClients: vi.fn(() => ({
     get s3() {
       return {};
     },
@@ -78,7 +78,7 @@ const mockListStacks = vi.fn<() => Promise<Array<{ stackName: string; region?: s
 const mockGetState = vi.fn<(stackName: string, region: string) => Promise<unknown>>();
 const mockSaveState = vi.fn<() => Promise<void>>();
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({
+  S3StateBackend: vi.fn(() => ({
     destroyClient: vi.fn(),
     listStacks: mockListStacks,
     getState: mockGetState,
@@ -93,7 +93,7 @@ const mockIsLocked = vi.fn<() => Promise<boolean>>();
 const mockReleaseLock = vi.fn<() => Promise<void>>();
 const mockGetLockInfo = vi.fn<() => Promise<unknown>>();
 vi.mock('../../../src/state/lock-manager.js', () => ({
-  LockManager: vi.fn().mockImplementation(() => ({
+  LockManager: vi.fn(() => ({
     isLocked: mockIsLocked,
     forceReleaseLock: vi.fn(async () => {}),
     getLockInfo: mockGetLockInfo,
@@ -104,7 +104,7 @@ vi.mock('../../../src/state/lock-manager.js', () => ({
 
 const mockReadCurrentState = vi.fn<() => Promise<unknown>>();
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({
-  ProviderRegistry: vi.fn().mockImplementation(() => ({
+  ProviderRegistry: vi.fn(() => ({
     setCustomResourceResponseBucket: vi.fn(),
     shouldSkipResource: () => false,
     getProviderFor: () => ({ provider: { readCurrentState: mockReadCurrentState } }),

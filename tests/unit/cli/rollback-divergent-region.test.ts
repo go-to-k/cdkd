@@ -50,14 +50,18 @@ vi.mock('../../../src/provisioning/register-providers.js', () => ({
 }));
 
 const replayProvider = {
-  delete: vi.fn().mockResolvedValue(undefined),
-  update: vi.fn().mockResolvedValue({ physicalId: 'p' }),
-  create: vi.fn().mockResolvedValue({ physicalId: 'old' }),
+  delete: vi.fn(async (_logicalId: string, ..._rest: unknown[]): Promise<void> => undefined),
+  update: vi.fn(
+    async (_logicalId: string, ..._rest: unknown[]): Promise<{ physicalId: string; wasReplaced?: boolean }> => ({
+      physicalId: 'p',
+    })
+  ),
+  create: vi.fn(async () => ({ physicalId: 'old' })),
   // go-to-k/cdkd#4658: the live identity matches the journaled token.
   resourceIdentity: async () => 'created-token',
 };
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({
-  ProviderRegistry: vi.fn().mockImplementation(() => ({
+  ProviderRegistry: vi.fn(() => ({
     getProviderFor: ({ resourceType }: { resourceType: string }) => ({
       // Real-shaped: only these types' providers read a creation identity.
       provider: [
@@ -80,7 +84,7 @@ vi.mock('../../../src/cli/commands/deployment-events-run.js', () => ({
   startRunRecorder: () => ({ record: vi.fn(), finalize: vi.fn().mockResolvedValue(undefined) }),
 }));
 vi.mock('../../../src/utils/aws-clients.js', () => ({
-  AwsClients: vi.fn().mockImplementation(() => ({ destroy: vi.fn() })),
+  AwsClients: vi.fn(() => ({ destroy: vi.fn() })),
   setAwsClients: vi.fn(),
   runWithStackAwsClients: (_c: unknown, fn: () => unknown) => fn(),
   getAwsClients: vi.fn(() => ({})),
@@ -531,7 +535,6 @@ describe('cdkd rollback does not write over a record rewritten mid-run with a di
       expect((thrown as Error).message).toContain('1 operation(s) also failed');
     } finally {
       replayProvider.delete.mockReset();
-      replayProvider.delete.mockResolvedValue(undefined);
     }
   });
 

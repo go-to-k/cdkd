@@ -58,7 +58,7 @@ const PROFILE_KEY = 'cdkd-unit-profile-chain-key-0001';
 // them different keys is the whole discriminator — with one shared value every
 // assertion below would pass under the mutation.
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation(() => ({
+  STSClient: vi.fn(() => ({
     config: {
       credentials: vi
         .fn()
@@ -67,54 +67,54 @@ vi.mock('@aws-sdk/client-sts', () => ({
     send: stsSendMock,
     destroy: vi.fn(),
   })),
-  AssumeRoleCommand: vi.fn().mockImplementation((input: unknown) => ({ input })),
-  GetCallerIdentityCommand: vi.fn().mockImplementation((input: unknown) => ({ input })),
+  AssumeRoleCommand: vi.fn((input: unknown) => ({ input })),
+  GetCallerIdentityCommand: vi.fn((input: unknown) => ({ input })),
 }));
 
 vi.mock('../../../src/local/docker-runner.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  ensureDockerAvailable: vi.fn().mockResolvedValue(undefined),
+  ensureDockerAvailable: vi.fn(async () => undefined),
 }));
 vi.mock('../../../src/local/docker-version.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  resolveHostGatewayExtraHosts: vi.fn().mockResolvedValue([]),
+  resolveHostGatewayExtraHosts: vi.fn(async () => []),
 }));
 vi.mock('../../../src/utils/role-arn.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  applyRoleArnIfSet: vi.fn().mockResolvedValue(undefined),
+  applyRoleArnIfSet: vi.fn(async () => undefined),
 }));
 vi.mock('../../../src/cli/config-loader.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  resolveApp: vi.fn().mockReturnValue('node app.js'),
+  resolveApp: vi.fn(() => 'node app.js'),
 }));
 vi.mock('../../../src/synthesis/synthesizer.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  Synthesizer: vi.fn().mockImplementation(() => ({
+  Synthesizer: vi.fn(() => ({
     synthesize: vi.fn().mockResolvedValue({ stacks: [] }),
   })),
 }));
 vi.mock('../../../src/cli/commands/local-state-source.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  createLocalStateProvider: vi.fn().mockReturnValue(undefined),
+  createLocalStateProvider: vi.fn(() => undefined),
 }));
 vi.mock('../../../src/local/ecs-task-resolver.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  parseEcsTarget: vi.fn().mockReturnValue({ stackPattern: undefined }),
-  pickCandidateStack: vi.fn().mockReturnValue(undefined),
-  resolveEcsTaskTarget: vi.fn().mockReturnValue({
+  parseEcsTarget: vi.fn(() => ({ stackPattern: undefined })),
+  pickCandidateStack: vi.fn(() => undefined),
+  resolveEcsTaskTarget: vi.fn(() => ({
     stack: { stackName: 'CdkdUnitStack', region: 'us-east-1' },
     taskDefinitionLogicalId: 'TaskDef',
     family: 'cdkd-unit-family',
     // A local CDK asset image: `--image-override` has nothing pinned to cover.
     containers: [{ name: 'app', environment: {}, image: { kind: 'cdk-asset' } }],
     taskRoleArn: undefined,
-  }),
-  detectEcsImageResolutionNeeds: vi.fn().mockReturnValue({ needsCrossStackResolver: false }),
+  })),
+  detectEcsImageResolutionNeeds: vi.fn(() => ({ needsCrossStackResolver: false })),
 }));
 vi.mock('../../../src/local/ecs-task-runner.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  createEcsRunState: vi.fn().mockReturnValue({ containers: [], entries: new Map() }),
-  cleanupEcsRun: vi.fn().mockResolvedValue(undefined),
+  createEcsRunState: vi.fn(() => ({ containers: [], entries: new Map() })),
+  cleanupEcsRun: vi.fn(async () => undefined),
   runEcsTask: runEcsTaskMock,
 }));
 

@@ -17,7 +17,7 @@ const stsDestroyMock = vi.fn();
 const stsCtorMock = vi.fn();
 
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation((config: unknown) => {
+  STSClient: vi.fn((config: unknown) => {
     stsCtorMock(config);
     return {
       config: { credentials: credsProviderMock },

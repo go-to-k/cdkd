@@ -33,12 +33,12 @@ const {
 }));
 
 vi.mock('../../../src/synthesis/synthesizer.js', () => ({
-  Synthesizer: vi.fn().mockImplementation(() => ({ synthesize: mockSynthesize })),
+  Synthesizer: vi.fn(() => ({ synthesize: mockSynthesize })),
   synthesisStatusMessage: (_app: unknown, msg: string) => msg,
 }));
 
 vi.mock('../../../src/assets/asset-publisher.js', () => ({
-  AssetPublisher: vi.fn().mockImplementation(() => ({
+  AssetPublisher: vi.fn(() => ({
     addAssetsToGraph: mockAddAssetsToGraph,
     executeNode: mockExecuteNode,
   })),
@@ -51,11 +51,11 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
 }));
 
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation(() => ({
+  STSClient: vi.fn(() => ({
     send: vi.fn(async () => ({ Account: '111111111111' })),
     destroy: vi.fn(),
   })),
-  GetCallerIdentityCommand: vi.fn().mockImplementation((input) => ({ ...input })),
+  GetCallerIdentityCommand: vi.fn((input) => ({ ...input })),
 }));
 
 // A publishable manifest for every stack, so each one reaches the marker read.
@@ -64,13 +64,13 @@ vi.mock('../../../src/assets/asset-redirect.js', async (importOriginal) => ({
   loadPublishableAssetManifest: () => ({ version: '38.0.0', files: {}, dockerImages: {} }),
 }));
 vi.mock('../../../src/assets/asset-storage.js', () => ({
-  AssetModeResolver: vi.fn().mockImplementation(() => ({ resolve: mockModeResolve })),
+  AssetModeResolver: vi.fn(() => ({ resolve: mockModeResolve })),
 }));
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({})),
+  S3StateBackend: vi.fn(() => ({})),
 }));
 vi.mock('../../../src/utils/aws-clients.js', () => ({
-  AwsClients: vi.fn().mockImplementation(() => ({ s3: {}, destroy: vi.fn() })),
+  AwsClients: vi.fn(() => ({ s3: {}, destroy: vi.fn() })),
   getAwsClients: vi.fn(() => ({})),
 }));
 

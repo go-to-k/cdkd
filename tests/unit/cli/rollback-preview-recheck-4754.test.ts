@@ -20,7 +20,7 @@ const provider = vi.hoisted(() => ({
   resourceIdentity: vi.fn(async () => 'created-token'),
 }));
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({
-  ProviderRegistry: vi.fn().mockImplementation(() => ({
+  ProviderRegistry: vi.fn(() => ({
     getProviderFor: () => ({ provider, provisionedBy: 'sdk' }),
     setCustomResourceResponseBucket: vi.fn(),
   })),

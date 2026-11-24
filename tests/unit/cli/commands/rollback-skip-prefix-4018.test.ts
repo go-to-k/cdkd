@@ -37,14 +37,14 @@ vi.mock('../../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({ iam: { send: iamSend, config: { region: async () => 'us-east-1' } } }),
   setAwsClients: vi.fn(),
   runWithStackAwsClients: (_c: unknown, fn: () => unknown) => fn(),
-  AwsClients: vi.fn().mockImplementation(() => ({ destroy: vi.fn() })),
+  AwsClients: vi.fn(() => ({ destroy: vi.fn() })),
 }));
 
 // The registry routes every type to ONE real IAMRoleProvider, built lazily so
 // it picks up the mocked client above.
 const registry = vi.hoisted(() => ({ provider: undefined as unknown }));
 vi.mock('../../../../src/provisioning/provider-registry.js', () => ({
-  ProviderRegistry: vi.fn().mockImplementation(() => ({
+  ProviderRegistry: vi.fn(() => ({
     getProviderFor: () => ({ provider: registry.provider, provisionedBy: 'sdk' }),
     setCustomResourceResponseBucket: vi.fn(),
   })),

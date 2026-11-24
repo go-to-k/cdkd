@@ -19,7 +19,7 @@ const stsRegionProvider = vi.hoisted(() => ({ value: undefined as string | undef
 const stsDestroy = vi.hoisted(() => vi.fn());
 
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation(() => ({
+  STSClient: vi.fn(() => ({
     config: {
       region: async (): Promise<string> => {
         // The SDK's real contract: a region-less client REJECTS when the chain

@@ -14,10 +14,10 @@ import type { CloudFormationTemplate } from '../../../../src/types/resource.js';
 import { clearReplicationProbeCache } from '../../../../src/state/s3-replication-purge-gap.js';
 
 vi.mock('../../../../src/utils/bucket-region-client.js', () => ({
-  rebuildClientForBucketRegion: vi.fn().mockResolvedValue(null),
+  rebuildClientForBucketRegion: vi.fn(async () => null),
 }));
 vi.mock('../../../../src/utils/expected-bucket-owner.js', () => ({
-  expectedOwnerParam: vi.fn().mockResolvedValue({}),
+  expectedOwnerParam: vi.fn(async () => ({})),
 }));
 
 const backendWarn = vi.hoisted(() => vi.fn());
@@ -27,7 +27,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: backendWarn,
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({ ...child, child: () => child, setLevel: vi.fn() }),
@@ -39,7 +39,7 @@ const SECRET_PLAINTEXT = 'the-real-resolved-db-password';
 
 vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../../src/deployment/intrinsic-function-resolver.js')>()),
-  IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
+  IntrinsicFunctionResolver: vi.fn(() => ({
     resolveParameters: vi.fn().mockResolvedValue({}),
     evaluateConditions: vi.fn().mockResolvedValue({}),
     resolve: vi
