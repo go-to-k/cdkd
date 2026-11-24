@@ -68,3 +68,40 @@ export function exportedStackTagsByStack(
   visit(rootStackName, childStackTags(rootStackTags, {}));
   return tagsByName;
 }
+
+/**
+ * CloudFormation's stack-tag limit: `ValidationError: Tags must have length
+ * less than or equal to 50` on `UpdateStack` and `CreateStack` alike (measured
+ * us-east-1, 2026-11-24, go-to-k/cdkd#6902).
+ */
+export const CFN_MAX_STACK_TAGS = 50;
+
+/**
+ * go-to-k/cdkd#6902: refuse, before the first changeset, a tree in which a
+ * non-root stack's flip could not be sent. The flip adds
+ * `cdkd:nested-export-flip` to the stack's own tags, so a stack already
+ * holding {@link CFN_MAX_STACK_TAGS} would be refused there, half-way through
+ * the export. The root takes no flip tag.
+ */
+export function refuseFlipTagBudget(
+  tagsByName: ReadonlyMap<string, Readonly<Record<string, string>>>,
+  rootStackName: string
+): void {
+  const over: string[] = [];
+  for (const [cdkdName, tags] of tagsByName) {
+    if (cdkdName === rootStackName) continue;
+    const count = Object.keys(tags).length;
+    if (count + 1 > CFN_MAX_STACK_TAGS) {
+      over.push(`${quotedOrNotShown(cdkdName)} (${count} stack tags)`);
+    }
+  }
+  if (over.length === 0) return;
+  throw new Error(
+    `Refusing to export: CloudFormation allows ${CFN_MAX_STACK_TAGS} stack tags, and each ` +
+      `nested stack is moved out of IMPORT_COMPLETE by an update that adds one more ` +
+      `('cdkd:nested-export-flip'). These nested stacks have no room for it: ${over.join(', ')}. ` +
+      `Their tags are the parent's stack tags plus the nested stack resource's own Tags; remove ` +
+      `enough to leave each at ${CFN_MAX_STACK_TAGS - 1} or fewer, deploy, and run the export ` +
+      `again. Nothing was changed.`
+  );
+}

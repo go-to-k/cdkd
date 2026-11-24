@@ -92,6 +92,11 @@ as in [a single-stack export](cli-export.md#stack-tags). A nested stack
 resource whose `Tags` are an intrinsic function, or hold a dynamic reference
 (`{{resolve:...}}`), gives its stack only the parent's tags, with a warning.
 
+CloudFormation allows at most 50 stack tags, and the update that readies a
+nested stack for adoption adds one of its own (`cdkd:nested-export-flip`). An
+export in which a nested stack already has 50 is refused before anything
+changes, naming each such stack and its count.
+
 ## When one stack of the tree fails
 
 Each stack that was imported before the failure has a CloudFormation stack.

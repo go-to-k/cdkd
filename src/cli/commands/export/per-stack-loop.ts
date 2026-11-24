@@ -42,7 +42,7 @@ import { blockedMigrationTail, buildImportPlan, groupBlockedReasons } from './im
 import { preDeleteListingLines, preDeleteManualCommands } from './pre-delete.js';
 import { assertCfnStackAbsent, awsStackNameArg, confirmPrompt } from './command-helpers.js';
 import { type PerStackPlan, runPerStackImportPhases } from './per-stack-phases.js';
-import { exportedStackTagsByStack } from './exported-stack-tags.js';
+import { exportedStackTagsByStack, refuseFlipTagBudget } from './exported-stack-tags.js';
 
 /**
  * Per-stack record of a successfully-IMPORTed stack within a
@@ -399,6 +399,8 @@ export async function runPerStackImportLoop(args: {
     args.rootStackTags,
     (line) => logger.warn(line)
   );
+  // go-to-k/cdkd#6902: a flip that cannot fit its tag fails mid-export.
+  refuseFlipTagBudget(stackTagsByCdkdName, rootStackName);
   const totalPhase2Creates = perStackPlans.reduce((acc, p) => acc + p.phase2Creates.length, 0);
   const totalRecreate = perStackPlans.reduce((acc, p) => acc + p.recreateBeforePhase2.length, 0);
 
