@@ -30,7 +30,6 @@ import {
   recordRollbackSkip,
   refusalResourceType,
   replayingStateCreateContext,
-  safe,
   shownLogicalId,
 } from './messages.js';
 import { ABSENT_BASELINE_SKIP_CAUSE, requireRestorableBaseline } from './names.js';
@@ -39,6 +38,7 @@ import { refuseMarkedNoEchoRecreate } from './replay-noecho.js';
 import { createWithRollbackRetry, recordedPropertiesAfterReplayCreate } from './replay-retry.js';
 import { redactRollbackRecord, type ReplayResolvers } from './replay-secrets.js';
 import type { FailedOperation, FailedOpReplayResult, RollbackExecutorContext } from './types.js';
+import type { ReplayFailedOperationsOptions } from './replay-failed-checks.js';
 
 /** What both arms read from `replayFailedOperations`' iteration. */
 export interface ReplacedDeletedScope {
@@ -51,9 +51,16 @@ export interface ReplacedDeletedScope {
   mask: MaskerFn;
   secrets: RecordedSecretValues;
   resolver: ReplayResolvers;
-  forDestroy: boolean;
-  isInterrupted?: (() => boolean) | undefined;
-  afterOp?: ((logicalId: string) => void | Promise<void>) | undefined;
+  options: Pick<ReplayFailedOperationsOptions, 'forDestroy' | 'isInterrupted' | 'afterOp'>;
+}
+
+/** The replay's arm for either action. */
+export async function replayReplacedDeleted(
+  action: 'skip-failed-replaced-deleted' | 'recreate-failed-replaced-deleted',
+  s: ReplacedDeletedScope
+): Promise<void> {
+  if (action === 'skip-failed-replaced-deleted') skipFailedReplacedDeleted(s);
+  else await recreateFailedReplacedDeleted(s);
 }
 
 /** `skip-failed-replaced-deleted`: warned, nothing reverted (go-to-k/cdkd#4604). */
@@ -66,7 +73,7 @@ export function skipFailedReplacedDeleted(s: ReplacedDeletedScope): void {
   // resource that is gone.
   s.ctx.logger.warn(
     safeMsg`  Rollback: Skipping failed UPDATE of ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}) — its replacement deleted the old resource ${mask(String(displayPhysicalId(op.previousState?.resourceType ?? op.resourceType, op.physicalId)))} before the new one's create failed, so there is nothing to revert` +
-      (s.forDestroy
+      (s.options.forDestroy === true
         ? '; the destroy drops its record with the stack'
         : '; state still records it, and a deploy whose template still replaces it creates it again')
   );
@@ -100,7 +107,7 @@ export async function recreateFailedReplacedDeleted(s: ReplacedDeletedScope): Pr
   }
   const oldType = prev.resourceType;
   logger.info(
-    `  Rollback: re-creating ${safe(op.logicalId)} (${safe(oldType)}): its replacement deleted ` +
+    safeMsg`  Rollback: re-creating ${shownLogicalId(op.logicalId)} (${refusalResourceType(oldType)}): its replacement deleted ` +
       `the old resource before the new one's create failed`
   );
   const { provider, provisionedBy } = ctx.providerRegistry.getProviderFor({
@@ -134,7 +141,7 @@ export async function recreateFailedReplacedDeleted(s: ReplacedDeletedScope): Pr
       ),
     op.logicalId,
     logger,
-    s.isInterrupted,
+    s.options.isInterrupted,
     mask,
     {
       isRetryable: isRecreateRetryableError,
@@ -167,10 +174,9 @@ export async function recreateFailedReplacedDeleted(s: ReplacedDeletedScope): Pr
     )
   );
   logger.info(
-    `  Rollback: ${safe(op.logicalId)} re-created as ` +
-      mask(String(displayPhysicalId(oldType, createResult.physicalId)))
+    safeMsg`  Rollback: ${shownLogicalId(op.logicalId)} re-created as ${mask(String(displayPhysicalId(oldType, createResult.physicalId)))}`
   );
-  await s.afterOp?.(op.logicalId);
+  await s.options.afterOp?.(op.logicalId);
   ctx.recordEvent?.({
     eventType: 'ROLLBACK_RESOURCE_SUCCEEDED',
     stackName: s.stackName,

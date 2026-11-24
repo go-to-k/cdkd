@@ -1008,7 +1008,8 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
         // a comment spelling the call (with its paren) is not a call site
         !/^\s*(\/\/|\*|\/\*)/.test(lineStart(m.index!))
     );
-    expect(calls).toHaveLength(4);
+    // go-to-k/cdkd#6958: the failed-op re-create of a deleted delete-first link is the fifth.
+    expect(calls).toHaveLength(5);
     for (const m of calls) {
       let depth = 1;
       let k = m.index! + m[0].length;

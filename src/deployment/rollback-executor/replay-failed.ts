@@ -74,10 +74,7 @@ import { withUnprovenUnsettled } from '../unsettled-convergence.js';
 import { skippedAsDeletedOutsideCdkd } from './replay-deleted-outside.js';
 import { noteRetainedResource } from '../../provisioning/providers/create-token-ledger.js';
 import { runDeleteAttempt } from '../../provisioning/providers/deletion-protection-compensation.js';
-import {
-  recreateFailedReplacedDeleted,
-  skipFailedReplacedDeleted,
-} from './replay-failed-replaced-deleted.js';
+import { replayReplacedDeleted } from './replay-failed-replaced-deleted.js';
 
 /**
  * Revert a segment's FAILED in-flight operations (issue #1198). Opt-in via
@@ -204,20 +201,7 @@ export async function replayFailedOperationsUnbound(
 
         case 'skip-failed-replaced-deleted':
         case 'recreate-failed-replaced-deleted': {
-          const scope = {
-            ...skipScope,
-            op,
-            secrets,
-            resolver,
-            forDestroy: options.forDestroy === true,
-          };
-          if (action === 'skip-failed-replaced-deleted') skipFailedReplacedDeleted(scope);
-          else
-            await recreateFailedReplacedDeleted({
-              ...scope,
-              isInterrupted: options.isInterrupted,
-              afterOp: options.afterOp,
-            });
+          await replayReplacedDeleted(action, { ...skipScope, op, secrets, resolver, options });
           break;
         }
 
