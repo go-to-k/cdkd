@@ -38,10 +38,27 @@ A skipped wait still runs, later in the same deploy, in three cases:
   the internet through a NAT gateway, which the CDK expresses only through
   the subnet's default route.
 
-- **A call AWS refuses until the resource is ready.** Associating an Elastic
-  IP with an instance this deploy launched or restarted (an update that
-  stopped and started it) waits for the instance to be `running`. This case is added per type, only where AWS was measured to
-  refuse the call.
+- **A call AWS refuses until the resource is ready.** This case is added per
+  type, only where AWS was measured to refuse the call:
+  - associating an Elastic IP with an instance this deploy launched or
+    restarted (an update that stopped and started it) waits for the instance
+    to be `running`;
+  - creating or updating an `AWS::BedrockAgentCore::RuntimeEndpoint` waits for
+    its runtime to be `READY`. AWS refuses it before then: `Agent version 1
+    must be in READY status. Current status: CREATING.`
+
+  Measured and not waited for, because AWS accepts the call or no resource
+  makes it:
+  - an `AWS::RDS::DBProxyTargetGroup` registers a DB instance or Aurora
+    cluster that is still `creating` (its target reads `REGISTERING`);
+  - no CloudFormation resource uses an `AWS::Lambda::MicrovmImage`; a microVM
+    is started from it with `RunMicrovm`, outside the template, and a custom
+    resource that starts one waits for the image as above;
+  - an `AWS::CertificateManager::Certificate` still `PENDING_VALIDATION` is
+    not waited for, even by the CloudFront distribution or listener that
+    uses it. That is deliberate: `--no-wait` exists to keep such a
+    certificate while you add its DNS validation records, and waiting for
+    `ISSUED` would remove that.
 
 A resource that only depends on a skipped-wait resource, through `DependsOn`
 or a reference, does not wait for it. A resource that nothing needs this way
@@ -182,7 +199,9 @@ cdkd returns while the runtime is `CREATING` or `UPDATING`, so a runtime that
 ends in `CREATE_FAILED` or `UPDATE_FAILED` does not fail the deploy. Its id
 and ARN are available first. A later delete of the runtime, by `cdkd destroy`
 or a replacement, waits for it to leave `CREATING` / `UPDATING` first, in
-every mode.
+every mode. A runtime endpoint created or updated on it in the same deploy
+waits for it to be `READY`, which AWS requires (see
+[above](#when-the-deploy-needs-a-resource-it-did-not-wait-for)).
 
 ### `AWS::Events::Archive`
 

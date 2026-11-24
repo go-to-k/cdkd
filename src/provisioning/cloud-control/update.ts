@@ -58,6 +58,7 @@ import { s3ClientDefaults } from '../../utils/s3-client-defaults.js';
 import { stringifyJsonProperties, stripNullValues, s3RedirectRegion } from './shared.js';
 import { IdScrubLog, inIdLogScope, holdsSecretDerivedLeaf } from './id-log.js';
 import { shiftAliasThroughCodeDeploy } from './codedeploy-alias-update.js';
+import { awaitRefusalEdgeTarget } from '../deferred-refusal-edges.js';
 
 /**
  * Update a resource using Cloud Control API
@@ -71,6 +72,8 @@ export async function update(
   previousProperties: Record<string, unknown>,
   context?: UpdateContext
 ): Promise<ResourceUpdateResult> {
+  // go-to-k/cdkd#6962: an update AWS refuses until a --no-wait target is ready.
+  await awaitRefusalEdgeTarget(logicalId, resourceType, properties);
   // Every line this update prints that can name the identifier, and the
   // error leaving it, go through `idLog` (go-to-k/cdkd#3869): the opening
   // line here, and the read-back / enrichment lines below, which
