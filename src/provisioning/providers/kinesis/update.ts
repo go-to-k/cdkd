@@ -574,13 +574,6 @@ export async function applyTagDiff(
 }
 
 /**
- * Adopt an existing Kinesis stream into cdkd state.
- *
- * Lookup order:
- *  1. `--resource <id>=<name>` override or `Properties.Name` → verify
- *     with `DescribeStream`.
- */
-/**
  * go-to-k/cdkd#5503: warn about each live shard-level metric outside
  * `named`. It is left enabled, and the warning says how to disable it.
  * Best-effort: a failed read only loses the warning.
