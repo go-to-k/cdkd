@@ -8,7 +8,7 @@ vi.mock('node:fs', () => ({
 // Mock FileAssetPublisher
 const mockFilePublish = vi.fn();
 vi.mock('../../../src/assets/file-asset-publisher.js', () => ({
-  FileAssetPublisher: vi.fn().mockImplementation(() => ({
+  FileAssetPublisher: vi.fn(() => ({
     publish: mockFilePublish,
   })),
 }));
@@ -18,7 +18,7 @@ const mockDockerBuild = vi.fn();
 const mockDockerPush = vi.fn();
 const mockDockerPublish = vi.fn();
 vi.mock('../../../src/assets/docker-asset-publisher.js', () => ({
-  DockerAssetPublisher: vi.fn().mockImplementation(() => ({
+  DockerAssetPublisher: vi.fn(() => ({
     publish: mockDockerPublish,
     build: mockDockerBuild,
     push: mockDockerPush,
@@ -29,11 +29,11 @@ vi.mock('../../../src/assets/docker-asset-publisher.js', () => ({
 const mockStsSend = vi.fn();
 const mockStsDestroy = vi.fn();
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation(() => ({
+  STSClient: vi.fn(() => ({
     send: mockStsSend,
     destroy: mockStsDestroy,
   })),
-  GetCallerIdentityCommand: vi.fn().mockImplementation((input) => ({
+  GetCallerIdentityCommand: vi.fn((input) => ({
     ...input,
     _type: 'GetCallerIdentity',
   })),

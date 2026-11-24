@@ -37,7 +37,7 @@ vi.mock('../../../src/utils/logger.js', async (importOriginal) => ({
   }),
 }));
 
-const buildContainerImageImpl = vi.fn().mockResolvedValue('img:tag');
+const buildContainerImageImpl = vi.fn(async (..._args: unknown[]) => 'img:tag');
 vi.mock('cdk-local/internal', () => ({
   architectureToPlatform: (a: string) => a,
   buildContainerImage: (...args: unknown[]) => buildContainerImageImpl(...args),

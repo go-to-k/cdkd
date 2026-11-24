@@ -36,14 +36,14 @@ import { clearReplicationProbeCache } from '../../../src/state/s3-replication-pu
 // The state bucket may live in another region, so every state-bucket call
 // goes through `ensureClientForBucket()`. `null` keeps the client under test.
 vi.mock('../../../src/utils/bucket-region-client.js', () => ({
-  rebuildClientForBucketRegion: vi.fn().mockResolvedValue(null),
+  rebuildClientForBucketRegion: vi.fn(async () => null),
 }));
 
 // Stubbed rather than driven through STS: this suite asserts that the header
 // REACHES the purge calls, which is a property of the backend's wiring and not
 // of account resolution.
 vi.mock('../../../src/utils/expected-bucket-owner.js', () => ({
-  expectedOwnerParam: vi.fn().mockResolvedValue({ ExpectedBucketOwner: '999999999999' }),
+  expectedOwnerParam: vi.fn(async () => ({ ExpectedBucketOwner: '999999999999' })),
 }));
 
 const warnSpy = vi.hoisted(() => vi.fn());
@@ -53,7 +53,9 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: warnSpy,
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) {
+      return this;
+    }),
   };
   return {
     getLogger: () => ({

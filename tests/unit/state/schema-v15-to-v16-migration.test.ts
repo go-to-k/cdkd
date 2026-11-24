@@ -17,11 +17,11 @@ import { clearBucketRegionCache } from '../../../src/utils/aws-region-resolver.j
  * (`schema-v16-to-v17-noecho-macs-6146.test.ts`).
  */
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation(() => ({
+  STSClient: vi.fn(() => ({
     send: vi.fn().mockResolvedValue({ Account: '999999999999' }),
     destroy: vi.fn(),
   })),
-  GetCallerIdentityCommand: vi.fn().mockImplementation((input) => ({ ...input })),
+  GetCallerIdentityCommand: vi.fn((input) => ({ ...input })),
 }));
 
 vi.mock('../../../src/utils/aws-region-resolver.js', async () => {

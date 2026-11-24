@@ -16,18 +16,18 @@ import { clearBucketRegionCache } from '../../../src/utils/aws-region-resolver.j
 // catch). With the mock, every state-bucket command is asserted to carry
 // ExpectedBucketOwner (the positive pin for the squatting hardening).
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation(() => ({
+  STSClient: vi.fn(() => ({
     send: vi.fn().mockResolvedValue({ Account: '999999999999' }),
     destroy: vi.fn(),
   })),
-  GetCallerIdentityCommand: vi.fn().mockImplementation((input) => ({ ...input })),
+  GetCallerIdentityCommand: vi.fn((input) => ({ ...input })),
 }));
 
 vi.mock('@aws-sdk/client-s3', async () => {
   const actual = await vi.importActual<typeof import('@aws-sdk/client-s3')>('@aws-sdk/client-s3');
   return {
     ...actual,
-    S3Client: vi.fn().mockImplementation(() => ({
+    S3Client: vi.fn(() => ({
       send: vi.fn(),
       destroy: vi.fn(),
     })),
@@ -197,7 +197,10 @@ describe('S3StateBackend create-token ledger', () => {
   it('reads the sibling key of state.json, and an absent ledger as null', async () => {
     s3Client.send.mockRejectedValueOnce(new NoSuchKey({ message: 'none', $metadata: {} }));
     await expect(backend.loadCreateTokenLedger('S', 'us-east-1')).resolves.toBeNull();
-    expect((sentOf(GetObjectCommand)[0] as GetObjectCommand).input.Key).toBe(KEY);
+    expect((sentOf(GetObjectCommand)[0] as GetObjectCommand).input).toMatchObject({
+      Key: KEY,
+      ExpectedBucketOwner: '999999999999',
+    });
   });
 
   it('throws on a failed read (the caller refuses its creates, it does not mint over it)', async () => {
@@ -210,6 +213,7 @@ describe('S3StateBackend create-token ledger', () => {
     await backend.saveCreateTokenLedger('S', 'us-east-1', emptyCreateTokenLedger('n-1'));
     const put = sentOf(PutObjectCommand)[0] as PutObjectCommand;
     expect(put.input.Key).toBe(KEY);
+    expect(put.input.ExpectedBucketOwner).toBe('999999999999');
     expect(JSON.parse(String(put.input.Body)).nonce).toBe('n-1');
   });
 
@@ -291,6 +295,9 @@ describe('S3StateBackend create-token ledger', () => {
     await backend.deleteState('S', 'us-east-1');
     const deletedKeys = sentOf(DeleteObjectCommand).map((c) => (c as DeleteObjectCommand).input.Key);
     expect(deletedKeys).toContain(KEY);
+    for (const del of sentOf(DeleteObjectCommand)) {
+      expect((del as DeleteObjectCommand).input.ExpectedBucketOwner).toBe('999999999999');
+    }
   });
 
   it('deleteState deletes the ledger FIRST: a record left behind by a failed state delete has no ledger', async () => {

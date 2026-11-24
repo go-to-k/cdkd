@@ -29,16 +29,18 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: warnSpy,
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) {
+      return this;
+    }),
   };
   return { getLogger: () => base };
 });
 
 vi.mock('../../../src/utils/bucket-region-client.js', () => ({
-  rebuildClientForBucketRegion: vi.fn().mockResolvedValue(null),
+  rebuildClientForBucketRegion: vi.fn(async () => null),
 }));
 vi.mock('../../../src/utils/expected-bucket-owner.js', () => ({
-  expectedOwnerParam: vi.fn().mockResolvedValue({}),
+  expectedOwnerParam: vi.fn(async () => ({})),
 }));
 vi.mock('../../../src/utils/aws-region-resolver.js', () => ({
   resolveBucketRegion: vi.fn(async () => 'us-east-1'),
