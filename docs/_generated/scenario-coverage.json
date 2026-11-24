@@ -2494,6 +2494,11 @@
       "scenarios": []
     },
     {
+      "name": "no-wait-agentcore-runtime-endpoint",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "no-wait-cr-nat-egress",
       "annotated": false,
       "scenarios": []
@@ -4458,6 +4463,7 @@
     "nested-stack-rollback",
     "nested-stack-transform",
     "nlb-quic-server-id",
+    "no-wait-agentcore-runtime-endpoint",
     "no-wait-cr-nat-egress",
     "no-wait-getatt-rds-endpoint",
     "nodejs-function",
