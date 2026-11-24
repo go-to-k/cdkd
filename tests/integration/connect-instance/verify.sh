@@ -209,8 +209,8 @@ dependents() {
 check_service_role_output() {
   local want got
   want="$(aws connect describe-instance --instance-id "${INSTANCE_ID}" --region "${REGION}" \
-    --query 'Instance.ServiceRole' --output text)"
-  got="$(state_output ServiceRole)"
+    --query 'Instance.ServiceRole' --output text)" || return 1
+  got="$(state_output ServiceRole)" || return 1
   if [ -z "${got}" ] || [ "${got}" != "${want}" ] || [ "${want}" = "None" ]; then
     echo "FAIL: ServiceRole output is '${got}', the instance reports '${want}'" >&2
     exit 1

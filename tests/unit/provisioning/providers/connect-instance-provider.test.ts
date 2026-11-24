@@ -311,6 +311,23 @@ describe('ConnectInstanceProvider', () => {
       expect(sentOf(CreateInstanceCommand)).toHaveLength(1);
     });
 
+    it("throws the create's own alias refusal when the alias listing fails", async () => {
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof CreateInstanceCommand) {
+          return Promise.reject(
+            new InvalidRequestException({ message: 'Invalid Input. Instance alias is already used.', $metadata: {} })
+          );
+        }
+        if (cmd instanceof ListInstancesCommand) {
+          return Promise.reject(Object.assign(new Error('denied'), { name: 'AccessDeniedException' }));
+        }
+        return Promise.resolve({});
+      });
+
+      await expect(provider.create('Inst', TYPE, baseProps())).rejects.toThrow(/InvalidRequestException/);
+      expect(sentOf(CreateInstanceCommand)).toHaveLength(1);
+    });
+
     it('retries the cleanup delete of an instance too young to accept it', async () => {
       scriptCreate({ statuses: ['CREATION_FAILED'] });
       const base = mockSend.getMockImplementation()!;

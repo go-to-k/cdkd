@@ -432,39 +432,59 @@ export class ConnectInstanceProvider implements ResourceProvider {
     mask: MaskerFn
   ): Promise<{ Id?: string | undefined; Arn?: string | undefined }> {
     const releaseDeadline = Date.now() + this.aliasReleaseWaitMs;
-    for (;;) {
-      try {
-        return await this.getClient().send(new CreateInstanceCommand(input));
-      } catch (error) {
-        if (
-          alias === undefined ||
-          !(error instanceof InvalidRequestException) ||
-          !/alias is already used/i.test(error.message) ||
-          Date.now() >= releaseDeadline ||
-          (await this.aliasIsListed(alias))
-        ) {
-          throw error;
+    const watch = startInterruptWatch(`Connect instance ${logicalId} alias release wait`);
+    try {
+      for (;;) {
+        try {
+          return await this.getClient().send(new CreateInstanceCommand(input));
+        } catch (error) {
+          if (
+            alias === undefined ||
+            !(error instanceof InvalidRequestException) ||
+            !/alias is already used/i.test(error.message) ||
+            Date.now() >= releaseDeadline ||
+            (await this.aliasIsListed(alias, mask))
+          ) {
+            throw error;
+          }
+          this.logger.debug(
+            mask(`Connect instance ${logicalId}: alias ${alias} still being released, retrying`)
+          );
+          if (watch.isInterrupted()) throw watch.onInterrupted();
+          await this.instanceWait.sleep(this.instanceWait.pollIntervalMs);
         }
-        this.logger.debug(
-          mask(`Connect instance ${logicalId}: alias ${alias} still being released, retrying`)
-        );
-        await this.instanceWait.sleep(this.instanceWait.pollIntervalMs);
       }
+    } finally {
+      watch.dispose();
     }
   }
 
   /** How long a create waits for a just-deleted instance's alias to be released. */
   aliasReleaseWaitMs = 180_000;
 
-  /** Whether a listed instance holds `alias`. */
-  private async aliasIsListed(alias: string): Promise<boolean> {
-    let nextToken: string | undefined;
-    do {
-      const page = await this.getClient().send(new ListInstancesCommand({ NextToken: nextToken }));
-      if (page.InstanceSummaryList?.some((s) => s.InstanceAlias === alias)) return true;
-      nextToken = page.NextToken;
-    } while (nextToken);
-    return false;
+  /**
+   * Whether a listed instance holds `alias`. A listing that fails answers
+   * `true`, so the create's own refusal is what the caller throws.
+   */
+  private async aliasIsListed(alias: string, mask: MaskerFn): Promise<boolean> {
+    try {
+      let nextToken: string | undefined;
+      do {
+        const page = await this.getClient().send(
+          new ListInstancesCommand({ NextToken: nextToken })
+        );
+        if (page.InstanceSummaryList?.some((s) => s.InstanceAlias === alias)) return true;
+        nextToken = page.NextToken;
+      } while (nextToken);
+      return false;
+    } catch (error) {
+      this.logger.debug(
+        mask(
+          `ListInstances failed while checking alias ${alias}: ${describeAwsFailure(error).detail}`
+        )
+      );
+      return true;
+    }
   }
 
   /**
@@ -476,26 +496,32 @@ export class ConnectInstanceProvider implements ResourceProvider {
    * the first answer was not-found and the instance is not there either.
    */
   private async deleteInstanceConfirmed(instanceId: string): Promise<'deleted' | 'gone'> {
-    const deadline = Date.now() + this.instanceWait.timeoutMs;
-    for (;;) {
-      try {
-        await this.getClient().send(new DeleteInstanceCommand({ InstanceId: instanceId }));
-        return 'deleted';
-      } catch (error) {
-        if (!(error instanceof ResourceNotFoundException)) throw error;
+    const deadline = this.deadline();
+    const watch = startInterruptWatch(`Connect instance ${instanceId} delete`);
+    try {
+      for (;;) {
         try {
-          await this.getClient().send(new DescribeInstanceCommand({ InstanceId: instanceId }));
-        } catch (describeError) {
-          if (describeError instanceof ResourceNotFoundException) return 'gone';
-          throw describeError;
+          await this.getClient().send(new DeleteInstanceCommand({ InstanceId: instanceId }));
+          return 'deleted';
+        } catch (error) {
+          if (!(error instanceof ResourceNotFoundException)) throw error;
+          try {
+            await this.getClient().send(new DescribeInstanceCommand({ InstanceId: instanceId }));
+          } catch (describeError) {
+            if (describeError instanceof ResourceNotFoundException) return 'gone';
+            throw describeError;
+          }
+          if (Date.now() >= deadline) throw error;
+          if (watch.isInterrupted()) throw watch.onInterrupted();
+          await this.instanceWait.sleep(this.instanceWait.pollIntervalMs);
         }
-        if (Date.now() >= deadline) throw error;
-        await this.instanceWait.sleep(this.instanceWait.pollIntervalMs);
       }
+    } finally {
+      watch.dispose();
     }
   }
 
-  /** The wall-clock end of one create's waits, capped by `--resource-timeout`. */
+  /** The wall-clock end of one operation's waits, capped by `--resource-timeout`. */
   private deadline(): number {
     const userTimeoutMs = resolvedResourceTimeoutMs(RESOURCE_TYPE);
     const timeoutMs =

@@ -244,7 +244,7 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
           'MULTI_PARTY_CONFERENCE',
           'OUTBOUND_CALLS',
           'USE_CUSTOM_TTS_VOICES',
-        ].map((type) => `UpdateInstanceAttributeCommand:${type}`),
+        ].map((type) => `UpdateInstanceAttributeCommand:${type.toLowerCase().replaceAll('_', '-')}`),
       ],
     },
   },

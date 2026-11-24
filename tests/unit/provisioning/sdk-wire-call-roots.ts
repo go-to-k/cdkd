@@ -66,7 +66,8 @@ export const CALL_ROOTS: Record<string, CallRoots> = {
   'AWS::Connect::Instance': {
     roots: {
       // One call per Attributes member, naming it in AttributeType.
-      UpdateInstanceAttributeCommand: (input) => String(input['AttributeType']),
+      UpdateInstanceAttributeCommand: (input) =>
+        String(input['AttributeType']).toLowerCase().replaceAll('_', '-'),
     },
   },
   'AWS::DynamoDB::Table': {
