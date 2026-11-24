@@ -107,6 +107,9 @@ not the RANGE, one global needle where each subject spells its own, and
 
 ### 5-e. Mutation probes
 
+A lane LISTS sites as a TSV (file:line, the break, the test that must fail);
+the probe lane or the parent breaks them.
+
 - **COMMIT the round's real fixes BEFORE any probe**: a probe restore reverts
   anything committed nowhere. Afterwards `git diff` is the separator, and the
   probe restores from a BYTE-EXACT COPY (`cp` out, `cp` back).
@@ -160,10 +163,7 @@ Never wait on a quiet lane: list the agents; send "REPORT ONLY" to any
 `completed`, or running with a frozen tool count and its PR green (#5593); ask
 any lane silent past 30 min what is pending plus an ETA, saying "reply, then
 continue — this is not a handback" (#6282), and relay that to the user
-unasked. A lane reporting "CI pending": read
-`gh pr view <N> --json mergeStateStatus` yourself, as at `DIRTY` no CI fires
-(#6110). Read
-a completion when it arrives, and check the PR and tree before believing it —
+unasked. Read a completion when it arrives, and check the PR and tree before believing it —
 a per-item table's counts and verdicts come from its ROWS, never its headline
 (#6628); a
 completion still waiting on a reply you already sent crossed it: resend the

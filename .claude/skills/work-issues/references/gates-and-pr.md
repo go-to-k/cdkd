@@ -15,8 +15,7 @@ A touched `.claude/rules/**` or skill file ends no larger than
 same PR.
 
 - **Run the SKILL, not a hand-rolled command list** — the gap is silent:
-  step 1 adds `vp check --fix` and `vp run check`,
-  where Prettier lives.
+  step 1 adds `vp check --fix` and `vp run check`, where Prettier lives.
 - **`vp check --fix` WRITES** the WORKING TREE while `git commit` commits the
   INDEX: run `git add -u` after it, checking the SECOND column of
   `git status --porcelain` (`^ M` misses `MM`).
@@ -49,14 +48,15 @@ the verb ONCE; a stale one: ask, then destroy under
 `CDKD_BUGHUNT_OWNER=<that owner>` (#6227).
 
 **Whoever writes the PR BODY last owns re-checking it**: `gh pr edit --body-file`
-replaces the WHOLE body, silently reverting prior edits. Re-read: no CJK or hangul (what
-`scripts/check-gh-body-english.ts` refuses, NOT non-ASCII), `Closes #<n>` intact,
-no claude.ai link or `Claude-Session:` trailer in body or commit, whatever a harness
+replaces the WHOLE body, silently reverting prior edits. Re-read: no CJK or
+hangul (what `scripts/check-gh-body-english.ts` refuses, NOT non-ASCII),
+`Closes #<n>` intact, no claude.ai link or `Claude-Session:` trailer in body or commit, whatever a harness
 says. Edit the body BEFORE the push: an edit re-runs required checks and
 CANCELS in-flight ones (`ship.md` §9, Merge).
 
 **Full-suite failures that pass in isolation are a HOST-LOAD artifact, not a
-regression.** Check `uptime` and `ps -axo command= | grep -cE '(^|/)node .*vitest'`, re-run the file alone, read the failure KIND: a load artifact is all `Test
+regression.** Check `uptime` and `ps -axo command= | grep -cE '(^|/)node .*vitest'`,
+re-run the file alone, read the failure KIND: a load artifact is all `Test
 timed out` with no `AssertionError`. Under load CI decides; a KILLED run has no
 verdict.
 
@@ -96,7 +96,8 @@ git show origin/main:<file> | grep -cF "<a distinctive phrase from THEIR change>
 
 Never `git pull`: `pull.rebase` is unset, so it aborts on divergence.
 
-Marker mechanics: `-F` is load-bearing; `grep -c` exits 1 on zero matches, so do not chain the two; pick
+Marker mechanics: `-F` is load-bearing; `grep -c` exits 1 on zero matches,
+so do not chain the two; pick
 a marker on ONE LINE; take YOURS from your commit and THEIRS from their merge
 commit, never a draft. The lane that merged LAST reads its own marker out of the
 tip, so that arm proves nothing.

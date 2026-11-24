@@ -40,7 +40,7 @@ every lane dispatch, and state them all in the opening report.
   `origin/main` reads `upstream/main`, lanes push to `origin` and open with
   `--head <fork-owner>:<branch>`. Read `gh api repos/go-to-k/cdkd --jq
   .permissions` NOW: without `push`, the merge, its integ and any issue-body
-  edit are the maintainer's, so lanes stop at PR open + CI green (or
+  edit are the maintainer's, so the run stops at CI green (or
   `action_required` awaiting approval) and correct an issue's `Session-fit` by
   comment.
 

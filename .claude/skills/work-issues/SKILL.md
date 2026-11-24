@@ -69,10 +69,10 @@ file that holds that section.
   place), implements, runs `/check` + `/check-docs` once at the final sha,
   opens the PR, fixes its reviewers' (§8) findings, STOPS at the push and
   reports PR number, HEAD sha, verdicts, a TSV of sites to break, integs and
-  deferrals. The CI wait and those probes go to a probe lane or the parent; it
-  never runs a real-AWS integ or merges (#6928).
+  deferrals. The CI wait and those probes go to a probe lane or the parent (a
+  red one back to the lane); it never runs a real-AWS integ or merges.
 - **Finishing (stage 9): the parent — integs in parallel, merges one at a
-  time.** Grant each merge-ready lane its integ (lanes on DIFFERENT fixtures
+  time.** Grant each CI-green lane its integ (lanes on DIFFERENT fixtures
   run at once) and run `/run-integ` and `gh pr merge` yourself
   FROM THAT LANE'S WORKTREE (the `integ-destroy` marker is read from the
   worktree the command runs from) — never the lane agent; a refused call
