@@ -319,7 +319,7 @@ request's `sdk-wire-coverage` section lists the paths (see the table above).
 | Option | Meaning | Choose it when |
 | --- | --- | --- |
 | Wire it, and add it to a wire bag | The SDK provider sends it | The current SDK client models the member |
-| Declare it in `src/provisioning/sdk-unmodelled-nested-paths.ts` | A template carrying it routes through Cloud Control, which sends it | The current SDK client does not model the member yet; remove the entry once it does |
+| Declare it in `src/provisioning/sdk-unmodelled-nested-paths.ts` | A template carrying it routes through Cloud Control, which sends it | The SDK provider does not send the member (often because the current SDK client does not model it yet); remove the entry once the provider sends it |
 | Add a `nestedExempt` entry | No bag carries it, for the stated reason | The member cannot appear in a valid template on this path (read-only, refused by CloudFormation, legacy) |
 
 For a `definition-member-missing`, rule out the installed SDK

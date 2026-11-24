@@ -35,7 +35,8 @@ export const SDK_UNMODELLED_NESTED_PATHS: Readonly<Record<string, readonly strin
 
 /** Rationale of a nested-member route; `path` is the declared dotted path. */
 export function sdkUnmodelledNestedRationale(path: string): string {
-  return `${path} is not modelled by the AWS SDK client cdkd ships, so the SDK provider would drop it`;
+  // Also the `--prefer-sdk-route` warning's reason, so it names no route.
+  return `${path} is not sent by cdkd's SDK provider`;
 }
 
 /**

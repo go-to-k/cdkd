@@ -163,7 +163,10 @@ describe('routing', () => {
     expect(logger.info).toHaveBeenCalledTimes(1);
     const line = logger.info.mock.calls[0]![0] as string;
     expect(line).toContain('Zone (AWS::Route53::HostedZone): routing via Cloud Control API');
-    expect(line).toContain('HostedZoneFeatures: HostedZoneFeatures.ChangeGuardrails is not modelled');
+    expect(line).toContain(
+      "HostedZoneFeatures: HostedZoneFeatures.ChangeGuardrails is not sent by cdkd's SDK provider"
+    );
+    expect(line).not.toContain('not modelled');
     expect(line).not.toContain('does not yet wire');
     expect(line).toContain(`--prefer-sdk-route ${ZONE}:HostedZoneFeatures`);
   });
@@ -182,7 +185,7 @@ describe('routing', () => {
     expect(logger.warn).toHaveBeenCalledTimes(1);
     const line = logger.warn.mock.calls[0]![0] as string;
     expect(line).toContain('Zone (AWS::Route53::HostedZone): --prefer-sdk-route keeps');
-    expect(line).toContain('ChangeGuardrails is not modelled');
+    expect(line).toContain("ChangeGuardrails is not sent by cdkd's SDK provider");
   });
 
   it('keeps a Cloud-Control-recorded resource there until BOTH bags drop the member', () => {

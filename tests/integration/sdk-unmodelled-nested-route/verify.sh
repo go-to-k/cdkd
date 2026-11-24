@@ -218,7 +218,7 @@ deploy route "${LOG_DIR}/route.log"
 # so a reworded reason fails here instead of passing on the route line alone.
 line=$(grep -F "${ZONE} (" "${LOG_DIR}/route.log" | grep -F 'routing via Cloud Control API' || true)
 [ -n "${line}" ] || { echo "FAIL: phase 2: the deploy never said ${ZONE} routes via Cloud Control" >&2; exit 1; }
-reason="ChangeGuardrails is not modelled by the AWS SDK client"
+reason="ChangeGuardrails is not sent by cdkd's SDK provider"
 grep -qF "${reason}" <<<"${line}" || { echo "FAIL: phase 2: ${ZONE}'s route line lacks its reason '${reason}': ${line}" >&2; exit 1; }
 if grep -F "${DIST} (" "${LOG_DIR}/route.log" | grep -qF 'routing via Cloud Control API'; then
   echo "FAIL: phase 2: the deploy routed ${DIST} via Cloud Control for a member the SDK provider sends (issue 6932)" >&2
