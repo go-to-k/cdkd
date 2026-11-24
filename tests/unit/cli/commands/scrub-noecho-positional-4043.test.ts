@@ -71,8 +71,8 @@ function legacyState(stored: unknown, observedExtra: Record<string, unknown> = {
 describe('cdkd scrub - the NoEcho positional arm and migration rule (go-to-k/cdkd#4043 Phase C)', () => {
   let stateBackend: Record<string, ReturnType<typeof vi.fn>>;
   const lockManager = {
-    acquireLockWithRetry: vi.fn().mockResolvedValue(undefined),
-    releaseLock: vi.fn().mockResolvedValue(undefined),
+    acquireLockWithRetry: vi.fn(async () => undefined),
+    releaseLock: vi.fn(async () => undefined),
   };
 
   beforeEach(() => {

@@ -33,7 +33,7 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
 }));
 
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({
+  S3StateBackend: vi.fn(() => ({
     destroyClient: vi.fn(),
     verifyBucketExists: mocks.verifyBucketExistsMock,
     listStacks: mocks.listStacksMock,
@@ -45,7 +45,7 @@ vi.mock('../../../src/utils/aws-clients.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/utils/aws-clients.js')>();
   return {
     ...actual,
-    AwsClients: vi.fn().mockImplementation((config: unknown) => {
+    AwsClients: vi.fn((config: unknown) => {
       mocks.awsClientsCtorMock(config);
       return { s3: {}, destroy: (): void => {} };
     }),

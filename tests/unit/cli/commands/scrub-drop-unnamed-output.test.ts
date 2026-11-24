@@ -36,7 +36,7 @@ const RESOLVES: Record<string, string> = {
 
 vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../../src/deployment/intrinsic-function-resolver.js')>()),
-  IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
+  IntrinsicFunctionResolver: vi.fn(() => ({
     resolveParameters: vi.fn().mockResolvedValue({}),
     evaluateConditions: vi.fn().mockResolvedValue({}),
     resolve: vi
@@ -651,8 +651,8 @@ describe('cdkd scrub - review round 4 (go-to-k/cdkd#4120)', () => {
     listStacks: ReturnType<typeof vi.fn>;
   };
   const lockManager = {
-    acquireLockWithRetry: vi.fn().mockResolvedValue(undefined),
-    releaseLock: vi.fn().mockResolvedValue(undefined),
+    acquireLockWithRetry: vi.fn(async () => undefined),
+    releaseLock: vi.fn(async () => undefined),
   };
 
   beforeEach(() => {

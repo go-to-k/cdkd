@@ -48,7 +48,7 @@ const mockS3Send =
     (command: { constructor: { name: string }; input: Record<string, unknown> }) => Promise<unknown>
   >();
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
-  AwsClients: vi.fn().mockImplementation(() => ({
+  AwsClients: vi.fn(() => ({
     get s3() {
       return { send: mockS3Send, destroy: vi.fn() };
     },
@@ -68,7 +68,7 @@ const mockListStacks = vi.fn<() => Promise<Array<{ stackName: string; region?: s
 const mockGetState = vi.fn<(stackName: string, region: string) => Promise<unknown>>();
 const mockVerifyBucketExists = vi.fn<() => Promise<void>>();
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({
+  S3StateBackend: vi.fn(() => ({
     destroyClient: vi.fn(),
     listStacks: mockListStacks,
     getState: mockGetState,
@@ -78,14 +78,14 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
 
 const mockGetLockInfo = vi.fn<() => Promise<unknown>>();
 vi.mock('../../../src/state/lock-manager.js', () => ({
-  LockManager: vi.fn().mockImplementation(() => ({
+  LockManager: vi.fn(() => ({
     isLocked: vi.fn(async () => false),
     getLockInfo: mockGetLockInfo,
   })),
 }));
 
 vi.mock('../../../src/state/export-index-store.js', () => ({
-  ExportIndexStore: vi.fn().mockImplementation(() => ({})),
+  ExportIndexStore: vi.fn(() => ({})),
 }));
 
 /**
@@ -95,11 +95,11 @@ vi.mock('../../../src/state/export-index-store.js', () => ({
  */
 const mockStsSend = vi.hoisted(() => vi.fn());
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation(() => ({
+  STSClient: vi.fn(() => ({
     send: mockStsSend,
     destroy: vi.fn(),
   })),
-  AssumeRoleCommand: vi.fn().mockImplementation((input: unknown) => ({ input })),
+  AssumeRoleCommand: vi.fn((input: unknown) => ({ input })),
 }));
 
 import { createStateCommand } from '../../../src/cli/commands/state.js';

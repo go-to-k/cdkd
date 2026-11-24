@@ -26,7 +26,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 
 const profile = vi.hoisted(() => ({ region: 'ap-northeast-1' as string | undefined }));
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation(() => ({
+  STSClient: vi.fn(() => ({
     config: {
       region: async (): Promise<string> => {
         if (!profile.region) throw new Error('Region is missing');
@@ -47,7 +47,7 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
 }));
 
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
-  AwsClients: vi.fn().mockImplementation(() => ({
+  AwsClients: vi.fn(() => ({
     get s3() {
       return {};
     },
@@ -64,7 +64,7 @@ vi.mock('../../../src/utils/role-arn.js', () => ({
 /** Every `removeStack` on an exports-index store, as [indexRegion, stack, region]. */
 const indexRemovals = vi.hoisted(() => [] as string[][]);
 vi.mock('../../../src/state/export-index-store.js', () => ({
-  ExportIndexStore: vi.fn().mockImplementation((...args: unknown[]) => ({
+  ExportIndexStore: vi.fn((...args: unknown[]) => ({
     region: args[3],
     removeStack: vi.fn(async (stack: string, region: string) => {
       indexRemovals.push([args[3] as string, stack, region]);
@@ -83,7 +83,7 @@ const backend = vi.hoisted(() => ({
   stateExistsOwnedBy: vi.fn(),
 }));
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({
+  S3StateBackend: vi.fn(() => ({
     destroyClient: vi.fn(),
     // ONE ref, with NO region: the legacy (version 1) record shape.
     listStacks: vi.fn(async () => [{ stackName: 'MyStack' }]),
@@ -95,14 +95,14 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
 }));
 
 vi.mock('../../../src/state/lock-manager.js', () => ({
-  LockManager: vi.fn().mockImplementation(() => ({
+  LockManager: vi.fn(() => ({
     acquireLock: vi.fn().mockResolvedValue(true),
     releaseLock: vi.fn(),
   })),
 }));
 
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({
-  ProviderRegistry: vi.fn().mockImplementation(() => ({
+  ProviderRegistry: vi.fn(() => ({
     setCustomResourceResponseBucket: vi.fn(),
     getProvider: vi.fn(),
   })),

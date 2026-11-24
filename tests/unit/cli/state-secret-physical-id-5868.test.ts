@@ -21,7 +21,7 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
   resolveStateBucketWithDefault: vi.fn(async () => 'test-bucket'),
 }));
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
-  AwsClients: vi.fn().mockImplementation(() => ({
+  AwsClients: vi.fn(() => ({
     get s3() {
       return {};
     },
@@ -34,7 +34,7 @@ vi.mock('../../../src/utils/aws-clients.ts', () => ({
 const mockGetState =
   vi.fn<(stackName: string, region: string) => Promise<{ state: StackState } | null>>();
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({
+  S3StateBackend: vi.fn(() => ({
     destroyClient: vi.fn(),
     getState: mockGetState,
     listStacks: vi.fn(async () => [{ stackName: 'S', region: 'us-east-1' }]),
@@ -42,7 +42,7 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
   })),
 }));
 vi.mock('../../../src/state/lock-manager.js', () => ({
-  LockManager: vi.fn().mockImplementation(() => ({
+  LockManager: vi.fn(() => ({
     getLockInfo: vi.fn(async (): Promise<LockInfo | null> => null),
     isLocked: vi.fn(),
   })),

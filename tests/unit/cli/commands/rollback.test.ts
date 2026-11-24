@@ -16,14 +16,18 @@ vi.mock('../../../../src/provisioning/register-providers.js', () => ({
 // A ProviderRegistry stub whose getProviderFor returns a shared spyable
 // provider so the replay path (CREATE delete / UPDATE update) can be driven.
 const replayProvider = {
-  delete: vi.fn().mockResolvedValue(undefined),
-  update: vi.fn().mockResolvedValue({ physicalId: 'p' }),
+  delete: vi.fn(async (_logicalId: string, ..._rest: unknown[]): Promise<void> => undefined),
+  update: vi.fn(
+    async (_logicalId: string, ..._rest: unknown[]): Promise<{ physicalId: string; wasReplaced?: boolean }> => ({
+      physicalId: 'p',
+    })
+  ),
   // go-to-k/cdkd#4658: a journaled orphan's live identity matches its token.
   // Offered only for the types whose real provider implements it (below).
   resourceIdentity: vi.fn(async (): Promise<unknown> => 'created-token'),
 };
 vi.mock('../../../../src/provisioning/provider-registry.js', () => ({
-  ProviderRegistry: vi.fn().mockImplementation(() => ({
+  ProviderRegistry: vi.fn(() => ({
     getProviderFor: ({ resourceType }: { resourceType: string }) => ({
       provider: [
         'AWS::Kinesis::Stream',

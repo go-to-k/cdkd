@@ -63,7 +63,7 @@ vi.mock('@aws-sdk/client-sts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-sts')>();
   return {
     ...actual,
-    STSClient: vi.fn().mockImplementation(() => ({
+    STSClient: vi.fn(() => ({
       config: {
         region: async (): Promise<string> => {
           // A region-less client REJECTS when the chain answers nothing.
@@ -86,7 +86,7 @@ vi.mock('../../../src/utils/role-arn.js', () => ({
 }));
 
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
-  AwsClients: vi.fn().mockImplementation((config: { region?: string; profile?: string } = {}) => {
+  AwsClients: vi.fn((config: { region?: string; profile?: string } = {}) => {
     awsClientsConfigs.push(config);
     // The SDK's contract, reproduced: a client CONSTRUCTED with a region
     // reports it; a region-less one resolves through the provider chain and
@@ -112,14 +112,14 @@ vi.mock('../../../src/utils/aws-clients.ts', () => ({
 }));
 
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => stateBackendMocks),
+  S3StateBackend: vi.fn(() => stateBackendMocks),
 }));
 
 vi.mock('@aws-sdk/client-s3', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-s3')>();
   return {
     ...actual,
-    S3Client: vi.fn().mockImplementation((config: { region?: string }) => {
+    S3Client: vi.fn((config: { region?: string }) => {
       s3ClientConfigs.push(config);
       return { send: mockS3Send, destroy: vi.fn() };
     }),
@@ -130,7 +130,7 @@ vi.mock('@aws-sdk/client-ecr', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-ecr')>();
   return {
     ...actual,
-    ECRClient: vi.fn().mockImplementation(() => ({ send: mockEcrSend, destroy: vi.fn() })),
+    ECRClient: vi.fn(() => ({ send: mockEcrSend, destroy: vi.fn() })),
   };
 });
 

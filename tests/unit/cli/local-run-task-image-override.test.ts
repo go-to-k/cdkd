@@ -38,32 +38,32 @@ vi.mock('cdk-local/internal', async (importOriginal) => {
 
 vi.mock('@aws-sdk/client-sts', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  STSClient: vi.fn().mockImplementation(() => ({ send: h.stsSend, destroy: vi.fn() })),
+  STSClient: vi.fn(() => ({ send: h.stsSend, destroy: vi.fn() })),
 }));
 
 vi.mock('../../../src/local/docker-runner.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  ensureDockerAvailable: vi.fn().mockResolvedValue(undefined),
+  ensureDockerAvailable: vi.fn(async () => undefined),
 }));
 
 vi.mock('../../../src/local/docker-version.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  resolveHostGatewayExtraHosts: vi.fn().mockResolvedValue([]),
+  resolveHostGatewayExtraHosts: vi.fn(async () => []),
 }));
 
 vi.mock('../../../src/utils/role-arn.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  applyRoleArnIfSet: vi.fn().mockResolvedValue(undefined),
+  applyRoleArnIfSet: vi.fn(async () => undefined),
 }));
 
 vi.mock('../../../src/cli/config-loader.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  resolveApp: vi.fn().mockReturnValue('node app.js'),
+  resolveApp: vi.fn(() => 'node app.js'),
 }));
 
 vi.mock('../../../src/synthesis/synthesizer.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  Synthesizer: vi.fn().mockImplementation(() => ({
+  Synthesizer: vi.fn(() => ({
     synthesize: vi.fn().mockResolvedValue({
       stacks: [
         {
@@ -81,20 +81,20 @@ vi.mock('../../../src/synthesis/synthesizer.js', async (importOriginal) => ({
 
 vi.mock('../../../src/cli/commands/local-state-source.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  createLocalStateProvider: vi.fn().mockReturnValue(undefined),
+  createLocalStateProvider: vi.fn(() => undefined),
 }));
 
 vi.mock('../../../src/local/ecs-task-resolver.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  parseEcsTarget: vi.fn().mockReturnValue({ stackPattern: null, isPath: false, pathOrId: 'TD' }),
+  parseEcsTarget: vi.fn(() => ({ stackPattern: null, isPath: false, pathOrId: 'TD' })),
   resolveEcsTaskTarget: vi.fn(() => h.task),
-  detectEcsImageResolutionNeeds: vi.fn().mockReturnValue({ needsCrossStackResolver: false }),
+  detectEcsImageResolutionNeeds: vi.fn(() => ({ needsCrossStackResolver: false })),
 }));
 
 vi.mock('../../../src/local/ecs-task-runner.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  createEcsRunState: vi.fn().mockReturnValue({ containers: [], entries: new Map() }),
-  cleanupEcsRun: vi.fn().mockResolvedValue(undefined),
+  createEcsRunState: vi.fn(() => ({ containers: [], entries: new Map() })),
+  cleanupEcsRun: vi.fn(async () => undefined),
   runEcsTask: h.runEcsTask,
 }));
 

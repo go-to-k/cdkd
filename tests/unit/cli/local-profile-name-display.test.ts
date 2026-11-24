@@ -46,12 +46,12 @@ const stsSendMock = vi.fn();
 const stsDestroyMock = vi.fn();
 
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation(() => ({
+  STSClient: vi.fn(() => ({
     config: { credentials: credsProviderMock },
     send: stsSendMock,
     destroy: stsDestroyMock,
   })),
-  AssumeRoleCommand: vi.fn().mockImplementation((input: unknown) => ({ input })),
+  AssumeRoleCommand: vi.fn((input: unknown) => ({ input })),
 }));
 
 describe('writeProfileCredentialsFile: the refusal renders the name it is refusing (issue #3377)', () => {

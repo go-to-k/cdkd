@@ -19,7 +19,7 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
   resolveStateBucketWithDefault: mocks.resolveBucket,
 }));
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({
+  S3StateBackend: vi.fn(() => ({
     verifyBucketExists: mocks.verifyBucketExists,
   })),
 }));
@@ -29,7 +29,7 @@ vi.mock('../../../src/utils/aws-clients.js', async () => {
   );
   return {
     ...actual,
-    AwsClients: vi.fn().mockImplementation(() => ({ s3: {}, destroy: vi.fn() })),
+    AwsClients: vi.fn(() => ({ s3: {}, destroy: vi.fn() })),
   };
 });
 

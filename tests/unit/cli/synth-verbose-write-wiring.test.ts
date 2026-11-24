@@ -15,7 +15,7 @@ import { dirname, join } from 'node:path';
 
 const synthesize = vi.fn();
 vi.mock('../../../src/synthesis/synthesizer.js', () => ({
-  Synthesizer: vi.fn().mockImplementation(() => ({ synthesize })),
+  Synthesizer: vi.fn(() => ({ synthesize })),
   synthesisStatusMessage: () => 'synthesizing',
 }));
 vi.mock('../../../src/cli/config-loader.js', () => ({

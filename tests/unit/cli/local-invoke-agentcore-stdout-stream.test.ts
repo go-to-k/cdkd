@@ -72,7 +72,7 @@ vi.mock('../../../src/synthesis/synthesizer.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/synthesis/synthesizer.js')>();
   return {
     ...actual,
-    Synthesizer: vi.fn().mockImplementation(() => ({ synthesize: mocks.synthesize })),
+    Synthesizer: vi.fn(() => ({ synthesize: mocks.synthesize })),
   };
 });
 
@@ -171,7 +171,7 @@ vi.mock('@aws-sdk/client-sts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-sts')>();
   return {
     ...actual,
-    STSClient: vi.fn().mockImplementation(() => ({ send: mocks.stsSend, destroy: vi.fn() })),
+    STSClient: vi.fn(() => ({ send: mocks.stsSend, destroy: vi.fn() })),
   };
 });
 

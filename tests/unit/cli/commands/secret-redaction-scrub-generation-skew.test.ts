@@ -20,7 +20,7 @@ const EXPR_CURR = '{{resolve:secretsmanager:app/db:SecretString:password:AWSCURR
 const PLAINTEXT = 'super-secret-plaintext-value';
 
 vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', () => ({
-  IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
+  IntrinsicFunctionResolver: vi.fn(() => ({
     resolveParameters: vi.fn().mockResolvedValue({}),
     evaluateConditions: vi.fn().mockResolvedValue({}),
     resolve: vi

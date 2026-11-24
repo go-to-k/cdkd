@@ -23,7 +23,7 @@ import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 
 const mockSynthesize = vi.fn();
 vi.mock('../../../src/synthesis/synthesizer.js', () => ({
-  Synthesizer: vi.fn().mockImplementation(() => ({ synthesize: mockSynthesize })),
+  Synthesizer: vi.fn(() => ({ synthesize: mockSynthesize })),
 }));
 
 const mockResolveApp = vi.fn();

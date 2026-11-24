@@ -35,7 +35,7 @@ vi.mock('../../../src/synthesis/synthesizer.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/synthesis/synthesizer.js')>();
   return {
     ...actual,
-    Synthesizer: vi.fn().mockImplementation(() => ({
+    Synthesizer: vi.fn(() => ({
       synthesize: mockSynthesize,
     })),
   };
@@ -62,11 +62,11 @@ const mockStsSend = vi.hoisted(() => vi.fn());
 // the SDK module whose export surface must not be enumerated.
 vi.mock('@aws-sdk/client-sts', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@aws-sdk/client-sts')>()),
-  STSClient: vi.fn().mockImplementation(() => ({
+  STSClient: vi.fn(() => ({
     send: mockStsSend,
     destroy: vi.fn(),
   })),
-  AssumeRoleCommand: vi.fn().mockImplementation((input: unknown) => ({ input })),
+  AssumeRoleCommand: vi.fn((input: unknown) => ({ input })),
 }));
 
 import { createSynthCommand } from '../../../src/cli/commands/synth.js';

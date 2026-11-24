@@ -4,7 +4,7 @@ import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 // Mock Synthesizer — list.ts only uses Synthesizer.synthesize().
 const mockSynthesize = vi.fn();
 vi.mock('../../../src/synthesis/synthesizer.js', () => ({
-  Synthesizer: vi.fn().mockImplementation(() => ({
+  Synthesizer: vi.fn(() => ({
     synthesize: mockSynthesize,
   })),
 }));

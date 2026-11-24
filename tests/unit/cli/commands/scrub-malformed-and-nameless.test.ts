@@ -77,7 +77,7 @@ vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', async () =>
   ...(await vi.importActual<
     typeof import('../../../../src/deployment/intrinsic-function-resolver.js')
   >('../../../../src/deployment/intrinsic-function-resolver.js')),
-  IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
+  IntrinsicFunctionResolver: vi.fn(() => ({
     resolveParameters: vi.fn().mockResolvedValue({}),
     evaluateConditions: vi.fn().mockResolvedValue({}),
     resolve: vi.fn().mockImplementation(

@@ -22,7 +22,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 
 const profile = vi.hoisted(() => ({ region: 'ap-northeast-1' as string | undefined }));
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation(() => ({
+  STSClient: vi.fn(() => ({
     config: {
       region: async (): Promise<string> => {
         if (!profile.region) throw new Error('Region is missing');
@@ -51,7 +51,7 @@ vi.mock('../../../src/utils/role-arn.js', () => ({
 
 const world = vi.hoisted(() => ({ state: new Set<string>(), index: new Set<string>() }));
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({
+  S3StateBackend: vi.fn(() => ({
     verifyBucketExists: vi.fn(async () => undefined),
     destroyClient: vi.fn(),
     stateExistsOwnedBy: vi.fn(async (stack: string, region: string) =>
@@ -62,13 +62,13 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
 }));
 
 vi.mock('../../../src/state/lock-manager.js', () => ({
-  LockManager: vi.fn().mockImplementation(() => ({})),
+  LockManager: vi.fn(() => ({})),
 }));
 
 const indexRegion = vi.hoisted(() => ({ value: [] as string[] }));
 const removals = vi.hoisted(() => [] as string[][]);
 vi.mock('../../../src/state/export-index-store.js', () => ({
-  ExportIndexStore: vi.fn().mockImplementation((...args: unknown[]) => {
+  ExportIndexStore: vi.fn((...args: unknown[]) => {
     indexRegion.value.push(args[3] as string);
     return {
       removeStack: async (stack: string, region: string) => {

@@ -74,7 +74,7 @@ vi.mock('../../../src/cli/commands/local-state-source.js', async (importOriginal
 
 vi.mock('../../../src/synthesis/synthesizer.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  Synthesizer: vi.fn().mockImplementation(() => ({ synthesize: mocks.synthesize })),
+  Synthesizer: vi.fn(() => ({ synthesize: mocks.synthesize })),
 }));
 
 vi.mock('../../../src/cli/config-loader.js', async (importOriginal) => ({

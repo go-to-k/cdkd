@@ -33,11 +33,11 @@ vi.mock('../../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({}),
   setAwsClients: vi.fn(),
   runWithStackAwsClients: (_c: unknown, fn: () => unknown) => fn(),
-  AwsClients: vi.fn().mockImplementation(() => ({ destroy: vi.fn() })),
+  AwsClients: vi.fn(() => ({ destroy: vi.fn() })),
 }));
 
 vi.mock('../../../../src/provisioning/provider-registry.js', () => ({
-  ProviderRegistry: vi.fn().mockImplementation(() => ({
+  ProviderRegistry: vi.fn(() => ({
     getProviderFor: vi.fn(),
     setCustomResourceResponseBucket: vi.fn(),
   })),

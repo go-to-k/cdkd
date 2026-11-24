@@ -26,7 +26,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 const profile = vi.hoisted(() => ({ region: 'ap-northeast-1' as string | undefined }));
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation(() => ({
+  STSClient: vi.fn(() => ({
     config: {
       region: async (): Promise<string> => {
         if (!profile.region) throw new Error('Region is missing');
@@ -64,7 +64,7 @@ const cfnSend = vi.hoisted(() =>
 /** The region of the client each CloudFormation call went through. */
 const cfnRegions = vi.hoisted(() => [] as unknown[]);
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
-  AwsClients: vi.fn().mockImplementation((cfg?: { region?: string }) => ({
+  AwsClients: vi.fn((cfg?: { region?: string }) => ({
     get s3() {
       return {};
     },
@@ -116,12 +116,10 @@ const backend = vi.hoisted(() => ({
   getState: vi.fn(),
   saveState: vi.fn(),
   stateExistsOwnedBy: vi.fn(),
-  stackInstanceIdForFirstWrite: vi
-    .fn()
-    .mockResolvedValue('00000000-0000-4000-8000-000000000000'),
+  stackInstanceIdForFirstWrite: vi.fn(async () => '00000000-0000-4000-8000-000000000000'),
 }));
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({
+  S3StateBackend: vi.fn(() => ({
     destroyClient: vi.fn(),
     verifyBucketExists: vi.fn(async () => undefined),
     getState: backend.getState,
@@ -135,7 +133,7 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
 
 const releaseLock = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock('../../../src/state/lock-manager.js', () => ({
-  LockManager: vi.fn().mockImplementation(() => ({
+  LockManager: vi.fn(() => ({
     acquireLock: vi.fn(async () => true),
     getLockInfo: vi.fn(async () => null),
     releaseLock,
@@ -144,7 +142,7 @@ vi.mock('../../../src/state/lock-manager.js', () => ({
 
 const synthesize = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/synthesis/synthesizer.js', () => ({
-  Synthesizer: vi.fn().mockImplementation(() => ({ synthesize })),
+  Synthesizer: vi.fn(() => ({ synthesize })),
   synthesisStatusMessage: (_app: unknown, msg: string) => msg,
 }));
 
@@ -161,7 +159,7 @@ vi.mock('../../../src/provisioning/provider-registry.js', () => {
     })),
   };
   return {
-    ProviderRegistry: vi.fn().mockImplementation(() => ({
+    ProviderRegistry: vi.fn(() => ({
       hasProvider: () => true,
       getProvider: () => provider,
       getProviderFor: () => ({ provider, provisionedBy: 'sdk' }),

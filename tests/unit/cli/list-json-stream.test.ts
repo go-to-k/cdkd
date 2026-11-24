@@ -43,7 +43,7 @@ import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 
 const mockSynthesize = vi.fn();
 vi.mock('../../../src/synthesis/synthesizer.js', () => ({
-  Synthesizer: vi.fn().mockImplementation(() => ({
+  Synthesizer: vi.fn(() => ({
     synthesize: mockSynthesize,
   })),
 }));
@@ -55,11 +55,11 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
 
 const mockStsSend = vi.hoisted(() => vi.fn());
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation(() => ({
+  STSClient: vi.fn(() => ({
     send: mockStsSend,
     destroy: vi.fn(),
   })),
-  AssumeRoleCommand: vi.fn().mockImplementation((input: unknown) => ({ input })),
+  AssumeRoleCommand: vi.fn((input: unknown) => ({ input })),
 }));
 
 import { createListCommand } from '../../../src/cli/commands/list.js';

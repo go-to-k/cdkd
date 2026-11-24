@@ -38,7 +38,7 @@ vi.mock('../../../src/local/rie-mount.js', () => ({
   resolveRieWrap: mocks.resolveRieWrapMock,
 }));
 vi.mock('../../../src/assets/asset-manifest-loader.js', () => ({
-  AssetManifestLoader: vi.fn().mockImplementation(() => ({
+  AssetManifestLoader: vi.fn(() => ({
     loadStackManifest: mocks.loadManifestMock,
   })),
   getDockerImageBySourceHash: mocks.getDockerImageBySourceHashMock,

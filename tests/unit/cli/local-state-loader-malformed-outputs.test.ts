@@ -35,7 +35,7 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
   resolveStateBucketWithDefault: mocks.resolveStateBucketWithDefaultMock,
 }));
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({
+  S3StateBackend: vi.fn(() => ({
     destroyClient: vi.fn(),
     verifyBucketExists: mocks.verifyBucketExistsMock,
     listStacks: mocks.listStacksMock,
@@ -43,7 +43,7 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
   })),
 }));
 vi.mock('../../../src/state/export-index-store.js', () => ({
-  ExportIndexStore: vi.fn().mockImplementation(() => ({ lookup: mocks.lookupMock })),
+  ExportIndexStore: vi.fn(() => ({ lookup: mocks.lookupMock })),
 }));
 vi.mock('../../../src/utils/aws-clients.js', async () => {
   const actual = await vi.importActual<Record<string, unknown>>(
@@ -51,7 +51,7 @@ vi.mock('../../../src/utils/aws-clients.js', async () => {
   );
   return {
     ...actual,
-    AwsClients: vi.fn().mockImplementation(() => ({ s3: {}, destroy: mocks.destroyMock })),
+    AwsClients: vi.fn(() => ({ s3: {}, destroy: mocks.destroyMock })),
   };
 });
 vi.mock('../../../src/utils/logger.js', async (importOriginal) => {

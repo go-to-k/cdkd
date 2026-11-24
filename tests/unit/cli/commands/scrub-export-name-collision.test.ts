@@ -44,13 +44,13 @@ vi.mock('../../../../src/utils/logger.js', () => ({
 const synthStacks = vi.hoisted(() => [] as unknown[]);
 const commandStateBackend = vi.hoisted(() => ({
   getState: vi.fn(),
-  saveState: vi.fn().mockResolvedValue('etag-2'),
-  purgeNoncurrentVersions: vi.fn().mockResolvedValue(undefined),
+  saveState: vi.fn(async () => 'etag-2'),
+  purgeNoncurrentVersions: vi.fn(async () => undefined),
   // The nested-record listing (go-to-k/cdkd#2252): no `<stack>~` records here.
-  listStacks: vi.fn().mockResolvedValue([]),
+  listStacks: vi.fn(async () => []),
 }));
 vi.mock('../../../../src/synthesis/synthesizer.js', () => ({
-  Synthesizer: vi.fn().mockImplementation(() => ({
+  Synthesizer: vi.fn(() => ({
     synthesize: vi.fn().mockImplementation(() => Promise.resolve({ stacks: synthStacks })),
     expandMacrosForStacks: vi.fn().mockResolvedValue(undefined),
   })),
@@ -61,12 +61,12 @@ vi.mock('../../../../src/cli/config-loader.js', () => ({
   resolveStateBucketWithDefault: () => Promise.resolve('cdkd-state-bucket'),
 }));
 vi.mock('../../../../src/utils/aws-clients.js', () => ({
-  AwsClients: vi.fn().mockImplementation(() => ({ s3: {} })),
+  AwsClients: vi.fn(() => ({ s3: {} })),
   setAwsClients: vi.fn(),
 }));
 vi.mock('../../../../src/utils/role-arn.js', () => ({ applyRoleArnIfSet: vi.fn() }));
 vi.mock('../../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => commandStateBackend),
+  S3StateBackend: vi.fn(() => commandStateBackend),
 }));
 vi.mock('../../../../src/state/export-index-store.js', () => ({
   // These suites' subject is the `--all` LOOP and the outputs key space; their
@@ -74,13 +74,13 @@ vi.mock('../../../../src/state/export-index-store.js', () => ({
   // exist. `readPersistedEntries` returning `undefined` IS that state (issue
   // #2667) — the store reports a missing object without rebuilding it — so the
   // index step contributes no finding and no failure here.
-  ExportIndexStore: vi.fn().mockImplementation(() => ({
+  ExportIndexStore: vi.fn(() => ({
     readPersistedEntries: vi.fn().mockResolvedValue(undefined),
     patchEntry: vi.fn().mockResolvedValue(true),
   })),
 }));
 vi.mock('../../../../src/state/lock-manager.js', () => ({
-  LockManager: vi.fn().mockImplementation(() => ({
+  LockManager: vi.fn(() => ({
     acquireLockWithRetry: vi.fn().mockResolvedValue(undefined),
     releaseLock: vi.fn().mockResolvedValue(undefined),
   })),
@@ -208,7 +208,7 @@ function resolveMovingInto(map: Map<string, string> | undefined, expr: string): 
 // of them an undefined export, which fails at the call rather than at the mock.
 vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../../src/deployment/intrinsic-function-resolver.js')>()),
-  IntrinsicFunctionResolver: vi.fn().mockImplementation((region: string) => ({
+  IntrinsicFunctionResolver: vi.fn((region: string) => ({
     resolveParameters: vi.fn().mockResolvedValue({}),
     evaluateConditions: vi.fn().mockImplementation(() => Promise.resolve(conditionValues.value)),
     // The seam the cross-region pin resolves a `named-region` token through,

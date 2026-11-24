@@ -36,7 +36,7 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
 
 vi.mock('../../../src/utils/aws-clients.ts', () => {
   return {
-    AwsClients: vi.fn().mockImplementation(() => ({
+    AwsClients: vi.fn(() => ({
       get s3() {
         return {};
       },
@@ -60,7 +60,7 @@ const mockVerifyBucketExists = vi.fn<() => Promise<void>>();
 // and still reported success.
 const mockDeleteLegacyState = vi.fn<(stackName: string) => Promise<void>>();
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({
+  S3StateBackend: vi.fn(() => ({
     destroyClient: vi.fn(),
     stateExists: mockStateExists,
     deleteState: mockDeleteState,
@@ -76,7 +76,7 @@ const mockForceReleaseLock = vi.fn<(stackName: string, region?: string) => Promi
 // useful signal is naming the owner at the moment it destroys a LIVE lock.
 const mockGetLockInfo = vi.fn<(stackName: string, region?: string) => Promise<unknown>>();
 vi.mock('../../../src/state/lock-manager.js', () => ({
-  LockManager: vi.fn().mockImplementation(() => ({
+  LockManager: vi.fn(() => ({
     isLocked: mockIsLocked,
     forceReleaseLock: mockForceReleaseLock,
     getLockInfo: mockGetLockInfo,

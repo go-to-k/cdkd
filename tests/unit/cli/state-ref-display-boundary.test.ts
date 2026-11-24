@@ -64,7 +64,7 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
 }));
 
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
-  AwsClients: vi.fn().mockImplementation(() => ({
+  AwsClients: vi.fn(() => ({
     get s3() {
       return {};
     },
@@ -82,7 +82,7 @@ const mockVerifyBucketExists = vi.fn<() => Promise<void>>();
 const mockDeleteState = vi.fn<() => Promise<void>>();
 const mockDeleteLegacyState = vi.fn<() => Promise<void>>();
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({
+  S3StateBackend: vi.fn(() => ({
     destroyClient: vi.fn(),
     listStacks: mockListStacks,
     getState: mockGetState,
@@ -95,7 +95,7 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
 const mockIsLocked = vi.fn<() => Promise<boolean>>();
 const mockGetLockInfo = vi.fn<() => Promise<unknown>>();
 vi.mock('../../../src/state/lock-manager.js', () => ({
-  LockManager: vi.fn().mockImplementation(() => ({
+  LockManager: vi.fn(() => ({
     isLocked: mockIsLocked,
     forceReleaseLock: vi.fn(async () => {}),
     getLockInfo: mockGetLockInfo,
@@ -107,7 +107,7 @@ vi.mock('../../../src/state/lock-manager.js', () => ({
 // provider is ever consulted -- the stub exists to keep the real registry's
 // construction out of a display test.
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({
-  ProviderRegistry: vi.fn().mockImplementation(() => ({
+  ProviderRegistry: vi.fn(() => ({
     setCustomResourceResponseBucket: vi.fn(),
   })),
 }));

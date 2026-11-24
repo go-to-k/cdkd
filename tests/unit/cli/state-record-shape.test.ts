@@ -45,11 +45,11 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
 // The client double below is standard-shaped, so `resolveExpectedBucketOwner`
 // would otherwise issue a LIVE GetCallerIdentity.
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation(() => ({
+  STSClient: vi.fn(() => ({
     send: vi.fn().mockResolvedValue({ Account: '999999999999' }),
     destroy: vi.fn(),
   })),
-  GetCallerIdentityCommand: vi.fn().mockImplementation((input) => ({ ...input })),
+  GetCallerIdentityCommand: vi.fn((input) => ({ ...input })),
 }));
 
 vi.mock('../../../src/utils/aws-region-resolver.js', async () => {
@@ -69,7 +69,7 @@ const bucket = vi.hoisted(() => ({
 const s3Send = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
-  AwsClients: vi.fn().mockImplementation(() => ({
+  AwsClients: vi.fn(() => ({
     get s3() {
       return {
         send: s3Send,

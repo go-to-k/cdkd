@@ -28,7 +28,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 }));
 
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation(() => ({
+  STSClient: vi.fn(() => ({
     send: vi.fn(async () => ({ Account: '111122223333' })),
     destroy: vi.fn(),
   })),
@@ -56,7 +56,7 @@ vi.mock('../../../src/utils/role-arn.js', () => ({
 }));
 
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({
+  S3StateBackend: vi.fn(() => ({
     destroyClient: vi.fn(),
     verifyBucketExists: vi.fn(async () => undefined),
     listStacks: vi.fn(async () => []),
@@ -65,11 +65,11 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
 }));
 
 vi.mock('../../../src/state/export-index-store.js', () => ({
-  ExportIndexStore: vi.fn().mockImplementation(() => ({})),
+  ExportIndexStore: vi.fn(() => ({})),
 }));
 
 vi.mock('../../../src/state/lock-manager.js', () => ({
-  LockManager: vi.fn().mockImplementation(() => ({
+  LockManager: vi.fn(() => ({
     acquireLock: vi.fn().mockResolvedValue(true),
     releaseLock: vi.fn(),
     settleDeferredPurges: vi.fn().mockResolvedValue(undefined),
@@ -77,7 +77,7 @@ vi.mock('../../../src/state/lock-manager.js', () => ({
 }));
 
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({
-  ProviderRegistry: vi.fn().mockImplementation(() => ({
+  ProviderRegistry: vi.fn(() => ({
     setCustomResourceResponseBucket: vi.fn(),
     getProvider: vi.fn(),
   })),
@@ -97,17 +97,17 @@ vi.mock('../../../src/provisioning/nested-stack-context.js', () => ({
 }));
 
 vi.mock('../../../src/analyzer/dag-builder.js', () => ({
-  DagBuilder: vi.fn().mockImplementation(() => ({})),
+  DagBuilder: vi.fn(() => ({})),
 }));
 
 vi.mock('../../../src/analyzer/diff-calculator.js', () => ({
-  DiffCalculator: vi.fn().mockImplementation(() => ({})),
+  DiffCalculator: vi.fn(() => ({})),
 }));
 
 /** Every `addAssetsToGraph` call's options, to read the node prefix and region. */
 const assetGraphCalls = vi.hoisted(() => [] as { nodePrefix?: string; region: string }[]);
 vi.mock('../../../src/assets/asset-publisher.js', () => ({
-  AssetPublisher: vi.fn().mockImplementation(() => ({
+  AssetPublisher: vi.fn(() => ({
     addAssetsToGraph: vi.fn(
       (_graph: unknown, _path: string, opts: { nodePrefix?: string; region: string }) => {
         assetGraphCalls.push(opts);
@@ -119,7 +119,7 @@ vi.mock('../../../src/assets/asset-publisher.js', () => ({
 }));
 
 vi.mock('../../../src/assets/asset-storage.js', () => ({
-  AssetModeResolver: vi.fn().mockImplementation(() => ({
+  AssetModeResolver: vi.fn(() => ({
     resolve: vi.fn(async () => ({ mode: 'legacy' })),
   })),
 }));
@@ -145,7 +145,7 @@ vi.mock('../../../src/cli/commands/deployment-events-run.js', () => ({
 const deployed = vi.hoisted(() => [] as string[]);
 const engineConstructed = vi.hoisted(() => ({ count: 0 }));
 vi.mock('../../../src/deployment/deploy-engine.js', () => ({
-  DeployEngine: vi.fn().mockImplementation(() => {
+  DeployEngine: vi.fn(() => {
     engineConstructed.count++;
     return {
       deploy: vi.fn(async (stackName: string) => {
@@ -170,7 +170,7 @@ vi.mock('../../../src/deployment/deploy-engine.js', () => ({
 
 const synthStacks = vi.hoisted(() => ({ value: [] as unknown[] }));
 vi.mock('../../../src/synthesis/synthesizer.js', () => ({
-  Synthesizer: vi.fn().mockImplementation(() => ({
+  Synthesizer: vi.fn(() => ({
     synthesize: vi.fn(async () => ({ stacks: synthStacks.value })),
     expandMacrosForStacks: vi.fn(async () => undefined),
   })),

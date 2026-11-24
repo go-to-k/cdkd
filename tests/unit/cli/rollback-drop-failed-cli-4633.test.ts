@@ -22,9 +22,8 @@ const provider = vi.hoisted(() => ({
   update: vi.fn(),
   resourceIdentity: async () => 'created-token',
 }));
-const registryCtor = vi.hoisted(() => vi.fn());
-vi.mock('../../../src/provisioning/provider-registry.js', () => ({
-  ProviderRegistry: registryCtor.mockImplementation(() => ({
+const registryCtor = vi.hoisted(() =>
+  vi.fn(() => ({
     getProviderFor: ({ resourceType }: { resourceType: string }) => ({
       // Real-shaped: only these types' providers read a creation identity.
       provider: [
@@ -41,7 +40,10 @@ vi.mock('../../../src/provisioning/provider-registry.js', () => ({
       provisionedBy: 'sdk',
     }),
     setCustomResourceResponseBucket: vi.fn(),
-  })),
+  }))
+);
+vi.mock('../../../src/provisioning/provider-registry.js', () => ({
+  ProviderRegistry: registryCtor,
 }));
 vi.mock('../../../src/cli/commands/deployment-events-run.js', () => ({
   startRunRecorder: () => ({ record: vi.fn(), finalize: vi.fn().mockResolvedValue(undefined) }),

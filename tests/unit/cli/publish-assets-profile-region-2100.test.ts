@@ -11,13 +11,13 @@ import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 
 const synthesize = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/synthesis/synthesizer.js', () => ({
-  Synthesizer: vi.fn().mockImplementation(() => ({ synthesize })),
+  Synthesizer: vi.fn(() => ({ synthesize })),
   synthesisStatusMessage: (_app: unknown, msg: string) => msg,
 }));
 
 const addAssetsToGraph = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/assets/asset-publisher.js', () => ({
-  AssetPublisher: vi.fn().mockImplementation(() => ({
+  AssetPublisher: vi.fn(() => ({
     addAssetsToGraph,
     executeNode: vi.fn(async () => undefined),
   })),
@@ -32,7 +32,7 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
 
 const profile = vi.hoisted(() => ({ region: 'ap-northeast-1' as string | undefined }));
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation(() => ({
+  STSClient: vi.fn(() => ({
     config: {
       region: async (): Promise<string> => {
         if (!profile.region) throw new Error('Region is missing');
@@ -42,7 +42,7 @@ vi.mock('@aws-sdk/client-sts', () => ({
     send: vi.fn(async () => ({ Account: '111111111111' })),
     destroy: vi.fn(),
   })),
-  GetCallerIdentityCommand: vi.fn().mockImplementation((input) => ({ ...input })),
+  GetCallerIdentityCommand: vi.fn((input) => ({ ...input })),
 }));
 
 // No publishable manifest by default, so no marker read; a case that sets
@@ -54,7 +54,7 @@ vi.mock('../../../src/assets/asset-redirect.js', async (importOriginal) => ({
 }));
 const modeRegions = vi.hoisted(() => [] as string[]);
 vi.mock('../../../src/assets/asset-storage.js', () => ({
-  AssetModeResolver: vi.fn().mockImplementation(() => ({
+  AssetModeResolver: vi.fn(() => ({
     resolve: vi.fn(async (region: string) => {
       modeRegions.push(region);
       return { mode: 'legacy' };
@@ -66,10 +66,10 @@ vi.mock('../../../src/assets/asset-storage.js', () => ({
 const held = vi.hoisted(() => ({ regions: new Set<string>() }));
 const stateExistsOwnedBy = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({ stateExistsOwnedBy })),
+  S3StateBackend: vi.fn(() => ({ stateExistsOwnedBy })),
 }));
 vi.mock('../../../src/utils/aws-clients.js', () => ({
-  AwsClients: vi.fn().mockImplementation(() => ({ s3: {}, destroy: vi.fn() })),
+  AwsClients: vi.fn(() => ({ s3: {}, destroy: vi.fn() })),
   getAwsClients: vi.fn(() => ({})),
 }));
 

@@ -12,16 +12,16 @@ const sweep: {
 } = { result: { deletedBodies: 0, complete: true }, prefixes: [] };
 
 vi.mock('../../../../src/utils/aws-clients.js', () => ({
-  AwsClients: vi.fn().mockImplementation(() => ({ s3: {}, destroy: vi.fn() })),
+  AwsClients: vi.fn(() => ({ s3: {}, destroy: vi.fn() })),
   setAwsClients: vi.fn(),
 }));
 
 vi.mock('../../../../src/cli/config-loader.js', () => ({
-  resolveStateBucketWithDefault: vi.fn().mockResolvedValue('cdkd-state-123'),
+  resolveStateBucketWithDefault: vi.fn(async () => 'cdkd-state-123'),
 }));
 
 vi.mock('../../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({
+  S3StateBackend: vi.fn(() => ({
     destroyClient: vi.fn(),
     prefix: 'cdkd',
     verifyBucketExists: vi.fn().mockResolvedValue(undefined),

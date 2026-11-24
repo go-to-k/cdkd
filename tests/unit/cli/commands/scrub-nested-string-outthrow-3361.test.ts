@@ -71,7 +71,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
 
 const synthStacks = vi.hoisted(() => [] as unknown[]);
 vi.mock('../../../../src/synthesis/synthesizer.js', () => ({
-  Synthesizer: vi.fn().mockImplementation(() => ({
+  Synthesizer: vi.fn(() => ({
     synthesize: vi.fn().mockImplementation(() => Promise.resolve({ stacks: synthStacks })),
     expandMacrosForStacks: vi.fn().mockResolvedValue(undefined),
   })),
@@ -94,17 +94,17 @@ const stateBackend = vi.hoisted(() => ({
   listStacks: vi.fn(),
 }));
 vi.mock('../../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => stateBackend),
+  S3StateBackend: vi.fn(() => stateBackend),
 }));
 const releaseLock = vi.hoisted(() => vi.fn());
 vi.mock('../../../../src/state/lock-manager.js', () => ({
-  LockManager: vi.fn().mockImplementation(() => ({
+  LockManager: vi.fn(() => ({
     acquireLockWithRetry: vi.fn().mockResolvedValue(undefined),
     releaseLock,
   })),
 }));
 vi.mock('../../../../src/state/export-index-store.js', () => ({
-  ExportIndexStore: vi.fn().mockImplementation(() => ({
+  ExportIndexStore: vi.fn(() => ({
     readPersistedEntries: vi.fn().mockResolvedValue(undefined),
     patchEntry: vi.fn().mockResolvedValue(true),
   })),

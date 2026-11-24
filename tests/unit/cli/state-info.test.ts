@@ -46,7 +46,7 @@ const mockS3Destroy = vi.fn();
 
 vi.mock('../../../src/utils/aws-clients.ts', () => {
   return {
-    AwsClients: vi.fn().mockImplementation(() => ({
+    AwsClients: vi.fn(() => ({
       get s3() {
         return { send: mockS3Send, destroy: mockS3Destroy };
       },
@@ -76,7 +76,7 @@ vi.mock('../../../src/utils/bucket-region-client.js', () => ({
 // Mock S3StateBackend so verifyBucketExists is the only relevant call.
 const mockVerifyBucketExists = vi.fn<() => Promise<void>>();
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({
+  S3StateBackend: vi.fn(() => ({
     destroyClient: vi.fn(),
     verifyBucketExists: mockVerifyBucketExists,
   })),
@@ -84,7 +84,7 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
 
 // LockManager is imported by state.ts but unused by `state info`.
 vi.mock('../../../src/state/lock-manager.js', () => ({
-  LockManager: vi.fn().mockImplementation(() => ({
+  LockManager: vi.fn(() => ({
     isLocked: vi.fn(),
   })),
 }));

@@ -27,7 +27,7 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
 }));
 
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation((...args: unknown[]) => {
+  S3StateBackend: vi.fn((...args: unknown[]) => {
     mocks.backendCtorMock(...args);
     return {
       verifyBucketExists: mocks.verifyBucketExistsMock,

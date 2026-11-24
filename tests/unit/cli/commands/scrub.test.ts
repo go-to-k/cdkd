@@ -42,7 +42,7 @@ const THROW_AFTER_RECORDING_EXPR = '{{resolve:secretsmanager:orphan-secret:Secre
 // fails with a mock error instead of its own assertion.
 vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../../src/deployment/intrinsic-function-resolver.js')>()),
-  IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
+  IntrinsicFunctionResolver: vi.fn(() => ({
     resolveParameters: vi.fn().mockResolvedValue({}),
     evaluateConditions: vi.fn().mockResolvedValue({}),
     resolve: vi

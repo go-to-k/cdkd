@@ -42,7 +42,7 @@ vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', async (impo
   );
   return {
     ...actual,
-    IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
+    IntrinsicFunctionResolver: vi.fn(() => ({
       resolveParameters: vi.fn().mockResolvedValue({}),
       evaluateConditions: vi.fn().mockResolvedValue({}),
       resolve: vi

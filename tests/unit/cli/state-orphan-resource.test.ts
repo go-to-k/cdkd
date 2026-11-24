@@ -32,7 +32,7 @@ const awsClientsCtor = vi.hoisted(() => vi.fn());
 const clientInstances = vi.hoisted(() => [] as Array<{ destroy: ReturnType<typeof vi.fn> }>);
 const scopedRegions = vi.hoisted(() => [] as Array<string | undefined>);
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
-  AwsClients: vi.fn().mockImplementation((config?: { region?: string }) => {
+  AwsClients: vi.fn((config?: { region?: string }) => {
     awsClientsCtor(config);
     const instance = {
       region: config?.region,
@@ -58,7 +58,7 @@ const mockListStacks = vi.hoisted(() => vi.fn());
 const mockDeleteState = vi.hoisted(() => vi.fn());
 const mockRotateCreateTokenNonce = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({
+  S3StateBackend: vi.fn(() => ({
     destroyClient: vi.fn(),
     getState: mockGetState,
     saveState: mockSaveState,
@@ -74,7 +74,7 @@ const mockReleaseLock = vi.hoisted(() => vi.fn(async () => undefined));
 const mockForceReleaseLock = vi.hoisted(() => vi.fn(async () => undefined));
 const mockIsLocked = vi.hoisted(() => vi.fn(async () => false));
 vi.mock('../../../src/state/lock-manager.js', () => ({
-  LockManager: vi.fn().mockImplementation(() => ({
+  LockManager: vi.fn(() => ({
     acquireLock: mockAcquireLock,
     releaseLock: mockReleaseLock,
     forceReleaseLock: mockForceReleaseLock,
@@ -90,7 +90,7 @@ vi.mock('../../../src/provisioning/register-providers.js', () => ({
 
 const mockGetAttribute = vi.hoisted(() => vi.fn(async () => undefined as unknown));
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({
-  ProviderRegistry: vi.fn().mockImplementation(() => ({
+  ProviderRegistry: vi.fn(() => ({
     getProviderFor: vi.fn(() => ({ provider: { getAttribute: mockGetAttribute } })),
     setCustomResourceResponseBucket: vi.fn(),
   })),

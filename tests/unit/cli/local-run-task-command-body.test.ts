@@ -70,12 +70,12 @@ const cleanupEcsRunMock = vi.fn();
 
 vi.mock('../../../src/local/docker-runner.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  ensureDockerAvailable: vi.fn().mockResolvedValue(undefined),
+  ensureDockerAvailable: vi.fn(async () => undefined),
 }));
 
 vi.mock('../../../src/local/docker-version.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  resolveHostGatewayExtraHosts: vi.fn().mockResolvedValue([]),
+  resolveHostGatewayExtraHosts: vi.fn(async () => []),
 }));
 
 // go-to-k/cdkd#6132: the activation order is read off these two spies' calls.
@@ -88,49 +88,52 @@ vi.mock('../../../src/utils/role-arn.js', async (importOriginal) => ({
 }));
 // cdk-local's activation, doubled so no emulator is needed; cdkd's own
 // `activateLocalAwsAndRoleArn` runs for real around it.
-const activateMock = vi.hoisted(() => vi.fn());
-vi.mock('cdk-local/internal', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('cdk-local/internal')>();
-  activateMock.mockImplementation(async (o: Parameters<typeof actual.activateWorkloadAwsWiring>[0]) => {
+type CdkLocalInternal = typeof import('cdk-local/internal');
+const activateMock = vi.hoisted(() =>
+  vi.fn(async (o: Parameters<CdkLocalInternal['activateWorkloadAwsWiring']>[0]): Promise<unknown> => {
     callOrder.push('activate');
+    const actual = await vi.importActual<CdkLocalInternal>('cdk-local/internal');
     return actual.activateWorkloadAwsWiring(o);
-  });
+  })
+);
+vi.mock('cdk-local/internal', async (importOriginal) => {
+  const actual = await importOriginal<CdkLocalInternal>();
   return { ...actual, activateWorkloadAwsWiring: activateMock };
 });
 vi.mock('../../../src/cli/config-loader.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  resolveApp: vi.fn().mockReturnValue('node app.js'),
+  resolveApp: vi.fn(() => 'node app.js'),
 }));
 
 vi.mock('../../../src/synthesis/synthesizer.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  Synthesizer: vi.fn().mockImplementation(() => ({
+  Synthesizer: vi.fn(() => ({
     synthesize: vi.fn().mockResolvedValue({ stacks: [] }),
   })),
 }));
 
 vi.mock('../../../src/cli/commands/local-state-source.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  createLocalStateProvider: vi.fn().mockReturnValue(undefined),
+  createLocalStateProvider: vi.fn(() => undefined),
 }));
 
 vi.mock('../../../src/local/ecs-task-resolver.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  parseEcsTarget: vi.fn().mockReturnValue({ stackPattern: undefined }),
-  resolveEcsTaskTarget: vi.fn().mockReturnValue({
+  parseEcsTarget: vi.fn(() => ({ stackPattern: undefined })),
+  resolveEcsTaskTarget: vi.fn(() => ({
     stack: { stackName: 'CdkdUnitStack', region: 'us-east-1' },
     taskDefinitionLogicalId: 'TaskDef',
     family: 'cdkd-unit-family',
     // A local CDK asset image: `--image-override` has nothing pinned to cover.
     containers: [{ name: 'app', environment: {}, image: { kind: 'cdk-asset' } }],
     taskRoleArn: undefined,
-  }),
-  detectEcsImageResolutionNeeds: vi.fn().mockReturnValue({ needsCrossStackResolver: false }),
+  })),
+  detectEcsImageResolutionNeeds: vi.fn(() => ({ needsCrossStackResolver: false })),
 }));
 
 vi.mock('../../../src/local/ecs-task-runner.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  createEcsRunState: vi.fn().mockReturnValue({ containers: [], entries: new Map() }),
+  createEcsRunState: vi.fn(() => ({ containers: [], entries: new Map() })),
   cleanupEcsRun: cleanupEcsRunMock,
   runEcsTask: runEcsTaskMock,
 }));
@@ -754,14 +757,12 @@ describe('localRunTaskCommand body: --profile credentials file (issue #3394)', (
     (process.stdout as unknown as { write: unknown }).write = sink();
     (process.stderr as unknown as { write: unknown }).write = sink(stderrChunks);
     let error: unknown;
-    let runState: { closing?: boolean } | undefined;
     // As the real teardown does, the ^C's cleanup marks the run closing.
     cleanupEcsRunMock.mockImplementation(async (state: { closing?: boolean }) => {
       state.closing = true;
     });
     try {
       runEcsTaskMock.mockImplementation(async (_task: unknown, _opts: unknown, state) => {
-        runState = state as { closing?: boolean };
         if (interrupted) {
           const listeners = process.listeners('SIGINT');
           (listeners[listeners.length - 1] as () => void)();
@@ -779,8 +780,6 @@ describe('localRunTaskCommand body: --profile credentials file (issue #3394)', (
       (process as unknown as { exit: typeof realExit }).exit = realExit;
       (process.stdout as unknown as { write: typeof realOut }).write = realOut;
       (process.stderr as unknown as { write: typeof realErr }).write = realErr;
-      // `createEcsRunState` is mocked to one shared object.
-      if (runState) delete runState.closing;
     }
 
     expect(error).toBeUndefined();
