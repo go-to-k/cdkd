@@ -43,6 +43,7 @@ A few cases delete the old copy before the deploy succeeds:
 | An SNS subscription whose change cannot be applied in place | Before the new one is created | SNS returns the existing subscription for the same topic, protocol and endpoint. |
 | A Route 53 record set whose name, type or set identifier changes | In the same change batch that creates the new one | Route 53 keys a record on them; one batch swaps the two at once, so the name never stops resolving. |
 | A security group ingress rule whose description changes while its recorded description is redacted | Before the new one is authorized | EC2 keys a rule on its protocol, ports and source, so the same rule cannot be added while the old one is there. |
+| A VPC gateway attachment or a subnet route table association, unless `UpdateReplacePolicy: Retain` keeps it | Before the new one is created | AWS allows one gateway per VPC and one route table per subnet, so it refuses the new one while the old exists. CloudFormation deletes it first too. |
 | An update AWS rejects as unsupported, on a resource whose name cannot change | Before the new one is created | Only one copy can hold the name. A stateful type also needs `--force-stateful-recreation`. |
 | `--replace`, `--recreate-via-cc-api` or `--recreate-via-sdk-provider` | Before the new one is created | You asked for delete-first. A resource stored inside the re-created one goes with it. |
 
@@ -171,6 +172,12 @@ is kept. Delete the new resource yourself, or remove
   the new resource, and the journal is kept.
 - **A failed re-create on the delete-first order.** The resource is then
   absent, and the message says so. Run `cdkd deploy` to fix it forward.
+- **A deploy whose new copy failed to create after the old one was deleted
+  first.** For a VPC gateway attachment or a subnet route table association,
+  the rollback and `cdkd rollback --revert-failed` re-create the old one from
+  its recorded properties, whichever order or flag deleted it. For any other
+  type, the rollback warns and the old resource stays absent: run
+  `cdkd deploy` to fix it forward.
 - **A resource re-created under its own name that holds other resources.**
   When the deploy deleted and re-created a resource under the same name, and
   the stack records a resource AWS stores inside it (a function's permission,

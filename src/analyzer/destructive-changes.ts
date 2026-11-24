@@ -4,6 +4,7 @@ import { displayIdent, displaySafe } from '../utils/display-safe.js';
 import { movedToHint, type MovedTo } from './refactor-hints.js';
 import { providerReplacementOldDeleted } from './diff-calculator/provider-replacement.js';
 import { isInlinePolicyType } from '../deployment/superseded-resources.js';
+import { replacesDeleteFirst } from '../deployment/delete-first-replacement-types.js';
 import {
   plannedEarlyDeleteNote,
   type PlannedEarlyDelete,
@@ -30,7 +31,8 @@ export interface DestructiveChange {
   /** A removal a `cdkd refactor` would keep: where the resource reappears (go-to-k/cdkd#5203). */
   movedTo?: MovedTo;
   /**
-   * go-to-k/cdkd#6713: a `WILL_REPLACE` whose old copy the deploy deletes
+   * go-to-k/cdkd#6713: a `WILL_REPLACE` (or a delete-first type's
+   * `MAY_REPLACE`, go-to-k/cdkd#6958) whose old copy the deploy deletes
    * before it succeeds, so a failed deploy's rollback re-creates it from its
    * recorded properties only ({@link plannedEarlyDelete}).
    */
@@ -90,8 +92,12 @@ export function findDestructiveChanges(
     // state.json is hand-editable: a non-string recorded path is ignored.
     const recorded = typeof record?.constructPath === 'string' ? record.constructPath : undefined;
     const constructPath = constructPathOf(template, change.logicalId) ?? recorded;
+    // go-to-k/cdkd#6958: a delete-first type's order is its type's, so a
+    // replacement the deploy may make (a VPC's attachment while the VPC
+    // itself is replaced) carries the note too.
     const earlyDelete =
-      impact === 'WILL_REPLACE'
+      impact === 'WILL_REPLACE' ||
+      (impact === 'MAY_REPLACE' && replacesDeleteFirst(resourceType, change.resourceType))
         ? plannedEarlyDelete(change, resourceType, template, recreateTargets)
         : undefined;
     found.push({
@@ -150,7 +156,10 @@ function destructiveImpactOf(
  *   template keeps it (`UpdateReplacePolicy: Retain`);
  * - a provider replacement (`providerReplacement`: an SNS subscription, a
  *   renamed Route 53 record set) is re-created inside `update()`;
- * - an IAM inline policy never is noted: its record restores it whole.
+ * - an IAM inline policy never is noted: its record restores it whole;
+ * - a gateway attachment or a subnet route table association
+ *   (`replacesDeleteFirst`, go-to-k/cdkd#6958) is deleted, then created,
+ *   unless the template keeps it (`UpdateReplacePolicy: Retain`).
  *
  * A create-first replacement waits for the cleanup phase. What the plan
  * cannot see is left out: a new resource that takes the old one's physical
@@ -165,13 +174,16 @@ function plannedEarlyDelete(
 ): PlannedEarlyDelete | undefined {
   if (isInlinePolicyType(oldType)) return undefined;
   if (change.changeType !== 'UPDATE') return undefined;
+  const resources = template?.Resources;
+  const keepsOld =
+    resources !== undefined &&
+    Object.hasOwn(resources, change.logicalId) &&
+    resources[change.logicalId]?.UpdateReplacePolicy === 'Retain';
   if (recreateTargets.has(change.logicalId)) {
-    const resources = template?.Resources;
-    const policy =
-      resources !== undefined && Object.hasOwn(resources, change.logicalId)
-        ? resources[change.logicalId]?.UpdateReplacePolicy
-        : undefined;
-    return policy === 'Retain' ? undefined : 'recreate';
+    return keepsOld ? undefined : 'recreate';
+  }
+  if (replacesDeleteFirst(oldType, change.resourceType)) {
+    return keepsOld ? undefined : 'before-create';
   }
   if (change.providerReplacement === undefined || oldType !== change.resourceType) return undefined;
   return providerReplacementOldDeleted(change.resourceType);

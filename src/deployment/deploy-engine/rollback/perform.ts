@@ -7,7 +7,7 @@ import {
   attemptUsesCompletedCreate,
   readsRegeneratingSecret,
 } from '../../rollback-executor/regenerated-secrets.js';
-import { seedsDeleteFirstGuard } from '../../rollback-executor/plan.js';
+import { recreatesDeletedOld, seedsDeleteFirstGuard } from '../../rollback-executor/plan.js';
 import { snapshotSurvivorIdentities } from '../../rollback-executor/replaced-survivor.js';
 import type { RolledBackCreate } from '../../../state/name-generation.js';
 import type {
@@ -120,10 +120,14 @@ export async function performRollback(
   // orphan is among them. It settles as a no-op (the old resource was never
   // written to), and it must not outlive its orphan's entry in the journal:
   // without it, a later `--revert-failed` would force-revert the old resource.
+  // go-to-k/cdkd#6958: and the failed UPDATE whose delete-first replacement
+  // of a `replacesDeleteFirst` type deleted the old link: the replay
+  // re-creates it (after its orphan, if any), as CloudFormation's rollback.
   failedOperations.forEach((op, i) => {
     if (
       !isJournaledOrphan(op) &&
-      !(op.changeType === 'UPDATE' && replacementNeverSwapped(op, failedOperations))
+      !(op.changeType === 'UPDATE' && replacementNeverSwapped(op, failedOperations)) &&
+      !recreatesDeletedOld(op)
     ) {
       return;
     }

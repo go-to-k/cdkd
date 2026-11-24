@@ -227,6 +227,13 @@ const EXPECTED: Readonly<Record<string, { readonly sites: number; readonly why: 
       'NOT a write: the destructuring rename that STRIPS `observedProperties` off a ' +
       'previous-generation record before a reverse-replacement replay re-adopts it.',
   },
+  'src/deployment/rollback-executor/replay-failed-replaced-deleted.ts': {
+    sites: 1,
+    why:
+      'NOT a write: the destructuring rename that STRIPS `observedProperties` off the ' +
+      'journaled record before a failed delete-first replacement re-creates the old resource ' +
+      '(go-to-k/cdkd#6958), as the reverse replacement does.',
+  },
   'src/deployment/rollback-executor/replay-observed-refresh.ts': {
     sites: 2,
     why:
@@ -348,9 +355,10 @@ describe('observedProperties write population (issue #2828)', () => {
     // go-to-k/cdkd#6420's security-group twin of it added one: 18 across 13.
     // go-to-k/cdkd#6526's rollback baseline refresh added two: 20 across 14.
     // go-to-k/cdkd#6610's table-driven sibling prune added one: 21 across 14.
+    // go-to-k/cdkd#6958's failed-op re-create strip added one: 22 across 15.
     const actual = scanPopulation();
-    expect(Object.values(actual).reduce((a, b) => a + b, 0)).toBe(21);
-    expect(Object.keys(EXPECTED)).toHaveLength(14);
+    expect(Object.values(actual).reduce((a, b) => a + b, 0)).toBe(22);
+    expect(Object.keys(EXPECTED)).toHaveLength(15);
   });
 
   it('every ASSIGNMENT-form site redacts at the call site, or is allow-listed', () => {
