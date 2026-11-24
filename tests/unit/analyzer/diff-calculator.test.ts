@@ -1566,36 +1566,45 @@ describe('DiffCalculator - replacement propagation to dependents (issue #807)', 
   );
 
   it.each([
-    ['ManageMasterUserPassword', false, 'UPDATE'],
-    ['BackupRetentionPeriod', 7, 'NO_CHANGE'],
+    ['AWS::RDS::DBCluster', 'MasterUserSecret.SecretArn', 'ManageMasterUserPassword', false, 'UPDATE'],
+    ['AWS::RDS::DBCluster', 'MasterUserSecret.SecretArn', 'BackupRetentionPeriod', 7, 'NO_CHANGE'],
+    ['AWS::RDS::DBInstance', 'MasterUserSecret.SecretArn', 'ManageMasterUserPassword', false, 'UPDATE'],
+    ['AWS::RDS::DBInstance', 'MasterUserSecret.SecretArn', 'BackupRetentionPeriod', 7, 'NO_CHANGE'],
+    ['AWS::RDS::DBCluster', 'StorageThroughput', 'StorageType', 'io2', 'UPDATE'],
+    ['AWS::RDS::DBCluster', 'StorageThroughput', 'Iops', 4000, 'UPDATE'],
+    ['AWS::RDS::DBCluster', 'StorageThroughput', 'AllocatedStorage', 200, 'UPDATE'],
+    ['AWS::RDS::DBCluster', 'StorageThroughput', 'BackupRetentionPeriod', 7, 'NO_CHANGE'],
   ] as const)(
-    'a reader of a DBCluster MasterUserSecret.SecretArn: a %s change -> %s (go-to-k/cdkd#6913)',
-    async (prop, next, expected) => {
-      const arn = 'arn:aws:secretsmanager:us-east-1:123:secret:rds!cluster-1-AbC';
-      const props = { Engine: 'aurora-postgresql', ManageMasterUserPassword: true, BackupRetentionPeriod: 1 };
+    'a reader of a %s %s: %s changed to %s -> %s (go-to-k/cdkd#6913)',
+    async (type, attr, prop, next, expected) => {
+      const value = attr === 'StorageThroughput' ? '125' : 'arn:aws:secretsmanager:us-east-1:123:secret:rds!x-AbC';
+      const props = {
+        Engine: 'postgres',
+        ManageMasterUserPassword: true,
+        BackupRetentionPeriod: 1,
+        StorageType: 'io1',
+        Iops: 3000,
+        AllocatedStorage: 100,
+      };
       const state = baseState();
       state.resources['Db'] = {
         physicalId: 'db',
-        resourceType: 'AWS::RDS::DBCluster',
+        resourceType: type,
         properties: props,
-        attributes: { 'MasterUserSecret.SecretArn': arn },
+        attributes: { [attr]: value },
       };
       state.resources['Param'] = {
         physicalId: 'p',
         resourceType: 'AWS::SSM::Parameter',
-        properties: { Name: 'p', Type: 'String', Value: arn },
+        properties: { Name: 'p', Type: 'String', Value: value },
         attributes: {},
       };
       const template: CloudFormationTemplate = {
         Resources: {
-          Db: { Type: 'AWS::RDS::DBCluster', Properties: { ...props, [prop]: next } },
+          Db: { Type: type, Properties: { ...props, [prop]: next } },
           Param: {
             Type: 'AWS::SSM::Parameter',
-            Properties: {
-              Name: 'p',
-              Type: 'String',
-              Value: { 'Fn::GetAtt': ['Db', 'MasterUserSecret.SecretArn'] },
-            },
+            Properties: { Name: 'p', Type: 'String', Value: { 'Fn::GetAtt': ['Db', attr] } },
           },
         },
       };
