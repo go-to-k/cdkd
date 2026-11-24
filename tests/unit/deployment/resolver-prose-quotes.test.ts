@@ -30,7 +30,7 @@ vi.mock('@aws-sdk/client-ssm', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-ssm')>();
   return {
     ...actual,
-    SSMClient: vi.fn().mockImplementation(() => ({
+    SSMClient: vi.fn(() => ({
       send: ssmSend,
       destroy: vi.fn(),
       config: { region: () => 'us-east-1' },

@@ -27,15 +27,15 @@ import type { AbandonedResolution } from '../../../src/deployment/intrinsic-func
 const sendMock = vi.hoisted(() => vi.fn());
 
 vi.mock('@aws-sdk/client-secrets-manager', () => ({
-  SecretsManagerClient: vi.fn().mockImplementation(() => ({ send: sendMock })),
-  GetSecretValueCommand: vi.fn().mockImplementation((input: unknown) => ({
+  SecretsManagerClient: vi.fn(() => ({ send: sendMock })),
+  GetSecretValueCommand: vi.fn((input: unknown) => ({
     __type: 'GetSecretValue',
     input,
   })),
 }));
 vi.mock('@aws-sdk/client-ssm', () => ({
-  SSMClient: vi.fn().mockImplementation(() => ({ send: sendMock })),
-  GetParameterCommand: vi.fn().mockImplementation((input: unknown) => ({
+  SSMClient: vi.fn(() => ({ send: sendMock })),
+  GetParameterCommand: vi.fn((input: unknown) => ({
     __type: 'GetParameter',
     input,
   })),

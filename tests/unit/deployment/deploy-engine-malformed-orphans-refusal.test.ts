@@ -49,7 +49,7 @@ const renderer = {
 vi.mock('../../../src/utils/live-renderer.js', () => ({ getLiveRenderer: () => renderer }));
 
 vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
-  IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
+  IntrinsicFunctionResolver: vi.fn(() => ({
     getPhysicalIdFallbackCount: vi.fn().mockReturnValue(0),
     resetPhysicalIdFallbackCount: vi.fn(),
     resolve: vi.fn().mockImplementation((props: unknown) => Promise.resolve(props)),
@@ -98,9 +98,9 @@ describe('DeployEngine refuses an unreadable orphans container (go-to-k/cdkd#337
   });
 
   const dagBuilder = {
-    buildGraph: vi.fn().mockReturnValue({}),
-    getExecutionLevels: vi.fn().mockReturnValue([['ParamA']]),
-    getDirectDependencies: vi.fn().mockReturnValue([]),
+    buildGraph: vi.fn(() => ({})),
+    getExecutionLevels: vi.fn(() => [['ParamA']]),
+    getDirectDependencies: vi.fn(() => []),
   };
 
   function makeProviderRegistry() {

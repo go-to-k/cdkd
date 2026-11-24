@@ -36,7 +36,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 // Pass-through resolver; conditions come from the mutable holder below.
 const conditionsHolder: { value: Record<string, boolean> } = { value: {} };
 vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
-  IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
+  IntrinsicFunctionResolver: vi.fn(() => ({
     getPhysicalIdFallbackCount: vi.fn().mockReturnValue(0),
     resetPhysicalIdFallbackCount: vi.fn(),
     resolve: vi.fn().mockImplementation((props: unknown) => Promise.resolve(props)),

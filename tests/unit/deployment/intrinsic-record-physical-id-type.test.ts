@@ -59,7 +59,7 @@ vi.mock('@aws-sdk/client-servicediscovery', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-servicediscovery')>();
   return {
     ...actual,
-    ServiceDiscoveryClient: vi.fn().mockImplementation(function () {
+    ServiceDiscoveryClient: vi.fn(function () {
       return {
         send: async (command: { constructor: { name: string } }) => {
           aws.calls.push(`servicediscovery:${command.constructor.name}`);

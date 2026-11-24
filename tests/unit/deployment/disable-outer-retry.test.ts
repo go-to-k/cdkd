@@ -36,7 +36,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 }));
 
 vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
-  IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
+  IntrinsicFunctionResolver: vi.fn(() => ({
     getPhysicalIdFallbackCount: vi.fn().mockReturnValue(0),
     resetPhysicalIdFallbackCount: vi.fn(),
     resolve: vi.fn().mockImplementation((props: unknown) => Promise.resolve(props)),
@@ -53,19 +53,15 @@ vi.mock('../../../src/provisioning/cloud-control-provider.js', () => ({
 
 // Bypass the wall-clock deadline wrapper.
 vi.mock('../../../src/deployment/resource-deadline.js', () => ({
-  withResourceDeadline: vi
-    .fn()
-    .mockImplementation(async (operation: () => Promise<unknown>) => operation()),
+  withResourceDeadline: vi.fn(async (operation: () => Promise<unknown>) => operation()),
 }));
 
 const withRetryMock = vi.fn();
 vi.mock('../../../src/deployment/retry.js', () => ({
-  withRetry: vi
-    .fn()
-    .mockImplementation(async (operation: () => Promise<unknown>, _logicalId: string) => {
-      withRetryMock();
-      return operation();
-    }),
+  withRetry: vi.fn(async (operation: () => Promise<unknown>, _logicalId: string) => {
+    withRetryMock();
+    return operation();
+  }),
 }));
 
 describe('DeployEngine — provider.disableOuterRetry bypasses withRetry', () => {

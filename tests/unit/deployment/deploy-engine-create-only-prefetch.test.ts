@@ -29,7 +29,7 @@ vi.mock('../../../src/provisioning/create-only-properties.js', async () => {
       prefetchCreateOnlyPropertyPaths([...types]);
       return { cancel: prefetchCancel };
     },
-    createOnlyChangeRequiresReplacement: vi.fn().mockReturnValue(false),
+    createOnlyChangeRequiresReplacement: vi.fn(() => false),
   };
 });
 
@@ -50,7 +50,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
-  IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
+  IntrinsicFunctionResolver: vi.fn(() => ({
     getPhysicalIdFallbackCount: vi.fn().mockReturnValue(0),
     resetPhysicalIdFallbackCount: vi.fn(),
     resolve: vi.fn().mockImplementation((props: unknown) => Promise.resolve(props)),

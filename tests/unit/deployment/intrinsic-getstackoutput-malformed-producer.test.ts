@@ -23,7 +23,9 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) {
+      return this;
+    }),
   };
   return {
     getLogger: () => ({
@@ -39,16 +41,17 @@ vi.mock('../../../src/utils/logger.js', () => {
 // A cdkd-state MISS falls back to CloudFormation `DescribeStacks` (issue
 // #1697), which would otherwise build a REAL client from a unit test. Default:
 // the stack does not exist.
-const cfnMockSend = vi.hoisted(() => vi.fn());
+const cfnMockSend = vi.hoisted(() =>
+  vi.fn(async () => {
+    throw Object.assign(new Error('Stack does not exist'), { name: 'ValidationError' });
+  })
+);
 vi.mock('@aws-sdk/client-cloudformation', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-cloudformation')>();
   return {
     ...actual,
-    CloudFormationClient: vi.fn().mockImplementation(() => ({ send: cfnMockSend })),
+    CloudFormationClient: vi.fn(() => ({ send: cfnMockSend })),
   };
-});
-cfnMockSend.mockImplementation(async () => {
-  throw Object.assign(new Error('Stack does not exist'), { name: 'ValidationError' });
 });
 
 import { IntrinsicFunctionResolver } from '../../../src/deployment/intrinsic-function-resolver.js';

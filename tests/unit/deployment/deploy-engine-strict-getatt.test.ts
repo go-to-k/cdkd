@@ -44,7 +44,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 const fallbackCountHolder: { value: number } = { value: 0 };
 const resetSpy = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
-  IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
+  IntrinsicFunctionResolver: vi.fn(() => ({
     getPhysicalIdFallbackCount: vi.fn().mockImplementation(() => fallbackCountHolder.value),
     resetPhysicalIdFallbackCount: resetSpy,
     resolve: vi

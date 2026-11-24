@@ -273,7 +273,7 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', async (importO
   }
   return {
     ...actual,
-    IntrinsicFunctionResolver: vi.fn().mockImplementation((...args: unknown[]) =>
+    IntrinsicFunctionResolver: vi.fn((...args: unknown[]) =>
       resolverMode.real ? realResolver(args) : new MockResolver()
     ),
   };

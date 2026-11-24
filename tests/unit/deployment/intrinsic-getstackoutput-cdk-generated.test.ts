@@ -14,7 +14,7 @@ vi.mock('@aws-sdk/client-sts', async () => {
   const actual = await vi.importActual<typeof import('@aws-sdk/client-sts')>('@aws-sdk/client-sts');
   return {
     ...actual,
-    STSClient: vi.fn().mockImplementation(() => ({ send: mockStsSend, destroy: vi.fn() })),
+    STSClient: vi.fn(() => ({ send: mockStsSend, destroy: vi.fn() })),
   };
 });
 
@@ -23,7 +23,7 @@ vi.mock('@aws-sdk/client-s3', async () => {
   const actual = await vi.importActual<typeof import('@aws-sdk/client-s3')>('@aws-sdk/client-s3');
   return {
     ...actual,
-    S3Client: vi.fn().mockImplementation((cfg: unknown) => ({
+    S3Client: vi.fn((cfg: unknown) => ({
       send: mockS3Send,
       destroy: vi.fn(),
       config: { region: async () => (cfg as { region?: string })?.region ?? 'us-east-1' },
@@ -39,7 +39,7 @@ vi.mock('@aws-sdk/client-cloudformation', async () => {
   );
   return {
     ...actual,
-    CloudFormationClient: vi.fn().mockImplementation(() => ({ send: cfnMockSend })),
+    CloudFormationClient: vi.fn(() => ({ send: cfnMockSend })),
   };
 });
 
@@ -49,7 +49,9 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) {
+      return this;
+    }),
   };
   return {
     getLogger: () => ({

@@ -30,7 +30,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 // branch (which calls resolve()) can be exercised. Plain object/scalar
 // inputs (resource properties) pass through unchanged.
 vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
-  IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
+  IntrinsicFunctionResolver: vi.fn(() => ({
     getPhysicalIdFallbackCount: vi.fn().mockReturnValue(0),
     resetPhysicalIdFallbackCount: vi.fn(),
     resolve: vi.fn().mockImplementation((props: unknown) => {

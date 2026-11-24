@@ -40,7 +40,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 }));
 
 vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
-  IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
+  IntrinsicFunctionResolver: vi.fn(() => ({
     getPhysicalIdFallbackCount: vi.fn().mockReturnValue(0),
     resetPhysicalIdFallbackCount: vi.fn(),
     resolve: vi.fn().mockImplementation((props: unknown) => Promise.resolve(props)),
@@ -58,14 +58,12 @@ vi.mock('../../../src/provisioning/cloud-control-provider.js', () => ({
 // Capture (warnAfterMs, timeoutMs) per call by replacing withResourceDeadline.
 const captured: Array<{ warnAfterMs: number; timeoutMs: number }> = [];
 vi.mock('../../../src/deployment/resource-deadline.js', () => ({
-  withResourceDeadline: vi
-    .fn()
-    .mockImplementation(
-      async (operation: () => Promise<unknown>, opts: { warnAfterMs: number; timeoutMs: number }) => {
-        captured.push({ warnAfterMs: opts.warnAfterMs, timeoutMs: opts.timeoutMs });
-        return operation();
-      }
-    ),
+  withResourceDeadline: vi.fn(
+    async (operation: () => Promise<unknown>, opts: { warnAfterMs: number; timeoutMs: number }) => {
+      captured.push({ warnAfterMs: opts.warnAfterMs, timeoutMs: opts.timeoutMs });
+      return operation();
+    }
+  ),
 }));
 
 describe('DeployEngine — per-resource-type timeout resolution (#91 v2)', () => {

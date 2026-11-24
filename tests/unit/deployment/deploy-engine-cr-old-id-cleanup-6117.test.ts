@@ -38,7 +38,7 @@ vi.mock('../../../src/utils/logger.js', async () => {
 });
 
 vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
-  IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
+  IntrinsicFunctionResolver: vi.fn(() => ({
     getPhysicalIdFallbackCount: vi.fn().mockReturnValue(0),
     resetPhysicalIdFallbackCount: vi.fn(),
     // `{ Ref: 'Secret' }` resolves to the NoEcho parameter's value.

@@ -22,7 +22,7 @@ vi.mock('../../../src/utils/logger.js', () => {
   return { getLogger: () => l };
 });
 vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
-  IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
+  IntrinsicFunctionResolver: vi.fn(() => ({
     getPhysicalIdFallbackCount: vi.fn().mockReturnValue(0),
     resetPhysicalIdFallbackCount: vi.fn(),
     // A `{{resolve:` leaf resolves to its plaintext, recorded in the pass's

@@ -33,7 +33,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 // itself has to be mocked or the test reaches the network and silently gets [].
 vi.mock('@aws-sdk/client-ec2', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('@aws-sdk/client-ec2');
-  return { ...actual, EC2Client: vi.fn().mockImplementation(() => ({ send: ec2Send })) };
+  return { ...actual, EC2Client: vi.fn(() => ({ send: ec2Send })) };
 });
 
 /**

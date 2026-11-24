@@ -52,10 +52,10 @@ vi.mock('../../../src/utils/logger.js', () => ({
 // makes `getAccountInfo` refuse, which is the only way to reach
 // `constructGuardedAttribute`'s refusal.
 const stsSend = vi.hoisted(() =>
-  vi.fn().mockResolvedValue({
+  vi.fn(async () => ({
     Account: '123456789012',
     Arn: 'arn:aws:iam::123456789012:user/test',
-  })
+  }))
 );
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
@@ -108,11 +108,8 @@ const expectTerminal = (error: Error): void => {
 
 describe('IntrinsicResolutionRefusalError throw sites are non-retryable (#1874 review)', () => {
   beforeEach(() => {
+    // Restores the `vi.fn(impl)` default (the accepting STS answer).
     stsSend.mockReset();
-    stsSend.mockResolvedValue({
-      Account: '123456789012',
-      Arn: 'arn:aws:iam::123456789012:user/test',
-    });
     resetAccountInfoCache();
   });
 

@@ -48,7 +48,7 @@ vi.mock('@aws-sdk/client-cloudformation', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-cloudformation')>();
   return {
     ...actual,
-    CloudFormationClient: vi.fn().mockImplementation(() => ({
+    CloudFormationClient: vi.fn(() => ({
       send: cfnSend,
       destroy: vi.fn(),
       config: { region: () => 'us-east-1' },

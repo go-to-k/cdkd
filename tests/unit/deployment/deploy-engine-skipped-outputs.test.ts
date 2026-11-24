@@ -59,7 +59,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
-  IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
+  IntrinsicFunctionResolver: vi.fn(() => ({
     getPhysicalIdFallbackCount: vi.fn().mockReturnValue(0),
     resetPhysicalIdFallbackCount: vi.fn(),
     // Rejects on the string sentinel (an output VALUE) and on an `Fn::Sub` of

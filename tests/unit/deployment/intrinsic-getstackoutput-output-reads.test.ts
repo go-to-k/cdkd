@@ -14,7 +14,9 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) {
+      return this;
+    }),
   };
   return {
     getLogger: () => ({
@@ -33,16 +35,17 @@ vi.mock('../../../src/utils/logger.js', () => {
 // attempt a live network call from a unit test. Default: the stack does not
 // exist (the typed ValidationError miss), preserving each test's pre-#1697
 // outcome hermetically.
-const cfnMockSend = vi.hoisted(() => vi.fn());
+const cfnMockSend = vi.hoisted(() =>
+  vi.fn(async () => {
+    throw Object.assign(new Error('Stack does not exist'), { name: 'ValidationError' });
+  })
+);
 vi.mock('@aws-sdk/client-cloudformation', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-cloudformation')>();
   return {
     ...actual,
-    CloudFormationClient: vi.fn().mockImplementation(() => ({ send: cfnMockSend })),
+    CloudFormationClient: vi.fn(() => ({ send: cfnMockSend })),
   };
-});
-cfnMockSend.mockImplementation(async () => {
-  throw Object.assign(new Error('Stack does not exist'), { name: 'ValidationError' });
 });
 
 // Mock STS (issue #2081): the cross-account (RoleArn) test below routes through
@@ -63,22 +66,23 @@ cfnMockSend.mockImplementation(async () => {
 // (`name` + `$metadata.httpStatusCode`), which is what `assumeCrossAccountRole`
 // re-wraps into its trust-policy hint and what any downstream error classifier
 // inspects.
-const stsMockSend = vi.hoisted(() => vi.fn());
+const stsMockSend = vi.hoisted(() =>
+  vi.fn(async () => {
+    throw Object.assign(
+      new Error(
+        'User: arn:aws:iam::999988887777:user/test is not authorized to perform: ' +
+          'sts:AssumeRole on resource: arn:aws:iam::111122223333:role/cdkd-state-reader'
+      ),
+      { name: 'AccessDenied', $metadata: { httpStatusCode: 403, requestId: 'test-request-id' } }
+    );
+  })
+);
 vi.mock('@aws-sdk/client-sts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-sts')>();
   return {
     ...actual,
-    STSClient: vi.fn().mockImplementation(() => ({ send: stsMockSend, destroy: vi.fn() })),
+    STSClient: vi.fn(() => ({ send: stsMockSend, destroy: vi.fn() })),
   };
-});
-stsMockSend.mockImplementation(async () => {
-  throw Object.assign(
-    new Error(
-      'User: arn:aws:iam::999988887777:user/test is not authorized to perform: ' +
-        'sts:AssumeRole on resource: arn:aws:iam::111122223333:role/cdkd-state-reader'
-    ),
-    { name: 'AccessDenied', $metadata: { httpStatusCode: 403, requestId: 'test-request-id' } }
-  );
 });
 
 import { IntrinsicFunctionResolver } from '../../../src/deployment/intrinsic-function-resolver.js';

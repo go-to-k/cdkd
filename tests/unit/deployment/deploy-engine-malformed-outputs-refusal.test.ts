@@ -52,7 +52,7 @@ const renderer = {
 vi.mock('../../../src/utils/live-renderer.js', () => ({ getLiveRenderer: () => renderer }));
 
 vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
-  IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
+  IntrinsicFunctionResolver: vi.fn(() => ({
     getPhysicalIdFallbackCount: vi.fn().mockReturnValue(0),
     resetPhysicalIdFallbackCount: vi.fn(),
     resolve: vi.fn().mockImplementation((props: unknown) => Promise.resolve(props)),
@@ -107,30 +107,29 @@ describe('DeployEngine refuses a malformed `outputs` bag at the load (go-to-k/cd
   });
 
   const dagBuilder = {
-    buildGraph: vi.fn().mockReturnValue({}),
-    getExecutionLevels: vi.fn().mockReturnValue([]),
-    getDirectDependencies: vi.fn().mockReturnValue([]),
+    buildGraph: vi.fn(() => ({})),
+    getExecutionLevels: vi.fn(() => []),
+    getDirectDependencies: vi.fn(() => []),
   };
   const diffCalculator = {
-    calculateDiff: vi.fn().mockResolvedValue(
-      new Map<string, ResourceChange>([
-        [
-          'ParamA',
-          { logicalId: 'ParamA', changeType: 'NO_CHANGE', resourceType: 'AWS::SSM::Parameter' },
-        ],
-      ])
+    calculateDiff: vi.fn(
+      async () =>
+        new Map<string, ResourceChange>([
+          [
+            'ParamA',
+            { logicalId: 'ParamA', changeType: 'NO_CHANGE', resourceType: 'AWS::SSM::Parameter' },
+          ],
+        ])
     ),
-    hasChanges: vi.fn().mockReturnValue(false),
-    filterByType: vi
-      .fn()
-      .mockImplementation((changes: Map<string, ResourceChange>, type: string) =>
-        Array.from(changes.values()).filter((c) => c.changeType === type)
-      ),
+    hasChanges: vi.fn(() => false),
+    filterByType: vi.fn((changes: Map<string, ResourceChange>, type: string) =>
+      Array.from(changes.values()).filter((c) => c.changeType === type)
+    ),
   };
   const providerRegistry = {
     getProvider: vi.fn(),
     getProviderFor: vi.fn(),
-    getRegisteredTypes: vi.fn().mockReturnValue([]),
+    getRegisteredTypes: vi.fn(() => []),
     validateResourceTypes: vi.fn(),
     validateResourceProperties: vi.fn(),
   };
