@@ -128,13 +128,13 @@ declares `false` for one of the members the instance turns on by itself
 `MultiPartyChatConference`, `EnhancedContactMonitoring`,
 `EnhancedChatMonitoring`, `MessageStreaming`). cdkd then waits until those
 defaults have landed (about 40 s), because a `false` written earlier would be
-overwritten by them. A `true`, or any other member, is written at once. Storage configs, contact flows, Lambda
-associations and the other resources that reference the instance are created
-then, and they stay in place when the instance turns `ACTIVE`. The instance
-can still end `CREATION_FAILED` after the deploy returns, and that does not
-fail the deploy. Its ID and ARN are available first. A `Fn::GetAtt` of
-`ServiceRole` still waits for `ACTIVE`, up to 10 minutes, because the role
-exists only then. Only an instance whose `ServiceRole` something references
+overwritten by them. A `true`, or any other member, is written at once.
+Storage configs, contact flows, Lambda associations and the other resources
+that reference the instance are created then, and they stay in place when
+the instance turns `ACTIVE`. The instance can still end `CREATION_FAILED`
+after the deploy returns, and that does not fail the deploy. Its ID and ARN
+are available first. A `Fn::GetAtt` of `ServiceRole` still waits for
+`ACTIVE`, up to 10 minutes, because the role exists only then. Only an instance whose `ServiceRole` something references
 pays for that wait.
 
 ### Auto Scaling group instance refresh

@@ -127,7 +127,7 @@ cleanup() {
       reap_instance
       aws s3 rb "s3://${BUCKET_NAME}" --force --region "${REGION}" >/dev/null 2>&1 || true
       # Connect creates this group when contact-flow logs are turned on
-      # (Phase 3), and deleting the instance leaves it.
+      # (Phases 3 and 5), and deleting the instance leaves it.
       aws logs delete-log-group --log-group-name "/aws/connect/${INSTANCE_ALIAS}" \
         --region "${REGION}" >/dev/null 2>&1 || true
       for lg in $(aws logs describe-log-groups --log-group-name-prefix "/aws/lambda/${STACK}" \
@@ -354,6 +354,9 @@ assert_gone "Connect instance ${INSTANCE_ID} still exists after the second destr
   aws connect describe-instance --instance-id "${INSTANCE_ID}" --region "${REGION}"
 assert_gone "state file ${STATE_KEY} still exists after the second destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
+# Phase 5 turned contact-flow logs on again, so Connect made the group again.
+aws logs delete-log-group --log-group-name "/aws/connect/${INSTANCE_ALIAS}" \
+  --region "${REGION}" >/dev/null 2>&1 || true
 
 trap - EXIT INT TERM
 rm -f "${DRIFT_JSON}"

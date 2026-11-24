@@ -89,7 +89,9 @@ export const CONNECT_INSTANCE_ATTRIBUTE_TYPES: Readonly<Record<string, InstanceA
  * defaults differ falls back to that). A `true`, or a member outside this
  * list, written at readiness stays (measured: `ContactflowLogs`,
  * `ContactLens` and `EarlyMedia` `true` kept; `AutoResolveBestVoices` `false`
- * overwritten).
+ * overwritten). Only a default-mode create reads the members back once
+ * ACTIVE: under `--no-wait`, a region whose late defaults reach a member
+ * outside this list would leave that member's `false` overwritten.
  */
 export const CONNECT_INSTANCE_ASYNC_DEFAULTS: readonly InstanceAttributeType[] = [
   'MESSAGE_STREAMING',

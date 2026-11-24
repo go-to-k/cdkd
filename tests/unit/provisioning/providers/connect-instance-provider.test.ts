@@ -227,6 +227,20 @@ describe('ConnectInstanceProvider', () => {
       expect(sentOf(DescribeInstanceAttributeCommand)).toHaveLength(0);
     });
 
+    it("treats a template string 'false' for a default like false: it waits for the defaults", async () => {
+      process.env['CDKD_NO_WAIT'] = 'true';
+      scriptCreate({ statuses: ['CREATION_IN_PROGRESS'], defaultsPending: 1 });
+
+      await provider.create(
+        'Inst',
+        TYPE,
+        baseProps({ Attributes: { InboundCalls: true, OutboundCalls: true, EarlyMedia: 'false' } })
+      );
+
+      expect(sentOf(ListInstanceAttributesCommand).length).toBeGreaterThanOrEqual(2);
+      expect(sentOf(UpdateInstanceAttributeCommand).map((c) => c.input.Value)).toEqual(['false']);
+    });
+
     it.each([
       ['a member with no late default', { ContactflowLogs: true }],
       ['a default declared true', { ContactLens: true, EarlyMedia: true }],
