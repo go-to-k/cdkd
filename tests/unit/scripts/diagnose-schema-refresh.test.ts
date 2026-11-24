@@ -115,6 +115,53 @@ import {
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
+/**
+ * The backfill campaign can be EMPTY: go-to-k/cdkd#5825 and #6799 wired its
+ * last `not yet implemented by cdkd` rows. So no case may assume the live map
+ * holds a row, or that it holds none. Each arm of the renderers (rows, and
+ * the finished-campaign sentinel) is pinned on a SYNTHETIC copy of the real
+ * module that provably takes that arm, whatever the live campaign holds.
+ */
+const SYNTHETIC_PENDING_PROPERTY = 'SyntheticPendingProperty';
+const FINISHED_SDK_UNWIRED = 'sdkUnwired: new Map<string, string>(),';
+
+/** The real module with one remaining property added to its first FINISHED type. */
+function withSyntheticPendingRow(generated: string): { source: string; type: string } {
+  const at = generated.indexOf(FINISHED_SDK_UNWIRED);
+  if (at === -1) throw new Error('no finished type to add a pending row to: the generated shape changed');
+  const type = [...generated.slice(0, at).matchAll(/\[\s*'([A-Z][\w:]+)'\s*,\s*\{/g)].at(-1)?.[1];
+  if (type === undefined) throw new Error('the finished type has no name: the generated shape changed');
+  const row = `sdkUnwired: new Map<string, string>([['${SYNTHETIC_PENDING_PROPERTY}', '${NOT_IMPLEMENTED_RATIONALE}']]),`;
+  return {
+    source: generated.slice(0, at) + row + generated.slice(at + FINISHED_SDK_UNWIRED.length),
+    type,
+  };
+}
+
+/** The real module with every remaining property settled: the campaign finished. */
+function withoutPendingRows(generated: string): string {
+  return generated.split(`'${NOT_IMPLEMENTED_RATIONALE}'`).join("'settled by a synthetic decision'");
+}
+
+/**
+ * A copy of `scripts/` beside the given coverage module, so the spawned script
+ * (which reads `<its dir>/../src/provisioning/property-coverage.generated.ts`)
+ * renders that module. The caller removes it.
+ */
+function coverageCorpus(generated: string): string {
+  const root = mkdtempSync(join(tmpdir(), 'cdkd-coverage-corpus-'));
+  cpSync(join(REPO_ROOT, 'scripts'), join(root, 'scripts'), { recursive: true });
+  mkdirSync(join(root, 'src/provisioning'), { recursive: true });
+  writeFileSync(join(root, 'src/provisioning/property-coverage.generated.ts'), generated);
+  // REAL path: the script runs `main()` only when its own URL matches
+  // `process.argv[1]`, and the tmpdir can sit behind a symlink (`/var` on
+  // macOS), which makes the spawn exit 0 having rendered nothing.
+  return realpathSync(root);
+}
+
+const realCoverageSource = (): string =>
+  readFileSync(join(REPO_ROOT, 'src/provisioning/property-coverage.generated.ts'), 'utf8');
+
 const fixture = (properties: string[], readOnly: string[] = [], createOnly: string[] = []) =>
   JSON.stringify({
     resourceType: 'AWS::Test::Type',
@@ -360,11 +407,22 @@ describe('parseDeclaredProperties', () => {
 
   it('reads the `sdkUnwired` rows of the REAL generated module (parseSdkUnwiredByType)', () => {
     // The parser matches the generated key by NAME, and a key it no longer
-    // recognises yields an empty list rather than a throw. Pin that the real
-    // module still parses to at least one group, so renaming the key in the
-    // generator without the parser (or the reverse) reds here.
-    const groups = parseSdkUnwiredByType(readFileSync(REAL_GENERATED, 'utf8'));
-    expect(groups.length, 'no sdkUnwired group parsed from the real module').toBeGreaterThan(0);
+    // recognises yields an empty list rather than a throw. The live campaign
+    // may be empty, so the row comes from a synthetic one added to the REAL
+    // module text: renaming the key in the generator without the parser (or
+    // the reverse) loses that row, or the finished shape it is added to.
+    const real = readFileSync(REAL_GENERATED, 'utf8');
+    const live = parseSdkUnwiredByType(real);
+    const { source, type } = withSyntheticPendingRow(real);
+    const groups = parseSdkUnwiredByType(source);
+    expect(groups.length, 'the added row did not parse as one more group').toBe(live.length + 1);
+    expect(groups.find((g) => g.type === type)?.properties).toEqual([SYNTHETIC_PENDING_PROPERTY]);
+    // Live, only what holds in any campaign state: every group parsed is a
+    // real one (a group is never minted empty).
+    for (const group of live) expect(group.properties.length, group.type).toBeGreaterThan(0);
+    // ...and settling every row leaves nothing, so the count above was read
+    // off the rationale and not off the map's shape alone.
+    expect(parseSdkUnwiredByType(withoutPendingRows(source))).toEqual([]);
   });
 
   it('accepts a type declaring NOTHING, which is not the same as an unread one', () => {
@@ -3278,13 +3336,22 @@ describe('--umbrella-checklist returns before the refresh-report setup', () => {
         'failed to run'
       );
 
-      const md = execFileSync('node', [SCRIPT, '--umbrella-checklist', '--fixtures-dir', dir], {
-        encoding: 'utf8',
-      });
-      expect(md).toMatch(/^- \[ \] `AWS::/m);
-      expect(md, 'the checklist mode fell through into the refresh report').not.toContain(
-        'What changed, and what needs a decision'
-      );
+      // The render runs over a module that HAS a row, so the rows arm, the
+      // one past the parse, is what returned before the floor.
+      const corpus = coverageCorpus(withSyntheticPendingRow(realCoverageSource()).source);
+      try {
+        const md = execFileSync(
+          'node',
+          [join(corpus, 'scripts/diagnose-schema-refresh.mjs'), '--umbrella-checklist', '--fixtures-dir', dir],
+          { encoding: 'utf8' }
+        );
+        expect(md).toMatch(/^- \[ \] `AWS::/m);
+        expect(md, 'the checklist mode fell through into the refresh report').not.toContain(
+          'What changed, and what needs a decision'
+        );
+      } finally {
+        rmSync(corpus, { recursive: true, force: true });
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -3338,9 +3405,19 @@ describe('a failure in a mode a WORKFLOW consumes exits non-zero', () => {
     // path, still exits 0 and emits rows — and does so with a fixtures
     // directory that does not exist, which is what proves the early return
     // still sits above the fixture floor.
-    const out = spawn(['--umbrella-checklist', '--fixtures-dir', '/nonexistent']);
-    expect(out.status).toBe(0);
-    expect(out.stdout).toMatch(/^- \[ \] `AWS::/m);
+    // Over a module that HAS a row, so the rows arm is the one exercised.
+    const corpus = coverageCorpus(withSyntheticPendingRow(realCoverageSource()).source);
+    try {
+      const out = spawnSync(
+        'node',
+        [join(corpus, 'scripts/diagnose-schema-refresh.mjs'), '--umbrella-checklist', '--fixtures-dir', '/nonexistent'],
+        { encoding: 'utf8' }
+      );
+      expect(out.status).toBe(0);
+      expect(out.stdout).toMatch(/^- \[ \] `AWS::/m);
+    } finally {
+      rmSync(corpus, { recursive: true, force: true });
+    }
   }, 60_000);
 });
 
@@ -3369,15 +3446,41 @@ describe('the finished-campaign sentinel', () => {
     ).not.toContain('UMBRELLA_EMPTY_SENTINEL');
   });
 
-  it('renders rows on the real map, so the sentinel arm is not the live one', () => {
-    // The control. A sentinel that fired in production would mean the campaign
-    // had silently emptied, and every case above would be asserting about a
-    // branch nothing takes.
-    const out = spawnSync('node', [SCRIPT, '--umbrella-checklist'], { encoding: 'utf8' });
-    expect(out.status).toBe(0);
-    expect(out.stdout).toMatch(/^- \[ \] `AWS::/m);
-    expect(out.stdout).not.toContain(UMBRELLA_EMPTY_SENTINEL);
-  }, 60_000);
+  it('takes each arm on a map that provably needs it, and the live map by its parse', () => {
+    // The control. Each arm is pinned on a synthetic copy of the real module
+    // that takes it, since the live campaign can be empty (it is, since
+    // go-to-k/cdkd#5825 and #6799) or regain a property at the next refresh.
+    const render = (generated: string) => {
+      const corpus = coverageCorpus(generated);
+      try {
+        return spawnSync('node', [join(corpus, 'scripts/diagnose-schema-refresh.mjs'), '--umbrella-checklist'], {
+          encoding: 'utf8',
+        });
+      } finally {
+        rmSync(corpus, { recursive: true, force: true });
+      }
+    };
+    const pending = withSyntheticPendingRow(realCoverageSource());
+    const rows = render(pending.source);
+    expect(rows.status).toBe(0);
+    expect(rows.stdout).toContain(`- [ ] \`${pending.type}\`: \`${SYNTHETIC_PENDING_PROPERTY}\``);
+    expect(rows.stdout).not.toContain(UMBRELLA_EMPTY_SENTINEL);
+
+    const finished = render(withoutPendingRows(pending.source));
+    expect(finished.status).toBe(0);
+    expect(finished.stdout.trim()).toBe(UMBRELLA_EMPTY_SENTINEL);
+
+    // Live: rows exactly when the parse found remaining properties, else
+    // exactly the sentinel. True in any campaign state.
+    const live = spawnSync('node', [SCRIPT, '--umbrella-checklist'], { encoding: 'utf8' });
+    expect(live.status).toBe(0);
+    if (parseSdkUnwiredByType(realCoverageSource()).length > 0) {
+      expect(live.stdout).toMatch(/^- \[ \] `AWS::/m);
+      expect(live.stdout).not.toContain(UMBRELLA_EMPTY_SENTINEL);
+    } else {
+      expect(live.stdout.trim()).toBe(UMBRELLA_EMPTY_SENTINEL);
+    }
+  }, 120_000);
 });
 
 describe('parseStickyCcMigrationExempt', () => {

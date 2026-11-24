@@ -2,8 +2,8 @@
   "summary": {
     "sites": 19,
     "types": 10,
-    "triggers": 88,
-    "replacement": 66,
+    "triggers": 92,
+    "replacement": 70,
     "conditional": 3,
     "providerMarked": 11,
     "exempt": 8,
@@ -47,6 +47,11 @@
           "via": "create-only"
         },
         {
+          "property": "CertificateUsage",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
           "property": "DomainName",
           "verdict": "replacement",
           "via": "create-only"
@@ -58,6 +63,11 @@
         },
         {
           "property": "KeyAlgorithm",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "RootHierarchyType",
           "verdict": "replacement",
           "via": "create-only"
         },
@@ -93,6 +103,11 @@
           "via": "create-only"
         },
         {
+          "property": "CertificateUsage",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
           "property": "DomainName",
           "verdict": "replacement",
           "via": "create-only"
@@ -104,6 +119,11 @@
         },
         {
           "property": "KeyAlgorithm",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "RootHierarchyType",
           "verdict": "replacement",
           "via": "create-only"
         },

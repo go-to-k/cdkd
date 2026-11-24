@@ -71,6 +71,26 @@ export class AcmCertificateStack extends cdk.Stack {
       });
     }
 
+    // Phase 5 (go-to-k/cdkd#6799): an Amazon N2 certificate, present only
+    // under `CDKD_TEST_N2=1`. Both properties are create-only and were
+    // SDK-unwired, so the resource used to route through Cloud Control.
+    // `CertificateUsage` is accepted with an N2 RootHierarchyType only, and
+    // ACM requires DNS validation for one. The domain contains
+    // `cdkd-integ-<stack>`, so the trap's leak sweep covers it. A
+    // `CfnResource`: `CfnCertificate` (aws-cdk-lib 2.276) models neither
+    // property yet.
+    if (process.env['CDKD_TEST_N2'] === '1') {
+      new cdk.CfnResource(this, 'N2Certificate', {
+        type: 'AWS::CertificateManager::Certificate',
+        properties: {
+          DomainName: `n2.${domain}`,
+          ValidationMethod: 'DNS',
+          RootHierarchyType: 'N2_AMAZON_MANAGED',
+          CertificateUsage: 'CLIENT_AUTH_ONLY',
+        },
+      });
+    }
+
     new cdk.CfnOutput(this, 'CertificateArn', {
       value: cert.certificateArn,
       description: 'ARN of the test ACM certificate (PENDING_VALIDATION — synthetic domain)',

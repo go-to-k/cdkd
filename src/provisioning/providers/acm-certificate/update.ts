@@ -59,6 +59,8 @@ export async function update(
     'CertificateAuthorityArn',
     'CertificateExport',
     'KeyAlgorithm',
+    'RootHierarchyType',
+    'CertificateUsage',
   ] as const;
   // A secret-derived value is recorded as its `{{resolve:...}}` reference
   // and handed here resolved, which is no change, so it must not REPLACE the
@@ -90,6 +92,16 @@ export async function update(
     if (
       k === 'CertificateExport' &&
       (properties[k] ?? 'DISABLED') === (previousProperties[k] ?? 'DISABLED')
+    ) {
+      continue;
+    }
+    // go-to-k/cdkd#6799: ACM reports an N2 certificate requested without a
+    // CertificateUsage as CLIENT_AND_SERVER_AUTH, so a readback carries it
+    // where the record does not: no change. A non-N2 certificate has neither.
+    if (
+      k === 'CertificateUsage' &&
+      (properties[k] ?? 'CLIENT_AND_SERVER_AUTH') ===
+        (previousProperties[k] ?? 'CLIENT_AND_SERVER_AUTH')
     ) {
       continue;
     }

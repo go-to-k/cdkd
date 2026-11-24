@@ -22,15 +22,7 @@
     "entry MUST carry a one-line rationale; the section is preserved across",
     "regenerations of the `types` block."
   ],
-  "types": {
-    "AWS::CertificateManager::Certificate": [
-      "CertificateUsage",
-      "RootHierarchyType"
-    ],
-    "AWS::Lambda::MicrovmImage": [
-      "KmsKeyIdentifier"
-    ]
-  },
+  "types": {},
   "bogusTolerated": {
     "AWS::AutoScaling::AutoScalingGroup": {
       "DefaultCooldown": "SDK input field name; CFn schema names the same field 'Cooldown'. Provider currently maps the SDK name through handledProperties; investigate whether to rename or split the safety-net check (follow-up of #391)."

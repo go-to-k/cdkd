@@ -23,6 +23,8 @@ import { RESOURCE_NOT_FOUND } from '../../../types/resource.js';
  * Coverage:
  *  - `DomainName`, `SubjectAlternativeNames`, `KeyAlgorithm` straight from
  *    `DescribeCertificate.Certificate.*`.
+ *  - `RootHierarchyType` / `CertificateUsage` straight from the certificate,
+ *    present for an Amazon N2 certificate only.
  *  - `CertificateTransparencyLoggingPreference` extracted from the nested
  *    `Options` field and flattened to match CFn shape.
  *  - `Tags` via `ListTagsForCertificate`, with the `aws:cdk:path` etc.
@@ -69,6 +71,11 @@ export async function readCurrentState(
   if (cert.Options?.Export !== undefined) {
     result['CertificateExport'] = cert.Options.Export;
   }
+  // Amazon N2 certificates only (go-to-k/cdkd#6799): ACM omits both for any
+  // other certificate, and reports CertificateUsage CLIENT_AND_SERVER_AUTH for
+  // an N2 one requested without it.
+  if (cert.RootHierarchyType !== undefined) result['RootHierarchyType'] = cert.RootHierarchyType;
+  if (cert.CertificateUsage !== undefined) result['CertificateUsage'] = cert.CertificateUsage;
 
   try {
     const tagsResp = await this.acmClient.send(

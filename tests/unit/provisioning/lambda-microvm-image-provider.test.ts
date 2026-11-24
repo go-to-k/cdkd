@@ -61,6 +61,8 @@ const TYPE = 'AWS::Lambda::MicrovmImage';
 const ARN = 'arn:aws:lambda:us-east-1:123456789012:microvm-image:my-image';
 const BASE = 'arn:aws:lambda:us-east-1:aws:microvm-image:al2023-1';
 const ROLE = 'arn:aws:iam::123456789012:role/MicrovmBuildRole';
+const KMS_KEY = 'arn:aws:kms:us-east-1:123456789012:key/11111111-2222-3333-4444-555555555555';
+const OTHER_KMS_KEY = 'arn:aws:kms:us-east-1:123456789012:alias/other';
 
 function callsOfType(klass: { new (...args: any[]): any }): any[] {
   return mockSend.mock.calls
@@ -254,6 +256,24 @@ describe('LambdaMicrovmImageProvider', () => {
       }
     }, 120_000);
 
+    it('sends KmsKeyIdentifier as kmsKeyIdentifier (go-to-k/cdkd#5825)', async () => {
+      mockSend.mockResolvedValueOnce({ imageArn: ARN, state: 'CREATING' });
+      mockSend.mockResolvedValueOnce({ state: 'CREATED' });
+
+      await provider.create('MyImage', TYPE, { ...minimalProps(), KmsKeyIdentifier: KMS_KEY });
+
+      expect(callsOfType(CreateMicrovmImageCommand)[0].input.kmsKeyIdentifier).toBe(KMS_KEY);
+    });
+
+    it('omits kmsKeyIdentifier when KmsKeyIdentifier is absent (AWS owned key)', async () => {
+      mockSend.mockResolvedValueOnce({ imageArn: ARN, state: 'CREATING' });
+      mockSend.mockResolvedValueOnce({ state: 'CREATED' });
+
+      await provider.create('MyImage', TYPE, minimalProps());
+
+      expect('kmsKeyIdentifier' in callsOfType(CreateMicrovmImageCommand)[0].input).toBe(false);
+    });
+
     it('skips the poll when CDKD_NO_WAIT=true', async () => {
       process.env['CDKD_NO_WAIT'] = 'true';
       mockSend.mockResolvedValueOnce({ imageArn: ARN, state: 'CREATING' });
@@ -334,6 +354,54 @@ describe('LambdaMicrovmImageProvider', () => {
       await provider.update('MyImage', ARN, TYPE, next, prev);
 
       expect(callsOfType(UpdateMicrovmImageCommand)[0].input.environmentVariables).toEqual({});
+    });
+
+    it('rebuilds with the new key when only KmsKeyIdentifier changes (go-to-k/cdkd#5825)', async () => {
+      mockSend.mockResolvedValueOnce({}); // Update
+      mockSend.mockResolvedValueOnce({ state: 'UPDATED' }); // poll
+
+      const prev = { ...minimalProps(), KmsKeyIdentifier: KMS_KEY };
+      const next = { ...minimalProps(), KmsKeyIdentifier: OTHER_KMS_KEY };
+      await provider.update('MyImage', ARN, TYPE, next, prev);
+
+      const updates = callsOfType(UpdateMicrovmImageCommand);
+      expect(updates).toHaveLength(1);
+      expect(updates[0].input.kmsKeyIdentifier).toBe(OTHER_KMS_KEY);
+    });
+
+    it('rebuilds with the key when KmsKeyIdentifier is added', async () => {
+      mockSend.mockResolvedValueOnce({}); // Update
+      mockSend.mockResolvedValueOnce({ state: 'UPDATED' }); // poll
+
+      const next = { ...minimalProps(), KmsKeyIdentifier: KMS_KEY };
+      await provider.update('MyImage', ARN, TYPE, next, minimalProps());
+
+      const updates = callsOfType(UpdateMicrovmImageCommand);
+      expect(updates).toHaveLength(1);
+      expect(updates[0].input.kmsKeyIdentifier).toBe(KMS_KEY);
+    });
+
+    it('rebuilds without a key when KmsKeyIdentifier is removed (the new version takes an AWS owned key)', async () => {
+      mockSend.mockResolvedValueOnce({}); // Update
+      mockSend.mockResolvedValueOnce({ state: 'UPDATED' }); // poll
+
+      const prev = { ...minimalProps(), KmsKeyIdentifier: KMS_KEY };
+      await provider.update('MyImage', ARN, TYPE, minimalProps(), prev);
+
+      const updates = callsOfType(UpdateMicrovmImageCommand);
+      expect(updates).toHaveLength(1);
+      expect('kmsKeyIdentifier' in updates[0].input).toBe(false);
+    });
+
+    it('re-sends an unchanged KmsKeyIdentifier on another build change', async () => {
+      mockSend.mockResolvedValueOnce({}); // Update
+      mockSend.mockResolvedValueOnce({ state: 'UPDATED' }); // poll
+
+      const prev = { ...minimalProps(), KmsKeyIdentifier: KMS_KEY };
+      const next = { ...prev, Description: 'changed' };
+      await provider.update('MyImage', ARN, TYPE, next, prev);
+
+      expect(callsOfType(UpdateMicrovmImageCommand)[0].input.kmsKeyIdentifier).toBe(KMS_KEY);
     });
 
     it('refuses a create-only Name change in place', async () => {
@@ -542,6 +610,8 @@ describe('LambdaMicrovmImageProvider', () => {
       expect(paths).toContain('CodeArtifact');
       expect(paths).toContain('Logging');
       expect(paths).toContain('EnvironmentVariables');
+      // Write-only in the CloudFormation schema (go-to-k/cdkd#5825).
+      expect(paths).toContain('KmsKeyIdentifier');
       // Name + Tags ARE read back, so they must NOT be declared unknown.
       expect(paths).not.toContain('Name');
       expect(paths).not.toContain('Tags');

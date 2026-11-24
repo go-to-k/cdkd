@@ -1,5 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as kms from 'aws-cdk-lib/aws-kms';
 import { Construct } from 'constructs';
 
 /**
@@ -71,6 +72,44 @@ export class LambdaMicrovmImageStack extends cdk.Stack {
         ? cdk.SecretValue.secretsManager(nameSecret, { jsonField: 'name' }).unsafeUnwrap()
         : 'cdkd-integ-microvm-image';
 
+    // go-to-k/cdkd#5825: `MICROVM_KMS=with` encrypts the image with a
+    // customer managed key; `MICROVM_KMS=keep` keeps the key in the stack but
+    // drops `KmsKeyIdentifier` from the image (an update that rebuilds on an
+    // AWS owned key). The image still DependsOn the key there, so the destroy
+    // retires the key only after the image, whose earlier version it
+    // encrypts. Unset: no key at all, so the other phases mint none.
+    //
+    // CreateMicrovmImage refuses a key whose policy does not let Lambda use it
+    // ("Lambda is not authorized to use KMS key ... Check that the key policy
+    // allows Lambda to use the key"); the statement below is the one probed
+    // to build. The build role needs no KMS permission.
+    const kmsMode = process.env['MICROVM_KMS'] ?? '';
+    let imageKey: kms.Key | undefined;
+    if (kmsMode === 'with' || kmsMode === 'keep') {
+      imageKey = new kms.Key(this, 'ImageKey', {
+        description: 'cdkd integ: MicroVM image KmsKeyIdentifier (#5825)',
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+        pendingWindow: cdk.Duration.days(7),
+      });
+      imageKey.addToResourcePolicy(
+        new iam.PolicyStatement({
+          sid: 'AllowLambdaMicrovmImage',
+          principals: [new iam.ServicePrincipal('lambda.amazonaws.com')],
+          actions: [
+            'kms:Decrypt',
+            'kms:Encrypt',
+            'kms:GenerateDataKey*',
+            'kms:ReEncrypt*',
+            'kms:DescribeKey',
+            'kms:CreateGrant',
+          ],
+          resources: ['*'],
+          conditions: { StringEquals: { 'aws:SourceAccount': cdk.Aws.ACCOUNT_ID } },
+        })
+      );
+      new cdk.CfnOutput(this, 'ImageKeyArn', { value: imageKey.keyArn });
+    }
+
     const image = new cdk.CfnResource(this, 'MicrovmImage', {
       type: 'AWS::Lambda::MicrovmImage',
       properties: {
@@ -84,8 +123,10 @@ export class LambdaMicrovmImageStack extends cdk.Stack {
         CpuConfigurations: [{ Architecture: 'ARM_64' }],
         Resources: [{ MinimumMemoryInMiB: 4096 }],
         Tags: tags,
+        ...(kmsMode === 'with' && imageKey ? { KmsKeyIdentifier: imageKey.keyArn } : {}),
       },
     });
+    if (imageKey) image.node.addDependency(imageKey);
 
     new cdk.CfnOutput(this, 'MicrovmImageArn', {
       value: image.getAtt('ImageArn').toString(),

@@ -6,7 +6,7 @@
 # INVARIANT: exactly one row per test, rows sorted by test name. Duplicates break
 # file byte-for-byte instead of appending a duplicate row (issue #1112).
 access-key-cloudmap-fix-forward-orphan	2026-11-17T05:50:34Z	PASS	191	verify.sh	rc ok, destroy 0 errors, orph clean; at 148f393bc (#6484)
-acm-certificate	2026-11-19T18:50:43Z	PASS	114	verify.sh	#6640 regression 84223153c: rc ok, orph clean
+acm-certificate	2026-11-24T15:28:00Z	PASS	120	verify.sh	rc 0, N2 RootHierarchyType/CertificateUsage SDK route + readback + clean drift (#6799), 0 leftover certs, own bucket deleted
 agentcore-tools	2026-11-04T09:11:36Z	PASS	75	verify.sh	phase-1 deploy --verbose OK (no assertion tripped on debug output); rc 0, destroy 0 errors, orph clean; own state bucket
 alb	2026-11-22T03:31:56Z	PASS	569	verify.sh	d2646a6f6 #6759 part a, rc 0, 0 leftovers
 alb-advanced	2026-11-06T16:14:57Z	PASS	151	standard	#5881 split head; rc ok, orph clean
@@ -290,7 +290,7 @@ lambda-event-invoke-config-update	2026-11-10T15:29:52Z	PASS	161	verify.sh	rc ok,
 lambda-fix-forward-orphan	2026-11-22T05:45:21Z	PASS	145	verify.sh	rc ok, orph clean; at 16461a57b (#6816, #6759 sub-read errors); own state bucket
 lambda-layer-version-update	2026-11-23T10:54:09Z	PASS	217	verify.sh	rc ok, orph clean (#6857 6852 normalization audit)
 lambda-log-retention	2026-11-04T05:45:58Z	PASS	91	verify.sh	1104 sweep b5; rc ok, 0 orph
-lambda-microvm-image	2026-11-05T03:14:59Z	PASS	827	verify.sh	rc 0, all phases ok; deleted leftover log group /aws/lambda-microvms/cdkd-integ-microvm-image; orph clean
+lambda-microvm-image	2026-11-24T15:28:00Z	PASS	1093	verify.sh	rc 0, KmsKeyIdentifier add/remove rebuild (#5825), key PendingDeletion, 0 leftovers
 lambda-network-connector	2026-11-21T13:30:19Z	PASS	1559	verify.sh	rc 0, orph clean; phase 1 old-release retry used once; no IAM-propagation retry in current-build phases
 lambda-reserved-concurrency	2026-11-22T05:45:21Z	PASS	65	verify.sh	rc ok, orph clean; at 16461a57b (#6816, #6759 sub-read errors)
 lambda-runtime-config	2026-11-22T05:45:21Z	PASS	120	verify.sh	rc ok, orph clean; at 16461a57b (#6816, #6759 sub-read errors)

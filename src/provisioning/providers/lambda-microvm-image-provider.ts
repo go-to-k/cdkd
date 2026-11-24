@@ -127,6 +127,7 @@ export class LambdaMicrovmImageProvider implements ResourceProvider {
         'AdditionalOsCapabilities',
         'Hooks',
         'EnvironmentVariables',
+        'KmsKeyIdentifier',
         'Tags',
       ]),
     ],
@@ -745,6 +746,10 @@ const BUILD_AFFECTING_CFN_KEYS = [
   'AdditionalOsCapabilities',
   'Hooks',
   'EnvironmentVariables',
+  // go-to-k/cdkd#5825: each build is a new image version, encrypted with the
+  // key the request names or, when it names none, an AWS owned key. A change
+  // or a removal therefore rebuilds.
+  'KmsKeyIdentifier',
 ] as const;
 
 /**
@@ -815,6 +820,9 @@ function buildCommonImageInput(
   if (hooks) input.hooks = hooks;
   const environmentVariables = mapKeyValueListToRecord(properties['EnvironmentVariables']);
   if (environmentVariables) input.environmentVariables = environmentVariables;
+  if (typeof properties['KmsKeyIdentifier'] === 'string') {
+    input.kmsKeyIdentifier = properties['KmsKeyIdentifier'];
+  }
 
   return input;
 }

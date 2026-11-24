@@ -1,9 +1,9 @@
 {
   "summary": {
     "types": 148,
-    "properties": 1568,
-    "update": 1144,
-    "replacement": 403,
+    "properties": 1571,
+    "update": 1145,
+    "replacement": 405,
     "allowListed": 21,
     "gap": 0,
     "outsideSchema": 13
@@ -1253,6 +1253,11 @@
           "status": "update"
         },
         {
+          "property": "CertificateUsage",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
           "property": "DomainName",
           "status": "replacement",
           "via": "create-only"
@@ -1264,6 +1269,11 @@
         },
         {
           "property": "KeyAlgorithm",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "RootHierarchyType",
           "status": "replacement",
           "via": "create-only"
         },
@@ -5563,6 +5573,10 @@
         },
         {
           "property": "Hooks",
+          "status": "update"
+        },
+        {
+          "property": "KmsKeyIdentifier",
           "status": "update"
         },
         {

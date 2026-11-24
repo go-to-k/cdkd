@@ -98,6 +98,7 @@ const IMAGE_FULL: Bag = {
     { Key: 'EA', Value: 'ea' },
     { Key: 'EB', Value: 'eb' },
   ],
+  KmsKeyIdentifier: `arn:aws:kms:us-east-1:${ACCOUNT}:key/k1`,
   Tags: [
     { Key: 'k1', Value: 'v1' },
     { Key: 'k2', Value: 'v2' },
