@@ -123,6 +123,10 @@ cleanup() {
     [0-9]?*)
       reap_instance
       aws s3 rb "s3://${BUCKET_NAME}" --force --region "${REGION}" >/dev/null 2>&1 || true
+      # Connect creates this group when contact-flow logs are turned on
+      # (Phase 3), and deleting the instance leaves it.
+      aws logs delete-log-group --log-group-name "/aws/connect/${INSTANCE_ALIAS}" \
+        --region "${REGION}" >/dev/null 2>&1 || true
       for lg in $(aws logs describe-log-groups --log-group-name-prefix "/aws/lambda/${STACK}" \
         --region "${REGION}" --query 'logGroups[].logGroupName' --output text 2>/dev/null); do
         aws logs delete-log-group --log-group-name "${lg}" --region "${REGION}" >/dev/null 2>&1 || true
@@ -308,6 +312,9 @@ assert_gone "bucket ${BUCKET_NAME} still exists after destroy" \
   aws s3api head-bucket --bucket "${BUCKET_NAME}" --region "${REGION}"
 assert_gone "state file ${STATE_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
+# Not a cdkd resource: Connect made it when Phase 3 turned contact-flow logs on.
+aws logs delete-log-group --log-group-name "/aws/connect/${INSTANCE_ALIAS}" \
+  --region "${REGION}" >/dev/null 2>&1 || true
 echo "    destroyed (destroy took ${DESTROY_SECS}s)"
 
 # --- Phase 5: immediate re-create with the same alias under --no-wait --------
