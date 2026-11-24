@@ -72,8 +72,10 @@ extension>' tests/unit` hits; suites need not mirror `src/`; a new drift-unknown
 path changes the type's `getDriftUnknownPaths` pin, `grep -rl
 getDriftUnknownPaths tests/unit | grep '<provider basename>'`), the fixture §8-c
 will extend (`grep -rl '<type's last segment>' tests/integration/*/lib`; a NEW
-one, or a `--<flag>` token no `verify.sh` used before, adds `gen:all-matrices`'
-outputs in `docs/`; a NEW one seeding a secret, e.g. `unsafePlainText`, adds its
+one, a `--<flag>` token no `verify.sh` used before, or a provider wiring a
+member, adds `gen:all-matrices`' outputs in `docs/` — a backfill rewrites
+`_generated/{drift-readback-coverage,provider-replace-branches,update-path-coverage}.*`,
+#6942; a NEW one seeding a secret, e.g. `unsafePlainText`, adds its
 name to `integ-secret-fixture-sweep.test.ts`'s audited set, #6505) and, when a
 provider gains `context?: UpdateContext`, triage.md §2's checker/test pair, and
 every file the fix makes FALSE — a comment, doc or rule stating the old invariant
@@ -100,7 +102,13 @@ the harness fails until it carries or exempts each newly handled key (#6087) —
 plus
 the file that DECLARES the type's `handledProperties` (`grep -rn "'<Type>'"
 src/provisioning/providers/*-provider.ts`: the facade, never the split
-module) and, for a `writeOnlyProperties` key, the drift `neverRead` list; a member
+module), plus every file of its delegate directory the wiring edits (`ls
+src/provisioning/providers/<facade basename minus -provider>/`: ACM's
+create/read/update live there, #6942) and, for a `writeOnlyProperties` key,
+the drift `neverRead` list; a backfill wiring the LAST open rows adds
+`tests/unit/scripts/{diagnose-schema-refresh,umbrella-checklist-no-deps}.test.ts`,
+whose cases read the LIVE map's pending rows — re-anchor them on synthetic
+maps (#6942); a member
 sent off its CFn path (its own command, a renamed field) adds its
 `sdk-wire-member-renames.ts` entry, plus `sdk-wire-call-roots.ts` when that
 command is sent more than once per resource (#5630); and the
