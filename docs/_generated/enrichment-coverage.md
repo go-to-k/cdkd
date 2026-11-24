@@ -16,12 +16,12 @@ Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback
 
 ## Summary
 
-- Classified types (cached schema): **148**
+- Classified types (cached schema): **149**
 - Fully enriched: **50**
 - No computed attribute (Ref == physicalId is correct): **18**
 - **Pure-CC latent gaps (unenriched-computed, blocks CI): 0**
-- SDK-fallback gaps (informational, #614 path only): **80**
-- Types with allow-listed (not-a-gap) attributes: **90**
+- SDK-fallback gaps (informational, #614 path only): **81**
+- Types with allow-listed (not-a-gap) attributes: **91**
 
 ## Pure-CC latent gaps
 
@@ -60,6 +60,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::EC2::SecurityGroup` | `GroupId` |
 | `AWS::EC2::Subnet` | `BlockPublicAccessStates`, `Ipv6CidrBlocks`, `NetworkAclAssociationId` |
 | `AWS::EC2::VPC` | `CidrBlockAssociations`, `DefaultNetworkAcl`, `DefaultSecurityGroup`, `Ipv6CidrBlocks` |
+| `AWS::EC2::VPCEndpoint` | `CreationTimestamp`, `DnsEntries`, `NetworkInterfaceIds` |
 | `AWS::ECS::Cluster` | `Arn` |
 | `AWS::ECS::Service` | `Name` |
 | `AWS::EFS::AccessPoint` | `Arn` |
@@ -176,6 +177,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::EC2::SubnetNetworkAclAssociation` | yes | enriched | `AssociationId` (allow) |
 | `AWS::EC2::SubnetRouteTableAssociation` | yes | enriched | `Id` (allow) |
 | `AWS::EC2::VPC` | yes | sdk-fallback-gap | `CidrBlockAssociations` (GAP), `DefaultNetworkAcl` (GAP), `DefaultSecurityGroup` (GAP), `Ipv6CidrBlocks` (GAP), `VpcId` (allow) |
+| `AWS::EC2::VPCEndpoint` | yes | sdk-fallback-gap | `CreationTimestamp` (GAP), `DnsEntries` (GAP), `Id` (allow), `NetworkInterfaceIds` (GAP) |
 | `AWS::EC2::VPCGatewayAttachment` | yes | enriched | `AttachmentType` (allow) |
 | `AWS::ECR::Repository` | yes | enriched | `Arn` (OK), `RepositoryUri` (OK) |
 | `AWS::ECS::Cluster` | yes | sdk-fallback-gap | `Arn` (GAP) |

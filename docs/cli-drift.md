@@ -577,7 +577,7 @@ A type that neither route can read is reported as drift unknown.
 | `AWS::DLM` | `LifecyclePolicy` |
 | `AWS::DocDB` | `DBCluster`, `DBInstance`, `DBSubnetGroup` |
 | `AWS::DynamoDB` | `GlobalTable`, `Table` |
-| `AWS::EC2` | `EIP`, `Instance`, `InternetGateway`, `NatGateway`, `NetworkAcl`, `NetworkAclEntry`, `Route`, `RouteTable`, `SecurityGroup`, `SecurityGroupIngress`, `Subnet`, `SubnetNetworkAclAssociation`, `SubnetRouteTableAssociation`, `VPC`, `VPCGatewayAttachment` |
+| `AWS::EC2` | `EIP`, `Instance`, `InternetGateway`, `NatGateway`, `NetworkAcl`, `NetworkAclEntry`, `Route`, `RouteTable`, `SecurityGroup`, `SecurityGroupIngress`, `Subnet`, `SubnetNetworkAclAssociation`, `SubnetRouteTableAssociation`, `VPC`, `VPCEndpoint`, `VPCGatewayAttachment` |
 | `AWS::ECR` | `Repository` |
 | `AWS::ECS` | `Cluster`, `Service`, `TaskDefinition` |
 | `AWS::EFS` | `AccessPoint`, `FileSystem`, `MountTarget` |

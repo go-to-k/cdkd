@@ -10,9 +10,9 @@
     }
   ],
   "summary": {
-    "classifiedCount": 148,
+    "classifiedCount": 149,
     "covered": 78,
-    "noArnAttr": 70,
+    "noArnAttr": 71,
     "gap": 0,
     "knownGap": 0,
     "refused": 2
@@ -490,6 +490,12 @@
     },
     {
       "resourceType": "AWS::EC2::VPC",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::EC2::VPCEndpoint",
       "bucket": "no-arn-attr",
       "arnAttributes": [],
       "gaps": []

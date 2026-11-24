@@ -111,6 +111,8 @@ export const NOT_NAME_KEYED_TYPES: ReadonlySet<string> = new Set([
   'AWS::Cognito::UserPool',
   'AWS::EC2::Instance',
   'AWS::EC2::SecurityGroupIngress',
+  // `ServiceName` names the endpoint SERVICE; the endpoint id is AWS-assigned.
+  'AWS::EC2::VPCEndpoint',
   'AWS::EFS::FileSystem',
   'AWS::EMR::Cluster',
   'AWS::EMR::InstanceFleetConfig',

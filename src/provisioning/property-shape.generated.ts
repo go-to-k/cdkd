@@ -162,6 +162,10 @@ export const PROPERTY_SHAPES: ReadonlyMap<string, string> = new Map<string, stri
     '{"CidrBlockAssociations":"array","Ipv6CidrBlocks":"array","Tags":"array","Tags[]":"object","VpcEncryptionControl":"object","VpcEncryptionControl.ResourceExclusions":"object","VpcEncryptionControl.ResourceExclusions.EgressOnlyInternetGateway":"object","VpcEncryptionControl.ResourceExclusions.ElasticFileSystem":"object","VpcEncryptionControl.ResourceExclusions.InternetGateway":"object","VpcEncryptionControl.ResourceExclusions.Lambda":"object","VpcEncryptionControl.ResourceExclusions.NatGateway":"object","VpcEncryptionControl.ResourceExclusions.VirtualPrivateGateway":"object","VpcEncryptionControl.ResourceExclusions.VpcLattice":"object","VpcEncryptionControl.ResourceExclusions.VpcPeering":"object"}',
   ],
   [
+    'AWS::EC2::VPCEndpoint',
+    '{"DnsEntries":"array","DnsOptions":"object","DnsOptions.PrivateDnsSpecifiedDomains":"array","NetworkInterfaceIds":"array","RouteTableIds":"array","SecurityGroupIds":"array","SubnetIds":"array","Tags":"array","Tags[]":"object"}',
+  ],
+  [
     'AWS::ECR::Repository',
     '{"EncryptionConfiguration":"object","ImageScanningConfiguration":"object","ImageTagMutabilityExclusionFilters":"array","ImageTagMutabilityExclusionFilters[]":"object","LifecyclePolicy":"object","Tags":"array","Tags[]":"object"}',
   ],

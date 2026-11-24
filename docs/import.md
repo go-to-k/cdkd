@@ -547,7 +547,7 @@ with no `--resource`, or with `--auto`.
 | DLM | `AWS::DLM::LifecyclePolicy` |
 | DocumentDB | `AWS::DocDB::DBInstance`, `AWS::DocDB::DBCluster`, `AWS::DocDB::DBSubnetGroup` |
 | DynamoDB | `AWS::DynamoDB::Table`, `AWS::DynamoDB::GlobalTable` |
-| EC2 | `AWS::EC2::VPC`, `AWS::EC2::Subnet`, `AWS::EC2::SecurityGroup`, `AWS::EC2::NatGateway`, `AWS::EC2::EIP`, `AWS::EC2::InternetGateway`, `AWS::EC2::RouteTable`, `AWS::EC2::NetworkAcl`, `AWS::EC2::Instance` |
+| EC2 | `AWS::EC2::VPC`, `AWS::EC2::Subnet`, `AWS::EC2::SecurityGroup`, `AWS::EC2::NatGateway`, `AWS::EC2::EIP`, `AWS::EC2::InternetGateway`, `AWS::EC2::RouteTable`, `AWS::EC2::NetworkAcl`, `AWS::EC2::Instance`, `AWS::EC2::VPCEndpoint` |
 | ECR, ECS | `AWS::ECR::Repository`, `AWS::ECS::Cluster`, `AWS::ECS::Service`, `AWS::ECS::TaskDefinition` |
 | EFS, FSx | `AWS::EFS::FileSystem`, `AWS::EFS::AccessPoint`, `AWS::FSx::FileSystem` |
 | ElastiCache | `AWS::ElastiCache::CacheCluster`, `AWS::ElastiCache::SubnetGroup` |

@@ -65,7 +65,7 @@ part of the type name.
 | DLM | `AWS::DLM::LifecyclePolicy` |
 | DocDB | `AWS::DocDB::DBCluster`, `AWS::DocDB::DBInstance`, `AWS::DocDB::DBSubnetGroup` |
 | DynamoDB | `AWS::DynamoDB::GlobalTable`, `AWS::DynamoDB::Table` |
-| EC2 | `AWS::EC2::EIP`, `AWS::EC2::Instance`, `AWS::EC2::InternetGateway`, `AWS::EC2::NatGateway`, `AWS::EC2::NetworkAcl`, `AWS::EC2::NetworkAclEntry`, `AWS::EC2::Route`, `AWS::EC2::RouteTable`, `AWS::EC2::SecurityGroup`, `AWS::EC2::SecurityGroupIngress`, `AWS::EC2::Subnet`, `AWS::EC2::SubnetNetworkAclAssociation`, `AWS::EC2::SubnetRouteTableAssociation`, `AWS::EC2::VPC`, `AWS::EC2::VPCGatewayAttachment` |
+| EC2 | `AWS::EC2::EIP`, `AWS::EC2::Instance`, `AWS::EC2::InternetGateway`, `AWS::EC2::NatGateway`, `AWS::EC2::NetworkAcl`, `AWS::EC2::NetworkAclEntry`, `AWS::EC2::Route`, `AWS::EC2::RouteTable`, `AWS::EC2::SecurityGroup`, `AWS::EC2::SecurityGroupIngress`, `AWS::EC2::Subnet`, `AWS::EC2::SubnetNetworkAclAssociation`, `AWS::EC2::SubnetRouteTableAssociation`, `AWS::EC2::VPC`, `AWS::EC2::VPCEndpoint`, `AWS::EC2::VPCGatewayAttachment` |
 | ECR | `AWS::ECR::Repository` |
 | ECS | `AWS::ECS::Cluster`, `AWS::ECS::Service`, `AWS::ECS::TaskDefinition` |
 | EFS | `AWS::EFS::AccessPoint`, `AWS::EFS::FileSystem`, `AWS::EFS::MountTarget` |

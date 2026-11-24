@@ -688,6 +688,8 @@ const MESSAGE_SINK_FACTORIES: ReadonlySet<string> = new Set([
   'zoneSwitchRefusalError',
   // A drift revert's refusal to replace a resource (go-to-k/cdkd#6638).
   'revertReplacementRefusal',
+  // VPC endpoint pre-call refusals (go-to-k/cdkd#6939).
+  'vpcEndpointRefusal',
   'handleError',
   'wrapError',
   'wrapUpdateError',

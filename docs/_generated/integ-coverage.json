@@ -58,6 +58,7 @@
     "AWS::EC2::SubnetNetworkAclAssociation",
     "AWS::EC2::SubnetRouteTableAssociation",
     "AWS::EC2::VPC",
+    "AWS::EC2::VPCEndpoint",
     "AWS::EC2::VPCGatewayAttachment",
     "AWS::ECR::Repository",
     "AWS::ECS::Cluster",
@@ -1896,6 +1897,7 @@
         "ec2-instance-volume-attachment-drift",
         "ec2-route-targets",
         "ec2-vpc",
+        "ec2-vpc-endpoint",
         "ecs-bluegreen",
         "ecs-fargate",
         "ecs-gateway-role-propagation",
@@ -2059,6 +2061,9 @@
           "l1"
         ],
         "ec2-vpc": [
+          "l2"
+        ],
+        "ec2-vpc-endpoint": [
           "l2"
         ],
         "ecs-bluegreen": [
@@ -2287,6 +2292,7 @@
         "ec2-instance-fanout",
         "ec2-instance-volume-attachment-drift",
         "ec2-vpc",
+        "ec2-vpc-endpoint",
         "ecs-bluegreen",
         "ecs-fargate",
         "ecs-gateway-role-propagation",
@@ -2439,6 +2445,9 @@
           "l2"
         ],
         "ec2-vpc": [
+          "l2"
+        ],
+        "ec2-vpc-endpoint": [
           "l2"
         ],
         "ecs-bluegreen": [
@@ -2697,6 +2706,7 @@
         "ec2-instance-volume-attachment-drift",
         "ec2-route-targets",
         "ec2-vpc",
+        "ec2-vpc-endpoint",
         "ecs-bluegreen",
         "ecs-fargate",
         "ecs-gateway-role-propagation",
@@ -2855,6 +2865,9 @@
           "literal"
         ],
         "ec2-vpc": [
+          "l2"
+        ],
+        "ec2-vpc-endpoint": [
           "l2"
         ],
         "ecs-bluegreen": [
@@ -3080,6 +3093,7 @@
         "ec2-instance-volume-attachment-drift",
         "ec2-route-targets",
         "ec2-vpc",
+        "ec2-vpc-endpoint",
         "ecs-bluegreen",
         "ecs-fargate",
         "ecs-gateway-role-propagation",
@@ -3242,6 +3256,9 @@
           "l1"
         ],
         "ec2-vpc": [
+          "l2"
+        ],
+        "ec2-vpc-endpoint": [
           "l2"
         ],
         "ecs-bluegreen": [
@@ -3458,6 +3475,7 @@
         "ec2-instance-fanout",
         "ec2-sg-source-group-name",
         "ec2-vpc",
+        "ec2-vpc-endpoint",
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
         "elasticache-snapshot-arns",
@@ -3567,6 +3585,9 @@
           "literal"
         ],
         "ec2-vpc": [
+          "l2"
+        ],
+        "ec2-vpc-endpoint": [
           "l2"
         ],
         "efs-standalone": [
@@ -3778,6 +3799,7 @@
         "ec2-route-targets",
         "ec2-subnet-dns64",
         "ec2-vpc",
+        "ec2-vpc-endpoint",
         "ec2-vpc-ipam",
         "ecs-bluegreen",
         "ecs-fargate",
@@ -3956,6 +3978,9 @@
           "literal"
         ],
         "ec2-vpc": [
+          "l2"
+        ],
+        "ec2-vpc-endpoint": [
           "l2"
         ],
         "ec2-vpc-ipam": [
@@ -4227,6 +4252,7 @@
         "ec2-instance-fanout",
         "ec2-instance-volume-attachment-drift",
         "ec2-vpc",
+        "ec2-vpc-endpoint",
         "ecs-bluegreen",
         "ecs-fargate",
         "ecs-gateway-role-propagation",
@@ -4379,6 +4405,9 @@
           "l2"
         ],
         "ec2-vpc": [
+          "l2"
+        ],
+        "ec2-vpc-endpoint": [
           "l2"
         ],
         "ecs-bluegreen": [
@@ -4602,6 +4631,7 @@
         "ec2-route-targets",
         "ec2-subnet-dns64",
         "ec2-vpc",
+        "ec2-vpc-endpoint",
         "ec2-vpc-ipam",
         "ecs-bluegreen",
         "ecs-fargate",
@@ -4794,6 +4824,9 @@
         ],
         "ec2-vpc": [
           "l1",
+          "l2"
+        ],
+        "ec2-vpc-endpoint": [
           "l2"
         ],
         "ec2-vpc-ipam": [
@@ -5050,6 +5083,18 @@
       }
     },
     {
+      "resourceType": "AWS::EC2::VPCEndpoint",
+      "integs": [
+        "ec2-vpc-endpoint"
+      ],
+      "signals": {
+        "ec2-vpc-endpoint": [
+          "l1",
+          "literal"
+        ]
+      }
+    },
+    {
       "resourceType": "AWS::EC2::VPCGatewayAttachment",
       "integs": [
         "alb",
@@ -5084,6 +5129,7 @@
         "ec2-instance-volume-attachment-drift",
         "ec2-route-targets",
         "ec2-vpc",
+        "ec2-vpc-endpoint",
         "ecs-bluegreen",
         "ecs-fargate",
         "ecs-gateway-role-propagation",
@@ -5243,6 +5289,9 @@
           "literal"
         ],
         "ec2-vpc": [
+          "l2"
+        ],
+        "ec2-vpc-endpoint": [
           "l2"
         ],
         "ecs-bluegreen": [
@@ -10795,6 +10844,7 @@
         "drift-revert",
         "dynamic-ref-cross-region",
         "ec2-instance",
+        "ec2-vpc-endpoint",
         "elasticache-replicationgroup-getatt",
         "eventbridge",
         "export-nested-stack",
@@ -11012,6 +11062,9 @@
         ],
         "ec2-instance": [
           "l1"
+        ],
+        "ec2-vpc-endpoint": [
+          "l2"
         ],
         "elasticache-replicationgroup-getatt": [
           "l1"

@@ -47,6 +47,7 @@ import { CASES_CLOUDMAP } from './sdk-wire-cases-cloudmap.js';
 import { CASES_LOGS_DELIVERY } from './sdk-wire-cases-logs-delivery.js';
 import { CASES_LIGHTSAIL } from './sdk-wire-cases-lightsail.js';
 import { CASES_CONNECT } from './sdk-wire-cases-connect.js';
+import { CASES_VPC_ENDPOINT } from './sdk-wire-cases-vpc-endpoint.js';
 import { CASES_NO_PROPERTIES } from './sdk-wire-cases-no-properties.js';
 
 // Every client class a covered provider reaches, wrapped so each instance
@@ -914,6 +915,11 @@ const CASE_LISTS: { cases: TypeCase[]; name: string; file: string }[] = [
     cases: CASES_CONNECT,
     name: 'CASES_CONNECT',
     file: 'sdk-wire-coverage-connect.test.ts',
+  },
+  {
+    cases: CASES_VPC_ENDPOINT,
+    name: 'CASES_VPC_ENDPOINT',
+    file: 'sdk-wire-coverage-vpc-endpoint.test.ts',
   },
   {
     cases: CASES_NO_PROPERTIES,

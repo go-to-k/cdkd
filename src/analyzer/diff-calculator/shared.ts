@@ -128,6 +128,14 @@ export const IN_PLACE_UPDATE_ATTRS_MOVED_BY: Readonly<
   'AWS::RDS::DBInstance': Object.freeze({
     'MasterUserSecret.SecretArn': new Set(['ManageMasterUserPassword']),
   }),
+  // go-to-k/cdkd#6939: a subnet added or removed gains or loses an interface
+  // and its zonal DNS name; private DNS, DNS options and the IP address type
+  // add or drop DNS names. The update records the described values, or, after
+  // a --no-wait modify, none, so a reader reads the endpoint live.
+  'AWS::EC2::VPCEndpoint': Object.freeze({
+    NetworkInterfaceIds: new Set(['SubnetIds']),
+    DnsEntries: new Set(['SubnetIds', 'PrivateDnsEnabled', 'DnsOptions', 'IpAddressType']),
+  }),
 });
 
 /**

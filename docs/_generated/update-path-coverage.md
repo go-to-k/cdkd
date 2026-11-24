@@ -12,10 +12,10 @@ For every SDK provider type and every top-level property its `handledProperties`
 
 ## Summary
 
-- SDK provider types: **148**
-- Handled properties classified: **1571**
-- Read on the update path: **1145**
-- Replacement: **405**
+- SDK provider types: **149**
+- Handled properties classified: **1585**
+- Read on the update path: **1153**
+- Replacement: **411**
 - Allow-listed (does NOT block CI): **21**
 - Handled names outside the schema's writable properties (not classified): **13**
 - **Gaps (blocks CI): 0**
@@ -108,6 +108,7 @@ For every SDK provider type and every top-level property its `handledProperties`
 | `AWS::EC2::SubnetNetworkAclAssociation` | `EC2Provider` |  | NetworkAclId, SubnetId |
 | `AWS::EC2::SubnetRouteTableAssociation` | `EC2Provider` |  | RouteTableId, SubnetId |
 | `AWS::EC2::VPC` | `EC2Provider` | EnableDnsHostnames, EnableDnsSupport, InstanceTenancy, Tags | CidrBlock, Ipv4IpamPoolId, Ipv4NetmaskLength, VpcEncryptionControl |
+| `AWS::EC2::VPCEndpoint` | `EC2VPCEndpointProvider` | DnsOptions, IpAddressType, PolicyDocument, PrivateDnsEnabled, RouteTableIds, SecurityGroupIds, SubnetIds, Tags | ResourceConfigurationArn, ServiceName, ServiceNetworkArn, ServiceRegion, VpcEndpointType, VpcId |
 | `AWS::EC2::VPCGatewayAttachment` | `EC2Provider` | InternetGatewayId, VpnGatewayId | VpcId |
 | `AWS::ECR::Repository` | `ECRProvider` | ImageScanningConfiguration, ImageTagMutability, ImageTagMutabilityExclusionFilters, LifecyclePolicy, RepositoryPolicyText, Tags | EncryptionConfiguration, RepositoryName |
 | `AWS::ECS::Cluster` | `ECSProvider` | CapacityProviders, ClusterSettings, Configuration, DefaultCapacityProviderStrategy, ServiceConnectDefaults, Tags | ClusterName |

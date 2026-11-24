@@ -511,6 +511,7 @@ export const NESTED_REQUIRED: ReadonlyMap<string, ReadonlyMap<string, readonly s
   ],
   ['AWS::EC2::Subnet', new Map<string, readonly string[]>([['Tags', ['Key', 'Value']]])],
   ['AWS::EC2::VPC', new Map<string, readonly string[]>([['Tags', ['Key', 'Value']]])],
+  ['AWS::EC2::VPCEndpoint', new Map<string, readonly string[]>([['Tags', ['Key', 'Value']]])],
   [
     'AWS::ECR::Repository',
     new Map<string, readonly string[]>([

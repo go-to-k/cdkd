@@ -373,6 +373,15 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       AvailabilityZoneAddresses: ['AssociateNatGatewayAddressCommand'],
     },
   },
+  // go-to-k/cdkd#6939: an update diffs each id list into ModifyVpcEndpoint's
+  // Add* (and Remove*) members.
+  'AWS::EC2::VPCEndpoint': {
+    members: {
+      SubnetIds: ['AddSubnetIds'],
+      SecurityGroupIds: ['AddSecurityGroupIds'],
+      RouteTableIds: ['AddRouteTableIds'],
+    },
+  },
   'AWS::EC2::NetworkAclEntry': {
     containers: {
       Icmp: ['IcmpTypeCode'],

@@ -12,12 +12,21 @@ import {
   s3BucketWebsiteUrl,
 } from '../../utils/s3-endpoints.js';
 import { type ResolverContext, cachedVpcDefaultSecurityGroups, quotedRender } from './support.js';
-import { markNonRetryable } from '../retryable-errors.js';
+import {
+  isThrottlingError,
+  isTransientServerError,
+  markNonRetryable,
+} from '../retryable-errors.js';
 import {
   DescribeNetworkAclsCommand,
   DescribeSecurityGroupsCommand,
+  DescribeVpcEndpointsCommand,
   DescribeVpcsCommand,
+  type VpcEndpoint,
 } from '@aws-sdk/client-ec2';
+import { startInterruptWatch } from '../../provisioning/interrupt-watch.js';
+import { isoTimestampAttribute } from '../../provisioning/attribute-timestamp.js';
+import { dnsEntryStrings } from '../../provisioning/vpc-endpoint-dns-entries.js';
 import {
   describeFailureObserved,
   guardedPhysicalIdFallback,
@@ -141,6 +150,99 @@ export async function constructAttributeForCoreTypes(
           physicalId,
           context
         );
+    }
+  }
+
+  // VPC endpoint (go-to-k/cdkd#6939). The physical id is the endpoint id. A
+  // `--no-wait` update records no `DnsEntries` / `NetworkInterfaceIds` while
+  // `ModifyVpcEndpoint` has the endpoint `pending` (its interfaces are still
+  // moving), so either is read live here and, while the endpoint is
+  // `pending`, WAITED for (bounded, Ctrl-C aware): only a REFERENCED value
+  // pays for the wait. `CreationTimestamp` is read live without one. Nothing
+  // is ever answered with the endpoint id: a read that leaves no value is
+  // refused.
+  if (resourceType === 'AWS::EC2::VPCEndpoint') {
+    if (attributeName === 'Id') return physicalId;
+    if (
+      attributeName === 'DnsEntries' ||
+      attributeName === 'NetworkInterfaceIds' ||
+      attributeName === 'CreationTimestamp'
+    ) {
+      const read = async (): Promise<{ endpoint?: VpcEndpoint; transient?: true }> => {
+        try {
+          const ec2 = resolver.clients.clientsForRegion(resolver.explicitRegion).ec2;
+          const resp = await ec2.send(
+            new DescribeVpcEndpointsCommand({ VpcEndpointIds: [physicalId] })
+          );
+          const endpoint = resp.VpcEndpoints?.find((e) => e.VpcEndpointId === physicalId);
+          return endpoint === undefined ? {} : { endpoint };
+        } catch (err) {
+          if (isThrottlingError(err) || isTransientServerError(err)) return { transient: true };
+          return refuseUnservedAttribute(resolver, {
+            logicalId,
+            attributeName,
+            resourceType,
+            physicalId,
+            context,
+            observed: describeFailureObserved(resolver, 'DescribeVpcEndpoints', err, context),
+            remedy:
+              'Fix the read (the ec2:DescribeVpcEndpoints permission, or the region) and deploy again.',
+          });
+        }
+      };
+      const pending = (observed: { endpoint?: VpcEndpoint; transient?: true }): boolean =>
+        observed.transient === true ||
+        (attributeName !== 'CreationTimestamp' &&
+          observed.endpoint?.State?.toLowerCase() === 'pending');
+      let observed = await read();
+      if (pending(observed)) {
+        const watch = startInterruptWatch(`VPC endpoint ${logicalId} attribute wait`);
+        try {
+          for (let poll = 0; poll < vpcEndpointAttributeWait.polls && pending(observed); poll++) {
+            if (watch.isInterrupted()) throw watch.onInterrupted();
+            await vpcEndpointAttributeWait.sleep(vpcEndpointAttributeWait.delayMs);
+            observed = await read();
+          }
+        } finally {
+          watch.dispose();
+        }
+      }
+      const endpoint = observed.endpoint;
+      const refusal = {
+        logicalId,
+        attributeName,
+        resourceType,
+        physicalId,
+        context,
+        remedy:
+          'Check the endpoint with `aws ec2 describe-vpc-endpoints`, then deploy again once it is available.',
+      };
+      if (observed.transient === true) {
+        return refuseUnservedAttribute(resolver, {
+          ...refusal,
+          observed: 'DescribeVpcEndpoints stayed throttled or failing past the attribute wait',
+        });
+      }
+      if (endpoint === undefined) {
+        return refuseUnservedAttribute(resolver, {
+          ...refusal,
+          observed: 'DescribeVpcEndpoints reported no such endpoint',
+        });
+      }
+      if (pending(observed)) {
+        return refuseUnservedAttribute(resolver, {
+          ...refusal,
+          observed: 'the VPC endpoint stayed pending past the attribute wait',
+        });
+      }
+      if (attributeName === 'DnsEntries') return dnsEntryStrings(endpoint);
+      if (attributeName === 'NetworkInterfaceIds') return [...(endpoint.NetworkInterfaceIds ?? [])];
+      const created = isoTimestampAttribute(endpoint.CreationTimestamp);
+      if (created !== undefined) return created;
+      return refuseUnservedAttribute(resolver, {
+        ...refusal,
+        observed: 'DescribeVpcEndpoints reported no CreationTimestamp for the endpoint',
+      });
     }
   }
 
@@ -597,3 +699,15 @@ export async function constructAttributeForCoreTypes(
   }
   return NOT_CONSTRUCTED;
 }
+
+/**
+ * How long `Fn::GetAtt [<EC2::VPCEndpoint>, DnsEntries | NetworkInterfaceIds]`
+ * waits for a `pending` endpoint (go-to-k/cdkd#6939): 10 minutes in 3 s
+ * polls, against the 30-60 s an Interface endpoint measured. A mutable seam so
+ * tests do not sleep.
+ */
+export const vpcEndpointAttributeWait = {
+  polls: 200,
+  delayMs: 3_000,
+  sleep: (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms)),
+};

@@ -1,9 +1,9 @@
 {
   "summary": {
-    "types": 148,
+    "types": 149,
     "noReadback": 2,
-    "properties": 1574,
-    "read": 1431,
+    "properties": 1588,
+    "read": 1445,
     "unknown": 119,
     "baseline": 24,
     "gap": 0,
@@ -2946,6 +2946,71 @@
         },
         {
           "property": "VpcEncryptionControl",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EC2::VPCEndpoint",
+      "file": "src/provisioning/providers/ec2-vpc-endpoint-provider.ts",
+      "className": "EC2VPCEndpointProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "DnsOptions",
+          "status": "read"
+        },
+        {
+          "property": "IpAddressType",
+          "status": "read"
+        },
+        {
+          "property": "PolicyDocument",
+          "status": "read"
+        },
+        {
+          "property": "PrivateDnsEnabled",
+          "status": "read"
+        },
+        {
+          "property": "ResourceConfigurationArn",
+          "status": "read"
+        },
+        {
+          "property": "RouteTableIds",
+          "status": "read"
+        },
+        {
+          "property": "SecurityGroupIds",
+          "status": "read"
+        },
+        {
+          "property": "ServiceName",
+          "status": "read"
+        },
+        {
+          "property": "ServiceNetworkArn",
+          "status": "read"
+        },
+        {
+          "property": "ServiceRegion",
+          "status": "read"
+        },
+        {
+          "property": "SubnetIds",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "VpcEndpointType",
+          "status": "read"
+        },
+        {
+          "property": "VpcId",
           "status": "read"
         }
       ],

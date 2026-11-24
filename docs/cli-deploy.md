@@ -254,6 +254,7 @@ CloudFormation and Terraform do, for comparison.
 | `AWS::Neptune::DBCluster` / `DBInstance` | Return after the create or update call; a cluster whose `AssociatedRoles` change still waits for `available`, which attaching or detaching a role needs, as does a restore with a follow-up `ModifyDBCluster` | Wait for `available` (5-10 min); an update waits for changed cluster security groups to apply, and for a changed role, log export, `NetworkType` or `PubliclyAccessible` to read back | same as default | Waits | Waits |
 | `AWS::ElastiCache::CacheCluster` etc. | Return after the create call | Wait for `available` | same as default | Waits | Waits |
 | `AWS::EC2::NatGateway` | Return while `pending` | Wait for `available` (1-2 min) | same as default | Waits | Waits |
+| `AWS::EC2::VPCEndpoint` | Return while `pending`, on create and after a `ModifyVpcEndpoint` update; a dependent that calls the service through the endpoint at deploy time can fail until it is `available`; a `Fn::GetAtt` of `DnsEntries` or `NetworkInterfaceIds` after such an update still waits for it | Wait for `available` (an Interface endpoint 30-50 s); an endpoint that turns `failed`, `rejected`, `expired`, `partial`, `deleting` or `deleted` fails the deploy | same as default | Waits | Waits |
 | `AWS::EC2::Instance` | Return while `pending`; a create declaring `Volumes` or `SsmAssociations` still waits for `running`, which attaching a volume or associating a document needs; an update that stops the instance (an `InstanceType`, `UserData`, `PrivateDnsNameOptions.HostnameType`, `Affinity`, `HostId`, `KernelId` or `RamdiskId` change) still waits for `stopped`, then returns after the start; each `Volumes` attach or detach still waits for the attachment to read `attached` or to go | Wait for `running` (30-60 s), on create and after an update's stop and start, and for each `Volumes` attachment to read `attached` (or, on a detach, to go) | same as default | Waits | Waits |
 | `AWS::ElasticLoadBalancingV2::LoadBalancer` | Return while `provisioning` | Wait for `active` (90-180 s) | same as default | Waits | Waits |
 | `AWS::Lambda::MicrovmImage` | Return while `CREATING` | Wait for `CREATED` | same as default | Waits | n/a |
@@ -319,7 +320,8 @@ return leaves unfinished, and what `--full-wait` does when a wait runs out.
   - releasing the gateway's last associated address waits until another
     address the template keeps has associated.
 - **CloudFront, `AWS::Lambda::MicrovmImage`, `AWS::BedrockAgentCore::Runtime`,
-  `AWS::Events::Archive` and `AWS::Connect::Instance` through Cloud Control.** cdkd provisions common resource types by calling
+  `AWS::Events::Archive`, `AWS::Connect::Instance` and `AWS::EC2::VPCEndpoint`
+  through Cloud Control.** cdkd provisions common resource types by calling
   the service's own API, and the rest through the AWS Cloud Control API. The
   early return in the table applies only to the first route. A resource of
   these types that is routed through Cloud Control waits for its final state
