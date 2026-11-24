@@ -612,6 +612,19 @@ describe('ConnectInstanceProvider', () => {
       expect(isMarkedNotGone(error)).toBe(true);
     });
 
+    it('rethrows a Ctrl-C during the delete retry as the interrupt, not a delete failure', async () => {
+      interrupt.on = true;
+      mockSend.mockImplementation((cmd: unknown) =>
+        cmd instanceof DescribeInstanceCommand
+          ? Promise.resolve({ Instance: { Id: ID, Arn: ARN } })
+          : Promise.reject(notFound())
+      );
+      const error = await provider
+        .delete('Inst', ARN, TYPE, undefined, { expectedRegion: 'us-east-1' })
+        .catch((e: unknown) => e);
+      expect(isInterruptedWaitError(error)).toBe(true);
+    });
+
     it('treats not-found as already deleted', async () => {
       mockSend.mockRejectedValue(notFound());
       await expect(provider.delete('Inst', ARN, TYPE, undefined, { expectedRegion: 'us-east-1' })).resolves.toBeUndefined();

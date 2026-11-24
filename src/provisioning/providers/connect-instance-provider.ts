@@ -819,6 +819,7 @@ export class ConnectInstanceProvider implements ResourceProvider {
     try {
       outcome = await this.deleteInstanceConfirmed(connectInstanceIdOf(physicalId));
     } catch (error) {
+      if (isInterruptedWaitError(error)) throw error;
       const cause = error instanceof Error ? error : undefined;
       const failure = this.wrapMaskedError(
         mask,
