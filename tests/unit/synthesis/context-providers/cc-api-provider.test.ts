@@ -4,15 +4,15 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 const mockSend = vi.fn();
 const mockDestroy = vi.fn();
 vi.mock('@aws-sdk/client-cloudcontrol', () => ({
-  CloudControlClient: vi.fn().mockImplementation(() => ({
+  CloudControlClient: vi.fn(() => ({
     send: mockSend,
     destroy: mockDestroy,
   })),
-  GetResourceCommand: vi.fn().mockImplementation((input) => ({
+  GetResourceCommand: vi.fn((input) => ({
     ...input,
     _type: 'GetResourceCommand',
   })),
-  ListResourcesCommand: vi.fn().mockImplementation((input) => ({
+  ListResourcesCommand: vi.fn((input) => ({
     ...input,
     _type: 'ListResourcesCommand',
   })),

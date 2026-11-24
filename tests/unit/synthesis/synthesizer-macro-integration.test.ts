@@ -17,11 +17,11 @@ const mockContextStoreSave = vi.hoisted(() => vi.fn());
 const mockExpandMacros = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../src/synthesis/app-executor.js', () => ({
-  AppExecutor: vi.fn().mockImplementation(() => ({ execute: mockExecute })),
+  AppExecutor: vi.fn(() => ({ execute: mockExecute })),
 }));
 
 vi.mock('../../../src/synthesis/assembly-reader.js', () => ({
-  AssemblyReader: vi.fn().mockImplementation(() => ({
+  AssemblyReader: vi.fn(() => ({
     readManifest: mockReadManifest,
     // `Synthesizer` reads through `readAssembly`, which returns the stacks in
     // a record, so the mock wraps the staged list in that shape.
@@ -33,15 +33,15 @@ vi.mock('../../../src/synthesis/assembly-reader.js', () => ({
 
 vi.mock('../../../src/synthesis/context-store.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../src/synthesis/context-store.js')>()),
-  ContextStore: vi.fn().mockImplementation(() => ({
+  ContextStore: vi.fn(() => ({
     load: mockContextStoreLoad,
     save: mockContextStoreSave,
   })),
 }));
 
 vi.mock('../../../src/synthesis/context-providers/index.js', () => ({
-  ContextProviderRegistry: vi.fn().mockImplementation(() => ({
-    resolve: vi.fn().mockResolvedValue({}),
+  ContextProviderRegistry: vi.fn(() => ({
+    resolve: vi.fn(async () => ({})),
   })),
 }));
 
@@ -63,7 +63,7 @@ const mockStsSend = vi.hoisted(() => vi.fn());
 // region configured anywhere).
 const mockStsConfigRegion = vi.hoisted(() => vi.fn());
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation(() => ({
+  STSClient: vi.fn(() => ({
     send: mockStsSend,
     destroy: vi.fn(),
     config: { region: mockStsConfigRegion },

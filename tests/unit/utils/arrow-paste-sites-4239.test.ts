@@ -50,10 +50,10 @@ vi.mock('../../../src/provisioning/create-only-properties.js', async () => {
   const actual = await vi.importActual<
     typeof import('../../../src/provisioning/create-only-properties.js')
   >('../../../src/provisioning/create-only-properties.js');
-  return { ...actual, getCreateOnlyPropertyPaths: vi.fn().mockResolvedValue(['Name']) };
+  return { ...actual, getCreateOnlyPropertyPaths: vi.fn(async () => ['Name']) };
 });
 vi.mock('../../../src/provisioning/write-only-properties.js', () => ({
-  tryGetTopLevelWriteOnlyProperties: vi.fn().mockResolvedValue([]),
+  tryGetTopLevelWriteOnlyProperties: vi.fn(async () => []),
 }));
 vi.mock('node:readline/promises', () => ({
   createInterface: vi.fn(() => ({ question: vi.fn(async () => 'n'), close: vi.fn() })),

@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 
 const clientConfigs: Record<string, Record<string, unknown>[]> = {};
 function recordingClient(name: string, send: (command: unknown) => unknown) {
-  return vi.fn().mockImplementation((config: Record<string, unknown>) => {
+  return vi.fn((config: Record<string, unknown>) => {
     (clientConfigs[name] ??= []).push(config);
     return {
       send: vi.fn(async (command: unknown) => send(command)),

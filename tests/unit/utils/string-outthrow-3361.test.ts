@@ -4,8 +4,8 @@ import type { S3Client } from '@aws-sdk/client-s3';
 const loggerDebug = vi.hoisted(() => vi.fn());
 
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation(() => ({ send: vi.fn(), destroy: vi.fn() })),
-  GetCallerIdentityCommand: vi.fn().mockImplementation((input) => ({ ...input })),
+  STSClient: vi.fn(() => ({ send: vi.fn(), destroy: vi.fn() })),
+  GetCallerIdentityCommand: vi.fn((input) => ({ ...input })),
 }));
 
 vi.mock('../../../src/utils/logger.js', () => {

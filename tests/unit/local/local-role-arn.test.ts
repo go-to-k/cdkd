@@ -16,7 +16,8 @@ vi.mock('../../../src/utils/role-arn.js', async (importOriginal) => {
 // is still exercised and reset between cases.
 vi.mock('cdk-local/internal', async (importOriginal) => {
   const actual = await importOriginal<typeof import('cdk-local/internal')>();
-  mocks.recordAssumedRole.mockImplementation(actual.recordAssumedRole);
+  // `vi.fn(impl)`: a reset restores the real recorder.
+  mocks.recordAssumedRole = vi.fn(actual.recordAssumedRole);
   return { ...actual, recordAssumedRole: mocks.recordAssumedRole };
 });
 

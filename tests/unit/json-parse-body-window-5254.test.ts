@@ -16,9 +16,9 @@ import { parse } from 'yaml';
 
 const mockCcSend = vi.hoisted(() => vi.fn());
 vi.mock('@aws-sdk/client-cloudcontrol', () => ({
-  CloudControlClient: vi.fn().mockImplementation(() => ({ send: mockCcSend, destroy: vi.fn() })),
-  GetResourceCommand: vi.fn().mockImplementation((input: object) => ({ ...input })),
-  ListResourcesCommand: vi.fn().mockImplementation((input: object) => ({ ...input })),
+  CloudControlClient: vi.fn(() => ({ send: mockCcSend, destroy: vi.fn() })),
+  GetResourceCommand: vi.fn((input: object) => ({ ...input })),
+  ListResourcesCommand: vi.fn((input: object) => ({ ...input })),
 }));
 
 const loggerSpies = vi.hoisted(() => ({
