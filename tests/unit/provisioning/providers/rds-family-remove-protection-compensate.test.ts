@@ -18,7 +18,7 @@ vi.mock('@aws-sdk/client-rds', async (importOriginal) => {
   const orig = (await importOriginal()) as Record<string, unknown>;
   return {
     ...orig,
-    RDSClient: vi.fn().mockImplementation(() => ({
+    RDSClient: vi.fn(() => ({
       send: rdsSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -28,7 +28,7 @@ vi.mock('@aws-sdk/client-docdb', async (importOriginal) => {
   const orig = (await importOriginal()) as Record<string, unknown>;
   return {
     ...orig,
-    DocDBClient: vi.fn().mockImplementation(() => ({
+    DocDBClient: vi.fn(() => ({
       send: docdbSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -38,7 +38,7 @@ vi.mock('@aws-sdk/client-neptune', async (importOriginal) => {
   const orig = (await importOriginal()) as Record<string, unknown>;
   return {
     ...orig,
-    NeptuneClient: vi.fn().mockImplementation(() => ({
+    NeptuneClient: vi.fn(() => ({
       send: neptuneSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -50,7 +50,7 @@ const childLogger = {
   info: vi.fn(),
   warn: vi.fn(),
   error: vi.fn(),
-  child: vi.fn().mockReturnThis(),
+  child: vi.fn(function (this: unknown) { return this; }),
 };
 vi.mock('../../../../src/utils/logger.js', () => ({
   getLogger: () => ({

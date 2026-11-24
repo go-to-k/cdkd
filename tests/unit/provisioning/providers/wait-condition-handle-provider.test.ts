@@ -5,7 +5,7 @@ const child = {
   info: vi.fn(),
   warn: vi.fn(),
   error: vi.fn(),
-  child: vi.fn().mockReturnThis(),
+  child: vi.fn(function (this: unknown) { return this; }),
 };
 vi.mock('../../../../src/utils/logger.js', () => ({
   getLogger: () => ({ ...child, child: () => child }),

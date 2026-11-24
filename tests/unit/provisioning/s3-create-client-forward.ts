@@ -23,7 +23,7 @@ interface SharedS3 {
 /** The `S3Client` export a suite's `@aws-sdk/client-s3` mock spreads in. */
 export function forwardedS3Client(): { S3Client: unknown } {
   return {
-    S3Client: vi.fn().mockImplementation((cfg?: { region?: string }) => ({
+    S3Client: vi.fn((cfg?: { region?: string }) => ({
       config: { region: () => Promise.resolve(cfg?.region) },
       send: async (...args: unknown[]) => {
         const { getAwsClients } = await import('../../../src/utils/aws-clients.js');
