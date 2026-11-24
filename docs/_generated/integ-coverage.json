@@ -37,6 +37,7 @@
     "AWS::CodeBuild::Project",
     "AWS::CodeCommit::Repository",
     "AWS::Cognito::UserPool",
+    "AWS::Connect::Instance",
     "AWS::DLM::LifecyclePolicy",
     "AWS::DocDB::DBCluster",
     "AWS::DocDB::DBInstance",
@@ -1431,6 +1432,17 @@
         ],
         "serverless-api": [
           "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::Connect::Instance",
+      "integs": [
+        "connect-instance"
+      ],
+      "signals": {
+        "connect-instance": [
+          "literal"
         ]
       }
     },
@@ -7844,6 +7856,7 @@
         "codedeploy-lambda-deployment-group",
         "cognito-lambda-triggers",
         "composite-stack",
+        "connect-instance",
         "cross-stack-export-in-use",
         "custom-resource-getatt-data",
         "custom-resource-masked-service-token",
@@ -8034,6 +8047,9 @@
         "composite-stack": [
           "l2",
           "literal"
+        ],
+        "connect-instance": [
+          "l2"
         ],
         "cross-stack-export-in-use": [
           "l2"
@@ -11745,8 +11761,9 @@
     "AWS::Cognito::UserPoolGroup",
     "AWS::Cognito::UserPoolUser",
     "AWS::Cognito::UserPoolUserToGroupAttachment",
-    "AWS::Connect::Instance",
+    "AWS::Connect::ContactFlow",
     "AWS::Connect::InstanceStorageConfig",
+    "AWS::Connect::IntegrationAssociation",
     "AWS::DMS::Endpoint",
     "AWS::DSQL::Cluster",
     "AWS::DataSync::LocationS3",

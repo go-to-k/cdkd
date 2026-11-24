@@ -662,7 +662,11 @@ const FLOORS = {
 // the walk follows its create and update sites into the poll loop (the signal
 // store read and `evaluateSignals`' verdict) and drops six past the cap. A
 // signal fold, not a fallback.
-const DEPTH_DROPPED_CAP = 43;
+// Raised to 46 by go-to-k/cdkd#6912: `connect-instance-provider.ts` records
+// the `DescribeInstance` answer its readiness / ACTIVE wait returns, so the
+// walk follows it into the poll loop and drops three past the cap. A wait's
+// last read, not a fallback.
+const DEPTH_DROPPED_CAP = 46;
 
 /**
  * The fence's verdict over a scan: hits that match no allow-list entry, and

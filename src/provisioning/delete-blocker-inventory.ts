@@ -647,6 +647,12 @@ export const DELETE_BLOCKER_INVENTORY: readonly DeleteBlockerRow[] = [
   ),
   none('AWS::Events::Archive', perms('events:DeleteArchive')),
   none(
+    'AWS::Connect::Instance',
+    perms(
+      "connect:DeleteInstance, connect:DescribeInstance, connect:UntagResource, ds:DeleteDirectory, ds:UnauthorizeApplication, ds:DescribeDirectories (the ds:* grants serve DeleteInstance removing the Connect-managed directory itself; the instance's storage configs, flows and integrations are records of their own, deleted first)"
+    )
+  ),
+  none(
     'AWS::Logs::LogGroup',
     perms(
       'logs:DeleteLogGroup, logs:DeleteDataProtectionPolicy (the group is deleted with its policy)'

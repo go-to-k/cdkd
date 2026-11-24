@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 147,
+    "classifiedCount": 148,
     "enriched": 50,
     "noComputedAttr": 18,
     "unenrichedGap": 0,
-    "sdkFallbackGap": 79,
-    "allowListedTypes": 89
+    "sdkFallbackGap": 80,
+    "allowListedTypes": 90
   },
   "types": [
     {
@@ -913,6 +913,48 @@
         "Arn",
         "ProviderName",
         "ProviderURL"
+      ]
+    },
+    {
+      "resourceType": "AWS::Connect::Instance",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn",
+        "CreatedTime",
+        "Id",
+        "InstanceStatus",
+        "ServiceRole"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
+        },
+        {
+          "name": "CreatedTime",
+          "status": "gap"
+        },
+        {
+          "name": "Id",
+          "status": "gap"
+        },
+        {
+          "name": "InstanceStatus",
+          "status": "gap"
+        },
+        {
+          "name": "ServiceRole",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "CreatedTime",
+        "Id",
+        "InstanceStatus",
+        "ServiceRole"
       ]
     },
     {

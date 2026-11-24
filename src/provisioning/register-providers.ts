@@ -64,6 +64,7 @@ export function registerAllProviders(registry: ProviderRegistry, classes: Provid
     EventBridgeRuleProvider,
     EventBridgeBusProvider,
     EventBridgeArchiveProvider,
+    ConnectInstanceProvider,
     EC2Provider,
     ApiGatewayProvider,
     ApiGatewayV2Provider,
@@ -183,6 +184,7 @@ export function registerAllProviders(registry: ProviderRegistry, classes: Provid
   registry.register('AWS::Events::Rule', new EventBridgeRuleProvider());
   registry.register('AWS::Events::EventBus', new EventBridgeBusProvider());
   registry.register('AWS::Events::Archive', new EventBridgeArchiveProvider());
+  registry.register('AWS::Connect::Instance', new ConnectInstanceProvider());
 
   // EC2 / Networking
   const ec2Provider = new EC2Provider();

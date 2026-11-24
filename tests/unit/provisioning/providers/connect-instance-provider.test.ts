@@ -1,0 +1,407 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import {
+  CreateInstanceCommand,
+  DeleteInstanceCommand,
+  DescribeInstanceAttributeCommand,
+  DescribeInstanceCommand,
+  ListInstanceAttributesCommand,
+  ListInstancesCommand,
+  ResourceNotFoundException,
+  TagResourceCommand,
+  UntagResourceCommand,
+  UpdateInstanceAttributeCommand,
+} from '@aws-sdk/client-connect';
+
+const interrupt = vi.hoisted(() => ({ on: false }));
+vi.mock('../../../../src/provisioning/interrupt-watch.js', async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import('../../../../src/provisioning/interrupt-watch.js')
+  >();
+  return {
+    ...actual,
+    startInterruptWatch: (what: string) => ({
+      isInterrupted: () => interrupt.on,
+      onInterrupted: () => new actual.InterruptedWaitError(what),
+      dispose: () => undefined,
+    }),
+  };
+});
+
+const warn = vi.fn();
+vi.mock('../../../../src/utils/logger.js', () => {
+  const childLogger = {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: (...args: unknown[]) => warn(...args),
+    error: vi.fn(),
+    child: vi.fn().mockReturnThis(),
+  };
+  return {
+    getLogger: () => ({
+      child: () => childLogger,
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    }),
+  };
+});
+
+import {
+  CONNECT_INSTANCE_ATTRIBUTE_TYPES,
+  ConnectInstanceProvider,
+} from '../../../../src/provisioning/providers/connect-instance-provider.js';
+import { connectInstanceIdOf } from '../../../../src/provisioning/connect-instance-id.js';
+import { RESOURCE_NOT_FOUND } from '../../../../src/types/resource.js';
+import { createdBeforeFailure } from '../../../../src/provisioning/auxiliary-failure.js';
+import { isInterruptedWaitError } from '../../../../src/provisioning/interrupt-watch.js';
+
+const TYPE = 'AWS::Connect::Instance';
+const ID = '11111111-2222-3333-4444-555555555555';
+const ARN = `arn:aws:connect:us-east-1:123456789012:instance/${ID}`;
+const ROLE = 'arn:aws:iam::123456789012:role/aws-service-role/connect.amazonaws.com/AWSServiceRoleForAmazonConnect_x';
+const CREATED = new Date('2026-11-24T00:00:00.000Z');
+
+const notFound = (): ResourceNotFoundException =>
+  new ResourceNotFoundException({ message: 'not found', $metadata: {} });
+
+const mockSend = vi.fn();
+
+function sentOf<T>(ctor: new (...args: never[]) => T): T[] {
+  return mockSend.mock.calls.map((c) => c[0] as unknown).filter((c): c is T => c instanceof ctor);
+}
+
+function baseProps(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    IdentityManagementType: 'CONNECT_MANAGED',
+    InstanceAlias: 'my-alias',
+    Attributes: { InboundCalls: true, OutboundCalls: false, ContactflowLogs: true },
+    ...extra,
+  };
+}
+
+/**
+ * Script a create: DescribeInstance answers `statuses` in turn (the last
+ * repeats), DescribeInstanceAttribute fails not-found `attrNotFound` times.
+ */
+function scriptCreate(options: {
+  statuses: string[];
+  attrNotFound?: number;
+  createdResponse?: { Id?: string; Arn?: string };
+}): void {
+  let describe = 0;
+  let attr = options.attrNotFound ?? 0;
+  mockSend.mockImplementation((cmd: unknown) => {
+    if (cmd instanceof CreateInstanceCommand) {
+      return Promise.resolve(options.createdResponse ?? { Id: ID, Arn: ARN });
+    }
+    if (cmd instanceof DescribeInstanceCommand) {
+      const status = options.statuses[Math.min(describe++, options.statuses.length - 1)];
+      return Promise.resolve({
+        Instance: {
+          Id: ID,
+          Arn: ARN,
+          InstanceStatus: status,
+          CreatedTime: CREATED,
+          ...(status === 'ACTIVE' ? { ServiceRole: ROLE } : {}),
+          ...(status === 'CREATION_FAILED' ? { StatusReason: { Message: 'boom' } } : {}),
+        },
+      });
+    }
+    if (cmd instanceof DescribeInstanceAttributeCommand) {
+      if (attr > 0) {
+        attr--;
+        return Promise.reject(notFound());
+      }
+      return Promise.resolve({ Attribute: { AttributeType: 'INBOUND_CALLS', Value: 'true' } });
+    }
+    return Promise.resolve({});
+  });
+}
+
+describe('ConnectInstanceProvider', () => {
+  let provider: ConnectInstanceProvider;
+
+  beforeEach(() => {
+    mockSend.mockReset();
+    warn.mockReset();
+    interrupt.on = false;
+    provider = new ConnectInstanceProvider();
+    (provider as unknown as { client: unknown }).client = {
+      send: mockSend,
+      config: { region: () => Promise.resolve('us-east-1') },
+    };
+    provider.instanceWait = { pollIntervalMs: 0, timeoutMs: 60_000, sleep: () => Promise.resolve() };
+    delete process.env['CDKD_NO_WAIT'];
+  });
+
+  afterEach(() => {
+    delete process.env['CDKD_NO_WAIT'];
+  });
+
+  it('maps every CFn Attributes member to its InstanceAttributeType', () => {
+    expect(Object.keys(CONNECT_INSTANCE_ATTRIBUTE_TYPES)).toHaveLength(14);
+    expect(new Set(Object.values(CONNECT_INSTANCE_ATTRIBUTE_TYPES)).size).toBe(14);
+  });
+
+  it('reads the instance id out of the ARN', () => {
+    expect(connectInstanceIdOf(ARN)).toBe(ID);
+    expect(connectInstanceIdOf(ID)).toBe(ID);
+  });
+
+  describe('create', () => {
+    it('creates, waits for readiness, applies the other attributes, then waits for ACTIVE', async () => {
+      scriptCreate({ statuses: ['CREATION_IN_PROGRESS', 'CREATION_IN_PROGRESS', 'ACTIVE'], attrNotFound: 1 });
+
+      const result = await provider.create('Inst', TYPE, baseProps({ Tags: [{ Key: 'k', Value: 'v' }] }));
+
+      expect(result.physicalId).toBe(ARN);
+      expect(result.attributes).toEqual({
+        Id: ID,
+        Arn: ARN,
+        ServiceRole: ROLE,
+        CreatedTime: CREATED.toISOString(),
+        InstanceStatus: 'ACTIVE',
+      });
+      const [create] = sentOf(CreateInstanceCommand);
+      expect(create?.input).toMatchObject({
+        IdentityManagementType: 'CONNECT_MANAGED',
+        InstanceAlias: 'my-alias',
+        InboundCallsEnabled: true,
+        OutboundCallsEnabled: false,
+        Tags: { k: 'v' },
+      });
+      expect(create?.input.ClientToken).toEqual(expect.any(String));
+      const updates = sentOf(UpdateInstanceAttributeCommand).map((c) => c.input);
+      expect(updates).toEqual([{ InstanceId: ID, AttributeType: 'CONTACTFLOW_LOGS', Value: 'true' }]);
+      // The attribute write comes after readiness, before the ACTIVE read.
+      const order = mockSend.mock.calls.map((c) => (c[0] as object).constructor.name);
+      expect(order.indexOf('UpdateInstanceAttributeCommand')).toBeGreaterThan(
+        order.lastIndexOf('DescribeInstanceAttributeCommand')
+      );
+    });
+
+    it('under --no-wait returns once the attributes are applied, without the ACTIVE wait', async () => {
+      process.env['CDKD_NO_WAIT'] = 'true';
+      scriptCreate({ statuses: ['CREATION_IN_PROGRESS'] });
+
+      const result = await provider.create('Inst', TYPE, baseProps());
+
+      expect(result.physicalId).toBe(ARN);
+      expect(result.attributes?.['ServiceRole']).toBeUndefined();
+      expect(result.attributes?.['InstanceStatus']).toBe('CREATION_IN_PROGRESS');
+      expect(sentOf(UpdateInstanceAttributeCommand)).toHaveLength(1);
+      expect(sentOf(DescribeInstanceCommand)).toHaveLength(1);
+    });
+
+    it('CREATION_FAILED fails the create and deletes the instance', async () => {
+      scriptCreate({ statuses: ['CREATION_FAILED'] });
+
+      await expect(provider.create('Inst', TYPE, baseProps())).rejects.toThrow(
+        /Connect instance Inst entered CREATION_FAILED/
+      );
+      expect(sentOf(DeleteInstanceCommand).map((c) => c.input)).toEqual([{ InstanceId: ID }]);
+    });
+
+    it('a failed cleanup delete names the survivor as created before the failure', async () => {
+      scriptCreate({ statuses: ['CREATION_FAILED'] });
+      const base = mockSend.getMockImplementation()!;
+      mockSend.mockImplementation((cmd: unknown) =>
+        cmd instanceof DeleteInstanceCommand
+          ? Promise.reject(Object.assign(new Error('denied'), { name: 'AccessDeniedException' }))
+          : base(cmd)
+      );
+
+      const error = await provider.create('Inst', TYPE, baseProps()).catch((e: unknown) => e);
+      expect(createdBeforeFailure(error, 'Inst', TYPE)).toBe(ARN);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('aws connect delete-instance'));
+    });
+
+    it('an interrupted wait is rethrown without deleting the instance', async () => {
+      scriptCreate({ statuses: ['CREATION_IN_PROGRESS'], attrNotFound: 100 });
+      interrupt.on = true;
+
+      const error = await provider.create('Inst', TYPE, baseProps()).catch((e: unknown) => e);
+      expect(isInterruptedWaitError(error)).toBe(true);
+      expect(sentOf(DeleteInstanceCommand)).toHaveLength(0);
+    });
+
+    it('a wait that runs out fails the create and deletes the instance', async () => {
+      provider.instanceWait = { pollIntervalMs: 0, timeoutMs: 0, sleep: () => Promise.resolve() };
+      scriptCreate({ statuses: ['CREATION_IN_PROGRESS'] });
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof CreateInstanceCommand) return Promise.resolve({ Id: ID, Arn: ARN });
+        if (cmd instanceof DescribeInstanceCommand) {
+          return Promise.resolve({ Instance: { Arn: ARN, InstanceStatus: 'CREATION_IN_PROGRESS' } });
+        }
+        if (cmd instanceof DescribeInstanceAttributeCommand) return Promise.reject(notFound());
+        return Promise.resolve({});
+      });
+
+      await expect(provider.create('Inst', TYPE, baseProps())).rejects.toThrow();
+      expect(sentOf(DeleteInstanceCommand)).toHaveLength(1);
+    });
+
+    it.each([
+      ['a missing Attributes', { Attributes: undefined }, /Attributes .* is required/],
+      ['an unknown member', { Attributes: { InboundCalls: true, OutboundCalls: true, Nope: true } }, /Nope/],
+      ['a non-boolean member', { Attributes: { InboundCalls: 'maybe', OutboundCalls: true } }, /InboundCalls/],
+      ['a missing OutboundCalls', { Attributes: { InboundCalls: true } }, /must declare OutboundCalls/],
+      ['a missing IdentityManagementType', { IdentityManagementType: undefined }, /IdentityManagementType is required/],
+    ])('refuses %s before any call', async (_label, extra, message) => {
+      await expect(provider.create('Inst', TYPE, baseProps(extra))).rejects.toThrow(message);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('accepts CFn string booleans', async () => {
+      scriptCreate({ statuses: ['ACTIVE'] });
+      await provider.create(
+        'Inst',
+        TYPE,
+        baseProps({ Attributes: { InboundCalls: 'true', OutboundCalls: 'false' } })
+      );
+      expect(sentOf(CreateInstanceCommand)[0]?.input).toMatchObject({
+        InboundCallsEnabled: true,
+        OutboundCallsEnabled: false,
+      });
+      expect(sentOf(UpdateInstanceAttributeCommand)).toHaveLength(0);
+    });
+  });
+
+  describe('update', () => {
+    it('writes only the changed attributes and diffs tags', async () => {
+      mockSend.mockResolvedValue({});
+      const result = await provider.update(
+        'Inst',
+        ARN,
+        TYPE,
+        baseProps({
+          Attributes: { InboundCalls: true, OutboundCalls: true, ContactflowLogs: true },
+          Tags: [{ Key: 'a', Value: '2' }],
+        }),
+        baseProps({
+          Attributes: { InboundCalls: true, OutboundCalls: false, ContactflowLogs: true },
+          Tags: [
+            { Key: 'a', Value: '1' },
+            { Key: 'b', Value: 'x' },
+          ],
+        })
+      );
+      expect(result).toEqual({ physicalId: ARN, wasReplaced: false });
+      expect(sentOf(UpdateInstanceAttributeCommand).map((c) => c.input)).toEqual([
+        { InstanceId: ID, AttributeType: 'OUTBOUND_CALLS', Value: 'true' },
+      ]);
+      expect(sentOf(UntagResourceCommand)[0]?.input).toEqual({ resourceArn: ARN, tagKeys: ['b'] });
+      expect(sentOf(TagResourceCommand)[0]?.input).toEqual({ resourceArn: ARN, tags: { a: '2' } });
+    });
+
+    it('leaves a removed attribute at its live value, with a warning', async () => {
+      mockSend.mockResolvedValue({});
+      await provider.update('Inst', ARN, TYPE, baseProps({ Attributes: { InboundCalls: true, OutboundCalls: false } }), baseProps());
+      expect(sentOf(UpdateInstanceAttributeCommand)).toHaveLength(0);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('ContactflowLogs'));
+    });
+
+    it('sends nothing when nothing changed', async () => {
+      await provider.update('Inst', ARN, TYPE, baseProps(), baseProps());
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('delete', () => {
+    it('deletes by instance id', async () => {
+      mockSend.mockResolvedValue({});
+      await provider.delete('Inst', ARN, TYPE);
+      expect(sentOf(DeleteInstanceCommand).map((c) => c.input)).toEqual([{ InstanceId: ID }]);
+    });
+
+    it('treats not-found as already deleted', async () => {
+      mockSend.mockRejectedValue(notFound());
+      await expect(provider.delete('Inst', ARN, TYPE, undefined, { expectedRegion: 'us-east-1' })).resolves.toBeUndefined();
+    });
+
+    it('refuses a not-found from a client in another region than the record', async () => {
+      mockSend.mockRejectedValue(notFound());
+      await expect(
+        provider.delete('Inst', ARN, TYPE, undefined, { expectedRegion: 'eu-west-1' })
+      ).rejects.toThrow(/eu-west-1/);
+    });
+
+    it('refuses a not-found from a client in another region than the ARN when no region is recorded', async () => {
+      mockSend.mockRejectedValue(notFound());
+      const other = ARN.replace('us-east-1', 'eu-west-1');
+      await expect(provider.delete('Inst', other, TYPE)).rejects.toThrow(/eu-west-1/);
+    });
+  });
+
+  describe('readCurrentState', () => {
+    it('reads the instance, every attribute, and user tags', async () => {
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof DescribeInstanceCommand) {
+          return Promise.resolve({
+            Instance: {
+              Arn: ARN,
+              IdentityManagementType: 'CONNECT_MANAGED',
+              InstanceAlias: 'my-alias',
+              Tags: { k: 'v', 'aws:cloudformation:stack-name': 's' },
+            },
+          });
+        }
+        if (cmd instanceof ListInstanceAttributesCommand) {
+          return Promise.resolve({
+            Attributes: [
+              { AttributeType: 'INBOUND_CALLS', Value: 'true' },
+              { AttributeType: 'CONTACTFLOW_LOGS', Value: 'false' },
+            ],
+          });
+        }
+        return Promise.resolve({});
+      });
+      expect(await provider.readCurrentState(ARN, 'Inst', TYPE)).toEqual({
+        IdentityManagementType: 'CONNECT_MANAGED',
+        InstanceAlias: 'my-alias',
+        Attributes: { InboundCalls: true, ContactflowLogs: false },
+        Tags: [{ Key: 'k', Value: 'v' }],
+      });
+    });
+
+    it('answers RESOURCE_NOT_FOUND for a gone instance', async () => {
+      mockSend.mockRejectedValue(notFound());
+      expect(await provider.readCurrentState(ARN, 'Inst', TYPE)).toBe(RESOURCE_NOT_FOUND);
+    });
+  });
+
+  describe('import', () => {
+    const input = (extra: Record<string, unknown> = {}) => ({
+      logicalId: 'Inst',
+      resourceType: TYPE,
+      stackName: 's',
+      region: 'us-east-1',
+      properties: baseProps(),
+      ...extra,
+    });
+
+    it('verifies an explicit id and records the ARN', async () => {
+      mockSend.mockResolvedValue({ Instance: { Id: ID, Arn: ARN, InstanceStatus: 'ACTIVE' } });
+      const result = await provider.import(input({ knownPhysicalId: ID }));
+      expect(result?.physicalId).toBe(ARN);
+      expect(sentOf(DescribeInstanceCommand)[0]?.input).toEqual({ InstanceId: ID });
+    });
+
+    it('finds the instance by InstanceAlias', async () => {
+      mockSend.mockResolvedValue({
+        InstanceSummaryList: [
+          { Id: 'other', Arn: 'arn:other', InstanceAlias: 'other' },
+          { Id: ID, Arn: ARN, InstanceAlias: 'my-alias' },
+        ],
+      });
+      expect((await provider.import(input()))?.physicalId).toBe(ARN);
+      expect(sentOf(ListInstancesCommand)).toHaveLength(1);
+    });
+
+    it('returns null when nothing matches', async () => {
+      mockSend.mockResolvedValue({ InstanceSummaryList: [] });
+      expect(await provider.import(input())).toBeNull();
+    });
+  });
+});

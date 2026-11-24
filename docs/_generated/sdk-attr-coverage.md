@@ -12,8 +12,8 @@ For every SDK-backed resource type (whose CFn schema is cached under `tests/fixt
 
 ## Summary
 
-- SDK-backed types classified: **147**
-- Covered (every Arn/ARN/Url/URL readOnly resolvable): **77**
+- SDK-backed types classified: **148**
+- Covered (every Arn/ARN/Url/URL readOnly resolvable): **78**
 - No Arn/ARN/Url/URL readOnly attribute: **70**
 - **Latent gaps (blocks CI): 0**
 - Allow-listed KNOWN GAPs (real debt, tracked, does not block CI): **0**
@@ -50,6 +50,7 @@ None. Every `Arn`/`ARN`/`Url`/`URL` read-only attribute on a cached SDK-backed t
 | `AWS::CodeBuild::Project` | covered | `Arn` (cached) |
 | `AWS::CodeCommit::Repository` | covered | `Arn` (cached) |
 | `AWS::Cognito::UserPool` | covered | `Arn` (cached), `ProviderURL` (cached) |
+| `AWS::Connect::Instance` | covered | `Arn` (cached) |
 | `AWS::DLM::LifecyclePolicy` | covered | `Arn` (cached) |
 | `AWS::DynamoDB::GlobalTable` | covered | `Arn` (cached), `StreamArn` (cached) |
 | `AWS::DynamoDB::Table` | covered | `Arn` (cached), `StreamArn` (cached) |

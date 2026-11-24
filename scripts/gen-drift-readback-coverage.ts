@@ -123,6 +123,7 @@ export const DRIFT_READBACK_BASELINE: ReadonlyMap<string, BaselineEntry> = new M
   ...(
     [
       ['AWS::AutoScaling::AutoScalingGroup', 'SkipZonalShiftValidation'],
+      ['AWS::Connect::Instance', 'DirectoryId'],
       ['AWS::EFS::FileSystem', 'BypassPolicyLockoutSafetyCheck'],
       ['AWS::Events::EventBus', 'EventSourceName'],
       ['AWS::Glue::Trigger', 'StartOnCreation'],

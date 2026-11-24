@@ -63,6 +63,12 @@ export const CALL_ROOTS: Record<string, CallRoots> = {
       AttachVolumeCommand: PER_ITEM('Volumes', 'VolumeId'),
     },
   },
+  'AWS::Connect::Instance': {
+    roots: {
+      // One call per Attributes member, naming it in AttributeType.
+      UpdateInstanceAttributeCommand: (input) => String(input['AttributeType']),
+    },
+  },
   'AWS::DynamoDB::Table': {
     roots: {
       PutResourcePolicyCommand: tableOrStream,

@@ -10,8 +10,8 @@
     }
   ],
   "summary": {
-    "classifiedCount": 147,
-    "covered": 77,
+    "classifiedCount": 148,
+    "covered": 78,
     "noArnAttr": 70,
     "gap": 0,
     "knownGap": 0,
@@ -335,6 +335,17 @@
         },
         {
           "name": "ProviderURL",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Connect::Instance",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
           "status": "cached"
         }
       ],

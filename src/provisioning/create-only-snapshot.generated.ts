@@ -76,6 +76,7 @@ export const CREATE_ONLY_PATHS_SNAPSHOT: ReadonlyMap<
   ['AWS::CodeBuild::Project', [['Name']]],
   ['AWS::CodeCommit::Repository', []],
   ['AWS::Cognito::UserPool', []],
+  ['AWS::Connect::Instance', [['DirectoryId'], ['IdentityManagementType'], ['InstanceAlias']]],
   ['AWS::DLM::LifecyclePolicy', []],
   [
     'AWS::DocDB::DBCluster',

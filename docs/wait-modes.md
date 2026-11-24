@@ -127,6 +127,9 @@ the background. Until then, you may see these:
   runtime that fails to reach `READY` does not fail the deploy.
 - An EventBridge archive can still be `CREATING` or `UPDATING`: it does not
   archive events yet, and an archive that fails does not fail the deploy.
+- An Amazon Connect instance can still be `CREATION_IN_PROGRESS`, and an
+  instance that ends `CREATION_FAILED` does not fail the deploy. A
+  `Fn::GetAtt` of its `ServiceRole` still waits for `ACTIVE`.
 - A load balancer's DNS name returns 503 until the load balancer is `active`.
 - An ECS service's rollout is unchecked: a service whose tasks never start
   still deploys with exit `0`.

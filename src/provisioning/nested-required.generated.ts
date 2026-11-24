@@ -343,6 +343,13 @@ export const NESTED_REQUIRED: ReadonlyMap<string, ReadonlyMap<string, readonly s
     ]),
   ],
   [
+    'AWS::Connect::Instance',
+    new Map<string, readonly string[]>([
+      ['Attributes', ['InboundCalls', 'OutboundCalls']],
+      ['Tags', ['Key', 'Value']],
+    ]),
+  ],
+  [
     'AWS::DLM::LifecyclePolicy',
     new Map<string, readonly string[]>([
       ['Exclusions.ExcludeTags', ['Key', 'Value']],

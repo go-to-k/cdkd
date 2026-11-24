@@ -118,6 +118,19 @@ that ends in `CREATE_FAILED` or `UPDATE_FAILED` does not fail the deploy, and
 events sent before it is `ENABLED` are not archived. Its name and ARN are
 available first.
 
+### `AWS::Connect::Instance`
+
+cdkd returns once the instance accepts dependent calls, about 20-25 s after
+`CreateInstance`, while it is still `CREATION_IN_PROGRESS`, and after it has
+applied the declared `Attributes`. Storage configs, contact flows, Lambda
+associations and the other resources that reference the instance are created
+then, and they stay in place when the instance turns `ACTIVE`. The instance
+can still end `CREATION_FAILED` after the deploy returns, and that does not
+fail the deploy. Its ID and ARN are available first. A `Fn::GetAtt` of
+`ServiceRole` still waits for `ACTIVE`, up to 10 minutes, because the role
+exists only then. Only an instance whose `ServiceRole` something references
+pays for that wait.
+
 ### Auto Scaling group instance refresh
 
 With `--update-policy`, an Auto Scaling group whose `AutoScalingRollingUpdate`

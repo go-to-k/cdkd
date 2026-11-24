@@ -1,9 +1,9 @@
 {
   "summary": {
-    "types": 147,
-    "properties": 1563,
-    "update": 1142,
-    "replacement": 400,
+    "types": 148,
+    "properties": 1568,
+    "update": 1144,
+    "replacement": 403,
     "allowListed": 21,
     "gap": 0,
     "outsideSchema": 13
@@ -1909,6 +1909,38 @@
         },
         {
           "property": "WebAuthnUserVerification",
+          "status": "update"
+        }
+      ],
+      "outsideSchema": [],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Connect::Instance",
+      "file": "src/provisioning/providers/connect-instance-provider.ts",
+      "className": "ConnectInstanceProvider",
+      "properties": [
+        {
+          "property": "Attributes",
+          "status": "update"
+        },
+        {
+          "property": "DirectoryId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "IdentityManagementType",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "InstanceAlias",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Tags",
           "status": "update"
         }
       ],
