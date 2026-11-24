@@ -94,23 +94,22 @@ site which gave way and why.
 - **Run `/check` before every commit — it opens with a four-axis self-review —
   `/check-docs` whenever the commit touches `src/**`, `docs/**`, `README.md`,
   `AGENTS.md` or `.claude/rules/**`, and `/verify-pr` before opening a PR**
-  (each is `.claude/skills/<name>/SKILL.md`, followable by hand where slash
-  commands are not available). Recommended, not enforced — nothing blocks them,
-  and skipping them is how main goes red.
+  (each a `.claude/skills/<name>/SKILL.md`, followable by hand). Recommended,
+  not enforced — nothing blocks them, and skipping them is how main goes red.
 - **Cost is not a tiebreaker for verification depth** on a `src/**` change:
-  tokens, wall-clock or "probably fine" never justify the weaker option; when
-  unsure take the higher tier. Run every `/pick-integ` integ; a hard-to-reach
+  tokens, wall-clock or "probably fine" never justify the weaker one; unsure
+  means the higher tier. Run every `/pick-integ` integ; a hard-to-reach
   path gets a fixture arm, not unit tests plus reasoning. Not for tooling.
 - **Integration tests run through `/run-integ <name>`, never a manual
-  `cdkd deploy` / `cdkd destroy`** — it is the only path that pairs deploy with
-  destroy plus orphan verification and records the run. `/pick-integ` chooses.
-  Afterwards, confirm AWS is clean; if the destroy failed or left orphans, clean
-  them up through direct AWS API calls before anything else.
+  `cdkd deploy` / `cdkd destroy`** — the only path that pairs deploy with destroy,
+  verifies orphans and records the run. `/pick-integ` chooses.
+  Afterwards confirm AWS is clean; clean up a failed destroy's orphans through
+  direct AWS API calls first.
 - **Deletion logic and state-schema bumps cannot merge on green CI alone.** Each
-  is held by a marker gate until `/run-integ` records a clean real-AWS run, so
-  budget that run before planning the merge.
+  waits on a marker gate until `/run-integ` records a clean real-AWS run; budget
+  that run in the merge plan.
 - **Dispatch reviewers with `/review-pr`**, which owns the counts and the
-  trigger list. They are read-only sub-agents, run once on the final sha; a fix
+  trigger list. Read-only sub-agents, they run once on the final sha; a fix
   round goes back to the same reviewer with the delta, never a fresh dispatch.
 - **CI must be green and the server enforces it.** Wait with
   `gh pr checks <N> --watch` — an early merge fails with a ruleset message that
@@ -119,7 +118,9 @@ site which gave way and why.
   every check.
 - **Merge with squash only**: `gh pr merge <N> --squash --delete-branch`.
 - **Never merge the standing `chore(release): <ver>` PR unless the maintainer
-  asks for a release.** An ordinary merge publishes nothing by itself.
+  asks for a release.** An ordinary merge publishes nothing.
+- **Approve a bot PR's `action_required` runs for its `headRefOid` only**, once
+  per head change: a former head's approved runs queue ahead of it.
 
 ## Reporting
 
