@@ -156,6 +156,24 @@ describe('ACMCertificateProvider', () => {
         Export: 'ENABLED',
       });
       expect(req.Tags).toEqual([{ Key: 'env', Value: 'test' }]);
+      // Not declared, so not sent: a plain certificate is not an N2 one.
+      expect('RootHierarchyType' in req).toBe(false);
+      expect('CertificateUsage' in req).toBe(false);
+    });
+
+    it('forwards an Amazon N2 RootHierarchyType and CertificateUsage (go-to-k/cdkd#6799)', async () => {
+      mockSend.mockResolvedValueOnce({ CertificateArn: ARN });
+
+      await provider.create('MyCert', 'AWS::CertificateManager::Certificate', {
+        DomainName: 'example.com',
+        ValidationMethod: 'DNS',
+        RootHierarchyType: 'N2_SFG2_AMAZON_MANAGED',
+        CertificateUsage: 'CLIENT_AUTH_ONLY',
+      });
+
+      const req = callsOfType(RequestCertificateCommand)[0].input;
+      expect(req.RootHierarchyType).toBe('N2_SFG2_AMAZON_MANAGED');
+      expect(req.CertificateUsage).toBe('CLIENT_AUTH_ONLY');
     });
 
     it('strips CDK-only HostedZoneId from DomainValidationOptions (ACM SDK rejects it)', async () => {
@@ -1651,6 +1669,65 @@ describe('ACMCertificateProvider', () => {
       expect(callsOfType(DeleteCertificateCommand)[0].input.CertificateArn).toBe(ARN);
     });
 
+    // go-to-k/cdkd#6799: ACM reports an N2 certificate requested without a
+    // CertificateUsage as CLIENT_AND_SERVER_AUTH, so `drift --revert` can hand
+    // update() that pair, which must not replace the certificate.
+    it.each([
+      ['previous absent, desired default', { CertificateUsage: 'CLIENT_AND_SERVER_AUTH' }, {}],
+      ['previous default, desired absent', {}, { CertificateUsage: 'CLIENT_AND_SERVER_AUTH' }],
+    ])('does not replace on an absent vs CLIENT_AND_SERVER_AUTH CertificateUsage (%s)', async (_, desired, previous) => {
+      mockSend.mockResolvedValue({});
+      const n2 = { DomainName: 'example.com', RootHierarchyType: 'N2_AMAZON_MANAGED' };
+
+      const result = await provider.update(
+        'MyCert',
+        ARN,
+        TYPE,
+        { ...n2, ...desired },
+        { ...n2, ...previous }
+      );
+
+      expect(result.wasReplaced).toBe(false);
+      expect(result.physicalId).toBe(ARN);
+      expect(callsOfType(RequestCertificateCommand)).toHaveLength(0);
+      expect(callsOfType(DeleteCertificateCommand)).toHaveLength(0);
+    });
+
+    it.each([
+      ['CertificateUsage CLIENT_AUTH_ONLY vs absent', { CertificateUsage: 'CLIENT_AUTH_ONLY' }, {}],
+      [
+        'CertificateUsage CLIENT_AUTH_ONLY vs CLIENT_AND_SERVER_AUTH',
+        { CertificateUsage: 'CLIENT_AUTH_ONLY' },
+        { CertificateUsage: 'CLIENT_AND_SERVER_AUTH' },
+      ],
+      ['RootHierarchyType added', { RootHierarchyType: 'N2_AMAZON_MANAGED' }, {}],
+      ['RootHierarchyType removed', {}, { RootHierarchyType: 'N2_AMAZON_MANAGED' }],
+      [
+        'RootHierarchyType changed',
+        { RootHierarchyType: 'N2_SFG2_AMAZON_MANAGED' },
+        { RootHierarchyType: 'N2_AMAZON_MANAGED' },
+      ],
+    ])('replaces on a real N2 change (%s), sending the desired values', async (_, desired, previous) => {
+      const newArn = 'arn:aws:acm:us-east-1:123456789012:certificate/new';
+      mockSend.mockResolvedValueOnce({ CertificateArn: newArn }); // RequestCertificate
+      mockSend.mockResolvedValueOnce({}); // DeleteCertificate
+
+      const result = await provider.update(
+        'MyCert',
+        ARN,
+        TYPE,
+        { DomainName: 'example.com', ...desired },
+        { DomainName: 'example.com', ...previous }
+      );
+
+      expect(result.wasReplaced).toBe(true);
+      expect(result.physicalId).toBe(newArn);
+      const req = callsOfType(RequestCertificateCommand)[0].input;
+      expect(req.RootHierarchyType).toBe((desired as Record<string, unknown>)['RootHierarchyType']);
+      expect(req.CertificateUsage).toBe((desired as Record<string, unknown>)['CertificateUsage']);
+      expect(callsOfType(DeleteCertificateCommand)[0].input.CertificateArn).toBe(ARN);
+    });
+
     it('replaces the certificate when CertificateExport is removed, never dropping it', async () => {
       const newArn = 'arn:aws:acm:us-east-1:123456789012:certificate/new';
       mockSend.mockResolvedValueOnce({ CertificateArn: newArn }); // RequestCertificate
@@ -1726,6 +1803,8 @@ describe('ACMCertificateProvider', () => {
         CertificateExport: 'ENABLED',
         CertificateTransparencyLoggingPreference: 'DISABLED',
         KeyAlgorithm: 'RSA_2048',
+        RootHierarchyType: 'N2_AMAZON_MANAGED',
+        CertificateUsage: 'CLIENT_AUTH_ONLY',
         Tags: [{ Key: 'a', Value: '1' }],
         NotInTheSchema: 'x',
       };
@@ -1815,8 +1894,29 @@ describe('ACMCertificateProvider', () => {
       expect(result!['KeyAlgorithm']).toBe('RSA_2048');
       expect(result!['CertificateTransparencyLoggingPreference']).toBe('ENABLED');
       expect(result!['CertificateExport']).toBe('DISABLED');
+      // A non-N2 certificate carries neither (go-to-k/cdkd#6799).
+      expect('RootHierarchyType' in result!).toBe(false);
+      expect('CertificateUsage' in result!).toBe(false);
       // aws:* tag filtered out.
       expect(result!['Tags']).toEqual([{ Key: 'env', Value: 'prod' }]);
+    });
+
+    it('reads an Amazon N2 RootHierarchyType and CertificateUsage back (go-to-k/cdkd#6799)', async () => {
+      mockSend.mockResolvedValueOnce({
+        Certificate: {
+          DomainName: 'example.com',
+          RootHierarchyType: 'N2_AMAZON_MANAGED',
+          CertificateUsage: 'CLIENT_AUTH_ONLY',
+        },
+      });
+      mockSend.mockResolvedValueOnce({ Tags: [] });
+
+      const result = bagOf(
+        await provider.readCurrentState(ARN, 'MyCert', 'AWS::CertificateManager::Certificate')
+      );
+
+      expect(result!['RootHierarchyType']).toBe('N2_AMAZON_MANAGED');
+      expect(result!['CertificateUsage']).toBe('CLIENT_AUTH_ONLY');
     });
 
     it('returns RESOURCE_NOT_FOUND when the certificate is gone', async () => {

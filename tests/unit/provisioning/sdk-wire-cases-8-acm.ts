@@ -121,6 +121,20 @@ export const ACM_CASES: TypeCase[] = [
         },
       },
       {
+        // go-to-k/cdkd#6799: ACM refuses CertificateUsage without an N2
+        // RootHierarchyType, and an N2 one beside CertificateAuthorityArn.
+        name: 'an Amazon N2 certificate',
+        bag: {
+          DomainName: 'example.com',
+          ValidationMethod: 'DNS',
+          RootHierarchyType: 'N2_AMAZON_MANAGED',
+          CertificateUsage: 'CLIENT_AUTH_ONLY',
+        },
+        expectedRemovalThrows: {
+          'create:DomainName': DOMAIN_REQUIRED,
+        },
+      },
+      {
         name: 'a private-CA certificate',
         bag: {
           DomainName: 'internal.example.com',

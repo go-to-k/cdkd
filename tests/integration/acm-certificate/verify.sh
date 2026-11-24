@@ -22,6 +22,8 @@
 #   - Phase 4 (issue #4275): a certificate whose DomainName comes from a
 #     Secrets Manager secret keeps its ARN across a Tags-only update instead
 #     of being replaced.
+#   - Phase 5 (issue #6799): an Amazon N2 certificate (RootHierarchyType +
+#     CertificateUsage) is created on the SDK route and ACM holds both values.
 #
 # What this does NOT exercise:
 #   - The poll-until-ISSUED happy path (needs a real DNS zone the test
@@ -71,11 +73,15 @@ SECRET_NAME="cdkd-integ-acm-domain-$(date +%s)-$$"
 SEEDED_SECRET=0
 
 acm_arns_for_fixture() {
-  local stack_lc
+  local stack_lc query
   stack_lc=$(printf '%s' "${STACK}" | tr '[:upper:]' '[:lower:]')
+  query="CertificateSummaryList[?contains(DomainName, 'cdkd-integ-${stack_lc}')].CertificateArn"
+  aws acm list-certificates --region "${REGION}" --query "${query}" --output text || return
+  # ListCertificates omits Amazon N2 certificates unless asked for them by
+  # root hierarchy (phase 5's, go-to-k/cdkd#6799), so they take a second call.
   aws acm list-certificates --region "${REGION}" \
-    --query "CertificateSummaryList[?contains(DomainName, 'cdkd-integ-${stack_lc}')].CertificateArn" \
-    --output text
+    --root-hierarchy-types N2_AMAZON_MANAGED N2_SFG2_AMAZON_MANAGED \
+    --query "${query}" --output text
 }
 
 cleanup() {
@@ -552,6 +558,67 @@ if [[ "${phase_tag}" != "v2" ]]; then
   exit 1
 fi
 echo "PASS: the Tags-only update was applied in place (phase=v2)"
+
+# --- Phase 5: an Amazon N2 certificate on the SDK route (#6799) ---------------
+#
+# RootHierarchyType and CertificateUsage are create-only and were SDK-unwired,
+# so a certificate declaring them routed through Cloud Control. The SDK
+# provider now sends both on RequestCertificate: assert the route the state
+# records, and that ACM holds the values the template declares. The phase 4
+# env is kept, so nothing else in the template moves.
+echo "=== Phase 5: an Amazon N2 certificate is created on the SDK route (issue #6799) ==="
+CDKD_NO_WAIT=true CDKD_TEST_SECRET_NAME="${SECRET_NAME}" CDKD_TEST_SECRET_CERT_TAG=v2 CDKD_TEST_N2=1 \
+  $CDKD deploy --region "${REGION}" --state-bucket "${BUCKET}"
+
+n2_record=$(aws s3 cp "s3://${BUCKET}/cdkd/${STACK}/${REGION}/state.json" - --region "${REGION}" \
+  | python3 -c '
+import json, sys
+r = json.load(sys.stdin)["resources"].get("N2Certificate", {})
+print(r.get("physicalId", ""), r.get("provisionedBy", "<absent>"))
+')
+read -r n2_arn n2_by <<<"${n2_record}"
+if [[ "${n2_arn:-}" != arn:aws:acm:* ]]; then
+  echo "FAIL: state records no ACM ARN for N2Certificate (got '${n2_record}')"
+  exit 1
+fi
+if [[ "${n2_by:-}" != "sdk" ]]; then
+  echo "FAIL: N2Certificate provisionedBy is '${n2_by:-}', expected sdk -- RootHierarchyType / CertificateUsage still route it through Cloud Control (#6799)"
+  exit 1
+fi
+echo "PASS: N2Certificate ${n2_arn} is on the SDK route"
+n2_live=$(aws acm describe-certificate --certificate-arn "${n2_arn}" --region "${REGION}" \
+  --query 'Certificate.[RootHierarchyType, CertificateUsage]' --output text)
+if [[ "${n2_live}" != $'N2_AMAZON_MANAGED\tCLIENT_AUTH_ONLY' ]]; then
+  echo "FAIL: ACM holds RootHierarchyType/CertificateUsage '${n2_live}', expected N2_AMAZON_MANAGED/CLIENT_AUTH_ONLY"
+  exit 1
+fi
+echo "PASS: ACM holds RootHierarchyType N2_AMAZON_MANAGED and CertificateUsage CLIENT_AUTH_ONLY"
+
+# The drift readback (readCurrentState) against the live certificate: the
+# baseline cdkd captured right after the create comes from it, so a field it
+# misread is absent there (and drift, which compares against that baseline,
+# would stay clean over it).
+n2_observed=$(aws s3 cp "s3://${BUCKET}/cdkd/${STACK}/${REGION}/state.json" - --region "${REGION}" \
+  | jq -r '.resources.N2Certificate.observedProperties // {} | "\(.RootHierarchyType // "<absent>") \(.CertificateUsage // "<absent>")"')
+if [[ "${n2_observed}" != "N2_AMAZON_MANAGED CLIENT_AUTH_ONLY" ]]; then
+  echo "FAIL: the captured readback of N2Certificate holds RootHierarchyType/CertificateUsage '${n2_observed}', expected 'N2_AMAZON_MANAGED CLIENT_AUTH_ONLY' (#6799)"
+  exit 1
+fi
+# ...and drift reads the certificate as compared and clean. Other resources'
+# verdicts are not this check's subject.
+set +e
+n2_drift=$($CDKD drift "${STACK}" --region "${REGION}" --state-bucket "${BUCKET}" --json)
+n2_drift_rc=$?
+set -e
+if [[ "${n2_drift_rc}" -gt 2 ]] || ! jq -e --arg stack "${STACK}" '
+  [.[] | select(.stack == $stack)] as $r |
+  ($r | length) == 1 and ([$r[0].clean[] | select(.logicalId == "N2Certificate")] | length) == 1
+' <<<"${n2_drift}" >/dev/null; then
+  echo "FAIL: cdkd drift (exit ${n2_drift_rc}) does not report N2Certificate as compared and clean (#6799)"
+  printf '%s\n' "${n2_drift}"
+  exit 1
+fi
+echo "PASS: the readback holds both values and drift reads N2Certificate as clean"
 
 # Destroy on the success path (unpiped, so `set -e` stops the run if it
 # fails), then sweep every object version under the stack's prefix and assert

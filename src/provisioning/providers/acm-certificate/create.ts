@@ -67,6 +67,15 @@ export async function create(
   if (properties['KeyAlgorithm']) {
     input['KeyAlgorithm'] = properties['KeyAlgorithm'];
   }
+  // Amazon N2 certificates (go-to-k/cdkd#6799). Both are create-only and sent
+  // as declared: ACM itself refuses a CertificateUsage without an N2
+  // RootHierarchyType, and an N2 one combined with CertificateAuthorityArn.
+  if (properties['RootHierarchyType']) {
+    input['RootHierarchyType'] = properties['RootHierarchyType'];
+  }
+  if (properties['CertificateUsage']) {
+    input['CertificateUsage'] = properties['CertificateUsage'];
+  }
   // CFn flat top-level `CertificateTransparencyLoggingPreference` /
   // `CertificateExport` map to the SDK's nested `Options: { ... }`.
   const options: Record<string, unknown> = {};

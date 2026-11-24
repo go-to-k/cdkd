@@ -133,17 +133,39 @@ afterEach(() => {
  * A corpus carrying what the mode READS and nothing else — no `node_modules`,
  * no `package.json`, so a resolution of any bare specifier must fail.
  */
-function makeCorpus(): string {
+function makeCorpus(generated?: string): string {
   const root = mkdtempSync(join(tmpdir(), 'cdkd-umbrella-nodeps-'));
   corpora.push(root);
   mkdirSync(join(root, 'scripts'), { recursive: true });
   mkdirSync(join(root, 'src/provisioning'), { recursive: true });
   cpSync(join(repoRoot, 'scripts'), join(root, 'scripts'), { recursive: true });
-  cpSync(
-    join(repoRoot, 'src/provisioning/property-coverage.generated.ts'),
-    join(root, 'src/provisioning/property-coverage.generated.ts')
-  );
+  const target = join(root, 'src/provisioning/property-coverage.generated.ts');
+  if (generated === undefined) {
+    cpSync(join(repoRoot, 'src/provisioning/property-coverage.generated.ts'), target);
+  } else {
+    writeFileSync(target, generated);
+  }
   return root;
+}
+
+/**
+ * The real coverage module with one remaining property added to its first
+ * FINISHED type. The live campaign can be empty (go-to-k/cdkd#5825 and #6799
+ * wired its last rows), so a case needing a rendered type takes it from here
+ * rather than from whatever the live map holds.
+ */
+function withSyntheticPendingRow(): { source: string; type: string } {
+  const generated = readFileSync(
+    join(repoRoot, 'src/provisioning/property-coverage.generated.ts'),
+    'utf8'
+  );
+  const finished = 'sdkUnwired: new Map<string, string>(),';
+  const at = generated.indexOf(finished);
+  if (at === -1) throw new Error('no finished type to add a pending row to: the generated shape changed');
+  const type = [...generated.slice(0, at).matchAll(/\[\s*'([A-Z][\w:]+)'\s*,\s*\{/g)].at(-1)?.[1];
+  if (type === undefined) throw new Error('the finished type has no name: the generated shape changed');
+  const row = "sdkUnwired: new Map<string, string>([['SyntheticPendingProperty', 'not yet implemented by cdkd']]),";
+  return { source: generated.slice(0, at) + row + generated.slice(at + finished.length), type };
 }
 
 /**
@@ -194,7 +216,9 @@ describe('--umbrella-checklist runs without the repo dependencies', () => {
     // is about what the process LOADS before either arm runs — so a mode added
     // to `RENDER_ONLY_FLAGS` without being reachable bare would pass a fence
     // that only ever spawns the first one.
-    const root = makeCorpus();
+    // Over a module that HAS a remaining property, so the plan renders a type.
+    const pending = withSyntheticPendingRow();
+    const root = makeCorpus(pending.source);
     expect(existsSync(join(root, 'node_modules'))).toBe(false);
 
     const run = spawnSync(
@@ -207,6 +231,7 @@ describe('--umbrella-checklist runs without the repo dependencies', () => {
     const plan = JSON.parse(run.stdout) as { types: Array<{ type: string; body: string }> };
     expect(Array.isArray(plan.types)).toBe(true);
     expect(plan.types.length, 'the fixture corpus rendered no types').toBeGreaterThan(0);
+    expect(plan.types.map((t) => t.type)).toContain(pending.type);
     // The body carries the marker the reconciler keys on — the one field whose
     // absence would make every run mint duplicates.
     expect(plan.types[0]!.body).toContain(`<!-- backfill-type: ${plan.types[0]!.type} -->`);

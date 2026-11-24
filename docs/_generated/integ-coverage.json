@@ -1001,7 +1001,8 @@
       ],
       "signals": {
         "acm-certificate": [
-          "l2"
+          "l2",
+          "literal"
         ],
         "created-before-failure-revert": [
           "literal"
@@ -7566,6 +7567,7 @@
         "eventbridge",
         "infra-security",
         "kms-encryption",
+        "lambda-microvm-image",
         "loggroup-kms-associate",
         "propagation-races-2",
         "s3-directory-bucket",
@@ -7629,6 +7631,9 @@
           "l1",
           "l2",
           "literal"
+        ],
+        "lambda-microvm-image": [
+          "l2"
         ],
         "loggroup-kms-associate": [
           "l2"

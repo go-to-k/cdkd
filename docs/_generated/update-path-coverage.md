@@ -13,9 +13,9 @@ For every SDK provider type and every top-level property its `handledProperties`
 ## Summary
 
 - SDK provider types: **148**
-- Handled properties classified: **1568**
-- Read on the update path: **1144**
-- Replacement: **403**
+- Handled properties classified: **1571**
+- Read on the update path: **1145**
+- Replacement: **405**
 - Allow-listed (does NOT block CI): **21**
 - Handled names outside the schema's writable properties (not classified): **13**
 - **Gaps (blocks CI): 0**
@@ -74,7 +74,7 @@ For every SDK provider type and every top-level property its `handledProperties`
 | `AWS::BedrockAgentCore::Evaluator` | `AgentCoreEvaluatorProvider` | Description, EvaluatorConfig, KmsKeyArn, Level, Tags | EvaluatorName |
 | `AWS::BedrockAgentCore::Runtime` | `AgentCoreRuntimeProvider` | AgentRuntimeArtifact, AuthorizerConfiguration, CapacityProviderConfiguration, Description, EnvironmentVariables, FilesystemConfigurations, HooksConfiguration, LifecycleConfiguration, NetworkConfiguration, PlatformVersion, ProtocolConfiguration, RequestHeaderConfiguration, ResourceConfigurations, RoleArn, Tags | AgentRuntimeName |
 | `AWS::Budgets::Budget` | `BudgetsBudgetProvider` | Budget, NotificationsWithSubscribers, ResourceTags |  |
-| `AWS::CertificateManager::Certificate` | `ACMCertificateProvider` | CertificateTransparencyLoggingPreference, Tags | CertificateAuthorityArn, CertificateExport, DomainName, DomainValidationOptions, KeyAlgorithm, SubjectAlternativeNames, ValidationMethod |
+| `AWS::CertificateManager::Certificate` | `ACMCertificateProvider` | CertificateTransparencyLoggingPreference, Tags | CertificateAuthorityArn, CertificateExport, CertificateUsage, DomainName, DomainValidationOptions, KeyAlgorithm, RootHierarchyType, SubjectAlternativeNames, ValidationMethod |
 | `AWS::CloudFormation::Stack` | `NestedStackProvider` | Parameters, Tags |  |
 | `AWS::CloudFormation::WaitCondition` | `WaitConditionProvider` |  |  |
 | `AWS::CloudFormation::WaitConditionHandle` | `WaitConditionHandleProvider` |  |  |
@@ -153,7 +153,7 @@ For every SDK provider type and every top-level property its `handledProperties`
 | `AWS::Lambda::EventSourceMapping` | `LambdaEventSourceMappingProvider` | AmazonManagedKafkaEventSourceConfig, BatchSize, BisectBatchOnFunctionError, DestinationConfig, DocumentDBEventSourceConfig, Enabled, FilterCriteria, FunctionName, FunctionResponseTypes, KmsKeyArn, LoggingConfig, MaximumBatchingWindowInSeconds, MaximumRecordAgeInSeconds, MaximumRetryAttempts, MetricsConfig, ParallelizationFactor, ProvisionedPollerConfig, Queues, ScalingConfig, SelfManagedKafkaEventSourceConfig, SourceAccessConfigurations, Tags, Topics, TumblingWindowInSeconds | EventSourceArn, SelfManagedEventSource, StartingPosition, StartingPositionTimestamp |
 | `AWS::Lambda::Function` | `LambdaFunctionProvider` | AcceleratorConfig, Architectures, CapacityProviderConfig, Code, CodeSigningConfigArn, DeadLetterConfig, Description, DurableConfig, Environment, EphemeralStorage, FileSystemConfigs, FunctionScalingConfig, Handler, ImageConfig, KmsKeyArn, Layers, LoggingConfig, MemorySize, PublishToLatestPublished, RecursiveLoop, ReservedConcurrentExecutions, Role, Runtime, RuntimeConfig, RuntimeManagementConfig, SnapStart, Tags, Timeout, TracingConfig, VpcConfig | FunctionName, PackageType, TenancyConfig |
 | `AWS::Lambda::LayerVersion` | `LambdaLayerVersionProvider` |  | CompatibleArchitectures, CompatibleRuntimes, Content, Description, LayerName, LicenseInfo |
-| `AWS::Lambda::MicrovmImage` | `LambdaMicrovmImageProvider` | AdditionalOsCapabilities, BaseImageArn, BaseImageVersion, BuildRoleArn, CodeArtifact, CpuConfigurations, Description, EgressNetworkConnectors, EnvironmentVariables, Hooks, Logging, Resources, Tags | Name |
+| `AWS::Lambda::MicrovmImage` | `LambdaMicrovmImageProvider` | AdditionalOsCapabilities, BaseImageArn, BaseImageVersion, BuildRoleArn, CodeArtifact, CpuConfigurations, Description, EgressNetworkConnectors, EnvironmentVariables, Hooks, KmsKeyIdentifier, Logging, Resources, Tags | Name |
 | `AWS::Lambda::NetworkConnector` | `LambdaNetworkConnectorProvider` | Configuration, OperatorRole, Tags | Name |
 | `AWS::Lambda::Permission` | `LambdaPermissionProvider` |  | Action, EventSourceToken, FunctionName, FunctionUrlAuthType, InvokedViaFunctionUrl, Principal, PrincipalOrgID, SourceAccount, SourceArn |
 | `AWS::Lambda::Url` | `LambdaUrlProvider` | AuthType, Cors, InvokeMode | Qualifier, TargetFunctionArn |

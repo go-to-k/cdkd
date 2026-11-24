@@ -17,6 +17,11 @@
 #      with the active image version UNCHANGED (no rebuild).
 #   1c. Drift: cdkd drift is clean after deploy; an out-of-band tag mutation is
 #      detected as drift; reverting realigns (readCurrentState).
+#   1d. Issue #5825: phases 1-1c run with MICROVM_KMS=with, so the image is
+#      created with a customer managed KmsKeyIdentifier on the SDK route, and
+#      GetMicrovmImageVersion reports that key on the built version. This
+#      phase drops KmsKeyIdentifier (the key stays in the stack): the update
+#      rebuilds, and the new version names no key (an AWS owned one).
 #   2. Destroy + assert the image is gone (GetMicrovmImage 404s) and the cdkd
 #      state file is removed.
 #   3. --no-wait deploy: assert cdkd returns while the image is still CREATING
@@ -85,10 +90,26 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 SECRET_IMAGE_NAME="cdkd-integ-sdn-microvm-image"
 NAME_SECRET="cdkd-integ-microvm-name-$(date +%s)-$$"
 SEEDED_SECRET=0
+# Phase 1's customer managed key (issue #5825), once phase 1 read it.
+KEY_ARN=""
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  # The image key (issue #5825) as state records it, read BEFORE the
+  # `state destroy` below drops the record: a run that failed before phase 1
+  # read KEY_ARN still names its key here.
+  if [ -z "${KEY_ARN}" ] && [ -n "${STATE_BUCKET:-}" ]; then
+    KEY_ARN="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" 2>/dev/null \
+      | python3 -c '
+import json, sys
+# By TYPE: an L2 key logical id carries a hash suffix (ImageKey<hash>).
+for v in json.load(sys.stdin).get("resources", {}).values():
+    if v.get("resourceType") == "AWS::KMS::Key":
+        print(v.get("physicalId", ""))
+        break
+' 2>/dev/null)"
+  fi
   if [ -x "${LOCAL_DIST}" ] || [ -f "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
@@ -102,6 +123,19 @@ cleanup() {
       aws lambda-microvms delete-microvm-image --image-identifier "${leftover_arn}" --region "${REGION}" >/dev/null 2>&1 || true
     fi
   done
+  # The image key, should the `state destroy` above have failed to retire it.
+  # Printed, not swallowed, so a surviving key is visible.
+  if [ -n "${KEY_ARN}" ]; then
+    local key_state key_out
+    key_state="$(aws kms describe-key --key-id "${KEY_ARN}" --region "${REGION}" \
+      --query 'KeyMetadata.KeyState' --output text 2>&1)"
+    if [ "${key_state}" != "PendingDeletion" ]; then
+      if ! key_out="$(aws kms schedule-key-deletion --key-id "${KEY_ARN}" \
+        --pending-window-in-days 7 --region "${REGION}" 2>&1)"; then
+        echo "WARNING: could not schedule the image key ${KEY_ARN} for deletion (state: ${key_state}): ${key_out}" >&2
+      fi
+    fi
+  fi
   # Printed, not swallowed, so a surviving secret is visible.
   if [ "${SEEDED_SECRET}" = "1" ]; then
     local secret_out
@@ -144,7 +178,7 @@ echo "    artifact uploaded to ${ARTIFACT_URI}"
 
 # --- Phase 1: deploy (async build -> CREATED) ---------------------------
 echo "==> Phase 1: deploy (the MicroVM image build can take several minutes)"
-MICROVM_ARTIFACT_URI="${ARTIFACT_URI}" MICROVM_ARTIFACT_BUCKET="${STATE_BUCKET}" \
+MICROVM_KMS=with MICROVM_ARTIFACT_URI="${ARTIFACT_URI}" MICROVM_ARTIFACT_BUCKET="${STATE_BUCKET}" \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 STATE_JSON="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")"
@@ -186,9 +220,34 @@ VERSION_BEFORE="$(aws lambda-microvms get-microvm-image --image-identifier "${IM
   --region "${REGION}" --query 'latestActiveImageVersion' --output text)"
 echo "    active version after create: ${VERSION_BEFORE}"
 
+# Issue #5825: the image is on the SDK route (KmsKeyIdentifier used to be
+# SDK-unwired, routing it through Cloud Control), and the built version is
+# encrypted with the stack's key. GetMicrovmImage does not report the key;
+# GetMicrovmImageVersion does.
+IMAGE_BY="$(echo "${STATE_JSON}" | python3 -c '
+import json, sys
+for v in json.load(sys.stdin)["resources"].values():
+    if v["resourceType"] == "AWS::Lambda::MicrovmImage":
+        print(v.get("provisionedBy", "<absent>"))
+        break
+')"
+[ "${IMAGE_BY}" = "sdk" ] || { echo "FAIL: MicroVM image provisionedBy is '${IMAGE_BY}', expected sdk -- KmsKeyIdentifier still routes it through Cloud Control (#5825)" >&2; exit 1; }
+KEY_ARN="$(echo "${STATE_JSON}" | python3 -c '
+import json, sys
+print(json.load(sys.stdin).get("outputs", {}).get("ImageKeyArn", ""))
+')"
+case "${KEY_ARN}" in
+  arn:aws:kms:*:key/*) ;;
+  *) echo "FAIL: output ImageKeyArn is not a KMS key ARN: '${KEY_ARN}'" >&2; exit 1 ;;
+esac
+VERSION_KEY="$(aws lambda-microvms get-microvm-image-version --image-identifier "${IMAGE_ARN}" \
+  --image-version "${VERSION_BEFORE}" --region "${REGION}" --query 'kmsKeyIdentifier' --output text)"
+[ "${VERSION_KEY}" = "${KEY_ARN}" ] || { echo "FAIL: version ${VERSION_BEFORE} is encrypted with '${VERSION_KEY}', expected the stack's key ${KEY_ARN} (#5825)" >&2; exit 1; }
+echo "    SDK route; version ${VERSION_BEFORE} is encrypted with ${KEY_ARN}"
+
 # --- Phase 1b: tags-only UPDATE (reconcile via Tag/UntagResource, no rebuild) --
 echo "==> Phase 1b: re-deploy with a tags-only change (env dev->prod, +team)"
-MICROVM_ARTIFACT_URI="${ARTIFACT_URI}" MICROVM_ARTIFACT_BUCKET="${STATE_BUCKET}" CDKD_TEST_UPDATE=true \
+MICROVM_KMS=with MICROVM_ARTIFACT_URI="${ARTIFACT_URI}" MICROVM_ARTIFACT_BUCKET="${STATE_BUCKET}" CDKD_TEST_UPDATE=true \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 # NOTE: ListTags returns the map under `Tags` (capital) even though
@@ -233,6 +292,31 @@ node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region 
 [ "${drift_rc}" -eq 0 ] || { echo "FAIL: expected zero drift after reverting the tag, drift exited ${drift_rc}" >&2; exit 1; }
 echo "    drift clean again after revert"
 
+# --- Phase 1d: removing KmsKeyIdentifier rebuilds on an AWS owned key (#5825)
+# UpdateMicrovmImage builds a NEW version from the request alone, so an omitted
+# key means an AWS owned one (measured: the rebuilt version reports no
+# kmsKeyIdentifier while the earlier one keeps its key). The key stays in the
+# stack (MICROVM_KMS=keep), so nothing retires it while a version names it.
+echo "==> Phase 1d: drop KmsKeyIdentifier (the update rebuilds the image)"
+MICROVM_KMS=keep MICROVM_ARTIFACT_URI="${ARTIFACT_URI}" MICROVM_ARTIFACT_BUCKET="${STATE_BUCKET}" CDKD_TEST_UPDATE=true \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+VERSION_1D="$(aws lambda-microvms get-microvm-image --image-identifier "${IMAGE_ARN}" \
+  --region "${REGION}" --query 'latestActiveImageVersion' --output text)"
+[ "${VERSION_1D}" != "${VERSION_AFTER}" ] || { echo "FAIL: dropping KmsKeyIdentifier did not rebuild the image (active version still ${VERSION_1D})" >&2; exit 1; }
+VERSION_1D_KEY="$(aws lambda-microvms get-microvm-image-version --image-identifier "${IMAGE_ARN}" \
+  --image-version "${VERSION_1D}" --region "${REGION}" --query 'kmsKeyIdentifier' --output text)"
+[ "${VERSION_1D_KEY}" = "None" ] || { echo "FAIL: the rebuilt version ${VERSION_1D} still names key '${VERSION_1D_KEY}'; the update sent the removed KmsKeyIdentifier (#5825)" >&2; exit 1; }
+STATE_JSON1D="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")"
+IMAGE_1D="$(echo "${STATE_JSON1D}" | python3 -c '
+import json, sys
+for v in json.load(sys.stdin)["resources"].values():
+    if v["resourceType"] == "AWS::Lambda::MicrovmImage":
+        print(v["physicalId"], v.get("provisionedBy", "<absent>"))
+        break
+')"
+[ "${IMAGE_1D}" = "${IMAGE_ARN} sdk" ] || { echo "FAIL: after the key removal state holds '${IMAGE_1D}', expected '${IMAGE_ARN} sdk'" >&2; exit 1; }
+echo "    rebuilt in place as version ${VERSION_1D} with no customer managed key, still on the SDK route"
+
 # --- Phase 2: destroy (the waited-create image) --------------------------
 echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
@@ -240,6 +324,9 @@ node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --regio
 assert_gone "MicroVM image ${IMAGE_ARN} still exists after destroy" \
   aws lambda-microvms get-microvm-image --image-identifier "${IMAGE_ARN}" --region "${REGION}"
 echo "    MicroVM image deleted"
+KEY_STATE="$(aws kms describe-key --key-id "${KEY_ARN}" --region "${REGION}" --query 'KeyMetadata.KeyState' --output text)"
+[ "${KEY_STATE}" = "PendingDeletion" ] || { echo "FAIL: the image key ${KEY_ARN} is '${KEY_STATE}' after destroy, expected PendingDeletion" >&2; exit 1; }
+echo "    image key scheduled for deletion"
 assert_gone "state file still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
@@ -421,4 +508,4 @@ trap - EXIT INT TERM
 s3_purge_prefix_versions "${STATE_BUCKET}" "${PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${PREFIX}" "stack state teardown"
 
-echo "[verify] PASS -- MicroVM image async create (CREATING -> CREATED), ARN physicalId + Ref-attr parity, tags-only update no-rebuild, tag drift detect/revert, --no-wait returns at CREATING, clean async destroy, secret-derived Name updated in place (#4275)"
+echo "[verify] PASS -- MicroVM image async create (CREATING -> CREATED), ARN physicalId + Ref-attr parity, KmsKeyIdentifier on the SDK route + its removal rebuild (#5825), tags-only update no-rebuild, tag drift detect/revert, --no-wait returns at CREATING, clean async destroy, secret-derived Name updated in place (#4275)"

@@ -13,8 +13,8 @@ Every place an SDK provider's `update()` replaces the resource (a `wasReplaced` 
 ## Summary
 
 - Replace sites: **19** over **10** types
-- Triggers classified: **88**
-- Replacement in the diff: **66**
+- Triggers classified: **92**
+- Replacement in the diff: **70**
 - Conditional replacement in the diff: **3**
 - Marked as a provider replacement in the diff: **11**
 - Exempt (not a trigger, does NOT block CI): **8**
@@ -27,8 +27,8 @@ Every place an SDK provider's `update()` replaces the resource (a `wasReplaced` 
 | Type | Site | Signal | Triggers | Disposition |
 | --- | --- | --- | --- | --- |
 | `AWS::ApiGateway::Resource` | `src/provisioning/providers/apigateway/resource-deployment.ts:updateResource` | was-replaced | PathPart (replacement: create-only) |  |
-| `AWS::CertificateManager::Certificate` | `src/provisioning/providers/acm-certificate/update.ts:update` | own-create | CertificateAuthorityArn (replacement: create-only), CertificateExport (replacement: create-only), DomainName (replacement: create-only), DomainValidationOptions (replacement: create-only), KeyAlgorithm (replacement: create-only), SubjectAlternativeNames (replacement: create-only), ValidationMethod (replacement: rule) |  |
-| `AWS::CertificateManager::Certificate` | `src/provisioning/providers/acm-certificate/update.ts:update` | was-replaced | CertificateAuthorityArn (replacement: create-only), CertificateExport (replacement: create-only), DomainName (replacement: create-only), DomainValidationOptions (replacement: create-only), KeyAlgorithm (replacement: create-only), SubjectAlternativeNames (replacement: create-only), ValidationMethod (replacement: rule) |  |
+| `AWS::CertificateManager::Certificate` | `src/provisioning/providers/acm-certificate/update.ts:update` | own-create | CertificateAuthorityArn (replacement: create-only), CertificateExport (replacement: create-only), CertificateUsage (replacement: create-only), DomainName (replacement: create-only), DomainValidationOptions (replacement: create-only), KeyAlgorithm (replacement: create-only), RootHierarchyType (replacement: create-only), SubjectAlternativeNames (replacement: create-only), ValidationMethod (replacement: rule) |  |
+| `AWS::CertificateManager::Certificate` | `src/provisioning/providers/acm-certificate/update.ts:update` | was-replaced | CertificateAuthorityArn (replacement: create-only), CertificateExport (replacement: create-only), CertificateUsage (replacement: create-only), DomainName (replacement: create-only), DomainValidationOptions (replacement: create-only), KeyAlgorithm (replacement: create-only), RootHierarchyType (replacement: create-only), SubjectAlternativeNames (replacement: create-only), ValidationMethod (replacement: rule) |  |
 | `AWS::CloudFormation::WaitConditionHandle` | `src/provisioning/providers/wait-condition-handle-provider.ts:update` | own-create |  | no-template-trigger: only a recorded pre-#6694 placeholder id re-issues the handle (#6704); the type has no properties, and the diff marks that row itself (`providerReplacement`, legacy-handle-heal.ts) |
 | `AWS::CloudFormation::WaitConditionHandle` | `src/provisioning/providers/wait-condition-handle-provider.ts:update` | was-replaced |  | no-template-trigger: the answer of the placeholder re-issue above |
 | `AWS::EC2::Route` | `src/provisioning/providers/ec2/route.ts:updateRoute` | own-create | DestinationCidrBlock (replacement: create-only), DestinationIpv6CidrBlock (replacement: create-only), DestinationPrefixListId (replacement: create-only), RouteTableId (replacement: create-only) |  |

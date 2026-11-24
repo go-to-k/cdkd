@@ -2,9 +2,9 @@
   "summary": {
     "types": 148,
     "noReadback": 2,
-    "properties": 1571,
-    "read": 1429,
-    "unknown": 118,
+    "properties": 1574,
+    "read": 1431,
+    "unknown": 119,
     "baseline": 24,
     "gap": 0,
     "outsideSchema": 12
@@ -1207,6 +1207,10 @@
           "status": "read"
         },
         {
+          "property": "CertificateUsage",
+          "status": "read"
+        },
+        {
           "property": "DomainName",
           "status": "read"
         },
@@ -1216,6 +1220,10 @@
         },
         {
           "property": "KeyAlgorithm",
+          "status": "read"
+        },
+        {
+          "property": "RootHierarchyType",
           "status": "read"
         },
         {
@@ -5271,6 +5279,10 @@
         },
         {
           "property": "Hooks",
+          "status": "unknown"
+        },
+        {
+          "property": "KmsKeyIdentifier",
           "status": "unknown"
         },
         {
