@@ -623,6 +623,7 @@ describe('ConnectInstanceProvider', () => {
         .delete('Inst', ARN, TYPE, undefined, { expectedRegion: 'us-east-1' })
         .catch((e: unknown) => e);
       expect(isInterruptedWaitError(error)).toBe(true);
+      expect(String(error)).not.toMatch(/Failed to delete/);
     });
 
     it('treats not-found as already deleted', async () => {
