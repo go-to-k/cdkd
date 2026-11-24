@@ -35,7 +35,7 @@ const pkgPath = join(repoRoot, 'package.json');
  *
  * Deliberately NOT keyed on a bare `CI`: `CI` is set in every job, but only
  * the jobs that run `vp run build` have a `dist/`, so keying on it reddened
- * `once-leak-detect` and `runtime-compat`, which legitimately have none. The
+ * `runtime-compat` and the former `once-leak-detect`, which legitimately had none. The
  * suite now runs in `unit-tests`, which builds first and sets the flag.
  */
 const distMissing = !existsSync(cliPath);

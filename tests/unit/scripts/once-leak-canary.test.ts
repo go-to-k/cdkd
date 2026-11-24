@@ -9,7 +9,7 @@ import { beforeEach, describe, expect, it, vi } from 'vite-plus/test';
  *
  * How it is wired:
  *
- * - In the normal `once-leak-detect` job the file is allow-listed (it leaks, so
+ * - In the normal `unit-tests` run (detector armed) the file is allow-listed (it leaks, so
  *   `vp run gen:once-leak-allowlist` picks it up automatically and keeps it
  *   there), and the job stays green.
  * - The `detector canary` CI step re-runs THIS FILE ONLY with

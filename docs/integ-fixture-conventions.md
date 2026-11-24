@@ -1347,8 +1347,8 @@ never got there". In issue #1588 the only symptom was a `logger.warn` that was
 mysteriously never called, and locating it took a full instrumentation pass.
 
 A runtime detector catches this (issue #1618). It is **off by default** so the
-ordinary `vp run test` is unaffected; the CI job `once-leak-detect` runs the
-suite a second time with it armed:
+ordinary local `vp run test` is unaffected; CI's `unit-tests` job runs the
+suite with it armed:
 
 ```bash
 vp run test:once-leak        # the unit suite with the detector armed
