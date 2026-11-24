@@ -33,8 +33,8 @@ Implemented in `src/cli/config-loader.ts`; option parsing in
   fixture's `--region`. The state-bucket client still finds the bucket's
   region via `GetBucketLocation`, whatever the flag.
 - **`--context` / `-c`** — repeatable `key=value`, merged over cdk.json context.
-- **`--tags` / `-t`** (deploy, diff) — REPLACES each stack's tags, else cdk.json
-  `tags` (#6886).
+- **`--tags` / `-t`** (deploy/diff/import/export) REPLACES stack tags, else
+  cdk.json `tags`.
 - **`--lookups` / `--no-lookups`** ride in `contextOptions`; unset means on. Do
   not read cdk.json `"lookups"`: the `cdk` CLI ignores it too (#6883).
 - **`-y` / `--yes`** is global; `cdkd destroy` also takes `-f` / `--force`.

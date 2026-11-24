@@ -78,6 +78,8 @@ export interface LockedImportContext {
   providerRegistry: ProviderRegistry;
   assetRedirect: AssetRedirectMap | undefined;
   stateTemplate: CloudFormationTemplate;
+  /** `--tags` / cdk.json "tags" (go-to-k/cdkd#6909): replaces `stackInfo.tags`. */
+  stackTagsOverride: Readonly<Record<string, string>> | undefined;
   overrides: Map<string, string>;
   /** The logical ids the operator named with `--resource` / `--resource-mapping`. */
   userOverrideIds: ReadonlySet<string>;
@@ -120,6 +122,7 @@ export async function runLockedImport(ctx: LockedImportContext): Promise<void> {
     providerRegistry,
     assetRedirect,
     stateTemplate,
+    stackTagsOverride,
     overrides,
     userOverrideIds,
     autoModeCfnStackName,
@@ -194,7 +197,7 @@ export async function runLockedImport(ctx: LockedImportContext): Promise<void> {
           migrationCfnStackName,
           'cdkd state was not written and the CloudFormation stack was not changed.'
         )
-      : stackInfo.tags;
+      : (stackTagsOverride ?? stackInfo.tags);
   recordTemplate = await applyStackTagsToTemplate(recordTemplate, recordStackTags, (line) =>
     logger.warn(line)
   );

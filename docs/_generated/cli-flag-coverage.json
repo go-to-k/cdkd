@@ -2473,6 +2473,7 @@
         "dynamodb-table-policy-baseline",
         "efs-standalone",
         "emr-cluster",
+        "export",
         "fsx-lustre",
         "fsx-openzfs",
         "globaltable-fix-forward-orphan",

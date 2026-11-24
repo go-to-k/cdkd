@@ -34,6 +34,7 @@ cdkd import MyStack --force --yes
 | `--record-resource-mapping <file>` | none | Write the resolved `{logicalId: physicalId}` map to a file. |
 | `--auto` | off | With a mapping, also look up every resource not listed. |
 | `--dry-run` | off | Print the import plan and write no state. |
+| `-t`, `--tags <key=value>` | the stack's tags | Record these stack tags on each resource in place of the stack's own, as [`cdkd deploy --tags`](cli-deploy.md#stack-tags) applies them. Repeatable. Also read from `tags` in `cdk.json`. Ignored with `--migrate-from-cloudformation`, which records the tags the CloudFormation stack holds. |
 | `--force` | off | Confirm a write that drops or overwrites existing state records. |
 | `--migrate-from-cloudformation [name]` | off | Retire the CloudFormation stack: set Retain, write state from the ids the stack then holds, delete the stack (default name: the cdkd stack name). |
 | `--use-cdk-bootstrap-assets` | off | Keep CDK bootstrap asset destinations in a cdkd-assets region. |

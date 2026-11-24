@@ -1,6 +1,7 @@
 /**
  * `--tags KEY=VALUE` on `cdkd deploy` / `cdkd diff` (AWS CDK CLI parity,
- * go-to-k/cdkd#6886).
+ * go-to-k/cdkd#6886), and on `cdkd import` / `cdkd export`, which resolve the
+ * stack tags as a deploy does (go-to-k/cdkd#6909).
  *
  * The AWS CDK CLI's `cdk deploy --tags` (alias `-t`, repeatable, marked
  * deprecated in its help: tags belong in the cloud assembly) REPLACES the

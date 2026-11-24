@@ -84,6 +84,11 @@ still pass it.
 | A key given twice | The last value is used. |
 | A later deploy without the flag | The resources go back to the stack's own tags, as with CloudFormation. |
 
+[`cdkd import`](import-reference.md#options) and [`cdkd export`](cli-export.md#options)
+take the same flag and read the same `cdk.json` key, so a stack deployed with
+`--tags` is imported or exported with those tags. `cdk import` has no
+`--tags`; it never sends stack tags to an IMPORT changeset.
+
 `cdkd diff` takes the same flag, so its preview matches the deploy.
 
 The tags are part of what cdkd records for each resource, so

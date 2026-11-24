@@ -1,3 +1,4 @@
+import { resolveStackTagsOverride } from '../../options/stack-tags.js';
 import { displayPhysicalId } from '../../../provisioning/secret-physical-id.js';
 import {
   deleteSignalReceiver,
@@ -168,7 +169,7 @@ export async function exportCommand(
     let template: Record<string, unknown>;
     // The synthesized stack, when the template came from synth (#6421).
     let legacyAssetStack: StackInfo | undefined;
-    // The manifest's stack tags (go-to-k/cdkd#6887); none for `--template`.
+    // The stack tags (go-to-k/cdkd#6887): the override, else the manifest's.
     let stackTags: Record<string, string> | undefined;
     let resolvedStackName: string;
     let synthedRegion: string | undefined;
@@ -195,6 +196,9 @@ export async function exportCommand(
     // out-of-sync refusal.
     let rootNestedTemplatePaths: Record<string, string> = nullPrototypeRecord<string>();
 
+    // go-to-k/cdkd#6909: `--tags` / cdk.json "tags" replace the stack's own, as for deploy.
+    const stackTagsOverride = resolveStackTagsOverride(options.tags, (line) => logger.warn(line));
+    stackTags = stackTagsOverride;
     if (options.template) {
       // User-supplied template path: still need a stack name to load state.
       if (!stackArg) {
@@ -264,7 +268,7 @@ export async function exportCommand(
       refuseFailedLookups([stackInfo], result.stacks, result.failedLookups);
       template = stackInfo.template as unknown as Record<string, unknown>;
       legacyAssetStack = stackInfo;
-      stackTags = stackInfo.tags;
+      stackTags = stackTagsOverride ?? stackInfo.tags;
       resolvedStackName = stackInfo.stackName;
       synthedRegion = stackInfo.region;
       // Null-prototype on the ABSENT arm too (issue go-to-k/cdkd#3480).

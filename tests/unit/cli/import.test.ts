@@ -51,6 +51,8 @@ vi.mock('../../../src/utils/logger.js', () => ({
 }));
 
 vi.mock('../../../src/cli/config-loader.js', () => ({
+  // No cdk.json "tags" (go-to-k/cdkd#6909).
+  loadCdkJson: vi.fn(() => null),
   resolveStateBucketWithDefault: vi.fn(async () => 'test-bucket'),
   resolveApp: vi.fn(() => 'cdk-out'),
   resolveUseCdkBootstrapAssets: vi.fn(() => false),
@@ -8332,6 +8334,48 @@ describe('cdkd import', () => {
         { Key: 'team', Value: 'core' },
       ]);
       expect(mockReadDeployedStackTags).not.toHaveBeenCalled();
+    });
+
+    it('records the --tags override instead of the manifest stack tags, as the deploy would (go-to-k/cdkd#6909)', async () => {
+      setup({ team: 'manifest', only: 'manifest' });
+
+      await runImport([
+        'import', '--app', 'x', '--yes', '--resource', 'Topic=topic-arn', '--tags', 'team=flag',
+      ]);
+
+      expect(savedTags()).toEqual([
+        { Key: 'own', Value: 'mine' },
+        { Key: 'team', Value: 'flag' },
+      ]);
+    });
+
+    it('records cdk.json "tags" when --tags is absent (go-to-k/cdkd#6909)', async () => {
+      setup({ team: 'manifest' });
+      const cl = await import('../../../src/cli/config-loader.js');
+      vi.mocked(cl.loadCdkJson).mockReturnValueOnce({
+        tags: [{ Key: 'team', Value: 'cdk-json' }],
+      });
+
+      await runImport(['import', '--app', 'x', '--yes', '--resource', 'Topic=topic-arn']);
+
+      expect(savedTags()).toEqual([
+        { Key: 'own', Value: 'mine' },
+        { Key: 'team', Value: 'cdk-json' },
+      ]);
+    });
+
+    it('ignores --tags under a migration: it records what the CloudFormation stack holds (go-to-k/cdkd#6909)', async () => {
+      setup({ team: 'manifest' });
+      mockReadDeployedStackTags.mockResolvedValue({ team: 'deployed' });
+
+      await runImport([
+        'import', '--app', 'x', '--yes', '--migrate-from-cloudformation', '--tags', 'team=flag',
+      ]);
+
+      expect(savedTags()).toEqual([
+        { Key: 'own', Value: 'mine' },
+        { Key: 'team', Value: 'deployed' },
+      ]);
     });
 
     it('records the resource\'s own tags alone for a stack without stack tags', async () => {

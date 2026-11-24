@@ -1,3 +1,4 @@
+import { stackTagsOption } from '../options/stack-tags.js';
 import { Command } from 'commander';
 import {
   appOptions,
@@ -146,6 +147,8 @@ export function createImportCommand(): Command {
         '`cdk deploy`); pass an explicit value when the CFn stack name differs.'
     )
     .addOption(useCdkBootstrapAssetsOption)
+    // go-to-k/cdkd#6909: record the tags a deploy with the same flag applies.
+    .addOption(stackTagsOption)
     .action(withErrorHandling(importCommand));
 
   // Re-use the same option set as `deploy` / `destroy` for parity.

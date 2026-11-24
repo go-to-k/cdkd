@@ -1,3 +1,4 @@
+import { stackTagsOption } from '../options/stack-tags.js';
 import { Command } from 'commander';
 import {
   appOptions,
@@ -193,6 +194,8 @@ export function createExportCommand(): Command {
         'between phases, and lets CFn re-CREATE in phase 2 (brief unavailability window). ' +
         'With this flag, the export aborts with a clear error instead.'
     )
+    // go-to-k/cdkd#6909: the stack tags a deploy with the same flag applies.
+    .addOption(stackTagsOption)
     .action(withErrorHandling(exportCommand));
 
   [...commonOptions, ...appOptions, ...stateOptions, ...contextOptions].forEach((opt) =>

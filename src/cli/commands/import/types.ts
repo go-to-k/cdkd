@@ -3,6 +3,8 @@ import type { TemplateResource } from '../../../types/resource.js';
 
 export interface ImportOptions {
   app?: string;
+  /** `--tags KEY=VALUE` (go-to-k/cdkd#6909): replaces the manifest stack tags, as deploy does. */
+  tags?: string[];
   output?: string;
   stateBucket?: string;
   statePrefix: string;

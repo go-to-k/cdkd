@@ -29,6 +29,8 @@ vi.mock('../../../src/utils/logger.js', () => ({
 }));
 
 vi.mock('../../../src/cli/config-loader.js', () => ({
+  // No cdk.json "tags" (go-to-k/cdkd#6909).
+  loadCdkJson: vi.fn(() => null),
   resolveStateBucketWithDefault: vi.fn(async () => 'test-bucket'),
   resolveApp: vi.fn(() => undefined),
   resolveUseCdkBootstrapAssets: vi.fn(() => false),
