@@ -272,6 +272,13 @@ describe('S3DirectoryBucketProvider Tags (issue #609)', () => {
   });
 
   describe('readCurrentState', () => {
+    // After HeadBucket the read issues GetBucketEncryption, answered empty
+    // here. Set in this block, not inherited from an earlier test's
+    // `mockResolvedValue({})`, which `mockReset` wipes.
+    beforeEach(() => {
+      mockS3Send.mockResolvedValue({});
+    });
+
     it('fails loudly when the tag read errors (no silent placeholder)', async () => {
       // A silent `Tags: []` placeholder on a permission error would read as
       // "all tags removed" phantom drift; propagating is the honest failure.

@@ -1,8 +1,7 @@
 /**
- * Enforcement for `scripts/check-module-scope-mock-defaults.ts` (issue #6928,
- * step 1): a mock default installed where `mockReset` would wipe it may not be
- * added to `tests/unit/**`, and the grandfathered files in
- * `tests/module-scope-mock-defaults-allowlist.json` may only shrink.
+ * Enforcement for `scripts/check-module-scope-mock-defaults.ts` (issue #6928):
+ * no mock default in `tests/unit/**` may sit where `mockReset: true` (set in
+ * `vite.config.ts`) wipes it before every test. There is no allow-list.
  */
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -13,18 +12,15 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vite-plus/test';
 
 import {
-  type AllowList,
   type Report,
   type Site,
-  ALLOW_LIST_PATH,
   analyzeSource,
   buildReport,
-  readAllowList,
   reportFails,
   SETTERS,
-  shrunkAllowList,
 } from '../../../scripts/check-module-scope-mock-defaults.ts';
 import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
+import ts from 'typescript-v6';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const script = join(repoRoot, 'scripts/check-module-scope-mock-defaults.ts');
@@ -44,8 +40,8 @@ const scratchDirs: string[] = [];
 afterAll(() => {
   for (const dir of scratchDirs) rmSync(dir, { recursive: true, force: true });
 });
-/** A scan root holding `tests/unit/<name>` for each entry, plus an allow-list file. */
-function scratchRoot(files: Record<string, string>, allow: AllowList): { root: string; allowPath: string } {
+/** A scan root holding `tests/unit/<name>` for each entry. */
+function scratchRoot(files: Record<string, string>): string {
   const root = mkdtempSync(join(tmpdir(), 'cdkd-mock-defaults-'));
   scratchDirs.push(root);
   for (const [name, text] of Object.entries(files)) {
@@ -53,9 +49,7 @@ function scratchRoot(files: Record<string, string>, allow: AllowList): { root: s
     mkdirSync(dirname(full), { recursive: true });
     writeFileSync(full, text);
   }
-  const allowPath = join(root, 'allow.json');
-  writeFileSync(allowPath, JSON.stringify(allow));
-  return { root, allowPath };
+  return root;
 }
 
 const MODULE_DEFAULT = `const m = vi.fn();\nm.mockReturnValue(1);\n`;
@@ -199,75 +193,34 @@ describe('module-scope mock-default checker', () => {
     });
   });
 
-  describe('allow-list semantics', () => {
-    const files = { 'a.test.ts': MODULE_DEFAULT, 'b.test.ts': CLEAN };
-
-    it('passes when the list matches exactly', () => {
-      const { root } = scratchRoot(files, { files: {} });
-      const report = buildReport(root, { files: { 'tests/unit/a.test.ts': 1 } });
+  describe('verdict: every refused site fails, with no grandfathering', () => {
+    it('passes a tree with only safe sites', () => {
+      const report = buildReport(scratchRoot({ 'b.test.ts': CLEAN }));
+      expect(report.filesScanned).toBe(1);
+      expect(report.offenders).toEqual([]);
       expect(reportFails(report)).toBe(false);
-      expect(report.filesScanned).toBe(2);
     });
 
-    it('NEW: an unlisted offending file', () => {
-      const { root } = scratchRoot(files, { files: {} });
-      const report = buildReport(root, { files: {} });
-      expect(report.newFiles.map((f) => f.file)).toEqual(['tests/unit/a.test.ts']);
-      expect(reportFails(report)).toBe(true);
-    });
-
-    it('GREW: a grandfathered file gaining a default', () => {
-      const { root } = scratchRoot({ 'a.test.ts': `${MODULE_DEFAULT}m.mockResolvedValue(2);\n` }, { files: {} });
-      const report = buildReport(root, { files: { 'tests/unit/a.test.ts': 1 } });
-      expect(report.grew).toEqual([{ file: 'tests/unit/a.test.ts', listed: 1, actual: 2 }]);
-      expect(reportFails(report)).toBe(true);
-    });
-
-    it('LOWER: a grandfathered file losing one of several', () => {
-      const { root } = scratchRoot(files, { files: {} });
-      const report = buildReport(root, { files: { 'tests/unit/a.test.ts': 2 } });
-      expect(report.lower).toEqual([{ file: 'tests/unit/a.test.ts', listed: 2, actual: 1 }]);
-      expect(reportFails(report)).toBe(true);
-    });
-
-    it('STALE: a listed file that is clean now', () => {
-      const { root } = scratchRoot(files, { files: {} });
-      const report = buildReport(root, { files: { 'tests/unit/a.test.ts': 1, 'tests/unit/b.test.ts': 1 } });
-      expect(report.stale).toEqual(['tests/unit/b.test.ts']);
-      expect(reportFails(report)).toBe(true);
-    });
-
-    it('DEAD: a listed file that does not exist', () => {
-      const { root } = scratchRoot(files, { files: {} });
-      const report = buildReport(root, { files: { 'tests/unit/a.test.ts': 1, 'tests/unit/gone.test.ts': 3 } });
-      expect(report.dead).toEqual(['tests/unit/gone.test.ts']);
+    it('fails on one refused site, naming its file and every site', () => {
+      const report = buildReport(
+        scratchRoot({ 'a.test.ts': `${MODULE_DEFAULT}m.mockResolvedValue(2);\n`, 'b.test.ts': CLEAN })
+      );
+      expect(report.offenders.map((f) => `${f.file}:${f.refused.map((s) => s.line).join(',')}`)).toEqual([
+        'tests/unit/a.test.ts:2,3',
+      ]);
       expect(reportFails(report)).toBe(true);
     });
 
     it('a file that does not parse fails rather than reading clean', () => {
-      const { root } = scratchRoot({ 'a.test.ts': 'const = ;\n' }, { files: {} });
-      const report = buildReport(root, { files: {} });
+      const report = buildReport(scratchRoot({ 'a.test.ts': 'const = ;\n' }));
       expect(report.parseErrors).toEqual(['tests/unit/a.test.ts']);
       expect(reportFails(report)).toBe(true);
     });
 
     it('an empty tree fails', () => {
-      const { root } = scratchRoot({}, { files: {} });
+      const root = scratchRoot({});
       mkdirSync(join(root, 'tests/unit'), { recursive: true });
-      expect(reportFails(buildReport(root, { files: {} }))).toBe(true);
-    });
-
-    it('--update only lowers and removes, never adds or raises', () => {
-      const { root } = scratchRoot(
-        { 'a.test.ts': `${MODULE_DEFAULT}m.mockResolvedValue(2);\n`, 'b.test.ts': CLEAN, 'c.test.ts': MODULE_DEFAULT },
-        { files: {} }
-      );
-      const allow: AllowList = {
-        files: { 'tests/unit/a.test.ts': 1, 'tests/unit/b.test.ts': 4, 'tests/unit/gone.test.ts': 1 },
-      };
-      const report = buildReport(root, allow);
-      // a grew (stays 1), b is stale, gone is dead, c is new (not added).
-      expect(shrunkAllowList(allow, report).files).toEqual({ 'tests/unit/a.test.ts': 1 });
+      expect(reportFails(buildReport(root))).toBe(true);
     });
   });
 
@@ -279,10 +232,10 @@ describe('module-scope mock-default checker', () => {
       ['a static named import', `import { forwarded as fw } from './h.js';\ndescribe('d', () => { fw(); });`],
       ['a static namespace import', `import * as h from './h';\nh.forwarded();`],
     ])('refuses an exported helper called from a refused context: %s', (_shape, importer) => {
-      const { root } = scratchRoot({ 'h.ts': HELPER, 'sub/a.test.ts': importer.replaceAll('./h', '../h') }, { files: {} });
-      const report = buildReport(root, { files: {} });
-      expect(report.newFiles.map((f) => f.file)).toEqual(['tests/unit/sub/a.test.ts']);
-      expect(report.newFiles[0]!.refused[0]!.via).toContain('tests/unit/h.ts#forwarded');
+      const root = scratchRoot({ 'h.ts': HELPER, 'sub/a.test.ts': importer.replaceAll('./h', '../h') });
+      const report = buildReport(root);
+      expect(report.offenders.map((f) => f.file)).toEqual(['tests/unit/sub/a.test.ts']);
+      expect(report.offenders[0]!.refused[0]!.via).toContain('tests/unit/h.ts#forwarded');
       expect(report.unresolvedSites.map((u) => u.file)).toEqual(['tests/unit/h.ts']);
     });
 
@@ -291,34 +244,31 @@ describe('module-scope mock-default checker', () => {
       ['a beforeAll hook', `import { forwarded as fw } from './h.js';\nbeforeAll(fw);`],
       ['a namespace member to beforeAll', `import * as h from './h.js';\nbeforeAll(h.forwarded);`],
     ])('refuses an imported helper PASSED uncalled to %s', (_shape, importer) => {
-      const { root } = scratchRoot({ 'h.ts': HELPER, 'a.test.ts': importer }, { files: {} });
-      const report = buildReport(root, { files: {} });
-      expect(report.newFiles.map((f) => f.file)).toEqual(['tests/unit/a.test.ts']);
-      expect(report.newFiles[0]!.refused[0]!.via).toContain('tests/unit/h.ts#forwarded');
+      const root = scratchRoot({ 'h.ts': HELPER, 'a.test.ts': importer });
+      const report = buildReport(root);
+      expect(report.offenders.map((f) => f.file)).toEqual(['tests/unit/a.test.ts']);
+      expect(report.offenders[0]!.refused[0]!.via).toContain('tests/unit/h.ts#forwarded');
     });
 
     it('accepts an imported helper passed uncalled to beforeEach', () => {
-      const { root } = scratchRoot(
-        { 'h.ts': HELPER, 'a.test.ts': `import { forwarded } from './h.js';\nbeforeEach(forwarded);` },
-        { files: {} }
+      const root = scratchRoot(
+        { 'h.ts': HELPER, 'a.test.ts': `import { forwarded } from './h.js';\nbeforeEach(forwarded);` }
       );
-      expect(buildReport(root, { files: {} }).newFiles).toEqual([]);
+      expect(buildReport(root).offenders).toEqual([]);
     });
 
     it('accepts the same helper called from beforeEach', () => {
-      const { root } = scratchRoot(
-        { 'h.ts': HELPER, 'a.test.ts': `import { forwarded } from './h.js';\nbeforeEach(() => { forwarded(); });` },
-        { files: {} }
+      const root = scratchRoot(
+        { 'h.ts': HELPER, 'a.test.ts': `import { forwarded } from './h.js';\nbeforeEach(() => { forwarded(); });` }
       );
-      expect(buildReport(root, { files: {} }).newFiles).toEqual([]);
+      expect(buildReport(root).offenders).toEqual([]);
     });
 
     it('follows a helper its own file also calls safely: the importer is its own context', () => {
-      const { root } = scratchRoot(
-        { 'h.ts': `${HELPER}beforeEach(() => { forwarded(); });\n`, 'a.test.ts': `import { forwarded } from './h.js';\nforwarded();` },
-        { files: {} }
+      const root = scratchRoot(
+        { 'h.ts': `${HELPER}beforeEach(() => { forwarded(); });\n`, 'a.test.ts': `import { forwarded } from './h.js';\nforwarded();` }
       );
-      expect(buildReport(root, { files: {} }).newFiles.map((f) => f.file)).toEqual(['tests/unit/a.test.ts']);
+      expect(buildReport(root).offenders.map((f) => f.file)).toEqual(['tests/unit/a.test.ts']);
     });
 
     it('follows the helpers an exported helper calls, whatever else calls them', () => {
@@ -326,49 +276,49 @@ describe('module-scope mock-default checker', () => {
         `function inner() { return vi.fn().mockReturnValue(1); }\n` +
         `const o = { go() { return inner(); } };\n` +
         `export function outer() { return inner(); }\n`;
-      const { root } = scratchRoot(
-        { 'h.ts': helper, 'a.test.ts': `vi.mock('y', async () => ({ x: (await import('./h.js')).outer() }));` },
-        { files: {} }
+      const root = scratchRoot(
+        { 'h.ts': helper, 'a.test.ts': `vi.mock('y', async () => ({ x: (await import('./h.js')).outer() }));` }
       );
-      const report = buildReport(root, { files: {} });
-      expect(report.newFiles.map((f) => f.file)).toEqual(['tests/unit/a.test.ts']);
-      expect(report.newFiles[0]!.refused).toHaveLength(1);
+      const report = buildReport(root);
+      expect(report.offenders.map((f) => f.file)).toEqual(['tests/unit/a.test.ts']);
+      expect(report.offenders[0]!.refused).toHaveLength(1);
     });
   });
 
   describe('the shipped command', () => {
-    const run = (root: string, allowPath: string, extra: string[] = []) =>
-      spawnSync(
-        process.execPath,
-        ['--experimental-strip-types', script, '--check', `--root=${root}`, `--allow-list=${allowPath}`, ...extra],
-        { encoding: 'utf8', timeout: CONTENDED_CASE_TIMEOUT_MS }
-      );
+    const run = (root: string) =>
+      spawnSync(process.execPath, ['--experimental-strip-types', script, '--check', `--root=${root}`], {
+        encoding: 'utf8',
+        timeout: CONTENDED_CASE_TIMEOUT_MS,
+      });
 
-    it('exits 1 naming the file and line of a new default, 0 once grandfathered', () => {
-      const { root, allowPath } = scratchRoot({ 'a.test.ts': MODULE_DEFAULT }, { files: {} });
-      const refused = run(root, allowPath);
+    it('exits 1 naming the file and line of a refused default, 0 once it moves into beforeEach', () => {
+      const root = scratchRoot({ 'a.test.ts': MODULE_DEFAULT });
+      const refused = run(root);
       expect(refused.status).toBe(1);
-      expect(refused.stderr).toContain('NEW    tests/unit/a.test.ts:2 .mockReturnValue() in module-scope');
-      writeFileSync(allowPath, JSON.stringify({ files: { 'tests/unit/a.test.ts': 1 } }));
-      expect(run(root, allowPath).status).toBe(0);
+      expect(refused.stderr).toContain('REFUSED tests/unit/a.test.ts:2 .mockReturnValue() in module-scope');
+      writeFileSync(join(root, 'tests/unit/a.test.ts'), CLEAN);
+      expect(run(root).status).toBe(0);
     }, CONTENDED_CASE_TIMEOUT_MS);
 
-    it('--update rewrites the list shrunk', () => {
-      const { root, allowPath } = scratchRoot(
-        { 'a.test.ts': CLEAN },
-        { $comment: 'kept', files: { 'tests/unit/a.test.ts': 2 } }
-      );
-      expect(run(root, allowPath).status).toBe(1);
-      expect(run(root, allowPath, ['--update']).status).toBe(0);
-      expect(JSON.parse(readFileSync(allowPath, 'utf8'))).toEqual({ $comment: 'kept', files: {} });
-      expect(run(root, allowPath).status).toBe(0);
+    it('refuses the removed --update and --allow-list= instead of ignoring them', () => {
+      const root = scratchRoot({ 'a.test.ts': CLEAN });
+      expect(run(root).status).toBe(0);
+      for (const flag of ['--update', '--allow-list=x.json']) {
+        const refused = spawnSync(
+          process.execPath,
+          ['--experimental-strip-types', script, '--check', `--root=${root}`, flag],
+          { encoding: 'utf8', timeout: CONTENDED_CASE_TIMEOUT_MS }
+        );
+        expect(refused.status).toBe(1);
+        expect(refused.stderr).toContain(`unknown argument(s): ${flag}`);
+      }
     }, CONTENDED_CASE_TIMEOUT_MS);
 
-    it('--update refuses an empty scan instead of writing an empty list', () => {
-      const { root, allowPath } = scratchRoot({}, { files: { 'tests/unit/a.test.ts': 1 } });
+    it('exits 1 on an empty scan', () => {
+      const root = scratchRoot({});
       mkdirSync(join(root, 'tests/unit'), { recursive: true });
-      expect(run(root, allowPath, ['--update']).status).toBe(1);
-      expect(JSON.parse(readFileSync(allowPath, 'utf8'))).toEqual({ files: { 'tests/unit/a.test.ts': 1 } });
+      expect(run(root).status).toBe(1);
     }, CONTENDED_CASE_TIMEOUT_MS);
   });
 
@@ -376,39 +326,66 @@ describe('module-scope mock-default checker', () => {
     let cached: Report | undefined;
     const real = (): Report => (cached ??= buildReport());
 
+    it('runs under mockReset: true, the setting whose wipe this checker guards', () => {
+      // Without it a refused site is harmless and a `*Once` primer a test leaves
+      // unconsumed shifts every later test in its file (`clearAllMocks` does not
+      // drain the queue). Read as SYNTAX, not lines: the `test` property of the
+      // object passed to `defineConfig(...)` must hold `mockReset: true`, so a
+      // commented-out line or one moved to another block does not count.
+      const path = join(repoRoot, 'vite.config.ts');
+      const source = ts.createSourceFile(path, readFileSync(path, 'utf8'), ts.ScriptTarget.Latest, true);
+      const values: string[] = [];
+      const propertyOf = (object: ts.ObjectLiteralExpression, name: string) =>
+        object.properties.find(
+          (p): p is ts.PropertyAssignment =>
+            ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && p.name.text === name
+        );
+      const visit = (node: ts.Node): void => {
+        if (
+          ts.isCallExpression(node) &&
+          ts.isIdentifier(node.expression) &&
+          node.expression.text === 'defineConfig' &&
+          node.arguments[0] !== undefined &&
+          ts.isObjectLiteralExpression(node.arguments[0])
+        ) {
+          const test = propertyOf(node.arguments[0], 'test');
+          if (test && ts.isObjectLiteralExpression(test.initializer)) {
+            // Every `mockReset` key, plus any spread: a later duplicate or a
+            // spread would win at runtime over the first `true`.
+            for (const p of test.initializer.properties) {
+              const named =
+                p.name !== undefined &&
+                (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)) &&
+                p.name.text === 'mockReset';
+              if (ts.isSpreadAssignment(p)) values.push('<spread>');
+              else if (named && ts.isPropertyAssignment(p)) values.push(p.initializer.getText(source));
+              else if (named) values.push('<not a literal>');
+            }
+            if (values.length === 0) values.push('<absent>');
+          }
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(source);
+      expect(values).toEqual(['true']);
+    });
+
     it('is green', () => {
       const report = real();
       expect(report.parseErrors).toEqual([]);
-      expect(report.newFiles.map((f) => `${f.file}:${f.refused.map((s) => s.line).join(',')}`)).toEqual([]);
-      expect(report.grew).toEqual([]);
-      expect(report.lower).toEqual([]);
-      expect(report.stale).toEqual([]);
-      expect(report.dead).toEqual([]);
+      expect(report.offenders.map((f) => `${f.file}:${f.refused.map((s) => s.line).join(',')}`)).toEqual([]);
+      expect(reportFails(report)).toBe(false);
     }, CONTENDED_CASE_TIMEOUT_MS);
 
     it('still sees the population: floors on files and safe sites', () => {
       // FLOORS, as literals the checker does not read: a collapsed walk reads
-      // as "0 violations". They sit far below the measured counts (see the PR)
-      // because step 2's migration moves refused sites to safe ones. There is
-      // no per-reason floor on the real tree: each reason's count falls to zero
-      // as #6928 empties the allow-list, so each refusal reason is pinned by
-      // its synthetic case above instead.
+      // as "0 violations". There is no per-reason floor on the real tree: every
+      // reason's count is zero there, so each refusal reason is pinned by its
+      // synthetic case above instead.
       const report = real();
       expect(report.filesScanned).toBeGreaterThan(2000);
       expect(report.totals.safe).toBeGreaterThan(10_000);
       expect(report.totals.unresolved).toBeGreaterThan(0);
     }, CONTENDED_CASE_TIMEOUT_MS);
-  });
-
-  describe('the allow-list file', () => {
-    it('is sorted, with positive integer counts', () => {
-      const allow = readAllowList(ALLOW_LIST_PATH);
-      const keys = Object.keys(allow.files);
-      expect(keys).toEqual([...keys].sort());
-      for (const key of keys) {
-        expect(key.startsWith('tests/unit/')).toBe(true);
-        expect(Number.isInteger(allow.files[key]) && allow.files[key]! > 0).toBe(true);
-      }
-    });
   });
 });

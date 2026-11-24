@@ -21,7 +21,9 @@ function clientMock(actualModule: string, clientName: string) {
     const actual = await vi.importActual<Record<string, unknown>>(actualModule);
     return {
       ...actual,
-      [clientName]: vi.fn().mockImplementation(() => ({
+      // `vi.fn(impl)`: `mockReset` restores it before every test, where a
+      // `.mockImplementation(...)` set here would be wiped.
+      [clientName]: vi.fn(() => ({
         send: mockSend,
         config: { region: () => Promise.resolve('us-east-1') },
       })),

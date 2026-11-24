@@ -1346,67 +1346,34 @@ assertion is satisfied both by "the guard correctly declined" and by "the code
 never got there". In issue #1588 the only symptom was a `logger.warn` that was
 mysteriously never called, and locating it took a full instrumentation pass.
 
-A runtime detector catches this (issue #1618). It is **off by default** so the
-ordinary local `vp run test` is unaffected; CI's `unit-tests` job runs the
-suite with it armed:
+The suite now prevents this structurally (issue #6928): `vite.config.ts` sets
+`mockReset: true`, so vitest resets every mock before each test. That drains
+any `*Once` value a previous test left queued, and it also puts each mock back
+to the implementation it was created with. (From issue #1618 until #6928, a
+runtime detector caught leaked primers instead.)
 
-```bash
-vp run test:once-leak        # the unit suite with the detector armed
-```
+The reset has a cost: a default set anywhere other than a `beforeEach` or the
+test body is wiped before the test runs. That includes module scope, a
+`describe` body, a `vi.mock` factory, `vi.hoisted`, `beforeAll` and
+`afterEach`. A wiped default returns `undefined`, and absence assertions still
+accept `undefined`, so the test passes without testing anything. So:
 
-What it flags is precisely a value **consumed by a different test than the one
-that primed it**. The failure lands on the test whose result is corrupt, and
-names the earlier test that primed the stale value:
+- set a mock's default in `beforeEach`, or create the mock with it as
+  `vi.fn(impl)`, which the reset restores rather than wipes;
+- a test whose state depends on an earlier test is wrong: set the state in its
+  own `beforeEach` or in the test.
 
-```text
-This test consumed a mock response primed by an EARLIER test.
+`scripts/check-module-scope-mock-defaults.ts` refuses every default in a
+place the reset wipes. `tests/unit/scripts/module-scope-mock-defaults.test.ts`
+runs it, and also fails if `mockReset: true` is removed from the config.
 
-  - primed by: over-primes and clearAllMocks does not drain it
-  - mock: vi.fn()
-```
-
-Fix the EARLIER test: prime exactly what its code path consumes. If the extra
-priming is deliberate, drain it with `mockReset()` in `beforeEach` (again:
-`clearAllMocks` does not drain it).
-
-Two things it deliberately does NOT flag, because neither corrupts a result: an
-over-priming that no later test ever consumes, and a value primed in `beforeAll`
-(which has no owning test to cross a boundary from).
-
-The detector carries a canary — `tests/unit/scripts/once-leak-canary.test.ts`
-leaks on purpose, and a CI step requires that running it with the allow-list
-ignored still FAILS. That is what stops a silently-broken detector from looking
-identical to a clean tree. Do not "fix" that suite's priming.
-
-Three pre-existing files leaked when the detector landed and were grandfathered in
-`tests/once-leak-allowlist.json`. All three were fixed by
-[issue #1655](https://github.com/go-to-k/cdkd/issues/1655) and dropped from the
-list, so it now holds nothing but the canary — the goal state. Fixing a file and
-dropping its entry is the intended direction; adding an entry is not, and a new
-test file that leaks fails CI. Regenerate the list with
-`vp run gen:once-leak-allowlist`.
-
-Worth knowing before you fix one, from the #1655 pass: in all three files the
-over-priming described a call the code path never makes at all — a
-`ListTagsForResource` gated on a field the mocked response omitted, three
-policy/tag no-op responses for helpers that issue zero sends, and a
-`DescribeTags` that `update()` never calls because it derives the tag diff from
-the property bags. So the reliable fix is to MEASURE what the path consumes
-rather than to trust the priming's own comment, all three of which were wrong.
-Pinning the count with `expect(mockSend).toHaveBeenCalledTimes(N)` next to the
-existing assertions is worth adding, but know what it does: it catches the code
-path CHANGING how many calls it makes (the thing that silently invalidates a
-priming), NOT a surplus primer — an unconsumed response leaves the count
-unchanged. The detector is what catches the surplus, which is why dropping the
-file from the allow-list is the load-bearing half of the fix.
-
-Note what this deliberately does NOT do: it does not require `mockReset()` in
-every suite that uses a `*Once` primer. That was the original proposal, and
-measurement rejected it — 182 of the 265 `*Once`-using files have no reset, the
-mechanical swap to `resetAllMocks()` breaks 1181 tests, and the presence of
-`mockReset` is only a PROXY for the defect. Checking the defect directly
-implicated a handful of files rather than 182, and needed no remediation batch
-at all.
+Priming exactly what the code path consumes is still the rule, because a
+surplus primer usually means the test's idea of the path is wrong. When you
+fix a primer, MEASURE what the path consumes instead of trusting the primer's
+comment. In the #1655 pass, all three over-primings described calls the code
+never made. Pinning `expect(mockSend).toHaveBeenCalledTimes(N)` catches the
+code path changing how many calls it makes. It does not catch a surplus
+primer, which leaves the count unchanged.
 
 ## Unit tests: a green run prints nothing
 

@@ -72,7 +72,7 @@ const AWS_COMPUTED_WARM_THROUGHPUT = {
 /**
  * Dispatch by COMMAND rather than priming `*Once` responses: `readCurrentState`
  * issues seven calls whose count is not the subject of these tests, and a
- * surplus primer would leak into the next test (see `.claude/rules/testing.md`).
+ * `*Once` chain would pin that count (see `.claude/rules/testing.md`).
  */
 function primeDescribeTable(table: Record<string, unknown>): void {
   mockSend.mockImplementation((cmd: unknown) => {

@@ -357,8 +357,8 @@ jobs:
       # builds before running the suite. `tests/unit/cli/version.test.ts` skips
       # itself when `dist/` is absent -- correct for a contributor who has not
       # built. Keying the loud assertion on a bare `CI` reddened the jobs that
-      # ran the suite without building (`runtime-compat`, and the former
-      # `once-leak-detect`); keying it on the build is what
+      # ran the suite without building (`runtime-compat`, and a former
+      # second suite job); keying it on the build is what
       # actually says "dist was produced, so a skip here means the step order
       # regressed".
       # Assert the suite actually RAN, not merely that the step exited 0.
@@ -387,44 +387,6 @@ jobs:
           fi
         env:
           CDKD_EXPECT_DIST: "1"
-          # Issue #1618: the runtime `*Once`-leak detector, armed on the one
-          # suite run CI makes. A test that primes more mock responses than its
-          # code path consumes fails here instead of silently shifting every
-          # later test in its file by one response. Sharding loses no detection:
-          # tests share mock state only within one file, and `--shard`
-          # partitions by file. The files in tests/once-leak-allowlist.json are
-          # grandfathered; dropping a fixed one is the intended ratchet
-          # direction, adding a new entry is not. A detector failure names
-          # itself ("primed by an EARLIER test"), so it is not mistaken for an
-          # ordinary test failure. (This used to be a separate
-          # job that ran the whole suite a second time.)
-          CDKD_ONCE_LEAK_DETECT: "1"
-
-      # Prove the detector still REJECTS, not just that it ran. With the
-      # grandfather list honoured, "the detector went dead" and "the tree is
-      # clean" produce the identical green result above — the vacuous pass
-      # .claude/rules/testing.md forbids for any checker. The canary suite
-      # leaks on purpose, so ignoring the allow-list MUST fail it. It is one
-      # file and takes seconds, so every shard runs it: a step `if:` would let
-      # ci-ok count a skip as a pass (ci-ok-gate.test.ts refuses one).
-      - name: detector canary — a known leak must still be caught
-        run: |
-          set +e
-          vp run test:once-leak-canary > canary.log 2>&1
-          rc=$?
-          set -e
-          cat canary.log
-          # Assert on the detector's OWN message, not merely on a non-zero exit.
-          # A deleted or renamed canary file makes `vp test run <missing>` exit 1
-          # with "No test files found", and so does a syntax error or a failed
-          # install -- each of which would let this step pass while the detector
-          # is dead. That is the exact vacuous pass the step exists to close.
-          if [ "${rc}" -eq 0 ] || ! grep -q 'primed by an EARLIER test' canary.log; then
-            echo "::error::the *Once-leak detector did not report the deliberate leak in tests/unit/scripts/once-leak-canary.test.ts (exit ${rc}). Either the detector has gone dead (check @vitest/spy internals and the vi.fn patch in tests/setup.ts), or the canary file itself is missing / broken."
-            exit 1
-          fi
-          # The log is written into the checkout; the next step requires a clean tree.
-          rm -f canary.log
 
       # A test that writes into the repo and does not clean up must red CI.
       # Before the suite was sharded out of check-build-test this was caught

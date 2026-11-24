@@ -74,8 +74,6 @@ const CORRECTNESS_GATE_TASKS = [
   'test',
   'typecheck',
   'typecheck:test',
-  'test:once-leak',
-  'test:once-leak-canary',
   'test:hooks',
   'verify',
 ] as const;

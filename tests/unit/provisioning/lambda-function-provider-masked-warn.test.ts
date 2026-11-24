@@ -112,10 +112,9 @@ function debugLines(): string {
 /**
  * Answer every Lambda command with a shape the update path can walk.
  *
- * A `mockImplementation` rather than a chain of `mockResolvedValueOnce`: a
- * `*Once` primer this path did not consume would leak into the next test in
- * the file (`vi.clearAllMocks()` does not drain the queue), which the repo's
- * once-leak detector (CI `unit-tests`) fails on.
+ * A `mockImplementation` rather than a chain of `mockResolvedValueOnce`: the
+ * update path's call SEQUENCE is not what these tests are about, and a chain
+ * would pin one nothing here asserts.
  */
 function wireLambda(): void {
   mockLambdaSend.mockImplementation((command: { constructor: { name: string } }) => {

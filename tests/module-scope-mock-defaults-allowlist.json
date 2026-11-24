@@ -1,6 +1,0 @@
-{
-  "$comment": "Files under tests/unit grandfathered by scripts/check-module-scope-mock-defaults.ts (issue 6928): each maps to its EXACT count of mock defaults set where mockReset would wipe them (module scope, a describe body, a vi.mock factory, vi.hoisted, beforeAll / afterAll / afterEach). This list may only SHRINK: a new file, a raised count, a lowered count, a clean file and a missing file all fail. After moving a file's defaults into beforeEach (or onto vi.fn(impl)), run `node --experimental-strip-types scripts/check-module-scope-mock-defaults.ts --update`, which only lowers and removes entries.",
-  "files": {
-    "tests/unit/provisioning/custom-resource-provider-referenced-lambda-active-wait.test.ts": 2
-  }
-}

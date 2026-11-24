@@ -53,8 +53,8 @@ describe('S3TablesProvider — AWS::S3Tables::Table Tags wire (#609 backfill)', 
 
   beforeEach(() => {
     vi.clearAllMocks();
-    // clearAllMocks keeps implementations; restore vi.fn()'s default so a
-    // case that routes via mockImplementation does not leak into the next.
+    // Restores vi.fn()'s default answer explicitly; `mockReset: true` in
+    // vite.config.ts already resets every mock before each test.
     mockSend.mockImplementation(() => undefined);
     provider = new S3TablesProvider();
   });
@@ -193,7 +193,7 @@ describe('S3TablesProvider — AWS::S3Tables::Table Tags wire (#609 backfill)', 
       // #3515: `!(k in next)` saw `constructor` on Object.prototype, so the
       // removed key was never untagged and stayed live on AWS.
       // Route by command type (no `*Once` queue): pre-fix the path sends
-      // nothing, so a sequential primer would leak into a later case.
+      // nothing, so a sequential primer would sit unconsumed.
       mockSend.mockImplementation((cmd: unknown) => {
         if (cmd instanceof GetTableCommand) return Promise.resolve({ tableARN: TABLE_ARN });
         if (cmd instanceof UntagResourceCommand || cmd instanceof TagResourceCommand) {

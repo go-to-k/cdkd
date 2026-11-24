@@ -129,10 +129,10 @@ fails even when its own assertions pass.
 - **A passing run prints nothing.** Output that a test writes to stdout or
   stderr is shown only when the test fails. Mock the logger, or assert on the
   output.
-- **A `mock...Once` value is used by the test that queued it.** A leftover
-  value fails under `vp run test:once-leak`, which CI runs. Queue only what
-  the code path consumes, because `vi.clearAllMocks()` does not empty the
-  queue.
+- **Every mock is reset before each test.** `mockReset: true` empties the
+  `mock...Once` queue and wipes any default set outside `beforeEach` or the
+  test. Set a default in `beforeEach`, or as `vi.fn(impl)`. A check refuses a
+  default anywhere else.
 - **Temporary files stay in the run's own directory.** `os.tmpdir()` points at
   a per-run directory that is removed afterwards, so use `os.tmpdir()` as
   usual.

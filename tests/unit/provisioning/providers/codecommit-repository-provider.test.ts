@@ -108,8 +108,8 @@ describe('CodeCommitRepositoryProvider', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    // clearAllMocks keeps implementations; restore vi.fn()'s default so a
-    // case that routes via mockImplementation does not leak into the next.
+    // Restores vi.fn()'s default answer explicitly; `mockReset: true` in
+    // vite.config.ts already resets every mock before each test.
     mockSend.mockImplementation(() => undefined);
     admZipState.entries = [];
     provider = new CodeCommitRepositoryProvider();
@@ -736,7 +736,7 @@ describe('CodeCommitRepositoryProvider', () => {
       // #3515 update() removedKeys: `k in newTagMap` found `constructor` on
       // Object.prototype, so the dropped tag was never untagged.
       // Route by command type (no `*Once` queue): the pre-fix path sends one
-      // fewer command, so a sequential primer would leak into a later case.
+      // fewer command, so a sequential primer would sit unconsumed.
       mockSend.mockImplementation((cmd: unknown) => {
         if (cmd instanceof GetRepositoryCommand) {
           return Promise.resolve({ repositoryMetadata: metadata() });

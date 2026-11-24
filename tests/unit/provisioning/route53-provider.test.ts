@@ -1328,10 +1328,9 @@ describe('Route53Provider', () => {
         } finally {
           delete process.env['CDKD_R53_ACCEL_RECOVERY_POLL_INTERVAL_MS'];
           delete process.env['CDKD_R53_ACCEL_RECOVERY_POLL_TIMEOUT_MS'];
-          // The persistent mockResolvedValue above survives
-          // vi.clearAllMocks() (which clears calls, not implementations) —
-          // reset here so it cannot leak into a later test that forgets its
-          // own mockReset().
+          // Explicit reset of the persistent mockResolvedValue above, redundant
+          // with `mockReset: true` in vite.config.ts, which resets every mock
+          // before each test.
           mockSend.mockReset();
         }
       });

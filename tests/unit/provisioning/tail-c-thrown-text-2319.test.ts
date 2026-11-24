@@ -20,7 +20,9 @@ function routedClient(pkg: string, ...classes: string[]) {
     const actual = await vi.importActual<Record<string, unknown>>(pkg);
     const out: Record<string, unknown> = { ...actual };
     for (const name of classes) {
-      out[name] = vi.fn().mockImplementation((cfg: { region?: string } | undefined) => ({
+      // `vi.fn(impl)`: `mockReset` restores it before every test, where a
+      // `.mockImplementation(...)` set here would be wiped.
+      out[name] = vi.fn((cfg: { region?: string } | undefined) => ({
         send: mockSend,
         config: { region: () => Promise.resolve(cfg?.region ?? 'us-east-1') },
         middlewareStack: { add: vi.fn(), addRelativeTo: vi.fn() },

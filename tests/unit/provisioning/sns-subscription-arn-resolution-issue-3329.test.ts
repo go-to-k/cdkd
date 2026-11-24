@@ -85,7 +85,8 @@ describe('issue #3329 — SNS subscription Arn resolves from cache, and non-ARNs
 
   beforeEach(() => {
     vi.clearAllMocks();
-    // Drain any `*Once` queue so a primer cannot leak into a later test.
+    // Explicit reset, redundant with `mockReset: true` in vite.config.ts, which
+    // resets every mock before each test.
     mockSnsSend.mockReset();
     resolver = new IntrinsicFunctionResolver();
   });

@@ -1,6 +1,0 @@
-{
-  "$comment": "`*Once` leaks grandfathered for the runtime detector (issue 1618). The three pre-existing real entries were fixed by issue 1655, so what remains is the deliberately-leaking canary suite, which must stay listed (see .claude/rules/testing.md). Regenerate with `vp run gen:once-leak-allowlist`. Removing a file from this list after fixing its priming is the intended ratchet direction; adding one is not.",
-  "files": [
-    "tests/unit/scripts/once-leak-canary.test.ts"
-  ]
-}

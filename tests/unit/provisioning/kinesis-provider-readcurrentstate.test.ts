@@ -345,7 +345,7 @@ describe('KinesisStreamProvider.readCurrentState', () => {
     // the assertion below would pass for entirely the wrong reason and could
     // not see the swallow at all (found by mutation probe). A default keeps the
     // fallthrough VALID so the swallow resolves and the test fails, and unlike
-    // a third `*Once` it cannot leak into the next test when unconsumed.
+    // a third `*Once` it does not claim a call the path may never make.
     mockSend.mockResolvedValue({ Tags: [] });
     mockSend
       .mockResolvedValueOnce({ StreamDescription: { StreamName: 'mystream' } })

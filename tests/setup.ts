@@ -11,7 +11,6 @@ import {
   wrapConstructableImplementation,
   type MockableImplementation,
 } from './constructable-implementation.js';
-import { installOnceLeakDetector } from './once-leak-detector.js';
 import { installStreamFence } from './stream-fence.js';
 import { resetInjectedAwsRegionForTests } from '../src/utils/injected-aws-region.js';
 import { resetEmulatorDefaultRegionForTests } from '../src/utils/emulator-default-region.js';
@@ -157,11 +156,6 @@ vi.fn = ((implementation?: MockableImplementation) => {
 
   return wrapMockImplementationSetters(originalViFn(implementation as never));
 }) as typeof vi.fn;
-
-// Runtime `*Once`-leak detector (issue #1618). Installed AFTER the `vi.fn`
-// patch above so it composes over it rather than being overwritten by it, and
-// inert unless `CDKD_ONCE_LEAK_DETECT=1`.
-installOnceLeakDetector();
 
 // Buffer raw `process.stdout` / `process.stderr` writes made inside a test and
 // replay them only when that test FAILS. See tests/stream-fence.ts for why a
