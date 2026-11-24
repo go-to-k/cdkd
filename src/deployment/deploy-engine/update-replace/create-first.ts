@@ -35,6 +35,7 @@ import {
   unionOfSecretBags,
 } from '../../secret-redaction.js';
 import { noteRetainedResource } from '../../../provisioning/providers/create-token-ledger.js';
+import { replacesDeleteFirst } from '../../delete-first-replacement-types.js';
 import type { ReplacementArmInput } from './arm-input.js';
 
 /**
@@ -97,6 +98,41 @@ export async function replaceCreateFirst(
           'UPDATE_POLICY_REPLACEMENT_REFUSED'
         )
       )
+    );
+  }
+  // go-to-k/cdkd#6958: AWS lets the old copy of these links block the new one
+  // (`Resource.AlreadyAssociated`: one gateway per VPC, one route table
+  // association per subnet), so they are replaced delete-first, as
+  // CloudFormation replaces them. Through the `--replace` helper, so the
+  // journal records `oldDeletedBeforeCreate` and a failed deploy's rollback
+  // deletes the new copy, then re-creates the old one. `UpdateReplacePolicy:
+  // Retain` keeps the old copy, so it keeps the create-first order below (AWS
+  // refuses the new one wherever the old still holds the link); a link that
+  // went with its re-created parent is already gone.
+  if (
+    lostWithParent === undefined &&
+    updateReplacePolicy !== 'Retain' &&
+    replacesDeleteFirst(oldResourceType, resourceType)
+  ) {
+    engine.logger.info(
+      safeMsg`  ${resourceType} allows one link at a time — deleting old ${logicalId} ` +
+        safeMsg`(${displayPhysicalId(currentResource.resourceType, currentResource.physicalId)}) before creating its replacement...`
+    );
+    return replaceDeleteFirstAndRecreate(
+      engine.replacementRun,
+      engine.replacementDeps(),
+      logicalId,
+      resourceType,
+      oldResourceType,
+      currentResource,
+      oldDeleteProvider,
+      replaceProvider,
+      replaceProps,
+      updateSecrets,
+      updateReplacePolicy,
+      oldDeleteRoute.provisionedBy,
+      noEchoDeleteValues,
+      'the delete-first replacement'
     );
   }
   engine.logger.info(safeMsg`  Creating new ${logicalId}...`);

@@ -197,7 +197,7 @@ export const EXCEPTIONS: readonly Exception[] = [
     count: 1,
     kind: 'early-delete',
     cannotDefer:
-      "opt-in `--replace`: a custom-named resource whose create-first collided on its name, or whose name-idempotent create handed back the old copy; only the old copy can release the name, and the user asked for delete-first",
+      "opt-in `--replace`: a custom-named resource whose create-first collided on its name, or whose name-idempotent create handed back the old copy; only the old copy can release the name, and the user asked for delete-first. Also every replacement of a `replacesDeleteFirst` type (a gateway attachment, a subnet route table association, #6958): AWS refuses the new link while the old one holds it, and CloudFormation deletes it first too",
     rollbackReports: ROLLBACK_LOSS_BEFORE_CREATE,
   },
   {

@@ -97,6 +97,52 @@ describe('findDestructiveChanges: earlyDelete (#6713)', () => {
     expect(formatDestructiveChange(found!)).toBe('S: AWS::DynamoDB::Table T will be replaced');
   });
 
+  // go-to-k/cdkd#6958: AWS refuses the new link while the old one holds it,
+  // so these two types are replaced delete-first, as CloudFormation does.
+  const replaced = (path: string): Partial<ResourceChange> => ({
+    propertyChanges: [{ path, oldValue: 'a', newValue: 'b', requiresReplacement: true }],
+  });
+
+  it.each([
+    ['AWS::EC2::VPCGatewayAttachment', 'VpcId'],
+    ['AWS::EC2::SubnetRouteTableAssociation', 'RouteTableId'],
+    ['AWS::EC2::SubnetRouteTableAssociation', 'SubnetId'],
+  ])('a replaced %s (%s) is deleted before its replacement is created (#6958)', (type, path) => {
+    const [found] = classify(update('Link', type, replaced(path)));
+    expect(found).toMatchObject({ impact: 'WILL_REPLACE', earlyDelete: 'before-create' });
+    expect(formatDestructiveChange(found!)).toBe(
+      `S: ${type} Link will be replaced — the deploy deletes the old resource before ` +
+        `creating its replacement, so ${CONSEQUENCE}`
+    );
+  });
+
+  it('a replaced gateway attachment under UpdateReplacePolicy: Retain keeps its old copy (#6958)', () => {
+    const template: CloudFormationTemplate = {
+      Resources: { Link: { Type: 'AWS::EC2::VPCGatewayAttachment', UpdateReplacePolicy: 'Retain' } },
+    };
+    const [found] = classify(update('Link', 'AWS::EC2::VPCGatewayAttachment', replaced('VpcId')), {
+      template,
+    });
+    expect(found).toMatchObject({ impact: 'WILL_REPLACE' });
+    expect(found).not.toHaveProperty('earlyDelete');
+  });
+
+  it('a subnet network ACL association stays create-first: no note (#6958)', () => {
+    const [found] = classify(
+      update('Acl', 'AWS::EC2::SubnetNetworkAclAssociation', replaced('NetworkAclId'))
+    );
+    expect(found).toMatchObject({ impact: 'WILL_REPLACE' });
+    expect(found).not.toHaveProperty('earlyDelete');
+  });
+
+  it('a Type change onto a delete-first type is not noted (#6958)', () => {
+    const [found] = classify(update('Link', 'AWS::EC2::VPCGatewayAttachment'), {
+      recordType: 'AWS::EC2::SubnetRouteTableAssociation',
+    });
+    expect(found).toMatchObject({ impact: 'WILL_REPLACE' });
+    expect(found).not.toHaveProperty('earlyDelete');
+  });
+
   it('an IAM inline policy is never noted: its record restores it whole', () => {
     const [found] = classify(update('Pol', 'AWS::IAM::Policy'), { recreate: true });
     expect(found).toMatchObject({ impact: 'WILL_REPLACE' });

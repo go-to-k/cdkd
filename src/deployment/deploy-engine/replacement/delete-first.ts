@@ -77,7 +77,13 @@ export async function replaceDeleteFirstAndRecreate(
   /** The layer `oldDeleteProvider` was routed to, for a guard row (issue #2422). */
   oldDeleteProvisionedBy: 'sdk' | 'cc-api' | undefined,
   /** go-to-k/cdkd#4682: today's values at the old record's NoEcho coordinates. */
-  noEchoDeleteValues?: NoEchoDeleteValues
+  noEchoDeleteValues?: NoEchoDeleteValues,
+  /**
+   * go-to-k/cdkd#6958: what ordered the delete first, as the failure lines
+   * name it. A type replaced delete-first on a plain deploy
+   * (`replacesDeleteFirst`) is no `--replace` fallback.
+   */
+  order = 'the --replace delete-first fallback'
 ): Promise<Awaited<ReturnType<ResourceProvider['create']>>> {
   // go-to-k/cdkd#5638: before the delete, which is what would lose the source.
   refuseRestoreFromItself(resourceType, replaceProps, currentResource.physicalId, logicalId, {
@@ -198,7 +204,7 @@ export async function replaceDeleteFirstAndRecreate(
         // flattened newline inside a secret would no longer match its needle.
         safeMsg`Failed to delete old resource ${maskSecretsInText(logicalId, shownSecrets)} ` +
         safeMsg`(${maskSecretsInText(String(displayPhysicalId(currentResource.resourceType, currentResource.physicalId)), shownSecrets)}) ` +
-        `during the --replace delete-first fallback: ` +
+        safeMsg`during ${order}: ` +
         // go-to-k/cdkd#2676: the wrapped error's (masked) message is embedded
         // as-is and LAST: it can end in cdkd's own remedy command lines.
         safeMsg`${asIsMessage(failure)}`
@@ -229,7 +235,7 @@ export async function replaceDeleteFirstAndRecreate(
         logicalId,
         displayPhysicalId(currentResource.resourceType, currentResource.physicalId),
         replaceSkipReason,
-        'during the --replace delete-first fallback'
+        `during ${order}`
       )
     );
   }
@@ -332,8 +338,8 @@ export async function replaceDeleteFirstAndRecreate(
       recreateError,
       shownSecrets,
       (failure) =>
-        safeMsg`Failed to re-create ${maskSecretsInText(logicalId, shownSecrets)} after the ` +
-        safeMsg`--replace delete-first fallback already deleted the old resource (${maskSecretsInText(String(displayPhysicalId(currentResource.resourceType, currentResource.physicalId)), shownSecrets)}). ` +
+        safeMsg`Failed to re-create ${maskSecretsInText(logicalId, shownSecrets)} after ` +
+        safeMsg`${order} already deleted the old resource (${maskSecretsInText(String(displayPhysicalId(currentResource.resourceType, currentResource.physicalId)), shownSecrets)}). ` +
         // go-to-k/cdkd#2676: the wrapped error's (masked) message is embedded
         // as-is and LAST: it can end in cdkd's own remedy command lines.
         safeMsg`Re-run the deploy to create it fresh. Cause: ${asIsMessage(failure)}`

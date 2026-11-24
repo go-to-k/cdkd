@@ -4,6 +4,7 @@ import { displayIdent, displaySafe } from '../utils/display-safe.js';
 import { movedToHint, type MovedTo } from './refactor-hints.js';
 import { providerReplacementOldDeleted } from './diff-calculator/provider-replacement.js';
 import { isInlinePolicyType } from '../deployment/superseded-resources.js';
+import { replacesDeleteFirst } from '../deployment/delete-first-replacement-types.js';
 import {
   plannedEarlyDeleteNote,
   type PlannedEarlyDelete,
@@ -150,7 +151,10 @@ function destructiveImpactOf(
  *   template keeps it (`UpdateReplacePolicy: Retain`);
  * - a provider replacement (`providerReplacement`: an SNS subscription, a
  *   renamed Route 53 record set) is re-created inside `update()`;
- * - an IAM inline policy never is noted: its record restores it whole.
+ * - an IAM inline policy never is noted: its record restores it whole;
+ * - a gateway attachment or a subnet route table association
+ *   (`replacesDeleteFirst`, go-to-k/cdkd#6958) is deleted, then created,
+ *   unless the template keeps it (`UpdateReplacePolicy: Retain`).
  *
  * A create-first replacement waits for the cleanup phase. What the plan
  * cannot see is left out: a new resource that takes the old one's physical
@@ -165,13 +169,16 @@ function plannedEarlyDelete(
 ): PlannedEarlyDelete | undefined {
   if (isInlinePolicyType(oldType)) return undefined;
   if (change.changeType !== 'UPDATE') return undefined;
+  const resources = template?.Resources;
+  const keepsOld =
+    resources !== undefined &&
+    Object.hasOwn(resources, change.logicalId) &&
+    resources[change.logicalId]?.UpdateReplacePolicy === 'Retain';
   if (recreateTargets.has(change.logicalId)) {
-    const resources = template?.Resources;
-    const policy =
-      resources !== undefined && Object.hasOwn(resources, change.logicalId)
-        ? resources[change.logicalId]?.UpdateReplacePolicy
-        : undefined;
-    return policy === 'Retain' ? undefined : 'recreate';
+    return keepsOld ? undefined : 'recreate';
+  }
+  if (replacesDeleteFirst(oldType, change.resourceType)) {
+    return keepsOld ? undefined : 'before-create';
   }
   if (change.providerReplacement === undefined || oldType !== change.resourceType) return undefined;
   return providerReplacementOldDeleted(change.resourceType);
