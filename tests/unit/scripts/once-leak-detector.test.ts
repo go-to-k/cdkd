@@ -12,7 +12,7 @@ import {
 
 // A REAL path, and this file's own. These tests drive the detector's internal
 // state directly, which is the same state the global hooks use when the run is
-// armed (`CDKD_ONCE_LEAK_DETECT=1`, i.e. the once-leak-detect CI job). A test
+// armed (`CDKD_ONCE_LEAK_DETECT=1`, i.e. CI's unit-tests job). A test
 // here that left a finding undrained would surface under THIS file's name, and
 // a fabricated path would then poison `vp run gen:once-leak-allowlist` with an
 // entry that the allow-list's own "names only files that exist" guard rejects.

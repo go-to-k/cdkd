@@ -363,6 +363,15 @@ export default defineConfig({
         command: 'node --experimental-strip-types scripts/gen-once-leak-allowlist.ts',
         cache: false,
       },
+      // Issue #6928 step 1 — no NEW mock default where `mockReset` would wipe
+      // it (module scope, a describe body, a vi.mock factory, vi.hoisted,
+      // beforeAll / afterAll / afterEach). The unit suite
+      // (`module-scope-mock-defaults.test.ts`) is what CI enforces; this is the
+      // same verdict from the command line. Its allow-list only shrinks.
+      'audit:module-scope-mock-defaults:check': {
+        command: 'node --experimental-strip-types scripts/check-module-scope-mock-defaults.ts --check',
+        cache: false,
+      },
       // A replay measured 2026-08-30: two consecutive `vp run lint` printed a
       // byte-identical summary with `cache hit, 1.23s saved` BELOW it, where a
       // `tail` does not reach.

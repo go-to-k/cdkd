@@ -115,7 +115,7 @@ function debugLines(): string {
  * A `mockImplementation` rather than a chain of `mockResolvedValueOnce`: a
  * `*Once` primer this path did not consume would leak into the next test in
  * the file (`vi.clearAllMocks()` does not drain the queue), which the repo's
- * `once-leak-detect` job fails on.
+ * once-leak detector (CI `unit-tests`) fails on.
  */
 function wireLambda(): void {
   mockLambdaSend.mockImplementation((command: { constructor: { name: string } }) => {

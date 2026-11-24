@@ -84,7 +84,9 @@ subcommand>\|<most specific token of a special case the fix widens>'
 .claude/rules plugins tests/integration .github`, each hit through §2's
 open-PR `files` query; READ each hit's
 prose, as a stale sentence may name no symbol (#5944); a `plugins/**` edit adds
-check-docs' two `version` files); a NEW SDK provider adds
+check-docs' two `version` files); a NEW `audit:*:check` task adds its `ci.yml`
+step or a `NOT_IN_CI` entry in `provider-secret-mask.test.ts`, whose CI-wiring
+fence only the full suite runs (#6929); a NEW SDK provider adds
 `.claude/rules/providers.md`'s "Adding a New SDK Provider" files, the fenced
 tables (`name-keys.ts`,
 `reverse-replacement-name-holder.test.ts`, `docs/cli-drift.md`) and, for a new
