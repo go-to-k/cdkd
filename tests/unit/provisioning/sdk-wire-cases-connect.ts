@@ -1,4 +1,11 @@
-import { ACCOUNT, createOnlyOf, setOutputOverrides, type TypeCase } from './sdk-wire-harness.js';
+import {
+  ACCOUNT,
+  TAGS_REFUSED,
+  createOnlyOf,
+  setOutputOverrides,
+  type Throw,
+  type TypeCase,
+} from './sdk-wire-harness.js';
 import { ConnectInstanceProvider } from '../../../src/provisioning/providers/connect-instance-provider.js';
 
 /**
@@ -12,10 +19,18 @@ import { ConnectInstanceProvider } from '../../../src/provisioning/providers/con
 // the type documents no value to reset it to.
 const ATTRIBUTE_KEPT_ON_REMOVAL =
   'a removed Attributes member keeps its live value; the type documents no default to reset it to';
-const ATTRIBUTES_REQUIRED = 'Attributes is required by the schema';
-const CALLS_REQUIRED = 'the schema requires Attributes.InboundCalls and Attributes.OutboundCalls';
-const TYPE_REQUIRED = 'IdentityManagementType is required by the schema';
-const TAG_ENTRY_REFUSED = 'a tag without a Key or a Value is refused before any call';
+const ATTRIBUTES_REQUIRED: Throw = {
+  why: 'Attributes is required by the schema',
+  says: /Attributes of Connect instance L is required/,
+};
+const CALLS_REQUIRED: Throw = {
+  why: 'the schema requires Attributes.InboundCalls and Attributes.OutboundCalls',
+  says: /must declare (Inbound|Outbound)Calls/,
+};
+const TYPE_REQUIRED: Throw = {
+  why: 'IdentityManagementType is required by the schema',
+  says: /IdentityManagementType is required/,
+};
 
 const ARN = `arn:aws:connect:us-east-1:${ACCOUNT}:instance/i-1`;
 
@@ -84,8 +99,8 @@ export const CASES_CONNECT: TypeCase[] = [
           ...Object.fromEntries(
             ['create', 'update-add', 'update-remove'].flatMap((d) => [
               [`${d}:Attributes`, ATTRIBUTES_REQUIRED],
-              [`${d}:Tags.0.Key`, TAG_ENTRY_REFUSED],
-              [`${d}:Tags.0.Value`, TAG_ENTRY_REFUSED],
+              [`${d}:Tags.0.Key`, TAGS_REFUSED],
+              [`${d}:Tags.0.Value`, TAGS_REFUSED],
               [`${d}:Attributes.InboundCalls`, CALLS_REQUIRED],
               [`${d}:Attributes.OutboundCalls`, CALLS_REQUIRED],
             ])
