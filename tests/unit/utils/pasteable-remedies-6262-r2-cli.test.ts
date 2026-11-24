@@ -35,7 +35,7 @@ vi.mock('../../../src/utils/role-arn.js', () => ({
 }));
 vi.mock('../../../src/utils/aws-clients.ts', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../src/utils/aws-clients.js')>()),
-  AwsClients: vi.fn().mockImplementation(() => ({
+  AwsClients: vi.fn(() => ({
     get s3() {
       return { send: mockS3Send, destroy: vi.fn() };
     },
@@ -50,11 +50,11 @@ vi.mock('../../../src/utils/aws-clients.ts', async (importOriginal) => ({
 }));
 vi.mock('../../../src/state/s3-state-backend.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../src/state/s3-state-backend.js')>()),
-  S3StateBackend: vi.fn().mockImplementation(() => stateBackendMocks),
+  S3StateBackend: vi.fn(() => stateBackendMocks),
 }));
 vi.mock('../../../src/state/lock-manager.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../src/state/lock-manager.js')>()),
-  LockManager: vi.fn().mockImplementation(() => ({
+  LockManager: vi.fn(() => ({
     acquireLock: vi.fn(async () => true),
     acquireLockWithRetry: vi.fn(async () => undefined),
     getLockInfo: vi.fn(async () => null),
@@ -64,13 +64,13 @@ vi.mock('../../../src/state/lock-manager.js', async (importOriginal) => ({
 }));
 vi.mock('@aws-sdk/client-sts', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@aws-sdk/client-sts')>()),
-  STSClient: vi.fn().mockImplementation(() => ({ send: mockStsSend, destroy: vi.fn() })),
+  STSClient: vi.fn(() => ({ send: mockStsSend, destroy: vi.fn() })),
 }));
 vi.mock('@aws-sdk/client-s3', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-s3')>();
   return {
     ...actual,
-    S3Client: vi.fn().mockImplementation(() => ({ send: mockS3Send, destroy: vi.fn() })),
+    S3Client: vi.fn(() => ({ send: mockS3Send, destroy: vi.fn() })),
   };
 });
 // Let action errors propagate to parseAsync instead of process.exit-ing.

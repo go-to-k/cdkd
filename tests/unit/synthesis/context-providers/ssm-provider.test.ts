@@ -4,11 +4,11 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 const mockSend = vi.fn();
 const mockDestroy = vi.fn();
 vi.mock('@aws-sdk/client-ssm', () => ({
-  SSMClient: vi.fn().mockImplementation(() => ({
+  SSMClient: vi.fn(() => ({
     send: mockSend,
     destroy: mockDestroy,
   })),
-  GetParameterCommand: vi.fn().mockImplementation((input) => ({
+  GetParameterCommand: vi.fn((input) => ({
     ...input,
     _type: 'GetParameterCommand',
   })),

@@ -10,7 +10,7 @@ vi.mock('@aws-sdk/client-sts', async () => {
   );
   return {
     ...actual,
-    STSClient: vi.fn().mockImplementation(() => ({
+    STSClient: vi.fn(() => ({
       send: mockStsSend,
       destroy: vi.fn(),
     })),
@@ -23,7 +23,9 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) {
+      return this;
+    }),
   };
   return {
     getLogger: () => ({

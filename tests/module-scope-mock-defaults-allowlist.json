@@ -1,9 +1,6 @@
 {
   "$comment": "Files under tests/unit grandfathered by scripts/check-module-scope-mock-defaults.ts (issue 6928): each maps to its EXACT count of mock defaults set where mockReset would wipe them (module scope, a describe body, a vi.mock factory, vi.hoisted, beforeAll / afterAll / afterEach). This list may only SHRINK: a new file, a raised count, a lowered count, a clean file and a missing file all fail. After moving a file's defaults into beforeEach (or onto vi.fn(impl)), run `node --experimental-strip-types scripts/check-module-scope-mock-defaults.ts --update`, which only lowers and removes entries.",
   "files": {
-    "tests/unit/analyzer/diff-calculator-narrowing-announcement.test.ts": 1,
-    "tests/unit/analyzer/diff-calculator-noecho-log-mask.test.ts": 2,
-    "tests/unit/analyzer/diff-calculator-read-provenance-4852.test.ts": 1,
     "tests/unit/cli/bootstrap-destroy-empty-role-arn.test.ts": 1,
     "tests/unit/cli/bootstrap-destroy-string-outthrow-3361.test.ts": 5,
     "tests/unit/cli/bootstrap-destroy.test.ts": 5,
@@ -399,11 +396,6 @@
     "tests/unit/deployment/strict-getatt-output-refusal-cause.test.ts": 1,
     "tests/unit/deployment/superseded-resources-5111.test.ts": 1,
     "tests/unit/deployment/update-replace-thrown-text-2319.test.ts": 1,
-    "tests/unit/json-parse-body-window-5254.test.ts": 3,
-    "tests/unit/local/ecr-puller.test.ts": 5,
-    "tests/unit/local/ecs-task-runner-runner.test.ts": 1,
-    "tests/unit/local/local-role-arn-from-cfn-stack.test.ts": 1,
-    "tests/unit/local/local-role-arn.test.ts": 1,
     "tests/unit/provisioning/acm-certificate-provider-created-before-failure-4583.test.ts": 1,
     "tests/unit/provisioning/acm-certificate-provider-malformed-tags-3994.test.ts": 1,
     "tests/unit/provisioning/acm-certificate-provider.test.ts": 1,
@@ -1259,25 +1251,6 @@
     "tests/unit/provisioning/wafv2-provider-search-string-base64.test.ts": 2,
     "tests/unit/provisioning/wafv2-provider.test.ts": 2,
     "tests/unit/provisioning/wafv2-webacl-capacity-6242.test.ts": 2,
-    "tests/unit/provisioning/wait-condition-signal-store.test.ts": 4,
-    "tests/unit/synthesis/context-providers/az-provider.test.ts": 2,
-    "tests/unit/synthesis/context-providers/cc-api-provider.test.ts": 3,
-    "tests/unit/synthesis/context-providers/registry.test.ts": 5,
-    "tests/unit/synthesis/context-providers/ssm-provider.test.ts": 2,
-    "tests/unit/synthesis/synthesizer-context-proto-key.test.ts": 4,
-    "tests/unit/synthesis/synthesizer-display-safe.test.ts": 5,
-    "tests/unit/synthesis/synthesizer-macro-integration.test.ts": 5,
-    "tests/unit/synthesis/synthesizer.test.ts": 5,
-    "tests/unit/utils/ambient-client-defaults.test.ts": 1,
-    "tests/unit/utils/arrow-paste-sites-4239.test.ts": 2,
-    "tests/unit/utils/aws-region-resolver.test.ts": 1,
-    "tests/unit/utils/bucket-region-client.test.ts": 1,
-    "tests/unit/utils/expected-bucket-owner.test.ts": 2,
-    "tests/unit/utils/pasteable-remedies-6262-r2-cli.test.ts": 5,
-    "tests/unit/utils/role-arn-cross-account.test.ts": 2,
-    "tests/unit/utils/role-arn-shape.test.ts": 2,
-    "tests/unit/utils/role-arn.test.ts": 2,
-    "tests/unit/utils/state-utils-types-string-outthrow-3361.test.ts": 1,
-    "tests/unit/utils/string-outthrow-3361.test.ts": 2
+    "tests/unit/provisioning/wait-condition-signal-store.test.ts": 4
   }
 }

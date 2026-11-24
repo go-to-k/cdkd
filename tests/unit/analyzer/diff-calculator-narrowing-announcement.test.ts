@@ -16,18 +16,16 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
   }),
 }));
 
-vi.mock('../../../src/utils/logger.js', () => {
-  childLogger.child.mockReturnValue(childLogger);
-  return {
-    getLogger: () => ({
-      child: () => childLogger,
-      debug: childLogger.debug,
-      info: childLogger.info,
-      warn: childLogger.warn,
-      error: childLogger.error,
-    }),
-  };
-});
+// `childLogger.child` returns `childLogger`, installed in the `beforeEach` below.
+vi.mock('../../../src/utils/logger.js', () => ({
+  getLogger: () => ({
+    child: () => childLogger,
+    debug: childLogger.debug,
+    info: childLogger.info,
+    warn: childLogger.warn,
+    error: childLogger.error,
+  }),
+}));
 
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js';

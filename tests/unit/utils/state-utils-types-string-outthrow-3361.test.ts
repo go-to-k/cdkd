@@ -9,7 +9,7 @@ vi.mock('@aws-sdk/client-sts', async () => {
     await vi.importActual<typeof import('@aws-sdk/client-sts')>('@aws-sdk/client-sts');
   return {
     ...actual,
-    STSClient: vi.fn().mockImplementation(() => ({ send: mockStsSend, destroy: vi.fn() })),
+    STSClient: vi.fn(() => ({ send: mockStsSend, destroy: vi.fn() })),
   };
 });
 

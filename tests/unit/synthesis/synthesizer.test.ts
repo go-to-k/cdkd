@@ -10,14 +10,14 @@ const mockResolve = vi.fn();
 
 // Mock AppExecutor
 vi.mock('../../../src/synthesis/app-executor.js', () => ({
-  AppExecutor: vi.fn().mockImplementation(() => ({
+  AppExecutor: vi.fn(() => ({
     execute: mockExecute,
   })),
 }));
 
 // Mock AssemblyReader
 vi.mock('../../../src/synthesis/assembly-reader.js', () => ({
-  AssemblyReader: vi.fn().mockImplementation(() => ({
+  AssemblyReader: vi.fn(() => ({
     readManifest: mockReadManifest,
     // `Synthesizer` reads through `readAssembly`, which returns the stacks in
     // a record. `getAllStacks` is deliberately NOT stubbed: a production call
@@ -29,7 +29,7 @@ vi.mock('../../../src/synthesis/assembly-reader.js', () => ({
 // Mock ContextStore
 vi.mock('../../../src/synthesis/context-store.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../src/synthesis/context-store.js')>()),
-  ContextStore: vi.fn().mockImplementation(() => ({
+  ContextStore: vi.fn(() => ({
     load: mockContextStoreLoad,
     save: mockContextStoreSave,
   })),
@@ -37,7 +37,7 @@ vi.mock('../../../src/synthesis/context-store.js', async (importOriginal) => ({
 
 // Mock ContextProviderRegistry
 vi.mock('../../../src/synthesis/context-providers/index.js', () => ({
-  ContextProviderRegistry: vi.fn().mockImplementation(() => ({
+  ContextProviderRegistry: vi.fn(() => ({
     resolve: mockResolve,
   })),
 }));
@@ -52,8 +52,8 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
 
 // Mock STS
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation(() => ({
-    send: vi.fn().mockResolvedValue({ Account: '123456789012' }),
+  STSClient: vi.fn(() => ({
+    send: vi.fn(async () => ({ Account: '123456789012' })),
     destroy: vi.fn(),
   })),
   GetCallerIdentityCommand: vi.fn(),

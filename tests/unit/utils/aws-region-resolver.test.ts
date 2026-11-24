@@ -24,7 +24,7 @@ vi.mock('@aws-sdk/client-s3', async () => {
   const actual = await vi.importActual<typeof import('@aws-sdk/client-s3')>('@aws-sdk/client-s3');
   return {
     ...actual,
-    S3Client: vi.fn().mockImplementation((cfg: unknown) => {
+    S3Client: vi.fn((cfg: unknown) => {
       s3ClientFactory(cfg);
       const explicit = (cfg as { region?: string } | undefined)?.region;
       return {

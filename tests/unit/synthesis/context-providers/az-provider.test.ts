@@ -4,11 +4,11 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 const mockSend = vi.fn();
 const mockDestroy = vi.fn();
 vi.mock('@aws-sdk/client-ec2', () => ({
-  EC2Client: vi.fn().mockImplementation(() => ({
+  EC2Client: vi.fn(() => ({
     send: mockSend,
     destroy: mockDestroy,
   })),
-  DescribeAvailabilityZonesCommand: vi.fn().mockImplementation((input) => ({
+  DescribeAvailabilityZonesCommand: vi.fn((input) => ({
     ...input,
     _type: 'DescribeAvailabilityZonesCommand',
   })),

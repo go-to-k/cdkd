@@ -43,11 +43,11 @@ const { loggerSpies } = vi.hoisted(() => ({
 }));
 
 vi.mock('../../../src/synthesis/app-executor.js', () => ({
-  AppExecutor: vi.fn().mockImplementation(() => ({ execute: mockExecute })),
+  AppExecutor: vi.fn(() => ({ execute: mockExecute })),
 }));
 
 vi.mock('../../../src/synthesis/assembly-reader.js', () => ({
-  AssemblyReader: vi.fn().mockImplementation(() => ({
+  AssemblyReader: vi.fn(() => ({
     readManifest: mockReadManifest,
     readAssembly: (...args: unknown[]) => ({ stacks: mockAssemblyStacks(...args) }),
   })),
@@ -55,15 +55,15 @@ vi.mock('../../../src/synthesis/assembly-reader.js', () => ({
 
 vi.mock('../../../src/synthesis/context-store.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../src/synthesis/context-store.js')>()),
-  ContextStore: vi.fn().mockImplementation(() => ({
+  ContextStore: vi.fn(() => ({
     load: mockContextStoreLoad,
     save: mockContextStoreSave,
   })),
 }));
 
 vi.mock('../../../src/synthesis/context-providers/index.js', () => ({
-  ContextProviderRegistry: vi.fn().mockImplementation(() => ({
-    resolve: vi.fn().mockResolvedValue({}),
+  ContextProviderRegistry: vi.fn(() => ({
+    resolve: vi.fn(async () => ({})),
   })),
 }));
 
@@ -81,7 +81,7 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
 const mockStsSend = vi.hoisted(() => vi.fn());
 const mockStsConfigRegion = vi.hoisted(() => vi.fn());
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation(() => ({
+  STSClient: vi.fn(() => ({
     send: mockStsSend,
     destroy: vi.fn(),
     config: { region: mockStsConfigRegion },

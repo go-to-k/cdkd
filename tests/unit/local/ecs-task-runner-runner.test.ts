@@ -253,7 +253,8 @@ vi.mock('../../../src/utils/docker-cmd.js', async () => {
   const actual = await vi.importActual<typeof import('../../../src/utils/docker-cmd.js')>(
     '../../../src/utils/docker-cmd.js'
   );
-  dockerCmdStubs.runDockerStreaming.mockImplementation(actual.runDockerStreaming);
+  // `vi.fn(impl)`: a reset restores the real helper.
+  dockerCmdStubs.runDockerStreaming = vi.fn(actual.runDockerStreaming);
   return { ...actual, runDockerStreaming: dockerCmdStubs.runDockerStreaming };
 });
 

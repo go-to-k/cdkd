@@ -5,32 +5,28 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 const stsSendMock = vi.fn();
 const stsConstructorMock = vi.fn();
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation((config: unknown) => {
+  STSClient: vi.fn((config: unknown) => {
     stsConstructorMock(config);
     return {
       send: stsSendMock,
       destroy: vi.fn(),
     };
   }),
-  GetCallerIdentityCommand: vi
-    .fn()
-    .mockImplementation((input: unknown) => ({ _kind: 'GetCallerIdentity', input })),
-  AssumeRoleCommand: vi
-    .fn()
-    .mockImplementation((input: unknown) => ({ _kind: 'AssumeRole', input })),
+  GetCallerIdentityCommand: vi.fn((input: unknown) => ({ _kind: 'GetCallerIdentity', input })),
+  AssumeRoleCommand: vi.fn((input: unknown) => ({ _kind: 'AssumeRole', input })),
 }));
 
 const ecrSendMock = vi.fn();
 const ecrConstructorMock = vi.fn();
 vi.mock('@aws-sdk/client-ecr', () => ({
-  ECRClient: vi.fn().mockImplementation((config: unknown) => {
+  ECRClient: vi.fn((config: unknown) => {
     ecrConstructorMock(config);
     return {
       send: ecrSendMock,
       destroy: vi.fn(),
     };
   }),
-  GetAuthorizationTokenCommand: vi.fn().mockImplementation((input: unknown) => ({ input })),
+  GetAuthorizationTokenCommand: vi.fn((input: unknown) => ({ input })),
 }));
 
 // Mock the docker-cmd helpers. `vi.mock` is hoisted ABOVE top-level

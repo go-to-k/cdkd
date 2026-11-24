@@ -2,31 +2,31 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 // Mock all provider constructors to avoid real AWS SDK usage
 vi.mock('../../../../src/synthesis/context-providers/az-provider.js', () => ({
-  AZContextProvider: vi.fn().mockImplementation(() => ({
+  AZContextProvider: vi.fn(() => ({
     resolve: vi.fn(),
   })),
 }));
 
 vi.mock('../../../../src/synthesis/context-providers/ssm-provider.js', () => ({
-  SSMContextProvider: vi.fn().mockImplementation(() => ({
+  SSMContextProvider: vi.fn(() => ({
     resolve: vi.fn(),
   })),
 }));
 
 vi.mock('../../../../src/synthesis/context-providers/hosted-zone-provider.js', () => ({
-  HostedZoneContextProvider: vi.fn().mockImplementation(() => ({
+  HostedZoneContextProvider: vi.fn(() => ({
     resolve: vi.fn(),
   })),
 }));
 
 vi.mock('../../../../src/synthesis/context-providers/vpc-provider.js', () => ({
-  VpcContextProvider: vi.fn().mockImplementation(() => ({
+  VpcContextProvider: vi.fn(() => ({
     resolve: vi.fn(),
   })),
 }));
 
 vi.mock('../../../../src/synthesis/context-providers/cc-api-provider.js', () => ({
-  CcApiContextProvider: vi.fn().mockImplementation(() => ({
+  CcApiContextProvider: vi.fn(() => ({
     resolve: vi.fn(),
   })),
 }));

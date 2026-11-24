@@ -10,11 +10,11 @@ vi.mock('@aws-sdk/client-sts', () => ({
   // The client config is forwarded to `mockStsSend` as a second argument so a
   // test can return a different account per credential set (the cross-account
   // `RoleArn` path, issue #1283).
-  STSClient: vi.fn().mockImplementation((cfg: unknown) => ({
+  STSClient: vi.fn((cfg: unknown) => ({
     send: (cmd: unknown) => mockStsSend(cmd, cfg),
     destroy: mockStsDestroy,
   })),
-  GetCallerIdentityCommand: vi.fn().mockImplementation((input) => ({ ...input })),
+  GetCallerIdentityCommand: vi.fn((input) => ({ ...input })),
 }));
 
 vi.mock('../../../src/utils/logger.js', () => ({

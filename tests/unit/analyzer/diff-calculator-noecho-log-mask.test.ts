@@ -26,10 +26,10 @@ vi.mock('../../../src/provisioning/create-only-properties.js', async () => {
   const actual = await vi.importActual<
     typeof import('../../../src/provisioning/create-only-properties.js')
   >('../../../src/provisioning/create-only-properties.js');
-  return { ...actual, getCreateOnlyPropertyPaths: vi.fn().mockResolvedValue([]) };
+  return { ...actual, getCreateOnlyPropertyPaths: vi.fn(async () => []) };
 });
 vi.mock('../../../src/provisioning/write-only-properties.js', () => ({
-  tryGetTopLevelWriteOnlyProperties: vi.fn().mockResolvedValue([]),
+  tryGetTopLevelWriteOnlyProperties: vi.fn(async () => []),
 }));
 
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';

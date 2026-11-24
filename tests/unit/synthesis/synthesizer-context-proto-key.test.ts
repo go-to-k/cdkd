@@ -15,7 +15,7 @@ const mockExecute = vi.fn();
 const mockAzResolve = vi.fn();
 
 vi.mock('../../../src/synthesis/app-executor.js', () => ({
-  AppExecutor: vi.fn().mockImplementation(() => ({ execute: mockExecute })),
+  AppExecutor: vi.fn(() => ({ execute: mockExecute })),
 }));
 
 /** The context the app received on its most recent run. */
@@ -27,7 +27,7 @@ function lastContext(): Record<string, unknown> {
 // The app asks for `__proto__` until its context carries it as an OWN key —
 // which is what CDK's own `JSON.parse` of `CDK_CONTEXT_JSON` would see.
 vi.mock('../../../src/synthesis/assembly-reader.js', () => ({
-  AssemblyReader: vi.fn().mockImplementation(() => ({
+  AssemblyReader: vi.fn(() => ({
     readManifest: () => ({
       version: '38.0.0',
       artifacts: {},
@@ -46,7 +46,7 @@ vi.mock('../../../src/synthesis/assembly-reader.js', () => ({
 }));
 
 vi.mock('../../../src/synthesis/context-providers/az-provider.js', () => ({
-  AZContextProvider: vi.fn().mockImplementation(() => ({ resolve: mockAzResolve })),
+  AZContextProvider: vi.fn(() => ({ resolve: mockAzResolve })),
 }));
 
 vi.mock('../../../src/cli/config-loader.js', () => ({
@@ -55,8 +55,8 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
 }));
 
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation(() => ({
-    send: vi.fn().mockResolvedValue({ Account: '123456789012' }),
+  STSClient: vi.fn(() => ({
+    send: vi.fn(async () => ({ Account: '123456789012' })),
     destroy: vi.fn(),
   })),
   GetCallerIdentityCommand: vi.fn(),
