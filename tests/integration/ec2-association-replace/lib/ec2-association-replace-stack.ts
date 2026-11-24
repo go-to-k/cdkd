@@ -24,6 +24,12 @@ import type { Construct } from 'constructs';
  * - `cidr` (L2): the `ec2.Vpc` `Net` changes its CIDR, so the VPC, its public
  *   subnet, route table, association, default route and gateway attachment
  *   are all replaced; the attachment's `VpcId` names the new VPC.
+ * - `failatt` / `failassoc`: replacements AWS refuses after the old link was
+ *   deleted first, so the automatic rollback must re-create it
+ *   (`recreate-failed-replaced-deleted`). `failatt` moves `Att` to `VpcC`,
+ *   which already holds its own gateway `IgwC` (a VPC holds one);
+ *   `failassoc` moves `RtAssoc` to `RtC`, a route table of ANOTHER VPC.
+ *   `VpcC`, `IgwC`, `AttC` and `RtC` are part of every version.
  */
 export class Ec2AssociationReplaceStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -32,16 +38,30 @@ export class Ec2AssociationReplaceStack extends cdk.Stack {
     const modes = new Set((process.env.CDKD_TEST_UPDATE ?? '').split(','));
     const move = modes.has('move');
     const cidr = modes.has('cidr');
+    const failAtt = modes.has('failatt');
+    const failAssoc = modes.has('failassoc');
 
     // --- L1 arm --------------------------------------------------------------
     const vpcA = new ec2.CfnVPC(this, 'VpcA', { cidrBlock: '10.60.0.0/16' });
     vpcA.overrideLogicalId('VpcA');
     const vpcB = new ec2.CfnVPC(this, 'VpcB', { cidrBlock: '10.61.0.0/16' });
     vpcB.overrideLogicalId('VpcB');
+    const vpcC = new ec2.CfnVPC(this, 'VpcC', { cidrBlock: '10.64.0.0/16' });
+    vpcC.overrideLogicalId('VpcC');
+    const igwC = new ec2.CfnInternetGateway(this, 'IgwC');
+    igwC.overrideLogicalId('IgwC');
+    const attC = new ec2.CfnVPCGatewayAttachment(this, 'AttC', {
+      vpcId: vpcC.ref,
+      internetGatewayId: igwC.ref,
+    });
+    attC.overrideLogicalId('AttC');
+    const rtC = new ec2.CfnRouteTable(this, 'RtC', { vpcId: vpcC.ref });
+    rtC.overrideLogicalId('RtC');
+
     const igw = new ec2.CfnInternetGateway(this, 'Igw');
     igw.overrideLogicalId('Igw');
     const att = new ec2.CfnVPCGatewayAttachment(this, 'Att', {
-      vpcId: (move ? vpcB : vpcA).ref,
+      vpcId: (failAtt ? vpcC : move ? vpcB : vpcA).ref,
       internetGatewayId: igw.ref,
     });
     att.overrideLogicalId('Att');
@@ -58,7 +78,7 @@ export class Ec2AssociationReplaceStack extends cdk.Stack {
     rtB.overrideLogicalId('RtB');
     const assoc = new ec2.CfnSubnetRouteTableAssociation(this, 'RtAssoc', {
       subnetId: subnet.ref,
-      routeTableId: (move ? rtB : rtA).ref,
+      routeTableId: (failAssoc ? rtC : move ? rtB : rtA).ref,
     });
     assoc.overrideLogicalId('RtAssoc');
 
@@ -80,6 +100,8 @@ export class Ec2AssociationReplaceStack extends cdk.Stack {
     out('SubnetId', subnet.ref);
     out('RtAId', rtA.ref);
     out('RtBId', rtB.ref);
+    out('VpcCId', vpcC.ref);
+    out('IgwCId', igwC.ref);
     out('NetVpcId', net.vpcId);
     out('NetIgwId', net.internetGatewayId!);
     out('NetSubnetId', net.publicSubnets[0]!.subnetId);

@@ -150,9 +150,9 @@ export function classifyFailedOp(
 /**
  * go-to-k/cdkd#6958: a failed UPDATE of a type a plain deploy replaces
  * delete-first, whose old resource the replacement deleted before the new
- * one's create failed. Its rollback re-creates the old resource. Scoped to
- * `replacesDeleteFirst`: the opt-in delete-first routes (`--replace`,
- * `--recreate-via-*`) and the update-rejected fallback keep the warned skip.
+ * one's create failed, by whichever route. Its rollback re-creates the old
+ * resource (a destroy's replay still skips it). Scoped by type: every other
+ * type keeps the warned skip, whatever route deleted it first.
  */
 export function recreatesDeletedOld(op: FailedOperation): boolean {
   return (

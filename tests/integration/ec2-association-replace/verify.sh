@@ -19,7 +19,17 @@
 #   4. Deploy CDKD_TEST_UPDATE=move,cidr: Net is replaced (10.63.0.0/16), its
 #      gateway is attached to the new VPC with an active default route, and
 #      the old VPC is gone.
-#   5. Destroy: every VPC, both gateways and the state file are gone.
+#   5. Deploy CDKD_TEST_UPDATE=move,cidr,failatt (Att -> VpcC, which already
+#      holds IgwC): cdkd deletes the old attachment first, AWS refuses the new
+#      one, the deploy fails, and the automatic rollback re-creates the old
+#      attachment (issue #6958): Igw is attached to VpcB again, IgwC to VpcC,
+#      and state's Att names that attachment.
+#   6. Deploy CDKD_TEST_UPDATE=move,cidr,failassoc (RtAssoc -> RtC, a route
+#      table of another VPC): the same, for the association: the subnet is
+#      associated with RtB again and state's RtAssoc names that association.
+#   7. `cdkd diff --fail` of move,cidr reports no changes, and `cdkd drift`
+#      reports neither Att nor RtAssoc drifted.
+#   8. Destroy: every VPC, every gateway and the state file are gone.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -90,6 +100,10 @@ subnet_route_table() { # $1 = subnet id -> the route table explicitly associated
 vpc_cidr() { # $1 = VPC id
   aws ec2 describe-vpcs --vpc-ids "$1" --region "${REGION}" --query 'Vpcs[0].CidrBlock' --output text || return 1
 }
+subnet_association_id() { # $1 = subnet id -> its explicit route table association id
+  aws ec2 describe-route-tables --filters "Name=association.subnet-id,Values=$1" --region "${REGION}" \
+    --query "join(' ', RouteTables[].Associations[] | [?SubnetId=='$1'].RouteTableAssociationId)" --output text || return 1
+}
 default_route_state() { # $1 = subnet id -> the state of its route table's 0.0.0.0/0 route
   aws ec2 describe-route-tables --filters "Name=association.subnet-id,Values=$1" --region "${REGION}" \
     --query "join(' ', RouteTables[].Routes[] | [?DestinationCidrBlock=='0.0.0.0/0'].State)" --output text || return 1
@@ -158,7 +172,9 @@ RT_B="$(output RtBId)"
 NET_VPC_OLD="$(output NetVpcId)"
 NET_IGW="$(output NetIgwId)"
 NET_SUBNET_OLD="$(output NetSubnetId)"
-for v in "${VPC_A}" "${VPC_B}" "${IGW}" "${SUBNET}" "${RT_A}" "${RT_B}" "${NET_VPC_OLD}" "${NET_IGW}" "${NET_SUBNET_OLD}"; do
+VPC_C="$(output VpcCId)"
+IGW_C="$(output IgwCId)"
+for v in "${VPC_C}" "${IGW_C}" "${VPC_A}" "${VPC_B}" "${IGW}" "${SUBNET}" "${RT_A}" "${RT_B}" "${NET_VPC_OLD}" "${NET_IGW}" "${NET_SUBNET_OLD}"; do
   case "${v}" in
     vpc-?* | igw-?* | subnet-?* | rtb-?*) ;;
     *) echo "FAIL: an output id is '${v}'" >&2; exit 1 ;;
@@ -167,6 +183,7 @@ done
 ATT_ID_1="$(physical_id Att)"
 ASSOC_ID_1="$(physical_id RtAssoc)"
 expect_eq "Igw's attached VPCs" "$(igw_vpcs "${IGW}")" "${VPC_A}"
+expect_eq "IgwC's attached VPCs" "$(igw_vpcs "${IGW_C}")" "${VPC_C}"
 expect_eq "the subnet's route table" "$(subnet_route_table "${SUBNET}")" "${RT_A}"
 expect_eq "Net's gateway's attached VPCs" "$(igw_vpcs "${NET_IGW}")" "${NET_VPC_OLD}"
 expect_eq "Net's CIDR" "$(vpc_cidr "${NET_VPC_OLD}")" "10.62.0.0/16"
@@ -243,14 +260,88 @@ assert_gone "Net's old VPC ${NET_VPC_OLD} still exists after its replacement" \
 expect_eq "Igw's attached VPCs after the CIDR change" "$(igw_vpcs "${IGW}")" "${VPC_B}"
 echo "    Net replaced (${NET_VPC_OLD} -> ${NET_VPC_NEW}), ${NET_IGW} re-attached, old VPC gone"
 
-# --- Phase 5: destroy --------------------------------------------------------
-echo "==> Phase 5: destroy"
+# --- Phase 5: a refused re-attach is rolled back ------------------------------
+echo "==> Phase 5: deploy CDKD_TEST_UPDATE=move,cidr,failatt (expected to fail and roll back)"
+set +e
+fail_out=$(CDKD_TEST_UPDATE=move,cidr,failatt node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes </dev/null 2>&1)
+fail_rc=$?
+set -e
+if [ "${fail_rc}" -eq 0 ]; then
+  echo "FAIL: the failatt deploy succeeded; AWS should refuse a second gateway on ${VPC_C}" >&2
+  echo "${fail_out}" >&2
+  exit 1
+fi
+# Sentinel: the forward deleted the old attachment first; without that line
+# the assertions below would pass on a deploy that never touched it.
+if ! grep -q "allows one link at a time — deleting old Att" <<<"${fail_out}"; then
+  echo "FAIL: the failatt deploy did not replace Att delete-first" >&2
+  echo "${fail_out}" >&2
+  exit 1
+fi
+expect_eq "Igw's attached VPCs after the rolled-back failatt deploy" "$(igw_vpcs "${IGW}")" "${VPC_B}"
+expect_eq "IgwC's attached VPCs after the failatt deploy" "$(igw_vpcs "${IGW_C}")" "${VPC_C}"
+expect_eq "state's Att record after the rollback" "$(physical_id Att)" "${ATT_ID_2}"
+echo "    the refused attach was rolled back: Igw is attached to ${VPC_B} again"
+
+# --- Phase 6: a refused re-association is rolled back -------------------------
+echo "==> Phase 6: deploy CDKD_TEST_UPDATE=move,cidr,failassoc (expected to fail and roll back)"
+set +e
+fail_out=$(CDKD_TEST_UPDATE=move,cidr,failassoc node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes </dev/null 2>&1)
+fail_rc=$?
+set -e
+if [ "${fail_rc}" -eq 0 ]; then
+  echo "FAIL: the failassoc deploy succeeded; AWS should refuse a route table of another VPC" >&2
+  echo "${fail_out}" >&2
+  exit 1
+fi
+if ! grep -q "allows one link at a time — deleting old RtAssoc" <<<"${fail_out}"; then
+  echo "FAIL: the failassoc deploy did not replace RtAssoc delete-first" >&2
+  echo "${fail_out}" >&2
+  exit 1
+fi
+expect_eq "the subnet's route table after the rolled-back failassoc deploy" "$(subnet_route_table "${SUBNET}")" "${RT_B}"
+ASSOC_ID_3="$(physical_id RtAssoc)"
+expect_eq "state's RtAssoc record after the rollback" "${ASSOC_ID_3}" "$(subnet_association_id "${SUBNET}")"
+if [ "${ASSOC_ID_3}" = "${ASSOC_ID_2}" ]; then
+  echo "FAIL: state's RtAssoc still names the association the deploy deleted (${ASSOC_ID_2})" >&2
+  exit 1
+fi
+echo "    the refused association was rolled back: the subnet is on ${RT_B} again (${ASSOC_ID_3})"
+
+# --- Phase 7: state matches the last good version ------------------------------
+echo "==> Phase 7: cdkd diff --fail and cdkd drift after the rollbacks"
+set +e
+diff_out=$(CDKD_TEST_UPDATE=move,cidr node "${LOCAL_DIST}" diff "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --fail </dev/null 2>&1)
+diff_rc=$?
+set -e
+if [ "${diff_rc}" -ne 0 ] || ! grep -q "No changes detected for stack ${STACK}" <<<"${diff_out}"; then
+  echo "FAIL: cdkd diff --fail after the rollbacks exited ${diff_rc}; expected 0 and no changes" >&2
+  echo "${diff_out}" >&2
+  exit 1
+fi
+set +e
+drift_out=$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --json 2>/dev/null)
+set -e
+if [ "$(jq -r 'if type == "array" and length > 0 then "yes" else "no" end' <<<"${drift_out}" 2>/dev/null)" != "yes" ]; then
+  echo "FAIL: cdkd drift --json produced no stack report: ${drift_out}" >&2
+  exit 1
+fi
+drifted=$(jq '[.[].drifted[] | select(.logicalId == "Att" or .logicalId == "RtAssoc")] | length' <<<"${drift_out}")
+expect_eq "drifted Att / RtAssoc after the rollbacks" "${drifted}" "0"
+echo "    no changes, no drift"
+
+# --- Phase 8: destroy --------------------------------------------------------
+echo "==> Phase 8: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
-for vpc in "${VPC_A}" "${VPC_B}" "${NET_VPC_NEW}"; do
+for vpc in "${VPC_A}" "${VPC_B}" "${VPC_C}" "${NET_VPC_NEW}"; do
   assert_gone "VPC ${vpc} still exists after destroy" \
     aws ec2 describe-vpcs --vpc-ids "${vpc}" --region "${REGION}"
 done
-for gw in "${IGW}" "${NET_IGW}"; do
+for gw in "${IGW}" "${IGW_C}" "${NET_IGW}"; do
   assert_gone "internet gateway ${gw} still exists after destroy" \
     aws ec2 describe-internet-gateways --internet-gateway-ids "${gw}" --region "${REGION}"
 done
@@ -258,4 +349,4 @@ assert_gone "state file ${STATE_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 
 trap - EXIT INT TERM
-echo "[verify] PASS — gateway attachment and route table association replaced delete-first (move), Net's VPC replaced on a CIDR change with its gateway re-attached, destroyed clean"
+echo "[verify] PASS — gateway attachment and route table association replaced delete-first (move), Net's VPC replaced on a CIDR change with its gateway re-attached, refused re-attach and re-association rolled back to the old links, destroyed clean"

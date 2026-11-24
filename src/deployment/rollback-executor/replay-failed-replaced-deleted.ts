@@ -59,8 +59,12 @@ export async function replayReplacedDeleted(
   action: 'skip-failed-replaced-deleted' | 'recreate-failed-replaced-deleted',
   s: ReplacedDeletedScope
 ): Promise<void> {
-  if (action === 'skip-failed-replaced-deleted') skipFailedReplacedDeleted(s);
-  else await recreateFailedReplacedDeleted(s);
+  // A destroy drops the stack's records, so a re-created link would be
+  // recorded nowhere and left in AWS (holding the VPC the destroy deletes
+  // next): it takes the skip, whose line says the destroy drops the record.
+  if (action === 'skip-failed-replaced-deleted' || s.options.forDestroy === true) {
+    skipFailedReplacedDeleted(s);
+  } else await recreateFailedReplacedDeleted(s);
 }
 
 /** `skip-failed-replaced-deleted`: warned, nothing reverted (go-to-k/cdkd#4604). */
