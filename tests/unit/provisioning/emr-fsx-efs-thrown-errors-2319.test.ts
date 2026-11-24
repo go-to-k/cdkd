@@ -32,15 +32,15 @@ const { mockSend, debugSpy, fakeClient } = vi.hoisted(() => {
 
 vi.mock('@aws-sdk/client-emr', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-emr')>();
-  return { ...actual, EMRClient: vi.fn().mockImplementation(fakeClient) };
+  return { ...actual, EMRClient: vi.fn(fakeClient) };
 });
 vi.mock('@aws-sdk/client-fsx', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-fsx')>();
-  return { ...actual, FSxClient: vi.fn().mockImplementation(fakeClient) };
+  return { ...actual, FSxClient: vi.fn(fakeClient) };
 });
 vi.mock('@aws-sdk/client-efs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-efs')>();
-  return { ...actual, EFSClient: vi.fn().mockImplementation(fakeClient) };
+  return { ...actual, EFSClient: vi.fn(fakeClient) };
 });
 vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
@@ -48,7 +48,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

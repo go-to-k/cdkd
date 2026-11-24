@@ -8,7 +8,7 @@ const { mockSend, childLogger } = vi.hoisted(() => ({
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn(),
+    child: vi.fn((): unknown => childLogger),
   },
 }));
 
@@ -19,7 +19,6 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 }));
 
 vi.mock('../../../src/utils/logger.js', () => {
-  childLogger.child.mockReturnValue(childLogger);
   return {
     getLogger: () => ({
       child: () => childLogger,
@@ -102,7 +101,6 @@ beforeEach(() => {
   // they silently read the wrong DescribeTable.
   mockSend.mockReset();
   vi.clearAllMocks();
-  childLogger.child.mockReturnValue(childLogger);
   provider = new DynamoDBTableProvider();
 });
 

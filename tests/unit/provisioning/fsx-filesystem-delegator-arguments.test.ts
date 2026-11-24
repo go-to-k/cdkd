@@ -18,7 +18,7 @@ vi.mock('@aws-sdk/client-fsx', async () => {
   const actual = await vi.importActual<typeof import('@aws-sdk/client-fsx')>('@aws-sdk/client-fsx');
   return {
     ...actual,
-    FSxClient: vi.fn().mockImplementation(() => ({
+    FSxClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),

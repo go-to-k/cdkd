@@ -23,7 +23,7 @@ vi.mock('@aws-sdk/client-glue', async () => {
     await vi.importActual<typeof import('@aws-sdk/client-glue')>('@aws-sdk/client-glue');
   return {
     ...actual,
-    GlueClient: vi.fn().mockImplementation(() => ({
+    GlueClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),

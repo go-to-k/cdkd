@@ -12,7 +12,7 @@ vi.mock('@aws-sdk/client-ecs', async (importOriginal) => {
   const actual = (await importOriginal()) as object;
   return {
     ...actual,
-    ECSClient: vi.fn().mockImplementation(() => ({
+    ECSClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -30,7 +30,7 @@ vi.mock('../../../src/provisioning/create-only-properties.js', async () => {
 
 vi.mock('../../../src/utils/logger.js', () => {
   const child = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), child: vi.fn() };
-  child.child = vi.fn().mockReturnValue(child);
+  child.child = vi.fn(() => child);
   return { getLogger: () => child };
 });
 

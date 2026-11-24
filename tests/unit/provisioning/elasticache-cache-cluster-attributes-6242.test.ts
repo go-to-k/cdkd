@@ -11,7 +11,7 @@ import { DescribeCacheClustersCommand } from '@aws-sdk/client-elasticache';
 const mockSend = vi.hoisted(() => vi.fn());
 vi.mock('@aws-sdk/client-elasticache', async () => ({
   ...(await vi.importActual('@aws-sdk/client-elasticache')),
-  ElastiCacheClient: vi.fn().mockImplementation(() => ({
+  ElastiCacheClient: vi.fn(() => ({
     send: mockSend,
     config: { region: () => Promise.resolve('us-east-1') },
   })),

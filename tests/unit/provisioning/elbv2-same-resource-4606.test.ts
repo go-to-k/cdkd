@@ -22,7 +22,7 @@ vi.mock('@aws-sdk/client-elastic-load-balancing-v2', async () => {
   );
   return {
     ...actual,
-    ElasticLoadBalancingV2Client: vi.fn().mockImplementation(() => ({
+    ElasticLoadBalancingV2Client: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve(clientRegion.value) },
     })),

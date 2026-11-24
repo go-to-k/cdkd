@@ -18,11 +18,10 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 }));
 
 const { childLogger } = vi.hoisted(() => ({
-  childLogger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), child: vi.fn() },
+  childLogger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), child: vi.fn((): unknown => childLogger) },
 }));
 
 vi.mock('../../../src/utils/logger.js', () => {
-  childLogger.child.mockReturnValue(childLogger);
   return {
     getLogger: () => ({
       child: () => childLogger,
@@ -69,7 +68,6 @@ let provider: EC2Provider;
 
 beforeEach(() => {
   vi.clearAllMocks();
-  childLogger.child.mockReturnValue(childLogger);
   provider = new EC2Provider();
   mockSend.mockResolvedValue({ Return: true });
 });

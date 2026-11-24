@@ -33,7 +33,7 @@ vi.mock('@aws-sdk/client-dynamodb', async () => {
     await vi.importActual<typeof import('@aws-sdk/client-dynamodb')>('@aws-sdk/client-dynamodb');
   return {
     ...actual,
-    DynamoDBClient: vi.fn().mockImplementation((cfg: { region?: string } | undefined) => ({
+    DynamoDBClient: vi.fn((cfg: { region?: string } | undefined) => ({
       send: mockSend,
       config: { region: () => Promise.resolve(cfg?.region ?? 'us-east-1') },
     })),
@@ -46,7 +46,7 @@ vi.mock('@aws-sdk/client-application-auto-scaling', async () => {
   >('@aws-sdk/client-application-auto-scaling');
   return {
     ...actual,
-    ApplicationAutoScalingClient: vi.fn().mockImplementation(() => ({
+    ApplicationAutoScalingClient: vi.fn(() => ({
       send: mockAutoScalingSend,
     })),
   };
@@ -58,7 +58,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: warnSpy,
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

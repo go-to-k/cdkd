@@ -25,7 +25,7 @@ function nameIsFree(command: { constructor: { name: string } }): Promise<never> 
 // RegisterTargets failure path.
 vi.mock('@aws-sdk/client-lambda', async () => ({
   ...(await vi.importActual<typeof import('@aws-sdk/client-lambda')>('@aws-sdk/client-lambda')),
-  waitUntilFunctionActiveV2: vi.fn().mockResolvedValue({ state: 'SUCCESS' }),
+  waitUntilFunctionActiveV2: vi.fn(async () => ({ state: 'SUCCESS' })),
 }));
 
 vi.mock('@aws-sdk/client-elastic-load-balancing-v2', async () => {
@@ -34,7 +34,7 @@ vi.mock('@aws-sdk/client-elastic-load-balancing-v2', async () => {
   >('@aws-sdk/client-elastic-load-balancing-v2');
   return {
     ...actual,
-    ElasticLoadBalancingV2Client: vi.fn().mockImplementation(() => ({
+    ElasticLoadBalancingV2Client: vi.fn(() => ({
       send: (command: { input?: { Names?: unknown } }) =>
         command.input?.Names !== undefined ? ownershipSend(command) : mockSend(command),
       config: { region: () => Promise.resolve('us-east-1') },
@@ -43,7 +43,7 @@ vi.mock('@aws-sdk/client-elastic-load-balancing-v2', async () => {
     // suite exercises. Stub it so these cases keep testing the
     // ModifyLoadBalancerAttributes failure path; the wait-failure branch of
     // the same cleanup is covered by elbv2-loadbalancer-active-wait.test.ts.
-    waitUntilLoadBalancerAvailable: vi.fn().mockResolvedValue({ state: 'SUCCESS' }),
+    waitUntilLoadBalancerAvailable: vi.fn(async () => ({ state: 'SUCCESS' })),
   };
 });
 
@@ -53,7 +53,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: warnSpy,
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

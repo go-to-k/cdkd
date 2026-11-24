@@ -26,7 +26,7 @@ vi.mock('@aws-sdk/client-ecs', async (importOriginal) => {
   const actual = (await importOriginal()) as object;
   return {
     ...actual,
-    ECSClient: vi.fn().mockImplementation(() => ({
+    ECSClient: vi.fn(() => ({
       send: (command: { constructor: { name: string } }) => {
         if (command.constructor.name === 'CreateServiceCommand') return createSend(command);
         return createSend.mock.calls.length === 0 ? lookupSend(command) : afterSend(command);
@@ -39,7 +39,7 @@ vi.mock('@aws-sdk/client-ecs', async (importOriginal) => {
 
 vi.mock('../../../src/utils/logger.js', () => {
   const l = { debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() };
-  const child = { ...l, child: vi.fn().mockReturnThis() };
+  const child = { ...l, child: vi.fn(function (this: unknown) { return this; }) };
   return { getLogger: () => ({ ...l, child: () => child }) };
 });
 

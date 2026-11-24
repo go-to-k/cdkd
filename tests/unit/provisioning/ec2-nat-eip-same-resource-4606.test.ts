@@ -28,7 +28,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 
 vi.mock('@aws-sdk/client-ec2', async (importOriginal) => {
   const actual = (await importOriginal()) as object;
-  return { ...actual, waitUntilNatGatewayDeleted: vi.fn().mockResolvedValue({}) };
+  return { ...actual, waitUntilNatGatewayDeleted: vi.fn(async () => ({})) };
 });
 
 import {

@@ -13,15 +13,14 @@ vi.mock('@aws-sdk/client-emr', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-emr')>();
   return {
     ...actual,
-    EMRClient: vi.fn().mockImplementation(() => ({
+    EMRClient: vi.fn(() => ({
       config: { region: () => Promise.resolve('us-east-1') },
       send: (command: unknown) => mockSend(command),
     })),
   };
 });
 vi.mock('../../../src/utils/logger.js', () => {
-  const child = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), child: vi.fn() };
-  child.child.mockReturnValue(child);
+  const child = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), child: vi.fn((): unknown => child) };
   return { getLogger: () => ({ ...child, child: () => child }) };
 });
 

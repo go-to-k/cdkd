@@ -19,12 +19,11 @@ const { childLogger } = vi.hoisted(() => ({
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn(),
+    child: vi.fn((): unknown => childLogger),
   },
 }));
 
 vi.mock('../../../src/utils/logger.js', () => {
-  childLogger.child.mockReturnValue(childLogger);
   return {
     getLogger: () => ({
       child: () => childLogger,
@@ -93,7 +92,6 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
 
   beforeEach(() => {
     vi.clearAllMocks();
-    childLogger.child.mockReturnValue(childLogger);
     provider = new EC2Provider();
     mockSend.mockResolvedValue({});
   });

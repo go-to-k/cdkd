@@ -40,7 +40,7 @@ vi.mock('@aws-sdk/client-emr', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-emr')>();
   return {
     ...actual,
-    EMRClient: vi.fn().mockImplementation((options: { region?: unknown }) => {
+    EMRClient: vi.fn((options: { region?: unknown }) => {
       ctorArgs.push(options);
       const config = {
         region: () => {
@@ -69,7 +69,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: warnSpy,
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

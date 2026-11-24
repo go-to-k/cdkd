@@ -67,7 +67,7 @@ vi.mock('@aws-sdk/client-dynamodb', async () => {
   );
   return {
     ...actual,
-    DynamoDBClient: vi.fn().mockImplementation((cfg: { region?: string } | undefined) => ({
+    DynamoDBClient: vi.fn((cfg: { region?: string } | undefined) => ({
       send: mockSend,
       config: { region: () => Promise.resolve(cfg?.region ?? 'us-east-1') },
     })),
@@ -81,7 +81,7 @@ vi.mock('@aws-sdk/client-application-auto-scaling', async () => {
     );
   return {
     ...actual,
-    ApplicationAutoScalingClient: vi.fn().mockImplementation(() => ({
+    ApplicationAutoScalingClient: vi.fn(() => ({
       send: mockAutoScalingSend,
     })),
   };
@@ -891,6 +891,10 @@ describe('both DynamoDB providers route DeleteTable through the shared retry', (
     );
 
     expect(stub.deletes()).toBe(2);
+    // The local auto-scaling teardown before `DeleteTable` swallows its own
+    // failure, so pin that it reached the stub: a wiped client default would
+    // otherwise pass on a path that skipped the teardown (go-to-k/cdkd#6928).
+    expect(mockAutoScalingSend).toHaveBeenCalled();
     expect(retrySpy).toHaveBeenCalledTimes(1);
     expect(retrySpy.mock.calls[0]?.[0]).toMatchObject({
       typeLabel: 'GlobalTable',
@@ -946,6 +950,7 @@ describe('both DynamoDB providers route DeleteTable through the shared retry', (
     );
 
     expect(stub.deletes()).toBe(2);
+    expect(mockAutoScalingSend).toHaveBeenCalled(); // see the GlobalTable case above
     // Assert the re-arm HAPPENED before reading it. Without this the fence is
     // vacuous in one direction: `settleSpy` is reset per test, but `.at(-1)` on
     // an empty list is `undefined`, and `toMatchObject` against `undefined`

@@ -28,7 +28,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 
 vi.mock('@aws-sdk/client-ec2', async (importOriginal) => {
   const actual = (await importOriginal()) as object;
-  return { ...actual, waitUntilInstanceTerminated: vi.fn().mockResolvedValue({}) };
+  return { ...actual, waitUntilInstanceTerminated: vi.fn(async () => ({})) };
 });
 
 import { DescribeInstancesCommand, TerminateInstancesCommand } from '@aws-sdk/client-ec2';

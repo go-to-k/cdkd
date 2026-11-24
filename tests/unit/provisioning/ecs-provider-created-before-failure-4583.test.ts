@@ -19,7 +19,7 @@ vi.mock('@aws-sdk/client-ecs', async (importOriginal) => {
   const actual = (await importOriginal()) as object;
   return {
     ...actual,
-    ECSClient: vi.fn().mockImplementation(() => ({
+    ECSClient: vi.fn(() => ({
       // A DescribeServices sent before any CreateService is the pre-create
       // lookup; one after it is the settle poll.
       send: (command: { constructor: { name: string } }) =>
@@ -35,7 +35,7 @@ vi.mock('@aws-sdk/client-ecs', async (importOriginal) => {
 
 vi.mock('../../../src/utils/logger.js', () => {
   const l = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-  const child = { ...l, child: vi.fn().mockReturnThis() };
+  const child = { ...l, child: vi.fn(function (this: unknown) { return this; }) };
   return { getLogger: () => ({ ...l, child: () => child }) };
 });
 
