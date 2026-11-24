@@ -4,7 +4,7 @@ const mockSend = vi.fn();
 
 vi.mock('@aws-sdk/client-rds', async () => ({
   ...(await vi.importActual('@aws-sdk/client-rds')),
-  RDSClient: vi.fn().mockImplementation(() => ({
+  RDSClient: vi.fn(() => ({
     send: mockSend,
     config: { region: () => Promise.resolve('us-east-1') },
   })),

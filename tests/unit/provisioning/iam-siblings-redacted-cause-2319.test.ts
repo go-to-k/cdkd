@@ -36,7 +36,7 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', async () => ({
   ...(await vi.importActual<Record<string, unknown>>(
     '../../../src/deployment/intrinsic-function-resolver.js'
   )),
-  IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
+  IntrinsicFunctionResolver: vi.fn(() => ({
     resolveDynamicReferences: resolveSpy,
   })),
 }));
@@ -56,7 +56,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

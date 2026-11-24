@@ -12,14 +12,14 @@ const { mockRdsSend, mockDocdbSend } = vi.hoisted(() => ({
 }));
 vi.mock('@aws-sdk/client-rds', async () => ({
   ...(await vi.importActual('@aws-sdk/client-rds')),
-  RDSClient: vi.fn().mockImplementation(() => ({
+  RDSClient: vi.fn(() => ({
     send: mockRdsSend,
     config: { region: () => Promise.resolve('us-east-1') },
   })),
 }));
 vi.mock('@aws-sdk/client-docdb', async () => ({
   ...(await vi.importActual('@aws-sdk/client-docdb')),
-  DocDBClient: vi.fn().mockImplementation(() => ({ send: mockDocdbSend })),
+  DocDBClient: vi.fn(() => ({ send: mockDocdbSend })),
 }));
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), child: () => fns };

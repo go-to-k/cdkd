@@ -62,7 +62,7 @@ const deployCalls: Array<{
   };
 }> = [];
 vi.mock('../../../src/deployment/deploy-engine.js', () => ({
-  DeployEngine: vi.fn().mockImplementation((...ctor: unknown[]) => ({
+  DeployEngine: vi.fn((...ctor: unknown[]) => ({
     deploy: vi.fn(async (stackName: string, template: { Resources?: Record<string, unknown> }) => {
       // Dynamic import inside the mock factory body: top-level imports
       // are hoisted before vi.mock() and would create a TDZ / circular

@@ -18,7 +18,7 @@ vi.mock('@aws-sdk/client-neptune', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-neptune')>();
   return {
     ...actual,
-    NeptuneClient: vi.fn().mockImplementation(() => ({
+    NeptuneClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve(clientRegion.value) },
     })),

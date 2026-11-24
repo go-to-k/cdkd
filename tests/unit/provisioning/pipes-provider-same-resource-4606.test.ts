@@ -27,7 +27,7 @@ vi.mock('@aws-sdk/client-pipes', async () => {
     await vi.importActual<typeof import('@aws-sdk/client-pipes')>('@aws-sdk/client-pipes');
   return {
     ...actual,
-    PipesClient: vi.fn().mockImplementation(() => ({
+    PipesClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve(clientRegion.value) },
     })),

@@ -21,7 +21,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 // whose SDK retry refuses a 5xx); route it to the same mock.
 vi.mock('@aws-sdk/client-lambda', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@aws-sdk/client-lambda')>()),
-  LambdaClient: vi.fn().mockImplementation(() => ({
+  LambdaClient: vi.fn(() => ({
     send: (command: unknown) => mockSend(command),
     config: {},
   })),
@@ -33,7 +33,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

@@ -28,7 +28,7 @@ const engineDeploys: string[] = [];
 const RUNAWAY_DEPTH = 12;
 
 vi.mock('../../../src/deployment/deploy-engine.js', () => ({
-  DeployEngine: vi.fn().mockImplementation(() => ({
+  DeployEngine: vi.fn(() => ({
     deploy: vi.fn(
       async (stackName: string, template: { Resources?: Record<string, { Type?: string }> }) => {
         engineDeploys.push(stackName);

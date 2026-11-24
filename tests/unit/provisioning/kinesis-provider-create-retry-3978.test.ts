@@ -30,7 +30,7 @@ vi.mock('@aws-sdk/client-kinesis', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-kinesis')>();
   return {
     ...actual,
-    KinesisClient: vi.fn().mockImplementation(() => {
+    KinesisClient: vi.fn(() => {
       const config = {
         region: () => Promise.resolve('us-east-1'),
         retryStrategy: async (): Promise<unknown> => baseStrategy,
@@ -68,7 +68,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

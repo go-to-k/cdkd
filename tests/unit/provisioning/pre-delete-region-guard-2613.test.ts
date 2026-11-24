@@ -17,27 +17,27 @@ const regionalClient = vi.hoisted(() => () => ({
 
 vi.mock('@aws-sdk/client-glue', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-glue')>();
-  return { ...actual, GlueClient: vi.fn().mockImplementation(regionalClient) };
+  return { ...actual, GlueClient: vi.fn(regionalClient) };
 });
 vi.mock('@aws-sdk/client-s3tables', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-s3tables')>();
-  return { ...actual, S3TablesClient: vi.fn().mockImplementation(regionalClient) };
+  return { ...actual, S3TablesClient: vi.fn(regionalClient) };
 });
 vi.mock('@aws-sdk/client-wafv2', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-wafv2')>();
-  return { ...actual, WAFV2Client: vi.fn().mockImplementation(regionalClient) };
+  return { ...actual, WAFV2Client: vi.fn(regionalClient) };
 });
 vi.mock('@aws-sdk/client-s3', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-s3')>();
-  return { ...actual, S3Client: vi.fn().mockImplementation(regionalClient) };
+  return { ...actual, S3Client: vi.fn(regionalClient) };
 });
 vi.mock('@aws-sdk/client-s3-control', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-s3-control')>();
-  return { ...actual, S3ControlClient: vi.fn().mockImplementation(regionalClient) };
+  return { ...actual, S3ControlClient: vi.fn(regionalClient) };
 });
 vi.mock('@aws-sdk/client-ec2', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-ec2')>();
-  return { ...actual, EC2Client: vi.fn().mockImplementation(regionalClient) };
+  return { ...actual, EC2Client: vi.fn(regionalClient) };
 });
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({ s3: regionalClient(), sts: { send: mockStsSend } }),
@@ -49,7 +49,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

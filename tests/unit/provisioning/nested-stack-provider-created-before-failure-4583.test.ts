@@ -14,7 +14,7 @@ import { join } from 'node:path';
 const { deployMock } = vi.hoisted(() => ({ deployMock: vi.fn() }));
 
 vi.mock('../../../src/deployment/deploy-engine.js', () => ({
-  DeployEngine: vi.fn().mockImplementation(() => ({ deploy: deployMock })),
+  DeployEngine: vi.fn(() => ({ deploy: deployMock })),
   DEFAULT_RESOURCE_WARN_AFTER_MS: 5 * 60 * 1000,
   DEFAULT_RESOURCE_TIMEOUT_MS: 30 * 60 * 1000,
 }));

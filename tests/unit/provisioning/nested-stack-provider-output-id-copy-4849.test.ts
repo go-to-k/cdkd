@@ -27,7 +27,7 @@ import {
 import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
 
 vi.mock('../../../src/deployment/deploy-engine.js', () => ({
-  DeployEngine: vi.fn().mockImplementation(() => ({
+  DeployEngine: vi.fn(() => ({
     deploy: vi.fn(async (stackName: string) => ({
       stackName,
       created: 1,

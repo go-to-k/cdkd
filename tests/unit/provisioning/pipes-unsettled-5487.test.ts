@@ -12,15 +12,14 @@ vi.mock('@aws-sdk/client-pipes', async () => {
   const actual = await vi.importActual<typeof import('@aws-sdk/client-pipes')>('@aws-sdk/client-pipes');
   return {
     ...actual,
-    PipesClient: vi.fn().mockImplementation(() => ({
+    PipesClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
   };
 });
 vi.mock('../../../src/utils/logger.js', () => {
-  const child = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), child: vi.fn() };
-  child.child.mockReturnValue(child);
+  const child = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), child: vi.fn((): unknown => child) };
   return { getLogger: () => ({ ...child, child: () => child }) };
 });
 

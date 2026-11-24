@@ -29,7 +29,7 @@ import {
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 
 vi.mock('../../../src/deployment/deploy-engine.js', () => ({
-  DeployEngine: vi.fn().mockImplementation(() => ({
+  DeployEngine: vi.fn(() => ({
     deploy: vi.fn(async (stackName: string) => ({
       stackName,
       created: 1,

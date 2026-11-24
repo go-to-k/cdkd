@@ -27,7 +27,7 @@ const reverts = vi.hoisted(() => ({
 }));
 
 vi.mock('../../../src/deployment/deploy-engine.js', () => ({
-  DeployEngine: vi.fn().mockImplementation(() => {
+  DeployEngine: vi.fn(() => {
     engines.constructed++;
     return {
       deploy: vi.fn(async (stackName: string) => {
