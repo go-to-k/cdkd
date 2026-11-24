@@ -183,7 +183,7 @@ describe('module-scope mock-default checker', () => {
     });
   });
 
-  describe('bounds are reported as unresolved, not silently passed', () => {
+  describe('bounds are reported as unresolved (in --json, not gated)', () => {
     it.each([
       ['an exported helper with no in-file caller', `export function setup() { m.mockReturnValue(1); }`],
       ['an implementation passed to a setter', `it('x', () => { a.mockImplementation(() => b.mockReturnValue(1)); });`],
@@ -284,6 +284,25 @@ describe('module-scope mock-default checker', () => {
       expect(report.newFiles.map((f) => f.file)).toEqual(['tests/unit/sub/a.test.ts']);
       expect(report.newFiles[0]!.refused[0]!.via).toContain('tests/unit/h.ts#forwarded');
       expect(report.unresolvedSites.map((u) => u.file)).toEqual(['tests/unit/h.ts']);
+    });
+
+    it.each([
+      ['a vi.mock factory', `import { forwarded } from './h.js';\nvi.mock('y', forwarded);`],
+      ['a beforeAll hook', `import { forwarded as fw } from './h.js';\nbeforeAll(fw);`],
+      ['a namespace member to beforeAll', `import * as h from './h.js';\nbeforeAll(h.forwarded);`],
+    ])('refuses an imported helper PASSED uncalled to %s', (_shape, importer) => {
+      const { root } = scratchRoot({ 'h.ts': HELPER, 'a.test.ts': importer }, { files: {} });
+      const report = buildReport(root, { files: {} });
+      expect(report.newFiles.map((f) => f.file)).toEqual(['tests/unit/a.test.ts']);
+      expect(report.newFiles[0]!.refused[0]!.via).toContain('tests/unit/h.ts#forwarded');
+    });
+
+    it('accepts an imported helper passed uncalled to beforeEach', () => {
+      const { root } = scratchRoot(
+        { 'h.ts': HELPER, 'a.test.ts': `import { forwarded } from './h.js';\nbeforeEach(forwarded);` },
+        { files: {} }
+      );
+      expect(buildReport(root, { files: {} }).newFiles).toEqual([]);
     });
 
     it('accepts the same helper called from beforeEach', () => {

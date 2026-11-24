@@ -60,8 +60,8 @@
  * in-file helpers it calls too) is a refused site OF THE IMPORTING FILE, `via`
  * naming the helper. The helper's own file judges them by its own calls.
  *
- * WHAT THIS DOES NOT CATCH (bounded, and counted as `unresolved`)
- * --------------------------------------------------------------
+ * WHAT THIS DOES NOT CATCH (bounded; 1-3 are counted as `unresolved`, 4 is not)
+ * ----------------------------------------------------------------------------
  *  1. An exported helper called only from another module's helper (the hop is
  *     one deep), from a file outside `tests/unit`, via a bare specifier, a
  *     barrel re-export (`export { f } from './h.js'`) or a directory import;
@@ -74,7 +74,8 @@
  *  4. A setter reached by an element access (`m['mockReturnValue']`), or a
  *     custom test function (`const myTest = test.extend(...)`; `myTest(...)` is
  *     read as an ordinary call, so its body inherits — fail-closed).
- * `unresolved` sites are reported in `--json` so the bound stays visible.
+ * `unresolved` sites are reported in `--json` so the bound stays visible; they
+ * are NOT gated, so a new one does not fail the run.
  *
  * THE ALLOW-LIST SHRINKS, NEVER GROWS
  * -----------------------------------
@@ -84,7 +85,9 @@
  * (GREW), a listed file whose count fell (LOWER: edit the number, or run
  * `--update`), a listed file now clean (STALE: delete the entry), a listed file
  * that no longer exists (DEAD). `--update` only lowers or removes entries; it
- * never adds one or raises a count, so it cannot launder a new default.
+ * never adds one or raises a count, so it cannot launder a new default. The
+ * unit is a COUNT, so a listed file that moves one default into `beforeEach`
+ * and adds another elsewhere in the same change still matches.
  *
  * WHAT DEFENDS THIS CHECKER FROM ITSELF
  * -------------------------------------
@@ -408,8 +411,20 @@ export function analyzeSource(fileName: string, text: string): FileAnalysis {
         if (isFunctionLike(bare)) {
           visitBody(bare, argumentContext(node, context));
         } else if (ts.isIdentifier(bare)) {
-          // `beforeEach(setup)`: the helper runs where a function argument would.
-          references.push({ name: bare.text, context: argumentContext(node, context) });
+          // `beforeEach(setup)`: the helper runs where a function argument would,
+          // an imported one included (`beforeAll(importedSetup)`).
+          const argContext = argumentContext(node, context);
+          references.push({ name: bare.text, context: argContext });
+          externalCalls.push({ line: lineOf(bare), context: argContext, local: bare.text });
+        } else if (ts.isPropertyAccessExpression(bare) && ts.isIdentifier(unwrap(bare.expression))) {
+          // `beforeAll(ns.setup)` over an imported namespace.
+          const owner = unwrap(bare.expression) as ts.Identifier;
+          externalCalls.push({
+            line: lineOf(bare),
+            context: argumentContext(node, context),
+            local: `${owner.text}.${bare.name.text}`,
+          });
+          visit(argument, context);
         } else {
           visit(argument, context);
         }
