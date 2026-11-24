@@ -58,6 +58,8 @@ import { rollbackFailedDeploy } from './execute/rollback-after-failure.js';
 import type { DeployRun } from './execute/run.js';
 import { pruneStoppedSiblingMembersBestEffort } from './observed-capture.js';
 import { refuseDeferredExportChanges } from './deploy-flow/plan-checks.js';
+import { type ForceQuitFlushRegistrar, withForceQuitFlushScope } from '../force-quit-journal.js';
+import { forceQuitFlusher } from './execute/force-quit-flush.js';
 import type { AffectedExport } from '../export-change-guard.js';
 
 /**
@@ -70,17 +72,26 @@ import type { AffectedExport } from '../export-change-guard.js';
  *   resources that depend ON it have finished deleting)
  *
  * A ROOT engine (no `parentStackInfo`) binds the nested cleanup queue its
- * descendants' cleanup phases wait in (go-to-k/cdkd#6398).
+ * descendants' cleanup phases wait in (go-to-k/cdkd#6398). Every run's
+ * force-quit flusher (go-to-k/cdkd#6894) is removed when the run settles.
  */
 export function executeDeployment(
-  ...args: Parameters<typeof executeDeploymentBody>
+  ...args: ExecuteDeploymentArgs
 ): ReturnType<typeof executeDeploymentBody> {
   const [engine] = args;
-  if (engine.options.parentStackInfo !== undefined) return executeDeploymentBody(...args);
-  return withNestedCleanupQueue(new NestedCleanupQueue(), () => executeDeploymentBody(...args));
+  const run = (): ReturnType<typeof executeDeploymentBody> =>
+    withForceQuitFlushScope((register) => executeDeploymentBody(register, ...args));
+  if (engine.options.parentStackInfo !== undefined) return run();
+  return withNestedCleanupQueue(new NestedCleanupQueue(), run);
 }
 
+type ExecuteDeploymentArgs =
+  Parameters<typeof executeDeploymentBody> extends [ForceQuitFlushRegistrar, ...infer Rest]
+    ? Rest
+    : never;
+
 async function executeDeploymentBody(
+  registerForceQuitFlush: ForceQuitFlushRegistrar,
   engine: DeployEngine,
   template: CloudFormationTemplate,
   currentState: StackState,
@@ -280,7 +291,23 @@ async function executeDeploymentBody(
     startedUpdates,
     settledUpdates,
     inFlightWrites,
+    inFlightCreatedSinks: new Map(),
   };
+
+  // go-to-k/cdkd#6894: a force-quit or a closed terminal exits before any
+  // segment below is written; this flusher writes one for the operations so
+  // far. Taken back where this run's own path takes journaling over; the
+  // scope removes it when the run settles. In memory: an uninterrupted deploy
+  // makes no extra call.
+  let createUpdateExecutor: DagExecutor<ResourceChange> | undefined;
+  let deleteExecutor: DagExecutor<ResourceChange> | undefined;
+  const forceQuit = registerForceQuitFlush(
+    forceQuitFlusher(
+      run,
+      { executors: () => [createUpdateExecutor, deleteExecutor], saveChain: () => saveChain },
+      currentEtag === undefined
+    )
+  );
 
   try {
     // Step 1: Process CREATE/UPDATE via event-driven DAG dispatch.
@@ -298,7 +325,8 @@ async function executeDeploymentBody(
         safeMsg`${cyan('Deploying')} ${cyan(createUpdateIds.length)} resource(s) (DAG: ${executionLevels.length} levels, max parallel: ${concurrency})`
       );
 
-      const createUpdateExecutor = new DagExecutor<ResourceChange>(phaseScope);
+      const createUpdates = new DagExecutor<ResourceChange>(phaseScope);
+      createUpdateExecutor = createUpdates;
       const provisionable = new Set(createUpdateIds);
       // Only deps that are themselves being provisioned in this phase are
       // carried, but a NO_CHANGE dep is walked THROUGH to the provisioned ones
@@ -330,7 +358,7 @@ async function executeDeploymentBody(
         );
       }
       for (const id of createUpdateIds) {
-        createUpdateExecutor.add({
+        createUpdates.add({
           id,
           dependencies: createUpdateDeps.get(id)!,
           state: 'pending',
@@ -341,13 +369,13 @@ async function executeDeploymentBody(
       const provisionNode = (node: { id: string; data: ResourceChange }): Promise<void> =>
         provisionCreateUpdateNode(
           run,
-          createUpdateExecutor,
+          createUpdates,
           (executor) => enqueueLostChildren(run, executor),
           node
         );
 
       try {
-        await createUpdateExecutor.execute(concurrency, provisionNode, () => engine.interrupted);
+        await createUpdates.execute(concurrency, provisionNode, () => engine.interrupted);
       } finally {
         // Wait for any pending per-resource state saves before the next phase or
         // before propagating an error — prevents partial-save races.
@@ -360,7 +388,7 @@ async function executeDeploymentBody(
       // If every node already completed before SIGINT landed, treat the deploy
       // as fully successful — matches the prior level-loop's "loop exits, no
       // check" behaviour at the very end of execution.
-      if (engine.interrupted && hasPending(createUpdateExecutor)) {
+      if (engine.interrupted && hasPending(createUpdates)) {
         throw new InterruptedError(engine.interruptCause ?? 'user');
       }
     }
@@ -394,9 +422,10 @@ async function executeDeploymentBody(
       engine.logger.info(safeMsg`${red('Deleting')} ${red(deleteChanges.size)} resource(s)`);
 
       const deleteDeps = buildDeletionDependencies(deleteChanges, currentState, engine.logger);
-      const deleteExecutor = new DagExecutor<ResourceChange>(phaseScope);
+      const deletes = new DagExecutor<ResourceChange>(phaseScope);
+      deleteExecutor = deletes;
       for (const id of deleteChanges) {
-        deleteExecutor.add({
+        deletes.add({
           id,
           dependencies: deleteDeps.get(id) ?? new Set(),
           state: 'pending',
@@ -405,7 +434,7 @@ async function executeDeploymentBody(
       }
 
       try {
-        await deleteExecutor.execute(
+        await deletes.execute(
           concurrency,
           async (node) => {
             const logicalId = node.id;
@@ -485,7 +514,7 @@ async function executeDeploymentBody(
         await timePhase(phaseScope, 'wait for queued saves (delete)', () => saveChain);
       }
 
-      if (engine.interrupted && hasPending(deleteExecutor)) {
+      if (engine.interrupted && hasPending(deletes)) {
         throw new InterruptedError(engine.interruptCause ?? 'user');
       }
     }
@@ -562,7 +591,13 @@ async function executeDeploymentBody(
       );
     }
 
-    await rollbackFailedDeploy(run, error, initialDeploy, currentEtag);
+    // go-to-k/cdkd#6894: a force-quit flush that already started writes this
+    // run's segment; a second one would replay the same operations twice.
+    // `takeOver` waits for that flush, so the rethrow cannot end the process
+    // mid-write.
+    if (await forceQuit.takeOver()) {
+      await rollbackFailedDeploy(run, error, initialDeploy, currentEtag);
+    }
 
     throw error;
   }
@@ -633,6 +668,8 @@ async function executeDeploymentBody(
       outputs
     );
   } catch (outputError) {
+    // go-to-k/cdkd#6894: journaled below, unless a force-quit flush did.
+    const journalHere = await forceQuit.takeOver();
     // go-to-k/cdkd#6398: the cleanup phase runs only once the outputs
     // resolved, so the journal written below never sits over deletes already
     // made; the deferred deletes are left for a rollback or the next deploy.
@@ -657,14 +694,16 @@ async function executeDeploymentBody(
     // Every resource op succeeded here — provisioning was clean, only
     // output resolution failed — so rolling back is a legitimate use case
     // (issue #1183). Record a journal segment so `cdkd rollback` can revert.
-    await writeRollbackJournalSegment(
-      engine.rollbackDeps(),
-      stackName,
-      completedOperations,
-      failedOperations,
-      'no-rollback-failure',
-      currentEtag === undefined
-    );
+    if (journalHere) {
+      await writeRollbackJournalSegment(
+        engine.rollbackDeps(),
+        stackName,
+        completedOperations,
+        failedOperations,
+        'no-rollback-failure',
+        currentEtag === undefined
+      );
+    }
     throw outputError;
   }
 
@@ -693,6 +732,12 @@ async function executeDeploymentBody(
     }),
     lastModified: Date.now(),
   });
+
+  // go-to-k/cdkd#6894: every operation and output landed. The cleanup phase
+  // below deletes superseded resources, which a segment written over it would
+  // not describe, so a force-quit from here on journals nothing, as before;
+  // one whose flush already started stops this run before any delete.
+  if (!(await forceQuit.takeOver())) throw new InterruptedError('user');
 
   // go-to-k/cdkd#4900: CloudFormation's cleanup phase, for the deletes a
   // still-unupdated dependent refused inside the DAG. After the outputs

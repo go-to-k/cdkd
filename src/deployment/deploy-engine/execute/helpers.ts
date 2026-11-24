@@ -122,7 +122,13 @@ export async function settleReportedCreates(
   engine: DeployEngine,
   template: CloudFormationTemplate,
   failedOperations: FailedOperation[],
-  pending: readonly ReportedCreateToSettle[]
+  pending: readonly ReportedCreateToSettle[],
+  /**
+   * go-to-k/cdkd#6894: `false` journals only a token the provider carried and
+   * never reads one, for a force-quit's flush, whose exit budget (and a CI
+   * runner's SIGKILL) a bounded read can outlast.
+   */
+  readIdentity = true
 ): Promise<void> {
   for (const { sink, failedOp, replaced, refused } of pending) {
     const report = sink.report;
@@ -154,7 +160,7 @@ export async function settleReportedCreates(
       );
       failedOperations.push(orphanOp);
     }
-    await journalOrphanIdentity(engine, orphanOp, report.createdResourceIdentity);
+    await journalOrphanIdentity(engine, orphanOp, report.createdResourceIdentity, readIdentity);
   }
 }
 
@@ -209,7 +215,9 @@ export function replacementOrphanOpFor(
 export async function journalOrphanIdentity(
   engine: DeployEngine,
   orphanOp: FailedOperation,
-  carried: string | undefined
+  carried: string | undefined,
+  /** `false`: never read the token (a force-quit's flush, go-to-k/cdkd#6894). */
+  readIdentity = true
 ): Promise<void> {
   if (
     orphanOp.physicalId === undefined ||
@@ -220,7 +228,7 @@ export async function journalOrphanIdentity(
   }
   if (carried !== undefined) {
     orphanOp.createdResourceIdentity = carried;
-  } else if (engine.interruptCause !== 'user') {
+  } else if (readIdentity && engine.interruptCause !== 'user') {
     const identity = await readResourceIdentity(
       engine.providerRegistry,
       {

@@ -282,6 +282,9 @@ export async function deployCommand(
     },
   });
   process.on('SIGINT', topLevelSigintHandler);
+  // go-to-k/cdkd#6894: a closed terminal force-quits at once, rollback journal
+  // included, instead of dying with nothing recorded.
+  process.on('SIGHUP', topLevelSigintHandler.hangup);
   // CI cancellation delivers SIGTERM, not Ctrl-C (issue #1342) — route it
   // through the same graceful path (incl. the engine's partial-state save
   // and the providers' poll-abort listeners).
@@ -898,6 +901,7 @@ export async function deployCommand(
     runClock.lap('assets + stacks, summary');
     unforwardSigterm();
     process.removeListener('SIGINT', topLevelSigintHandler);
+    process.removeListener('SIGHUP', topLevelSigintHandler.hangup);
     awsClients.destroy();
     preflightBackendForCleanup?.destroyClient();
     // go-to-k/cdkd#5200: on every path, so a failed deploy reports too.

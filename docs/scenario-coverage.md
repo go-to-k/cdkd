@@ -9,7 +9,7 @@ unlisted: true
 
 Run `vp run scenario-coverage` to regenerate.
 
-**97 / 97 canonical scenarios** have at least one integ fixture exercising them. **233 / 540 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**97 / 98 canonical scenarios** have at least one integ fixture exercising them. **233 / 541 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -27,11 +27,15 @@ Empty `[]` means "intentionally no canonical scenario applies to this fixture" (
 
 This report is a visibility tool, not a commit-time gate. Many cdkd fixtures legitimately exercise no canonical scenario, and forcing per-commit annotation would add friction without proportional value. Contrast with the provider-coverage matrix ([docs/integ-coverage.md](integ-coverage.md)) which IS gated because the "is every registered SDK Provider exercised?" question has a structural answer.
 
-## Orphan scenarios
+## Orphan scenarios (1)
 
-_None._ Every canonical scenario has at least one integ fixture tagged with it.
+These canonical scenarios have NO integ fixture tagged with them. Each is a real-AWS verification gap — a regression against the named pattern would only surface in production. Either tag an existing fixture (when it already exercises the pattern) or write a new fixture.
 
-## Per-scenario coverage (97 scenarios)
+| Scenario | Description |
+|---|---|
+| `deploy-force-quit-rollback` | Force-quit (two SIGINTs) and a closed terminal (a killed pseudo-terminal: SIGHUP, then EIO on every write) mid-deploy (#6894) — while a custom resource's 90 s update is in flight, the deploy exits after writing an `interrupted` rollback-journal segment (the completed updates, plus the in-flight custom resource as a failed operation); `cdkd force-unlock` + `cdkd rollback --force` put the SSM parameter, the SQS queue's visibility timeout and the Lambda environment back to v1. |
+
+## Per-scenario coverage (98 scenarios)
 
 | Scenario | Description | Integ Fixture(s) |
 |---|---|---|
@@ -57,6 +61,7 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `deletion-policy-retain` | DeletionPolicy: Retain skip on destroy (schema v5 recorded value wins over template). | [`apigw-cloudwatch-role-redeploy`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/apigw-cloudwatch-role-redeploy/)<br>[`deletion-policy-retain`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/deletion-policy-retain/)<br>[`generated-name-lifecycle`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/generated-name-lifecycle/) |
 | `deletion-policy-snapshot` | DeletionPolicy / UpdateReplacePolicy: Snapshot honored on delete (issues #1352 / #1354 / #1357): final EBS snapshot created + waited to completed on the deploy engine template-removal DELETE path, on the REPLACEMENT delete site (an immutable AvailabilityZone change under --force-stateful-recreation, unblocked by the #1356 EC2 Volume classification), and on the destroy-runner path; --skip-final-snapshot opt-out. | [`deletion-policy-snapshot`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/deletion-policy-snapshot/) |
 | `deletion-policy-snapshot-heavy` | DeletionPolicy: Snapshot pre-delete machinery for the CC-routed name-keyed snapshot APIs (issue #1353): Redshift Cluster CreateClusterSnapshot + ElastiCache ReplicationGroup CreateSnapshot, both waited to available before the delete. | [`deletion-policy-snapshot-heavy`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/deletion-policy-snapshot-heavy/) |
+| `deploy-force-quit-rollback` | Force-quit (two SIGINTs) and a closed terminal (a killed pseudo-terminal: SIGHUP, then EIO on every write) mid-deploy (#6894) — while a custom resource's 90 s update is in flight, the deploy exits after writing an `interrupted` rollback-journal segment (the completed updates, plus the in-flight custom resource as a failed operation); `cdkd force-unlock` + `cdkd rollback --force` put the SSM parameter, the SQS queue's visibility timeout and the Lambda environment back to v1. | _(orphan)_ |
 | `deployment-events` | Structured deployment events to S3 + `cdkd events` command (issue #808): per-run `deployments/{runId}.jsonl` + `index.json` (separate key family from state.json, no schema bump), events survive `cdkd destroy`, and carry error + metadata ONLY (no resource properties / secrets). | [`deployment-events`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/deployment-events/) |
 | `destroy-data-guard` | CloudFormation-parity refusal to force-clean contained data on destroy (issue #1340): a non-empty S3 bucket WITHOUT the auto-delete opt-in and an image-carrying ECR repository WITHOUT EmptyOnDelete both FAIL the destroy with the data intact, while the opted-in siblings (aws-cdk:auto-delete-objects tag / EmptyOnDelete: true) are force-cleaned in the same run; after AWS-native data cleanup a second destroy completes with zero orphans. | [`destroy-data-guard`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/destroy-data-guard/)<br>[`s3-directory-bucket`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/s3-directory-bucket/) |
 | `destroy-interrupt` | Graceful SIGINT on destroy (#816 — first Ctrl-C drains in-flight deletes, flushes trimmed state, releases the lock, exits non-zero; no 30m stranded lock) + Custom Resource replay fail-fast on re-run (#804 — the CR delete does NOT stall ~10 minutes invoking GetFunction against the already-deleted backing Lambda; the re-run resumes cleanly and quickly). | [`destroy-interrupt`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/destroy-interrupt/) |
@@ -133,7 +138,7 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `warn-arm-effective-properties` | A provider warn arm that SKIPS or SUBSTITUTES a malformed DECLARED value must record what it actually SENT (`effectiveProperties`), not the declared value. The deploy SUCCEEDS, so recording the declared bag makes state describe something AWS does not hold: `readCurrentState` can never match it, every later `cdkd drift` re-reports the same difference, and `drift --revert` re-issues the same skipped call (issues #1591 / #1612 / #1653 / #1654). Only a real deploy can produce the record and only a real read-side run can prove it converges, so a mocked client agrees with whatever wire assumption the author had. Covered arms: the DynamoDB GlobalTable `StreamSpecification` warn-and-SKIP (retains the PREVIOUS value; drops it when the previous side is malformed too) and the Lambda URL `AuthType` warn-and-SUBSTITUTE (records the previous value on the substituted arm, drops the key on the OMITTED arm) — each asserting the recorded value, the untouched LIVE resource, and that the corrected template then diffs clean against that record (a `cdkd drift` assertion would be vacuous here: drift prefers the `observedProperties` baseline, which is a live read and therefore matches AWS either way). The Lambda arm additionally asserts the security consequence directly (the URL is still IAM-guarded) and that a reverse-replacement replay of a record with no `AuthType` ANNOUNCES the PUBLIC default it falls back to. | [`dynamodb-globaltable`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/dynamodb-globaltable/)<br>[`lambda-url-authtype-replay`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/lambda-url-authtype-replay/) |
 | `wide-dag-throttle-retry` | Wide (~100-resource: 80 SSM Parameters + 10 IAM Roles + 10 SNS Topics, 10-deep SSM Fn::Sub chain) single-stack burst deployed under a HIGH `--concurrency` to stress the concurrency limiter + event-driven DAG executor + throttle/retry classifier: a `TooManyRequests` / `Rate exceeded` / HTTP 429 during the burst must be RETRIED (deploy still succeeds) not fatal, the chained subset proves strict DAG ordering, and the destroy burst absorbs ~100 deletes with 0 orphans. | [`throttle-wide-dag`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/throttle-wide-dag/) |
 
-## Un-annotated fixtures (307)
+## Un-annotated fixtures (308)
 
 These integ fixtures have no `.scenarios.json` sidecar. They may or may not exercise a canonical scenario — contributor review needed. To opt out (per-service smoke tests with no canonical pattern), add a sidecar with `{ "scenarios": [] }`.
 
@@ -208,6 +213,7 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 - [`custom-resource-service-token-change`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/custom-resource-service-token-change/)
 - [`datasync-location-role`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/datasync-location-role/)
 - [`depends-on-flip`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/depends-on-flip/)
+- [`deploy-force-quit-rollback`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/deploy-force-quit-rollback/)
 - [`destroy-failed-delete-keeps-dependencies`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/destroy-failed-delete-keeps-dependencies/)
 - [`destroy-nested-cross-region`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/destroy-nested-cross-region/)
 - [`diff-fail-on-destructive`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/diff-fail-on-destructive/)

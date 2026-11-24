@@ -1,5 +1,5 @@
 import { getLogger } from '../../../utils/logger.js';
-import { pasteableCommand } from '../../../utils/pasteable-command.js';
+import { cdkdRemedy, pasteableCommand, proseQuoted } from '../../../utils/pasteable-command.js';
 import { displaySafe, safeMsg } from '../../../utils/display-safe.js';
 import { awsEndpointOverrideActive } from '../../../utils/aws-client-defaults.js';
 import type { DeployResult } from '../../../deployment/deploy-engine.js';
@@ -8,6 +8,10 @@ import {
   abortInFlightMultipartUploads,
   type InFlightAbort,
 } from '../../../assets/file-asset-publisher.js';
+import {
+  type StartedForceQuitFlush,
+  startForceQuitFlushes,
+} from '../../../deployment/force-quit-journal.js';
 
 /**
  * The `Release with:` command deploy's force-quit prints: both values are
@@ -81,22 +85,36 @@ export async function confirmAutoAssetStorageCreate(args: {
   );
 }
 
-/** How long deploy's force-quit waits for in-flight uploads to abort. */
+/**
+ * How long deploy's force-quit waits for in-flight uploads to abort and for
+ * the rollback journal to be written (go-to-k/cdkd#6894), both at once.
+ */
 export const FORCE_QUIT_ABORT_BUDGET_MS = 5000;
 
+/** The `cdkd rollback` line printed once a force-quit recorded a stack's changes. */
+export function forceQuitRollbackLine(stackName: string): string {
+  const command = pasteableCommand('cdkd rollback', [{ value: stackName, hole: 'stack' }]).command;
+  return `What the deploy changed so far was recorded; revert it with: ${command}\n`;
+}
+
 /**
- * Deploy's second Ctrl-C: abort the multipart uploads in flight, say so, THEN
- * exit (go-to-k/cdkd#6162). `process.exit` first would leave their parts billed
- * in the bucket; and the line is written HERE, because the exit races the
- * uploads' own rejections up to the work graph. Bounded: an abort that hangs
- * (a dead network is a likely reason to hit Ctrl-C twice) still exits after
+ * Deploy's force-quit: abort the multipart uploads in flight
+ * (go-to-k/cdkd#6162) and write the rollback journal of each deploy still
+ * running (go-to-k/cdkd#6894), say what happened, THEN exit. `process.exit`
+ * first would leave the uploads' parts billed in the bucket and the changes
+ * already made unrecorded, so `cdkd rollback` could not revert them; and the
+ * lines are written HERE, because the exit races the uploads' own rejections
+ * up to the work graph. Bounded: an abort or a journal write that hangs (a dead
+ * network is a likely reason to hit Ctrl-C twice) still exits after
  * `budgetMs`. Exported for its test.
  */
 export function exitAfterAbortingUploads(
   exit: (code: number) => void,
   write: (text: string) => void,
   abort: () => InFlightAbort = abortInFlightMultipartUploads,
-  budgetMs: number = FORCE_QUIT_ABORT_BUDGET_MS
+  budgetMs: number = FORCE_QUIT_ABORT_BUDGET_MS,
+  flush: () => StartedForceQuitFlush = startForceQuitFlushes,
+  code = 130
 ): Promise<void> {
   let started: InFlightAbort;
   try {
@@ -104,11 +122,18 @@ export function exitAfterAbortingUploads(
   } catch {
     started = { destinations: [], done: Promise.resolve() };
   }
+  let flushing: StartedForceQuitFlush;
+  try {
+    flushing = flush();
+  } catch {
+    flushing = { pending: 0, done: Promise.resolve([]) };
+  }
   const { destinations } = started;
   let exited = false;
-  const finish = (confirmed: boolean): void => {
+  const finish = (recorded: string[] | undefined): void => {
     if (exited) return;
     exited = true;
+    const confirmed = recorded !== undefined;
     if (destinations.length > 0) {
       const list = destinations.map((d) => displaySafe(d)).join(', ');
       write(
@@ -118,53 +143,74 @@ export function exitAfterAbortingUploads(
               `was confirmed; the asset bucket's lifecycle rule removes what is left.\n`
       );
     }
-    exit(130);
+    if (recorded === undefined && flushing.pending > 0) {
+      write(
+        'Force-quit: exiting before the rollback journal was written; ' +
+          `${proseQuoted(cdkdRemedy('cdkd rollback'))} may not be able to revert what this deploy changed.\n`
+      );
+    }
+    for (const stackName of recorded ?? []) write(forceQuitRollbackLine(stackName));
+    exit(code);
   };
-  const timer = setTimeout(() => finish(false), budgetMs);
-  return started.done
-    .catch(() => undefined)
-    .then(() => {
-      clearTimeout(timer);
-      finish(true);
-    });
+  const timer = setTimeout(() => finish(undefined), budgetMs);
+  return Promise.all([
+    started.done.catch(() => undefined),
+    flushing.done.catch(() => [] as string[]),
+  ]).then(([, recorded]) => {
+    clearTimeout(timer);
+    finish(recorded);
+  });
 }
 
 export interface DeploySigintHandlerOptions {
-  /** Called on the first signal, after its notice. */
+  /** Called on the first signal, after its notice, and on a hang-up. */
   onFirst: () => void;
   /** Test seams; default to the process. */
   write?: (text: string) => void;
   exit?: (code: number) => void;
   abort?: () => InFlightAbort;
+  flush?: () => StartedForceQuitFlush;
   budgetMs?: number;
 }
 
+/** Deploy's SIGINT handler, with its SIGHUP entry on the same state. */
+export interface DeploySignalHandler {
+  (): void;
+  /**
+   * SIGHUP (go-to-k/cdkd#6894): the terminal is gone, so no second Ctrl-C can
+   * follow and no notice can be read. Force-quit at once, journal included,
+   * and exit 129 (128 + SIGHUP), the code an unhandled hang-up leaves.
+   */
+  hangup(): void;
+}
+
+/** The exit code of a deploy ended by a hang-up (128 + SIGHUP). */
+export const SIGHUP_EXIT_CODE = 129;
+
 /**
- * Deploy's SIGINT handler (SIGTERM is forwarded to it).
+ * Deploy's SIGINT handler (SIGTERM is forwarded to it; SIGHUP enters through
+ * `hangup`).
  *
  * - First signal: say so, and let the operations in progress finish — asset
  *   uploads included, as the notice promises (go-to-k/cdkd#6162).
  * - Second: print the lock-recovery command, abort the in-flight multipart
- *   uploads, THEN exit 130 ({@link exitAfterAbortingUploads}).
- * - Third, while that abort runs: exit at once.
+ *   uploads and write the rollback journal of the deploys still running, THEN
+ *   exit 130 ({@link exitAfterAbortingUploads}).
+ * - Third, while that runs: exit at once — unless the force-quit came from a
+ *   hang-up, which nothing cuts short.
  *
  * Exported for its test.
  */
-export function createDeploySigintHandler(options: DeploySigintHandlerOptions): () => void {
+export function createDeploySigintHandler(
+  options: DeploySigintHandlerOptions
+): DeploySignalHandler {
   const write = options.write ?? ((text: string) => void process.stderr.write(text));
   const exit = options.exit ?? ((code: number) => process.exit(code));
   let signals = 0;
-  return () => {
-    signals++;
-    if (signals === 1) {
-      write('\nInterrupted — waiting for in-progress operations to complete...\n');
-      options.onFirst();
-      return;
-    }
-    if (signals > 2) {
-      exit(130);
-      return;
-    }
+  // The exit code of the force-quit under way, once one started.
+  let forceQuitting: number | undefined;
+  const forceQuit = (code: number): void => {
+    forceQuitting = code;
     // Force-exit bypasses every `finally`, so per-stack locks may be left
     // behind. Print the recovery command (parity with destroy's force-quit
     // path) — the lock TTL reclaims them automatically otherwise.
@@ -182,6 +228,38 @@ export function createDeploySigintHandler(options: DeploySigintHandlerOptions): 
         // `--profile` / `--state-bucket` / `--state-prefix` (go-to-k/cdkd#4177).
         `\nRelease with: ${forceQuitReleaseCommand()}\n`
     );
-    void exitAfterAbortingUploads(exit, write, options.abort, options.budgetMs);
+    void exitAfterAbortingUploads(
+      exit,
+      write,
+      options.abort,
+      options.budgetMs,
+      options.flush,
+      code
+    );
   };
+  const handler = (): void => {
+    signals++;
+    // A hang-up's force-quit is not cut short: no one at a closed terminal
+    // asked for it, and its budget bounds it anyway.
+    if (forceQuitting === SIGHUP_EXIT_CODE) return;
+    if (forceQuitting !== undefined) {
+      exit(130);
+      return;
+    }
+    if (signals === 1) {
+      write('\nInterrupted — waiting for in-progress operations to complete...\n');
+      options.onFirst();
+      return;
+    }
+    forceQuit(130);
+  };
+  return Object.assign(handler, {
+    hangup: (): void => {
+      // A hang-up during a force-quit already under way changes nothing.
+      if (forceQuitting !== undefined) return;
+      // Stop the run starting another stack while the journal is written.
+      options.onFirst();
+      forceQuit(SIGHUP_EXIT_CODE);
+    },
+  });
 }

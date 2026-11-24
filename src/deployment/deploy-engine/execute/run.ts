@@ -6,6 +6,7 @@ import type { DeployEngine, ProvisionCounts } from '../../deploy-engine.js';
 import type { CompletedOperation, FailedOperation } from '../../rollback-executor.js';
 import type { InFlightWrite } from '../../stack-records-scope.js';
 import type { ReportedCreateToSettle } from './helpers.js';
+import type { CreatedResourceSink } from '../../../provisioning/created-resource-sink.js';
 
 /**
  * The state one `executeDeployment` call shares with the modules its body was
@@ -37,4 +38,9 @@ export interface DeployRun {
   readonly startedUpdates: Set<string>;
   readonly settledUpdates: Set<string>;
   readonly inFlightWrites: Map<string, { write: InFlightWrite; settle: (ok: boolean) => void }>;
+  /**
+   * go-to-k/cdkd#6894: each create / update in flight's created-resource sink,
+   * so a force-quit journals a resource its provider already reported making.
+   */
+  readonly inFlightCreatedSinks: Map<string, CreatedResourceSink>;
 }

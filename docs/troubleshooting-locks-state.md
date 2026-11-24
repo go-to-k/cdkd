@@ -108,7 +108,7 @@ leave the lock behind. What happens depends on the command:
 | Command | On the second signal | It prints |
 | --- | --- | --- |
 | `cdkd destroy`, `cdkd state destroy` | Attempts a release without waiting for it | The first message below |
-| `cdkd deploy` | Does not attempt a release | The second message below |
+| `cdkd deploy` | Does not attempt a release; records what it changed in the rollback journal first | The second message below |
 | `cdkd rollback` | Keeps running; it cannot be force-quit this way | Nothing |
 
 ```text
@@ -116,11 +116,17 @@ Force-quit: stack lock may not be released. If the next run reports a lock, run:
 ```
 
 ```text
-Force-quit: stack locks may not be released. If the next run reports a lock, run this for EACH stack it names (the region-qualified form — see the message that run prints): cdkd force-unlock <stackName> --stack-region <region>
+Force-quit: stack locks may not be released. If the next run reports a lock, run this for EACH stack it names, in the region-qualified form — see the message that run prints.
+Release with: cdkd force-unlock '<stackName>' --stack-region '<region>'
+What the deploy changed so far was recorded; revert it with: cdkd rollback MyStack
 ```
 
 After a destroy force-quit the release usually lands and no lock is left.
 After a deploy force-quit, expect one and clear it with the printed command.
+To undo what the deploy changed before it stopped, run the printed
+`cdkd rollback` command after releasing the lock. A deploy whose terminal was
+closed does the same and exits `129`; see
+[A deploy that was killed](cli-rollback-limitations.md#a-deploy-that-was-killed).
 
 ## Stale lock after a cancelled CI job
 

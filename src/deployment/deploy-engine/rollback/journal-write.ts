@@ -13,6 +13,7 @@ import type { CompletedOperation, FailedOperation } from '../../rollback-executo
 import { maskOutputsByPosition } from '../noecho.js';
 import type { RollbackDeps } from './deps.js';
 import { redactOperationsForJournal } from './adopt-orphans.js';
+import { trackJournalWrite } from '../../force-quit-journal.js';
 
 /**
  * Record one rollback-journal segment (issue #1183) so the failed /
@@ -95,7 +96,11 @@ export async function writeRollbackJournalSegment(
         templateDependencies: nestedPending.templateDependencies,
       }),
     };
-    await deps.stateBackend.appendRollbackJournalSegment(stackName, deps.stackRegion, segment);
+    // go-to-k/cdkd#6894: a force-quit landing now waits for this write.
+    await trackJournalWrite(
+      deps.stateBackend.appendRollbackJournalSegment(stackName, deps.stackRegion, segment),
+      deps.options.parentStackInfo === undefined ? stackName : undefined
+    );
     deps.logger.debug(safeMsg`Rollback journal segment written (${reason})`);
     return true;
   } catch (journalError) {

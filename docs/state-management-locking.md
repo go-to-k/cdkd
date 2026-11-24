@@ -112,6 +112,7 @@ applies to `cdkd deploy`, `cdkd destroy`, `cdkd state destroy` and
 | It finishes or fails | Released | Saved |
 | First {kbd:ctrl+c} or `SIGTERM` | Released | Saved |
 | Second {kbd:ctrl+c} or `SIGTERM` | May be left behind | As of the last save |
+| `cdkd deploy` only: its terminal closed (`SIGHUP`) | Left behind | As of the last save |
 | `SIGKILL`, a crash, a machine that sleeps | Left behind | As of the last save |
 
 On the first {kbd:ctrl+c} or `SIGTERM`, cdkd lets the operations already in
@@ -121,7 +122,10 @@ can run the command again immediately.
 
 On the second {kbd:ctrl+c} or `SIGTERM`, the process exits with code 130
 without waiting. The record holds whatever the last save after a resource
-operation wrote.
+operation wrote. A deploy first writes the rollback journal for what it
+changed so far, with the operations still in progress listed as failed, and
+does the same when its terminal is closed, exiting `129`. See
+[A deploy that was killed](cli-rollback-limitations.md#a-deploy-that-was-killed).
 
 An interrupted destroy leaves a record that lists only the resources that
 still exist. Running the destroy again does not repeat the deletes that
