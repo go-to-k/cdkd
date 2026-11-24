@@ -25,6 +25,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 
 import { EC2VPCEndpointProvider } from '../../../src/provisioning/providers/ec2-vpc-endpoint-provider.js';
 import { hasCreatedBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import { isMarkedNotGone } from '../../../src/provisioning/not-gone.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import {
   ProvisioningError,
@@ -479,6 +480,186 @@ describe('EC2VPCEndpointProvider (#6939)', () => {
           knownPhysicalId: ID,
         })
       ).toBeNull();
+    });
+  });
+
+  describe('review round 1', () => {
+    const availableOr = (cmd: unknown, fields: Record<string, unknown> = {}) =>
+      Promise.resolve(cmd instanceof DescribeVpcEndpointsCommand ? described({ State: 'available', ...fields }) : {});
+
+    it('under --no-wait never records a post-modify read as settled, even when it still says available', async () => {
+      process.env['CDKD_NO_WAIT'] = 'true';
+      // The read right after ModifyVpcEndpoint can still report the old state.
+      mockSend.mockImplementation((cmd: unknown) => availableOr(cmd, { NetworkInterfaceIds: ['eni-old'] }));
+      const result = await provider().update(
+        'Endpoint',
+        ID,
+        TYPE,
+        interfaceProps({ SubnetIds: ['subnet-a', 'subnet-b'] }),
+        interfaceProps()
+      );
+      expect(result.attributes).toEqual({ Id: ID, CreationTimestamp: '2026-11-24T14:28:20.570Z' });
+    });
+
+    it('under --no-wait a tag-only update still records an available read', async () => {
+      process.env['CDKD_NO_WAIT'] = 'true';
+      mockSend.mockImplementation((cmd: unknown) => availableOr(cmd));
+      const result = await provider().update(
+        'Endpoint',
+        ID,
+        TYPE,
+        interfaceProps({ Tags: [{ Key: 'team', Value: 'b' }] }),
+        interfaceProps()
+      );
+      expect(result.attributes).toMatchObject({ NetworkInterfaceIds: ['eni-1'] });
+    });
+
+    it('reads an absent VpcEndpointType as Gateway, so a drift revert of an L1 Gateway endpoint is not refused', async () => {
+      mockSend.mockImplementation((cmd: unknown) => availableOr(cmd));
+      const recorded = { VpcId: 'vpc-1', ServiceName: 'com.amazonaws.us-east-1.s3', RouteTableIds: ['rtb-1'] };
+      await provider().update(
+        'Endpoint',
+        ID,
+        TYPE,
+        { ...recorded, VpcEndpointType: 'Gateway', RouteTableIds: ['rtb-1', 'rtb-2'] },
+        recorded,
+        { desiredFromAwsReadback: true }
+      );
+      expect(sent(ModifyVpcEndpointCommand)[0]!.input).toEqual({
+        VpcEndpointId: ID,
+        AddRouteTableIds: ['rtb-2'],
+      });
+      // An explicit change of type is still refused.
+      await expect(
+        provider().update('Endpoint', ID, TYPE, { ...recorded, VpcEndpointType: 'Interface' }, recorded)
+      ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
+    });
+
+    it('refuses a change to a create-only DnsOptions member', async () => {
+      for (const member of [
+        { PrivateDnsPreference: 'ALL_DOMAINS' },
+        { PrivateDnsSpecifiedDomains: ['example.com'] },
+      ]) {
+        const error = await provider()
+          .update(
+            'Endpoint',
+            ID,
+            TYPE,
+            interfaceProps({ DnsOptions: { DnsRecordIpType: 'ipv4', ...member } }),
+            interfaceProps({ DnsOptions: { DnsRecordIpType: 'ipv4' } })
+          )
+          .catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(ResourceUpdateNotSupportedError);
+        expect(String((error as ResourceUpdateNotSupportedError).suggestion ?? error)).toMatch(
+          /DnsOptions\.PrivateDns(Preference|SpecifiedDomains) cannot change in place/
+        );
+      }
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('sends a changed IpAddressType and DnsOptions, AllResolvers as false', async () => {
+      mockSend.mockImplementation((cmd: unknown) => availableOr(cmd));
+      await provider().update(
+        'Endpoint',
+        ID,
+        TYPE,
+        interfaceProps({
+          IpAddressType: 'dualstack',
+          DnsOptions: { DnsRecordIpType: 'dualstack', PrivateDnsOnlyForInboundResolverEndpoint: 'AllResolvers' },
+        }),
+        interfaceProps({ IpAddressType: 'ipv4', DnsOptions: { DnsRecordIpType: 'ipv4' } })
+      );
+      expect(sent(ModifyVpcEndpointCommand)[0]!.input).toEqual({
+        VpcEndpointId: ID,
+        IpAddressType: 'dualstack',
+        DnsOptions: { DnsRecordIpType: 'dualstack', PrivateDnsOnlyForInboundResolverEndpoint: false },
+      });
+    });
+
+    it.each([
+      ['PrivateDnsEnabled', 'maybe', /PrivateDnsEnabled is not a boolean/],
+      ['IpAddressType', 7, /IpAddressType is not a non-empty string/],
+      ['DnsOptions', 'x', /DnsOptions must be an object/],
+    ])('refuses a malformed template %s and keeps the recorded one on a drift revert', async (key, bad, says) => {
+      await expect(
+        provider().update('Endpoint', ID, TYPE, interfaceProps({ [key]: bad }), interfaceProps())
+      ).rejects.toThrow(says);
+      expect(mockSend).not.toHaveBeenCalled();
+
+      mockSend.mockImplementation((cmd: unknown) => availableOr(cmd));
+      const previous = interfaceProps({ [key]: key === 'DnsOptions' ? { DnsRecordIpType: 'ipv4' } : key === 'IpAddressType' ? 'ipv4' : true });
+      const result = await provider().update(
+        'Endpoint',
+        ID,
+        TYPE,
+        interfaceProps({ [key]: bad }),
+        previous,
+        { desiredFromAwsReadback: true }
+      );
+      expect(sent(ModifyVpcEndpointCommand)).toHaveLength(0);
+      expect(result.effectiveProperties).toEqual(previous);
+    });
+
+    it('fails a create whose wait runs out, marked as created', async () => {
+      mockSend.mockImplementation((cmd: unknown) =>
+        cmd instanceof CreateVpcEndpointCommand
+          ? Promise.resolve({ VpcEndpoint: endpoint() })
+          : Promise.resolve(described({ State: 'pending' }))
+      );
+      const p = provider();
+      p.endpointWait.timeoutMs = 0;
+      const error = await p.create('Endpoint', TYPE, interfaceProps()).catch((e: unknown) => e);
+      expect(String(error)).toMatch(/was still pending when its available wait ran out/);
+      expect(hasCreatedBeforeFailure(error)).toBe(true);
+    });
+
+    it('fails a create answered with no VpcEndpointId, and a refused create, with no created mark', async () => {
+      mockSend.mockResolvedValueOnce({ VpcEndpoint: {} });
+      const noId = await provider().create('Endpoint', TYPE, interfaceProps()).catch((e: unknown) => e);
+      expect(String(noId)).toMatch(/returned no VpcEndpointId/);
+      expect(hasCreatedBeforeFailure(noId)).toBe(false);
+
+      mockSend.mockRejectedValueOnce(
+        Object.assign(new Error('bad service'), { name: 'InvalidServiceName' })
+      );
+      const refused = await provider().create('Endpoint', TYPE, interfaceProps()).catch((e: unknown) => e);
+      expect(refused).toBeInstanceOf(ProvisioningError);
+      expect(String(refused)).toMatch(/Failed to create VPC endpoint Endpoint/);
+      expect(hasCreatedBeforeFailure(refused)).toBe(false);
+    });
+
+    it('rethrows a non-transient read failure during the create wait', async () => {
+      mockSend.mockImplementation((cmd: unknown) =>
+        cmd instanceof CreateVpcEndpointCommand
+          ? Promise.resolve({ VpcEndpoint: endpoint() })
+          : Promise.reject(Object.assign(new Error('denied'), { name: 'UnauthorizedOperation' }))
+      );
+      const error = await provider().create('Endpoint', TYPE, interfaceProps()).catch((e: unknown) => e);
+      expect(String(error)).toMatch(/Failed to create VPC endpoint Endpoint: denied/);
+      expect(hasCreatedBeforeFailure(error)).toBe(true);
+      expect(sent(DescribeVpcEndpointsCommand)).toHaveLength(1);
+    });
+
+    it('wraps a refused ModifyVpcEndpoint as a ProvisioningError', async () => {
+      mockSend.mockImplementation((cmd: unknown) =>
+        cmd instanceof ModifyVpcEndpointCommand
+          ? Promise.reject(Object.assign(new Error('nope'), { name: 'InvalidParameter' }))
+          : availableOr(cmd)
+      );
+      const error = await provider()
+        .update('Endpoint', ID, TYPE, interfaceProps({ SubnetIds: ['subnet-b'] }), interfaceProps())
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ProvisioningError);
+      expect(String(error)).toMatch(/Failed to update VPC endpoint Endpoint: nope/);
+    });
+
+    it('marks a thrown delete failure naming another NotFound as not gone', async () => {
+      mockSend.mockRejectedValueOnce(
+        Object.assign(new Error('no such subnet'), { name: 'InvalidSubnetID.NotFound' })
+      );
+      const error = await provider().delete('Endpoint', ID, TYPE).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ProvisioningError);
+      expect(isMarkedNotGone(error)).toBe(true);
     });
   });
 });

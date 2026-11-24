@@ -22,6 +22,11 @@ const VPC_REQUIRED: Throw = {
   says: /VpcId must be a VPC id/,
 };
 const VPC_REQUIRED_THROWS = { 'create:VpcId': VPC_REQUIRED };
+// The vary's previous bag drops the WHOLE DnsOptions block, taking its
+// create-only members (PrivateDnsPreference, PrivateDnsSpecifiedDomains) with
+// it, so update() refuses the change as a replacement before any call.
+const DNS_CREATE_ONLY_IN_BLOCK =
+  'the previous bag lacks the whole DnsOptions block, so its create-only members change and update() refuses before any call';
 const NO_RESET_VALUE =
   'a removed IpAddressType / DnsOptions member keeps its live value: the type documents no value to reset it to, and the update caller warns';
 
@@ -70,7 +75,27 @@ export const CASES_VPC_ENDPOINT: TypeCase[] = [
           Tags: [{ Key: 'k1', Value: 'v1' }],
         },
         expectedRemovalThrows: { ...TAG_THROWS(ALL, 1), ...VPC_REQUIRED_THROWS },
-        expectedSilent: { 'update-remove:IpAddressType': NO_RESET_VALUE },
+        expectedSilent: {
+          'update-remove:IpAddressType': NO_RESET_VALUE,
+          'update-vary:DnsOptions.DnsRecordIpType': DNS_CREATE_ONLY_IN_BLOCK,
+          'update-vary:DnsOptions.PrivateDnsOnlyForInboundResolverEndpoint': DNS_CREATE_ONLY_IN_BLOCK,
+        },
+      },
+      {
+        // Without the create-only members, so a DnsOptions member's update is observed.
+        name: 'Interface endpoint, updatable DnsOptions members',
+        bag: {
+          VpcId: 'vpc-1',
+          ServiceName: 'com.amazonaws.us-east-1.secretsmanager',
+          VpcEndpointType: 'Interface',
+          SubnetIds: ['subnet-1'],
+          DnsOptions: {
+            DnsRecordIpType: 'ipv4',
+            PrivateDnsOnlyForInboundResolverEndpoint: 'AllResolvers',
+          },
+        },
+        expectedRemovalThrows: VPC_REQUIRED_THROWS,
+        expectedSilent: { 'update-remove:DnsOptions': NO_RESET_VALUE },
       },
       {
         name: 'Gateway endpoint',

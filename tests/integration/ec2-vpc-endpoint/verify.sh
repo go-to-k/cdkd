@@ -21,7 +21,7 @@
 #      destroy waits for each endpoint to be gone before the VPC's subnets
 #      and security group, which its interfaces hold).
 #   5. Re-deploy under --no-wait: returns while the Interface endpoint is
-#      still `pending`, the parameter still equals the live values once it is
+#      still `pending` (asserted), the parameter still equals the live values once it is
 #      available. Then destroy again.
 #
 # Required env vars:
@@ -274,6 +274,10 @@ case "${IFACE_ID}" in
   *) echo "FAIL: no Interface endpoint id after the --no-wait deploy ('${IFACE_ID}')" >&2; exit 1 ;;
 esac
 NOWAIT_STATE="$(endpoint_field "${IFACE_ID}" State)"
+if [ "${NOWAIT_STATE}" != "pending" ]; then
+  echo "FAIL: the --no-wait deploy returned with the Interface endpoint '${NOWAIT_STATE}', expected pending (did the create wait?)" >&2
+  exit 1
+fi
 wait_available "${IFACE_ID}"
 check_network_param "${IFACE_ID}" 1
 echo "    --no-wait deploy returned with the Interface endpoint '${NOWAIT_STATE}' (took ${NOWAIT_SECS}s)"

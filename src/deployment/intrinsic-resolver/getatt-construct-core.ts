@@ -26,6 +26,7 @@ import {
 } from '@aws-sdk/client-ec2';
 import { startInterruptWatch } from '../../provisioning/interrupt-watch.js';
 import { isoTimestampAttribute } from '../../provisioning/attribute-timestamp.js';
+import { dnsEntryStrings } from '../../provisioning/vpc-endpoint-dns-entries.js';
 import {
   describeFailureObserved,
   guardedPhysicalIdFallback,
@@ -234,11 +235,7 @@ export async function constructAttributeForCoreTypes(
           observed: 'the VPC endpoint stayed pending past the attribute wait',
         });
       }
-      if (attributeName === 'DnsEntries') {
-        return (endpoint.DnsEntries ?? [])
-          .filter((entry) => typeof entry.DnsName === 'string' && entry.DnsName !== '')
-          .map((entry) => `${entry.HostedZoneId ?? ''}:${entry.DnsName}`);
-      }
+      if (attributeName === 'DnsEntries') return dnsEntryStrings(endpoint);
       if (attributeName === 'NetworkInterfaceIds') return [...(endpoint.NetworkInterfaceIds ?? [])];
       const created = isoTimestampAttribute(endpoint.CreationTimestamp);
       if (created !== undefined) return created;

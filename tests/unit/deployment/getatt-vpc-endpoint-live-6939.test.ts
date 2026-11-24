@@ -126,4 +126,39 @@ describe('Fn::GetAtt AWS::EC2::VPCEndpoint live arm (#6939)', () => {
       resolver.resolve({ 'Fn::GetAtt': ['Endpoint', 'NetworkInterfaceIds'] }, context())
     ).rejects.toThrow(/reported no such endpoint/);
   });
+
+  it('keeps polling through throttles, then refuses when they outlast the wait', async () => {
+    mockEc2Send.mockRejectedValue(
+      Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' })
+    );
+    const resolver = new IntrinsicFunctionResolver();
+    await expect(
+      resolver.resolve({ 'Fn::GetAtt': ['Endpoint', 'NetworkInterfaceIds'] }, context())
+    ).rejects.toThrow(/stayed throttled or failing past the attribute wait/);
+    expect(mockEc2Send).toHaveBeenCalledTimes(4);
+  });
+
+  it('refuses at once on a non-transient read failure, naming its class', async () => {
+    mockEc2Send.mockRejectedValue(
+      Object.assign(new Error('denied for arn:aws:sts::1:assumed-role/x'), {
+        name: 'UnauthorizedOperation',
+      })
+    );
+    const resolver = new IntrinsicFunctionResolver();
+    const error = await resolver
+      .resolve({ 'Fn::GetAtt': ['Endpoint', 'DnsEntries'] }, context())
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(IntrinsicResolutionRefusalError);
+    expect(String(error)).toMatch(/UnauthorizedOperation/);
+    expect(String(error)).not.toMatch(/assumed-role/);
+    expect(mockEc2Send).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a CreationTimestamp EC2 does not report', async () => {
+    mockEc2Send.mockResolvedValue({ VpcEndpoints: [{ VpcEndpointId: ID, State: 'available' }] });
+    const resolver = new IntrinsicFunctionResolver();
+    await expect(
+      resolver.resolve({ 'Fn::GetAtt': ['Endpoint', 'CreationTimestamp'] }, context())
+    ).rejects.toThrow(/reported no CreationTimestamp/);
+  });
 });

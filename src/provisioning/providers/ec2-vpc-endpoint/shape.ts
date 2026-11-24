@@ -4,6 +4,7 @@ import { isoTimestampAttribute } from '../../attribute-timestamp.js';
 import { coerceCfnBoolean } from '../../config-shape.js';
 import { policyDocumentMatchesDeclared } from '../../settle-after-own-write.js';
 import { readbackEc2Tags } from '../ec2/read-network-state.js';
+import { dnsEntryStrings } from '../../vpc-endpoint-dns-entries.js';
 
 /**
  * The pure halves of `EC2VPCEndpointProvider` (go-to-k/cdkd#6939): reading
@@ -34,6 +35,51 @@ export const VPC_ENDPOINT_CREATE_ONLY = [
   'ResourceConfigurationArn',
   'ServiceRegion',
 ] as const;
+
+/** The nested create-only paths (the schema's `createOnlyPropertyPaths`). */
+const VPC_ENDPOINT_CREATE_ONLY_NESTED = [
+  ['DnsOptions', 'PrivateDnsPreference'],
+  ['DnsOptions', 'PrivateDnsSpecifiedDomains'],
+] as const;
+
+/** A property's value with CloudFormation's default filled in for an absent `VpcEndpointType`. */
+function createOnlyValue(properties: Record<string, unknown>, key: string): unknown {
+  const value = properties[key] ?? null;
+  return key === 'VpcEndpointType' && value === null ? 'Gateway' : value;
+}
+
+/**
+ * The first create-only path whose value differs between the two bags, as
+ * `Key` or `Key.Member`, or `undefined` when none does.
+ */
+export function createOnlyChange(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>
+): string | undefined {
+  for (const key of VPC_ENDPOINT_CREATE_ONLY) {
+    if (
+      JSON.stringify(createOnlyValue(properties, key)) !==
+      JSON.stringify(createOnlyValue(previousProperties, key))
+    ) {
+      return key;
+    }
+  }
+  const member = (bag: Record<string, unknown>, top: string, key: string): unknown => {
+    const block = bag[top];
+    return block !== null && typeof block === 'object' && !Array.isArray(block)
+      ? ((block as Record<string, unknown>)[key] ?? null)
+      : null;
+  };
+  for (const [top, key] of VPC_ENDPOINT_CREATE_ONLY_NESTED) {
+    if (
+      JSON.stringify(member(properties, top, key)) !==
+      JSON.stringify(member(previousProperties, top, key))
+    ) {
+      return `${top}.${key}`;
+    }
+  }
+  return undefined;
+}
 
 /**
  * The endpoint states a wait ends on. `pendingAcceptance` waits on the
@@ -190,18 +236,6 @@ export function readOptionalString(
   return typeof value === 'string' && value !== ''
     ? { kind: 'usable', value }
     : { kind: 'malformed' };
-}
-
-/**
- * `DnsEntries` as CloudFormation (and Cloud Control) reports it: one
- * `<HostedZoneId>:<DnsName>` string per entry, in the order EC2 lists them
- * (measured, us-east-1: the regional name, the zonal ones, then the private
- * DNS names, each private name with its own hosted zone).
- */
-export function dnsEntryStrings(endpoint: VpcEndpoint): string[] {
-  return (endpoint.DnsEntries ?? [])
-    .filter((entry) => typeof entry.DnsName === 'string' && entry.DnsName !== '')
-    .map((entry) => `${entry.HostedZoneId ?? ''}:${entry.DnsName}`);
 }
 
 /**

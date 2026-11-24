@@ -38,6 +38,7 @@ import { acquireIdempotencyToken } from './idempotency-token.js';
 import { isNamedError } from './ec2/common.js';
 import {
   VPC_ENDPOINT_CREATE_ONLY,
+  createOnlyChange,
   VPC_ENDPOINT_NOT_FOUND_NAMES,
   VPC_ENDPOINT_TYPE,
   endpointState,
@@ -412,17 +413,16 @@ export class EC2VPCEndpointProvider implements ResourceProvider {
     const mask = maskerOrIdentity(context?.maskSecrets);
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
     // A create-only change reaches update() only from `cdkd drift --revert`
-    // (the diff replaces the endpoint otherwise): refused, never a no-op.
-    for (const key of VPC_ENDPOINT_CREATE_ONLY) {
-      if (
-        JSON.stringify(properties[key] ?? null) !== JSON.stringify(previousProperties[key] ?? null)
-      ) {
-        throw new ResourceUpdateNotSupportedError(
-          resourceType,
-          logicalId,
-          `${key} cannot change in place; re-deploy with ${deployReplaceCommand()}`
-        );
-      }
+    // (the diff replaces the endpoint otherwise): refused, never a no-op. An
+    // absent VpcEndpointType is CloudFormation's `Gateway`, which the drift
+    // readback spells out.
+    const changedCreateOnly = createOnlyChange(properties, previousProperties);
+    if (changedCreateOnly !== undefined) {
+      throw new ResourceUpdateNotSupportedError(
+        resourceType,
+        logicalId,
+        `${changedCreateOnly} cannot change in place; re-deploy with ${deployReplaceCommand()}`
+      );
     }
     // A state-borne desired bag (a rollback replay, a drift revert) cannot be
     // fixed in the template, so a malformed value there keeps the previous
@@ -560,7 +560,10 @@ export class EC2VPCEndpointProvider implements ResourceProvider {
         modifying && !noWait
           ? await this.waitForSettled(physicalId, logicalId, mask)
           : await this.describe(physicalId);
-      const settled = endpointWaitVerdict(endpoint) === 'settled';
+      // Under --no-wait the one read right after `ModifyVpcEndpoint` can still
+      // report the `available` the change is leaving, with the old interfaces:
+      // never recorded as settled, so a GetAtt reads the endpoint live.
+      const settled = !(modifying && noWait) && endpointWaitVerdict(endpoint) === 'settled';
 
       let effectiveProperties: Record<string, unknown> | undefined;
       if (kept.length > 0) {
