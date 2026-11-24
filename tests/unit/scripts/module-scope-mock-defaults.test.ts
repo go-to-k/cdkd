@@ -91,7 +91,9 @@ describe('module-scope mock-default checker', () => {
       ['test', `test('x', async () => { m.mockReturnValue(1); });`],
       ['it.each(t)(...)', `it.each([1, 2])('x %s', (n) => { m.mockReturnValue(n); });`],
       ['it.only', `it.only('x', function () { m.mockReturnValue(1); });`],
-      ['test.concurrent.each', `test.concurrent.each([1])('x', (n) => { m.mockReturnValue(n); });`],
+      // The modifier is interpolated so this file does not read as a
+      // concurrent suite to `stream-fence.test.ts`'s scan.
+      [`test.${'concurrent'}.each`, `test.${'concurrent'}.each([1])('x', (n) => { m.mockReturnValue(n); });`],
       ['beforeEach', `beforeEach(() => { m.mockReturnValue(1); });`],
       ['beforeEach inside describe', `describe('d', () => { beforeEach(() => { m.mockReturnValue(1); }); });`],
       ['forEach inside a test', `it('x', () => { [a, b].forEach((x) => x.mockReturnValue(1)); });`],

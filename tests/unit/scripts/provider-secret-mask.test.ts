@@ -1400,6 +1400,10 @@ describe('provider secret-mask critic — CI wiring', () => {
       'audit:getatt-attributes:check',
       'a pure staleness check: CI already regenerates the table through `gen:all-matrices` and fails on the diff',
     ],
+    [
+      'audit:module-scope-mock-defaults:check',
+      'CI already enforces it through `module-scope-mock-defaults.test.ts` in the unit shards; the task is the same verdict from the command line',
+    ],
   ]);
 
   // Parser floor: "found nothing" and "everything matches" look identical
