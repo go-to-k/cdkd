@@ -21,7 +21,10 @@
 #   5. Re-deploy at once with the SAME alias under --no-wait: the create must
 #      not trip over anything the delete left settling. The dependents are
 #      created against the instance, and the ServiceRole output still waits
-#      for ACTIVE and matches. Then destroy again.
+#      for ACTIVE and matches. This deploy uses the UPDATE props, so contact-flow
+#      logs and early media `true` are written at readiness without waiting
+#      for the instance's own defaults, and must still read `true` after
+#      ACTIVE. Then destroy again.
 #
 # Account limit to keep in mind: Amazon Connect caps how many instances an
 # account may create and delete within 30 days, so do not loop this fixture.
@@ -318,9 +321,12 @@ aws logs delete-log-group --log-group-name "/aws/connect/${INSTANCE_ALIAS}" \
 echo "    destroyed (destroy took ${DESTROY_SECS}s)"
 
 # --- Phase 5: immediate re-create with the same alias under --no-wait --------
+# The UPDATE props this time: contact-flow logs and early media `true`, written
+# at readiness without waiting for the instance's own defaults (#6912). Phase
+# 1's `false` early media is the case that waits for them.
 echo "==> Phase 5: re-deploy at once with the same alias, --no-wait"
 T0="$(date +%s)"
-env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --no-wait
 NOWAIT_SECS=$(( $(date +%s) - T0 ))
 INSTANCE_ID="$(instance_id_by_alias)"
@@ -333,6 +339,12 @@ if [ "$(dependents)" != "1 1" ]; then
   exit 1
 fi
 check_service_role_output
+# The ServiceRole output waited for ACTIVE, so every default has landed by now:
+# the attributes written before them must still hold.
+if [ "$(flow_logs)" != "true" ] || [ "$(early_media)" != "true" ]; then
+  echo "FAIL: after ACTIVE, CONTACTFLOW_LOGS=$(flow_logs) EARLY_MEDIA=$(early_media), expected true true" >&2
+  exit 1
+fi
 echo "    --no-wait re-deploy with the same alias succeeded (took ${NOWAIT_SECS}s)"
 
 T0="$(date +%s)"
@@ -345,4 +357,4 @@ assert_gone "state file ${STATE_KEY} still exists after the second destroy" \
 
 trap - EXIT INT TERM
 rm -f "${DRIFT_JSON}"
-echo "[verify] PASS — Connect instance deployed (${DEPLOY_SECS}s), drift-clean, updated in place (${UPDATE_SECS}s), destroyed (${DESTROY_SECS}s), re-created with the same alias under --no-wait (${NOWAIT_SECS}s), destroyed (${DESTROY2_SECS}s)"
+echo "[verify] PASS — Connect instance deployed (${DEPLOY_SECS}s), drift-clean, updated in place (${UPDATE_SECS}s), destroyed (${DESTROY_SECS}s), re-created with the same alias under --no-wait with attributes written at readiness (${NOWAIT_SECS}s), destroyed (${DESTROY2_SECS}s)"

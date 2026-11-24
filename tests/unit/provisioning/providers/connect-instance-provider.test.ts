@@ -211,16 +211,35 @@ describe('ConnectInstanceProvider', () => {
       );
     });
 
-    it('writes the attributes only once the instance has set its own defaults', async () => {
+    it('with a default declared false, writes the attributes only once the instance has set its own defaults', async () => {
       scriptCreate({ statuses: ['CREATION_IN_PROGRESS', 'CREATION_IN_PROGRESS', 'CREATION_IN_PROGRESS', 'ACTIVE'], defaultsPending: 2 });
 
-      await provider.create('Inst', TYPE, baseProps());
+      await provider.create(
+        'Inst',
+        TYPE,
+        baseProps({ Attributes: { InboundCalls: true, OutboundCalls: true, ContactflowLogs: true, EarlyMedia: false } })
+      );
 
       const order = mockSend.mock.calls.map((c) => (c[0] as object).constructor.name);
       const firstWrite = order.indexOf('UpdateInstanceAttributeCommand');
       // Two unsettled listings, then the settled one, then the write.
       expect(order.slice(0, firstWrite).filter((n) => n === 'ListInstanceAttributesCommand')).toHaveLength(3);
       expect(sentOf(DescribeInstanceAttributeCommand)).toHaveLength(0);
+    });
+
+    it.each([
+      ['a member with no late default', { ContactflowLogs: true }],
+      ['a default declared true', { ContactLens: true, EarlyMedia: true }],
+      ['a member with no late default declared false', { ContactflowLogs: false }],
+    ])('with %s, writes at readiness without waiting for the defaults', async (_label, extra) => {
+      process.env['CDKD_NO_WAIT'] = 'true';
+      scriptCreate({ statuses: ['CREATION_IN_PROGRESS'], defaultsPending: 100 });
+
+      await provider.create('Inst', TYPE, baseProps({ Attributes: { InboundCalls: true, OutboundCalls: true, ...extra } }));
+
+      expect(sentOf(DescribeInstanceAttributeCommand)).toHaveLength(1);
+      expect(sentOf(ListInstanceAttributesCommand)).toHaveLength(0);
+      expect(sentOf(UpdateInstanceAttributeCommand)).toHaveLength(Object.keys(extra).length);
     });
 
     it('with no attribute to write waits only for readiness, not for the defaults', async () => {
