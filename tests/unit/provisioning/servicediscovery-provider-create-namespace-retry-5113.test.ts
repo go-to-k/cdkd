@@ -13,7 +13,7 @@ vi.mock('@aws-sdk/client-servicediscovery', async () => {
   );
   return {
     ...actual,
-    ServiceDiscoveryClient: vi.fn().mockImplementation(() => ({
+    ServiceDiscoveryClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),

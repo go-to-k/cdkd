@@ -12,7 +12,7 @@ vi.mock('@aws-sdk/client-s3tables', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-s3tables')>();
   return {
     ...actual,
-    S3TablesClient: vi.fn().mockImplementation(() => ({
+    S3TablesClient: vi.fn(() => ({
       send: tablesSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -23,7 +23,7 @@ vi.mock('@aws-sdk/client-s3vectors', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-s3vectors')>();
   return {
     ...actual,
-    S3VectorsClient: vi.fn().mockImplementation(() => ({
+    S3VectorsClient: vi.fn(() => ({
       send: vectorsSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -36,9 +36,8 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn(),
+    child: vi.fn((): unknown => logger),
   };
-  logger.child.mockReturnValue(logger);
   return { getLogger: () => logger };
 });
 

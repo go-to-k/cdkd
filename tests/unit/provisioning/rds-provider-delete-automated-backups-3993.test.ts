@@ -16,7 +16,7 @@ vi.mock('@aws-sdk/client-rds', async () => {
   const actual = await vi.importActual('@aws-sdk/client-rds');
   return {
     ...actual,
-    RDSClient: vi.fn().mockImplementation((config: { region?: string }) => {
+    RDSClient: vi.fn((config: { region?: string }) => {
       rdsClientRegions.push(config.region);
       return {
         send: rdsSend,
@@ -42,7 +42,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

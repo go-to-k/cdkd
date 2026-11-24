@@ -11,8 +11,7 @@
 import { describe, it, expect, vi } from 'vite-plus/test';
 
 vi.mock('../../../src/utils/logger.js', () => {
-  const quiet = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), child: vi.fn() };
-  quiet.child.mockReturnValue(quiet);
+  const quiet = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), child: vi.fn((): unknown => quiet) };
   return { getLogger: () => quiet };
 });
 

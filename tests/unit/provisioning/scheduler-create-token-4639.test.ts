@@ -16,7 +16,7 @@ vi.mock('@aws-sdk/client-scheduler', async (importOriginal) => {
   return {
     ...actual,
     // The provider's client: records each command's INPUT as cdkd built it.
-    SchedulerClient: vi.fn().mockImplementation(() => ({
+    SchedulerClient: vi.fn(() => ({
       config: { region: () => Promise.resolve('us-east-1') },
       send: async (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
         sent.push([command.constructor.name, command.input]);
@@ -32,7 +32,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

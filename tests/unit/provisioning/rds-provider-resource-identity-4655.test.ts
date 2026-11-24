@@ -18,7 +18,7 @@ vi.mock('@aws-sdk/client-rds', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-rds')>();
   return {
     ...actual,
-    RDSClient: vi.fn().mockImplementation(() => ({
+    RDSClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve(clientRegion.value) },
     })),

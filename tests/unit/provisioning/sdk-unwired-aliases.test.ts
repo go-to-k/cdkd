@@ -37,7 +37,7 @@ vi.mock('@aws-sdk/client-ec2', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-ec2')>();
   return {
     ...actual,
-    EC2Client: vi.fn().mockImplementation(() => ({
+    EC2Client: vi.fn(() => ({
       send: mockEc2Send,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -48,7 +48,7 @@ vi.mock('@aws-sdk/client-ecs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-ecs')>();
   return {
     ...actual,
-    ECSClient: vi.fn().mockImplementation(() => ({
+    ECSClient: vi.fn(() => ({
       send: mockEcsSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -59,7 +59,7 @@ vi.mock('@aws-sdk/client-glue', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-glue')>();
   return {
     ...actual,
-    GlueClient: vi.fn().mockImplementation(() => ({
+    GlueClient: vi.fn(() => ({
       send: mockGlueSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -70,7 +70,7 @@ vi.mock('@aws-sdk/client-neptune', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-neptune')>();
   return {
     ...actual,
-    NeptuneClient: vi.fn().mockImplementation(() => ({
+    NeptuneClient: vi.fn(() => ({
       send: mockNeptuneSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -81,7 +81,7 @@ vi.mock('@aws-sdk/client-elasticache', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-elasticache')>();
   return {
     ...actual,
-    ElastiCacheClient: vi.fn().mockImplementation(() => ({
+    ElastiCacheClient: vi.fn(() => ({
       send: mockElastiCacheSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -92,7 +92,7 @@ vi.mock('@aws-sdk/client-s3tables', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-s3tables')>();
   return {
     ...actual,
-    S3TablesClient: vi.fn().mockImplementation(() => ({
+    S3TablesClient: vi.fn(() => ({
       send: mockS3TablesSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -103,7 +103,7 @@ vi.mock('@aws-sdk/client-sts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-sts')>();
   return {
     ...actual,
-    STSClient: vi.fn().mockImplementation(() => ({ send: mockStsSend })),
+    STSClient: vi.fn(() => ({ send: mockStsSend })),
   };
 });
 
@@ -113,7 +113,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

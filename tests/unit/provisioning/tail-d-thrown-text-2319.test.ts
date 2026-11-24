@@ -45,7 +45,7 @@ for (const [mod, client] of [
 ] as const) {
   vi.doMock(mod, async () => {
     const actual = await vi.importActual<Record<string, unknown>>(mod);
-    return { ...actual, [client]: vi.fn().mockImplementation(fakeClient) };
+    return { ...actual, [client]: vi.fn(fakeClient) };
   });
 }
 vi.mock('../../../src/deployment/intrinsic-function-resolver.js', async (importOriginal) => ({
@@ -59,7 +59,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn,
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

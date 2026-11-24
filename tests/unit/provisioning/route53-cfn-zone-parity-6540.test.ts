@@ -12,7 +12,7 @@ const { childLogger } = vi.hoisted(() => ({
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn(),
+    child: vi.fn((): unknown => childLogger),
   },
 }));
 
@@ -20,7 +20,7 @@ vi.mock('@aws-sdk/client-route-53', async () => {
   const actual = await vi.importActual('@aws-sdk/client-route-53');
   return {
     ...actual,
-    Route53Client: vi.fn().mockImplementation(() => ({
+    Route53Client: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -28,7 +28,6 @@ vi.mock('@aws-sdk/client-route-53', async () => {
 });
 
 vi.mock('../../../src/utils/logger.js', () => {
-  childLogger.child.mockReturnValue(childLogger);
   return {
     getLogger: () => ({
       child: () => childLogger,

@@ -51,7 +51,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 }));
 
 vi.mock('../../../src/utils/logger.js', () => {
-  const childLogger = { ...logSpies, child: vi.fn().mockReturnThis() };
+  const childLogger = { ...logSpies, child: vi.fn(function (this: unknown) { return this; }) };
   return {
     getLogger: () => ({ ...logSpies, child: () => childLogger }),
   };

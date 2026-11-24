@@ -9,7 +9,7 @@ vi.mock('@aws-sdk/client-s3-control', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-s3-control')>();
   return {
     ...actual,
-    S3ControlClient: vi.fn().mockImplementation(() => ({
+    S3ControlClient: vi.fn(() => ({
       send: mockControlSend,
     })),
   };
@@ -28,7 +28,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

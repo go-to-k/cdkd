@@ -38,9 +38,8 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn(),
+    child: vi.fn((): unknown => child),
   };
-  child.child = vi.fn().mockReturnValue(child);
   return { getLogger: () => child };
 });
 

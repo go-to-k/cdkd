@@ -9,7 +9,7 @@ const { mockS3Send, mockStsSend, mockEc2Send, childLogger } = vi.hoisted(() => (
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn(),
+    child: vi.fn((): unknown => childLogger),
   },
 }));
 
@@ -26,7 +26,7 @@ vi.mock('@aws-sdk/client-s3', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-s3')>();
   return {
     ...actual,
-    S3Client: vi.fn().mockImplementation(() => ({
+    S3Client: vi.fn(() => ({
       send: mockS3Send,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -37,7 +37,7 @@ vi.mock('@aws-sdk/client-ec2', async () => {
   const actual = await vi.importActual('@aws-sdk/client-ec2');
   return {
     ...actual,
-    EC2Client: vi.fn().mockImplementation(() => ({
+    EC2Client: vi.fn(() => ({
       send: mockEc2Send,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -45,7 +45,6 @@ vi.mock('@aws-sdk/client-ec2', async () => {
 });
 
 vi.mock('../../../src/utils/logger.js', () => {
-  childLogger.child.mockReturnValue(childLogger);
   return {
     getLogger: () => ({
       child: () => childLogger,

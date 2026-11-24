@@ -38,23 +38,23 @@ const { mockSend, debug, warn, accountInfo, fakeClient } = vi.hoisted(() => {
 
 vi.mock('@aws-sdk/client-emr', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-emr')>();
-  return { ...actual, EMRClient: vi.fn().mockImplementation(fakeClient) };
+  return { ...actual, EMRClient: vi.fn(fakeClient) };
 });
 vi.mock('@aws-sdk/client-fsx', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-fsx')>();
-  return { ...actual, FSxClient: vi.fn().mockImplementation(fakeClient) };
+  return { ...actual, FSxClient: vi.fn(fakeClient) };
 });
 vi.mock('@aws-sdk/client-ssm', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-ssm')>();
-  return { ...actual, SSMClient: vi.fn().mockImplementation(fakeClient) };
+  return { ...actual, SSMClient: vi.fn(fakeClient) };
 });
 vi.mock('@aws-sdk/client-kinesis', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-kinesis')>();
-  return { ...actual, KinesisClient: vi.fn().mockImplementation(fakeClient) };
+  return { ...actual, KinesisClient: vi.fn(fakeClient) };
 });
 vi.mock('@aws-sdk/client-cloudtrail', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-cloudtrail')>();
-  return { ...actual, CloudTrailClient: vi.fn().mockImplementation(fakeClient) };
+  return { ...actual, CloudTrailClient: vi.fn(fakeClient) };
 });
 // The shared clients (`getAwsClients().ssm`, `.iam`, ...) route to the same fake.
 vi.mock('../../../src/utils/aws-clients.js', () => ({
@@ -71,7 +71,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn,
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({ child: () => childLogger, debug, info: vi.fn(), warn, error: vi.fn() }),

@@ -22,7 +22,7 @@ vi.mock('@aws-sdk/client-servicediscovery', async () => {
   );
   return {
     ...actual,
-    ServiceDiscoveryClient: vi.fn().mockImplementation(() => ({
+    ServiceDiscoveryClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -31,7 +31,7 @@ vi.mock('@aws-sdk/client-servicediscovery', async () => {
 
 vi.mock('@aws-sdk/client-sts', async () => {
   const actual = await vi.importActual<typeof import('@aws-sdk/client-sts')>('@aws-sdk/client-sts');
-  return { ...actual, STSClient: vi.fn().mockImplementation(() => ({ send: stsSend })) };
+  return { ...actual, STSClient: vi.fn(() => ({ send: stsSend })) };
 });
 
 vi.mock('../../../src/utils/logger.js', () => {

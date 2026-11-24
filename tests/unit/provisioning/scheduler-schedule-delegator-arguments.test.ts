@@ -20,7 +20,7 @@ vi.mock('@aws-sdk/client-scheduler', async () => {
   );
   return {
     ...actual,
-    SchedulerClient: vi.fn().mockImplementation(() => ({
+    SchedulerClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),

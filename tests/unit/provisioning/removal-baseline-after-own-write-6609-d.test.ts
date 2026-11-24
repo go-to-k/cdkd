@@ -32,7 +32,7 @@ const childLogger = vi.hoisted(() => ({
   info: vi.fn(),
   warn: vi.fn(),
   error: vi.fn(),
-  child: vi.fn().mockReturnThis(),
+  child: vi.fn(function (this: unknown) { return this; }),
 }));
 /** The `refresh-observed` warnings, for the unsettled outcome (value-free). */
 const unsettledWarnings = (): string[] =>

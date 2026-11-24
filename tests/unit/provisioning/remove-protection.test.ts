@@ -72,7 +72,7 @@ vi.mock('@aws-sdk/client-rds', async () => {
   const actual = await vi.importActual<typeof import('@aws-sdk/client-rds')>('@aws-sdk/client-rds');
   return {
     ...actual,
-    RDSClient: vi.fn().mockImplementation(() => ({
+    RDSClient: vi.fn(() => ({
       send: mockRdsSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -87,7 +87,7 @@ vi.mock('@aws-sdk/client-elastic-load-balancing-v2', async () => {
     );
   return {
     ...actual,
-    ElasticLoadBalancingV2Client: vi.fn().mockImplementation(() => ({
+    ElasticLoadBalancingV2Client: vi.fn(() => ({
       send: mockElbv2Send,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -100,7 +100,7 @@ vi.mock('@aws-sdk/client-docdb', async () => {
     await vi.importActual<typeof import('@aws-sdk/client-docdb')>('@aws-sdk/client-docdb');
   return {
     ...actual,
-    DocDBClient: vi.fn().mockImplementation(() => ({
+    DocDBClient: vi.fn(() => ({
       send: mockDocdbSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -113,7 +113,7 @@ vi.mock('@aws-sdk/client-neptune', async () => {
     await vi.importActual<typeof import('@aws-sdk/client-neptune')>('@aws-sdk/client-neptune');
   return {
     ...actual,
-    NeptuneClient: vi.fn().mockImplementation(() => ({
+    NeptuneClient: vi.fn(() => ({
       send: mockNeptuneSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -128,7 +128,7 @@ vi.mock('@aws-sdk/client-auto-scaling', async () => {
     );
   return {
     ...actual,
-    AutoScalingClient: vi.fn().mockImplementation(() => ({
+    AutoScalingClient: vi.fn(() => ({
       send: mockAsgSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -143,7 +143,7 @@ vi.mock('@aws-sdk/client-cognito-identity-provider', async () => {
     );
   return {
     ...actual,
-    CognitoIdentityProviderClient: vi.fn().mockImplementation(() => ({
+    CognitoIdentityProviderClient: vi.fn(() => ({
       send: mockCognitoSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),

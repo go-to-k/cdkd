@@ -16,7 +16,7 @@ vi.mock('@aws-sdk/client-scheduler', async () => {
   );
   return {
     ...actual,
-    SchedulerClient: vi.fn().mockImplementation(() => ({
+    SchedulerClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -33,10 +33,9 @@ const { childLogger } = vi.hoisted(() => ({
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn(),
+    child: vi.fn((): unknown => childLogger),
   },
 }));
-childLogger.child.mockReturnValue(childLogger);
 
 vi.mock('../../../src/utils/logger.js', () => {
   return {
