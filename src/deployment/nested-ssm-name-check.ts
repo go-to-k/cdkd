@@ -22,6 +22,11 @@ import { childTemplateLoader } from './nested-output-templates.js';
 import { healSlashedSsmParameterNames } from './ssm-slashed-name-heal.js';
 import { safeMsg } from '../utils/display-safe.js';
 import { SECRET_MASK } from './secret-redaction/pairs.js';
+import {
+  isMarkedCoordinate,
+  noEchoLeavesOf,
+  type NoEchoCoordinate,
+} from './secret-redaction/noecho-leaves.js';
 import type { ChildTemplateLoader } from './masked-property-fingerprints.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import type { ResourceState, StackState } from '../types/state.js';
@@ -40,7 +45,8 @@ export interface NestedSsmNameCheck {
   forcedRows: Set<string>;
   /**
    * Rows that would be forced but whose record holds a value cdkd stores
-   * masked: updating one would reach the redacted-read refusal (#2274) and
+   * masked, other than a `NoEcho` parameter's at a `noEchoLeaves` coordinate
+   * (go-to-k/cdkd#6906): updating one would reach the redacted-read refusal (#2274) and
    * fail a deploy of a stack nobody changed, so it is left for the next
    * deploy that changes that nested stack (named, never forced, and the
    * stack is still marked: the check would only find it again).
@@ -54,12 +60,99 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** Whether `value` holds the stored mask anywhere (a bounded walk). */
-function holdsMask(value: unknown, depth = 0): boolean {
+/** `Fn::Sub` text naming `${Resource.Attribute}` (a dotted variable). */
+const DOTTED_SUB_VARIABLE = /\$\{[^}!]*\.[^}]*\}/;
+
+/**
+ * Whether the template node READS anything that can resolve to a value cdkd
+ * stores masked: an `Fn::GetAtt`, a dotted `Fn::Sub` variable, or a
+ * cross-stack read. Conservative on purpose: every attribute read counts,
+ * declared `NoEcho` or not.
+ */
+function readsAnyAttribute(node: unknown, depth = 0): boolean {
   if (depth > 64) return true;
+  if (typeof node === 'string') return false;
+  if (Array.isArray(node)) return node.some((item) => readsAnyAttribute(item, depth + 1));
+  if (!isObject(node)) return false;
+  for (const [key, value] of Object.entries(node)) {
+    if (key === 'Fn::GetAtt' || key === 'Fn::ImportValue' || key === 'Fn::GetStackOutput') {
+      return true;
+    }
+    if (key === 'Fn::Sub') {
+      const text = Array.isArray(value) ? value[0] : value;
+      if (typeof text !== 'string' || DOTTED_SUB_VARIABLE.test(text)) return true;
+      if (Array.isArray(value) && readsAnyAttribute(value[1], depth + 1)) return true;
+      continue;
+    }
+    if (readsAnyAttribute(value, depth + 1)) return true;
+  }
+  return false;
+}
+
+/**
+ * The template node a record coordinate was resolved from: followed while the
+ * template spells the same key or index, stopping at the first intrinsic (its
+ * whole subtree then stands for the leaf).
+ */
+function templateNodeAt(properties: unknown, coordinate: NoEchoCoordinate): unknown {
+  let node = properties;
+  for (const segment of coordinate) {
+    if (isObject(node) && Object.keys(node).some((k) => k === 'Ref' || k.startsWith('Fn::'))) {
+      return node;
+    }
+    if (Array.isArray(node) && typeof segment === 'number' && segment < node.length) {
+      node = node[segment];
+    } else if (isObject(node) && typeof segment === 'string' && Object.hasOwn(node, segment)) {
+      node = node[segment];
+    } else {
+      return node;
+    }
+  }
+  return node;
+}
+
+/**
+ * The record's `noEchoLeaves` coordinates whose mask is a `NoEcho` PARAMETER's
+ * value only (go-to-k/cdkd#6906): the template reads no attribute there. Such
+ * a value is resolved afresh by the update, so it reaches no redacted read.
+ * A coordinate the template reads an attribute at (a declared `NoEcho`
+ * output or custom-resource attribute also lands in `noEchoLeaves`) is left
+ * out, so its mask still defers.
+ */
+function parameterOnlyCoordinates(
+  record: ResourceState | undefined,
+  templateProperties: unknown
+): NoEchoCoordinate[] {
+  if (record === undefined) return [];
+  return (noEchoLeavesOf(record) ?? []).filter(
+    (coordinate) => !readsAnyAttribute(templateNodeAt(templateProperties, coordinate))
+  );
+}
+
+/**
+ * Whether `value` holds the stored mask anywhere outside `marked` (a bounded
+ * walk). Since go-to-k/cdkd#6896 a row's recorded `Tags` can hold a `NoEcho`
+ * parameter's mask, and deferring for it left the heal undone for good
+ * (go-to-k/cdkd#6906); `marked` is {@link parameterOnlyCoordinates}. Any
+ * other mask (an attribute the row reads, an unmarked legacy record) still
+ * defers.
+ */
+function holdsUnmarkedMask(
+  value: unknown,
+  marked: readonly NoEchoCoordinate[],
+  path: (string | number)[] = []
+): boolean {
+  if (path.length > 64) return true;
+  if (marked.length > 0 && isMarkedCoordinate(path, marked)) return false;
   if (typeof value === 'string') return value.includes(SECRET_MASK);
-  if (Array.isArray(value)) return value.some((item) => holdsMask(item, depth + 1));
-  if (isObject(value)) return Object.values(value).some((item) => holdsMask(item, depth + 1));
+  if (Array.isArray(value)) {
+    return value.some((item, i) => holdsUnmarkedMask(item, marked, [...path, i]));
+  }
+  if (isObject(value)) {
+    return Object.entries(value).some(([key, item]) =>
+      holdsUnmarkedMask(item, marked, [...path, key])
+    );
+  }
   return false;
 }
 
@@ -99,8 +192,16 @@ async function checkLevel(
   const deferredRows = new Set<string>();
   let complete = true;
   const force = (logicalId: string): void => {
-    const properties = records?.[logicalId]?.properties;
-    (holdsMask(properties) ? deferredRows : forcedRows).add(logicalId);
+    const record = records?.[logicalId];
+    const resource =
+      isObject(template.Resources) && Object.hasOwn(template.Resources, logicalId)
+        ? template.Resources[logicalId]
+        : undefined;
+    const marked = parameterOnlyCoordinates(
+      record,
+      isObject(resource) ? resource['Properties'] : undefined
+    );
+    (holdsUnmarkedMask(record?.properties, marked) ? deferredRows : forcedRows).add(logicalId);
   };
   await Promise.all(
     recordedNestedRows(template, records).rows.map(async (logicalId) => {
