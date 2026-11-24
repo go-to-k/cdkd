@@ -727,9 +727,10 @@ export class DocDBProvider implements ResourceProvider {
   waitForClusterAvailable(
     logicalId: string,
     dbClusterIdentifier: string,
-    maxWaitMs?: number
+    maxWaitMs?: number,
+    signal?: AbortSignal
   ): Promise<void> {
-    return waitForClusterAvailable.call(this, logicalId, dbClusterIdentifier, maxWaitMs);
+    return waitForClusterAvailable.call(this, logicalId, dbClusterIdentifier, maxWaitMs, signal);
   }
 
   waitForClusterDeleted(
@@ -743,9 +744,10 @@ export class DocDBProvider implements ResourceProvider {
   waitForInstanceAvailable(
     logicalId: string,
     dbInstanceIdentifier: string,
-    maxWaitMs?: number
+    maxWaitMs?: number,
+    signal?: AbortSignal
   ): Promise<void> {
-    return waitForInstanceAvailable.call(this, logicalId, dbInstanceIdentifier, maxWaitMs);
+    return waitForInstanceAvailable.call(this, logicalId, dbInstanceIdentifier, maxWaitMs, signal);
   }
 
   waitForInstanceDeleted(dbInstanceIdentifier: string, maxWaitMs?: number): Promise<void> {

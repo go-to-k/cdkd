@@ -8,6 +8,7 @@ import {
   instanceParameterGroupSettled,
   instanceRebootApplied,
 } from './instance-members.js';
+import { abortableSleep, throwIfReadinessAborted } from '../../deferred-readiness.js';
 
 /**
  * Issue #1160: wait out a member instance's transition (`transitional`) after
@@ -191,12 +192,14 @@ export async function waitForClusterAvailable(
   logicalId: string,
   dbClusterIdentifier: string,
   maxWaitMs = 1_800_000,
-  doing = 'being created'
+  doing = 'being created',
+  signal?: AbortSignal
 ): Promise<void> {
   const startTime = Date.now();
   let delay = 5_000;
 
   while (Date.now() - startTime < maxWaitMs) {
+    throwIfReadinessAborted(signal);
     const cluster = await this.describeDBCluster(dbClusterIdentifier);
     const status = cluster?.Status;
 
@@ -210,7 +213,7 @@ export async function waitForClusterAvailable(
       );
     }
 
-    await this.sleep(delay);
+    await abortableSleep((ms) => this.sleep(ms), delay, signal);
     delay = Math.min(delay * 2, 10_000);
   }
 
@@ -340,12 +343,14 @@ export async function waitForInstanceAvailable(
   logicalId: string,
   dbInstanceIdentifier: string,
   maxWaitMs = 1_800_000,
-  doing = 'being created'
+  doing = 'being created',
+  signal?: AbortSignal
 ): Promise<void> {
   const startTime = Date.now();
   let delay = 10_000;
 
   while (Date.now() - startTime < maxWaitMs) {
+    throwIfReadinessAborted(signal);
     const instance = await this.describeDBInstance(dbInstanceIdentifier);
     const status = instance?.DBInstanceStatus;
 
@@ -359,7 +364,7 @@ export async function waitForInstanceAvailable(
       );
     }
 
-    await this.sleep(delay);
+    await abortableSleep((ms) => this.sleep(ms), delay, signal);
     delay = Math.min(delay * 2, 10_000);
   }
 

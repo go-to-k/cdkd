@@ -60,7 +60,7 @@ const DELEGATORS: ReadonlyArray<readonly [string, Module, string, number]> = [
   ['delete', del, 'deleteImpl', 5],
   ['readCurrentState', readState, 'readCurrentState', 4],
   ['import', readState, 'importImpl', 1],
-  ['waitForCertificateIssued', wait, 'waitForCertificateIssued', 4],
+  ['waitForCertificateIssued', wait, 'waitForCertificateIssued', 5],
   ['writeValidationRecords', wait, 'writeValidationRecords', 6],
   ['renderValidationOptions', wait, 'renderValidationOptions', 1],
 ];

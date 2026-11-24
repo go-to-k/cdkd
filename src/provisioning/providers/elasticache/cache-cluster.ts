@@ -23,6 +23,11 @@ import {
   TERMINAL_CLUSTER_STATUSES,
 } from './shared.js';
 import { cacheClusterAttributes } from './cache-cluster-attributes.js';
+import {
+  abortableSleep,
+  deferReadiness,
+  throwIfReadinessAborted,
+} from '../../deferred-readiness.js';
 
 export async function createCacheCluster(
   this: ElastiCacheProvider,
@@ -89,6 +94,11 @@ export async function createCacheCluster(
     // Wait for cluster to become available (skip with --no-wait)
     if (process.env['CDKD_NO_WAIT'] !== 'true') {
       await this.waitForClusterAvailable(cacheClusterId);
+    } else {
+      // go-to-k/cdkd#6940: the same wait, run later if the deploy needs it.
+      deferReadiness(logicalId, resourceType, cacheClusterId, (signal) =>
+        this.waitForClusterAvailable(cacheClusterId, undefined, undefined, undefined, signal)
+      );
     }
 
     // Describe to get final attributes
@@ -218,12 +228,14 @@ export async function waitForClusterAvailable(
   cacheClusterId: string,
   maxWaitMs = 600_000,
   expectedNodeType?: string,
-  removedNodeIds: readonly string[] = []
+  removedNodeIds: readonly string[] = [],
+  signal?: AbortSignal
 ): Promise<void> {
   const startTime = Date.now();
   let delay = 10_000;
 
   while (Date.now() - startTime < maxWaitMs) {
+    throwIfReadinessAborted(signal);
     const cluster = await this.describeCacheCluster(cacheClusterId);
     const status = cluster?.CacheClusterStatus;
 
@@ -281,7 +293,7 @@ export async function waitForClusterAvailable(
       );
     }
 
-    await this.sleep(delay);
+    await abortableSleep((ms) => this.sleep(ms), delay, signal);
     delay = Math.min(delay * 2, 10_000);
   }
 

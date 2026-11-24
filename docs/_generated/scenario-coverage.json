@@ -2489,6 +2489,16 @@
       "scenarios": []
     },
     {
+      "name": "no-wait-cr-nat-egress",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "no-wait-getatt-rds-endpoint",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "nodejs-function",
       "annotated": false,
       "scenarios": []
@@ -4442,6 +4452,8 @@
     "nested-stack-rollback",
     "nested-stack-transform",
     "nlb-quic-server-id",
+    "no-wait-cr-nat-egress",
+    "no-wait-getatt-rds-endpoint",
     "nodejs-function",
     "noecho-named-producer",
     "noecho-parameter-masking",

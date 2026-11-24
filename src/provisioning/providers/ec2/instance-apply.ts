@@ -20,6 +20,11 @@ import {
 } from '../../../utils/error-handler.js';
 import type { UpdateContext } from '../../../types/resource.js';
 import { safeMsg } from '../../../utils/display-safe.js';
+import {
+  abortableSleep,
+  deferReadiness,
+  throwIfReadinessAborted,
+} from '../../deferred-readiness.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import { isInterruptedWaitError, startInterruptWatch } from '../../interrupt-watch.js';
 import { markRefusedBeforeApplying } from '../../../deployment/prior-attempt-scope.js';
@@ -479,6 +484,13 @@ export async function applyInstanceMemberUpdates(
       this.logger.debug(
         safeMsg`Instance ${physicalId} started (skipping running-state wait per --no-wait)`
       );
+      // go-to-k/cdkd#6940: the same wait, run later if the deploy needs it.
+      deferReadiness(logicalId, resourceType, physicalId, (signal) =>
+        this.waitForInstanceState(logicalId, physicalId, resourceType, 'running', {
+          stoppedIsTerminal: true,
+          signal,
+        })
+      );
       return;
     }
     phase = 'wait';
@@ -558,7 +570,7 @@ export async function waitForInstanceState(
   physicalId: string,
   resourceType: string,
   target: 'running' | 'stopped',
-  opts: { stoppedIsTerminal?: boolean } = {}
+  opts: { stoppedIsTerminal?: boolean; signal?: AbortSignal } = {}
 ): Promise<string> {
   const watch = startInterruptWatch(`EC2 Instance ${logicalId} ${target} wait`);
   const capAt = Date.now() + INSTANCE_STATE_WAIT_CAP_MS;
@@ -567,6 +579,7 @@ export async function waitForInstanceState(
   try {
     for (;;) {
       if (watch.isInterrupted()) throw watch.onInterrupted();
+      throwIfReadinessAborted(opts.signal);
       const remaining = Math.min(enclosingDeadlineRemainingMs(), capAt - Date.now());
       if (remaining <= 0) {
         throw markNonRetryable(
@@ -612,8 +625,10 @@ export async function waitForInstanceState(
         );
       }
       if (watch.isInterrupted()) throw watch.onInterrupted();
-      await this.sleep(
-        Math.max(0, Math.min(INSTANCE_STATE_POLL_MS, enclosingDeadlineRemainingMs()))
+      await abortableSleep(
+        (ms) => this.sleep(ms),
+        Math.max(0, Math.min(INSTANCE_STATE_POLL_MS, enclosingDeadlineRemainingMs())),
+        opts.signal
       );
     }
   } finally {

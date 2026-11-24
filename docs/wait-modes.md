@@ -140,6 +140,12 @@ the background. Until then, you may see these:
   A Lambda alias's CodeDeploy deployment is waited for too, since the
   deploy can delete the version the alias serves until the shift ends.
 
+The deploy still waits for such a resource where it needs one. A
+`Fn::GetAtt` of a value that exists only once the resource is ready, such as an
+RDS endpoint, waits for it, and a custom resource waits, before its handler
+runs, for each such resource upstream of it. See
+[When the deploy needs a resource it did not wait for](cli-deploy-waits.md#when-the-deploy-needs-a-resource-it-did-not-wait-for).
+
 [cdkd deploy](cli-deploy.md) lists what each mode does for
 every affected resource type, next to what CloudFormation and Terraform do.
 

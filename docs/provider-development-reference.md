@@ -165,6 +165,15 @@ If your provider skips or lengthens its wait under either variable, document
 the behaviour in two places: the wait table in [`cdkd deploy`](cli-deploy.md), and
 the option's help text in `src/cli/options.ts`.
 
+A provider that skips a readiness wait under `CDKD_NO_WAIT` hands the same
+wait to the deploy with one call, `deferReadiness(logicalId, resourceType,
+physicalId, (signal) => wait(signal))` from
+`src/provisioning/deferred-readiness.ts`. The deploy runs it only when it
+needs the resource: a `Fn::GetAtt` of a value that exists only once the
+resource is ready, or a custom resource invoked after it. Pass `signal` to an
+SDK waiter as `abortSignal`. See
+[When the deploy needs a resource it did not wait for](cli-deploy-waits.md#when-the-deploy-needs-a-resource-it-did-not-wait-for).
+
 ## Custom resources
 
 You do not write a provider for a custom resource type, because the handler is

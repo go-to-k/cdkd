@@ -9,6 +9,7 @@ import { isPlainImportValue, VALUE_NOT_SHOWN } from '../../import-helpers.js';
 import { logicalIdShown } from '../../composite-id.js';
 import { commandHole } from '../../../utils/pasteable-command.js';
 import { VALIDATION_RECORD_TTL } from './shared.js';
+import { throwIfReadinessAborted } from '../../deferred-readiness.js';
 
 /**
  * Poll `DescribeCertificate` until status === `ISSUED`. On the FIRST poll
@@ -37,7 +38,8 @@ export async function waitForCertificateIssued(
   certificateArn: string,
   logicalId: string,
   resourceType: string,
-  zones: ReadonlyMap<string, string> = new Map()
+  zones: ReadonlyMap<string, string> = new Map(),
+  signal?: AbortSignal
 ): Promise<void> {
   this.logger.debug(`Waiting for ACM certificate ${certificateArn} to reach ISSUED status...`);
   /** Validation records already written, so a later poll does not write one twice. */
@@ -53,6 +55,7 @@ export async function waitForCertificateIssued(
 
   try {
     for (let attempt = 1; attempt <= this.maxPollAttempts; attempt++) {
+      throwIfReadinessAborted(signal);
       if (interrupted) {
         this.logger.debug(
           `ACM certificate ${certificateArn} wait interrupted by SIGINT, proceeding`
@@ -143,7 +146,7 @@ export async function waitForCertificateIssued(
       // don't waste a full second per attempt).
       const sleepEnd = Date.now() + this.pollIntervalMs;
       const tickMs = Math.min(1000, this.pollIntervalMs);
-      while (Date.now() < sleepEnd && !interrupted) {
+      while (Date.now() < sleepEnd && !interrupted && signal?.aborted !== true) {
         await new Promise((resolve) => setTimeout(resolve, tickMs));
       }
     }

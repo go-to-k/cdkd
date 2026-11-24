@@ -8,6 +8,7 @@ import {
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { markCreatedBeforeFailure } from '../../auxiliary-failure.js';
 import { reportCreatedResource, retractCreatedResource } from '../../created-resource-sink.js';
+import { deferReadiness } from '../../deferred-readiness.js';
 import { CdkdError, ProvisioningError } from '../../../utils/error-handler.js';
 import { isPlainImportValue, VALUE_NOT_SHOWN } from '../../import-helpers.js';
 import { logicalIdShown } from '../../composite-id.js';
@@ -158,6 +159,11 @@ export async function create(
       this.logger.warn(
         `Skipping wait for ACM certificate ${logicalId} (CDKD_NO_WAIT=true). ` +
           `Downstream consumers (CloudFront / ALB) will fail until the cert reaches ISSUED.`
+      );
+      // go-to-k/cdkd#6940: the same wait, run later if the deploy needs it.
+      const zones = dnsValidationZones(properties);
+      deferReadiness(logicalId, resourceType, certificateArn, (signal) =>
+        this.waitForCertificateIssued(certificateArn, logicalId, resourceType, zones, signal)
       );
     }
 

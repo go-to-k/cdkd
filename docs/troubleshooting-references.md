@@ -170,7 +170,9 @@ attribute for three reasons:
   `AWS::RDS::DBSubnetGroup`.
 - AWS had not assigned the value when the record was written. Examples are
   `Endpoint.Address` and `Endpoint.Port` of a `DBInstance` created with
-  `--no-wait`.
+  `--no-wait`. A reference in the same deploy waits for the instance to be
+  available first
+  ([details](cli-deploy-waits.md#when-the-deploy-needs-a-resource-it-did-not-wait-for)).
 - An old release stored a wildcard placeholder in place of the ARN of an
   `AWS::AppSync::*` child resource.
 

@@ -66,7 +66,7 @@ const DELEGATORS: ReadonlyArray<readonly [string, Module, string, number]> = [
   ['createCacheCluster', cacheCluster, 'createCacheCluster', 4],
   ['deleteCacheCluster', cacheCluster, 'deleteCacheCluster', 4],
   ['describeCacheCluster', cacheCluster, 'describeCacheCluster', 1],
-  ['waitForClusterAvailable', cacheCluster, 'waitForClusterAvailable', 4],
+  ['waitForClusterAvailable', cacheCluster, 'waitForClusterAvailable', 5],
   ['waitForClusterDeleted', cacheCluster, 'waitForClusterDeleted', 3],
   ['updateCacheCluster', cacheClusterUpdate, 'updateCacheCluster', 7],
   ['warnTransitEncryptionNotApplied', cacheClusterUpdate, 'warnTransitEncryptionNotApplied', 4],

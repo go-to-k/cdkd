@@ -11,6 +11,7 @@ import { enclosingDeadlineRemainingMs } from '../../../deployment/resource-deadl
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../../auxiliary-failure.js';
 import { reportCreatedResource } from '../../created-resource-sink.js';
+import { deferReadiness } from '../../deferred-readiness.js';
 import { generatedNameFor } from '../../resource-name.js';
 import { refuseMalformedDesiredTags } from '../../tag-list.js';
 import type { ResourceCreateResult } from '../../../types/resource.js';
@@ -490,6 +491,11 @@ export async function createDBInstance(
         dbInstanceIdentifier,
         restored ? restoreWaitMs() : undefined,
         restored ? 'being restored' : undefined
+      );
+    } else {
+      // go-to-k/cdkd#6940: the same wait, run later if the deploy needs it.
+      deferReadiness(logicalId, resourceType, dbInstanceIdentifier, (signal) =>
+        this.waitForInstanceAvailable(logicalId, dbInstanceIdentifier, undefined, undefined, signal)
       );
     }
 

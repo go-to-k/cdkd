@@ -27,6 +27,7 @@ import type {
 import { safeMsg } from '../../../utils/display-safe.js';
 import { markCreatedBeforeFailure } from '../../auxiliary-failure.js';
 import { reportCreatedResource } from '../../created-resource-sink.js';
+import { deferReadiness } from '../../deferred-readiness.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import { startInterruptWatch } from '../../interrupt-watch.js';
 import {
@@ -181,6 +182,19 @@ export async function createNatGateway(
     } else {
       this.logger.debug(
         `NatGateway ${natGatewayId} created (skipping available-state wait per --no-wait)`
+      );
+      // go-to-k/cdkd#6940: the same wait, run later if the deploy needs it.
+      deferReadiness(logicalId, resourceType, natGatewayId, (signal) =>
+        waitUntilNatGatewayAvailable(
+          {
+            client: this.ec2Client,
+            maxWaitTime: 15 * 60,
+            minDelay: 5,
+            maxDelay: 10,
+            abortSignal: signal,
+          },
+          { NatGatewayIds: [natGatewayId] }
+        )
       );
     }
 

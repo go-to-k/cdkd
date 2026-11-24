@@ -598,6 +598,25 @@ export interface ResolverContext {
   attributeHealer?: StaleAttributeHealer;
 
   /**
+   * go-to-k/cdkd#6940: a `Fn::GetAtt` of a value a record lacks, on a
+   * resource whose readiness wait `--no-wait` skipped in THIS deploy, waits
+   * for that readiness and reads the record again — the value exists only
+   * once the resource is ready (an RDS endpoint, an EC2 instance's IP).
+   *
+   * `awaitReady` answers `undefined` when the resource's wait was not skipped
+   * in this deploy, and otherwise the shared, memoized wait (rejecting when
+   * the resource ends failed or the wait runs out). `readAfterReady` is the
+   * one read of the record after it. Only `DeployEngine` supplies them.
+   */
+  deferredReadiness?: {
+    awaitReady: (logicalId: string, reason: string) => Promise<void> | undefined;
+    readAfterReady: (
+      logicalId: string,
+      resource: ResourceState
+    ) => Promise<import('../stale-attribute-heal.js').StaleAttributeHealOutcome>;
+  };
+
+  /**
    * INTERNAL to `resolveGetAtt`'s heal wrapper, which sets it on a DERIVED
    * context for one resolution. Never set by a caller.
    */

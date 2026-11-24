@@ -29,6 +29,8 @@ export interface ResolverContextDeps {
   noEchoRun: () => DeployEngine['noEchoRun'];
   healBaseline: () => DeployEngine['healBaseline'];
   attributeHealer: () => DeployEngine['attributeHealer'];
+  /** go-to-k/cdkd#6940: the readiness waits this deploy's `--no-wait` operations skipped. */
+  deferredReadiness?: () => DeployEngine['deferredReadiness'];
   recordedImports: () => DeployEngine['recordedImports'];
   recordedOutputReads: () => DeployEngine['recordedOutputReads'];
   runProducerRegionEvidence: () => DeployEngine['runProducerRegionEvidence'];
@@ -146,6 +148,15 @@ export function buildResolverContext(
     // and the heal is memoized, so whichever asks first pays the one read.
     attributeHealer: (logicalId, resource) =>
       deps.attributeHealer().heal(logicalId, resource, stackName),
+    // go-to-k/cdkd#6940: read live, like the healer — rebuilt per deploy.
+    ...(deps.deferredReadiness && {
+      deferredReadiness: {
+        awaitReady: (logicalId: string, reason: string) =>
+          deps.deferredReadiness!().awaitReady(logicalId, reason),
+        readAfterReady: (logicalId: string, resource: ResourceState) =>
+          deps.attributeHealer().readAfterReadiness(logicalId, resource, stackName),
+      },
+    }),
     // The pairs the PARENT resolved for this stack, on a nested-stack child
     // engine only (issue #1903). NOT pre-loaded into the map below: the
     // resolver copies a pair across at the moment a resource's `{Ref: Param}`

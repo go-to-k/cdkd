@@ -42,6 +42,7 @@ import {
 } from './common.js';
 import { markDeleteStarted } from '../../delete-started.js';
 import type { EC2Provider } from '../ec2-provider.js';
+import { awaitDeferredResource } from '../../deferred-readiness.js';
 
 // ─── AWS::EC2::InternetGateway ────────────────────────────────────
 
@@ -382,12 +383,24 @@ export async function createEip(
     // work already had to fix; this one was missed because no integ
     // exercises --no-wait against an Instance+EIP stack.
     //
-    // Handled the same way as #1279: skip under --no-wait and hand the user
-    // the exact repair command, rather than silently reintroducing a wait
-    // that --no-wait explicitly asked to skip.
+    // go-to-k/cdkd#6940 (rule 3): an instance whose `running` wait this
+    // deploy skipped is waited for HERE, the one call that needs it, through
+    // the deploy's shared wait. An instance whose wait this deploy did not
+    // defer keeps the #1279 skip-and-warn with the exact repair command.
     const instanceId = properties['InstanceId'] as string | undefined;
     if (instanceId) {
+      let associate = true;
       if (process.env['CDKD_NO_WAIT'] === 'true') {
+        const ready = awaitDeferredResource(
+          logicalId,
+          resourceType,
+          instanceId,
+          `Elastic IP ${logicalId} is associated with it, which AWS refuses until it is running`
+        );
+        if (ready !== undefined) await ready;
+        else associate = false;
+      }
+      if (!associate) {
         this.logger.warn(
           // The PROSE copy of the template's InstanceId renders through
           // `displayIdent`: under --no-wait AWS never saw it, so nothing has
@@ -541,7 +554,18 @@ export async function updateEip(
         // instance (repointing an EIP), so an unconditional skip would
         // break associations that succeed today -- attempt first, and only
         // degrade to the skip-and-warn remedy when AWS actually rejects the
-        // not-yet-running instance under --no-wait.
+        // not-yet-running instance under --no-wait. go-to-k/cdkd#6940 (rule
+        // 3): an instance this deploy launched and did not wait for is waited
+        // for first, so only an instance from outside the deploy can degrade.
+        if (process.env['CDKD_NO_WAIT'] === 'true') {
+          const ready = awaitDeferredResource(
+            logicalId,
+            resourceType,
+            newInstanceId,
+            `Elastic IP ${logicalId} is associated with it, which AWS refuses until it is running`
+          );
+          if (ready !== undefined) await ready;
+        }
         try {
           await this.ec2Client.send(
             new AssociateAddressCommand({

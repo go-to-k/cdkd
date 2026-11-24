@@ -35,6 +35,7 @@ import {
   instanceAttributes,
   markChangedUnsettled,
 } from './shared.js';
+import { deferReadiness } from '../../deferred-readiness.js';
 
 // ─── DBInstance ───────────────────────────────────────────────────
 
@@ -101,6 +102,11 @@ export async function createDBInstance(
     // Wait for instance to become available (skip with --no-wait)
     if (process.env['CDKD_NO_WAIT'] !== 'true') {
       await this.waitForInstanceAvailable(logicalId, dbInstanceIdentifier);
+    } else {
+      // go-to-k/cdkd#6940: the same wait, run later if the deploy needs it.
+      deferReadiness(logicalId, resourceType, dbInstanceIdentifier, (signal) =>
+        this.waitForInstanceAvailable(logicalId, dbInstanceIdentifier, undefined, signal)
+      );
     }
 
     const described = await this.describeDBInstance(dbInstanceIdentifier);

@@ -67,6 +67,7 @@ import {
   collectReferencedLambdaFunctionArns,
   customResourceRetryDelays,
 } from '../../../src/provisioning/providers/custom-resource-provider.js';
+import { withDeferredReadinessScope } from '../../../src/provisioning/deferred-readiness.js';
 import {
   disarmInterruptWatchForTests,
   interruptWatchTestSeam,
@@ -630,5 +631,67 @@ describe('CustomResourceProvider waits for a referenced Pending Lambda function'
       // stays armed until the command ends, by design, so it is not asserted.
       expect(vi.getTimerCount()).toBe(baselineTimers);
     });
+  });
+});
+
+// go-to-k/cdkd#6940: the handler is code running during the deploy, so what
+// `--no-wait` left pending upstream of it is waited for before the invoke.
+describe('CustomResourceProvider waits for upstream readiness --no-wait deferred (#6940)', () => {
+  beforeEach(() => {
+    order.length = 0;
+    mockLambdaSend.mockReset();
+    mockS3Send.mockReset();
+    mockWaitActive.mockReset();
+    mockWaitActive.mockImplementation(() => Promise.resolve({}));
+    interruptWatchTestSeam.commandOwnsInterrupts = () => true;
+  });
+
+  afterEach(() => {
+    disarmInterruptWatchForTests();
+  });
+
+  const scope = (awaitUpstreamReadiness: () => Promise<void>) => ({
+    logicalId: 'Notifications',
+    resourceType: TYPE,
+    deferred: new Map(),
+    awaitUpstreamReadiness,
+    awaitUpstreamReadinessRaw: async () => undefined,
+    awaitDeferredResource: () => undefined,
+  });
+
+  it('a create waits for the upstream readiness before the handler is invoked', async () => {
+    wire();
+    const upstream = vi.fn(async () => {
+      order.push('upstream');
+    });
+    await withDeferredReadinessScope(scope(upstream), () =>
+      makeProvider().create('Notifications', TYPE, propsFor())
+    );
+    expect(upstream).toHaveBeenCalledTimes(1);
+    const invoked = order.findIndex((entry) => entry.startsWith('InvokeCommand:'));
+    expect(order.indexOf('upstream')).toBeGreaterThan(-1);
+    expect(invoked).toBeGreaterThan(order.indexOf('upstream'));
+  });
+
+  it('an upstream resource that ends failed fails the create without invoking', async () => {
+    wire();
+    const upstream = vi.fn(async () => {
+      throw new Error('Db did not become ready');
+    });
+    await expect(
+      withDeferredReadinessScope(scope(upstream), () =>
+        makeProvider().create('Notifications', TYPE, propsFor())
+      )
+    ).rejects.toThrow(/Db did not become ready/);
+    expect(namesCalled('InvokeCommand')).toStrictEqual([]);
+  });
+
+  it('a delete does not wait', async () => {
+    wire();
+    const upstream = vi.fn(async () => undefined);
+    await withDeferredReadinessScope(scope(upstream), () =>
+      makeProvider().delete('Notifications', 'phys-1', TYPE, propsFor())
+    );
+    expect(upstream).not.toHaveBeenCalled();
   });
 });

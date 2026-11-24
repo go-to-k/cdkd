@@ -13,6 +13,7 @@ import {
   isTerminalDbWaitStatus,
 } from '../deletion-protection-compensation.js';
 import { SETTLE_MAX_WAIT_MS, DEADLINE_MARGIN_MS, CLUSTER_AVAILABLE_MAX_WAIT_MS } from './shared.js';
+import { abortableSleep, throwIfReadinessAborted } from '../../deferred-readiness.js';
 
 /**
  * Poll until each change AWS accepted reads back, so the observed baseline the
@@ -245,12 +246,14 @@ export async function waitForClusterAvailable(
   this: DocDBProvider,
   logicalId: string,
   dbClusterIdentifier: string,
-  maxWaitMs = CLUSTER_AVAILABLE_MAX_WAIT_MS
+  maxWaitMs = CLUSTER_AVAILABLE_MAX_WAIT_MS,
+  signal?: AbortSignal
 ): Promise<void> {
   const startTime = Date.now();
   let delay = 5_000;
 
   while (Date.now() - startTime < maxWaitMs) {
+    throwIfReadinessAborted(signal);
     const cluster = await this.describeDBCluster(dbClusterIdentifier);
     const status = cluster?.Status;
 
@@ -264,7 +267,7 @@ export async function waitForClusterAvailable(
       );
     }
 
-    await this.sleep(delay);
+    await abortableSleep((ms) => this.sleep(ms), delay, signal);
     delay = Math.min(delay * 2, 10_000);
   }
 
@@ -316,12 +319,14 @@ export async function waitForInstanceAvailable(
   this: DocDBProvider,
   logicalId: string,
   dbInstanceIdentifier: string,
-  maxWaitMs = 1_800_000
+  maxWaitMs = 1_800_000,
+  signal?: AbortSignal
 ): Promise<void> {
   const startTime = Date.now();
   let delay = 10_000;
 
   while (Date.now() - startTime < maxWaitMs) {
+    throwIfReadinessAborted(signal);
     const instance = await this.describeDBInstance(dbInstanceIdentifier);
     const status = instance?.DBInstanceStatus;
 
@@ -335,7 +340,7 @@ export async function waitForInstanceAvailable(
       );
     }
 
-    await this.sleep(delay);
+    await abortableSleep((ms) => this.sleep(ms), delay, signal);
     delay = Math.min(delay * 2, 10_000);
   }
 

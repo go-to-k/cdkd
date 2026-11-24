@@ -22,12 +22,59 @@ Under `--no-wait`, cdkd returns as soon as AWS accepts the create call. AWS
 finishes the resource in the background, and the resource is fully functional
 once that work is done. Until then, the cases below need care.
 
+### When the deploy needs a resource it did not wait for
+
+A skipped wait still runs, later in the same deploy, in three cases:
+
+- **A value.** A `Fn::GetAtt` of an attribute that exists only once the
+  resource is ready waits for it, then reads the resource again. Examples are
+  the `Endpoint.Address` of an RDS, DocumentDB or Neptune cluster or instance,
+  an ElastiCache endpoint, and an EC2 instance's `PrivateIp`. An attribute
+  that exists at once, such as an ARN, does not wait.
+- **Code that runs during the deploy.** Before cdkd invokes a custom
+  resource's handler, it waits for every such resource upstream of the custom
+  resource and of its handler function, through `DependsOn`, `Ref` and
+  `Fn::GetAtt`, transitively. That covers a handler in a VPC that reaches
+  the internet through a NAT gateway, which the CDK expresses only through
+  the subnet's default route.
+
+- **A call AWS refuses until the resource is ready.** Associating an Elastic
+  IP with an instance this deploy launched or restarted (an update that
+  stopped and started it) waits for the instance to be `running`. This case is added per type, only where AWS was measured to
+  refuse the call.
+
+A resource that only depends on a skipped-wait resource, through `DependsOn`
+or a reference, does not wait for it. A resource that nothing needs this way
+costs nothing.
+
+Each resource's wait runs once, however many references or custom resources
+need it, and is the same wait the default mode runs, bounded by that type's
+`--resource-timeout`. A resource that ends failed fails the deploy, as it does
+in the default mode. The resource that needed it is not created, and the
+rollback deletes the failed resource. Ctrl-C stops the wait.
+
+The resource types that take part are the ones in the
+[wait table](cli-deploy.md#wait-behaviour-by-resource-type): ECS services
+(steady state), ACM certificates, RDS, DocumentDB and Neptune clusters and
+instances, ElastiCache cache clusters, NAT gateways, EC2 instances (also after
+an update's stop and start), load balancers (`active`), Lambda MicroVM images,
+Bedrock AgentCore runtimes, EventBridge archives and Connect instances, on
+create and, where the update skips the wait, on update. These waits stay
+skipped:
+
+- an RDS, DocumentDB or Neptune update's waits for a changed setting to apply
+  or read back: the database stays available while the change applies;
+- a load balancer's capacity reservation: the load balancer serves at once;
+- an Auto Scaling group's instance refresh: the group keeps serving while it
+  replaces instances.
+
 ### NAT gateway
 
 Routes that need only the gateway's ID are created while the gateway is still
-`pending`. That is safe when nothing in the deploy needs to reach the internet
-through the gateway. A Lambda function that is invoked during the deploy and
-calls an external service is an example of something that does.
+`pending`. A custom resource whose handler runs in a subnet routed through
+the gateway waits for it to become available before the handler is invoked
+(see [above](#when-the-deploy-needs-a-resource-it-did-not-wait-for)), so a
+handler that calls an external service reaches it.
 
 A NAT gateway's `RouteTableId` and `EniId` exist only once it is `available`.
 A `Fn::GetAtt` of either, or of `AutoProvisionZones` / `AutoScalingIps`, on a
@@ -73,12 +120,19 @@ aws ec2 describe-iam-instance-profile-associations \
 ```
 
 A public address that AWS has not assigned yet is left out of state. cdkd
-reads it from AWS again when something refers to it.
+reads it from AWS again when something refers to it, and a `Fn::GetAtt` of an
+address on an instance this deploy launched waits for it to be `running`
+first.
 
 ### Elastic IP attached to an instance of the same deploy
 
 This case is an Elastic IP whose `InstanceId` is an instance that the same
-deploy creates. Under `--no-wait`:
+deploy creates. AWS refuses to associate an address with an instance that is
+not `running`, so under `--no-wait` the association waits for the instance's
+skipped `running` wait (see
+[below](#when-the-deploy-needs-a-resource-it-did-not-wait-for)), then
+associates. Only an instance whose wait was not skipped in this deploy keeps
+the earlier behavior:
 
 - On create, cdkd allocates the address and skips the association.
 - On update, cdkd attempts the association and warns if AWS rejects it.
@@ -195,6 +249,14 @@ deploys with exit `0`. Use this for a first deploy before the image is pushed,
 a fast iteration loop, or a pipeline that runs its own health check.
 
 ### The waits `--no-wait` never skips
+
+A custom resource's handler function in a VPC keeps CDK's ordering in every
+mode: it is created only once the private subnet's default route exists. cdkd
+normally drops that `DependsOn` for speed (see
+[`--no-aggressive-vpc-parallel`](cli-deploy-tuning.md#no-aggressive-vpc-parallel)),
+but not for a function upstream of a custom resource or a nested stack,
+because the handler runs during the deploy and may reach the internet through
+the route.
 
 An `AWS::EC2::Subnet` with `Ipv6CidrBlock` or `Ipv6IpamPoolId` waits in every
 mode. On create, cdkd waits for the IPv6 association to be `associated` before

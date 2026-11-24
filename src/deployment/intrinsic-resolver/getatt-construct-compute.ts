@@ -319,47 +319,76 @@ export async function constructAttributeForComputeTypes(
         }
         let value: string | undefined;
         let stateName: string | undefined;
-        try {
-          // Region-sensitive: an instance id only resolves in its own region,
-          // and a foreign-region client answers `InvalidInstanceID.NotFound`,
-          // which lands in the catch below (issue #1957).
-          const clients = resolver.clients.clientsForRegion(resolver.explicitRegion);
-          const response = await clients.ec2.send(
-            new DescribeInstancesCommand({ InstanceIds: [physicalId] })
-          );
-          const instance = response.Reservations?.[0]?.Instances?.[0];
-          stateName = instance?.State?.Name;
-          switch (attributeName) {
-            case 'PrivateIp':
-              value = instance?.PrivateIpAddress;
-              break;
-            case 'PublicIp':
-              value = instance?.PublicIpAddress;
-              break;
-            case 'PrivateDnsName':
-              value = instance?.PrivateDnsName;
-              break;
-            case 'PublicDnsName':
-              value = instance?.PublicDnsName;
-              break;
-            case 'AvailabilityZone':
-              value = instance?.Placement?.AvailabilityZone;
-              break;
+        const readyReason = `Fn::GetAtt ${displayMasked(resolver, attributeName, context)} needs a value it reports only once running`;
+        const describe = async (firstRead = true): Promise<void> => {
+          try {
+            // Region-sensitive: an instance id only resolves in its own region,
+            // and a foreign-region client answers `InvalidInstanceID.NotFound`,
+            // which lands in the catch below (issue #1957).
+            const clients = resolver.clients.clientsForRegion(resolver.explicitRegion);
+            const response = await clients.ec2.send(
+              new DescribeInstancesCommand({ InstanceIds: [physicalId] })
+            );
+            const instance = response.Reservations?.[0]?.Instances?.[0];
+            stateName = instance?.State?.Name;
+            switch (attributeName) {
+              case 'PrivateIp':
+                value = instance?.PrivateIpAddress;
+                break;
+              case 'PublicIp':
+                value = instance?.PublicIpAddress;
+                break;
+              case 'PrivateDnsName':
+                value = instance?.PrivateDnsName;
+                break;
+              case 'PublicDnsName':
+                value = instance?.PublicDnsName;
+                break;
+              case 'AvailabilityZone':
+                value = instance?.Placement?.AvailabilityZone;
+                break;
+            }
+          } catch (err) {
+            // go-to-k/cdkd#6940: an instance this deploy launched under
+            // `--no-wait` can read NotFound for a moment after RunInstances
+            // (eventual consistency): wait for its deferred `running`, read once more.
+            const ready =
+              firstRead &&
+              (err as { name?: unknown } | undefined)?.name === 'InvalidInstanceID.NotFound'
+                ? context.deferredReadiness?.awaitReady(logicalId, readyReason)
+                : undefined;
+            if (ready !== undefined) {
+              await ready;
+              return describe(false);
+            }
+            // The instance id is the WRONG value for every one of these
+            // attributes, so a failed read is a refusal, not a fallback (issue
+            // #3096). Unmarked: the read can succeed on a retry.
+            refuseUnservedAttribute(resolver, {
+              logicalId,
+              attributeName,
+              resourceType,
+              physicalId,
+              context,
+              observed: describeFailureObserved(resolver, 'DescribeInstances', err, context),
+              remedy:
+                'Fix the read (the ec2:DescribeInstances permission, or the region) and deploy again.',
+            });
           }
-        } catch (err) {
-          // The instance id is the WRONG value for every one of these
-          // attributes, so a failed read is a refusal, not a fallback (issue
-          // #3096). Unmarked: the read can succeed on a retry.
-          refuseUnservedAttribute(resolver, {
-            logicalId,
-            attributeName,
-            resourceType,
-            physicalId,
-            context,
-            observed: describeFailureObserved(resolver, 'DescribeInstances', err, context),
-            remedy:
-              'Fix the read (the ec2:DescribeInstances permission, or the region) and deploy again.',
-          });
+        };
+        await describe();
+        // go-to-k/cdkd#6940: an instance this deploy launched under `--no-wait`
+        // is still `pending`, with no address yet. Wait for the `running` its
+        // create skipped (one shared wait per instance), then read again.
+        if (
+          (value === undefined || value === null || value === '') &&
+          !isSettledInstanceState(stateName)
+        ) {
+          const ready = context.deferredReadiness?.awaitReady(logicalId, readyReason);
+          if (ready !== undefined) {
+            await ready;
+            await describe(false);
+          }
         }
         if (value !== undefined && value !== null && value !== '') {
           cachedEc2InstanceAttributes[cacheKey] = value;

@@ -75,6 +75,29 @@ export class AttributeHealer {
     { physicalId: string; resourceType: string; attributes: Record<string, unknown> }
   >();
 
+  /**
+   * go-to-k/cdkd#6940: the reads of records THIS deploy wrote, taken once the
+   * readiness wait `--no-wait` skipped for them has run — memoized like
+   * {@link heals}, keyed the same way.
+   */
+  private readonly readyReads = new Map<string, Promise<StaleAttributeHealOutcome>>();
+
+  /**
+   * What those reads found, merged into the record they read at its next
+   * save (only keys it lacks), as the create would have recorded them had it
+   * waited. `source` is the record's `attributes` object at the read: a record
+   * the deploy rewrote since then takes nothing.
+   */
+  private readonly readyRead = new Map<
+    string,
+    {
+      physicalId: string;
+      resourceType: string;
+      source: ResourceState['attributes'];
+      attributes: Record<string, unknown>;
+    }
+  >();
+
   private readonly deps: AttributeHealerDeps;
 
   constructor(deps: AttributeHealerDeps) {
@@ -162,8 +185,63 @@ export class AttributeHealer {
     );
   }
 
+  /**
+   * go-to-k/cdkd#6940: re-read a record THIS deploy wrote, once the readiness
+   * wait `--no-wait` skipped for it has run (the caller awaits that first).
+   * The #1852 heal never reads such a record — its attributes are the
+   * provider's own answer — but a `--no-wait` answer lacks what exists only
+   * once the resource is ready (an RDS endpoint, an ElastiCache address).
+   * Same read as {@link heal}, one per record per deploy; never throws.
+   */
+  readAfterReadiness(
+    logicalId: string,
+    resource: ResourceState,
+    stackName: string
+  ): Promise<StaleAttributeHealOutcome> {
+    if (isHealExcludedType(resource.resourceType)) {
+      return Promise.resolve({ kind: 'not-attempted' });
+    }
+    const key = injectiveKey(logicalId, resource.physicalId);
+    const inFlight = this.readyReads.get(key);
+    if (inFlight) return inFlight;
+    const read = this.readOutcome(logicalId, resource, stackName)
+      .then((outcome) => {
+        if (outcome.kind === 'read' && Object.keys(outcome.attributes).length > 0) {
+          this.readyRead.set(logicalId, {
+            physicalId: resource.physicalId,
+            resourceType: resource.resourceType,
+            source: resource.attributes,
+            attributes: outcome.attributes,
+          });
+        }
+        return outcome;
+      })
+      .catch((error: unknown): StaleAttributeHealOutcome => ({ kind: 'failed', error }));
+    this.readyReads.set(key, read);
+    return read;
+  }
+
   /** The read behind {@link heal}, unmemoized; it may throw. */
   async read(
+    logicalId: string,
+    resource: ResourceState,
+    stackName: string
+  ): Promise<StaleAttributeHealOutcome> {
+    const outcome = await this.readOutcome(logicalId, resource, stackName);
+    if (outcome.kind !== 'read') return outcome;
+    const { attributes } = outcome;
+    if (Object.keys(attributes).length > 0) {
+      this.healed.set(logicalId, {
+        physicalId: resource.physicalId,
+        resourceType: resource.resourceType,
+        attributes,
+      });
+    }
+    return outcome;
+  }
+
+  /** The provider read both {@link read} and {@link readAfterReadiness} take; it may throw. */
+  private async readOutcome(
     logicalId: string,
     resource: ResourceState,
     stackName: string
@@ -198,16 +276,8 @@ export class AttributeHealer {
         })
     );
     if (outcome.kind !== 'read') return outcome;
-    const { attributes } = outcome;
-    if (Object.keys(attributes).length > 0) {
-      this.healed.set(logicalId, {
-        physicalId: resource.physicalId,
-        resourceType: resource.resourceType,
-        attributes,
-      });
-    }
     this.deps.logger.debug(
-      safeMsg`Re-read the attributes of ${displaySafe(logicalId)} (${displaySafe(resource.resourceType)}) from AWS — its state record lacked one a Fn::GetAtt asked for: ${Object.keys(attributes).length} attribute(s) read`
+      safeMsg`Re-read the attributes of ${displaySafe(logicalId)} (${displaySafe(resource.resourceType)}) from AWS — its state record lacked one a Fn::GetAtt asked for: ${Object.keys(outcome.attributes).length} attribute(s) read`
     );
     return outcome;
   }
@@ -222,6 +292,19 @@ export class AttributeHealer {
    * this deploy made.
    */
   withHealedAttributes(logicalId: string, record: ResourceState): ResourceState {
+    const ready = this.readyRead.get(logicalId);
+    if (
+      ready !== undefined &&
+      ready.physicalId === record.physicalId &&
+      ready.resourceType === record.resourceType &&
+      ready.source === record.attributes
+    ) {
+      // Only keys the record lacks: what the provider recorded stays its answer.
+      const merged = mergeHealedAttributes(record.attributes, ready.attributes, () => false);
+      return merged === record.attributes || merged === undefined
+        ? record
+        : { ...record, attributes: merged };
+    }
     const healed = this.healed.get(logicalId);
     if (
       healed === undefined ||
@@ -249,7 +332,7 @@ export class AttributeHealer {
 
   /** Would a save of `resources` persist something a heal read? The no-change path's trigger. */
   hasUnpersistedHeals(resources: Readonly<Record<string, ResourceState>>): boolean {
-    for (const logicalId of this.healed.keys()) {
+    for (const logicalId of new Set([...this.healed.keys(), ...this.readyRead.keys()])) {
       const record = Object.hasOwn(resources, logicalId) ? resources[logicalId] : undefined;
       if (record !== undefined && this.withHealedAttributes(logicalId, record) !== record) {
         return true;

@@ -7,6 +7,7 @@ import {
 } from '@aws-sdk/client-rds';
 import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
+import { deferReadiness } from '../../deferred-readiness.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import { maskerOrIdentity } from '../../masked-retry-logger.js';
@@ -563,6 +564,27 @@ export async function createDBCluster(
             expressWriterIdentifier(dbClusterIdentifier)
           );
         }
+      } else {
+        // go-to-k/cdkd#6940: the `available` wait, run later if the deploy
+        // needs the cluster (a Fn::GetAtt of its endpoint, a custom resource).
+        deferReadiness(logicalId, resourceType, dbClusterIdentifier, async (signal) => {
+          await this.waitForClusterAvailable(
+            logicalId,
+            dbClusterIdentifier,
+            undefined,
+            undefined,
+            signal
+          );
+          if (express) {
+            await this.waitForInstanceAvailable(
+              logicalId,
+              expressWriterIdentifier(dbClusterIdentifier),
+              undefined,
+              undefined,
+              signal
+            );
+          }
+        });
       }
 
       // go-to-k/cdkd#5639: once the cluster is available, as CloudFormation's

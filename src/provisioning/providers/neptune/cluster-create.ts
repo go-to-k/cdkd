@@ -31,6 +31,7 @@ import {
   restoreFollowUp,
   restoreWaitMs,
 } from './shared.js';
+import { deferReadiness } from '../../deferred-readiness.js';
 
 // ─── DBCluster ────────────────────────────────────────────────────
 
@@ -179,6 +180,17 @@ export async function createDBCluster(
         undefined,
         restore === undefined ? undefined : restoreWaitMs()
       );
+    } else {
+      // go-to-k/cdkd#6940: the same wait, run later if the deploy needs it.
+      deferReadiness(logicalId, resourceType, dbClusterIdentifier, (signal) =>
+        this.waitForClusterAvailable(
+          logicalId,
+          dbClusterIdentifier,
+          undefined,
+          restore === undefined ? undefined : restoreWaitMs(),
+          signal
+        )
+      );
     }
     try {
       if (followUp !== undefined && followingUp) {
@@ -306,6 +318,17 @@ export async function sendRestoreFollowUp(
       physicalId,
       'being configured after a restore',
       restoreWaitMs()
+    );
+  } else {
+    // go-to-k/cdkd#6940: the same wait, run later if the deploy needs it.
+    deferReadiness(logicalId, resourceType, physicalId, (signal) =>
+      this.waitForClusterAvailable(
+        logicalId,
+        physicalId,
+        'being configured after a restore',
+        restoreWaitMs(),
+        signal
+      )
     );
   }
 }

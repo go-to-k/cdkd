@@ -230,22 +230,31 @@ export function guardStackRegionOptions(cmd: Command): void {
  * asset publish, lifecycle hooks — see the same setting without
  * threading the flag through every function signature).
  *
+ * A skipped wait still runs when the deploy itself needs the resource
+ * (go-to-k/cdkd#6940): a `Fn::GetAtt` of a value that exists only once the
+ * resource is ready (an RDS / ElastiCache endpoint, an EC2 instance's IP)
+ * waits for it, and so does a custom resource, before its handler is invoked,
+ * for each such resource upstream of it through `DependsOn`, `Ref` or
+ * `Fn::GetAtt`. A provider opts in with `deferReadiness()`
+ * (`src/provisioning/deferred-readiness.ts`). A plain dependent never waits.
+ *
  * CloudFront Distribution left this list with issue #1282: its
  * `Deployed` wait is skipped by DEFAULT now, so under `--no-wait` it
  * simply behaves the same as the default (`--full-wait` opts back in).
  * ECS Service joined it with go-to-k/cdkd#5571: its steady-state wait is
  * the default now, because a failing rollout surfaces only there.
  *
- * Deploy-only. NAT Gateway and VPC Endpoint destroy always wait regardless (a
- * still-`deleting` gateway or endpoint blocks downstream Subnet / IGW / VPC
- * delete with DependencyViolation), RDS / ElastiCache destroy paths
- * don't wait to begin with, and CloudFront's destroy-side
- * disable-then-wait is an API requirement no flag may skip — so
- * `destroy --no-wait` would be a no-op flag.
+ * Deploy-only. Every destroy wait runs regardless: NAT Gateway and VPC
+ * Endpoint (a still-`deleting` gateway or endpoint blocks downstream Subnet /
+ * IGW / VPC delete with DependencyViolation), RDS / DocDB / Neptune /
+ * ElastiCache (each delete waits until the resource is gone), and
+ * CloudFront's destroy-side disable-then-wait, an API requirement no flag may
+ * skip — so `destroy --no-wait` would be a no-op flag
+ * (docs/cli-deploy-waits.md, "Destroy always waits").
  */
 export const noWaitOption = new Option(
   '--no-wait',
-  'Skip waiting for async resources to stabilize (RDS, ElastiCache, NAT Gateway, EC2 Instance, ELBv2 LoadBalancer, Lambda MicroVM Image, Bedrock AgentCore Runtime, EventBridge Archive, Connect Instance, VPC Endpoint, ECS Service steady state, Auto Scaling instance refresh under --update-policy; an AutoScalingReplacingUpdate still waits for its new instances, and a Lambda alias CodeDeploy deployment for its traffic shift)'
+  'Skip waiting for async resources to stabilize (RDS, ElastiCache, NAT Gateway, EC2 Instance, ELBv2 LoadBalancer, Lambda MicroVM Image, Bedrock AgentCore Runtime, EventBridge Archive, Connect Instance, VPC Endpoint, ECS Service steady state, Auto Scaling instance refresh under --update-policy; an AutoScalingReplacingUpdate still waits for its new instances, and a Lambda alias CodeDeploy deployment for its traffic shift; a Fn::GetAtt of a value that exists only once a resource is ready, or a custom resource invoked after one, still waits for it)'
 );
 
 /**
@@ -353,9 +362,12 @@ export function applyWaitFlagEnv(opts: { wait?: boolean; fullWait?: boolean }): 
  * `/run-integ bench-cdk-sample --deploy-args "--aggressive-vpc-parallel"`
  * already validated the AWS-side behavior end-to-end. Pass
  * `--no-aggressive-vpc-parallel` to opt out (escape hatch for stacks where
- * the user wants the strict CDK-defensive ordering — e.g. a Custom Resource
- * that synchronously invokes a VPC Lambda outside of cdkd's
- * Lambda-ServiceToken Active wait).
+ * the user wants the strict CDK-defensive ordering — e.g. a VPC Lambda that
+ * SNS or a Step Functions task invokes during the deploy). A custom resource
+ * needs no opt-out (go-to-k/cdkd#6940): an edge whose dependent is upstream of
+ * a custom resource or a nested stack is not relaxed (`dag-builder.ts`), so
+ * the handler's function is created after the route in every mode, and under
+ * `--no-wait` the invoke also waits for the NAT gateway behind it.
  *
  * Deploy-only. The relaxation has no effect on destroy ordering (CDK route
  * DependsOn doesn't constrain delete-time correctness — Lambda hyperplane

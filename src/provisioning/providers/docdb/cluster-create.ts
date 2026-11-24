@@ -36,6 +36,7 @@ import {
   type DocDBRestoreFollowUp,
   docdbRestoreFollowUp,
 } from './shared.js';
+import { deferReadiness } from '../../deferred-readiness.js';
 
 // ─── DBCluster ────────────────────────────────────────────────────
 export async function createDBCluster(
@@ -217,6 +218,16 @@ export async function createDBCluster(
         logicalId,
         dbClusterIdentifier,
         restore === undefined ? undefined : restoreWaitMs()
+      );
+    } else {
+      // go-to-k/cdkd#6940: the same wait, run later if the deploy needs it.
+      deferReadiness(logicalId, resourceType, dbClusterIdentifier, (signal) =>
+        this.waitForClusterAvailable(
+          logicalId,
+          dbClusterIdentifier,
+          restore === undefined ? undefined : restoreWaitMs(),
+          signal
+        )
       );
     }
     if (followUp !== undefined && followingUp) {
@@ -400,6 +411,11 @@ export async function sendRestoreFollowUp(
   }
   if (process.env['CDKD_NO_WAIT'] !== 'true') {
     await this.waitForClusterAvailable(logicalId, physicalId, restoreWaitMs());
+  } else {
+    // go-to-k/cdkd#6940: the same wait, run later if the deploy needs it.
+    deferReadiness(logicalId, resourceType, physicalId, (signal) =>
+      this.waitForClusterAvailable(logicalId, physicalId, restoreWaitMs(), signal)
+    );
   }
 }
 
