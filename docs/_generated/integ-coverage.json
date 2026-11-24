@@ -968,7 +968,8 @@
       "integs": [
         "bedrock-agentcore",
         "cc-to-sdk-reroute-common-types-6",
-        "local-engine-role-identity"
+        "local-engine-role-identity",
+        "no-wait-agentcore-runtime-endpoint"
       ],
       "signals": {
         "bedrock-agentcore": [
@@ -978,6 +979,9 @@
           "literal"
         ],
         "local-engine-role-identity": [
+          "literal"
+        ],
+        "no-wait-agentcore-runtime-endpoint": [
           "literal"
         ]
       }
@@ -11963,6 +11967,7 @@
     "AWS::Backup::BackupPlan",
     "AWS::Backup::BackupSelection",
     "AWS::Backup::BackupVault",
+    "AWS::BedrockAgentCore::RuntimeEndpoint",
     "AWS::Budgets::BudgetsAction",
     "AWS::CloudFormation::CustomResource",
     "AWS::CloudFormation::Init",

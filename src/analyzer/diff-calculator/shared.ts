@@ -105,6 +105,13 @@ export const IN_PLACE_UPDATE_DERIVED_ATTRS: Readonly<Record<string, ReadonlySet<
     // go-to-k/cdkd#5630: a PrivateDnsNameOptions.HostnameType change moves the
     // private DNS name in place (`ip-10-0-0-1...` <-> `i-0123...`, measured).
     'AWS::EC2::Instance': new Set(['PublicIp', 'PublicDnsName', 'PrivateDnsName']),
+    // go-to-k/cdkd#6962: every UpdateAgentRuntime mints a new runtime version,
+    // and cdkd's update sends it for every change, a tag-only one included (a
+    // full replace, Tags synced after it). A reader of `AgentRuntimeVersion`
+    // (CDK `addEndpoint()`) moves to it, as CloudFormation moves the endpoint;
+    // if a tag-only update minted none, the re-resolve-and-skip drops the
+    // promotion. The update records the version UpdateAgentRuntime answers.
+    'AWS::BedrockAgentCore::Runtime': new Set(['AgentRuntimeVersion']),
   });
 
 /**

@@ -218,7 +218,7 @@ export function guardStackRegionOptions(cmd: Command): void {
 /**
  * Skip waiting for async-stabilization resources (RDS, ElastiCache,
  * NAT Gateway, EC2 Instance, ELBv2 LoadBalancer, Lambda MicroVM Image,
- * Bedrock AgentCore Runtime `READY` (go-to-k/cdkd#6490), EventBridge Archive leaving `CREATING` / `UPDATING`, Connect Instance `ACTIVE` after it accepts dependent calls (go-to-k/cdkd#6912; a `Fn::GetAtt` of its `ServiceRole` still waits), VPC Endpoint `available` (go-to-k/cdkd#6939; a `Fn::GetAtt` of its `DnsEntries` / `NetworkInterfaceIds` after a modify still waits), ECS Service steady state, the Auto Scaling instance refresh an
+ * Bedrock AgentCore Runtime `READY` (go-to-k/cdkd#6490; a runtime endpoint created or updated on it still waits, go-to-k/cdkd#6962), EventBridge Archive leaving `CREATING` / `UPDATING`, Connect Instance `ACTIVE` after it accepts dependent calls (go-to-k/cdkd#6912; a `Fn::GetAtt` of its `ServiceRole` still waits), VPC Endpoint `available` (go-to-k/cdkd#6939; a `Fn::GetAtt` of its `DnsEntries` / `NetworkInterfaceIds` after a modify still waits), ECS Service steady state, the Auto Scaling instance refresh an
  * `--update-policy` rolling update starts, go-to-k/cdkd#6437) on deploy.
  * NOT the wait of an `AutoScalingReplacingUpdate` for its new group's
  * instances, which runs whatever the flag says: deleting the old group

@@ -20,6 +20,7 @@ import {
   identifierCarriedBy,
   holdsSecretDerivedLeaf,
 } from './id-log.js';
+import { awaitRefusalEdgeTarget } from '../deferred-refusal-edges.js';
 
 /**
  * Create a resource using Cloud Control API.
@@ -37,6 +38,8 @@ export async function create(
   properties: Record<string, unknown>,
   context?: CreateContext
 ): Promise<ResourceCreateResult> {
+  // go-to-k/cdkd#6962: a create AWS refuses until a --no-wait target is ready.
+  await awaitRefusalEdgeTarget(logicalId, resourceType, properties);
   const mask = maskerOrIdentity(context?.maskSecrets);
   const idLog = new IdScrubLog(this.logger, mask, holdsSecretDerivedLeaf(properties, mask));
   return inIdLogScope(idLog, () =>
