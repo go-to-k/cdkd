@@ -36,28 +36,39 @@
  *     so an indented call there is module scope — the hidden mass a column-0
  *     grep cannot see);
  *   - a `vi.mock` factory and a `vi.hoisted` callback (run at import);
- *   - a `beforeAll`, `afterAll` or `afterEach` callback (each runs where the
- *     next test's reset wipes what it set).
- * A `vi.doMock` factory and any other call's function argument (`forEach`,
- * `new Promise`) runs where it is passed, so it takes its CALLER's context.
+ *   - a `beforeAll`, `afterAll`, `afterEach`, `aroundAll` or `aroundEach`
+ *     callback, and an `onTestFinished` / `onTestFailed` one (reason
+ *     `afterEach`): each runs where the next test's reset wipes what it set.
+ * A `vi.doMock` factory, an IIFE and any other call's function argument
+ * (`forEach`, `new Promise`) runs where it is passed, so it takes its CALLER's
+ * context. A function passed to `vi.fn(...)` or to a setter runs when the mock
+ * is CALLED (bound 2).
  *
  * NAMED HELPERS are resolved within the file. A function declaration or a
- * `const f = () => ...` defers its body; its context is the union of every
- * in-file REFERENCE's context — called at module scope, passed to `beforeAll`,
- * or called from another helper that is itself refused. `beforeEach(setup)`
- * passes it safely. Resolution is by NAME, so two same-named helpers in
- * different scopes are unioned (fail-closed).
+ * `const f = () => ...` defers its body; its context is its WORST in-file
+ * reference's: refused (called at module scope, passed to `beforeAll`, called
+ * from a refused helper), then unresolved, then safe (`beforeEach(setup)`, a
+ * call from a test). A `typeof f` or a value reference is not a call.
+ * Resolution is by NAME, so two same-named helpers in different scopes are
+ * merged (fail-closed).
+ *
+ * ACROSS FILES, one hop: a helper NOTHING in its own file calls (an exported
+ * one, like `tests/unit/provisioning/s3-create-client-forward.ts`'s
+ * `forwardedS3Client`) is resolved at each importing call site — a static named
+ * or namespace import, `const { f } = await import('./x.js')`, or
+ * `(await import('./x.js')).f()`. Called from a refused context, each of its
+ * setters is a refused site OF THE IMPORTING FILE, `via` naming the helper; the
+ * helper's own file counts them `unresolved`.
  *
  * WHAT THIS DOES NOT CATCH (bounded, and counted as `unresolved`)
  * --------------------------------------------------------------
- *  1. A helper with no in-file reference — EXPORTED for another file. Following
- *     imports would make this a module-graph consumer; the importing file's
- *     call site is where a refusal would belong, and it is not visible here.
+ *  1. An exported helper called only from another module's helper (the hop is
+ *     one deep), or from a file outside `tests/unit`, or via a bare specifier;
+ *     and an anonymous `export default function`.
  *  2. A function that is neither a named helper nor a call argument: an object
  *     or class METHOD, a property value, an array element (an `it.each` table
- *     row's callback), a returned closure, and an implementation passed TO a
- *     setter (`mockImplementation(() => other.mockReturnValue(1))`, which runs
- *     when the mock is called).
+ *     row's callback), a returned closure, and an implementation passed TO
+ *     `vi.fn` or a setter (it runs when the mock is called).
  *  3. A helper referenced only from such a function, or only in a cycle.
  *  4. A setter reached by an element access (`m['mockReturnValue']`), or a
  *     custom test function (`const myTest = test.extend(...)`; `myTest(...)` is
@@ -77,9 +88,10 @@
  * WHAT DEFENDS THIS CHECKER FROM ITSELF
  * -------------------------------------
  * A parse diagnostic in any scanned file fails the run (an unparsed file reads
- * exactly like a clean one), and the unit suite
- * `tests/unit/scripts/module-scope-mock-defaults.test.ts` pins a floor per
- * refusal reason and per safe shape over the real tree.
+ * exactly like a clean one), as does an empty scan, and `--update` refuses
+ * both. The unit suite `tests/unit/scripts/module-scope-mock-defaults.test.ts`
+ * pins each shape above on synthetic sources and floors the real tree's file
+ * and safe-site counts.
  *
  * USAGE
  *   node --experimental-strip-types scripts/check-module-scope-mock-defaults.ts --check
@@ -89,7 +101,7 @@
  */
 
 import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 // `typescript-v6` is an npm alias of typescript@6 — TS7 ships the stable
@@ -125,7 +137,9 @@ export type RefusalReason =
   | 'vi.hoisted'
   | 'beforeAll'
   | 'afterAll'
-  | 'afterEach';
+  | 'afterEach'
+  | 'aroundAll'
+  | 'aroundEach';
 
 type Context =
   | { readonly kind: 'safe' }
@@ -161,7 +175,7 @@ function calleeRoot(expression: ts.Expression): ts.Identifier | undefined {
   }
 }
 
-/** The first member name after `vi`, for `vi.mock` / `vi.hoisted` / `vi.doMock`. */
+/** The first member name after `vi`, for `vi.mock` / `vi.hoisted` / `vi.fn`. */
 function viMember(expression: ts.Expression): string | undefined {
   if (!ts.isPropertyAccessExpression(expression)) return undefined;
   if (!ts.isIdentifier(expression.expression) || expression.expression.text !== 'vi') return undefined;
@@ -176,6 +190,8 @@ function argumentContext(call: ts.CallExpression, outer: Context): Context {
   const member = viMember(call.expression);
   if (member === 'mock') return refused('vi.mock-factory');
   if (member === 'hoisted') return refused('vi.hoisted');
+  // `vi.fn(impl)`: the implementation runs when the mock is called.
+  if (member === 'fn') return UNRESOLVED;
   // An implementation handed TO a setter runs when the mock is called.
   if (ts.isPropertyAccessExpression(call.expression) && SETTERS.has(call.expression.name.text)) {
     return UNRESOLVED;
@@ -189,7 +205,13 @@ function argumentContext(call: ts.CallExpression, outer: Context): Context {
     case 'beforeAll':
     case 'afterAll':
     case 'afterEach':
+    case 'aroundAll':
+    case 'aroundEach':
       return refused(root);
+    // Registered inside a test, run after it: the next reset wipes them.
+    case 'onTestFinished':
+    case 'onTestFailed':
+      return refused('afterEach');
     case 'describe':
     case 'suite':
       // A describe body runs at collection: module scope when the describe is.
@@ -219,6 +241,15 @@ function unwrap(node: ts.Expression): ts.Expression {
   return current;
 }
 
+/** The specifier of `import('x')` / `await import('x')`, else undefined. */
+function dynamicImportSpecifier(node: ts.Expression): string | undefined {
+  const bare = unwrap(node);
+  const call = ts.isAwaitExpression(bare) ? unwrap(bare.expression) : bare;
+  if (!ts.isCallExpression(call) || call.expression.kind !== ts.SyntaxKind.ImportKeyword) return undefined;
+  const argument = call.arguments[0];
+  return argument !== undefined && ts.isStringLiteralLike(argument) ? argument.text : undefined;
+}
+
 interface RawSite {
   readonly line: number;
   readonly setter: string;
@@ -230,6 +261,24 @@ interface Reference {
   readonly context: Context;
 }
 
+/** A call into another module: `f()` with `f` imported, or `(await import('x')).f()`. */
+interface RawExternalCall {
+  readonly line: number;
+  readonly context: Context;
+  /** Set for a member call on an import; otherwise `local` names the binding. */
+  readonly target?: { readonly specifier: string; readonly name: string };
+  readonly local?: string;
+}
+
+/** A call into another module, resolved to a refusal at the call site. */
+export interface ExternalCall {
+  readonly line: number;
+  readonly specifier: string;
+  readonly name: string;
+  readonly reason: RefusalReason;
+  readonly via: readonly string[];
+}
+
 /** Parse diagnostics; `parseDiagnostics` is internal but stable across TS 4-6. */
 function parseDiagnosticCount(source: ts.SourceFile): number {
   return ((source as unknown as { parseDiagnostics?: unknown[] }).parseDiagnostics ?? []).length;
@@ -238,38 +287,83 @@ function parseDiagnosticCount(source: ts.SourceFile): number {
 export interface FileAnalysis {
   readonly sites: readonly Site[];
   readonly parseErrors: number;
+  /**
+   * Setter sites inside a helper NOTHING in this file calls, keyed by that
+   * helper's name: they run wherever an importing file calls it.
+   */
+  readonly pendingByHelper: Readonly<Record<string, readonly { line: number; setter: string }[]>>;
+  /** Calls into other modules made from a refused context. */
+  readonly refusedExternalCalls: readonly ExternalCall[];
 }
+
+interface Resolution {
+  readonly context: Context;
+  readonly via: readonly string[];
+  /** For `unresolved`: the reference-less helper the chain ends at, if any. */
+  readonly orphan?: string;
+}
+
+/** refused > unresolved > safe: a helper is as bad as its worst caller. */
+const RANK: Record<Context['kind'], number> = { refused: 3, unresolved: 2, helper: 2, safe: 1 };
 
 export function analyzeSource(fileName: string, text: string): FileAnalysis {
   const source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   const rawSites: RawSite[] = [];
   const references: Reference[] = [];
+  const externalCalls: RawExternalCall[] = [];
   const helpers = new Set<string>();
+  /** Local binding -> what it imports. `name: '*'` is a namespace. */
+  const imports = new Map<string, { specifier: string; name: string }>();
+  const lineOf = (node: ts.Node): number => source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
+
+  for (const statement of source.statements) {
+    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
+    const specifier = statement.moduleSpecifier.text;
+    const bindings = statement.importClause?.namedBindings;
+    if (bindings && ts.isNamedImports(bindings)) {
+      for (const element of bindings.elements) {
+        imports.set(element.name.text, { specifier, name: (element.propertyName ?? element.name).text });
+      }
+    } else if (bindings && ts.isNamespaceImport(bindings)) {
+      imports.set(bindings.name.text, { specifier, name: '*' });
+    }
+  }
 
   /** Walk a function's parameters and body in `context` (not the function node itself). */
   const visitBody = (fn: ts.Node, context: Context): void => {
     ts.forEachChild(fn, (child) => visit(child, context));
   };
   const visit = (node: ts.Node, context: Context): void => {
-    // Types never run (and `ReturnType<typeof f>` is no call of `f`).
-    if (ts.isTypeNode(node)) return;
     // A named helper defers its body: `function f() {}`, `const f = () => {}`.
-    if (ts.isFunctionDeclaration(node) && node.name !== undefined) {
+    if (ts.isFunctionDeclaration(node)) {
+      if (node.name === undefined) {
+        // `export default function () {}`: called from elsewhere, bound 1.
+        visitBody(node, UNRESOLVED);
+        return;
+      }
       helpers.add(node.name.text);
-      const inner: Context = { kind: 'helper', name: node.name.text };
-      node.parameters.forEach((p) => visit(p, inner));
-      if (node.body) visit(node.body, inner);
+      visitBody(node, { kind: 'helper', name: node.name.text });
       return;
     }
-    if (
-      ts.isVariableDeclaration(node) &&
-      ts.isIdentifier(node.name) &&
-      node.initializer !== undefined &&
-      isFunctionLike(unwrap(node.initializer))
-    ) {
-      helpers.add(node.name.text);
-      visitBody(unwrap(node.initializer), { kind: 'helper', name: node.name.text });
-      return;
+    if (ts.isVariableDeclaration(node) && node.initializer !== undefined) {
+      const initializer = unwrap(node.initializer);
+      if (ts.isIdentifier(node.name) && isFunctionLike(initializer)) {
+        helpers.add(node.name.text);
+        visitBody(initializer, { kind: 'helper', name: node.name.text });
+        return;
+      }
+      // `const { f } = await import('x')` binds `f` like a static import.
+      const specifier = dynamicImportSpecifier(initializer);
+      if (specifier !== undefined && ts.isObjectBindingPattern(node.name)) {
+        for (const element of node.name.elements) {
+          const exported = element.propertyName ?? element.name;
+          if (ts.isIdentifier(element.name) && ts.isIdentifier(exported)) {
+            imports.set(element.name.text, { specifier, name: exported.text });
+          }
+        }
+      } else if (specifier !== undefined && ts.isIdentifier(node.name)) {
+        imports.set(node.name.text, { specifier, name: '*' });
+      }
     }
     // Methods, accessors, constructors, class bodies: bound 2.
     if (
@@ -286,20 +380,27 @@ export function analyzeSource(fileName: string, text: string): FileAnalysis {
 
     if (ts.isCallExpression(node)) {
       if (ts.isPropertyAccessExpression(node.expression) && SETTERS.has(node.expression.name.text)) {
-        rawSites.push({
-          line: source.getLineAndCharacterOfPosition(node.expression.name.getStart(source)).line + 1,
-          setter: node.expression.name.text,
-          context,
-        });
+        rawSites.push({ line: lineOf(node.expression.name), setter: node.expression.name.text, context });
       }
       const callee = unwrap(node.expression);
       if (ts.isIdentifier(callee)) {
         // `f()`: a helper runs in its call site's context.
         references.push({ name: callee.text, context });
+        externalCalls.push({ line: lineOf(node), context, local: callee.text });
       } else if (isFunctionLike(callee)) {
         // `(() => { ... })()`: an IIFE runs right here.
         visitBody(callee, context);
       } else {
+        if (ts.isPropertyAccessExpression(callee)) {
+          // `(await import('x')).f()` and `ns.f()` over an imported namespace.
+          const specifier = dynamicImportSpecifier(callee.expression);
+          const owner = unwrap(callee.expression);
+          if (specifier !== undefined) {
+            externalCalls.push({ line: lineOf(node), context, target: { specifier, name: callee.name.text } });
+          } else if (ts.isIdentifier(owner)) {
+            externalCalls.push({ line: lineOf(node), context, local: `${owner.text}.${callee.name.text}` });
+          }
+        }
         visit(node.expression, context);
       }
       for (const argument of node.arguments) {
@@ -327,50 +428,74 @@ export function analyzeSource(fileName: string, text: string): FileAnalysis {
   };
   visit(source, refused('module-scope'));
 
-  // Resolve each helper to the union of its references' contexts. Refused wins
-  // (fail-closed); a cycle or a reference-less helper is unresolved.
-  const resolved = new Map<string, { context: Context; via: string[] }>();
+  // Resolve each helper to its WORST reference's context (refused, then
+  // unresolved, then safe). A reference-less helper is an orphan: unresolved
+  // here, and left for an importing file to resolve.
+  const resolved = new Map<string, Resolution>();
   const resolving = new Set<string>();
-  const resolveHelper = (name: string): { context: Context; via: string[] } => {
+  const resolveHelper = (name: string): Resolution => {
     const cached = resolved.get(name);
     if (cached) return cached;
     if (resolving.has(name)) return { context: UNRESOLVED, via: [] };
     resolving.add(name);
-    let best: { context: Context; via: string[] } = { context: UNRESOLVED, via: [] };
-    for (const reference of references) {
-      if (reference.name !== name) continue;
+    const mine = references.filter((reference) => reference.name === name);
+    let best: Resolution | undefined = mine.length === 0 ? { context: UNRESOLVED, via: [], orphan: name } : undefined;
+    for (const reference of mine) {
       const outcome = resolveContext(reference.context);
-      if (outcome.context.kind === 'refused') {
-        best = { context: outcome.context, via: [...outcome.via, name] };
-        break;
+      if (best === undefined || RANK[outcome.context.kind] > RANK[best.context.kind]) {
+        best = { ...outcome, via: outcome.context.kind === 'refused' ? [...outcome.via, name] : [] };
       }
-      if (outcome.context.kind === 'safe') best = { context: SAFE, via: [] };
+      if (best.context.kind === 'refused') break;
     }
     resolving.delete(name);
-    resolved.set(name, best);
-    return best;
+    resolved.set(name, best!);
+    return best!;
   };
-  const resolveContext = (context: Context): { context: Context; via: string[] } =>
+  const resolveContext = (context: Context): Resolution =>
     context.kind === 'helper' && helpers.has(context.name)
       ? resolveHelper(context.name)
       : context.kind === 'helper'
         ? { context: UNRESOLVED, via: [] }
         : { context, via: [] };
 
-  const sites: Site[] = rawSites.map((raw) => {
-    const { context, via } = resolveContext(raw.context);
+  const sites: Site[] = [];
+  const pendingByHelper: Record<string, { line: number; setter: string }[]> = {};
+  for (const raw of rawSites) {
+    const { context, via, orphan } = resolveContext(raw.context);
     if (context.kind === 'refused') {
-      return {
+      sites.push({
         line: raw.line,
         setter: raw.setter,
         verdict: 'refused',
         reason: context.reason,
-        ...(via.length > 0 ? { via } : {}),
-      };
+        ...(via.length > 0 ? { via: [...via] } : {}),
+      });
+      continue;
     }
-    return { line: raw.line, setter: raw.setter, verdict: context.kind === 'safe' ? 'safe' : 'unresolved' };
-  });
-  return { sites, parseErrors: parseDiagnosticCount(source) };
+    sites.push({ line: raw.line, setter: raw.setter, verdict: context.kind === 'safe' ? 'safe' : 'unresolved' });
+    if (context.kind !== 'safe' && orphan !== undefined) {
+      (pendingByHelper[orphan] ??= []).push({ line: raw.line, setter: raw.setter });
+    }
+  }
+
+  const refusedExternalCalls: ExternalCall[] = [];
+  for (const call of externalCalls) {
+    let target = call.target;
+    if (target === undefined && call.local !== undefined) {
+      const [head, member] = call.local.split('.');
+      const bound = imports.get(head!);
+      if (bound !== undefined && member === undefined && bound.name !== '*') target = bound;
+      if (bound !== undefined && member !== undefined && bound.name === '*') {
+        target = { specifier: bound.specifier, name: member };
+      }
+    }
+    if (target === undefined) continue;
+    const { context, via } = resolveContext(call.context);
+    if (context.kind !== 'refused') continue;
+    refusedExternalCalls.push({ line: call.line, ...target, reason: context.reason, via });
+  }
+
+  return { sites, parseErrors: parseDiagnosticCount(source), pendingByHelper, refusedExternalCalls };
 }
 
 function* walkTypeScriptFiles(dir: string): Generator<string> {
@@ -432,24 +557,50 @@ export function buildReport(scanRoot: string = REPO_ROOT, allowList?: AllowList)
   let refusedTotal = 0;
   let unresolved = 0;
 
+  // Pass 1: every file on its own.
+  const analyses = new Map<string, { file: string; analysis: FileAnalysis }>();
   for (const full of walkTypeScriptFiles(dir)) {
     const file = relative(scanRoot, full).split('\\').join('/');
     scanned.add(file);
-    const analysis = analyzeSource(full, readFileSync(full, 'utf8'));
+    analyses.set(full, { file, analysis: analyzeSource(full, readFileSync(full, 'utf8')) });
+  }
+
+  // Pass 2: a call from a refused context into a helper ANOTHER scanned file
+  // exports, whose setters nothing in that file calls, is refused at the CALL
+  // SITE (one hop; the remedy is either the call site or the helper).
+  for (const [full, { file, analysis }] of analyses) {
     if (analysis.parseErrors > 0) parseErrors.push(file);
-    const refusedSites = analysis.sites.filter((s) => s.verdict === 'refused');
+    const refusedSites: Site[] = analysis.sites.filter((s) => s.verdict === 'refused');
+    for (const call of analysis.refusedExternalCalls) {
+      if (!call.specifier.startsWith('.')) continue;
+      const base = resolve(dirname(full), call.specifier);
+      const candidates = [base.replace(/\.js$/, '.ts'), `${base}.ts`, base];
+      const exporter = candidates.map((c) => analyses.get(c)).find((a) => a !== undefined);
+      if (exporter === undefined || !Object.hasOwn(exporter.analysis.pendingByHelper, call.name)) continue;
+      for (const site of exporter.analysis.pendingByHelper[call.name]!) {
+        refusedSites.push({
+          line: call.line,
+          setter: site.setter,
+          verdict: 'refused',
+          reason: call.reason,
+          via: [...call.via, `${exporter.file}#${call.name}`],
+        });
+      }
+    }
     for (const site of analysis.sites) {
       if (site.verdict === 'safe') safe++;
       else if (site.verdict === 'unresolved') {
         unresolved++;
         unresolvedSites.push({ file, line: site.line, setter: site.setter });
-      } else {
-        refusedTotal++;
-        byReason[site.reason!] = (byReason[site.reason!] ?? 0) + 1;
       }
+    }
+    for (const site of refusedSites) {
+      refusedTotal++;
+      byReason[site.reason!] = (byReason[site.reason!] ?? 0) + 1;
     }
     if (refusedSites.length > 0) offenders.push({ file, refused: refusedSites });
   }
+  offenders.sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
 
   const listed = allow.files;
   const newFiles: FileReport[] = [];
@@ -522,6 +673,11 @@ function main(): void {
   const report = buildReport(scanRoot, allow);
 
   if (args.includes('--update')) {
+    if (report.filesScanned === 0 || report.parseErrors.length > 0) {
+      console.error(`${TAG} --update refused: ${report.filesScanned} files scanned, ${report.parseErrors.length} unparsable`);
+      process.exitCode = 1;
+      return;
+    }
     writeFileSync(allowPath, `${JSON.stringify(shrunkAllowList(allow, report), null, 2)}\n`);
     console.log(`${TAG} allow-list shrunk to the current tree (never grown): ${allowPath}`);
     return;

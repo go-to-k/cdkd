@@ -108,6 +108,10 @@ describe('module-scope mock-default checker', () => {
       ['beforeAll', `beforeAll(() => { m.mockReturnValue(1); });`],
       ['afterAll', `afterAll(() => { m.mockReturnValue(1); });`],
       ['afterEach', `describe('d', () => { afterEach(() => { m.mockReturnValue(1); }); });`],
+      ['afterEach', `it('x', () => { onTestFinished(() => { m.mockReturnValue(1); }); });`],
+      ['afterEach', `it('x', () => { onTestFailed(() => { m.mockReturnValue(1); }); });`],
+      ['aroundEach', `aroundEach(async (run) => { m.mockReturnValue(1); await run(); });`],
+      ['aroundAll', `aroundAll(async (run) => { m.mockReturnValue(1); await run(); });`],
       ['module-scope', `[a, b].forEach((x) => x.mockReturnValue(1));`],
       ['module-scope', `(() => { m.mockReturnValue(1); })();`],
       ['describe-body', `describe('d', () => { void (async function () { m.mockReturnValue(1); })(); });`],
@@ -154,8 +158,19 @@ describe('module-scope mock-default checker', () => {
       ).toMatchObject({ verdict: 'refused', reason: 'vi.mock-factory', via: ['command'] });
     });
 
-    it('refused wins over safe when a helper has both callers (fail-closed)', () => {
-      expect(only(`function s() { m.mockReturnValue(1); }\nbeforeEach(s);\ns();`).verdict).toBe('refused');
+    it.each([
+      ['safe caller first', `function s() { m.mockReturnValue(1); }\nbeforeEach(s);\ns();`],
+      ['refused caller first', `function s() { m.mockReturnValue(1); }\ns();\nbeforeEach(s);`],
+      ['unresolved caller between', `function s() { m.mockReturnValue(1); }\nbeforeEach(s);\nconst o = { go() { s(); } };\ns();`],
+    ])('refused wins over every other caller (%s)', (_order, source) => {
+      expect(only(source).verdict).toBe('refused');
+    });
+
+    it.each([
+      ['unresolved after safe', `function s() { m.mockReturnValue(1); }\nbeforeEach(s);\nconst o = { go() { s(); } };`],
+      ['unresolved before safe', `function s() { m.mockReturnValue(1); }\nconst o = { go() { s(); } };\nbeforeEach(s);`],
+    ])('unresolved wins over safe (%s)', (_order, source) => {
+      expect(only(source).verdict).toBe('unresolved');
     });
 
     it('a typeof reference is not a call', () => {
@@ -173,6 +188,8 @@ describe('module-scope mock-default checker', () => {
       ['an object method', `const fake = { send() { m.mockReturnValue(1); } };`],
       ['an it.each table row callback', `it.each([[() => m.mockReturnValue(1)]])('x', (f) => f());`],
       ['a helper in a cycle', `function a() { m.mockReturnValue(1); b(); }\nfunction b() { a(); }`],
+      ['an anonymous default export', `export default function () { m.mockReturnValue(1); }`],
+      ['an implementation passed to vi.fn', `const f = vi.fn(function () { return vi.fn().mockResolvedValue(1); });`],
     ])('%s', (_shape, source) => {
       const found = sites(source).filter((s) => s.verdict !== 'safe');
       expect(found.map((s) => s.verdict)).toContain('unresolved');
@@ -252,6 +269,38 @@ describe('module-scope mock-default checker', () => {
     });
   });
 
+  describe('across files (one hop)', () => {
+    const HELPER = `export function forwarded() { return { C: vi.fn().mockImplementation(() => 1) }; }\n`;
+    it.each([
+      ['a dynamic-import member call', `vi.mock('y', async () => ({ ...(await import('./h.js')).forwarded() }));`],
+      ['a destructured dynamic import', `vi.mock('y', async () => { const { forwarded } = await import('./h.js'); return forwarded(); });`],
+      ['a static named import', `import { forwarded as fw } from './h.js';\ndescribe('d', () => { fw(); });`],
+      ['a static namespace import', `import * as h from './h';\nh.forwarded();`],
+    ])('refuses an exported helper called from a refused context: %s', (_shape, importer) => {
+      const { root } = scratchRoot({ 'h.ts': HELPER, 'sub/a.test.ts': importer.replaceAll('./h', '../h') }, { files: {} });
+      const report = buildReport(root, { files: {} });
+      expect(report.newFiles.map((f) => f.file)).toEqual(['tests/unit/sub/a.test.ts']);
+      expect(report.newFiles[0]!.refused[0]!.via).toContain('tests/unit/h.ts#forwarded');
+      expect(report.unresolvedSites.map((u) => u.file)).toEqual(['tests/unit/h.ts']);
+    });
+
+    it('accepts the same helper called from beforeEach', () => {
+      const { root } = scratchRoot(
+        { 'h.ts': HELPER, 'a.test.ts': `import { forwarded } from './h.js';\nbeforeEach(() => { forwarded(); });` },
+        { files: {} }
+      );
+      expect(buildReport(root, { files: {} }).newFiles).toEqual([]);
+    });
+
+    it('does not follow a helper its own file already calls', () => {
+      const { root } = scratchRoot(
+        { 'h.ts': `${HELPER}beforeEach(() => { forwarded(); });\n`, 'a.test.ts': `import { forwarded } from './h.js';\nforwarded();` },
+        { files: {} }
+      );
+      expect(buildReport(root, { files: {} }).newFiles).toEqual([]);
+    });
+  });
+
   describe('the shipped command', () => {
     const run = (root: string, allowPath: string, extra: string[] = []) =>
       spawnSync(
@@ -279,6 +328,13 @@ describe('module-scope mock-default checker', () => {
       expect(JSON.parse(readFileSync(allowPath, 'utf8'))).toEqual({ $comment: 'kept', files: {} });
       expect(run(root, allowPath).status).toBe(0);
     }, CONTENDED_CASE_TIMEOUT_MS);
+
+    it('--update refuses an empty scan instead of writing an empty list', () => {
+      const { root, allowPath } = scratchRoot({}, { files: { 'tests/unit/a.test.ts': 1 } });
+      mkdirSync(join(root, 'tests/unit'), { recursive: true });
+      expect(run(root, allowPath, ['--update']).status).toBe(1);
+      expect(JSON.parse(readFileSync(allowPath, 'utf8'))).toEqual({ files: { 'tests/unit/a.test.ts': 1 } });
+    }, CONTENDED_CASE_TIMEOUT_MS);
   });
 
   describe('the real tree', () => {
@@ -295,13 +351,11 @@ describe('module-scope mock-default checker', () => {
       expect(report.dead).toEqual([]);
     }, CONTENDED_CASE_TIMEOUT_MS);
 
-    it('still sees the population: a floor per refusal reason and per verdict', () => {
-      // FLOORS, as literals the checker does not read (measured on main
-      // 2026-11-24: 2877 files; refused 2930 = vi.mock-factory 2789,
-      // module-scope 70, describe-body 29, vi.hoisted 21, beforeAll 14,
-      // afterEach 7; safe 27807; unresolved 1021). A collapsed walk reads as
-      // "0 violations"; each floor sits well below its count so migration
-      // (step 2) lowers counts without tripping it before the list empties.
+    it('still sees the population: floors on files and safe sites', () => {
+      // FLOORS, as literals the checker does not read: a collapsed walk reads
+      // as "0 violations". They sit far below the measured counts (see the PR)
+      // because step 2's migration moves refused sites to safe ones. Each
+      // refusal reason is pinned by its synthetic case above, not here.
       const report = real();
       expect(report.filesScanned).toBeGreaterThan(2000);
       expect(report.totals.safe).toBeGreaterThan(10_000);
