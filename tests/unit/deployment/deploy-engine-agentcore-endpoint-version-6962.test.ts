@@ -124,9 +124,12 @@ describe('DeployEngine - a runtime endpoint follows its runtime to the new versi
   let stateBackend: { getState: ReturnType<typeof vi.fn>; saveState: ReturnType<typeof vi.fn> };
   const order: string[] = [];
   let savedNoWait: string | undefined;
+  /** The version the stubbed UpdateAgentRuntime answers. */
+  let mintedVersion = '2';
 
   beforeEach(() => {
     order.length = 0;
+    mintedVersion = '2';
     savedNoWait = process.env['CDKD_NO_WAIT'];
     delete process.env['CDKD_NO_WAIT'];
     provider = {
@@ -142,7 +145,7 @@ describe('DeployEngine - a runtime endpoint follows its runtime to the new versi
           return {
             physicalId,
             wasReplaced: false,
-            attributes: { AgentRuntimeId: RUNTIME_ID, AgentRuntimeVersion: '2' },
+            attributes: { AgentRuntimeId: RUNTIME_ID, AgentRuntimeVersion: mintedVersion },
           };
         }
         // The Cloud Control route's rule-3 hook, as cloud-control/update.ts runs it.
@@ -213,4 +216,22 @@ describe('DeployEngine - a runtime endpoint follows its runtime to the new versi
     expect(updateCallFor('Runtime')).toBeUndefined();
     expect(updateCallFor('Endpoint')).toBeUndefined();
   });
+
+  it('a runtime update that minted no new version re-resolves the endpoint and skips its update', async () => {
+    mintedVersion = '1';
+    await makeEngine().deploy(STACK, template('2'));
+    expect(updateCallFor('Runtime')).toBeDefined();
+    expect(updateCallFor('Endpoint')).toBeUndefined();
+  });
+
+  it('a tag-only runtime change promotes the endpoint too', async () => {
+    const tpl = template('1');
+    (tpl.Resources['Runtime']!.Properties as Record<string, unknown>)['Tags'] = { team: 'b' };
+    await makeEngine().deploy(STACK, tpl);
+    expect(updateCallFor('Runtime')).toBeDefined();
+    const endpoint = updateCallFor('Endpoint');
+    expect(endpoint).toBeDefined();
+    expect((endpoint![3] as Record<string, unknown>)['AgentRuntimeVersion']).toBe('2');
+  });
 });
+
