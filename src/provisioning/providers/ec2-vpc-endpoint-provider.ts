@@ -177,7 +177,11 @@ export class EC2VPCEndpointProvider implements ResourceProvider {
   }
 
   /** A non-retryable refusal of a template value, made before any AWS call. */
-  private refusal(logicalId: string, what: string, physicalId?: string): ProvisioningError {
+  private vpcEndpointRefusal(
+    logicalId: string,
+    what: string,
+    physicalId?: string
+  ): ProvisioningError {
     return markNonRetryable(
       new ProvisioningError(
         safeMsg`${what} for VPC endpoint ${logicalId}` +
@@ -195,7 +199,7 @@ export class EC2VPCEndpointProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): CreateVpcEndpointCommandInput {
     const vpcId = readOptionalString(properties['VpcId']);
-    if (vpcId.kind !== 'usable') throw this.refusal(logicalId, 'VpcId must be a VPC id');
+    if (vpcId.kind !== 'usable') throw this.vpcEndpointRefusal(logicalId, 'VpcId must be a VPC id');
     const input: CreateVpcEndpointCommandInput = { VpcId: vpcId.value };
     const strings = [
       'ServiceName',
@@ -208,25 +212,28 @@ export class EC2VPCEndpointProvider implements ResourceProvider {
     for (const key of strings) {
       const read = readOptionalString(properties[key]);
       if (read.kind === 'malformed') {
-        throw this.refusal(logicalId, `${key} must be a non-empty string`);
+        throw this.vpcEndpointRefusal(logicalId, `${key} must be a non-empty string`);
       }
       if (read.kind === 'usable') (input as unknown as Record<string, unknown>)[key] = read.value;
     }
     for (const [key] of ID_LISTS) {
       const read = readIdList(properties[key]);
       if (read.kind === 'malformed') {
-        throw this.refusal(logicalId, `${key} must be a list of ids`);
+        throw this.vpcEndpointRefusal(logicalId, `${key} must be a list of ids`);
       }
       if (read.kind === 'usable' && read.ids.length > 0) input[key] = read.ids;
     }
     const policy = readPolicyDocument(properties['PolicyDocument']);
     if (policy.kind === 'malformed') {
-      throw this.refusal(logicalId, 'PolicyDocument must be a policy object or its JSON text');
+      throw this.vpcEndpointRefusal(
+        logicalId,
+        'PolicyDocument must be a policy object or its JSON text'
+      );
     }
     if (policy.kind === 'usable') input.PolicyDocument = policy.text;
     const privateDns = readBoolean(properties['PrivateDnsEnabled']);
     if (privateDns.kind === 'malformed') {
-      throw this.refusal(logicalId, 'PrivateDnsEnabled must be a boolean');
+      throw this.vpcEndpointRefusal(logicalId, 'PrivateDnsEnabled must be a boolean');
     }
     if (privateDns.kind === 'usable') {
       input.PrivateDnsEnabled = privateDns.value;
@@ -237,7 +244,8 @@ export class EC2VPCEndpointProvider implements ResourceProvider {
       input.PrivateDnsEnabled = false;
     }
     const dns = readDnsOptions(properties['DnsOptions']);
-    if (dns.kind === 'malformed') throw this.refusal(logicalId, `DnsOptions ${dns.reason}`);
+    if (dns.kind === 'malformed')
+      throw this.vpcEndpointRefusal(logicalId, `DnsOptions ${dns.reason}`);
     if (dns.kind === 'usable') input.DnsOptions = dns.spec;
     return input;
   }
@@ -422,7 +430,7 @@ export class EC2VPCEndpointProvider implements ResourceProvider {
     const stateBorne = context?.replayingState === true || context?.desiredFromAwsReadback === true;
     const kept: string[] = [];
     const unusable = (key: string, what: string): void => {
-      if (!stateBorne) throw this.refusal(logicalId, `${key} ${what}`, physicalId);
+      if (!stateBorne) throw this.vpcEndpointRefusal(logicalId, `${key} ${what}`, physicalId);
       this.logger.warn(
         safeMsg`VPC endpoint ${logicalId}: the recorded ${key} ${what}; it was left as it is`
       );
@@ -442,7 +450,7 @@ export class EC2VPCEndpointProvider implements ResourceProvider {
         // A malformed desired list read as empty would remove every id: it is
         // refused on every path (go-to-k/cdkd#3948).
         if (desired.kind === 'malformed') {
-          throw this.refusal(logicalId, `${key} must be a list of ids`, physicalId);
+          throw this.vpcEndpointRefusal(logicalId, `${key} must be a list of ids`, physicalId);
         }
         let recorded: IdListRead = readIdList(previousProperties[key]);
         if (recorded.kind === 'malformed') {
