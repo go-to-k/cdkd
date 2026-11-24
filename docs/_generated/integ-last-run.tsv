@@ -330,7 +330,7 @@ local-run-task-cdkd-assets	2026-11-13T07:02:34Z	PASS	18	verify.sh	rc ok, docker 
 local-run-task-from-state	2026-11-16T12:42:03Z	PASS	257	verify.sh	rc ok, orph clean; HEAD 23a69cc60 Ref-value mapping
 local-run-task-multi-container	2026-11-13T08:07:28Z	PASS	9	verify.sh	rc ok, docker sweep clean, #6194
 local-start-agentcore	2026-11-17T16:51:17Z	PASS	15	verify.sh	rc ok, docker sweep clean, no AWS resources (PR #6506)
-local-start-alb	2026-11-16T18:27:40Z	PASS	25	verify.sh	PR6461 018ba020; rc ok, docker clean
+local-start-alb	2026-11-24T10:34:52Z	PASS	25	verify.sh	rc ok, docker clean; #6911 cdk-local 0.169.3 single-value --lb-port
 local-start-alb-cognito-from-state	2026-11-16T18:32:17Z	PASS	100	verify.sh	PR6461 8086f400; rc ok, no-state tampered token 200, orph clean, docker clean
 local-start-alb-from-state	2026-11-16T18:27:40Z	PASS	366	verify.sh	PR6461 018ba020; rc ok, orph clean, docker clean
 local-start-api	2026-11-21T12:35:50Z	PASS	25	verify.sh	rc ok, local-only, docker clean, PR6780

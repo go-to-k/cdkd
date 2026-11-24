@@ -89,7 +89,7 @@ requirements.
 | `[targets...]` | picker | The `AWS::ECS::Service` resources to run. |
 | `--max-tasks <n>` | `3` | Most replicas per service. Between `1` and `83`. |
 | `--restart-policy <policy>` | `on-failure` | `on-failure`, `always` or `none`. |
-| `--host-port <containerPort=hostPort...>` | same port | Publish a container port on another host port. Repeatable. |
+| `--host-port <containerPort=hostPort>` | same port | Publish a container port on another host port. Repeatable. |
 | `--watch` | off | Reload replicas when the source changes. |
 | `--shadow-ready-timeout <ms>` | `60000` | How long a `--watch` rebuild waits for the new replica. |
 | `--no-logs` | off | Do not stream container output. |
@@ -111,11 +111,11 @@ comes from the task definition's `RuntimePlatform.CpuArchitecture`.
 | `--no-pull` | off | Skip `docker pull` for every image. |
 | `--no-build` | off | Reuse the image built last time for a CDK asset. |
 | `--ecr-role-arn <arn>` | — | Role to assume before authenticating to ECR. |
-| `--image-override <service=dockerfile or dockerfile...>` | — | Build a service's image from a local Dockerfile. |
-| `--image-build-arg <KEY=VAL...>` | — | `docker build --build-arg` for override builds. |
-| `--image-build-secret <id=src...>` | — | `docker build --secret` for override builds. |
-| `--image-target <stage or svc=stage...>` | — | `docker build --target` for override builds. |
-| `--image-context <dir or svc=dir...>` | the Dockerfile's directory | `docker build` context for override builds. |
+| `--image-override <service=dockerfile or dockerfile>` | — | Build a service's image from a local Dockerfile. |
+| `--image-build-arg <KEY=VAL>` | — | `docker build --build-arg` for override builds. |
+| `--image-build-secret <id=src>` | — | `docker build --secret` for override builds. |
+| `--image-target <stage or svc=stage>` | — | `docker build --target` for override builds. |
+| `--image-context <dir or svc=dir>` | the Dockerfile's directory | `docker build` context for override builds. |
 | `--no-interactive-overrides` | off | Do not prompt for Dockerfiles at startup. |
 | `--strict-overrides` | off | Refuse to start while a service still runs a deployed image. |
 
