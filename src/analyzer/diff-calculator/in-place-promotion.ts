@@ -6,6 +6,7 @@ import {
   type SyntheticCreateOnly,
   IN_PLACE_UPDATE_DERIVED_ATTRS,
   IN_PLACE_UPDATE_DERIVED_ATTR_PREFIXES,
+  attributeMovedByChangedProperty,
   REF_READ,
   markNewValueKnownAfterDeploy,
   siblingsOf,
@@ -144,6 +145,18 @@ export function promoteInPlaceAttributeDependents(
             ? IN_PLACE_UPDATE_DERIVED_ATTRS[upstreamType]
             : undefined;
         if (derivedAttrs && [...attrs].some((attr) => derivedAttrs.has(attr))) {
+          matched = true;
+          break;
+        }
+        // Arm 2b (go-to-k/cdkd#6913): a derived attribute that moves only
+        // with a NAMED property (`IN_PLACE_UPDATE_ATTRS_MOVED_BY`).
+        if (
+          upstreamType !== undefined &&
+          changedProps &&
+          [...attrs].some((attr) =>
+            attributeMovedByChangedProperty(upstreamType, attr, changedProps)
+          )
+        ) {
           matched = true;
           break;
         }

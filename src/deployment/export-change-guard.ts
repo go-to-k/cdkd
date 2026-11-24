@@ -4,6 +4,7 @@ import {
   IN_PLACE_UPDATE_DERIVED_ATTRS,
   IN_PLACE_UPDATE_DERIVED_ATTR_PREFIXES,
   REF_READ,
+  attributeMovedByChangedProperty,
 } from '../analyzer/diff-calculator/shared.js';
 import { importableOutputKeys } from '../types/state.js';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
@@ -38,7 +39,8 @@ import type { CloudFormationTemplate, TemplateOutput } from '../types/resource.j
  * - So does one reading an attribute an IN-PLACE update may move, by the
  *   diff calculator's own promotion rule (`in-place-promotion.ts`, arms 1-3):
  *   an attribute named after a changed property, or a derived attribute of
- *   the type (a launch template's version, a nested stack's `Outputs.*`). The
+ *   the type (a launch template's version, a nested stack's `Outputs.*`, an
+ *   RDS master secret's ARN when `ManageMasterUserPassword` changes). The
  *   diff context still holds the OLD value there, so resolving it would
  *   compare equal.
  * - One reading a CUSTOM RESOURCE this plan updates in place is DEFERRED
@@ -230,6 +232,7 @@ function inPlaceUpdateMayMove(change: ResourceChange, reads: ReadonlySet<string>
   for (const attr of reads) {
     if (attr === REF_READ) continue;
     if (changed.has(attr) || derived?.has(attr) === true) return true;
+    if (attributeMovedByChangedProperty(type, attr, changed)) return true;
     if (prefixes?.some((prefix) => attr.startsWith(prefix)) === true) return true;
   }
   return false;

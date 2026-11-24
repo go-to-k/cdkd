@@ -108,6 +108,45 @@ export const IN_PLACE_UPDATE_DERIVED_ATTRS: Readonly<Record<string, ReadonlySet<
   });
 
 /**
+ * go-to-k/cdkd#6913: derived attributes an in-place UPDATE moves only when one
+ * of the NAMED properties changes. Kept out of
+ * {@link IN_PLACE_UPDATE_DERIVED_ATTRS}, which promotes on ANY in-place edit:
+ * `export-change-guard.ts` reads both, so a CDK cross-stack `db.secret` export
+ * would be refused on every unrelated cluster update while a consumer imports
+ * it. Keyed by upstream type -> attribute -> the top-level property names.
+ */
+export const IN_PLACE_UPDATE_ATTRS_MOVED_BY: Readonly<
+  Record<string, Readonly<Record<string, ReadonlySet<string>>>>
+> = Object.freeze({
+  // Turning the managed password off and on again mints a new master secret;
+  // a storage change moves a Multi-AZ cluster's throughput. The update
+  // records the described values.
+  'AWS::RDS::DBCluster': Object.freeze({
+    'MasterUserSecret.SecretArn': new Set(['ManageMasterUserPassword']),
+    StorageThroughput: new Set(['StorageType', 'Iops', 'AllocatedStorage']),
+  }),
+  'AWS::RDS::DBInstance': Object.freeze({
+    'MasterUserSecret.SecretArn': new Set(['ManageMasterUserPassword']),
+  }),
+});
+
+/**
+ * Whether `attr` of an in-place-updated `type` moves with one of `changed`
+ * (top-level property names), per {@link IN_PLACE_UPDATE_ATTRS_MOVED_BY}.
+ * `Object.hasOwn` on both levels: type and attribute are template text.
+ */
+export function attributeMovedByChangedProperty(
+  type: string,
+  attr: string,
+  changed: ReadonlySet<string>
+): boolean {
+  if (!Object.hasOwn(IN_PLACE_UPDATE_ATTRS_MOVED_BY, type)) return false;
+  const byAttr = IN_PLACE_UPDATE_ATTRS_MOVED_BY[type]!;
+  if (!Object.hasOwn(byAttr, attr)) return false;
+  return [...byAttr[attr]!].some((prop) => changed.has(prop));
+}
+
+/**
  * The PREFIX twin of {@link IN_PLACE_UPDATE_DERIVED_ATTRS}, for a type whose
  * derived attributes are an open family rather than a fixed list (issue
  * [#3631](https://github.com/go-to-k/cdkd/issues/3631)).

@@ -1565,6 +1565,55 @@ describe('DiffCalculator - replacement propagation to dependents (issue #807)', 
     }
   );
 
+  it.each([
+    ['AWS::RDS::DBCluster', 'MasterUserSecret.SecretArn', 'ManageMasterUserPassword', false, 'UPDATE'],
+    ['AWS::RDS::DBCluster', 'MasterUserSecret.SecretArn', 'BackupRetentionPeriod', 7, 'NO_CHANGE'],
+    ['AWS::RDS::DBInstance', 'MasterUserSecret.SecretArn', 'ManageMasterUserPassword', false, 'UPDATE'],
+    ['AWS::RDS::DBInstance', 'MasterUserSecret.SecretArn', 'BackupRetentionPeriod', 7, 'NO_CHANGE'],
+    ['AWS::RDS::DBCluster', 'StorageThroughput', 'StorageType', 'io2', 'UPDATE'],
+    ['AWS::RDS::DBCluster', 'StorageThroughput', 'Iops', 4000, 'UPDATE'],
+    ['AWS::RDS::DBCluster', 'StorageThroughput', 'AllocatedStorage', 200, 'UPDATE'],
+    ['AWS::RDS::DBCluster', 'StorageThroughput', 'BackupRetentionPeriod', 7, 'NO_CHANGE'],
+  ] as const)(
+    'a reader of a %s %s: %s changed to %s -> %s (go-to-k/cdkd#6913)',
+    async (type, attr, prop, next, expected) => {
+      const value = attr === 'StorageThroughput' ? '125' : 'arn:aws:secretsmanager:us-east-1:123:secret:rds!x-AbC';
+      const props = {
+        Engine: 'postgres',
+        ManageMasterUserPassword: true,
+        BackupRetentionPeriod: 1,
+        StorageType: 'io1',
+        Iops: 3000,
+        AllocatedStorage: 100,
+      };
+      const state = baseState();
+      state.resources['Db'] = {
+        physicalId: 'db',
+        resourceType: type,
+        properties: props,
+        attributes: { [attr]: value },
+      };
+      state.resources['Param'] = {
+        physicalId: 'p',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Name: 'p', Type: 'String', Value: value },
+        attributes: {},
+      };
+      const template: CloudFormationTemplate = {
+        Resources: {
+          Db: { Type: type, Properties: { ...props, [prop]: next } },
+          Param: {
+            Type: 'AWS::SSM::Parameter',
+            Properties: { Name: 'p', Type: 'String', Value: { 'Fn::GetAtt': ['Db', attr] } },
+          },
+        },
+      };
+      const changes = await new DiffCalculator().calculateDiff(state, template, makeResolver(state));
+      expect(changes.get('Db')?.changeType).toBe('UPDATE');
+      expect(changes.get('Param')?.changeType).toBe(expected);
+    }
+  );
+
   it('does not promote a reader of an Instance PrivateIp (a stop/start keeps it; issue #5446)', async () => {
     const state = baseState();
     state.resources['Inst'] = {

@@ -531,6 +531,30 @@ describe('findAffectedExports: what moves an exported value', () => {
     });
     expect(await run(exported({ 'Fn::GetAtt': ['Q', 'Arn'] }), new Map([['Q', lambdaEdit]]))).toEqual([]);
   });
+
+  // go-to-k/cdkd#6913: a CDK cross-stack `db.secret` export reads the master
+  // secret's ARN, which moves only with ManageMasterUserPassword.
+  it.each(['AWS::RDS::DBCluster', 'AWS::RDS::DBInstance'])(
+    'counts a %s master secret ARN as changed only when ManageMasterUserPassword changes',
+    async (resourceType) => {
+      const value = exported({ 'Fn::GetAtt': ['Q', 'MasterUserSecret.SecretArn'] });
+      const edit = (path: string) =>
+        new Map([
+          [
+            'Q',
+            change({
+              changeType: 'UPDATE',
+              resourceType,
+              propertyChanges: [{ path, oldValue: 1, newValue: 7, requiresReplacement: false }],
+            }),
+          ],
+        ]);
+      expect(await run(value, edit('BackupRetentionPeriod'))).toEqual([]);
+      expect(await run(value, edit('ManageMasterUserPassword'))).toEqual([
+        { exportName: EXPORT, reason: 'changed' },
+      ]);
+    }
+  );
 });
 
 /**

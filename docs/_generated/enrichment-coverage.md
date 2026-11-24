@@ -93,7 +93,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::Logs::LogGroup` | `Arn` |
 | `AWS::Neptune::DBCluster` | `ClusterResourceId`, `Endpoint`, `Port`, `ReadEndpoint` |
 | `AWS::Neptune::DBInstance` | `Endpoint`, `Port` |
-| `AWS::RDS::DBCluster` | `DBClusterArn`, `StorageThroughput` |
+| `AWS::RDS::DBCluster` | `DBClusterArn` |
 | `AWS::RDS::DBInstance` | `DBInstanceArn` |
 | `AWS::RDS::DBProxy` | `DBProxyArn`, `Endpoint`, `VpcId` |
 | `AWS::RDS::DBProxyEndpoint` | `DBProxyEndpointArn`, `Endpoint`, `IsDefault`, `VpcId` |
@@ -234,7 +234,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::Neptune::DBInstance` | yes | sdk-fallback-gap | `Endpoint` (GAP), `Port` (GAP) |
 | `AWS::Neptune::DBSubnetGroup` | yes | no-computed-attr | _(none)_ |
 | `AWS::Pipes::Pipe` | yes | enriched | `Arn` (OK), `CreationTime` (OK), `CurrentState` (OK), `LastModifiedTime` (OK), `StateReason` (OK) |
-| `AWS::RDS::DBCluster` | yes | sdk-fallback-gap | `DBClusterArn` (GAP), `DBClusterResourceId` (OK), `Endpoint` (OK), `ReadEndpoint` (OK), `StorageEncryptionType` (OK), `StorageThroughput` (GAP) |
+| `AWS::RDS::DBCluster` | yes | sdk-fallback-gap | `DBClusterArn` (GAP), `DBClusterResourceId` (OK), `Endpoint` (OK), `ReadEndpoint` (OK), `StorageEncryptionType` (OK), `StorageThroughput` (OK) |
 | `AWS::RDS::DBInstance` | yes | sdk-fallback-gap | `AutomaticRestartTime` (OK), `CertificateDetails` (OK), `DBInstanceArn` (GAP), `DBInstanceStatus` (OK), `DbiResourceId` (OK), `Endpoint` (OK), `InstanceCreateTime` (OK), `IsStorageConfigUpgradeAvailable` (OK), `LatestRestorableTime` (OK), `ListenerEndpoint` (OK), `PercentProgress` (OK), `ReadReplicaDBClusterIdentifiers` (OK), `ReadReplicaDBInstanceIdentifiers` (OK), `ResumeFullAutomationModeTime` (OK), `SecondaryAvailabilityZone` (OK), `StatusInfos` (OK), `StorageOperationPercentProgress` (OK), `StorageOperationStatus` (OK) |
 | `AWS::RDS::DBProxy` | yes | sdk-fallback-gap | `DBProxyArn` (GAP), `Endpoint` (GAP), `VpcId` (GAP) |
 | `AWS::RDS::DBProxyEndpoint` | yes | sdk-fallback-gap | `DBProxyEndpointArn` (GAP), `Endpoint` (GAP), `IsDefault` (GAP), `VpcId` (GAP) |

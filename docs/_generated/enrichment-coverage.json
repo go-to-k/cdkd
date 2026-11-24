@@ -2841,8 +2841,10 @@
         "DBClusterResourceId",
         "Endpoint.Address",
         "Endpoint.Port",
+        "MasterUserSecret.SecretArn",
         "ReadEndpoint.Address",
-        "StorageEncryptionType"
+        "StorageEncryptionType",
+        "StorageThroughput"
       ],
       "attributes": [
         {
@@ -2867,12 +2869,11 @@
         },
         {
           "name": "StorageThroughput",
-          "status": "gap"
+          "status": "enriched"
         }
       ],
       "gaps": [
-        "DBClusterArn",
-        "StorageThroughput"
+        "DBClusterArn"
       ]
     },
     {
@@ -2915,6 +2916,7 @@
         "ListenerEndpoint.Address",
         "ListenerEndpoint.HostedZoneId",
         "ListenerEndpoint.Port",
+        "MasterUserSecret.SecretArn",
         "PercentProgress",
         "ReadReplicaDBClusterIdentifiers",
         "ReadReplicaDBInstanceIdentifiers",
