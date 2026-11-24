@@ -661,18 +661,29 @@ export const deployOptions = [
 ];
 
 /**
+ * Commander `argParser` for a REPEATABLE single-value option: each flag takes
+ * ONE value, appended to the earlier ones. A variadic `<value...>` would
+ * swallow the stack name that follows it (`-c k=v MyStack`), where the AWS
+ * CDK CLI declares these options `nargs: 1` (go-to-k/cdkd#6905).
+ */
+export function collectRepeated(value: string, previous: string[] | undefined): string[] {
+  return [...(previous ?? []), value];
+}
+
+/**
  * Context options
  *
- * -c / --context can be specified multiple times to pass context key=value pairs.
+ * -c / --context can be specified multiple times to pass context key=value pairs,
+ * one per flag (go-to-k/cdkd#6905).
  * `--lookups` / `--no-lookups` ride along because every command that takes
  * `-c` synthesizes the app (go-to-k/cdkd#6883). Unset leaves `lookups`
  * undefined, which the synthesizer reads as on.
  */
 export const contextOptions = [
   new Option(
-    '-c, --context <key=value...>',
+    '-c, --context <key=value>',
     'Set context values (can be specified multiple times)'
-  ),
+  ).argParser(collectRepeated),
   new Option('--lookups', 'Perform context lookups (the default)'),
   new Option(
     '--no-lookups',

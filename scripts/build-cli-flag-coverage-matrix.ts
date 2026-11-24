@@ -68,7 +68,7 @@ const OUTPUT_MD = join(REPO_ROOT, 'docs/cli-flag-coverage.md');
  *   '-f, --force'                     -> { long: ['--force'], short: ['-f'] }
  *   '--profile <profile>'             -> { long: ['--profile'], short: [] }
  *   '--no-rollback'                   -> { long: ['--no-rollback'], short: [] }
- *   '-c, --context <key=value...>'    -> { long: ['--context'], short: ['-c'] }
+ *   '-c, --context <key=value>'       -> { long: ['--context'], short: ['-c'] }
  *
  * `<...>` placeholder text (argument hints) is stripped. The leading
  * comma-separated tokens are split and classified by whether they start

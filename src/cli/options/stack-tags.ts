@@ -26,13 +26,14 @@ import { CdkdError } from '../../utils/error-handler.js';
 import { displayIdent } from '../../utils/display-safe.js';
 import { defineOwnKey, nullPrototypeRecord } from '../../utils/own-keys.js';
 import { loadCdkJson } from '../config-loader.js';
+import { collectRepeated } from '../options.js';
 
 export const stackTagsOption = new Option(
   '-t, --tags <key=value>',
   'Tags to add to the stack (KEY=VALUE, can be specified multiple times), overriding the ' +
     'stack tags from the cloud assembly (StackProps.tags) for every selected stack. ' +
     'Deprecated in the AWS CDK CLI: set StackProps.tags instead. Also read from "tags" in cdk.json.'
-).argParser((value: string, previous: string[] | undefined) => [...(previous ?? []), value]);
+).argParser(collectRepeated);
 
 function invalid(message: string): CdkdError {
   return new CdkdError(message, 'INVALID_TAGS');
