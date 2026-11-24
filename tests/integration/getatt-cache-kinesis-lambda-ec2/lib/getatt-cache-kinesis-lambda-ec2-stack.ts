@@ -56,6 +56,10 @@ export class GetattCacheKinesisLambdaEc2Stack extends cdk.Stack {
       vpcSecurityGroupIds: [sg.securityGroupId],
       // An in-place ModifyCacheCluster on the update phase.
       preferredMaintenanceWindow: isUpdate ? 'sun:05:00-sun:06:00' : 'sun:04:00-sun:05:00',
+      // Pinned clear of both maintenance windows: AWS otherwise picks a
+      // snapshot window per cluster, and one overlapping sun:05:00-06:00
+      // refuses the update phase.
+      snapshotWindow: '01:00-02:00',
     });
     const memcached = new elasticache.CfnCacheCluster(this, 'Memcached', {
       engine: 'memcached',

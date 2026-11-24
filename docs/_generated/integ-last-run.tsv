@@ -220,7 +220,7 @@ generated-name-lifecycle	2026-11-05T03:45:05Z	PASS	946	verify.sh	rc=0, own temp 
 generated-name-security-group	2026-11-05T03:29:19Z	PASS	95	verify.sh	rc=0, own temp bucket, destroy clean, orphan scan clean (state+iam+lambda+logs+sg+ddb)
 getatt-appsync-s3express-s3tables	2026-11-21T20:42:30Z	PASS	66	verify.sh	final PASS line, destroy clean, orph clean, shared state bucket
 getatt-asg-arn-rule-name	2026-11-17T03:42:27Z	PASS	135	verify.sh	rc ok, destroy 0 errors, orph clean; at 607f11bb9 (#6479)
-getatt-cache-kinesis-lambda-ec2	2026-11-24T14:30:05Z	FAIL	794	verify.sh	phase 2 Redis update: maintenance window overlaps the AWS-chosen snapshot window (fixture, not cdkd); orph clean
+getatt-cache-kinesis-lambda-ec2	2026-11-24T16:35:43Z	PASS	842	verify.sh	rc ok, orph clean (SnapshotWindow pinned, #6954)
 getatt-cloudtrail-appsync	2026-11-14T06:03:17Z	PASS	99	verify.sh	rc ok, orph clean incl. CR log group; CFn A/B measured all three (#6242)
 getatt-fallback-guard	2026-11-04T21:15:18Z	PASS	140	verify.sh	rc 0, orphans clean (state+AWS, us-east-1)
 getatt-iam-waf-s3vectors-evaluator	2026-11-21T20:42:30Z	PASS	135	verify.sh	final PASS line, destroy clean, orph clean, shared state bucket

@@ -4,6 +4,13 @@ import { resolveExplicitPhysicalId } from '../../import-helpers.js';
 import { streamAttributes } from './attributes.js';
 import type { ResourceImportInput, ResourceImportResult } from '../../../types/resource.js';
 
+/**
+ * Adopt an existing Kinesis stream into cdkd state.
+ *
+ * Lookup order:
+ *  1. `--resource <id>=<name>` override or `Properties.Name` → verify
+ *     with `DescribeStreamSummary`.
+ */
 export async function importImpl(
   this: KinesisStreamProvider,
   input: ResourceImportInput
