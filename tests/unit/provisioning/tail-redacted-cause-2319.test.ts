@@ -32,15 +32,15 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 }));
 vi.mock('@aws-sdk/client-elasticache', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@aws-sdk/client-elasticache')>()),
-  ElastiCacheClient: vi.fn().mockImplementation(fakeClient),
+  ElastiCacheClient: vi.fn(fakeClient),
 }));
 vi.mock('@aws-sdk/client-cloudtrail', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@aws-sdk/client-cloudtrail')>()),
-  CloudTrailClient: vi.fn().mockImplementation(fakeClient),
+  CloudTrailClient: vi.fn(fakeClient),
 }));
 vi.mock('@aws-sdk/client-iam', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@aws-sdk/client-iam')>()),
-  IAMClient: vi.fn().mockImplementation(fakeClient),
+  IAMClient: vi.fn(fakeClient),
 }));
 vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
@@ -48,7 +48,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: warnSpy,
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

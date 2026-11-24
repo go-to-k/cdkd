@@ -18,7 +18,7 @@ vi.mock('@aws-sdk/client-sfn', async () => {
   const actual = await vi.importActual('@aws-sdk/client-sfn');
   return {
     ...actual,
-    SFNClient: vi.fn().mockImplementation(() => ({
+    SFNClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),

@@ -39,7 +39,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 }));
 vi.mock('@aws-sdk/client-budgets', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@aws-sdk/client-budgets')>()),
-  BudgetsClient: vi.fn().mockImplementation(fakeClient),
+  BudgetsClient: vi.fn(fakeClient),
 }));
 vi.mock('../../../src/provisioning/providers/lambda-web-function-arns.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
@@ -51,7 +51,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

@@ -32,7 +32,7 @@ const { mockSend, debug, warn, error, waitUpdated, waitActive, fakeClient } = vi
 
 vi.mock('@aws-sdk/client-lambda', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@aws-sdk/client-lambda')>()),
-  LambdaClient: vi.fn().mockImplementation(() => fakeClient()),
+  LambdaClient: vi.fn(() => fakeClient()),
   waitUntilFunctionUpdatedV2: waitUpdated,
   waitUntilFunctionActiveV2: waitActive,
 }));
@@ -46,7 +46,7 @@ for (const [mod, client] of [
 ] as const) {
   vi.doMock(mod, async (importOriginal) => ({
     ...(await importOriginal<Record<string, unknown>>()),
-    [client]: vi.fn().mockImplementation(() => fakeClient()),
+    [client]: vi.fn(() => fakeClient()),
   }));
 }
 
@@ -60,7 +60,7 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', async (importO
 }));
 
 vi.mock('../../../src/utils/logger.js', () => {
-  const childLogger = { debug, info: vi.fn(), warn, error, child: vi.fn().mockReturnThis() };
+  const childLogger = { debug, info: vi.fn(), warn, error, child: vi.fn(function (this: unknown) { return this; }) };
   return { getLogger: () => ({ ...childLogger, child: () => childLogger }) };
 });
 

@@ -20,7 +20,7 @@ vi.mock('@aws-sdk/client-s3tables', async () => {
   );
   return {
     ...actual,
-    S3TablesClient: vi.fn().mockImplementation(() => ({
+    S3TablesClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),

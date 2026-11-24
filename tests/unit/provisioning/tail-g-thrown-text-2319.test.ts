@@ -33,7 +33,7 @@ const { mockSend, debug, warn, error, info, waitStable, fakeClient } = vi.hoiste
 
 vi.mock('@aws-sdk/client-ecs', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@aws-sdk/client-ecs')>()),
-  ECSClient: vi.fn().mockImplementation(() => fakeClient()),
+  ECSClient: vi.fn(() => fakeClient()),
   waitUntilServicesStable: waitStable,
 }));
 for (const [mod, client] of [
@@ -47,7 +47,7 @@ for (const [mod, client] of [
 ] as const) {
   vi.doMock(mod, async (importOriginal) => ({
     ...(await importOriginal<Record<string, unknown>>()),
-    [client]: vi.fn().mockImplementation(() => fakeClient()),
+    [client]: vi.fn(() => fakeClient()),
   }));
 }
 
@@ -67,7 +67,7 @@ vi.mock('../../../src/provisioning/providers/lambda-web-function-arns.js', async
 }));
 
 vi.mock('../../../src/utils/logger.js', () => {
-  const childLogger = { debug, info, warn, error, child: vi.fn().mockReturnThis() };
+  const childLogger = { debug, info, warn, error, child: vi.fn(function (this: unknown) { return this; }) };
   return { getLogger: () => ({ ...childLogger, child: () => childLogger }) };
 });
 

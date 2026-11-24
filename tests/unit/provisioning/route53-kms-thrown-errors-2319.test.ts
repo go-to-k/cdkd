@@ -33,11 +33,11 @@ const { mockSend, debugSpy, warnSpy, fakeClient } = vi.hoisted(() => {
 
 vi.mock('@aws-sdk/client-route-53', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-route-53')>();
-  return { ...actual, Route53Client: vi.fn().mockImplementation(fakeClient) };
+  return { ...actual, Route53Client: vi.fn(fakeClient) };
 });
 vi.mock('@aws-sdk/client-kms', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-kms')>();
-  return { ...actual, KMSClient: vi.fn().mockImplementation(fakeClient) };
+  return { ...actual, KMSClient: vi.fn(fakeClient) };
 });
 vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
@@ -45,7 +45,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: warnSpy,
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

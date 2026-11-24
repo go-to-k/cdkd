@@ -8,7 +8,7 @@ vi.mock('@aws-sdk/client-sfn', async () => {
   const actual = await vi.importActual('@aws-sdk/client-sfn');
   return {
     ...actual,
-    SFNClient: vi.fn().mockImplementation(() => ({
+    SFNClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -20,7 +20,7 @@ vi.mock('@aws-sdk/client-s3', async () => {
   const actual = await vi.importActual('@aws-sdk/client-s3');
   return {
     ...actual,
-    S3Client: vi.fn().mockImplementation(() => ({ send: mockS3Send })),
+    S3Client: vi.fn(() => ({ send: mockS3Send })),
   };
 });
 
@@ -30,7 +30,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

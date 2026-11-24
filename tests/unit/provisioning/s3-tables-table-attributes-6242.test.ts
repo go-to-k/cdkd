@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 const mockSend = vi.hoisted(() => vi.fn());
 vi.mock('@aws-sdk/client-s3tables', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@aws-sdk/client-s3tables')>()),
-  S3TablesClient: vi.fn().mockImplementation(() => ({ send: mockSend })),
+  S3TablesClient: vi.fn(() => ({ send: mockSend })),
 }));
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), child: () => fns };

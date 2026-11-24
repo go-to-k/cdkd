@@ -63,8 +63,7 @@ vi.mock('../../../src/provisioning/create-only-properties.js', async () => {
 });
 
 vi.mock('../../../src/utils/logger.js', () => {
-  const child = { debug: debugSpy, info: vi.fn(), warn: warnSpy, error: vi.fn(), child: vi.fn() };
-  child.child = vi.fn().mockReturnValue(child);
+  const child = { debug: debugSpy, info: vi.fn(), warn: warnSpy, error: vi.fn(), child: vi.fn((): unknown => child) };
   return { getLogger: () => child };
 });
 

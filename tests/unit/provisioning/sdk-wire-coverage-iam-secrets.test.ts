@@ -23,11 +23,20 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({ getAwsClients: () => clien
 import { CASES_IAM_SECRETS, deterministicRandomValues } from './sdk-wire-cases-iam-secrets.js';
 import { IAMUserGroupProvider } from '../../../src/provisioning/providers/iam-user-group-provider.js';
 
-// A generated secret value is drawn from `crypto.getRandomValues`.
+// A generated secret value is drawn from `crypto.getRandomValues`. It is
+// shadowed by an own `vi.fn(impl)` rather than `vi.spyOn(...).mockImplementation`,
+// whose implementation `mockReset` would wipe (#6928); `vi.fn(impl)` keeps it.
+const ownGetRandomValues = Object.getOwnPropertyDescriptor(globalThis.crypto, 'getRandomValues');
 beforeAll(() => {
-  vi.spyOn(globalThis.crypto, 'getRandomValues').mockImplementation(deterministicRandomValues);
+  Object.defineProperty(globalThis.crypto, 'getRandomValues', {
+    value: vi.fn(deterministicRandomValues),
+    configurable: true,
+    writable: true,
+  });
 });
 afterAll(() => {
+  if (ownGetRandomValues) Object.defineProperty(globalThis.crypto, 'getRandomValues', ownGetRandomValues);
+  else delete (globalThis.crypto as unknown as Record<string, unknown>)['getRandomValues'];
   vi.restoreAllMocks();
 });
 

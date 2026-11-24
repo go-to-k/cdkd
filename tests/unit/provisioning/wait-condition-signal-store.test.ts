@@ -7,7 +7,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return { getLogger: () => ({ ...child, child: () => child }) };
 });
@@ -19,12 +19,12 @@ const s3 = new S3Client({
 const mockSend = vi.fn();
 vi.mock('../../../src/utils/aws-clients.js', () => ({ getAwsClients: () => ({ s3 }) }));
 vi.mock('../../../src/utils/bucket-region-client.js', () => ({
-  rebuildClientForBucketRegion: vi.fn().mockResolvedValue(null),
+  rebuildClientForBucketRegion: vi.fn(async () => null),
 }));
 vi.mock('../../../src/utils/expected-bucket-owner.js', () => ({
-  expectedOwnerParam: vi.fn().mockResolvedValue({ ExpectedBucketOwner: '123456789012' }),
+  expectedOwnerParam: vi.fn(async () => ({ ExpectedBucketOwner: '123456789012' })),
 }));
-const mockPurge = vi.fn().mockResolvedValue(undefined);
+const mockPurge = vi.fn(async (..._args: unknown[]) => undefined);
 vi.mock('../../../src/state/s3-noncurrent-version-purge.js', () => ({
   purgeNoncurrentKeyVersions: (...args: unknown[]) => mockPurge(...args),
 }));

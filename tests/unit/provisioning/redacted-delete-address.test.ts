@@ -32,7 +32,7 @@ for (const [pkg, ctor] of [
 ] as const) {
   vi.doMock(pkg, async () => {
     const actual = await vi.importActual<Record<string, unknown>>(pkg);
-    return { ...actual, [ctor]: vi.fn().mockImplementation(stubClient) };
+    return { ...actual, [ctor]: vi.fn(stubClient) };
   });
 }
 
@@ -42,7 +42,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: warnSpy,
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({
