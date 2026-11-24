@@ -1215,7 +1215,8 @@ describe('runPerStackImportLoop — stack tags (go-to-k/cdkd#6887)', () => {
   async function run(
     rowTags: unknown,
     rootStackTags: Record<string, string> | undefined,
-    refused?: (error: Error) => void
+    refused?: (error: Error) => void,
+    dryRun = false
   ): Promise<SendCall[]> {
     const childPath = join(tmpRoot, 'Child.nested.template.json');
     writeFileSync(
@@ -1292,7 +1293,7 @@ describe('runPerStackImportLoop — stack tags (go-to-k/cdkd#6887)', () => {
         ssmClient: UNUSED_SSM,
       },
       options: {
-        dryRun: false,
+        dryRun,
         yes: true,
         includeNonImportable: false,
         recreateImportUnsupported: true,
@@ -1378,6 +1379,18 @@ describe('runPerStackImportLoop — stack tags (go-to-k/cdkd#6887)', () => {
     );
     expect(refusal?.message).toContain('Nothing was changed.');
     expect(calls.filter((c) => c.name === 'CreateChangeSet' || c.name === 'UpdateStack')).toEqual([]);
+  });
+  it('refuses on --dry-run too: a plan that cannot run is not reported as one that can', async () => {
+    let refusal: Error | undefined;
+    await run(
+      undefined,
+      nTags(50),
+      (error) => {
+        refusal = error;
+      },
+      true
+    );
+    expect(refusal?.message).toContain("'Root~Child' (50 stack tags)");
   });
 
   it('makes no root tag update for a stack without stack tags', async () => {
