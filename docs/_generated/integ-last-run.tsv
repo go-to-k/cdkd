@@ -95,7 +95,7 @@ cognito-schema-rollback	2026-11-16T03:49:33Z	PASS	68	verify.sh	rc ok, orph clean
 cognito-userpool-user-ref	2026-11-04T09:28:41Z	PASS	85	verify.sh	rc 0, own bucket, orph clean
 composite-stack	2026-11-04T05:26:26Z	PASS	54	standard	batch 3 (rc=0, destroy 17 deleted 0 errors); account clean
 conditions	2026-11-04T21:27:03Z	PASS	25	verify.sh	rc 0, orphans clean
-conditions-and-if	2026-11-07T12:23:22Z	PASS	89	verify.sh	#6005 s3-state-backend split head; rc ok, orph clean
+conditions-and-if	2026-11-24T06:06:11Z	PASS	95	verify.sh	rc ok, orph clean; #6905 single-value -c regression net
 conditions-update-2	2026-11-07T15:28:00Z	PASS	70	verify.sh	#6015 deploy-engine split head; rc ok, orph clean
 connect-instance	2026-11-20T17:56:22Z	PASS	220	verify.sh	rc ok, orph clean; deploy 82s update 11s destroy 86s (us-east-1)
 context-test	2026-11-07T00:10:22Z	PASS	30	standard	#5938 ssm-parameter split head; rc ok, orph clean
