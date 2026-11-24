@@ -378,6 +378,7 @@ nested-stack-secret	2026-11-23T19:53:15Z	PASS	381	verify.sh	rc ok, orph clean; #
 nested-stack-transform	2026-11-16T09:13:05Z	PASS	150	verify.sh	rc ok, orph clean
 nlb-quic-server-id	2026-11-10T17:00:47Z	PASS	241	verify.sh	rc ok, orph clean
 nlb-source-nat	2026-11-21T21:07:36Z	PASS	350	verify.sh	rc ok, orph clean (PR 6795 0162f3918)
+no-wait-agentcore-runtime-endpoint	2026-11-24T22:27:28Z	PASS	551	verify.sh	rc ok, orph clean
 no-wait-cr-nat-egress	2026-11-24T20:15:56Z	PASS	872	verify.sh	rc ok, orph clean; --no-wait NAT readiness wait before Probe
 no-wait-getatt-rds-endpoint	2026-11-24T20:15:56Z	PASS	474	verify.sh	rc ok, orph clean; GetAtt endpoint readiness wait
 nodejs-function	2026-11-04T05:36:33Z	PASS	79	verify.sh	batch 4; rc ok, 0 orph
