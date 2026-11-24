@@ -486,7 +486,9 @@ reasons, for the categories where the data is not obvious:
 - **Backup vaults.** A vault holds the recovery points, the data whose whole
   purpose is to outlive the resource it was taken from.
 - **Service domains holding records.** These hold cases, profiles, a catalog
-  and every user's home directory.
+  and every user's home directory. An `AWS::Connect::Instance` holds what the
+  template does not declare: users, queues, routing profiles, contact flows
+  made in the console, claimed phone numbers and contact history.
 - **Encryption keys.** Deleting an `AWS::CloudHSM::Cluster` destroys the key
   material inside it, and every ciphertext produced under those keys with it.
   An `AWS::KMS::Key` delete schedules the key for deletion, and once the
@@ -513,8 +515,8 @@ reasons, for the categories where the data is not obvious:
   `--prefer-sdk-route AWS::CloudFormation::Stack:StackName` is a replacement.
 - **Edge / identifier immutability.** For an `AWS::CloudFront::Distribution`
   the URL changes, which breaks consumers, and propagation takes roughly 20
-  minutes. `AWS::SMSVOICE::PhoneNumber` and `AWS::SMSVOICE::SenderId` are the
-  same class: a release returns the identifier to the pool, the replacement
+  minutes. `AWS::SMSVOICE::PhoneNumber`, `AWS::SMSVOICE::SenderId` and
+  `AWS::Connect::PhoneNumber` are the same class: a release returns the identifier to the pool, the replacement
   gets a different one, and the original may be unobtainable.
 
 ## Log group retention
