@@ -15,7 +15,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import { DagBuilder } from '../../../src/analyzer/dag-builder.js';
-import { vpcEndpointAttributeWait } from '../../../src/deployment/intrinsic-resolver/getatt-construct-core.js';
+import { deferReadiness } from '../../../src/provisioning/deferred-readiness.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { StackState } from '../../../src/types/state.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../../src/types/state.js';
@@ -124,22 +124,24 @@ describe('DeployEngine - a reader of VPC endpoint NetworkInterfaceIds (#6939)', 
     readCurrentState: ReturnType<typeof vi.fn>;
   };
   let stateBackend: { getState: ReturnType<typeof vi.fn>; saveState: ReturnType<typeof vi.fn> };
-  const realWait = { ...vpcEndpointAttributeWait };
 
   beforeEach(() => {
     mockEc2Send.mockReset();
-    Object.assign(vpcEndpointAttributeWait, { polls: 3, delayMs: 0, sleep: () => Promise.resolve() });
     provider = {
       create: vi.fn(),
-      // What EC2VPCEndpointProvider.update returns after a --no-wait modify:
-      // no network attributes.
-      update: vi.fn((logicalId: string, physicalId: string) =>
-        Promise.resolve(
+      // What EC2VPCEndpointProvider.update does after a --no-wait modify: no
+      // network attributes, and the skipped `available` wait deferred to the
+      // deploy (go-to-k/cdkd#6940).
+      update: vi.fn((logicalId: string, physicalId: string) => {
+        if (logicalId === 'Endpoint') {
+          deferReadiness(logicalId, 'AWS::EC2::VPCEndpoint', physicalId, async () => undefined);
+        }
+        return Promise.resolve(
           logicalId === 'Endpoint'
             ? { physicalId, wasReplaced: false, attributes: { Id: physicalId } }
             : { physicalId, wasReplaced: false }
-        )
-      ),
+        );
+      }),
       delete: vi.fn(),
       getAttribute: vi.fn(),
       readCurrentState: vi.fn(() => Promise.resolve(undefined)),
@@ -148,9 +150,6 @@ describe('DeployEngine - a reader of VPC endpoint NetworkInterfaceIds (#6939)', 
       getState: vi.fn(() => Promise.resolve({ state: priorState(), etag: 'etag-old' })),
       saveState: vi.fn(() => Promise.resolve('etag-new')),
     };
-  });
-  afterEach(() => {
-    Object.assign(vpcEndpointAttributeWait, realWait);
   });
 
   function makeEngine(): DeployEngine {

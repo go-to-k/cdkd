@@ -24,7 +24,6 @@ import {
   DescribeVpcsCommand,
   type VpcEndpoint,
 } from '@aws-sdk/client-ec2';
-import { startInterruptWatch } from '../../provisioning/interrupt-watch.js';
 import { isoTimestampAttribute } from '../../provisioning/attribute-timestamp.js';
 import { dnsEntryStrings } from '../../provisioning/vpc-endpoint-dns-entries.js';
 import {
@@ -157,7 +156,9 @@ export async function constructAttributeForCoreTypes(
   // `--no-wait` update records no `DnsEntries` / `NetworkInterfaceIds` while
   // `ModifyVpcEndpoint` has the endpoint `pending` (its interfaces are still
   // moving), so either is read live here and, while the endpoint is
-  // `pending`, WAITED for (bounded, Ctrl-C aware): only a REFERENCED value
+  // `pending`, WAITED for through the deploy's deferred readiness of the
+  // endpoint (go-to-k/cdkd#6940: one shared wait, bounded, Ctrl-C aware;
+  // the provider's --no-wait create and modify defer it): only a REFERENCED value
   // pays for the wait. `CreationTimestamp` is read live without one. Nothing
   // is ever answered with the endpoint id: a read that leaves no value is
   // refused.
@@ -196,15 +197,13 @@ export async function constructAttributeForCoreTypes(
           observed.endpoint?.State?.toLowerCase() === 'pending');
       let observed = await read();
       if (pending(observed)) {
-        const watch = startInterruptWatch(`VPC endpoint ${logicalId} attribute wait`);
-        try {
-          for (let poll = 0; poll < vpcEndpointAttributeWait.polls && pending(observed); poll++) {
-            if (watch.isInterrupted()) throw watch.onInterrupted();
-            await vpcEndpointAttributeWait.sleep(vpcEndpointAttributeWait.delayMs);
-            observed = await read();
-          }
-        } finally {
-          watch.dispose();
+        const ready = context.deferredReadiness?.awaitReady(
+          logicalId,
+          `Fn::GetAtt ${displayMasked(resolver, attributeName, context)} needs a value it reports only once available`
+        );
+        if (ready !== undefined) {
+          await ready;
+          observed = await read();
         }
       }
       const endpoint = observed.endpoint;
@@ -220,7 +219,7 @@ export async function constructAttributeForCoreTypes(
       if (observed.transient === true) {
         return refuseUnservedAttribute(resolver, {
           ...refusal,
-          observed: 'DescribeVpcEndpoints stayed throttled or failing past the attribute wait',
+          observed: 'DescribeVpcEndpoints was throttled or failing',
         });
       }
       if (endpoint === undefined) {
@@ -232,7 +231,7 @@ export async function constructAttributeForCoreTypes(
       if (pending(observed)) {
         return refuseUnservedAttribute(resolver, {
           ...refusal,
-          observed: 'the VPC endpoint stayed pending past the attribute wait',
+          observed: 'the VPC endpoint is still pending, and this deploy did not skip its wait',
         });
       }
       if (attributeName === 'DnsEntries') return dnsEntryStrings(endpoint);
@@ -699,15 +698,3 @@ export async function constructAttributeForCoreTypes(
   }
   return NOT_CONSTRUCTED;
 }
-
-/**
- * How long `Fn::GetAtt [<EC2::VPCEndpoint>, DnsEntries | NetworkInterfaceIds]`
- * waits for a `pending` endpoint (go-to-k/cdkd#6939): 10 minutes in 3 s
- * polls, against the 30-60 s an Interface endpoint measured. A mutable seam so
- * tests do not sleep.
- */
-export const vpcEndpointAttributeWait = {
-  polls: 200,
-  delayMs: 3_000,
-  sleep: (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms)),
-};

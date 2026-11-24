@@ -58,8 +58,8 @@ The resource types that take part are the ones in the
 (steady state), ACM certificates, RDS, DocumentDB and Neptune clusters and
 instances, ElastiCache cache clusters, NAT gateways, EC2 instances (also after
 an update's stop and start), load balancers (`active`), Lambda MicroVM images,
-Bedrock AgentCore runtimes, EventBridge archives and Connect instances, on
-create and, where the update skips the wait, on update. These waits stay
+Bedrock AgentCore runtimes, EventBridge archives, Connect instances and VPC
+endpoints, on create and, where the update skips the wait, on update. These waits stay
 skipped:
 
 - an RDS, DocumentDB or Neptune update's waits for a changed setting to apply
@@ -89,15 +89,20 @@ cause rather than answered with the gateway's ID: the gateway stayed
 An Interface endpoint is `pending` for 30 to 50 seconds after the create call
 returns. Resources that need only its ID, its DNS names or its network
 interfaces are created at once: all three are in the create call's answer. A
-resource that calls the service through the endpoint during the deploy, such
-as a custom resource in the VPC that reads a secret, can fail until it is
-`available`.
+custom resource upstream-linked to the endpoint, such as one in the VPC that
+reads a secret through it, waits for it to be `available` before its handler
+is invoked (see
+[above](#when-the-deploy-needs-a-resource-it-did-not-wait-for)). Another
+resource that calls the service through the endpoint during the deploy can
+still fail until it is `available`.
 
 An update that changes the subnets, security groups, policy, private DNS,
 DNS options or IP address type returns the endpoint to `pending`. A
 `Fn::GetAtt` of `DnsEntries` or `NetworkInterfaceIds` after such an update
-waits for it to become available, up to 10 minutes, and then reads the value
-from AWS.
+waits for it to become available, through the same shared wait, and then
+reads the value from AWS. An endpoint still `pending` that this deploy did not
+leave pending (an earlier `--no-wait` deploy's) is refused rather than waited
+for.
 
 ### EC2 instance
 

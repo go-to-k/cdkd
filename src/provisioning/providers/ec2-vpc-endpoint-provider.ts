@@ -63,6 +63,7 @@ import type {
   UpdateContext,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
+import { abortableSleep, deferReadiness } from '../deferred-readiness.js';
 
 /** The three id lists and the `ModifyVpcEndpoint` members that add and remove each. */
 const ID_LISTS = [
@@ -287,6 +288,12 @@ export class EC2VPCEndpointProvider implements ResourceProvider {
         this.logger.debug(
           safeMsg`VPC endpoint ${endpointId} created (skipping the available wait per --no-wait)`
         );
+        // go-to-k/cdkd#6940: the same wait, run later if the deploy needs it
+        // (a custom resource calling a service through the endpoint).
+        const id = endpointId;
+        deferReadiness(logicalId, resourceType, id, (signal) =>
+          this.waitForSettled(id, logicalId, mask, signal)
+        );
       } else {
         endpoint = await this.waitForSettled(endpointId, logicalId, mask);
       }
@@ -343,9 +350,13 @@ export class EC2VPCEndpointProvider implements ResourceProvider {
   private async waitForSettled(
     endpointId: string,
     logicalId: string,
-    mask: MaskerFn
+    mask: MaskerFn,
+    signal?: AbortSignal
   ): Promise<VpcEndpoint> {
-    const { pollIntervalMs, timeoutMs, sleep } = this.endpointWait;
+    const { pollIntervalMs, timeoutMs } = this.endpointWait;
+    // A deferred wait the deploy aborts (go-to-k/cdkd#6940) stops at its next sleep.
+    const sleep = (ms: number): Promise<void> =>
+      abortableSleep(this.endpointWait.sleep, ms, signal);
     const userTimeoutMs = resolvedResourceTimeoutMs(VPC_ENDPOINT_TYPE);
     const deadline =
       Date.now() +
@@ -560,6 +571,14 @@ export class EC2VPCEndpointProvider implements ResourceProvider {
         modifying && !noWait
           ? await this.waitForSettled(physicalId, logicalId, mask)
           : await this.describe(physicalId);
+      // go-to-k/cdkd#6940: the modify's skipped `available` wait, run later if
+      // the deploy needs it (a Fn::GetAtt of its network attributes, or a
+      // custom resource upstream-linked to it).
+      if (modifying && noWait) {
+        deferReadiness(logicalId, resourceType, physicalId, (signal) =>
+          this.waitForSettled(physicalId, logicalId, mask, signal)
+        );
+      }
       // Under --no-wait the one read right after `ModifyVpcEndpoint` can still
       // report the `available` the change is leaving, with the old interfaces:
       // never recorded as settled, so a GetAtt reads the endpoint live.
