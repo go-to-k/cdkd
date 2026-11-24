@@ -8,7 +8,7 @@ vi.mock('@aws-sdk/client-appsync', async () => {
   );
   return {
     ...actual,
-    AppSyncClient: vi.fn().mockImplementation((config?: { region?: string }) => ({
+    AppSyncClient: vi.fn((config?: { region?: string }) => ({
       send: mockSend,
       // Faithful to the real client: `config.region` is a PROVIDER function,
       // and it answers whatever region the constructor was handed — which is

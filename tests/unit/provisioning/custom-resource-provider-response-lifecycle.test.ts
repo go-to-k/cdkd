@@ -36,7 +36,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn,
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({
@@ -50,11 +50,11 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 vi.mock('@aws-sdk/s3-request-presigner', () => ({
-  getSignedUrl: vi.fn().mockResolvedValue('https://s3.example.com/presigned-url'),
+  getSignedUrl: vi.fn(async () => 'https://s3.example.com/presigned-url'),
 }));
 
 vi.mock('../../../src/utils/bucket-region-client.js', () => ({
-  rebuildClientForBucketRegion: vi.fn().mockResolvedValue(null),
+  rebuildClientForBucketRegion: vi.fn(async () => null),
 }));
 
 import { CustomResourceProvider } from '../../../src/provisioning/providers/custom-resource-provider.js';

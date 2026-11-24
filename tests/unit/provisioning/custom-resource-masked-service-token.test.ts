@@ -21,11 +21,11 @@ const stubClient = vi.hoisted(
 
 vi.mock('@aws-sdk/client-lambda', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('@aws-sdk/client-lambda');
-  return { ...actual, LambdaClient: vi.fn().mockImplementation(stubClient) };
+  return { ...actual, LambdaClient: vi.fn(stubClient) };
 });
 vi.mock('@aws-sdk/client-sns', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('@aws-sdk/client-sns');
-  return { ...actual, SNSClient: vi.fn().mockImplementation(stubClient) };
+  return { ...actual, SNSClient: vi.fn(stubClient) };
 });
 
 vi.mock('../../../src/utils/logger.js', () => {
@@ -34,7 +34,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: warnSpy,
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

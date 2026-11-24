@@ -20,7 +20,7 @@ vi.mock('@aws-sdk/client-dynamodb', async () => {
     await vi.importActual<typeof import('@aws-sdk/client-dynamodb')>('@aws-sdk/client-dynamodb');
   return {
     ...actual,
-    DynamoDBClient: vi.fn().mockImplementation((cfg: { region?: string } | undefined) => ({
+    DynamoDBClient: vi.fn((cfg: { region?: string } | undefined) => ({
       send: vi.fn(),
       config: { region: () => Promise.resolve(cfg?.region ?? 'us-east-1') },
     })),
@@ -31,7 +31,7 @@ vi.mock('@aws-sdk/client-kms', async () => {
   const actual = await vi.importActual<typeof import('@aws-sdk/client-kms')>('@aws-sdk/client-kms');
   return {
     ...actual,
-    KMSClient: vi.fn().mockImplementation((cfg: { region?: string }) => ({
+    KMSClient: vi.fn((cfg: { region?: string }) => ({
       send: (cmd: unknown) => kmsSend(cfg.region, cmd),
     })),
   };
@@ -43,7 +43,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

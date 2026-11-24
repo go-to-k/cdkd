@@ -20,7 +20,7 @@ function dbClientMock(name: string) {
     const orig = (await importOriginal()) as Record<string, unknown>;
     return {
       ...orig,
-      [name]: vi.fn().mockImplementation(() => ({
+      [name]: vi.fn(() => ({
         send: dbSend,
         config: { region: () => Promise.resolve('us-east-1') },
       })),
@@ -35,7 +35,7 @@ vi.mock('@aws-sdk/client-ec2', async (importOriginal) => {
   const orig = (await importOriginal()) as Record<string, unknown>;
   return {
     ...orig,
-    EC2Client: vi.fn().mockImplementation(() => ({ send: ec2Send })),
+    EC2Client: vi.fn(() => ({ send: ec2Send })),
   };
 });
 
@@ -47,7 +47,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: (...args: unknown[]) => loggerWarn(...args),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({
@@ -128,7 +128,7 @@ const countOf = (command: string): number =>
 
 /** No real sleeps: the waiters poll through `sleep`. */
 function withoutSleep<T extends object>(provider: T): T {
-  (provider as unknown as { sleep: () => Promise<void> }).sleep = vi.fn().mockResolvedValue(undefined);
+  (provider as unknown as { sleep: () => Promise<void> }).sleep = vi.fn(async () => undefined);
   return provider;
 }
 

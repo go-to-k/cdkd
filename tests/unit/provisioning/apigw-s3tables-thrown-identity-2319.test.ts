@@ -32,15 +32,15 @@ const { mockSend, debugSpy, fakeClient } = vi.hoisted(() => {
 
 vi.mock('@aws-sdk/client-s3tables', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-s3tables')>();
-  return { ...actual, S3TablesClient: vi.fn().mockImplementation(fakeClient) };
+  return { ...actual, S3TablesClient: vi.fn(fakeClient) };
 });
 vi.mock('@aws-sdk/client-api-gateway', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-api-gateway')>();
-  return { ...actual, APIGatewayClient: vi.fn().mockImplementation(fakeClient) };
+  return { ...actual, APIGatewayClient: vi.fn(fakeClient) };
 });
 vi.mock('@aws-sdk/client-apigatewayv2', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-apigatewayv2')>();
-  return { ...actual, ApiGatewayV2Client: vi.fn().mockImplementation(fakeClient) };
+  return { ...actual, ApiGatewayV2Client: vi.fn(fakeClient) };
 });
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({ apiGateway: fakeClient() }),
@@ -59,7 +59,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

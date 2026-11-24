@@ -23,7 +23,7 @@ vi.mock('@aws-sdk/client-api-gateway', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-api-gateway')>();
   return {
     ...actual,
-    APIGatewayClient: vi.fn().mockImplementation(() => ({
+    APIGatewayClient: vi.fn(() => ({
       send: (command: unknown) => mockSend(command),
       config: { retryStrategy: () => Promise.resolve(undefined) },
     })),
@@ -37,7 +37,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

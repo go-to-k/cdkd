@@ -25,7 +25,7 @@ vi.mock('@aws-sdk/client-glue', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-glue')>();
   return {
     ...actual,
-    GlueClient: vi.fn().mockImplementation(() => ({
+    GlueClient: vi.fn(() => ({
       send: mockGlueSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -36,7 +36,7 @@ vi.mock('@aws-sdk/client-s3tables', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-s3tables')>();
   return {
     ...actual,
-    S3TablesClient: vi.fn().mockImplementation(() => ({
+    S3TablesClient: vi.fn(() => ({
       send: mockS3TablesSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -47,7 +47,7 @@ vi.mock('@aws-sdk/client-appsync', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-appsync')>();
   return {
     ...actual,
-    AppSyncClient: vi.fn().mockImplementation(() => ({
+    AppSyncClient: vi.fn(() => ({
       send: mockAppSyncSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -58,7 +58,7 @@ vi.mock('@aws-sdk/client-route-53', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-route-53')>();
   return {
     ...actual,
-    Route53Client: vi.fn().mockImplementation(() => ({
+    Route53Client: vi.fn(() => ({
       send: mockRoute53Send,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -69,7 +69,7 @@ vi.mock('@aws-sdk/client-sts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-sts')>();
   return {
     ...actual,
-    STSClient: vi.fn().mockImplementation(() => ({ send: mockStsSend })),
+    STSClient: vi.fn(() => ({ send: mockStsSend })),
   };
 });
 
@@ -90,7 +90,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: mockLoggerWarn,
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

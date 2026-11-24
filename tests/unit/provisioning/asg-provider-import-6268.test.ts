@@ -14,7 +14,7 @@ vi.mock('@aws-sdk/client-auto-scaling', async () => {
   );
   return {
     ...actual,
-    AutoScalingClient: vi.fn().mockImplementation(() => ({
+    AutoScalingClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -28,7 +28,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
-    sts: { send: vi.fn().mockResolvedValue({ Account: '123456789012' }) },
+    sts: { send: vi.fn(async () => ({ Account: '123456789012' })) },
   }),
 }));
 

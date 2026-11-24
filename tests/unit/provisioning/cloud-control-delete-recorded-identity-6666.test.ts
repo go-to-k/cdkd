@@ -13,7 +13,7 @@ const mockCloudControlConfigRegion = vi.hoisted(() => vi.fn());
 const mockRdsDelete = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../src/provisioning/providers/rds-provider.js', () => ({
-  RDSProvider: vi.fn().mockImplementation(() => ({ delete: mockRdsDelete })),
+  RDSProvider: vi.fn(() => ({ delete: mockRdsDelete })),
 }));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({

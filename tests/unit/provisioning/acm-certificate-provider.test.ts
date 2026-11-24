@@ -32,7 +32,7 @@ const loggerSpy = vi.hoisted(() => ({
 }));
 
 vi.mock('../../../src/utils/logger.js', () => {
-  const childLogger = { ...loggerSpy, child: vi.fn().mockReturnThis() };
+  const childLogger = { ...loggerSpy, child: vi.fn(function (this: unknown) { return this; }) };
   return {
     getLogger: () => ({
       child: () => childLogger,

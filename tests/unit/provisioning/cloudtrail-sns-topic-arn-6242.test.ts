@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 const mockSend = vi.hoisted(() => vi.fn());
 vi.mock('@aws-sdk/client-cloudtrail', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@aws-sdk/client-cloudtrail')>()),
-  CloudTrailClient: vi.fn().mockImplementation(() => ({
+  CloudTrailClient: vi.fn(() => ({
     send: mockSend,
     config: { region: () => Promise.resolve('us-east-1') },
   })),

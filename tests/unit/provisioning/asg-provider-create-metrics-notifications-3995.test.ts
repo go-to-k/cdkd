@@ -14,7 +14,7 @@ vi.mock('@aws-sdk/client-ec2', async () => {
   const actual = await vi.importActual<typeof import('@aws-sdk/client-ec2')>('@aws-sdk/client-ec2');
   return {
     ...actual,
-    EC2Client: vi.fn().mockImplementation(() => ({
+    EC2Client: vi.fn(() => ({
       send: mockEc2Send,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -28,7 +28,7 @@ vi.mock('@aws-sdk/client-auto-scaling', async () => {
     );
   return {
     ...actual,
-    AutoScalingClient: vi.fn().mockImplementation(() => ({
+    AutoScalingClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -48,7 +48,7 @@ vi.mock('../../../src/utils/logger.js', () => {
       warned.push(message);
     }),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

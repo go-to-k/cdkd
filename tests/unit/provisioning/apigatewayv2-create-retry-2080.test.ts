@@ -37,7 +37,7 @@ vi.mock('@aws-sdk/client-apigatewayv2', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-apigatewayv2')>();
   return {
     ...actual,
-    ApiGatewayV2Client: vi.fn().mockImplementation((options: { region?: unknown }) => {
+    ApiGatewayV2Client: vi.fn((options: { region?: unknown }) => {
       ctorArgs.push(options);
       const config = {
         region: () => {
@@ -65,10 +65,10 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', async (importO
     await importOriginal<typeof import('../../../src/deployment/intrinsic-function-resolver.js')>();
   return {
     ...actual,
-    getAccountInfo: vi.fn().mockResolvedValue({
+    getAccountInfo: vi.fn(async () => ({
       accountId: '123456789012',
       region: 'us-east-1',
-    }),
+    })),
   };
 });
 
@@ -78,7 +78,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: warnSpy,
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

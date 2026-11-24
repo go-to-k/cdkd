@@ -1,15 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
-const { mockSend, childLogger } = vi.hoisted(() => ({
-  mockSend: vi.fn(),
-  childLogger: {
+const { mockSend, childLogger } = vi.hoisted(() => {
+  const childLogger = {
     debug: vi.fn(),
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn(),
-  },
-}));
+    child: vi.fn((): unknown => childLogger),
+  };
+  return {
+    mockSend: vi.fn(),
+    childLogger,
+  };
+});
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
@@ -77,14 +80,11 @@ vi.mock('@aws-sdk/client-application-auto-scaling', async (importOriginal) => {
     await importOriginal<typeof import('@aws-sdk/client-application-auto-scaling')>();
   return {
     ...actual,
-    ApplicationAutoScalingClient: vi
-      .fn()
-      .mockImplementation(() => ({ send: autoScalingSend, destroy: vi.fn() })),
+    ApplicationAutoScalingClient: vi.fn(() => ({ send: autoScalingSend, destroy: vi.fn() })),
   };
 });
 
 vi.mock('../../../src/utils/logger.js', () => {
-  childLogger.child.mockReturnValue(childLogger);
   return {
     getLogger: () => ({
       child: () => childLogger,

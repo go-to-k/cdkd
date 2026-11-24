@@ -1,15 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
-const { mockSend, childLogger } = vi.hoisted(() => ({
-  mockSend: vi.fn(),
-  childLogger: {
+const { mockSend, childLogger } = vi.hoisted(() => {
+  const childLogger = {
     debug: vi.fn(),
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn(),
-  },
-}));
+    child: vi.fn((): unknown => childLogger),
+  };
+  return {
+    mockSend: vi.fn(),
+    childLogger,
+  };
+});
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
@@ -25,7 +28,7 @@ vi.mock('@aws-sdk/client-dynamodb', async (importOriginal) => {
   const { getAwsClients } = await import('../../../src/utils/aws-clients.js');
   return {
     ...actual,
-    DynamoDBClient: vi.fn().mockImplementation((cfg: { region?: string } | undefined) =>
+    DynamoDBClient: vi.fn((cfg: { region?: string } | undefined) =>
       cfg?.region === 'us-east-1' ? getAwsClients().dynamoDB : new actual.DynamoDBClient(cfg ?? {})
     ),
   };
@@ -91,14 +94,11 @@ vi.mock('@aws-sdk/client-application-auto-scaling', async (importOriginal) => {
     await importOriginal<typeof import('@aws-sdk/client-application-auto-scaling')>();
   return {
     ...actual,
-    ApplicationAutoScalingClient: vi
-      .fn()
-      .mockImplementation(() => ({ send: autoScalingSend, destroy: vi.fn() })),
+    ApplicationAutoScalingClient: vi.fn(() => ({ send: autoScalingSend, destroy: vi.fn() })),
   };
 });
 
 vi.mock('../../../src/utils/logger.js', () => {
-  childLogger.child.mockReturnValue(childLogger);
   return {
     getLogger: () => ({
       child: () => childLogger,

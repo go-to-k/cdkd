@@ -7,7 +7,7 @@ vi.mock('@aws-sdk/client-cognito-identity-provider', async () => {
   const actual = await vi.importActual('@aws-sdk/client-cognito-identity-provider');
   return {
     ...actual,
-    CognitoIdentityProviderClient: vi.fn().mockImplementation(() => ({
+    CognitoIdentityProviderClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -17,16 +17,16 @@ vi.mock('@aws-sdk/client-cognito-identity-provider', async () => {
 // Hoisted so the tests can assert on the provider's own warnings (the
 // unrecognized-EnabledMfas warn below); the module factory closes over the
 // same object.
-const { childLogger } = vi.hoisted(() => ({
-  childLogger: {
+const { childLogger } = vi.hoisted(() => {
+  const childLogger = {
     debug: vi.fn(),
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn(),
-  },
-}));
-childLogger.child.mockReturnValue(childLogger);
+    child: vi.fn((): unknown => childLogger),
+  };
+  return { childLogger };
+});
 
 vi.mock('../../../src/utils/logger.js', () => {
   return {

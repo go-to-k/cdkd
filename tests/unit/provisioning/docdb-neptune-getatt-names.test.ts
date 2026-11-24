@@ -8,11 +8,11 @@ const { mockDocdbSend, mockNeptuneSend } = vi.hoisted(() => ({
 
 vi.mock('@aws-sdk/client-docdb', async () => ({
   ...(await vi.importActual('@aws-sdk/client-docdb')),
-  DocDBClient: vi.fn().mockImplementation(() => ({ send: mockDocdbSend })),
+  DocDBClient: vi.fn(() => ({ send: mockDocdbSend })),
 }));
 vi.mock('@aws-sdk/client-neptune', async () => ({
   ...(await vi.importActual('@aws-sdk/client-neptune')),
-  NeptuneClient: vi.fn().mockImplementation(() => ({ send: mockNeptuneSend })),
+  NeptuneClient: vi.fn(() => ({ send: mockNeptuneSend })),
 }));
 
 vi.mock('../../../src/utils/logger.js', () => {

@@ -1,16 +1,19 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
-const { mockSend, childLogger } = vi.hoisted(() => ({
-  mockSend: vi.fn(),
-  childLogger: {
+const { mockSend, childLogger } = vi.hoisted(() => {
+  const childLogger = {
     debug: vi.fn(),
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn(),
-  },
-}));
+    child: vi.fn((): unknown => childLogger),
+  };
+  return {
+    mockSend: vi.fn(),
+    childLogger,
+  };
+});
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
@@ -19,7 +22,6 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 }));
 
 vi.mock('../../../src/utils/logger.js', () => {
-  childLogger.child.mockReturnValue(childLogger);
   return {
     getLogger: () => ({
       child: () => childLogger,

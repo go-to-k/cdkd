@@ -29,7 +29,7 @@ vi.mock('../../../src/utils/logger.js', () => {
   return { getLogger: () => leaf };
 });
 vi.mock('@aws-sdk/s3-request-presigner', () => ({
-  getSignedUrl: vi.fn().mockResolvedValue('https://s3.example.com/presigned-url'),
+  getSignedUrl: vi.fn(async () => 'https://s3.example.com/presigned-url'),
 }));
 const wiring = vi.hoisted(() => ({ value: undefined as unknown }));
 vi.mock('cdk-local/internal', async (importOriginal) => ({

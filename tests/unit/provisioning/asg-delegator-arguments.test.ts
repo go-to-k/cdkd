@@ -19,7 +19,7 @@ vi.mock('@aws-sdk/client-auto-scaling', async () => {
   );
   return {
     ...actual,
-    AutoScalingClient: vi.fn().mockImplementation(() => ({
+    AutoScalingClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),

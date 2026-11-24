@@ -19,7 +19,7 @@ vi.mock('@aws-sdk/client-rds', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('@aws-sdk/client-rds');
   return {
     ...actual,
-    RDSClient: vi.fn().mockImplementation((config: unknown) => {
+    RDSClient: vi.fn((config: unknown) => {
       mockRdsClientCtor(config);
       return { send: mockSend, destroy: mockDestroy };
     }),

@@ -18,7 +18,7 @@ vi.mock('@aws-sdk/client-codecommit', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-codecommit')>();
   return {
     ...actual,
-    CodeCommitClient: vi.fn().mockImplementation(() => {
+    CodeCommitClient: vi.fn(() => {
       const config = {
         region: () => Promise.resolve('us-east-1'),
         retryStrategy: async (): Promise<unknown> => baseStrategy,
@@ -38,12 +38,12 @@ vi.mock('@aws-sdk/client-s3', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-s3')>();
   return {
     ...actual,
-    S3Client: vi.fn().mockImplementation(() => ({ send: mockS3Send })),
+    S3Client: vi.fn(() => ({ send: mockS3Send })),
   };
 });
 
 vi.mock('adm-zip', () => ({
-  default: vi.fn().mockImplementation(() => ({
+  default: vi.fn(() => ({
     getEntries: () => [
       { entryName: 'README.md', isDirectory: false, getData: () => Buffer.from('hi') },
     ],
@@ -56,7 +56,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({
