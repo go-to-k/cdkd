@@ -32,7 +32,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 // Output.Value (a literal in these fixtures) straight through, and an
 // Export.Name string is stored under both the output key and the export name.
 vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
-  IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
+  IntrinsicFunctionResolver: vi.fn(() => ({
     getPhysicalIdFallbackCount: vi.fn().mockReturnValue(0),
     resetPhysicalIdFallbackCount: vi.fn(),
     resolve: vi.fn().mockImplementation((props: unknown) => Promise.resolve(props)),

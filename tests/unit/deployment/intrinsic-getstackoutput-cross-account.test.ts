@@ -24,7 +24,7 @@ vi.mock('@aws-sdk/client-sts', async () => {
   );
   return {
     ...actual,
-    STSClient: vi.fn().mockImplementation(() => ({
+    STSClient: vi.fn(() => ({
       send: mockStsSend,
       destroy: vi.fn(),
     })),
@@ -39,7 +39,7 @@ vi.mock('@aws-sdk/client-s3', async () => {
   );
   return {
     ...actual,
-    S3Client: vi.fn().mockImplementation((cfg: unknown) => {
+    S3Client: vi.fn((cfg: unknown) => {
       s3ClientFactory(cfg);
       return {
         send: mockS3Send,
@@ -62,7 +62,7 @@ vi.mock('@aws-sdk/client-cloudformation', async () => {
   );
   return {
     ...actual,
-    CloudFormationClient: vi.fn().mockImplementation(() => ({ send: cfnMockSend })),
+    CloudFormationClient: vi.fn(() => ({ send: cfnMockSend })),
   };
 });
 
@@ -81,16 +81,16 @@ vi.mock('@aws-sdk/client-cloudformation', async () => {
 // the resolution would die on a TypeError and the `not.toHaveBeenCalled()`
 // assertion below would pass for the WRONG reason, i.e. it would stop
 // discriminating exactly when the code it guards changes.
-const secretsMockSend = vi.fn().mockResolvedValue({
+const secretsMockSend = vi.fn(async () => ({
   SecretString: JSON.stringify({ password: 'producer-account-password' }),
-});
+}));
 vi.mock('@aws-sdk/client-secrets-manager', async () => {
   const actual = await vi.importActual<typeof import('@aws-sdk/client-secrets-manager')>(
     '@aws-sdk/client-secrets-manager',
   );
   return {
     ...actual,
-    SecretsManagerClient: vi.fn().mockImplementation((cfg: unknown) => ({
+    SecretsManagerClient: vi.fn((cfg: unknown) => ({
       send: secretsMockSend,
       destroy: vi.fn(),
       config: { region: async () => (cfg as { region?: string })?.region ?? 'us-east-1' },
@@ -104,7 +104,9 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) {
+      return this;
+    }),
   };
   return {
     getLogger: () => ({
@@ -193,13 +195,10 @@ describe('Fn::GetStackOutput cross-account RoleArn', () => {
     mockStsSend.mockReset();
     mockS3Send.mockReset();
     s3ClientFactory.mockReset();
-    // Re-primed after the reset (which drops the implementation, not just the
-    // call record) so every test keeps a fake that would SUCCEED if reached —
+    // The reset restores the `vi.fn(impl)` default (it drains any `*Once`
+    // primer too), so every test keeps a fake that would SUCCEED if reached —
     // which is what makes "it was never called" a real finding.
     secretsMockSend.mockReset();
-    secretsMockSend.mockResolvedValue({
-      SecretString: JSON.stringify({ password: 'producer-account-password' }),
-    });
     clearCrossAccountCredentialsCache();
     clearBucketRegionCache();
   });

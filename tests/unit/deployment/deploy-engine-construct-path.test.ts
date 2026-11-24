@@ -26,7 +26,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
-  IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
+  IntrinsicFunctionResolver: vi.fn(() => ({
     getPhysicalIdFallbackCount: vi.fn().mockReturnValue(0),
     resetPhysicalIdFallbackCount: vi.fn(),
     resolve: vi.fn().mockImplementation((props: unknown) => Promise.resolve(props)),
@@ -67,9 +67,9 @@ describe('DeployEngine stamps constructPath on every save', () => {
   let calculateDiff: ReturnType<typeof vi.fn>;
   let hasChanges: ReturnType<typeof vi.fn>;
   const provider = {
-    create: vi.fn().mockResolvedValue({ physicalId: 'new-pid', attributes: {} }),
-    update: vi.fn().mockResolvedValue({ physicalId: 'pid' }),
-    delete: vi.fn().mockResolvedValue(undefined),
+    create: vi.fn(async () => ({ physicalId: 'new-pid', attributes: {} })),
+    update: vi.fn(async () => ({ physicalId: 'pid' })),
+    delete: vi.fn(async () => undefined),
     getAttribute: vi.fn(),
   };
 

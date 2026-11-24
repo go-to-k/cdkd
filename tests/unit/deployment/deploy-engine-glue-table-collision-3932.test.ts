@@ -20,7 +20,7 @@ vi.mock('@aws-sdk/client-glue', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-glue')>();
   return {
     ...actual,
-    GlueClient: vi.fn().mockImplementation(() => ({
+    GlueClient: vi.fn(() => ({
       send: mockGlueSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -44,7 +44,7 @@ vi.mock('p-limit', () => ({
 }));
 
 vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
-  IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
+  IntrinsicFunctionResolver: vi.fn(() => ({
     getPhysicalIdFallbackCount: vi.fn().mockReturnValue(0),
     resetPhysicalIdFallbackCount: vi.fn(),
     resolve: vi.fn().mockImplementation((value: unknown) => Promise.resolve(value)),

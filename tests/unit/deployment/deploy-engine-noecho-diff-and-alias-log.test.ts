@@ -30,13 +30,13 @@ vi.mock('../../../src/provisioning/create-only-properties.js', async () => {
   const actual = await vi.importActual<
     typeof import('../../../src/provisioning/create-only-properties.js')
   >('../../../src/provisioning/create-only-properties.js');
-  return { ...actual, getCreateOnlyPropertyPaths: vi.fn().mockResolvedValue([]) };
+  return { ...actual, getCreateOnlyPropertyPaths: vi.fn(async () => []) };
 });
 vi.mock('../../../src/provisioning/write-only-properties.js', async () => {
   const actual = await vi.importActual<
     typeof import('../../../src/provisioning/write-only-properties.js')
   >('../../../src/provisioning/write-only-properties.js');
-  return { ...actual, tryGetTopLevelWriteOnlyProperties: vi.fn().mockResolvedValue([]) };
+  return { ...actual, tryGetTopLevelWriteOnlyProperties: vi.fn(async () => []) };
 });
 vi.mock('p-limit', () => ({ default: vi.fn(() => <T>(fn: () => T) => fn()) }));
 

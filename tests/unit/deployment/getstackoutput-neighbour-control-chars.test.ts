@@ -48,7 +48,7 @@ vi.mock('@aws-sdk/client-cloudformation', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-cloudformation')>();
   return {
     ...actual,
-    CloudFormationClient: vi.fn().mockImplementation(() => ({
+    CloudFormationClient: vi.fn(() => ({
       send: cfnSend,
       destroy: vi.fn(),
       config: { region: () => 'us-east-1' },
@@ -299,6 +299,9 @@ describe('the CFn-fallback WARN strips control characters too (round 2 blocker)'
         )
         .catch(() => undefined);
 
+      // The echoing rejection must be what failed the fallback: a client that
+      // could not even be built fails it too, without the hostile echo.
+      expect(cfnSend, 'DescribeStacks was never sent, so nothing echoed').toHaveBeenCalled();
       const warned = warn.mock.calls.map((c) => String(c[0])).join('\n');
       expect(warned, 'the CFn fallback warn never fired, so this case proves nothing').toContain(
         'CloudFormation DescribeStacks fallback failed'

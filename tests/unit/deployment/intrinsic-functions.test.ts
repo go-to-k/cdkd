@@ -42,13 +42,16 @@ vi.mock('../../../src/utils/logger.js', () => ({
 // Mock EC2 DescribeAvailabilityZones response (default for backward compat
 // — tests that need a different response can call `mockEc2Send.mockImplementation(...)`
 // in their own setup).
-const mockEc2Send = vi.fn().mockResolvedValue({
+// Typed as a free-form `send` (what a bare `vi.fn()` was), so a test may prime
+// any EC2 command's answer and read any call's input.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const mockEc2Send = vi.fn<(...args: any[]) => Promise<unknown>>(async () => ({
   AvailabilityZones: [
     { ZoneName: 'us-east-1a', State: 'available' },
     { ZoneName: 'us-east-1b', State: 'available' },
     { ZoneName: 'us-east-1c', State: 'available' },
   ],
-});
+}));
 
 // Mock CloudFront client (for the issue #3096 `DomainName` live re-read;
 // primed per test).
@@ -58,22 +61,23 @@ const mockCloudFrontSend = vi.fn();
 // Default: no exports, and DescribeStacks reports the stack as missing —
 // so pre-#1697 not-found tests keep their original outcome without any
 // real AWS call when the fallback path fires.
-const cfnMockSend = vi.hoisted(() => vi.fn());
+const cfnMockSend = vi.hoisted(() =>
+  vi.fn(async (cmd: { constructor: { name: string } }) => {
+    if (cmd.constructor.name === 'ListExportsCommand') return { Exports: [] };
+    if (cmd.constructor.name === 'DescribeStacksCommand') {
+      // The typed does-not-exist miss (name + message are both required by
+      // the resolver's classifier — issue #1697 review).
+      throw Object.assign(new Error('Stack does not exist'), { name: 'ValidationError' });
+    }
+    throw new Error(`unexpected CloudFormation command: ${cmd.constructor.name}`);
+  })
+);
 vi.mock('@aws-sdk/client-cloudformation', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-cloudformation')>();
   return {
     ...actual,
-    CloudFormationClient: vi.fn().mockImplementation(() => ({ send: cfnMockSend })),
+    CloudFormationClient: vi.fn(() => ({ send: cfnMockSend })),
   };
-});
-cfnMockSend.mockImplementation(async (cmd: { constructor: { name: string } }) => {
-  if (cmd.constructor.name === 'ListExportsCommand') return { Exports: [] };
-  if (cmd.constructor.name === 'DescribeStacksCommand') {
-    // The typed does-not-exist miss (name + message are both required by
-    // the resolver's classifier — issue #1697 review).
-    throw Object.assign(new Error('Stack does not exist'), { name: 'ValidationError' });
-  }
-  throw new Error(`unexpected CloudFormation command: ${cmd.constructor.name}`);
 });
 
 // Mock ServiceDiscovery client (for the namespace HostedZoneId live fetch,
@@ -84,7 +88,7 @@ vi.mock('@aws-sdk/client-servicediscovery', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-servicediscovery')>();
   return {
     ...actual,
-    ServiceDiscoveryClient: vi.fn().mockImplementation(() => ({ send: sdMockSend })),
+    ServiceDiscoveryClient: vi.fn(() => ({ send: sdMockSend })),
   };
 });
 
@@ -5593,15 +5597,15 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
       [
         'no TableARN and a heal that finds nothing',
         {},
-        { attributeHealer: vi.fn().mockResolvedValue({ kind: 'not-found' } as const) },
+        { attributeHealer: vi.fn(async () => ({ kind: 'not-found' } as const)) },
       ],
       [
         'no TableARN and a heal reading a non-ARN',
         {},
         {
-          attributeHealer: vi
-            .fn()
-            .mockResolvedValue({ kind: 'read', attributes: { TableARN: 'events' } } as const),
+          attributeHealer: vi.fn(
+            async () => ({ kind: 'read', attributes: { TableARN: 'events' } }) as const
+          ),
         },
       ],
       ['an empty recorded TableARN', { TableARN: '' }, {}],

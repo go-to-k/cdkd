@@ -59,7 +59,7 @@ vi.mock('@aws-sdk/client-servicediscovery', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-servicediscovery')>();
   return {
     ...actual,
-    ServiceDiscoveryClient: vi.fn().mockImplementation(function () {
+    ServiceDiscoveryClient: vi.fn(function () {
       return {
         send: async (command: { constructor: { name: string } }) => {
           aws.calls.push(`servicediscovery:${command.constructor.name}`);
@@ -251,7 +251,11 @@ describe('one case per arm that reads the id: refused before the arm, with no AW
       { 'Fn::GetAtt': ['Thing', 'HostedZoneId'] },
       'AWS::ServiceDiscovery::PrivateDnsNamespace',
       'ns-0abc',
-      (o) => expect(errorMessage(o)).toContain('GetNamespace failed'),
+      (o) => {
+        expect(errorMessage(o)).toContain('GetNamespace failed');
+        // The read was SENT and failed; a client that cannot be built fails too.
+        expect(aws.calls).toContain('servicediscovery:GetNamespaceCommand');
+      },
     ],
     [
       'Fn::GetAtt LaunchTemplate LatestVersionNumber (falls back after a failed read)',

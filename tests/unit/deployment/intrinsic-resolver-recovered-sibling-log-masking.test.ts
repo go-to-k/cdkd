@@ -42,16 +42,12 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 const sendMock = vi.hoisted(() => vi.fn());
 vi.mock('@aws-sdk/client-secrets-manager', () => ({
-  SecretsManagerClient: vi.fn().mockImplementation(() => ({ send: sendMock })),
-  GetSecretValueCommand: vi
-    .fn()
-    .mockImplementation((input: unknown) => ({ __type: 'GetSecretValue', input })),
+  SecretsManagerClient: vi.fn(() => ({ send: sendMock })),
+  GetSecretValueCommand: vi.fn((input: unknown) => ({ __type: 'GetSecretValue', input })),
 }));
 vi.mock('@aws-sdk/client-ssm', () => ({
-  SSMClient: vi.fn().mockImplementation(() => ({ send: sendMock })),
-  GetParameterCommand: vi
-    .fn()
-    .mockImplementation((input: unknown) => ({ __type: 'GetParameter', input })),
+  SSMClient: vi.fn(() => ({ send: sendMock })),
+  GetParameterCommand: vi.fn((input: unknown) => ({ __type: 'GetParameter', input })),
 }));
 
 const { IntrinsicFunctionResolver } = await import(

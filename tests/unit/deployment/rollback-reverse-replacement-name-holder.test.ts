@@ -20,9 +20,8 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn(),
+    child: vi.fn((): unknown => logger),
   };
-  logger.child.mockReturnValue(logger);
   return { getLogger: () => logger };
 });
 
@@ -38,7 +37,7 @@ vi.mock('@aws-sdk/client-route-53', async () => {
   const actual = await vi.importActual('@aws-sdk/client-route-53');
   return {
     ...actual,
-    Route53Client: vi.fn().mockImplementation(() => ({
+    Route53Client: vi.fn(() => ({
       send: route53Send,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
