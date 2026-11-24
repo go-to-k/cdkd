@@ -792,6 +792,7 @@
         "cc-to-sdk-reroute-hosted-zone",
         "cc-to-sdk-reroute-mount-target",
         "cc-to-sdk-reroute-rest-api",
+        "cc-to-sdk-reroute-vpc-endpoint",
         "cc-write-only-create-only",
         "cc-write-only-secret-version",
         "cdk-cross-account-lookup-role",
@@ -1229,7 +1230,8 @@
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-hosted-zone",
         "cc-to-sdk-reroute-mount-target",
-        "cc-to-sdk-reroute-rest-api"
+        "cc-to-sdk-reroute-rest-api",
+        "cc-to-sdk-reroute-vpc-endpoint"
       ]
     },
     {
@@ -1278,6 +1280,7 @@
         "cc-to-sdk-reroute-hosted-zone",
         "cc-to-sdk-reroute-mount-target",
         "cc-to-sdk-reroute-rest-api",
+        "cc-to-sdk-reroute-vpc-endpoint",
         "codebuild-project",
         "generated-name-lifecycle",
         "iam-recreate-reattach",
@@ -1374,6 +1377,7 @@
         "cc-to-sdk-reroute-hosted-zone",
         "cc-to-sdk-reroute-mount-target",
         "cc-to-sdk-reroute-rest-api",
+        "cc-to-sdk-reroute-vpc-endpoint",
         "cc-write-only-create-only",
         "cc-write-only-secret-version",
         "cdk-cross-account-lookup-role",
@@ -2019,6 +2023,7 @@
         "cc-to-sdk-reroute-hosted-zone",
         "cc-to-sdk-reroute-mount-target",
         "cc-to-sdk-reroute-rest-api",
+        "cc-to-sdk-reroute-vpc-endpoint",
         "cc-write-only-create-only",
         "cc-write-only-secret-version",
         "cdk-cross-account-lookup-role",
@@ -2681,6 +2686,7 @@
         "cc-to-sdk-reroute-hosted-zone",
         "cc-to-sdk-reroute-mount-target",
         "cc-to-sdk-reroute-rest-api",
+        "cc-to-sdk-reroute-vpc-endpoint",
         "cc-write-only-create-only",
         "cc-write-only-secret-version",
         "cdk-cross-account-lookup-role",
