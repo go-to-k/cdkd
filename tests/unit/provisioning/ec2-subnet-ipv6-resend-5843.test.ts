@@ -14,10 +14,9 @@ const logger = vi.hoisted(() => ({
   info: vi.fn(),
   warn: vi.fn(),
   error: vi.fn(),
-  child: vi.fn(),
+  child: vi.fn((): unknown => logger),
 }));
 vi.mock('../../../src/utils/logger.js', () => {
-  logger.child.mockReturnValue(logger);
   return { getLogger: () => logger };
 });
 

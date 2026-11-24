@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vite-plus/test';
 
 const { mockSend, waitUntilServicesStableMock, debug, warn } = vi.hoisted(() => ({
   mockSend: vi.fn(),
@@ -11,7 +11,7 @@ vi.mock('@aws-sdk/client-ecs', async (importOriginal) => {
   const actual = (await importOriginal()) as object;
   return {
     ...actual,
-    ECSClient: vi.fn().mockImplementation(() => ({
+    ECSClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -25,7 +25,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn,
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return { getLogger: () => ({ ...childLogger, child: () => childLogger }) };
 });
@@ -41,10 +41,14 @@ import { isMarkedNotGone } from '../../../src/provisioning/not-gone.js';
 import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
 
 // The by-name lookup before CreateService (go-to-k/cdkd#4403): the name is free.
-vi.spyOn(
-  ECSProvider.prototype as unknown as { serviceNameHeld(): Promise<boolean> },
-  'serviceNameHeld'
-).mockResolvedValue(false);
+// A `vi.fn(impl)` assigned over the method, not a `vi.spyOn`: a spy's
+// `mockReset` restores the REAL method (go-to-k/cdkd#6928).
+const ecsPrototype = ECSProvider.prototype as unknown as { serviceNameHeld(): Promise<boolean> };
+const realServiceNameHeld = ecsPrototype.serviceNameHeld;
+ecsPrototype.serviceNameHeld = vi.fn(async () => false);
+afterAll(() => {
+  ecsPrototype.serviceNameHeld = realServiceNameHeld;
+});
 
 // go-to-k/cdkd#2319: every create / update / delete wrap is persisted to
 // `deployments/{runId}.jsonl`, so an AWS-authored failure is named by its class

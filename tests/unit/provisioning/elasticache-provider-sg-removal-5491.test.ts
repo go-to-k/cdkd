@@ -11,7 +11,7 @@ vi.mock('@aws-sdk/client-elasticache', async () => {
   const actual = await vi.importActual('@aws-sdk/client-elasticache');
   return {
     ...actual,
-    ElastiCacheClient: vi.fn().mockImplementation(() => ({
+    ElastiCacheClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -24,7 +24,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn,
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

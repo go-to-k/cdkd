@@ -22,7 +22,7 @@ const { mockSend, childLogger } = vi.hoisted(() => ({
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn(),
+    child: vi.fn((): unknown => childLogger),
   },
 }));
 
@@ -40,14 +40,12 @@ vi.mock('@aws-sdk/client-dynamodb', async (importOriginal) => {
   const { getAwsClients } = await import('../../../src/utils/aws-clients.js');
   return {
     ...actual,
-    DynamoDBClient: vi.fn().mockImplementation((cfg: { region?: string } | undefined) =>
-      cfg?.region === 'us-east-1' ? getAwsClients().dynamoDB : new actual.DynamoDBClient(cfg ?? {})
-    ),
+    DynamoDBClient: vi.fn((cfg: { region?: string } | undefined) =>
+      cfg?.region === 'us-east-1' ? getAwsClients().dynamoDB : new actual.DynamoDBClient(cfg ?? {})),
   };
 });
 
 vi.mock('../../../src/utils/logger.js', () => {
-  childLogger.child.mockReturnValue(childLogger);
   return {
     getLogger: () => ({
       child: () => childLogger,
@@ -235,7 +233,6 @@ describe('DynamoDBTableProvider StreamSpecification.ResourcePolicy / Tags (issue
   beforeEach(() => {
     vi.clearAllMocks();
     mockSend.mockReset();
-    childLogger.child.mockReturnValue(childLogger);
     provider = new DynamoDBTableProvider();
     // The absence re-ask exists for real-AWS read lag; one case below puts it back.
     setRereadDelays([]);

@@ -23,7 +23,7 @@
  * thrown message (class plus `--verbose` pointer) and goes to the masked debug
  * line, so an AWS echo is asserted on the transcript.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vite-plus/test';
 
 const { mockSend, warnSpy, debugSpy, infoSpy, waitUntilServicesStableMock } = vi.hoisted(() => ({
   mockSend: vi.fn(),
@@ -37,7 +37,7 @@ vi.mock('@aws-sdk/client-ecs', async (importOriginal) => {
   const actual = (await importOriginal()) as object;
   return {
     ...actual,
-    ECSClient: vi.fn().mockImplementation(() => ({
+    ECSClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -51,7 +51,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: infoSpy,
     warn: warnSpy,
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({
@@ -67,11 +67,14 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { ECSProvider } from '../../../src/provisioning/providers/ecs-provider.js';
 
 // The by-name lookup before a waiting CreateService (go-to-k/cdkd#4403):
-// the name is free.
-vi.spyOn(
-  ECSProvider.prototype as unknown as { serviceNameHeld(): Promise<boolean> },
-  'serviceNameHeld'
-).mockResolvedValue(false);
+// the name is free. A `vi.fn(impl)` assigned over the method, not a `vi.spyOn`:
+// a spy's `mockReset` restores the REAL method (go-to-k/cdkd#6928).
+const ecsPrototype = ECSProvider.prototype as unknown as { serviceNameHeld(): Promise<boolean> };
+const realServiceNameHeld = ecsPrototype.serviceNameHeld;
+ecsPrototype.serviceNameHeld = vi.fn(async () => false);
+afterAll(() => {
+  ecsPrototype.serviceNameHeld = realServiceNameHeld;
+});
 import { createSecretMasker, SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import type { RecordedSecretValues } from '../../../src/deployment/secret-redaction.js';
 import { WITHHELD_AWS_COMMAND } from '../../../src/provisioning/replacement-protection-advice.js';

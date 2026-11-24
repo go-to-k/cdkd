@@ -14,7 +14,7 @@ const { mockSend, childLogger } = vi.hoisted(() => ({
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn(),
+    child: vi.fn((): unknown => childLogger),
   },
 }));
 
@@ -25,7 +25,6 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 }));
 
 vi.mock('../../../src/utils/logger.js', () => {
-  childLogger.child.mockReturnValue(childLogger);
   return {
     getLogger: () => ({
       child: () => childLogger,
@@ -122,7 +121,6 @@ describe('DynamoDB Table ResourcePolicy baseline after its own write (go-to-k/cd
   beforeEach(() => {
     vi.clearAllMocks();
     mockSend.mockReset();
-    childLogger.child.mockReturnValue(childLogger);
     provider = new DynamoDBTableProvider();
     (provider as unknown as { streamMemberRereadDelaysMs: number[] }).streamMemberRereadDelaysMs =
       [0, 0, 0];

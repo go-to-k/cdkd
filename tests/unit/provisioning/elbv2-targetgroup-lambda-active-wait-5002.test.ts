@@ -13,7 +13,7 @@ vi.mock('@aws-sdk/client-elastic-load-balancing-v2', async () => {
   const actual = await vi.importActual('@aws-sdk/client-elastic-load-balancing-v2');
   return {
     ...actual,
-    ElasticLoadBalancingV2Client: vi.fn().mockImplementation(() => ({
+    ElasticLoadBalancingV2Client: vi.fn(() => ({
       send: (command: { constructor: { name: string }; input?: { Names?: unknown } }) =>
         command.input?.Names !== undefined
           ? Promise.reject(
@@ -29,7 +29,7 @@ vi.mock('@aws-sdk/client-lambda', async () => {
   const actual = await vi.importActual('@aws-sdk/client-lambda');
   return {
     ...actual,
-    LambdaClient: vi.fn().mockImplementation((config: unknown) => {
+    LambdaClient: vi.fn((config: unknown) => {
       lambdaCtor(config);
       return { send: vi.fn(), config: { region: () => Promise.resolve('ap-northeast-1') } };
     }),
@@ -43,7 +43,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return { getLogger: () => l };
 });

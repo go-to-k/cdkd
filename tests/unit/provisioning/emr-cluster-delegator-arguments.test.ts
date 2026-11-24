@@ -18,7 +18,7 @@ vi.mock('@aws-sdk/client-emr', async () => {
   const actual = await vi.importActual<typeof import('@aws-sdk/client-emr')>('@aws-sdk/client-emr');
   return {
     ...actual,
-    EMRClient: vi.fn().mockImplementation(() => ({
+    EMRClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),

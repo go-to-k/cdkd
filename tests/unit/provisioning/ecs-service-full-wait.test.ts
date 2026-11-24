@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vite-plus/test';
 import { DeleteServiceCommand, DescribeServicesCommand, UpdateServiceCommand } from '@aws-sdk/client-ecs';
 
 // go-to-k/cdkd#5571: cdkd waits for ECS Service steady state by DEFAULT, as
@@ -23,7 +23,7 @@ vi.mock('@aws-sdk/client-ecs', async (importOriginal) => {
   const actual = (await importOriginal()) as object;
   return {
     ...actual,
-    ECSClient: vi.fn().mockImplementation(() => ({
+    ECSClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -37,7 +37,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: infoSpy,
     warn: warnSpy,
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({
@@ -60,10 +60,15 @@ import {
 } from '../../../src/provisioning/providers/ecs-provider.js';
 
 // The by-name lookup before a waiting CreateService (go-to-k/cdkd#4403): the
-// name is free.
-const serviceNameHeldSpy = vi
-  .spyOn(ECSProvider.prototype as unknown as { serviceNameHeld(): Promise<boolean> }, 'serviceNameHeld')
-  .mockResolvedValue(false);
+// name is free. A `vi.fn(impl)` assigned over the method, not a `vi.spyOn`: a
+// spy's `mockReset` restores the REAL method (go-to-k/cdkd#6928).
+const ecsPrototype = ECSProvider.prototype as unknown as { serviceNameHeld(): Promise<boolean> };
+const realServiceNameHeld = ecsPrototype.serviceNameHeld;
+const serviceNameHeldSpy = vi.fn(async () => false);
+ecsPrototype.serviceNameHeld = serviceNameHeldSpy;
+afterAll(() => {
+  ecsPrototype.serviceNameHeld = realServiceNameHeld;
+});
 import {
   setResolvedResourceTimeouts,
   clearResolvedResourceTimeouts,

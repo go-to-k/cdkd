@@ -54,7 +54,7 @@ vi.mock('@aws-sdk/client-cloudtrail', async () => {
   );
   return {
     ...actual,
-    CloudTrailClient: vi.fn().mockImplementation(() => ({
+    CloudTrailClient: vi.fn(() => ({
       send: mockCloudTrailSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -65,7 +65,7 @@ vi.mock('@aws-sdk/client-ecs', async () => {
   const actual = await vi.importActual<typeof import('@aws-sdk/client-ecs')>('@aws-sdk/client-ecs');
   return {
     ...actual,
-    ECSClient: vi.fn().mockImplementation(() => ({
+    ECSClient: vi.fn(() => ({
       send: mockEcsSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -78,7 +78,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

@@ -19,7 +19,7 @@ vi.mock('@aws-sdk/client-ecs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-ecs')>();
   return {
     ...actual,
-    ECSClient: vi.fn().mockImplementation(() => {
+    ECSClient: vi.fn(() => {
       const config = {
         region: () => Promise.resolve('us-east-1'),
         retryStrategy: async (): Promise<unknown> => baseStrategy,
@@ -41,7 +41,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: warnSpy,
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

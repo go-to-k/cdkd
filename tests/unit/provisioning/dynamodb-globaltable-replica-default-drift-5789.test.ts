@@ -21,7 +21,7 @@ vi.mock('@aws-sdk/client-dynamodb', async () => {
     await vi.importActual<typeof import('@aws-sdk/client-dynamodb')>('@aws-sdk/client-dynamodb');
   return {
     ...actual,
-    DynamoDBClient: vi.fn().mockImplementation((cfg: { region?: string } | undefined) => ({
+    DynamoDBClient: vi.fn((cfg: { region?: string } | undefined) => ({
       send: vi.fn(),
       config: { region: () => Promise.resolve(cfg?.region ?? 'us-east-1') },
     })),
@@ -29,7 +29,7 @@ vi.mock('@aws-sdk/client-dynamodb', async () => {
 });
 
 vi.mock('../../../src/utils/logger.js', () => {
-  const childLogger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), child: vi.fn().mockReturnThis() };
+  const childLogger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), child: vi.fn(function (this: unknown) { return this; }) };
   return {
     getLogger: () => ({ child: () => childLogger, debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
   };

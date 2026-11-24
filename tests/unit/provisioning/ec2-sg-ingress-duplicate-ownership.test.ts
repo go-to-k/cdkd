@@ -28,12 +28,11 @@ const { childLogger } = vi.hoisted(() => ({
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn(),
+    child: vi.fn((): unknown => childLogger),
   },
 }));
 
 vi.mock('../../../src/utils/logger.js', () => {
-  childLogger.child.mockReturnValue(childLogger);
   return {
     getLogger: () => ({
       child: () => childLogger,
@@ -80,7 +79,6 @@ describe('EC2Provider SecurityGroupIngress duplicate ownership (#4355)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     singleSent.length = 0;
-    childLogger.child.mockReturnValue(childLogger);
     provider = new EC2Provider();
     mockSend.mockImplementation((command: unknown) => {
       if (command instanceof AuthorizeSecurityGroupIngressCommand) {

@@ -25,7 +25,7 @@ vi.mock('@aws-sdk/client-application-auto-scaling', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-application-auto-scaling')>();
   return {
     ...actual,
-    ApplicationAutoScalingClient: vi.fn().mockImplementation((config?: { region?: string }) => ({
+    ApplicationAutoScalingClient: vi.fn((config?: { region?: string }) => ({
       send: (command: unknown) => autoScalingSend(command, config?.region),
     })),
   };

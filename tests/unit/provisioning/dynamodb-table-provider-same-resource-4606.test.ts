@@ -33,7 +33,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 // shared client's region; route it to the same double.
 vi.mock('@aws-sdk/client-dynamodb', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-dynamodb')>();
-  return { ...actual, DynamoDBClient: vi.fn().mockImplementation(() => sharedClient) };
+  return { ...actual, DynamoDBClient: vi.fn(() => sharedClient) };
 });
 
 import {

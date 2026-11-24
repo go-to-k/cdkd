@@ -10,9 +10,7 @@ vi.mock('@aws-sdk/client-glue', async (importOriginal) => {
   const { sdkClientStandIn } = await import('./data-create-retry-4639-harness.js');
   return {
     ...actual,
-    GlueClient: vi
-      .fn()
-      .mockImplementation((cfg?: Parameters<typeof sdkClientStandIn>[0]) => sdkClientStandIn(cfg)),
+    GlueClient: vi.fn((cfg?: Parameters<typeof sdkClientStandIn>[0]) => sdkClientStandIn(cfg)),
   };
 });
 vi.mock('@aws-sdk/client-sts', async (importOriginal) => {
@@ -20,9 +18,7 @@ vi.mock('@aws-sdk/client-sts', async (importOriginal) => {
   const { sdkClientStandIn } = await import('./data-create-retry-4639-harness.js');
   return {
     ...actual,
-    STSClient: vi
-      .fn()
-      .mockImplementation((cfg?: Parameters<typeof sdkClientStandIn>[0]) => sdkClientStandIn(cfg)),
+    STSClient: vi.fn((cfg?: Parameters<typeof sdkClientStandIn>[0]) => sdkClientStandIn(cfg)),
   };
 });
 
@@ -32,7 +28,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

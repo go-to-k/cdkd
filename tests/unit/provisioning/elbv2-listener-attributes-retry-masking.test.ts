@@ -48,7 +48,7 @@ vi.mock('@aws-sdk/client-elastic-load-balancing-v2', async () => {
   >('@aws-sdk/client-elastic-load-balancing-v2');
   return {
     ...actual,
-    ElasticLoadBalancingV2Client: vi.fn().mockImplementation(() => ({
+    ElasticLoadBalancingV2Client: vi.fn(() => ({
       send: (command: { constructor: { name: string }; input?: { Names?: unknown } }) =>
         // The by-name lookup before a create (go-to-k/cdkd#4403): the name is free.
         command.input?.Names !== undefined
@@ -63,7 +63,7 @@ vi.mock('@aws-sdk/client-elastic-load-balancing-v2', async () => {
           : mockSend(command),
       config: { region: () => Promise.resolve('us-east-1') },
     })),
-    waitUntilLoadBalancerAvailable: vi.fn().mockResolvedValue({ state: 'SUCCESS' }),
+    waitUntilLoadBalancerAvailable: vi.fn(async () => ({ state: 'SUCCESS' })),
   };
 });
 
