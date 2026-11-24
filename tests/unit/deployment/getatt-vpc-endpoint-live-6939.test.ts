@@ -249,5 +249,29 @@ describe('Fn::GetAtt AWS::EC2::VPCEndpoint live arm (#6939)', () => {
       ).toEqual(['eni-1', 'eni-2']);
       expect(sleep).toHaveBeenCalledTimes(1);
     });
+
+    it('a shared wait that ends but leaves the endpoint pending refuses, rather than serving a stale value', async () => {
+      mockEc2Send.mockResolvedValue(endpoint('pending'));
+      const awaitReady = vi.fn(() => Promise.resolve());
+      const resolver = new IntrinsicFunctionResolver();
+      const error = await resolver
+        .resolve({ 'Fn::GetAtt': ['Endpoint', 'NetworkInterfaceIds'] }, context(undefined, awaitReady))
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(IntrinsicResolutionRefusalError);
+      expect(String(error)).toMatch(/stayed pending/);
+      expect(mockEc2Send).toHaveBeenCalledTimes(2);
+    });
+
+    it('a shared wait that ends with the endpoint no longer listed refuses', async () => {
+      mockEc2Send.mockResolvedValueOnce(endpoint('pending')).mockResolvedValueOnce({ VpcEndpoints: [] });
+      const resolver = new IntrinsicFunctionResolver();
+      await expect(
+        resolver.resolve(
+          { 'Fn::GetAtt': ['Endpoint', 'DnsEntries'] },
+          context(undefined, () => Promise.resolve())
+        )
+      ).rejects.toThrow(/reported no such endpoint/);
+    });
   });
 });
+

@@ -89,7 +89,7 @@ cause rather than answered with the gateway's ID: the gateway stayed
 An Interface endpoint is `pending` for 30 to 50 seconds after the create call
 returns. Resources that need only its ID, its DNS names or its network
 interfaces are created at once: all three are in the create call's answer. A
-custom resource upstream-linked to the endpoint, such as one in the VPC that
+custom resource the endpoint is upstream of, such as one in the VPC that
 reads a secret through it, waits for it to be `available` before its handler
 is invoked (see
 [above](#when-the-deploy-needs-a-resource-it-did-not-wait-for)). Another
