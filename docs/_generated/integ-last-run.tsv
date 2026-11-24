@@ -203,7 +203,7 @@ eventbridge-pipes	2026-11-06T22:52:11Z	PASS	235	verify.sh	#5925 pipes split head
 eventbridge-scheduler	2026-11-06T23:59:22Z	PASS	57	verify.sh	#5935 scheduler-schedule split head; rc ok, orph clean
 eventbus-policy	2026-11-21T11:33:31Z	PASS	173	verify.sh	rc 0, 0 orphans (PR #6763)
 eventsourcemapping-race	2026-11-06T20:37:27Z	PASS	109	verify.sh	#5913 lambda-eventsource split head; rc ok, orph clean
-export	2026-11-24T06:59:47Z	PASS	280	verify.sh	rc ok, orph clean; #6887 step 4a, rebased on #6907
+export	2026-11-24T09:12:52Z	PASS	280	verify.sh	rc ok, orph clean; #6909 cfn-stack-name --tags arm (251s) + default
 export-nested-stack	2026-11-24T08:24:34Z	PASS	205	verify.sh	rc ok, orph clean; #6902 regression (flip-tag pre-flight)
 fallback-recreate-children	2026-11-04T20:04:01Z	PASS	100	verify.sh	rc ok, orph clean
 fifo-sqs-event-source	2026-11-20T11:22:10Z	PASS	196	verify.sh	PR6652 be63cc056, us-east-1, revert-identity kept, orph clean

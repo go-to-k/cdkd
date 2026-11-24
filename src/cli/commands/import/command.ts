@@ -1,3 +1,4 @@
+import { resolveStackTagsOverride } from '../../options/stack-tags.js';
 import { parseContextOptions } from '../../options.js';
 import { getLogger } from '../../../utils/logger.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
@@ -159,6 +160,10 @@ export async function importCommand(
           'The template is read to find logical IDs, resource types, and dependencies.'
       );
     }
+    // go-to-k/cdkd#6909: `--tags` (else cdk.json "tags") replaces the stack's
+    // own tags, as `cdkd deploy` resolves them; before synth so a bad value
+    // fails fast.
+    const stackTagsOverride = resolveStackTagsOverride(options.tags, (line) => logger.warn(line));
 
     logger.info(synthesisStatusMessage(appCmd, 'Synthesizing CDK app to read template...'));
     const synthesizer = new Synthesizer();
@@ -739,6 +744,7 @@ export async function importCommand(
         providerRegistry,
         assetRedirect,
         stateTemplate,
+        stackTagsOverride,
         overrides,
         userOverrideIds,
         autoModeCfnStackName,

@@ -1,5 +1,7 @@
 export interface ExportOptions {
   app?: string;
+  /** `--tags KEY=VALUE` (go-to-k/cdkd#6909): replaces the manifest stack tags, as deploy does. */
+  tags?: string[];
   output?: string;
   template?: string;
   cfnStackName?: string;

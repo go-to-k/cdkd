@@ -27,6 +27,8 @@ vi.mock('../../../src/utils/logger.js', () => ({
 }));
 
 vi.mock('../../../src/cli/config-loader.js', () => ({
+  // No cdk.json "tags" (go-to-k/cdkd#6909).
+  loadCdkJson: vi.fn(() => null),
   resolveStateBucketWithDefault: vi.fn(async () => 'test-bucket'),
   resolveApp: vi.fn(() => undefined),
   resolveUseCdkBootstrapAssets: vi.fn(() => false),
@@ -431,7 +433,7 @@ describe('cdkd export gives the CloudFormation stack its stack tags (go-to-k/cdk
     });
   }
 
-  async function runExport(): Promise<void> {
+  async function runExport(...extra: string[]): Promise<void> {
     const cmd = createExportCommand();
     cmd.exitOverride();
     await cmd
@@ -448,6 +450,7 @@ describe('cdkd export gives the CloudFormation stack its stack tags (go-to-k/cdk
           '--parameter',
           'Stage=prod',
           '-y',
+          ...extra,
         ],
         { from: 'user' }
       )
@@ -479,6 +482,43 @@ describe('cdkd export gives the CloudFormation stack its stack tags (go-to-k/cdk
       names.indexOf('ExecuteChangeSetCommand')
     );
     expect(mockDeleteState).toHaveBeenCalled();
+  });
+
+  it('sets the --tags override instead of the manifest stack tags, as the deploy would (go-to-k/cdkd#6909)', async () => {
+    synthesize({ team: 'manifest' });
+
+    await runExport('--tags', 'team=flag', '--tags', 'extra=x');
+
+    const update = cfnCalls.find((c) => c.name === 'UpdateStackCommand')!;
+    expect(update.input['Tags']).toEqual([
+      { Key: 'team', Value: 'flag' },
+      { Key: 'extra', Value: 'x' },
+    ]);
+  });
+
+  it('sets the --tags override on a --template export, which has no manifest (go-to-k/cdkd#6909)', async () => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const { tmpdir } = await import('node:os');
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-export-template-tags-'));
+    try {
+      const templatePath = join(dir, 'template.json');
+      writeFileSync(
+        templatePath,
+        JSON.stringify({
+          Parameters: { Stage: { Type: 'String' } },
+          Resources: { MyBucket: { Type: 'AWS::S3::Bucket', Properties: {} } },
+        })
+      );
+
+      await runExport('--template', templatePath, '--tags', 'team=flag');
+
+      expect(mockSynthesize).not.toHaveBeenCalled();
+      const update = cfnCalls.find((c) => c.name === 'UpdateStackCommand')!;
+      expect(update.input['Tags']).toEqual([{ Key: 'team', Value: 'flag' }]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('makes no tag update for a stack without stack tags', async () => {

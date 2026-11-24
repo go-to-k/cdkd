@@ -159,6 +159,7 @@ blocks, including a damaged state record and a recorded value of `***`.
 | `--cfn-stack-name <name>` | the cdkd stack name | Name of the destination CloudFormation stack. |
 | `--cfn-child-stack-name <pair>` | `~` replaced by `-` | Name for a nested child, as `'<cdkdName>=<cfnName>'`. Repeatable. |
 | `--template <path>` | — | Use this CloudFormation template (JSON or YAML) and skip synthesis. |
+| `-t`, `--tags <key=value>` | the stack's tags | Tags for the CloudFormation stack in place of the stack's own, as [`cdkd deploy --tags`](cli-deploy.md#stack-tags) applies them. Repeatable. Also read from `tags` in `cdk.json`. |
 | `--stack-region <region>` | — | Region of the cdkd state record. Required when the stack name has state in several regions. |
 | `--include-non-importable` | off | Migrate Custom Resources in a second phase instead of refusing. |
 | `--no-recreate-import-unsupported` | off | Refuse on `AWS::IAM::Policy` instead of deleting and re-creating it. |

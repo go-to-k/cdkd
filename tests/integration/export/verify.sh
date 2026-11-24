@@ -361,11 +361,13 @@ case "${VARIANT}" in
     ;;
 
   cfn-stack-name)
-    echo "[verify] step 3: cdkd export --cfn-stack-name ${CFN_STACK} -y"
+    echo "[verify] step 3: cdkd export --cfn-stack-name ${CFN_STACK} --tags ... -y"
+    # go-to-k/cdkd#6909: --tags replaces the manifest stack tags, as for deploy.
     ${CLI} export "${STACK}" \
       --cfn-stack-name "${CFN_STACK}" \
       --state-bucket "${STATE_BUCKET}" \
       --include-non-importable \
+      --tags cdkd-integ-stack-tag=export-6909-flag \
       -y \
       --verbose
     echo "[verify] step 4: verify CFn stack ${CFN_STACK} (NOT ${STACK}) exists"
@@ -376,6 +378,13 @@ case "${VARIANT}" in
       UPDATE_COMPLETE|IMPORT_COMPLETE) echo "[verify] step 4 ok" ;;
       *) echo "[verify] FAIL: expected UPDATE_COMPLETE / IMPORT_COMPLETE, got ${STATUS}"; exit 1 ;;
     esac
+    FLAG_TAG="$(aws cloudformation describe-stacks --stack-name "${CFN_STACK}" --region "${REGION}" \
+      --query "Stacks[0].Tags[?Key=='cdkd-integ-stack-tag'].Value | [0]" --output text)"
+    if [ "${FLAG_TAG}" != "export-6909-flag" ]; then
+      echo "[verify] FAIL: --tags did not reach the CFn stack: cdkd-integ-stack-tag is '${FLAG_TAG}'"
+      exit 1
+    fi
+    echo "[verify] step 4a ok: the --tags override is the CFn stack's tag"
     # Default-name CFn stack must NOT exist (renamed-only assertion).
     assert_gone "default-name CFn stack '${STACK}' should not exist (--cfn-stack-name redirects)" aws cloudformation describe-stacks --stack-name "${STACK}" --region "${REGION}"
     echo "[verify] step 4b: cdkd state cleared"
