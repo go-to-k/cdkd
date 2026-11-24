@@ -5,29 +5,38 @@ import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as route53 from 'aws-cdk-lib/aws-route53';
 
 /**
- * Per phase: whether the template declares the members the AWS SDK does not
- * model, and the comment both resources carry. Consecutive deploys differ on
- * each resource, since a NO_CHANGE resource is never provisioned and so
- * could never move between routes.
+ * Per phase: whether the template declares the nested members, and the
+ * comment both resources carry. Consecutive deploys differ on each resource
+ * they must provision, since a NO_CHANGE resource is never provisioned and so
+ * could never move between routes. (`route` is deployed twice: the second
+ * time with `--recreate-via-cc-api`, which provisions without a change.)
  */
 const PHASES: Record<string, { nested: boolean; comment: string }> = {
   base: { nested: false, comment: 'a' },
   route: { nested: true, comment: 'a' },
-  removal: { nested: false, comment: 'a' },
+  return: { nested: true, comment: 'c' },
+  removal: { nested: false, comment: 'c' },
   back: { nested: false, comment: 'b' },
 };
 
 /**
- * go-to-k/cdkd#6690: a nested member the shipped AWS SDK client does not model
+ * go-to-k/cdkd#6690: a nested member the SDK route cannot send
  * (`SDK_UNMODELLED_NESTED_PATHS`) routes its resource through Cloud Control,
- * which forwards it, instead of the SDK serializer dropping it.
+ * which forwards it, instead of the SDK provider dropping it.
  *
  * covers: AWS::CloudFront::Distribution, AWS::Route53::HostedZone, AWS::ApiGateway::RestApi, AWS::ApiGateway::Authorizer
  *
- * Both start on the SDK route; adding the member moves each to Cloud Control
- * on the SAME physical id (both are `sdk-coverage` sticky-exempt types, whose
+ * The zone starts on the SDK route; adding ChangeGuardrails moves it to Cloud
+ * Control on the SAME physical id (an `sdk-coverage` sticky-exempt type, whose
  * ids the two layers share); removing it keeps Cloud Control, which clears
- * it; the next change returns each to the SDK provider.
+ * it; the next change returns it to the SDK provider.
+ *
+ * The distribution is the go-to-k/cdkd#6932 arm: once the SDK modelled
+ * `OriginHttpVersion` (@aws-sdk/client-cloudfront 3.1175.0) it left the
+ * declaration, so adding the member keeps the SDK provider, which sends it,
+ * reads it back, and clears it on removal. A distribution an older cdkd put on
+ * Cloud Control for the member (reproduced here with `--recreate-via-cc-api`)
+ * returns to the SDK provider on its next change, still holding it.
  *
  * The members are property overrides: aws-cdk-lib's L1s may predate them.
  * `OriginHttpVersion: http2` is refused by CloudFront itself (AccessDenied to

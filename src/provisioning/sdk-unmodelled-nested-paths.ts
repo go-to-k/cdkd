@@ -1,6 +1,7 @@
 /**
- * Nested CFn members the AWS SDK client cdkd ships does not model yet, under a
- * top-level property an SDK provider handles (go-to-k/cdkd#6690).
+ * Nested CFn members the SDK route cannot send, under a top-level property an
+ * SDK provider handles (go-to-k/cdkd#6690): the AWS SDK client cdkd ships does
+ * not model them, or the provider does not send them.
  *
  * The SDK v3 serializer drops a member its model lacks, so the SDK route would
  * deploy such a template "successfully" without the value. A declared path
@@ -20,14 +21,9 @@
  * A LEAF.
  */
 export const SDK_UNMODELLED_NESTED_PATHS: Readonly<Record<string, readonly string[]>> = {
-  // @aws-sdk/client-cloudfront declares no OriginHttpVersion (3.1169.0
-  // installed, 3.1173.0 the latest published).
-  'AWS::CloudFront::Distribution': [
-    'DistributionConfig.Origins.CustomOriginConfig.OriginHttpVersion',
-    'DistributionConfig.Origins.VpcOriginConfig.OriginHttpVersion',
-  ],
-  // @aws-sdk/client-route-53 declares none of these (same versions); the provider
-  // also reads only Comment and EnableAcceleratedRecovery off the two blocks.
+  // @aws-sdk/client-route-53 3.1175.0 models these, but the provider reads
+  // only Comment and EnableAcceleratedRecovery off the two blocks, so the SDK
+  // route would still drop them.
   'AWS::Route53::HostedZone': [
     'HostedZoneConfig.HostedZoneTier',
     'HostedZoneFeatures.ChangeGuardrails',
@@ -39,7 +35,8 @@ export const SDK_UNMODELLED_NESTED_PATHS: Readonly<Record<string, readonly strin
 
 /** Rationale of a nested-member route; `path` is the declared dotted path. */
 export function sdkUnmodelledNestedRationale(path: string): string {
-  return `${path} is not modelled by the AWS SDK client cdkd ships, so the SDK provider would drop it`;
+  // Also the `--prefer-sdk-route` warning's reason, so it names no route.
+  return `${path} is not sent by cdkd's SDK provider`;
 }
 
 /**
