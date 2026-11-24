@@ -1881,6 +1881,7 @@
         "cc-to-sdk-reroute-common-types-2",
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
+        "cc-to-sdk-reroute-vpc-endpoint",
         "creation-policy-cfn-init",
         "deletion-ordering-complex",
         "destroy-interrupt",
@@ -2013,6 +2014,9 @@
           "l2"
         ],
         "cc-to-sdk-reroute-mount-target": [
+          "l2"
+        ],
+        "cc-to-sdk-reroute-vpc-endpoint": [
           "l2"
         ],
         "creation-policy-cfn-init": [
@@ -2277,6 +2281,7 @@
         "cc-to-sdk-reroute-common-types-11",
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
+        "cc-to-sdk-reroute-vpc-endpoint",
         "creation-policy-cfn-init",
         "deletion-ordering-complex",
         "destroy-interrupt",
@@ -2400,6 +2405,9 @@
           "l2"
         ],
         "cc-to-sdk-reroute-mount-target": [
+          "l2"
+        ],
+        "cc-to-sdk-reroute-vpc-endpoint": [
           "l2"
         ],
         "creation-policy-cfn-init": [
@@ -2690,6 +2698,7 @@
         "cc-to-sdk-reroute-common-types-11",
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
+        "cc-to-sdk-reroute-vpc-endpoint",
         "creation-policy-cfn-init",
         "deletion-ordering-complex",
         "destroy-interrupt",
@@ -2816,6 +2825,9 @@
           "l2"
         ],
         "cc-to-sdk-reroute-mount-target": [
+          "l2"
+        ],
+        "cc-to-sdk-reroute-vpc-endpoint": [
           "l2"
         ],
         "creation-policy-cfn-init": [
@@ -3077,6 +3089,7 @@
         "cc-to-sdk-reroute-common-types-11",
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
+        "cc-to-sdk-reroute-vpc-endpoint",
         "creation-policy-cfn-init",
         "deletion-ordering-complex",
         "destroy-interrupt",
@@ -3208,6 +3221,9 @@
           "l2"
         ],
         "cc-to-sdk-reroute-mount-target": [
+          "l2"
+        ],
+        "cc-to-sdk-reroute-vpc-endpoint": [
           "l2"
         ],
         "creation-policy-cfn-init": [
@@ -3464,6 +3480,7 @@
         "cc-to-sdk-reroute-common-types-11",
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
+        "cc-to-sdk-reroute-vpc-endpoint",
         "codebuild-project",
         "deletion-ordering-complex",
         "destroy-interrupt",
@@ -3548,6 +3565,9 @@
           "l2"
         ],
         "cc-to-sdk-reroute-mount-target": [
+          "l2"
+        ],
+        "cc-to-sdk-reroute-vpc-endpoint": [
           "l2"
         ],
         "codebuild-project": [
@@ -3781,6 +3801,7 @@
         "cc-to-sdk-reroute-common-types-4",
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
+        "cc-to-sdk-reroute-vpc-endpoint",
         "codebuild-project",
         "creation-policy-cfn-init",
         "deletion-ordering-complex",
@@ -3922,6 +3943,9 @@
           "l2"
         ],
         "cc-to-sdk-reroute-mount-target": [
+          "l2"
+        ],
+        "cc-to-sdk-reroute-vpc-endpoint": [
           "l2"
         ],
         "codebuild-project": [
@@ -4237,6 +4261,7 @@
         "cc-to-sdk-reroute-common-types-11",
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
+        "cc-to-sdk-reroute-vpc-endpoint",
         "creation-policy-cfn-init",
         "deletion-ordering-complex",
         "destroy-interrupt",
@@ -4360,6 +4385,9 @@
           "l2"
         ],
         "cc-to-sdk-reroute-mount-target": [
+          "l2"
+        ],
+        "cc-to-sdk-reroute-vpc-endpoint": [
           "l2"
         ],
         "creation-policy-cfn-init": [
@@ -4613,6 +4641,7 @@
         "cc-to-sdk-reroute-common-types-5",
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
+        "cc-to-sdk-reroute-vpc-endpoint",
         "codebuild-project",
         "creation-policy-cfn-init",
         "deletion-ordering-complex",
@@ -4769,6 +4798,9 @@
           "l2"
         ],
         "cc-to-sdk-reroute-mount-target": [
+          "l2"
+        ],
+        "cc-to-sdk-reroute-vpc-endpoint": [
           "l2"
         ],
         "codebuild-project": [
@@ -5085,9 +5117,14 @@
     {
       "resourceType": "AWS::EC2::VPCEndpoint",
       "integs": [
+        "cc-to-sdk-reroute-vpc-endpoint",
         "ec2-vpc-endpoint"
       ],
       "signals": {
+        "cc-to-sdk-reroute-vpc-endpoint": [
+          "l1",
+          "literal"
+        ],
         "ec2-vpc-endpoint": [
           "l1",
           "literal"
@@ -5113,6 +5150,7 @@
         "cc-to-sdk-reroute-common-types-11",
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
+        "cc-to-sdk-reroute-vpc-endpoint",
         "creation-policy-cfn-init",
         "deletion-ordering-complex",
         "destroy-interrupt",
@@ -5240,6 +5278,9 @@
           "l2"
         ],
         "cc-to-sdk-reroute-mount-target": [
+          "l2"
+        ],
+        "cc-to-sdk-reroute-vpc-endpoint": [
           "l2"
         ],
         "creation-policy-cfn-init": [

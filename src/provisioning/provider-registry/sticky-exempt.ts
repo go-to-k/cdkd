@@ -32,6 +32,17 @@ const batch12 = (physicalIdForm: string): StickyExemptEntry => ({
 });
 
 /**
+ * Batch 2 of go-to-k/cdkd#6454: the types admitted with AWS::EC2::VPC, whose
+ * entry carries the batch's rationale. Its fixture observed every flip.
+ */
+const batch2 = (physicalIdForm: string): StickyExemptEntry => ({
+  mode: 'sdk-coverage',
+  physicalIdForm,
+  issue: 'https://github.com/go-to-k/cdkd/issues/6454',
+  integFixture: 'cc-to-sdk-reroute-common-types-2',
+});
+
+/**
  * Types exempt from the sticky `provisionedBy: 'cc-api'` routing rule.
  *
  * The sticky rule (rule 2 in `getProviderFor`) exists to avoid physical-ID
@@ -432,126 +443,76 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
   ],
   [
     'AWS::EC2::InternetGateway',
-    {
-      // Admitted with AWS::EC2::VPC (go-to-k/cdkd#6454, batch 2).
-      mode: 'sdk-coverage' as const,
-      physicalIdForm:
-        'both layers store the bare `igw-...` id: the schema primaryIdentifier is ' +
-        'InternetGatewayId and EC2Provider.create records the CreateInternetGateway id',
-      issue: 'https://github.com/go-to-k/cdkd/issues/6454',
-      integFixture: 'cc-to-sdk-reroute-common-types-2',
-    },
+    batch2(
+      'both layers store the bare `igw-...` id: the schema primaryIdentifier is ' +
+        'InternetGatewayId and EC2Provider.create records the CreateInternetGateway id'
+    ),
   ],
   [
     'AWS::EC2::NetworkAcl',
-    {
-      // Admitted with AWS::EC2::VPC (go-to-k/cdkd#6454, batch 2).
-      mode: 'sdk-coverage' as const,
-      physicalIdForm:
-        'both layers store the bare `acl-...` id: the schema primaryIdentifier is Id ' +
-        'and EC2Provider.create records the CreateNetworkAcl NetworkAclId',
-      issue: 'https://github.com/go-to-k/cdkd/issues/6454',
-      integFixture: 'cc-to-sdk-reroute-common-types-2',
-    },
+    batch2(
+      'both layers store the bare `acl-...` id: the schema primaryIdentifier is Id ' +
+        'and EC2Provider.create records the CreateNetworkAcl NetworkAclId'
+    ),
   ],
   [
     'AWS::IAM::User',
-    {
-      // Admitted with AWS::EC2::VPC (go-to-k/cdkd#6454, batch 2).
-      mode: 'sdk-coverage' as const,
-      physicalIdForm:
-        'both layers store the bare user name: the schema primaryIdentifier is UserName ' +
-        'and the IAM user provider records the name it created the user under',
-      issue: 'https://github.com/go-to-k/cdkd/issues/6454',
-      integFixture: 'cc-to-sdk-reroute-common-types-2',
-    },
+    batch2(
+      'both layers store the bare user name: the schema primaryIdentifier is UserName ' +
+        'and the IAM user provider records the name it created the user under'
+    ),
   ],
   [
     'AWS::IAM::Group',
-    {
-      // Admitted with AWS::EC2::VPC (go-to-k/cdkd#6454, batch 2).
-      mode: 'sdk-coverage' as const,
-      physicalIdForm:
-        'both layers store the bare group name: the schema primaryIdentifier is ' +
-        'GroupName and the IAM group provider records the name it created the group under',
-      issue: 'https://github.com/go-to-k/cdkd/issues/6454',
-      integFixture: 'cc-to-sdk-reroute-common-types-2',
-    },
+    batch2(
+      'both layers store the bare group name: the schema primaryIdentifier is ' +
+        'GroupName and the IAM group provider records the name it created the group under'
+    ),
   ],
   [
     'AWS::IAM::InstanceProfile',
-    {
-      // Admitted with AWS::EC2::VPC (go-to-k/cdkd#6454, batch 2).
-      mode: 'sdk-coverage' as const,
-      physicalIdForm:
-        'both layers store the bare instance profile name: the schema primaryIdentifier ' +
-        'is InstanceProfileName and IAMInstanceProfileProvider.create records that name',
-      issue: 'https://github.com/go-to-k/cdkd/issues/6454',
-      integFixture: 'cc-to-sdk-reroute-common-types-2',
-    },
+    batch2(
+      'both layers store the bare instance profile name: the schema primaryIdentifier ' +
+        'is InstanceProfileName and IAMInstanceProfileProvider.create records that name'
+    ),
   ],
   [
     'AWS::StepFunctions::StateMachine',
-    {
-      // Admitted with AWS::EC2::VPC (go-to-k/cdkd#6454, batch 2).
-      mode: 'sdk-coverage' as const,
-      physicalIdForm:
-        'both layers store the state machine ARN: the schema primaryIdentifier is Arn ' +
-        'and StepFunctionsProvider.create records the CreateStateMachine stateMachineArn',
-      issue: 'https://github.com/go-to-k/cdkd/issues/6454',
-      integFixture: 'cc-to-sdk-reroute-common-types-2',
-    },
+    batch2(
+      'both layers store the state machine ARN: the schema primaryIdentifier is Arn ' +
+        'and StepFunctionsProvider.create records the CreateStateMachine stateMachineArn'
+    ),
   ],
   [
     'AWS::Lambda::Url',
-    {
-      // Admitted with AWS::EC2::VPC (go-to-k/cdkd#6454, batch 2).
-      mode: 'sdk-coverage' as const,
-      physicalIdForm:
-        'both layers store the function ARN the URL is on, alias-qualified when ' +
+    batch2(
+      'both layers store the function ARN the URL is on, alias-qualified when ' +
         'Qualifier is set: the schema primaryIdentifier is FunctionArn and ' +
         'LambdaUrlProvider.create records the CreateFunctionUrlConfig FunctionArn ' +
-        '(the fixture observed both the unqualified and the qualified form)',
-      issue: 'https://github.com/go-to-k/cdkd/issues/6454',
-      integFixture: 'cc-to-sdk-reroute-common-types-2',
-    },
+        '(the fixture observed both the unqualified and the qualified form)'
+    ),
   ],
   [
     'AWS::Cognito::UserPool',
-    {
-      // Admitted with AWS::EC2::VPC (go-to-k/cdkd#6454, batch 2).
-      mode: 'sdk-coverage' as const,
-      physicalIdForm:
-        'both layers store the bare `<region>_...` pool id: the schema primaryIdentifier ' +
-        'is UserPoolId and CognitoUserPoolProvider.create records the CreateUserPool Id',
-      issue: 'https://github.com/go-to-k/cdkd/issues/6454',
-      integFixture: 'cc-to-sdk-reroute-common-types-2',
-    },
+    batch2(
+      'both layers store the bare `<region>_...` pool id: the schema primaryIdentifier ' +
+        'is UserPoolId and CognitoUserPoolProvider.create records the CreateUserPool Id'
+    ),
   ],
   [
     'AWS::CloudFront::OriginAccessControl',
-    {
-      // Admitted with AWS::EC2::VPC (go-to-k/cdkd#6454, batch 2).
-      mode: 'sdk-coverage' as const,
-      physicalIdForm:
-        'both layers store the bare origin access control id: the schema ' +
+    batch2(
+      'both layers store the bare origin access control id: the schema ' +
         'primaryIdentifier is Id and CloudFrontOACProvider.create records the ' +
-        'CreateOriginAccessControl Id',
-      issue: 'https://github.com/go-to-k/cdkd/issues/6454',
-      integFixture: 'cc-to-sdk-reroute-common-types-2',
-    },
+        'CreateOriginAccessControl Id'
+    ),
   ],
   [
     'AWS::KMS::Alias',
-    {
-      // Admitted with AWS::EC2::VPC (go-to-k/cdkd#6454, batch 2).
-      mode: 'sdk-coverage' as const,
-      physicalIdForm:
-        'both layers store the `alias/...` name: the schema primaryIdentifier is ' +
-        'AliasName and the KMS alias provider records the name it created the alias under',
-      issue: 'https://github.com/go-to-k/cdkd/issues/6454',
-      integFixture: 'cc-to-sdk-reroute-common-types-2',
-    },
+    batch2(
+      'both layers store the `alias/...` name: the schema primaryIdentifier is ' +
+        'AliasName and the KMS alias provider records the name it created the alias under'
+    ),
   ],
   [
     'AWS::CloudFront::CloudFrontOriginAccessIdentity',
@@ -996,5 +957,19 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
   [
     'AWS::Logs::Delivery',
     batch12('both layers store the DeliveryId (primaryIdentifier) CreateDelivery mints'),
+  ],
+  [
+    'AWS::EC2::VPCEndpoint',
+    {
+      // Cloud Control only until its SDK provider (go-to-k/cdkd#6939), so an
+      // endpoint deployed before then is recorded `cc-api`. The fixture's
+      // witness is the endpoint's AWS-minted network interface id.
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'both layers store the bare `vpce-...` id: the schema primaryIdentifier is Id and ' +
+        'EC2VPCEndpointProvider.create records the CreateVpcEndpoint VpcEndpointId',
+      issue: 'https://github.com/go-to-k/cdkd/issues/6943',
+      integFixture: 'cc-to-sdk-reroute-vpc-endpoint',
+    },
   ],
 ]);

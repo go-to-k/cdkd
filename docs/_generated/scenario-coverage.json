@@ -751,6 +751,11 @@
       "scenarios": []
     },
     {
+      "name": "cc-to-sdk-reroute-vpc-endpoint",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "cc-write-only-create-only",
       "annotated": false,
       "scenarios": []
@@ -4270,6 +4275,7 @@
     "cc-to-sdk-reroute-hosted-zone",
     "cc-to-sdk-reroute-mount-target",
     "cc-to-sdk-reroute-rest-api",
+    "cc-to-sdk-reroute-vpc-endpoint",
     "cc-write-only-create-only",
     "cc-write-only-secret-version",
     "cdk-cross-account-lookup-role",

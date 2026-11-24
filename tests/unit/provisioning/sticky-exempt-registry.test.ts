@@ -298,6 +298,18 @@ describe('sticky-CC exemption table', () => {
       'AWS::Logs::Delivery',
       { DeliverySourceName: 's', DeliveryDestinationArn: 'arn', Tags: [{ Key: 'k', Value: 'v' }] },
     ],
+    // go-to-k/cdkd#6943, as the reroute fixture declares it.
+    [
+      'AWS::EC2::VPCEndpoint',
+      {
+        VpcId: 'vpc-1',
+        VpcEndpointType: 'Interface',
+        ServiceName: 'com.amazonaws.us-east-1.sts',
+        SubnetIds: ['subnet-1'],
+        SecurityGroupIds: ['sg-1'],
+        PrivateDnsEnabled: false,
+      },
+    ],
   ])(
     'a cc-api %s returns to its SDK provider on a mutating deploy, and a pin declines it (issues #5641, #5654, #6454)',
     (resourceType, properties) => {
