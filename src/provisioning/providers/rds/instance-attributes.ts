@@ -40,6 +40,10 @@ export interface DbInstanceAttributeRead {
  * that did not wait (`--no-wait`), nor from a read taken mid-modification (an update returns before
  * RDS finishes most modifications). Absent, a reference re-reads the
  * instance (the stale-attribute heal) or is refused.
+ *
+ * go-to-k/cdkd#6913: `MasterUserSecret.SecretArn` (CDK's
+ * `attrMasterUserSecretSecretArn`) is absent when RDS manages no master
+ * secret for the instance.
  */
 export function dbInstanceAttributes(
   instance: DBInstance | undefined,
@@ -53,6 +57,7 @@ export function dbInstanceAttributes(
     'Endpoint.HostedZoneId': instance?.Endpoint?.HostedZoneId,
     Arn: instance?.DBInstanceArn,
     DbiResourceId: instance?.DbiResourceId,
+    'MasterUserSecret.SecretArn': instance?.MasterUserSecret?.SecretArn,
     'ListenerEndpoint.Address': instance?.ListenerEndpoint?.Address,
     'ListenerEndpoint.Port': stringifyIfAssigned(instance?.ListenerEndpoint?.Port),
     'ListenerEndpoint.HostedZoneId': instance?.ListenerEndpoint?.HostedZoneId,

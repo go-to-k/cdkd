@@ -22,6 +22,11 @@ export interface DbClusterAttributeExtras {
  * so an object and its members cannot disagree, and a record written before
  * the change serves them too. `StorageEncryptionType` is recorded as RDS
  * reports it (`sse-kms`), absent when it reports none.
+ *
+ * go-to-k/cdkd#6913: `MasterUserSecret.SecretArn` (CDK's
+ * `attrMasterUserSecretSecretArn`, which the L2's `secret` reads under
+ * `manageMasterUserPassword`) is absent when RDS manages no master secret,
+ * and `StorageThroughput` when RDS reports none.
  */
 export function dbClusterAttributes(
   cluster: DBCluster | undefined,
@@ -36,6 +41,8 @@ export function dbClusterAttributes(
     Arn: cluster?.DBClusterArn,
     DBClusterResourceId: cluster?.DbClusterResourceId,
     StorageEncryptionType: cluster?.StorageEncryptionType,
+    StorageThroughput: cluster?.StorageThroughput,
+    'MasterUserSecret.SecretArn': cluster?.MasterUserSecret?.SecretArn,
     [EXPRESS_WRITER_RESOURCE_ID_KEY]: extras.expressWriterId,
   });
 }

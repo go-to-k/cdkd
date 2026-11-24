@@ -288,6 +288,18 @@ expect_json "Cluster ReadEndpoint" "$(echoed ClReadEndpoint)" "$(jq -c '{Address
 expect_json "Cluster StorageEncryptionType" "$(echoed ClStorageEncryptionType)" "$(jq -c '.StorageEncryptionType' <<<"${CL}")"
 expect_json "Cluster StorageEncryptionType value" "$(echoed ClStorageEncryptionType)" '"sse-kms"'
 
+# #6913: the managed master-user secret ARNs, as RDS reports them.
+for pair in "Db:${DB}" "Cl:${CL}"; do
+  label="${pair%%:*}"
+  live="$(jq -c '.MasterUserSecret.SecretArn' <<<"${pair#*:}")"
+  case "${live}" in '"arn:'*':secretsmanager:'*) ;; *) echo "FAIL: ${label} describe reports no MasterUserSecret.SecretArn: ${live}" >&2; exit 1 ;; esac
+  expect_json "${label} MasterUserSecret.SecretArn" "$(echoed "${label}MasterUserSecretArn")" "${live}"
+done
+# The cluster's StorageThroughput is recorded as RDS reports it (absent: null both sides).
+expect_json "Cluster record StorageThroughput" \
+  "$(state_json | jq -c '[.resources[] | select(.resourceType == "AWS::RDS::DBCluster") | .attributes.StorageThroughput] | first')" \
+  "$(jq -c '.StorageThroughput' <<<"${CL}")"
+
 # A dotted member and the whole object come from one record.
 expect_json "Db Endpoint.Address == Endpoint.Address" "\"$(output_of DbEndpointAddress)\"" "$(jq -c '.DbEndpoint.Address' <<<"${ECHO}")"
 expect_json "Db Endpoint.Port == Endpoint.Port" "\"$(output_of DbEndpointPort)\"" "$(jq -c '.DbEndpoint.Port' <<<"${ECHO}")"

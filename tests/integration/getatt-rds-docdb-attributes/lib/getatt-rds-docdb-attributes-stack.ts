@@ -23,6 +23,11 @@ import type { Construct } from 'constructs';
  * returns is not measured, so the reference is served either from the
  * create's record or from the re-read a record lacking it triggers.
  *
+ * `MasterUserSecret.SecretArn` (#6913) is referenced on both RDS types and
+ * compared with the describe's; the cluster's recorded `StorageThroughput` is
+ * compared with the describe's without a reference (whether RDS reports one
+ * for an Aurora standard-storage cluster is not measured).
+ *
  * Nothing here declares a property the SDK providers leave unwired (such as
  * `deleteAutomatedBackups`), which would route the resource through Cloud
  * Control and skip the path under test; verify.sh asserts the route.
@@ -164,6 +169,10 @@ exports.handler = async (event) => {
         ClEndpoint: getAtt(cluster, 'Endpoint'),
         ClReadEndpoint: getAtt(cluster, 'ReadEndpoint'),
         ClStorageEncryptionType: getAtt(cluster, 'StorageEncryptionType'),
+        // #6913: the AWS-managed master-user secret's ARN, which the L2s'
+        // `secret` reads under `manageMasterUserPassword`.
+        DbMasterUserSecretArn: cfnDb.attrMasterUserSecretSecretArn,
+        ClMasterUserSecretArn: cluster.attrMasterUserSecretSecretArn,
         ...(isUpdate && {
           DocServerlessV2PlatformVersion: getAtt(docCluster, 'ServerlessV2PlatformVersion'),
         }),
