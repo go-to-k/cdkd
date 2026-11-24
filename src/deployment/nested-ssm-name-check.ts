@@ -60,14 +60,82 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** `Fn::Sub` text naming `${Resource.Attribute}` (a dotted variable). */
+const DOTTED_SUB_VARIABLE = /\$\{[^}!]*\.[^}]*\}/;
+
+/**
+ * Whether the template node READS anything that can resolve to a value cdkd
+ * stores masked: an `Fn::GetAtt`, a dotted `Fn::Sub` variable, or a
+ * cross-stack read. Conservative on purpose: every attribute read counts,
+ * declared `NoEcho` or not.
+ */
+function readsAnyAttribute(node: unknown, depth = 0): boolean {
+  if (depth > 64) return true;
+  if (typeof node === 'string') return false;
+  if (Array.isArray(node)) return node.some((item) => readsAnyAttribute(item, depth + 1));
+  if (!isObject(node)) return false;
+  for (const [key, value] of Object.entries(node)) {
+    if (key === 'Fn::GetAtt' || key === 'Fn::ImportValue' || key === 'Fn::GetStackOutput') {
+      return true;
+    }
+    if (key === 'Fn::Sub') {
+      const text = Array.isArray(value) ? value[0] : value;
+      if (typeof text !== 'string' || DOTTED_SUB_VARIABLE.test(text)) return true;
+      if (Array.isArray(value) && readsAnyAttribute(value[1], depth + 1)) return true;
+      continue;
+    }
+    if (readsAnyAttribute(value, depth + 1)) return true;
+  }
+  return false;
+}
+
+/**
+ * The template node a record coordinate was resolved from: followed while the
+ * template spells the same key or index, stopping at the first intrinsic (its
+ * whole subtree then stands for the leaf).
+ */
+function templateNodeAt(properties: unknown, coordinate: NoEchoCoordinate): unknown {
+  let node = properties;
+  for (const segment of coordinate) {
+    if (isObject(node) && Object.keys(node).some((k) => k === 'Ref' || k.startsWith('Fn::'))) {
+      return node;
+    }
+    if (Array.isArray(node) && typeof segment === 'number' && segment < node.length) {
+      node = node[segment];
+    } else if (isObject(node) && typeof segment === 'string' && Object.hasOwn(node, segment)) {
+      node = node[segment];
+    } else {
+      return node;
+    }
+  }
+  return node;
+}
+
+/**
+ * The record's `noEchoLeaves` coordinates whose mask is a `NoEcho` PARAMETER's
+ * value only (go-to-k/cdkd#6906): the template reads no attribute there. Such
+ * a value is resolved afresh by the update, so it reaches no redacted read.
+ * A coordinate the template reads an attribute at (a declared `NoEcho`
+ * output or custom-resource attribute also lands in `noEchoLeaves`) is left
+ * out, so its mask still defers.
+ */
+function parameterOnlyCoordinates(
+  record: ResourceState | undefined,
+  templateProperties: unknown
+): NoEchoCoordinate[] {
+  if (record === undefined) return [];
+  return (noEchoLeavesOf(record) ?? []).filter(
+    (coordinate) => !readsAnyAttribute(templateNodeAt(templateProperties, coordinate))
+  );
+}
+
 /**
  * Whether `value` holds the stored mask anywhere outside `marked` (a bounded
- * walk). A mask at a `noEchoLeaves` coordinate stands for a `NoEcho`
- * PARAMETER's value (go-to-k/cdkd#4043), which the update resolves afresh,
- * so it reaches no redacted read: since go-to-k/cdkd#6896 a row's recorded
- * `Tags` can hold one, and deferring for it left the heal undone for good
- * (go-to-k/cdkd#6906). Any other mask (a masked attribute the row reads, an
- * unmarked legacy record) still defers.
+ * walk). Since go-to-k/cdkd#6896 a row's recorded `Tags` can hold a `NoEcho`
+ * parameter's mask, and deferring for it left the heal undone for good
+ * (go-to-k/cdkd#6906); `marked` is {@link parameterOnlyCoordinates}. Any
+ * other mask (an attribute the row reads, an unmarked legacy record) still
+ * defers.
  */
 function holdsUnmarkedMask(
   value: unknown,
@@ -125,7 +193,14 @@ async function checkLevel(
   let complete = true;
   const force = (logicalId: string): void => {
     const record = records?.[logicalId];
-    const marked = (record && noEchoLeavesOf(record)) ?? [];
+    const resource =
+      isObject(template.Resources) && Object.hasOwn(template.Resources, logicalId)
+        ? template.Resources[logicalId]
+        : undefined;
+    const marked = parameterOnlyCoordinates(
+      record,
+      isObject(resource) ? resource['Properties'] : undefined
+    );
     (holdsUnmarkedMask(record?.properties, marked) ? deferredRows : forcedRows).add(logicalId);
   };
   await Promise.all(

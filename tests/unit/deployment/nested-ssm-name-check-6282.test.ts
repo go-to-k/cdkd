@@ -323,12 +323,68 @@ describe('checkNestedSsmNames (go-to-k/cdkd#6282)', () => {
         noEchoLeaves: [['Parameters', 'In'], ['Tags', 0, 'Value']],
       },
     });
-    expect(await check(state, readRecord)).toEqual({
-      forcedRows: new Set(['Child']),
-      deferredRows: new Set(),
-      complete: true,
-    });
+    const template: CloudFormationTemplate = {
+      Parameters: { Pin: { Type: 'String', NoEcho: true } },
+      Resources: {
+        Child: {
+          Type: NESTED,
+          Properties: {
+            TemplateURL: 'https://s3.amazonaws.com/assets/child.json',
+            Tags: [{ Key: 'pin', Value: { 'Fn::Join': ['', ['x-', { Ref: 'Pin' }]] } }],
+            Parameters: { In: { Ref: 'Pin' } },
+          },
+        },
+      },
+    } as CloudFormationTemplate;
+    expect(
+      await checkNestedSsmNames({
+        state,
+        template,
+        stackName: PARENT,
+        region: REGION,
+        nestedTemplates,
+        readRecord,
+      })
+    ).toEqual({ forcedRows: new Set(['Child']), deferredRows: new Set(), complete: true });
   });
+
+  it.each<[string, unknown]>([
+    ['an Fn::GetAtt of a NoEcho output', { 'Fn::GetAtt': ['Other', 'Outputs.Secret'] }],
+    ['a dotted Fn::Sub variable beside a NoEcho parameter', { 'Fn::Sub': '${Pin}-${Other.Outputs.Secret}' }],
+  ])(
+    'still defers a noEchoLeaves coordinate whose template reads %s (a redacted read)',
+    async (_label, source) => {
+      const child = childClean();
+      child.resources['Param'] = ssmRecord(`/${generated(CHILD, 'Param')}`);
+      const readRecord = readerOver({ [CHILD]: child });
+      const state = stateOf(PARENT, {
+        Child: {
+          ...nestedRecord(),
+          properties: { TemplateURL: 'https://s3.amazonaws.com/assets/child.json', Parameters: { In: '***' } },
+          noEchoLeaves: [['Parameters', 'In']],
+        },
+      });
+      const template = {
+        Parameters: { Pin: { Type: 'String', NoEcho: true } },
+        Resources: {
+          Child: {
+            Type: NESTED,
+            Properties: { TemplateURL: 'https://s3.amazonaws.com/assets/child.json', Parameters: { In: source } },
+          },
+        },
+      } as CloudFormationTemplate;
+      expect(
+        await checkNestedSsmNames({
+          state,
+          template,
+          stackName: PARENT,
+          region: REGION,
+          nestedTemplates,
+          readRecord,
+        })
+      ).toEqual({ forcedRows: new Set(), deferredRows: new Set(['Child']), complete: true });
+    }
+  );
 
   it('still defers a row whose mask sits outside its noEchoLeaves coordinates', async () => {
     const child = childClean();
@@ -613,6 +669,9 @@ describe('DeployEngine - nested children checked once (go-to-k/cdkd#6282)', () =
             TemplateURL: 'https://s3.amazonaws.com/assets/child.json',
             Parameters: { In: '***' },
           },
+          // What a real deploy writes for a leaf that IS the GetAtt of a
+          // declared NoEcho attribute (go-to-k/cdkd#6906 review).
+          noEchoLeaves: [['Parameters', 'In']],
           dependencies: ['Other'],
         },
       }),
