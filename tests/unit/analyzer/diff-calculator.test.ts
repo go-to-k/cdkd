@@ -1565,6 +1565,46 @@ describe('DiffCalculator - replacement propagation to dependents (issue #807)', 
     }
   );
 
+  it.each([
+    ['ManageMasterUserPassword', false, 'UPDATE'],
+    ['BackupRetentionPeriod', 7, 'NO_CHANGE'],
+  ] as const)(
+    'a reader of a DBCluster MasterUserSecret.SecretArn: a %s change -> %s (go-to-k/cdkd#6913)',
+    async (prop, next, expected) => {
+      const arn = 'arn:aws:secretsmanager:us-east-1:123:secret:rds!cluster-1-AbC';
+      const props = { Engine: 'aurora-postgresql', ManageMasterUserPassword: true, BackupRetentionPeriod: 1 };
+      const state = baseState();
+      state.resources['Db'] = {
+        physicalId: 'db',
+        resourceType: 'AWS::RDS::DBCluster',
+        properties: props,
+        attributes: { 'MasterUserSecret.SecretArn': arn },
+      };
+      state.resources['Param'] = {
+        physicalId: 'p',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Name: 'p', Type: 'String', Value: arn },
+        attributes: {},
+      };
+      const template: CloudFormationTemplate = {
+        Resources: {
+          Db: { Type: 'AWS::RDS::DBCluster', Properties: { ...props, [prop]: next } },
+          Param: {
+            Type: 'AWS::SSM::Parameter',
+            Properties: {
+              Name: 'p',
+              Type: 'String',
+              Value: { 'Fn::GetAtt': ['Db', 'MasterUserSecret.SecretArn'] },
+            },
+          },
+        },
+      };
+      const changes = await new DiffCalculator().calculateDiff(state, template, makeResolver(state));
+      expect(changes.get('Db')?.changeType).toBe('UPDATE');
+      expect(changes.get('Param')?.changeType).toBe(expected);
+    }
+  );
+
   it('does not promote a reader of an Instance PrivateIp (a stop/start keeps it; issue #5446)', async () => {
     const state = baseState();
     state.resources['Inst'] = {

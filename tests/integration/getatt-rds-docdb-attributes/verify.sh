@@ -295,10 +295,20 @@ for pair in "Db:${DB}" "Cl:${CL}"; do
   case "${live}" in '"arn:'*':secretsmanager:'*) ;; *) echo "FAIL: ${label} describe reports no MasterUserSecret.SecretArn: ${live}" >&2; exit 1 ;; esac
   expect_json "${label} MasterUserSecret.SecretArn" "$(echoed "${label}MasterUserSecretArn")" "${live}"
 done
-# The cluster's StorageThroughput is recorded as RDS reports it (absent: null both sides).
-expect_json "Cluster record StorageThroughput" \
-  "$(state_json | jq -c '[.resources[] | select(.resourceType == "AWS::RDS::DBCluster") | .attributes.StorageThroughput] | first')" \
-  "$(jq -c '.StorageThroughput' <<<"${CL}")"
+# The cluster's StorageThroughput is recorded as RDS reports it. An Aurora
+# standard-storage cluster may report none, which this run cannot then compare.
+CL_RECORDS="$(state_json | jq -c '[.resources[] | select(.resourceType == "AWS::RDS::DBCluster") | .attributes]')"
+[ "$(jq 'length' <<<"${CL_RECORDS}")" -eq 1 ] || { echo "FAIL: expected one AWS::RDS::DBCluster record: ${CL_RECORDS}" >&2; exit 1; }
+LIVE_THROUGHPUT="$(jq -c '.StorageThroughput' <<<"${CL}")"
+if [ "${LIVE_THROUGHPUT}" = "null" ]; then
+  if jq -e '.[0] | has("StorageThroughput")' <<<"${CL_RECORDS}" >/dev/null; then
+    echo "FAIL: RDS reports no StorageThroughput, yet the record holds one: ${CL_RECORDS}" >&2
+    exit 1
+  fi
+  echo "    NOTE: RDS reports no StorageThroughput for this cluster; not compared"
+else
+  expect_json "Cluster record StorageThroughput" "$(jq -c '.[0].StorageThroughput' <<<"${CL_RECORDS}")" "${LIVE_THROUGHPUT}"
+fi
 
 # A dotted member and the whole object come from one record.
 expect_json "Db Endpoint.Address == Endpoint.Address" "\"$(output_of DbEndpointAddress)\"" "$(jq -c '.DbEndpoint.Address' <<<"${ECHO}")"

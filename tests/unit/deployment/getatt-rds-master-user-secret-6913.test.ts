@@ -122,12 +122,24 @@ describe('Fn::GetAtt MasterUserSecret.SecretArn resolves (#6913)', () => {
     });
   }
 
-  it('a cluster with no managed master secret is refused, never served its identifier', async () => {
-    const healer = healerReading(dbClusterAttributes(CLUSTER));
-    await expect(
-      resolveAttr('AWS::RDS::DBCluster', dbClusterAttributes(CLUSTER), 'MasterUserSecret.SecretArn', healer)
-    ).rejects.toThrow(/MasterUserSecret\.SecretArn/);
-  });
+  for (const [type, attributes] of [
+    ['AWS::RDS::DBCluster', dbClusterAttributes(CLUSTER)],
+    ['AWS::RDS::DBInstance', dbInstanceAttributes(INSTANCE, { settled: true })],
+  ] as const) {
+    it(`${type} with no managed master secret is refused with the remedy, never served its identifier`, async () => {
+      const healer = healerReading(attributes);
+      const err = await resolveAttr(type, attributes, 'MasterUserSecret.SecretArn', healer).then(
+        () => undefined,
+        (e: unknown) => e
+      );
+      expect(String(err)).toContain(
+        'RDS manages no master user secret for it: declare ManageMasterUserPassword: true, or remove the reference.'
+      );
+      // Not the stale-record wording, which asks for a cdkd issue.
+      expect(String(err)).not.toMatch(/file an issue/i);
+      expect(healer).toHaveBeenCalledTimes(1);
+    });
+  }
 
   it('DBCluster StorageThroughput is served from the record as a number', async () => {
     await expect(

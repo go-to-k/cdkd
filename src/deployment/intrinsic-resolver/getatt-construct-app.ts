@@ -16,6 +16,14 @@ import { DescribeAvailabilityZonesCommand } from '@aws-sdk/client-ec2';
 import { secretPhysicalIdSegment } from '../../provisioning/secret-physical-id.js';
 
 /**
+ * go-to-k/cdkd#6913: what a completed read reporting no
+ * `MasterUserSecret.SecretArn` means — RDS manages no master secret for the
+ * resource, and CloudFormation cannot return one for it either.
+ */
+const MASTER_USER_SECRET_REMEDY =
+  'RDS manages no master user secret for it: declare ManageMasterUserPassword: true, or remove the reference.';
+
+/**
  * `constructAttribute`'s per-type handlers for AWS::Events::Rule through AWS::SNS::Topic, moved
  * verbatim and in order (issue #4337). Returns {@link NOT_CONSTRUCTED} when none
  * matched. Keep the `constructAttributeFor*` name and the `getatt-construct-*.ts`
@@ -504,6 +512,20 @@ export async function constructAttributeForAppTypes(
       case 'DBInstanceArn':
       case 'Arn':
         return `arn:${partition}:rds:${region}:${accountId}:db:${physicalId}`;
+      case 'MasterUserSecret.SecretArn':
+        // go-to-k/cdkd#6913: recorded from the describe; absent when RDS
+        // manages no master secret, which CloudFormation cannot serve either.
+        if (resourceType !== 'AWS::RDS::DBInstance') break;
+        healBeforeConstructing(resolver, context);
+        refuseUnconstructibleAttribute(resolver, {
+          logicalId,
+          attributeName,
+          resourceType,
+          context,
+          why: 'cdkd cannot build it from the DB instance identifier',
+          remedyWhenHealCompleted: MASTER_USER_SECRET_REMEDY,
+        });
+        break;
       case 'DbiResourceId':
       // go-to-k/cdkd#6242: the whole objects, which the resolver assembles
       // from the recorded flat members (`assembleFlatObjectAttribute`); a
@@ -575,6 +597,19 @@ export async function constructAttributeForAppTypes(
           why: 'cdkd cannot build it from the DB cluster identifier',
           remedyWhenHealCompleted:
             'RDS does not report it for the cluster yet (it may still be creating): deploy again once the cluster is available.',
+        });
+        break;
+      case 'MasterUserSecret.SecretArn':
+        // go-to-k/cdkd#6913: as for the DB instance above.
+        if (resourceType !== 'AWS::RDS::DBCluster') break;
+        healBeforeConstructing(resolver, context);
+        refuseUnconstructibleAttribute(resolver, {
+          logicalId,
+          attributeName,
+          resourceType,
+          context,
+          why: 'cdkd cannot build it from the DB cluster identifier',
+          remedyWhenHealCompleted: MASTER_USER_SECRET_REMEDY,
         });
     }
     return guardedPhysicalIdFallback(
