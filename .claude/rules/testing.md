@@ -44,6 +44,10 @@ paths:
 - MEASURE consumption before pinning `toHaveBeenCalledTimes(N)`: the pin catches
   a call-COUNT change, while a SURPLUS primer leaves the count unchanged and only
   the detector sees it. Fixing the priming beats draining.
+- **Set a mock default in `beforeEach` / a test, or as `vi.fn(impl)`**:
+  elsewhere (module scope, `describe` body, `vi.mock` factory, `vi.hoisted`,
+  other hooks) `mockReset` wipes it (#6928). `check-module-scope-mock-defaults.ts`
+  refuses a new one; its per-file allow-list only shrinks.
 
 ## Mutation probes
 
