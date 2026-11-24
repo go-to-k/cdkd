@@ -201,7 +201,8 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
   cc-api and FAILED its arm); push once
   `git status --porcelain` is empty (`docs/cli-flag-coverage.md` is outside `_generated/`).
 - **A bot can push onto the PR's own branch mid-merge** (#5123): merge with
-  `--match-head-commit <the sha you verified>`, take a head you did not author
+  `--match-head-commit <the sha you verified>` (all 40 hex, `git rev-parse
+  HEAD`: a short sha is refused), take a head you did not author
   by the MERGE ARM, never a force-push, and approve its runs —
   `gh run list --branch <b> --status action_required --json databaseId,headSha`,
   then `gh api -X POST repos/<R>/actions/runs/<id>/approve` ONLY where `headSha`
