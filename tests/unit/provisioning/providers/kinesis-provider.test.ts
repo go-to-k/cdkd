@@ -6,7 +6,7 @@ vi.mock('@aws-sdk/client-kinesis', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-kinesis')>();
   return {
     ...actual,
-    KinesisClient: vi.fn().mockImplementation(() => ({
+    KinesisClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -19,7 +19,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({
@@ -38,8 +38,8 @@ vi.mock('../../../../src/provisioning/resource-name.js', () => ({
   isNameGeneration: (value: unknown) =>
     typeof value === 'number' && Number.isSafeInteger(value) && value >= 0,
   stackInstanceNameSuffix: () => '000000000000',
-  generateResourceName: vi.fn().mockReturnValue('generated-stream-name'),
-  generatedNameFor: vi.fn().mockReturnValue('generated-stream-name'),
+  generateResourceName: vi.fn(() => 'generated-stream-name'),
+  generatedNameFor: vi.fn(() => 'generated-stream-name'),
 }));
 
 import {

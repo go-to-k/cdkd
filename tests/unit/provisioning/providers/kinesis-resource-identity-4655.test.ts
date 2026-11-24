@@ -18,7 +18,7 @@ vi.mock('@aws-sdk/client-kinesis', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-kinesis')>();
   return {
     ...actual,
-    KinesisClient: vi.fn().mockImplementation(() => ({
+    KinesisClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve(clientRegion.value) },
     })),

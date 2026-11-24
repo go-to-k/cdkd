@@ -6,7 +6,7 @@ vi.mock('@aws-sdk/client-s3tables', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-s3tables')>();
   return {
     ...actual,
-    S3TablesClient: vi.fn().mockImplementation(() => ({
+    S3TablesClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -19,7 +19,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

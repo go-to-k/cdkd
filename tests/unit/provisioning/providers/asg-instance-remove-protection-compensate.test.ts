@@ -20,7 +20,7 @@ vi.mock('@aws-sdk/client-auto-scaling', async (importOriginal) => {
   const orig = (await importOriginal()) as Record<string, unknown>;
   return {
     ...orig,
-    AutoScalingClient: vi.fn().mockImplementation(() => ({
+    AutoScalingClient: vi.fn(() => ({
       send: asgSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -31,7 +31,7 @@ vi.mock('@aws-sdk/client-ec2', async (importOriginal) => {
   const orig = (await importOriginal()) as Record<string, unknown>;
   return {
     ...orig,
-    EC2Client: vi.fn().mockImplementation(() => ({
+    EC2Client: vi.fn(() => ({
       send: ec2Send,
       config: { region: () => Promise.resolve('us-east-1') },
     })),

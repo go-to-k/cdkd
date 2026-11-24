@@ -13,15 +13,14 @@ vi.mock('@aws-sdk/client-kinesis', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-kinesis')>();
   return {
     ...actual,
-    KinesisClient: vi.fn().mockImplementation(() => ({
+    KinesisClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
   };
 });
 vi.mock('../../../../src/utils/logger.js', () => {
-  const child = { debug: vi.fn(), info: vi.fn(), warn: warnSpy, error: vi.fn(), child: vi.fn() };
-  child.child.mockReturnValue(child);
+  const child = { debug: vi.fn(), info: vi.fn(), warn: warnSpy, error: vi.fn(), child: vi.fn((): unknown => child) };
   return { getLogger: () => ({ ...child, child: () => child }) };
 });
 

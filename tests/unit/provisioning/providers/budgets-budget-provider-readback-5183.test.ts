@@ -7,7 +7,7 @@ vi.mock('@aws-sdk/client-budgets', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-budgets')>();
   return {
     ...actual,
-    BudgetsClient: vi.fn().mockImplementation(() => ({
+    BudgetsClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),

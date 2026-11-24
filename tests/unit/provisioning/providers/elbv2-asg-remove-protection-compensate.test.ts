@@ -20,7 +20,7 @@ vi.mock('@aws-sdk/client-elastic-load-balancing-v2', async (importOriginal) => {
   const orig = (await importOriginal()) as Record<string, unknown>;
   return {
     ...orig,
-    ElasticLoadBalancingV2Client: vi.fn().mockImplementation(() => ({
+    ElasticLoadBalancingV2Client: vi.fn(() => ({
       send: elbv2Send,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -31,7 +31,7 @@ vi.mock('@aws-sdk/client-auto-scaling', async (importOriginal) => {
   const orig = (await importOriginal()) as Record<string, unknown>;
   return {
     ...orig,
-    AutoScalingClient: vi.fn().mockImplementation(() => ({
+    AutoScalingClient: vi.fn(() => ({
       send: asgSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -43,7 +43,7 @@ const childLogger = {
   info: vi.fn(),
   warn: vi.fn(),
   error: vi.fn(),
-  child: vi.fn().mockReturnThis(),
+  child: vi.fn(function (this: unknown) { return this; }),
 };
 vi.mock('../../../../src/utils/logger.js', () => ({
   getLogger: () => ({

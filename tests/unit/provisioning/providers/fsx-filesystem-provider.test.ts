@@ -7,7 +7,7 @@ vi.mock('@aws-sdk/client-fsx', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-fsx')>();
   return {
     ...actual,
-    FSxClient: vi.fn().mockImplementation(() => ({
+    FSxClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -20,7 +20,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

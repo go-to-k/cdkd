@@ -12,15 +12,14 @@ vi.mock('@aws-sdk/client-dynamodb', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-dynamodb')>();
   return {
     ...actual,
-    DynamoDBClient: vi.fn().mockImplementation(() => ({
+    DynamoDBClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
   };
 });
 vi.mock('../../../../src/utils/logger.js', () => {
-  const child = { debug: debugSpy, info: vi.fn(), warn: warnSpy, error: vi.fn(), child: vi.fn() };
-  child.child.mockReturnValue(child);
+  const child = { debug: debugSpy, info: vi.fn(), warn: warnSpy, error: vi.fn(), child: vi.fn((): unknown => child) };
   return { getLogger: () => ({ ...child, child: () => child }) };
 });
 

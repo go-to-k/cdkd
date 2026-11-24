@@ -6,7 +6,7 @@ vi.mock('@aws-sdk/client-appsync', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-appsync')>();
   return {
     ...actual,
-    AppSyncClient: vi.fn().mockImplementation(() => ({
+    AppSyncClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -43,7 +43,7 @@ vi.mock('@aws-sdk/client-sts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-sts')>();
   return {
     ...actual,
-    STSClient: vi.fn().mockImplementation(() => ({ send: stsMockSend, destroy: vi.fn() })),
+    STSClient: vi.fn(() => ({ send: stsMockSend, destroy: vi.fn() })),
   };
 });
 
@@ -53,7 +53,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

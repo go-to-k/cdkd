@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 const mockGlueSend = vi.hoisted(() => vi.fn());
-const mockStsSend = vi.hoisted(() => vi.fn());
+const mockStsSend = vi.hoisted(() => vi.fn(() => Promise.resolve({ Account: '123456789012' })));
 const mockLoggerWarn = vi.hoisted(() => vi.fn());
 const mockLoggerDebug = vi.hoisted(() => vi.fn());
 
@@ -9,7 +9,7 @@ vi.mock('@aws-sdk/client-glue', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-glue')>();
   return {
     ...actual,
-    GlueClient: vi.fn().mockImplementation(() => ({
+    GlueClient: vi.fn(() => ({
       send: mockGlueSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -20,7 +20,7 @@ vi.mock('@aws-sdk/client-sts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-sts')>();
   return {
     ...actual,
-    STSClient: vi.fn().mockImplementation(() => ({ send: mockStsSend })),
+    STSClient: vi.fn(() => ({ send: mockStsSend })),
   };
 });
 
@@ -30,7 +30,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: mockLoggerWarn,
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({
@@ -1425,10 +1425,9 @@ describe('Glue CatalogId move refusal (issue #3756)', () => {
   });
 
   // This block primes STS itself (beforeEach); OLDER blocks further down rely
-  // on the answer the import block primed, so put that back afterwards.
+  // on the default answer, which mockReset restores from vi.fn(impl).
   afterEach(() => {
     mockStsSend.mockReset();
-    mockStsSend.mockResolvedValue({ Account: '123456789012' });
   });
 
   const db = (catalogId?: unknown) => ({
