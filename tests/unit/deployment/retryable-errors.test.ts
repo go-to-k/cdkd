@@ -2081,6 +2081,51 @@ describe('API Gateway v2 per-API mutation contention (#1607)', () => {
   });
 });
 
+describe('EventsV2 per-bus Subscriber contention (#6944)', () => {
+  // Verbatim from a live deploy (2026-11-24, ap-northeast-1) of six
+  // AWS::EventsV2::Subscriber on one event bus, request id redacted.
+  const subscriberMsg =
+    'CREATE failed for Sub0: This resource was modified concurrently. Please retry your request. ' +
+    '(Service: EventBridgeV2, Status Code: 409, Request ID: <id>) (SDK Attempt Count: 1)';
+
+  it('classifies the concurrent-modification 409 as retryable', () => {
+    expect(isRetryableTransientError(new Error(subscriberMsg), subscriberMsg)).toBe(true);
+  });
+
+  it.each([undefined, 'ResourceConflict', 'GeneralServiceException'])(
+    'classifies it as retryable on the Cloud Control path (handler code %s)',
+    (code) => {
+      const cc = new CloudControlOperationFailedError(
+        subscriberMsg,
+        'AWS::EventsV2::Subscriber',
+        'Sub0',
+        undefined,
+        code,
+        'CREATE'
+      );
+      expect(isRetryableTransientError(cc, subscriberMsg)).toBe(true);
+    }
+  );
+
+  it('matches by exactly its own entry', () => {
+    expect(RETRYABLE_ERROR_MESSAGE_PATTERNS.filter((p) => subscriberMsg.includes(p))).toEqual([
+      'This resource was modified concurrently',
+    ]);
+  });
+
+  it('keeps the pattern out of the dense IAM-propagation cadence', () => {
+    expect(isIamPropagationError(subscriberMsg)).toBe(false);
+  });
+
+  it('does not classify the bus-still-has-subscribers 409 as retryable', () => {
+    const msg =
+      'DELETE failed for Bus: The event bus cannot be deleted because it has one or more subscribers ' +
+      'that are not revoked. Delete or revoke them and retry. ' +
+      '(Service: EventBridgeV2, Status Code: 409, Request ID: <id>) (SDK Attempt Count: 1)';
+    expect(isRetryableTransientError(new Error(msg), msg)).toBe(false);
+  });
+});
+
 /**
  * Issue #1778: a cdkd-authored refusal is terminal by DECLARATION, so no
  * wording — in the message, in an interpolated logical id, in a

@@ -735,6 +735,15 @@ const OTHER_TRANSIENT_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // resources on each run, which is the signature of contention rather than of
   // a bad request. Issue #1607.
   'Unable to complete operation due to concurrent modification',
+  // EventBridge (EventsV2) serializes Subscriber mutations per event bus, so
+  // sibling `AWS::EventsV2::Subscriber` creates on ONE bus — parallel by
+  // design, as above — are refused with a 409 that asks for a retry ("This
+  // resource was modified concurrently. Please retry your request."). Observed
+  // live (2026-11-24, ap-northeast-1): six Subscribers on one bus failed 4 of 4
+  // deploys, the refused set moving between runs; six parallel
+  // `create-subscriber` CLI calls reproduce it without cdkd. Load-shaped
+  // contention, so the exponential half. Issue #6944.
+  'This resource was modified concurrently',
 ];
 
 /**
