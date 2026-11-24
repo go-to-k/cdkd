@@ -20,7 +20,7 @@ function clientMock(name: string) {
     const orig = (await importOriginal()) as Record<string, unknown>;
     return {
       ...orig,
-      [name]: vi.fn().mockImplementation(() => ({
+      [name]: vi.fn(() => ({
         send: mockSend,
         config: { region: () => Promise.resolve('us-east-1') },
       })),

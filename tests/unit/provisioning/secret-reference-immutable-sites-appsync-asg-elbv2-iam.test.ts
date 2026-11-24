@@ -28,7 +28,7 @@ function sdkClientMock(clientName: string) {
     const orig = (await importOriginal()) as Record<string, unknown>;
     return {
       ...orig,
-      [clientName]: vi.fn().mockImplementation(() => ({
+      [clientName]: vi.fn(() => ({
         send: mockSend,
         config: { region: () => Promise.resolve('us-east-1') },
       })),
