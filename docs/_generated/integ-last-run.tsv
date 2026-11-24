@@ -223,7 +223,7 @@ getatt-cache-kinesis-lambda-ec2	2026-11-14T19:24:51Z	PASS	757	verify.sh	rc ok, o
 getatt-cloudtrail-appsync	2026-11-14T06:03:17Z	PASS	99	verify.sh	rc ok, orph clean incl. CR log group; CFn A/B measured all three (#6242)
 getatt-fallback-guard	2026-11-04T21:15:18Z	PASS	140	verify.sh	rc 0, orphans clean (state+AWS, us-east-1)
 getatt-iam-waf-s3vectors-evaluator	2026-11-21T20:42:30Z	PASS	135	verify.sh	final PASS line, destroy clean, orph clean, shared state bucket
-getatt-rds-docdb-attributes	2026-11-14T19:24:51Z	PASS	1600	verify.sh	rc ok, orph clean (#6305)
+getatt-rds-docdb-attributes	2026-11-24T07:59:25Z	PASS	1965	verify.sh	rc ok, orph clean; MasterUserSecret Db/Cl OK, StorageThroughput not reported (#6914)
 getatt-vpc-managed-policy	2026-11-20T11:06:50Z	PASS	100	verify.sh	rc ok, orph clean; #6679 d7cb3dddb
 getstackoutput-crossregion	2026-11-21T11:36:21Z	PASS	341	verify.sh	rc 0, own bucket, 0 orphans (PR #6763)
 globaltable-delete-protection-preflight	2026-11-15T21:16:54Z	PASS	547	verify.sh	rc ok, orph clean (#6367); us-east-1 + us-west-2
