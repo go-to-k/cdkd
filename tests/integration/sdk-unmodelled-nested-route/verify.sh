@@ -278,6 +278,8 @@ echo "    OK: distribution ${DID} recorded on Cloud Control holding OriginHttpVe
 
 echo "==> Phase 5: THE 6932 ARM -- its next change returns the distribution to the SDK provider, same id, member kept"
 deploy return "${LOG_DIR}/return.log"
+grep -F "${DIST} (" "${LOG_DIR}/return.log" | grep -qF 'returning to the SDK provider' \
+  || { echo "FAIL: phase 5: the deploy never told the user ${DIST} returns to the SDK provider" >&2; exit 1; }
 load_state
 assert_layer "phase 5" "${DIST}" sdk
 assert_id "phase 5" "${DIST}" "${DID}"
