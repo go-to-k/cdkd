@@ -492,6 +492,12 @@ export function failedActionLabel(item: FailedOpPlanItem, skipFinalSnapshot: boo
         `— failed replacement deleted the old resource ${displacedPhysicalIdShown(op, getLogger(), undefined, op.previousState?.resourceType ?? op.resourceType) ?? 'a physical id'} ` +
         `before its create failed; nothing to revert, state still records it`
       );
+    case 'recreate-failed-replaced-deleted':
+      // go-to-k/cdkd#6958: the old link the failed replacement deleted first.
+      return (
+        `  - recreate ${logicalIdShown(op.logicalId)} (${resourceTypeShown(op.previousState?.resourceType ?? op.resourceType)}) ` +
+        `[FAILED replacement deleted the old resource ${displacedPhysicalIdShown(op, getLogger(), undefined, op.previousState?.resourceType ?? op.resourceType) ?? 'a physical id'} before its create failed; re-created from its recorded properties]`
+      );
     case 'skip-failed-superseded':
       // go-to-k/cdkd#1710: named (masked) like the mismatch below.
       return (

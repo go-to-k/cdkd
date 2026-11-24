@@ -31,7 +31,8 @@ export interface DestructiveChange {
   /** A removal a `cdkd refactor` would keep: where the resource reappears (go-to-k/cdkd#5203). */
   movedTo?: MovedTo;
   /**
-   * go-to-k/cdkd#6713: a `WILL_REPLACE` whose old copy the deploy deletes
+   * go-to-k/cdkd#6713: a `WILL_REPLACE` (or a delete-first type's
+   * `MAY_REPLACE`, go-to-k/cdkd#6958) whose old copy the deploy deletes
    * before it succeeds, so a failed deploy's rollback re-creates it from its
    * recorded properties only ({@link plannedEarlyDelete}).
    */
@@ -91,8 +92,12 @@ export function findDestructiveChanges(
     // state.json is hand-editable: a non-string recorded path is ignored.
     const recorded = typeof record?.constructPath === 'string' ? record.constructPath : undefined;
     const constructPath = constructPathOf(template, change.logicalId) ?? recorded;
+    // go-to-k/cdkd#6958: a delete-first type's order is its type's, so a
+    // replacement the deploy may make (a VPC's attachment while the VPC
+    // itself is replaced) carries the note too.
     const earlyDelete =
-      impact === 'WILL_REPLACE'
+      impact === 'WILL_REPLACE' ||
+      (impact === 'MAY_REPLACE' && replacesDeleteFirst(resourceType, change.resourceType))
         ? plannedEarlyDelete(change, resourceType, template, recreateTargets)
         : undefined;
     found.push({

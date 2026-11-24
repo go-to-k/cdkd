@@ -116,6 +116,39 @@ describe('findDestructiveChanges: earlyDelete (#6713)', () => {
     );
   });
 
+  it('an attachment that MAY be replaced (its VPC is) carries the note too (#6958)', () => {
+    const [found] = classify(
+      update('Link', 'AWS::EC2::VPCGatewayAttachment', {
+        propertyChanges: [
+          {
+            path: 'VpcId',
+            oldValue: 'vpc-a',
+            newValue: 'vpc-a',
+            requiresReplacement: true,
+            replacementPropagated: true,
+          },
+        ],
+      })
+    );
+    expect(found).toMatchObject({ impact: 'MAY_REPLACE', earlyDelete: 'before-create' });
+    // Another type's MAY_REPLACE stays without one.
+    const [other] = classify(
+      update('Acl', 'AWS::EC2::SubnetNetworkAclAssociation', {
+        propertyChanges: [
+          {
+            path: 'SubnetId',
+            oldValue: 's',
+            newValue: 's',
+            requiresReplacement: true,
+            replacementPropagated: true,
+          },
+        ],
+      })
+    );
+    expect(other).toMatchObject({ impact: 'MAY_REPLACE' });
+    expect(other).not.toHaveProperty('earlyDelete');
+  });
+
   it('a replaced gateway attachment under UpdateReplacePolicy: Retain keeps its old copy (#6958)', () => {
     const template: CloudFormationTemplate = {
       Resources: { Link: { Type: 'AWS::EC2::VPCGatewayAttachment', UpdateReplacePolicy: 'Retain' } },

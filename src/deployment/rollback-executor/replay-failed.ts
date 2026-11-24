@@ -74,6 +74,10 @@ import { withUnprovenUnsettled } from '../unsettled-convergence.js';
 import { skippedAsDeletedOutsideCdkd } from './replay-deleted-outside.js';
 import { noteRetainedResource } from '../../provisioning/providers/create-token-ledger.js';
 import { runDeleteAttempt } from '../../provisioning/providers/deletion-protection-compensation.js';
+import {
+  recreateFailedReplacedDeleted,
+  skipFailedReplacedDeleted,
+} from './replay-failed-replaced-deleted.js';
 
 /**
  * Revert a segment's FAILED in-flight operations (issue #1198). Opt-in via
@@ -198,23 +202,22 @@ export async function replayFailedOperationsUnbound(
           break;
         }
 
-        case 'skip-failed-replaced-deleted': {
-          // go-to-k/cdkd#4604: a delete-first replacement removed the old
-          // resource before its create failed. Nothing is reverted (there is
-          // nothing to revert onto); the record still names the removed id.
-          // Cleared with its orphan like every warned skip: kept alone, a later
-          // `--revert-failed` would aim a force-revert at a resource that is gone.
-          logger.warn(
-            safeMsg`  Rollback: Skipping failed UPDATE of ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}) — its replacement deleted the old resource ${mask(String(displayPhysicalId(op.previousState?.resourceType ?? op.resourceType, op.physicalId)))} before the new one's create failed, so there is nothing to revert` +
-              (options.forDestroy === true
-                ? '; the destroy drops its record with the stack'
-                : '; state still records it, and a deploy whose template still replaces it creates it again')
-          );
-          recordRollbackSkip(
-            skipScope,
+        case 'skip-failed-replaced-deleted':
+        case 'recreate-failed-replaced-deleted': {
+          const scope = {
+            ...skipScope,
             op,
-            'The failed UPDATE was a replacement that deleted the old resource before its create failed, so there is nothing to revert it onto; state still records the deleted resource.'
-          );
+            secrets,
+            resolver,
+            forDestroy: options.forDestroy === true,
+          };
+          if (action === 'skip-failed-replaced-deleted') skipFailedReplacedDeleted(scope);
+          else
+            await recreateFailedReplacedDeleted({
+              ...scope,
+              isInterrupted: options.isInterrupted,
+              afterOp: options.afterOp,
+            });
           break;
         }
 

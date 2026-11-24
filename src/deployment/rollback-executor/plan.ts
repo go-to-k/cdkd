@@ -29,6 +29,7 @@ export {
   isProvenDistinctRecord,
   recordUnderIdIsNotOwn,
   replacementNeverSwapped,
+  recreatesDeletedOld,
   demoteSupersededOrphans,
   isJournaledOrphan,
   planFailedOps,

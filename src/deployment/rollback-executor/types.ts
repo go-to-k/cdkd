@@ -555,6 +555,7 @@ export type FailedOpActionKind =
   | 'skip-failed-unknown' // failed CREATE with nothing recorded — cannot act
   | 'skip-failed-noop' // failed DELETE (resource still in place) / already handled
   | 'skip-failed-replaced-deleted' // failed replacement UPDATE whose delete-first removed the old resource (#4604) — warned
+  | 'recreate-failed-replaced-deleted' // ↑ of a `replacesDeleteFirst` type → re-create the old resource (#6958)
   | 'skip-failed-superseded' // proven failed-CREATE orphan later activity may own (#1710) — warned, nothing deleted
   | 'skip-failed-mismatch' // failed CREATE whose recorded physical id state no longer names — warned, nothing deleted (go-to-k/cdkd#4552)
   | 'skip-failed-absent' // failed UPDATE with no previousState / not in state

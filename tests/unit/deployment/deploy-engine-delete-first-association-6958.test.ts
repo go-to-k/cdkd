@@ -20,6 +20,7 @@ import type {
   FailedOperation,
 } from '../../../src/deployment/rollback-executor.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
+import { classifyFailedOp } from '../../../src/deployment/rollback-executor/plan.js';
 
 const printed = vi.hoisted(() => ({ info: [] as string[] }));
 vi.mock('../../../src/utils/logger.js', async () => {
@@ -115,6 +116,10 @@ describe('a gateway attachment or a route table association is replaced delete-f
   let journaledFailed: FailedOperation[][];
   let saved: StackState[];
   let routeFails: boolean;
+  /** How many of the next creates AWS refuses outright (an invalid value). */
+  let refuseCreates: number;
+  /** Ids AWS has ever minted: a re-created link gets a new one. */
+  let minted: Set<string>;
   let shape: Shape;
 
   beforeEach(() => {
@@ -125,11 +130,19 @@ describe('a gateway attachment or a route table association is replaced delete-f
     journaledFailed = [];
     saved = [];
     routeFails = false;
+    refuseCreates = 0;
+    minted = new Set(['link-a']);
     shape = SHAPES['attachment']!;
     live = new Map([['link-a', { [shape.holder]: 'h-1', [shape.moved]: 'a' }]]);
     provider = {
       create: vi.fn(async (_logicalId: string, _type: string, props: Record<string, unknown>) => {
-        const id = `link-${String(props[shape.moved])}`;
+        const base = `link-${String(props[shape.moved])}`;
+        const id = minted.has(base) ? `${base}-2` : base;
+        if (refuseCreates > 0) {
+          refuseCreates--;
+          order.push(`create ${id} refused`);
+          throw new Error('InvalidParameterValue: the create was refused');
+        }
         order.push(`create ${id}`);
         for (const [otherId, other] of live) {
           if (other[shape.holder] !== props[shape.holder]) continue;
@@ -144,6 +157,7 @@ describe('a gateway attachment or a route table association is replaced delete-f
           throw error;
         }
         live.set(id, { ...props });
+        minted.add(id);
         return { physicalId: id, attributes: {} };
       }),
       update: vi.fn(async (_logicalId: string, physicalId: string) => {
@@ -340,10 +354,35 @@ describe('a gateway attachment or a route table association is replaced delete-f
       'create link-b',
       'update route-1',
       'delete link-b',
-      'create link-a',
+      'create link-a-2',
     ]);
-    expect([...live.keys()]).toEqual(['link-a']);
-    expect(saved.at(-1)!.resources['Link']!.physicalId).toBe('link-a');
+    expect([...live.keys()]).toEqual(['link-a-2']);
+    expect(saved.at(-1)!.resources['Link']!.physicalId).toBe('link-a-2');
+  });
+
+  it('a refused re-create: the automatic rollback re-creates the deleted old link and records it', async () => {
+    refuseCreates = 1;
+    await expect(deploy({ engine: makeEngine({ noRollback: false }) })).rejects.toThrow();
+
+    // Forward: the old link is deleted, the new one refused, so nothing holds
+    // the gateway / subnet. The rollback re-creates the old link from its
+    // record, as CloudFormation's UPDATE_ROLLBACK does.
+    expect(order).toEqual(['delete link-a', 'create link-b refused', 'create link-a-2']);
+    expect([...live.keys()]).toEqual(['link-a-2']);
+    expect(live.get('link-a-2')).toEqual({ [shape.holder]: 'h-1', [shape.moved]: 'a' });
+    const record = saved.at(-1)!.resources['Link']!;
+    expect(record.physicalId).toBe('link-a-2');
+    expect(record.properties).toEqual({ [shape.holder]: 'h-1', [shape.moved]: 'a' });
+    expect(vi.mocked(provider.create).mock.calls[1]?.[3]).toMatchObject({ replayingState: true });
+  });
+
+  it('a refused re-create of an association is rolled back the same way', async () => {
+    shape = SHAPES['association']!;
+    live = new Map([['link-a', { [shape.holder]: 'h-1', [shape.moved]: 'a' }]]);
+    refuseCreates = 1;
+    await expect(deploy({ engine: makeEngine({ noRollback: false }) })).rejects.toThrow();
+    expect(order).toEqual(['delete link-a', 'create link-b refused', 'create link-a-2']);
+    expect(saved.at(-1)!.resources['Link']!.physicalId).toBe('link-a-2');
   });
 
   it('a failed re-create journals that the old link is already gone', async () => {
@@ -362,8 +401,19 @@ describe('a gateway attachment or a route table association is replaced delete-f
       'Failed to re-create Link after the delete-first replacement already deleted the old resource (link-a)'
     );
     expect(order).toEqual(['delete link-a', 'create refused']);
-    expect(journaledFailed[0]!.find((o) => o.logicalId === 'Link')).toMatchObject({
-      oldDeletedBeforeCreate: true,
-    });
+    const failedLink = journaledFailed[0]!.find((o) => o.logicalId === 'Link')!;
+    expect(failedLink).toMatchObject({ oldDeletedBeforeCreate: true });
+    // `cdkd rollback --revert-failed` plans the same re-create.
+    const records = saved.at(-1)!.resources;
+    expect(classifyFailedOp(failedLink, records, journaledFailed[0]!)).toBe(
+      'recreate-failed-replaced-deleted'
+    );
+    // A type the deploy replaces delete-first only on request keeps its plan.
+    const optIn = {
+      ...failedLink,
+      resourceType: ACL_ASSOCIATION,
+      previousState: { ...failedLink.previousState!, resourceType: ACL_ASSOCIATION },
+    };
+    expect(classifyFailedOp(optIn, records, [optIn])).not.toBe('recreate-failed-replaced-deleted');
   });
 });

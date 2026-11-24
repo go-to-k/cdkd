@@ -91,8 +91,9 @@ create. An IAM inline policy is the one case deleted right after the new one
 is created. An `AWS::EC2::VPCGatewayAttachment` or
 `AWS::EC2::SubnetRouteTableAssociation` is deleted before its replacement is
 created, as CloudFormation does: AWS refuses a second gateway on a VPC or a
-second route table on a subnet. Such a replacement happens when a VPC's CIDR
-changes or a subnet moves to another route table. Until the new one exists,
+second route table on a subnet. Such a replacement happens, for example, when the
+CIDR of a VPC without NAT gateways changes, or a subnet moves to another
+route table. Until the new one exists,
 the VPC has no internet gateway, or the subnet uses the VPC's main route table. Why these cases delete early, and what a
 rollback then does, is
 on [cdkd rollback: limitations](cli-rollback-limitations.md#reversing-a-replacement).

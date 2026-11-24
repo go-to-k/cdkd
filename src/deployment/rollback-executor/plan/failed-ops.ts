@@ -12,6 +12,7 @@ import { safeMsg } from '../../../utils/display-safe.js';
 import { RESOURCE_IDENTITY_TIMEOUT_MS } from '../orphan-identity.js';
 import type { ResourceIdentityVerdict } from '../../../types/resource.js';
 import { isTypeChangeOp } from './classify.js';
+import { replacesDeleteFirst } from '../../delete-first-replacement-types.js';
 
 /**
  * A failed CREATE that recorded no physical id: `classifyFailedOp` plans it
@@ -118,6 +119,12 @@ export function classifyFailedOp(
   }
   // UPDATE
   if (!current || !op.previousState) return 'skip-failed-absent';
+  // go-to-k/cdkd#6958: the old link a plain deploy deleted first is
+  // re-created, as CloudFormation's UPDATE_ROLLBACK does, while the record
+  // still names it; its replacement's orphan, if any, is deleted first.
+  if (recreatesDeletedOld(op) && current.physicalId === op.physicalId) {
+    return 'recreate-failed-replaced-deleted';
+  }
   // go-to-k/cdkd#4604: a replacement whose create made its new resource and
   // failed. The new resource is the sibling orphan entry's; this op applied
   // nothing to the record it names (create-first left the old resource alone,
@@ -138,6 +145,22 @@ export function classifyFailedOp(
   // another type's resource.
   if (isTypeChangeOp(op)) return 'skip-failed-type-change';
   return 'revert-failed-update';
+}
+
+/**
+ * go-to-k/cdkd#6958: a failed UPDATE of a type a plain deploy replaces
+ * delete-first, whose old resource the replacement deleted before the new
+ * one's create failed. Its rollback re-creates the old resource. Scoped to
+ * `replacesDeleteFirst`: the opt-in delete-first routes (`--replace`,
+ * `--recreate-via-*`) and the update-rejected fallback keep the warned skip.
+ */
+export function recreatesDeletedOld(op: FailedOperation): boolean {
+  return (
+    op.changeType === 'UPDATE' &&
+    op.oldDeletedBeforeCreate === true &&
+    op.previousState !== undefined &&
+    replacesDeleteFirst(op.previousState.resourceType, op.resourceType)
+  );
 }
 
 /**

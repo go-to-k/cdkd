@@ -18,8 +18,15 @@
  * current association, so cdkd's create-first order already succeeds there.
  *
  * Neither type holds anything beyond its recorded properties, so a failed
- * deploy's rollback re-creates the old link whole. A LEAF: the deploy engine
- * and the plan note (`analyzer/destructive-changes.ts`) both read it.
+ * deploy's rollback re-creates the old link whole, the failed op's replay
+ * included (`recreate-failed-replaced-deleted`). A LEAF: the deploy engine,
+ * the rollback plan and the plan note (`analyzer/destructive-changes.ts`)
+ * read it.
+ *
+ * Only a type with NO physical name and NO typed custom-resource payload may
+ * join: the delete-first branch in `update-replace/create-first.ts` skips
+ * `guardedReplacementCreate` (the generated-name holder check) and sends no
+ * `typedPayloadLeaves`.
  */
 const DELETE_FIRST_REPLACEMENT_TYPES: ReadonlySet<string> = new Set([
   'AWS::EC2::VPCGatewayAttachment',
