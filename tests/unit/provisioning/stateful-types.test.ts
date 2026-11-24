@@ -106,6 +106,13 @@ describe('STATEFUL_TYPES (#615)', () => {
     expect(STATEFUL_TYPES.has('AWS::CloudFront::Distribution')).toBe(true);
   });
 
+  it('guards a Connect instance and a claimed Connect phone number (#6917)', () => {
+    for (const resourceType of ['AWS::Connect::Instance', 'AWS::Connect::PhoneNumber']) {
+      expect(isStatefulRecreateTargetSync(resourceType, {}, undefined)).toBe('always');
+      expect(isStatefulRecreateTargetForReplace(resourceType, {}, undefined)).toBe('always');
+    }
+  });
+
   it('excludes ephemeral types where destroy+recreate loses no user data', () => {
     expect(STATEFUL_TYPES.has('AWS::Lambda::Function')).toBe(false);
     expect(STATEFUL_TYPES.has('AWS::IAM::Role')).toBe(false);

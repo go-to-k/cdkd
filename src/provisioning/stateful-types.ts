@@ -511,6 +511,10 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   'AWS::Cases::Domain',
   'AWS::CustomerProfiles::Domain',
   'AWS::DataZone::Domain',
+  // A Connect instance holds what the template does not declare: users,
+  // queues, routing profiles, console-made contact flows, claimed phone
+  // numbers and contact history (go-to-k/cdkd#6917).
+  'AWS::Connect::Instance',
 
   // Clean Rooms tables hold populated mapping and intermediate-result data,
   // not just a reference to a configured table.
@@ -571,6 +575,10 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   // ships `DeletionProtectionEnabled` on both, which is the same judgement.
   'AWS::SMSVOICE::PhoneNumber',
   'AWS::SMSVOICE::SenderId',
+  // A claimed Connect number is released on delete in the same way. Unlike
+  // the two SMS Voice types, AWS ships no deletion protection for it: the
+  // release alone puts it here.
+  'AWS::Connect::PhoneNumber',
 ]);
 
 /**

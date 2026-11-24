@@ -405,13 +405,13 @@ Deleting one of these loses all data in it, whatever its state.
 | Identity / config | `AWS::Cognito::UserPool`, `AWS::SecretsManager::Secret`, `AWS::SSM::Parameter`, `AWS::AppConfig::ConfigurationProfile`, `AWS::DirectoryService::MicrosoftAD` |
 | Runtime-written stores | `AWS::CloudFront::KeyValueStore`, `AWS::Connect::DataTable` |
 | Backup vaults | `AWS::Backup::BackupVault`, `AWS::Backup::LogicallyAirGappedBackupVault` |
-| Service domains holding records | `AWS::Cases::Domain`, `AWS::CustomerProfiles::Domain`, `AWS::DataZone::Domain`, `AWS::SageMaker::Domain`, `AWS::AgentRegistry::Registry`, `AWS::HealthAgent::Domain`, `AWS::SMSVOICE::NotifyConfiguration`, `AWS::WellArchitected::AgentProfile`, `AWS::WellArchitected::AgentOrganizationalProfile` |
+| Service domains holding records | `AWS::Cases::Domain`, `AWS::CustomerProfiles::Domain`, `AWS::DataZone::Domain`, `AWS::SageMaker::Domain`, `AWS::AgentRegistry::Registry`, `AWS::HealthAgent::Domain`, `AWS::SMSVOICE::NotifyConfiguration`, `AWS::WellArchitected::AgentProfile`, `AWS::WellArchitected::AgentOrganizationalProfile`, `AWS::Connect::Instance` |
 | Encryption keys | `AWS::CloudHSM::Cluster`, `AWS::KMS::Key`, `AWS::KMS::ReplicaKey`, `AWS::Transfer::HostKey` |
 | Source control / artifacts | `AWS::CodeCommit::Repository`, `AWS::CodeArtifact::Repository`, `AWS::CodeArtifact::Domain` |
 | Metadata catalog | `AWS::Glue::Database`, `AWS::Glue::Table` |
 | Retained records | `AWS::IoTSiteWise::Workspace`, `AWS::CloudWatch::Space`, `AWS::AIOps::InvestigationGroup`, `AWS::SES::MailManagerArchive`, `AWS::Rbin::Rule` |
 | Nested stacks | `AWS::CloudFormation::Stack` |
-| Edge / identifier immutability | `AWS::CloudFront::Distribution`, `AWS::SMSVOICE::PhoneNumber`, `AWS::SMSVOICE::SenderId` |
+| Edge / identifier immutability | `AWS::CloudFront::Distribution`, `AWS::SMSVOICE::PhoneNumber`, `AWS::SMSVOICE::SenderId`, `AWS::Connect::PhoneNumber` |
 
 Some entries are less obvious than a database:
 
