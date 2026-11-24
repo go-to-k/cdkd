@@ -993,6 +993,23 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     },
   ],
   [
+    'AWS::Connect::Instance',
+    {
+      handled: new Set<string>([
+        'Attributes',
+        'DirectoryId',
+        'IdentityManagementType',
+        'InstanceAlias',
+        'Tags',
+      ]),
+      sdkUnwired: new Map<string, string>(),
+      createOnlyDrops: new Set<string>(),
+      readOnly: new Set<string>(['Arn', 'CreatedTime', 'Id', 'InstanceStatus', 'ServiceRole']),
+      primaryIdentifier: new Set<string>(['Arn']),
+      ccRouteUnavailable: false,
+    },
+  ],
+  [
     'AWS::DLM::LifecyclePolicy',
     {
       handled: new Set<string>([

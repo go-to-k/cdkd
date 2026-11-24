@@ -12,11 +12,11 @@ For every SDK provider type and every top-level property its `handledProperties`
 
 ## Summary
 
-- SDK provider types: **147** (without a readback, reported as `drift unknown`: **2**)
-- Handled properties classified: **1566**
-- Named on the readback path: **1425**
+- SDK provider types: **148** (without a readback, reported as `drift unknown`: **2**)
+- Handled properties classified: **1571**
+- Named on the readback path: **1429**
 - Declared unreadable by `getDriftUnknownPaths`: **118**
-- In the committed baseline (does NOT block CI): **23**
+- In the committed baseline (does NOT block CI): **24**
 - Classified though the schema capture does not list them: **12**
 - **Gaps (blocks CI): 0**
 
@@ -30,6 +30,7 @@ For every SDK provider type and every top-level property its `handledProperties`
 | `AWS::CloudFormation::WaitCondition` | `Count` | baseline |  | cdkd-side input to the S3 signal poll: no AWS resource holds it |
 | `AWS::CloudFormation::WaitCondition` | `Handle` | baseline |  | cdkd-side input to the S3 signal poll: no AWS resource holds it |
 | `AWS::CloudFormation::WaitCondition` | `Timeout` | baseline |  | cdkd-side input to the S3 signal poll: no AWS resource holds it |
+| `AWS::Connect::Instance` | `DirectoryId` | baseline |  | write-only in the CloudFormation registry schema: AWS never returns it |
 | `AWS::DocDB::DBCluster` | `MasterUserPassword` | baseline |  | a password: DescribeDBClusters never returns it |
 | `AWS::EFS::FileSystem` | `BypassPolicyLockoutSafetyCheck` | baseline |  | write-only in the CloudFormation registry schema: AWS never returns it |
 | `AWS::Events::EventBus` | `EventSourceName` | baseline |  | write-only in the CloudFormation registry schema: AWS never returns it |
@@ -94,6 +95,7 @@ For every SDK provider type and every top-level property its `handledProperties`
 | `AWS::CodeBuild::Project` | `CodeBuildProvider` | Artifacts, AutoRetryLimit, BadgeEnabled, BuildBatchConfig, Cache, ConcurrentBuildLimit, Description, EncryptionKey, Environment, FileSystemLocations, LogsConfig, Name, QueuedTimeoutInMinutes, ResourceAccessRole, SecondaryArtifacts, SecondarySources, SecondarySourceVersions, ServiceRole, Source, SourceVersion, Tags, TimeoutInMinutes, Visibility, VpcConfig | Triggers |
 | `AWS::CodeCommit::Repository` | `CodeCommitRepositoryProvider` | KmsKeyId, RepositoryDescription, RepositoryName, Tags, Triggers | Code |
 | `AWS::Cognito::UserPool` | `CognitoUserPoolProvider` | AccountRecoverySetting, AdminCreateUserConfig, AliasAttributes, AutoVerifiedAttributes, DcrConfiguration, DeletionProtection, DeviceConfiguration, EmailAuthenticationMessage, EmailAuthenticationSubject, EmailConfiguration, EmailVerificationMessage, EmailVerificationSubject, EnabledMfas, IssuerConfiguration, KeyConfiguration, LambdaConfig, MfaConfiguration, Policies, Schema, SmsAuthenticationMessage, SmsConfiguration, SmsVerificationMessage, UserAttributeUpdateSettings, UsernameAttributes, UsernameConfiguration, UserPoolAddOns, UserPoolName, UserPoolTags, UserPoolTier, VerificationMessageTemplate, WebAuthnFactorConfiguration, WebAuthnRelyingPartyID, WebAuthnUserVerification |  |
+| `AWS::Connect::Instance` | `ConnectInstanceProvider` | Attributes, IdentityManagementType, InstanceAlias, Tags |  |
 | `AWS::DLM::LifecyclePolicy` | `DLMLifecyclePolicyProvider` | CopyTags, CreateInterval, CrossRegionCopyTargets, DefaultPolicy, Description, Exclusions, ExecutionRoleArn, ExtendDeletion, PolicyDetails, RetainInterval, State, Tags |  |
 | `AWS::DocDB::DBCluster` | `DocDBProvider` | BackupRetentionPeriod, CopyTagsToSnapshot, DBClusterIdentifier, DBClusterParameterGroupName, DBSubnetGroupName, DeletionProtection, EnableCloudwatchLogsExports, EngineVersion, KmsKeyId, ManageMasterUserPassword, MasterUsername, NetworkType, Port, PreferredBackupWindow, PreferredMaintenanceWindow, ServerlessV2ScalingConfiguration, StorageEncrypted, StorageType, Tags, VpcSecurityGroupIds | AvailabilityZones, GlobalClusterIdentifier, MasterUserSecretKmsKeyId, RestoreToTime, RestoreType, RotateMasterUserPassword, SnapshotIdentifier, SourceDBClusterIdentifier, UseLatestRestorableTime |
 | `AWS::DocDB::DBInstance` | `DocDBProvider` | AutoMinorVersionUpgrade, AvailabilityZone, CACertificateIdentifier, DBClusterIdentifier, DBInstanceClass, DBInstanceIdentifier, EnablePerformanceInsights, PreferredMaintenanceWindow, Tags | CertificateRotationRestart |

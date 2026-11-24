@@ -1,5 +1,6 @@
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import type { ServiceDiscoveryClient } from '@aws-sdk/client-servicediscovery';
+import type { ConnectClient } from '@aws-sdk/client-connect';
 import { CloudFormationClient } from '@aws-sdk/client-cloudformation';
 import { getAwsClients, type AwsClients } from '../../utils/aws-clients.js';
 import { canonicalizeRegion, sameRegion } from '../../utils/aws-partition.js';
@@ -78,6 +79,11 @@ export class ResolverClients {
    * PROMISE rather than the client is what is stored.
    */
   readonly serviceDiscoveryClients = new Map<string, Promise<ServiceDiscoveryClient>>();
+  /**
+   * Connect clients for the `AWS::Connect::Instance` live attribute reads
+   * (go-to-k/cdkd#6912), keyed and built as {@link serviceDiscoveryClients}.
+   */
+  readonly connectClients = new Map<string, Promise<ConnectClient>>();
   /**
    * Per-region CloudFormation clients for the cross-stack fallback
    * lookups (issue #1697). Keyed by region because `Fn::GetStackOutput`
@@ -337,6 +343,36 @@ export class ResolverClients {
       if (this.serviceDiscoveryClients.get(key) === building) {
         this.serviceDiscoveryClients.delete(key);
       }
+    });
+    return building;
+  }
+
+  /**
+   * The Connect client for a `Fn::GetAtt` of an `AWS::Connect::Instance`
+   * attribute the record lacks (go-to-k/cdkd#6912). Built here, not read off
+   * the bag, for {@link serviceDiscoveryClient}'s reason: `AwsClients` carries
+   * no Connect member, which would put a static `@aws-sdk/client-connect`
+   * import on every command's startup path. Same region decision, credential
+   * carry-over and promise memo.
+   */
+  async connectClient(): Promise<ConnectClient> {
+    const scoped = this.clientsForRegion(this.deps.explicitRegion);
+    const region = scoped.configuredRegion;
+    const credentialConfig: CredentialConfig = scoped.credentialConfig ?? {};
+    const key = clientCacheKey(region ?? '', credentialConfig);
+    const cached = this.connectClients.get(key);
+    if (cached) return cached;
+
+    const building = (async () => {
+      const { ConnectClient } = await import('@aws-sdk/client-connect');
+      return new ConnectClient({
+        ...clientDefaultsFor(credentialConfig),
+        ...(region ? { region } : {}),
+      });
+    })();
+    this.connectClients.set(key, building);
+    building.catch(() => {
+      if (this.connectClients.get(key) === building) this.connectClients.delete(key);
     });
     return building;
   }

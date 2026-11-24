@@ -14,6 +14,9 @@ import { noteAttributeSecrecy } from './getatt.js';
 import { graphQLSchemaCfnId } from './ref-values.js';
 import { DescribeAvailabilityZonesCommand } from '@aws-sdk/client-ec2';
 import { secretPhysicalIdSegment } from '../../provisioning/secret-physical-id.js';
+import { startInterruptWatch } from '../../provisioning/interrupt-watch.js';
+import { isThrottlingError, isTransientServerError } from '../retryable-errors.js';
+import { connectInstanceIdOf } from '../../provisioning/connect-instance-id.js';
 
 /**
  * go-to-k/cdkd#6913: what a completed read reporting no
@@ -41,6 +44,118 @@ export async function constructAttributeForAppTypes(
   partition: string,
   region: string
 ): Promise<unknown> {
+  // Connect Instance (go-to-k/cdkd#6912). The physical id is the instance
+  // ARN; `Id` is its last segment. `ServiceRole` exists only once the
+  // instance is ACTIVE, so a `--no-wait` create records none: the arm reads
+  // the instance live and, while it is still CREATION_IN_PROGRESS, WAITS for
+  // it (bounded, Ctrl-C aware), so only a REFERENCED ServiceRole pays for the
+  // wait. `CreatedTime` / `InstanceStatus` are read live without a wait. No
+  // value is ever answered with the ARN: anything that leaves none is refused.
+  if (resourceType === 'AWS::Connect::Instance') {
+    if (attributeName === 'Arn') return physicalId;
+    if (attributeName === 'Id') return connectInstanceIdOf(physicalId);
+    if (
+      attributeName === 'ServiceRole' ||
+      attributeName === 'CreatedTime' ||
+      attributeName === 'InstanceStatus'
+    ) {
+      const read = async (): Promise<{
+        status: string | undefined;
+        value: string | undefined;
+        transient?: true;
+      }> => {
+        try {
+          const { DescribeInstanceCommand } = await import('@aws-sdk/client-connect');
+          const connect = await resolver.clients.connectClient();
+          const resp = await connect.send(
+            new DescribeInstanceCommand({ InstanceId: connectInstanceIdOf(physicalId) })
+          );
+          const instance = resp.Instance;
+          const value =
+            attributeName === 'ServiceRole'
+              ? instance?.ServiceRole
+              : attributeName === 'CreatedTime'
+                ? instance?.CreatedTime?.toISOString()
+                : instance?.InstanceStatus;
+          return {
+            status: instance?.InstanceStatus,
+            value: typeof value === 'string' && value !== '' ? value : undefined,
+          };
+        } catch (err) {
+          // A throttled or 5xx read during the ServiceRole wait keeps polling.
+          if (isThrottlingError(err) || isTransientServerError(err)) {
+            return { status: undefined, value: undefined, transient: true };
+          }
+          return refuseUnservedAttribute(resolver, {
+            logicalId,
+            attributeName,
+            resourceType,
+            physicalId,
+            context,
+            observed: describeFailureObserved(resolver, 'DescribeInstance', err, context),
+            remedy:
+              'Fix the read (the connect:DescribeInstance permission, or the region) and deploy again.',
+          });
+        }
+      };
+      let observed = await read();
+      const pending = (): boolean =>
+        observed.value === undefined &&
+        (observed.status === 'CREATION_IN_PROGRESS' || observed.transient === true);
+      if (attributeName === 'ServiceRole' ? pending() : observed.transient === true) {
+        const watch = startInterruptWatch(`Connect instance ${logicalId} attribute wait`);
+        try {
+          for (
+            let poll = 0;
+            poll < connectInstanceAttributeWait.polls &&
+            (attributeName === 'ServiceRole' ? pending() : observed.transient === true);
+            poll++
+          ) {
+            if (watch.isInterrupted()) throw watch.onInterrupted();
+            await connectInstanceAttributeWait.sleep(connectInstanceAttributeWait.delayMs);
+            observed = await read();
+          }
+        } finally {
+          watch.dispose();
+        }
+      }
+      if (observed.value !== undefined) return observed.value;
+      // The observed clause is chosen among literals by the status (a Connect
+      // enum value, never a resolved template value).
+      const refusal = {
+        logicalId,
+        attributeName,
+        resourceType,
+        physicalId,
+        context,
+        remedy:
+          'Check the instance with `aws connect describe-instance` (a CREATION_FAILED one names its StatusReason), then deploy again once it is ACTIVE.',
+      };
+      if (observed.transient === true) {
+        return refuseUnservedAttribute(resolver, {
+          ...refusal,
+          observed: 'DescribeInstance stayed throttled or failing past the attribute wait',
+        });
+      }
+      if (observed.status === 'CREATION_IN_PROGRESS') {
+        return refuseUnservedAttribute(resolver, {
+          ...refusal,
+          observed: 'the Connect instance stayed CREATION_IN_PROGRESS past the attribute wait',
+        });
+      }
+      if (observed.status === 'CREATION_FAILED') {
+        return refuseUnservedAttribute(resolver, {
+          ...refusal,
+          observed: 'the Connect instance is CREATION_FAILED',
+        });
+      }
+      return refuseUnservedAttribute(resolver, {
+        ...refusal,
+        observed: 'DescribeInstance reported no such value for the Connect instance',
+      });
+    }
+  }
+
   // EventBridge Rule. Custom event bus ARN: rule/{busName}/{ruleName};
   // default bus ARN: rule/{ruleName}. By the time constructAttribute runs,
   // properties.EventBusName (if templated) has been resolved to a literal
@@ -791,3 +906,15 @@ function urlHost(value: unknown): string | undefined {
     return undefined;
   }
 }
+
+/**
+ * How long `Fn::GetAtt [<Connect::Instance>, ServiceRole]` waits for a
+ * CREATION_IN_PROGRESS instance to turn ACTIVE (go-to-k/cdkd#6912): 10 minutes
+ * in 5 s polls, against the 60-85 s measured. A mutable seam so tests do not
+ * sleep.
+ */
+export const connectInstanceAttributeWait = {
+  polls: 120,
+  delayMs: 5_000,
+  sleep: (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms)),
+};

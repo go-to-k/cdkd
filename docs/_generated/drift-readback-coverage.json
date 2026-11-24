@@ -1,11 +1,11 @@
 {
   "summary": {
-    "types": 147,
+    "types": 148,
     "noReadback": 2,
-    "properties": 1566,
-    "read": 1425,
+    "properties": 1571,
+    "read": 1429,
     "unknown": 118,
-    "baseline": 23,
+    "baseline": 24,
     "gap": 0,
     "outsideSchema": 12
   },
@@ -1833,6 +1833,36 @@
         },
         {
           "property": "WebAuthnUserVerification",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Connect::Instance",
+      "file": "src/provisioning/providers/connect-instance-provider.ts",
+      "className": "ConnectInstanceProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "Attributes",
+          "status": "read"
+        },
+        {
+          "property": "DirectoryId",
+          "status": "baseline",
+          "reason": "write-only in the CloudFormation registry schema: AWS never returns it"
+        },
+        {
+          "property": "IdentityManagementType",
+          "status": "read"
+        },
+        {
+          "property": "InstanceAlias",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
           "status": "read"
         }
       ],

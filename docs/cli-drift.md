@@ -573,6 +573,7 @@ A type that neither route can read is reported as drift unknown.
 | `AWS::CodeBuild` | `Project` |
 | `AWS::CodeCommit` | `Repository` |
 | `AWS::Cognito` | `UserPool` |
+| `AWS::Connect` | `Instance` |
 | `AWS::DLM` | `LifecyclePolicy` |
 | `AWS::DocDB` | `DBCluster`, `DBInstance`, `DBSubnetGroup` |
 | `AWS::DynamoDB` | `GlobalTable`, `Table` |

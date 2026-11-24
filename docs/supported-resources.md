@@ -61,6 +61,7 @@ part of the type name.
 | CodeBuild | `AWS::CodeBuild::Project` |
 | CodeCommit | `AWS::CodeCommit::Repository` |
 | Cognito | `AWS::Cognito::UserPool` |
+| Connect | `AWS::Connect::Instance` |
 | DLM | `AWS::DLM::LifecyclePolicy` |
 | DocDB | `AWS::DocDB::DBCluster`, `AWS::DocDB::DBInstance`, `AWS::DocDB::DBSubnetGroup` |
 | DynamoDB | `AWS::DynamoDB::GlobalTable`, `AWS::DynamoDB::Table` |

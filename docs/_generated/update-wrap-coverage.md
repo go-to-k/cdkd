@@ -12,8 +12,8 @@ For every SDK provider class declaring `update()`, walks from `update()` through
 
 ## Summary
 
-- Provider classes with `update()`: **98**
-- Wrapped: **90**
+- Provider classes with `update()`: **99**
+- Wrapped: **91**
 - No AWS call in update(): **8**
 - **Unwrapped-send gaps (blocks CI): 0**
 - **Unguarded wraps (blocks CI): 0**
@@ -48,6 +48,7 @@ None. Every provider `update()` either makes no AWS call or wraps every reachabl
 | `CodeBuildProvider` | `codebuild-provider.ts` | wrapped |
 | `CodeCommitRepositoryProvider` | `codecommit-repository-provider.ts` | wrapped |
 | `CognitoUserPoolProvider` | `cognito-provider.ts` | wrapped |
+| `ConnectInstanceProvider` | `connect-instance-provider.ts` | wrapped |
 | `CustomResourceProvider` | `custom-resource-provider.ts` | wrapped |
 | `DLMLifecyclePolicyProvider` | `dlm-lifecycle-policy-provider.ts` | wrapped |
 | `DocDBProvider` | `docdb-provider.ts` | wrapped |

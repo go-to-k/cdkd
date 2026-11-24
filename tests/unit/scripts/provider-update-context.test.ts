@@ -229,6 +229,7 @@ describe('provider UpdateContext fence — the real tree', () => {
       'CodeBuildProvider',
       'CodeCommitRepositoryProvider',
       'CognitoUserPoolProvider',
+      'ConnectInstanceProvider',
       'CustomResourceProvider',
       'DLMLifecyclePolicyProvider',
       'DocDBProvider',

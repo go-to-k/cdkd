@@ -63,6 +63,7 @@
     "@aws-sdk/client-codecommit": "^3.1169.0",
     "@aws-sdk/client-codedeploy": "^3.1169.0",
     "@aws-sdk/client-cognito-identity-provider": "^3.1169.0",
+    "@aws-sdk/client-connect": "^3.1169.0",
     "@aws-sdk/client-dlm": "^3.1169.0",
     "@aws-sdk/client-docdb": "^3.1169.0",
     "@aws-sdk/client-dynamodb": "^3.1169.0",

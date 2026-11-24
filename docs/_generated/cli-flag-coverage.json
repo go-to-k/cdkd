@@ -720,6 +720,7 @@
       "flag": "--no-wait",
       "integs": [
         "acm-certificate",
+        "connect-instance",
         "ec2-instance",
         "ecs-fargate",
         "lambda-microvm-image"

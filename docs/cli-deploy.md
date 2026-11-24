@@ -254,6 +254,7 @@ CloudFormation and Terraform do, for comparison.
 | `AWS::Lambda::MicrovmImage` | Return while `CREATING` | Wait for `CREATED` | same as default | Waits | n/a |
 | `AWS::BedrockAgentCore::Runtime` | Return while `CREATING` / `UPDATING` | Wait for `READY`; a `CREATE_FAILED` or `UPDATE_FAILED` runtime fails the deploy | same as default | Waits | Waits |
 | `AWS::Events::Archive` | Return while `CREATING` / `UPDATING` | Wait for the archive to leave `CREATING` / `UPDATING` (`ENABLED` or `DISABLED`); a `CREATE_FAILED` or `UPDATE_FAILED` archive fails the deploy | same as default | Waits | Does not wait |
+| `AWS::Connect::Instance` | Return while `CREATION_IN_PROGRESS`, once the instance accepts dependent calls (about 20 s after `CreateInstance`), or, when the template declares an `Attributes` member besides `InboundCalls` / `OutboundCalls`, once the instance has turned on its own default attributes (about 40 s) and the declared ones are written; a `Fn::GetAtt` of `ServiceRole` still waits for `ACTIVE`, since the role exists only then | Wait for `ACTIVE` (about 55-85 s), then write again any declared attribute a late default overwrote; a `CREATION_FAILED` instance fails the deploy | same as default | Waits | Waits |
 | `AWS::Lambda::Alias` with `--update-policy` and `CodeDeployLambdaAliasUpdate` | Waits, as the default does | Wait for the CodeDeploy deployment that shifts the alias to the new version to succeed; a failed or stopped deployment fails the deploy | same as default | Waits | n/a |
 | `AWS::AutoScaling::AutoScalingGroup` with `--update-policy` | Start the instance refresh an `AutoScalingRollingUpdate` or `AutoScalingInstanceRefresh` asks for, then return; an `AutoScalingReplacingUpdate` still waits for the new group's instances before deleting the old group | Wait for the refresh to succeed; a failed or cancelled refresh fails the deploy | same as default | Waits | Starts a refresh (`instance_refresh`) and does not wait |
 
@@ -312,8 +313,8 @@ return leaves unfinished, and what `--full-wait` does when a wait runs out.
     right after the deploy that added it, waits for the association;
   - releasing the gateway's last associated address waits until another
     address the template keeps has associated.
-- **CloudFront, `AWS::Lambda::MicrovmImage` and `AWS::BedrockAgentCore::Runtime`
-  through Cloud Control.** cdkd provisions common resource types by calling
+- **CloudFront, `AWS::Lambda::MicrovmImage`, `AWS::BedrockAgentCore::Runtime`,
+  `AWS::Events::Archive` and `AWS::Connect::Instance` through Cloud Control.** cdkd provisions common resource types by calling
   the service's own API, and the rest through the AWS Cloud Control API. The
   early return in the table applies only to the first route. A resource of
   these types that is routed through Cloud Control waits for its final state

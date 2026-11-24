@@ -202,6 +202,52 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
         'the S3 object is fetched and committed as file content',
     },
   },
+  // One UpdateInstanceAttribute call per Attributes member, rooted by its
+  // AttributeType (`sdk-wire-call-roots.ts`), carrying the boolean as `Value`;
+  // CreateInstance itself takes InboundCalls / OutboundCalls as `*Enabled`.
+  'AWS::Connect::Instance': {
+    members: {
+      'Attributes.InboundCalls': ['InboundCallsEnabled', 'Value'],
+      'Attributes.OutboundCalls': ['OutboundCallsEnabled', 'Value'],
+      ...Object.fromEntries(
+        [
+          'AutoMuteAgentOnHold',
+          'AutoResolveBestVoices',
+          'ContactLens',
+          'ContactflowLogs',
+          'EarlyMedia',
+          'EnhancedChatMonitoring',
+          'EnhancedContactMonitoring',
+          'HighVolumeOutBound',
+          'MessageStreaming',
+          'MultiPartyChatConference',
+          'MultiPartyConference',
+          'UseCustomTTSVoices',
+        ].map((key) => [`Attributes.${key}`, ['Value']])
+      ),
+    },
+    containers: {
+      Attributes: [
+        'CreateInstanceCommand',
+        ...[
+          'AUTO_MUTE_AGENT_ON_HOLD',
+          'AUTO_RESOLVE_BEST_VOICES',
+          'CONTACT_LENS',
+          'CONTACTFLOW_LOGS',
+          'EARLY_MEDIA',
+          'ENHANCED_CHAT_MONITORING',
+          'ENHANCED_CONTACT_MONITORING',
+          'HIGH_VOLUME_OUTBOUND',
+          'INBOUND_CALLS',
+          'MESSAGE_STREAMING',
+          'MULTI_PARTY_CHAT_CONFERENCE',
+          'MULTI_PARTY_CONFERENCE',
+          'OUTBOUND_CALLS',
+          'USE_CUSTOM_TTS_VOICES',
+        ].map((type) => `UpdateInstanceAttributeCommand:${type.toLowerCase().replaceAll('_', '-')}`),
+      ],
+    },
+  },
   'AWS::Cognito::UserPool': {
     members: {
       EmailAuthenticationMessage: ['Message'],

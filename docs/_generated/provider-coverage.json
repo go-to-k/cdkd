@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-11-23T15:11:22.814Z",
+  "generatedAt": "2026-11-24T07:02:46.976Z",
   "summary": {
-    "tier1Count": 147,
-    "tier2Count": 1683,
+    "tier1Count": 148,
+    "tier2Count": 1682,
     "tier3Count": 324,
     "totalCount": 2154
   },
@@ -45,6 +45,7 @@
     "AWS::CodeBuild::Project",
     "AWS::CodeCommit::Repository",
     "AWS::Cognito::UserPool",
+    "AWS::Connect::Instance",
     "AWS::DLM::LifecyclePolicy",
     "AWS::DocDB::DBCluster",
     "AWS::DocDB::DBInstance",
@@ -547,7 +548,6 @@
     "AWS::Connect::EmailAddress",
     "AWS::Connect::EvaluationForm",
     "AWS::Connect::HoursOfOperation",
-    "AWS::Connect::Instance",
     "AWS::Connect::InstanceStorageConfig",
     "AWS::Connect::IntegrationAssociation",
     "AWS::Connect::Metric",

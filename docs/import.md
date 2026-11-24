@@ -543,6 +543,7 @@ with no `--resource`, or with `--auto`.
 | CloudWatch, Logs | `AWS::CloudWatch::Alarm`, `AWS::Logs::Delivery`, `AWS::Logs::DeliveryDestination`, `AWS::Logs::DeliverySource`, `AWS::Logs::LogGroup` |
 | CodeBuild, CodeCommit | `AWS::CodeBuild::Project`, `AWS::CodeCommit::Repository` |
 | Cognito | `AWS::Cognito::UserPool` |
+| Connect | `AWS::Connect::Instance` (by `InstanceAlias`, which is unique per account and region; otherwise `--resource <id>=<instanceArn>`) |
 | DLM | `AWS::DLM::LifecyclePolicy` |
 | DocumentDB | `AWS::DocDB::DBInstance`, `AWS::DocDB::DBCluster`, `AWS::DocDB::DBSubnetGroup` |
 | DynamoDB | `AWS::DynamoDB::Table`, `AWS::DynamoDB::GlobalTable` |

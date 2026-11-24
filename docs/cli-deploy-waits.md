@@ -118,6 +118,22 @@ that ends in `CREATE_FAILED` or `UPDATE_FAILED` does not fail the deploy, and
 events sent before it is `ENABLED` are not archived. Its name and ARN are
 available first.
 
+### `AWS::Connect::Instance`
+
+cdkd returns while the instance is still `CREATION_IN_PROGRESS`: once it
+accepts dependent calls, about 20 s after `CreateInstance`, or, when the
+template declares an `Attributes` member besides `InboundCalls` and
+`OutboundCalls`, once the instance has turned on its own default attributes
+(about 40 s) and cdkd has written the declared ones. A write made before those
+defaults land would be overwritten by them. Storage configs, contact flows, Lambda
+associations and the other resources that reference the instance are created
+then, and they stay in place when the instance turns `ACTIVE`. The instance
+can still end `CREATION_FAILED` after the deploy returns, and that does not
+fail the deploy. Its ID and ARN are available first. A `Fn::GetAtt` of
+`ServiceRole` still waits for `ACTIVE`, up to 10 minutes, because the role
+exists only then. Only an instance whose `ServiceRole` something references
+pays for that wait.
+
 ### Auto Scaling group instance refresh
 
 With `--update-policy`, an Auto Scaling group whose `AutoScalingRollingUpdate`
@@ -347,6 +363,7 @@ A wait that runs out fails the update.
 | CloudFront distribution | Disable, then wait |
 | Kinesis stream, Firehose delivery stream | Until the stream is gone |
 | Lambda network connector | Until the connector is gone |
+| Amazon Connect instance | Until `DeleteInstance` is accepted: an instance refuses it for its first 20 s or so. The instance is gone from `DescribeInstance` at once, but its alias stays reserved for a few seconds more, so a create that reuses the alias waits for it to be released, up to 3 minutes |
 | ECS service | Until `INACTIVE` |
 | DynamoDB table, DynamoDB global table and its replicas | Until the table is gone, in every replica region |
 | RDS, DocumentDB and Neptune cluster or instance, ElastiCache cache cluster | Until it is gone |

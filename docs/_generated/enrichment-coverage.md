@@ -16,12 +16,12 @@ Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback
 
 ## Summary
 
-- Classified types (cached schema): **147**
+- Classified types (cached schema): **148**
 - Fully enriched: **50**
 - No computed attribute (Ref == physicalId is correct): **18**
 - **Pure-CC latent gaps (unenriched-computed, blocks CI): 0**
-- SDK-fallback gaps (informational, #614 path only): **79**
-- Types with allow-listed (not-a-gap) attributes: **89**
+- SDK-fallback gaps (informational, #614 path only): **80**
+- Types with allow-listed (not-a-gap) attributes: **90**
 
 ## Pure-CC latent gaps
 
@@ -49,6 +49,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::CodeBuild::Project` | `Arn` |
 | `AWS::CodeCommit::Repository` | `Arn`, `CloneUrlHttp`, `CloneUrlSsh`, `Name` |
 | `AWS::Cognito::UserPool` | `Arn`, `ProviderName`, `ProviderURL` |
+| `AWS::Connect::Instance` | `CreatedTime`, `Id`, `InstanceStatus`, `ServiceRole` |
 | `AWS::DLM::LifecyclePolicy` | `Arn` |
 | `AWS::DocDB::DBCluster` | `ClusterResourceId`, `Endpoint`, `ReadEndpoint`, `ServerlessV2PlatformVersion` |
 | `AWS::DocDB::DBInstance` | `Endpoint`, `Port` |
@@ -154,6 +155,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::CodeBuild::Project` | yes | sdk-fallback-gap | `Arn` (GAP) |
 | `AWS::CodeCommit::Repository` | yes | sdk-fallback-gap | `Arn` (GAP), `CloneUrlHttp` (GAP), `CloneUrlSsh` (GAP), `Name` (GAP), `RepositoryId` (allow) |
 | `AWS::Cognito::UserPool` | yes | sdk-fallback-gap | `Arn` (GAP), `ProviderName` (GAP), `ProviderURL` (GAP), `UserPoolId` (allow) |
+| `AWS::Connect::Instance` | yes | sdk-fallback-gap | `Arn` (allow), `CreatedTime` (GAP), `Id` (GAP), `InstanceStatus` (GAP), `ServiceRole` (GAP) |
 | `AWS::DLM::LifecyclePolicy` | yes | sdk-fallback-gap | `Arn` (GAP), `PolicyId` (allow) |
 | `AWS::DocDB::DBCluster` | yes | sdk-fallback-gap | `ClusterResourceId` (GAP), `Endpoint` (GAP), `Id` (allow), `ReadEndpoint` (GAP), `ServerlessV2PlatformVersion` (GAP) |
 | `AWS::DocDB::DBInstance` | yes | sdk-fallback-gap | `Endpoint` (GAP), `Port` (GAP) |

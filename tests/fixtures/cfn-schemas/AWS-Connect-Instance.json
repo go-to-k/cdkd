@@ -1,0 +1,190 @@
+{
+  "resourceType": "AWS::Connect::Instance",
+  "generatedAt": "2026-11-24",
+  "properties": [
+    "Arn",
+    "Attributes",
+    "CreatedTime",
+    "DirectoryId",
+    "Id",
+    "IdentityManagementType",
+    "InstanceAlias",
+    "InstanceStatus",
+    "ServiceRole",
+    "Tags"
+  ],
+  "readOnlyProperties": [
+    "Arn",
+    "CreatedTime",
+    "Id",
+    "InstanceStatus",
+    "ServiceRole"
+  ],
+  "createOnlyProperties": [
+    "DirectoryId",
+    "IdentityManagementType",
+    "InstanceAlias"
+  ],
+  "createOnlyPropertyPaths": [
+    [
+      "DirectoryId"
+    ],
+    [
+      "IdentityManagementType"
+    ],
+    [
+      "InstanceAlias"
+    ]
+  ],
+  "primaryIdentifier": [
+    "Arn"
+  ],
+  "nestedProperties": {
+    "Attributes": [
+      "AutoMuteAgentOnHold",
+      "AutoResolveBestVoices",
+      "ContactLens",
+      "ContactflowLogs",
+      "EarlyMedia",
+      "EnhancedChatMonitoring",
+      "EnhancedContactMonitoring",
+      "HighVolumeOutBound",
+      "InboundCalls",
+      "MessageStreaming",
+      "MultiPartyChatConference",
+      "MultiPartyConference",
+      "OutboundCalls",
+      "UseCustomTTSVoices"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Attributes": [
+      "AutoMuteAgentOnHold",
+      "AutoResolveBestVoices",
+      "ContactLens",
+      "ContactflowLogs",
+      "EarlyMedia",
+      "EnhancedChatMonitoring",
+      "EnhancedContactMonitoring",
+      "HighVolumeOutBound",
+      "InboundCalls",
+      "MessageStreaming",
+      "MultiPartyChatConference",
+      "MultiPartyConference",
+      "OutboundCalls",
+      "UseCustomTTSVoices"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "Id": "scalar",
+      "Arn": "scalar",
+      "IdentityManagementType": "scalar",
+      "InstanceAlias": "scalar",
+      "CreatedTime": "scalar",
+      "ServiceRole": "scalar",
+      "InstanceStatus": "scalar",
+      "DirectoryId": "scalar",
+      "Attributes": "object",
+      "Tags": "array"
+    },
+    "Attributes": {
+      "InboundCalls": "scalar",
+      "OutboundCalls": "scalar",
+      "ContactflowLogs": "scalar",
+      "ContactLens": "scalar",
+      "AutoResolveBestVoices": "scalar",
+      "UseCustomTTSVoices": "scalar",
+      "EarlyMedia": "scalar",
+      "MultiPartyConference": "scalar",
+      "HighVolumeOutBound": "scalar",
+      "EnhancedContactMonitoring": "scalar",
+      "EnhancedChatMonitoring": "scalar",
+      "MultiPartyChatConference": "scalar",
+      "MessageStreaming": "scalar",
+      "AutoMuteAgentOnHold": "scalar"
+    },
+    "Tag": {
+      "Key": "scalar",
+      "Value": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "Attributes",
+      "IdentityManagementType"
+    ],
+    "Attributes": [
+      "InboundCalls",
+      "OutboundCalls"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedRequired": {
+    "Attributes": [
+      "InboundCalls",
+      "OutboundCalls"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "propertyShapes": {
+    "Attributes": "object",
+    "Tags": "array",
+    "Tags[]": "object"
+  },
+  "propertyTypes": {
+    "Arn": "string",
+    "Attributes": "object",
+    "Attributes.AutoMuteAgentOnHold": "boolean",
+    "Attributes.AutoResolveBestVoices": "boolean",
+    "Attributes.ContactLens": "boolean",
+    "Attributes.ContactflowLogs": "boolean",
+    "Attributes.EarlyMedia": "boolean",
+    "Attributes.EnhancedChatMonitoring": "boolean",
+    "Attributes.EnhancedContactMonitoring": "boolean",
+    "Attributes.HighVolumeOutBound": "boolean",
+    "Attributes.InboundCalls": "boolean",
+    "Attributes.MessageStreaming": "boolean",
+    "Attributes.MultiPartyChatConference": "boolean",
+    "Attributes.MultiPartyConference": "boolean",
+    "Attributes.OutboundCalls": "boolean",
+    "Attributes.UseCustomTTSVoices": "boolean",
+    "CreatedTime": "string",
+    "DirectoryId": "string",
+    "Id": "string",
+    "IdentityManagementType": "string",
+    "InstanceAlias": "string",
+    "InstanceStatus": "string",
+    "ServiceRole": "string",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Tags[].Key": "string",
+    "Tags[].Value": "string"
+  },
+  "propertyEnums": {
+    "IdentityManagementType": [
+      "CONNECT_MANAGED",
+      "EXISTING_DIRECTORY",
+      "SAML"
+    ],
+    "InstanceStatus": [
+      "ACTIVE",
+      "CREATION_FAILED",
+      "CREATION_IN_PROGRESS"
+    ]
+  }
+}

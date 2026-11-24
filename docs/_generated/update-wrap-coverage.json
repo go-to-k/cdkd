@@ -1,7 +1,7 @@
 {
   "summary": {
-    "classifiedCount": 98,
-    "wrapped": 90,
+    "classifiedCount": 99,
+    "wrapped": 91,
     "noAws": 8,
     "gap": 0,
     "unguardedWrap": 0,
@@ -164,6 +164,14 @@
     {
       "file": "cognito-provider.ts",
       "className": "CognitoUserPoolProvider",
+      "bucket": "wrapped",
+      "unwrappedSendMethods": [],
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
+    },
+    {
+      "file": "connect-instance-provider.ts",
+      "className": "ConnectInstanceProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
       "unguardedWrapMethods": [],

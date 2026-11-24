@@ -1,18 +1,27 @@
 #!/usr/bin/env bash
-# verify.sh — cdkd Amazon Connect instance + chat-transcript storage config integ.
+# verify.sh — cdkd Amazon Connect instance integ (SDK provider, go-to-k/cdkd#6912).
 #
-# Both types route through Cloud Control (no SDK provider), so this fixture is
-# the live proof that the CC route deploys, updates in place, reads back clean
-# and destroys them. It also prints how long each phase took, the number a user
-# asking "how slow is a Connect instance under cdkd" wants.
+# The instance goes through cdkd's SDK provider; its dependents (an S3
+# chat-transcript storage config, a contact flow and a Lambda integration
+# association, all referencing the instance ARN) through Cloud Control. The
+# stack also outputs `ServiceRole`, which exists only once the instance is
+# ACTIVE. Each phase prints how long it took.
 #
 # Phases:
-#   1. Deploy: instance ACTIVE with inbound + outbound calls, contact-flow logs
-#      off, transcripts under prefix `chat`.
-#   2. Drift: both Connect resources report CLEAN.
-#   3. UPDATE (CDKD_TEST_UPDATE=true): contact-flow logs on, prefix `chat-v2`;
-#      both reach AWS and the instance id is unchanged (no replacement).
+#   1. Deploy (default wait mode): the instance is recorded `provisionedBy:
+#      sdk`, ACTIVE with inbound + outbound calls, contact-flow logs and early
+#      media off, tagged `base`; transcripts under prefix `chat`; the flow and
+#      the Lambda association exist; the ServiceRole output equals the
+#      instance's live ServiceRole.
+#   2. Drift: every Connect resource reports CLEAN.
+#   3. UPDATE (CDKD_TEST_UPDATE=true): contact-flow logs and early media on,
+#      tag `updated`, prefix `chat-v2`; all reach AWS and the instance id is
+#      unchanged (no replacement).
 #   4. Destroy: instance, bucket and state file are gone.
+#   5. Re-deploy at once with the SAME alias under --no-wait: the create must
+#      not trip over anything the delete left settling. The dependents are
+#      created against the instance, and the ServiceRole output still waits
+#      for ACTIVE and matches. Then destroy again.
 #
 # Account limit to keep in mind: Amazon Connect caps how many instances an
 # account may create and delete within 30 days, so do not loop this fixture.
@@ -114,6 +123,14 @@ cleanup() {
     [0-9]?*)
       reap_instance
       aws s3 rb "s3://${BUCKET_NAME}" --force --region "${REGION}" >/dev/null 2>&1 || true
+      # Connect creates this group when contact-flow logs are turned on
+      # (Phase 3), and deleting the instance leaves it.
+      aws logs delete-log-group --log-group-name "/aws/connect/${INSTANCE_ALIAS}" \
+        --region "${REGION}" >/dev/null 2>&1 || true
+      for lg in $(aws logs describe-log-groups --log-group-name-prefix "/aws/lambda/${STACK}" \
+        --region "${REGION}" --query 'logGroups[].logGroupName' --output text 2>/dev/null); do
+        aws logs delete-log-group --log-group-name "${lg}" --region "${REGION}" >/dev/null 2>&1 || true
+      done
       ;;
     *)
       echo "WARN: teardown sweep refused — account id '${ACCOUNT}' is not usable" >&2
@@ -173,6 +190,36 @@ flow_logs() {
   aws connect describe-instance-attribute --instance-id "${INSTANCE_ID}" --attribute-type CONTACTFLOW_LOGS \
     --region "${REGION}" --query 'Attribute.Value' --output text || return 1
 }
+early_media() {
+  aws connect describe-instance-attribute --instance-id "${INSTANCE_ID}" --attribute-type EARLY_MEDIA \
+    --region "${REGION}" --query 'Attribute.Value' --output text || return 1
+}
+instance_tag() {
+  aws connect describe-instance --instance-id "${INSTANCE_ID}" --region "${REGION}" --output json \
+    | jq -r '.Instance.Tags["cdkd-integ"] // "None"' || return 1
+}
+state_output() { # $1 = output key
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r --arg k "$1" '.outputs[$k] // empty'
+}
+# The dependents created against the instance: "<flows> <lambda-associations>".
+dependents() {
+  local flows lambdas
+  flows="$(aws connect list-contact-flows --instance-id "${INSTANCE_ID}" --region "${REGION}" --output json \
+    | jq '[.ContactFlowSummaryList[] | select(.Name == "cdkd-integ-disconnect")] | length')" || return 1
+  lambdas="$(aws connect list-lambda-functions --instance-id "${INSTANCE_ID}" --region "${REGION}" --output json \
+    | jq --arg s "${STACK}" '[.LambdaFunctions[] | select(contains($s))] | length')" || return 1
+  echo "${flows} ${lambdas}"
+}
+check_service_role_output() {
+  local want got
+  want="$(aws connect describe-instance --instance-id "${INSTANCE_ID}" --region "${REGION}" \
+    --query 'Instance.ServiceRole' --output text)" || return 1
+  got="$(state_output ServiceRole)" || return 1
+  if [ -z "${got}" ] || [ "${got}" != "${want}" ] || [ "${want}" = "None" ]; then
+    echo "FAIL: ServiceRole output is '${got}', the instance reports '${want}'" >&2
+    exit 1
+  fi
+}
 transcript_target() { # -> "<count> <association-id> <bucket>/<prefix>"
   aws connect list-instance-storage-configs --instance-id "${INSTANCE_ID}" --resource-type CHAT_TRANSCRIPTS \
     --region "${REGION}" --output json \
@@ -183,6 +230,20 @@ if [ "$(flow_logs)" != "false" ]; then
   echo "FAIL: CONTACTFLOW_LOGS is '$(flow_logs)' after the baseline deploy, expected false" >&2
   exit 1
 fi
+if [ "$(early_media)" != "false" ] || [ "$(instance_tag)" != "base" ]; then
+  echo "FAIL: EARLY_MEDIA/tag is '$(early_media)/$(instance_tag)' after the baseline deploy, expected false/base" >&2
+  exit 1
+fi
+BY="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.resources.Instance.provisionedBy // "<absent>"')"
+if [ "${BY}" != "sdk" ]; then
+  echo "FAIL: Instance provisionedBy is '${BY}', expected 'sdk'" >&2
+  exit 1
+fi
+if [ "$(dependents)" != "1 1" ]; then
+  echo "FAIL: flow/Lambda association count is '$(dependents)', expected '1 1'" >&2
+  exit 1
+fi
+check_service_role_output
 TARGET_P1="$(transcript_target)"
 read -r CONFIG_COUNT ASSOCIATION_ID TARGET <<<"${TARGET_P1}"
 if [ "${CONFIG_COUNT}" != "1" ] || [ "${TARGET}" != "${BUCKET_NAME}/chat" ]; then
@@ -192,7 +253,7 @@ fi
 echo "    instance ${INSTANCE_ID} ACTIVE, transcripts -> ${BUCKET_NAME}/chat (deploy took ${DEPLOY_SECS}s)"
 
 # --- Phase 2: drift ----------------------------------------------------------
-echo "==> Phase 2: cdkd drift reports both Connect resources clean"
+echo "==> Phase 2: cdkd drift reports every Connect resource clean"
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" --json >"${DRIFT_JSON}" 2>/dev/null || true
 if [ "$(jq -r 'if type == "array" and length > 0 then "yes" else "no" end' "${DRIFT_JSON}" 2>/dev/null)" != "yes" ]; then
@@ -203,12 +264,12 @@ fi
 connect_count() { # $1 = bucket (clean|drifted|notSupported)
   jq --arg b "$1" '[.[][$b][] | select(.type | startswith("AWS::Connect::"))] | length' "${DRIFT_JSON}"
 }
-if [ "$(connect_count drifted)" != "0" ] || [ "$(connect_count notSupported)" != "0" ] || [ "$(connect_count clean)" != "2" ]; then
-  echo "FAIL: expected both Connect resources CLEAN; drifted=$(connect_count drifted) unknown=$(connect_count notSupported) clean=$(connect_count clean)" >&2
+if [ "$(connect_count drifted)" != "0" ] || [ "$(connect_count notSupported)" != "0" ] || [ "$(connect_count clean)" != "4" ]; then
+  echo "FAIL: expected all four Connect resources CLEAN; drifted=$(connect_count drifted) unknown=$(connect_count notSupported) clean=$(connect_count clean)" >&2
   jq '[.[] | {drifted, notSupported}]' "${DRIFT_JSON}" >&2
   exit 1
 fi
-echo "    both Connect resources CLEAN"
+echo "    all four Connect resources CLEAN"
 
 # --- Phase 3: in-place UPDATE ------------------------------------------------
 echo "==> Phase 3: turn on contact-flow logs and move the transcript prefix"
@@ -222,6 +283,10 @@ if [ "$(instance_id_by_alias)" != "${INSTANCE_ID}" ]; then
 fi
 if [ "$(flow_logs)" != "true" ]; then
   echo "FAIL: CONTACTFLOW_LOGS is '$(flow_logs)' after the update, expected true" >&2
+  exit 1
+fi
+if [ "$(early_media)" != "true" ] || [ "$(instance_tag)" != "updated" ]; then
+  echo "FAIL: EARLY_MEDIA/tag is '$(early_media)/$(instance_tag)' after the update, expected true/updated" >&2
   exit 1
 fi
 # Same association, still one: the storage config was updated, not re-created.
@@ -247,7 +312,37 @@ assert_gone "bucket ${BUCKET_NAME} still exists after destroy" \
   aws s3api head-bucket --bucket "${BUCKET_NAME}" --region "${REGION}"
 assert_gone "state file ${STATE_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
+# Not a cdkd resource: Connect made it when Phase 3 turned contact-flow logs on.
+aws logs delete-log-group --log-group-name "/aws/connect/${INSTANCE_ALIAS}" \
+  --region "${REGION}" >/dev/null 2>&1 || true
+echo "    destroyed (destroy took ${DESTROY_SECS}s)"
+
+# --- Phase 5: immediate re-create with the same alias under --no-wait --------
+echo "==> Phase 5: re-deploy at once with the same alias, --no-wait"
+T0="$(date +%s)"
+env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --no-wait
+NOWAIT_SECS=$(( $(date +%s) - T0 ))
+INSTANCE_ID="$(instance_id_by_alias)"
+if [ -z "${INSTANCE_ID}" ] || [ "${INSTANCE_ID}" = "None" ]; then
+  echo "FAIL: no Connect instance with alias ${INSTANCE_ALIAS} after the --no-wait re-deploy" >&2
+  exit 1
+fi
+if [ "$(dependents)" != "1 1" ]; then
+  echo "FAIL: flow/Lambda association count is '$(dependents)' after --no-wait, expected '1 1'" >&2
+  exit 1
+fi
+check_service_role_output
+echo "    --no-wait re-deploy with the same alias succeeded (took ${NOWAIT_SECS}s)"
+
+T0="$(date +%s)"
+node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
+DESTROY2_SECS=$(( $(date +%s) - T0 ))
+assert_gone "Connect instance ${INSTANCE_ID} still exists after the second destroy" \
+  aws connect describe-instance --instance-id "${INSTANCE_ID}" --region "${REGION}"
+assert_gone "state file ${STATE_KEY} still exists after the second destroy" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 
 trap - EXIT INT TERM
 rm -f "${DRIFT_JSON}"
-echo "[verify] PASS — Connect instance deployed (${DEPLOY_SECS}s), drift-clean, updated in place (${UPDATE_SECS}s), destroyed (${DESTROY_SECS}s)"
+echo "[verify] PASS — Connect instance deployed (${DEPLOY_SECS}s), drift-clean, updated in place (${UPDATE_SECS}s), destroyed (${DESTROY_SECS}s), re-created with the same alias under --no-wait (${NOWAIT_SECS}s), destroyed (${DESTROY2_SECS}s)"
