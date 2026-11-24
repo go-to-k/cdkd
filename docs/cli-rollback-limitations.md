@@ -172,6 +172,13 @@ is kept. Delete the new resource yourself, or remove
   the new resource, and the journal is kept.
 - **A failed re-create on the delete-first order.** The resource is then
   absent, and the message says so. Run `cdkd deploy` to fix it forward.
+- **A deploy whose new copy failed to create after the old one was deleted
+  first.** For a VPC gateway attachment or a subnet route table association,
+  the rollback and `cdkd rollback --revert-failed` re-create the old one from
+  its recorded properties. For any other type (`--replace`,
+  `--recreate-via-*`, the fallback after an update AWS rejects), the rollback
+  warns and the old resource stays absent: run `cdkd deploy` to fix it
+  forward.
 - **A resource re-created under its own name that holds other resources.**
   When the deploy deleted and re-created a resource under the same name, and
   the stack records a resource AWS stores inside it (a function's permission,

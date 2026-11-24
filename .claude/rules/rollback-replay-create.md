@@ -11,30 +11,31 @@ Both arms live in the `reverse-replacement` branch
 (`deployment/rollback-executor/replay-reverse-replacement.ts`, the re-create
 in its `recreate.ts`): create-first,
 and delete-new-first, reached from the name-collision catch or, up front, a
-journaled `oldDeletedBeforeCreate` (#4690).
+journaled `oldDeletedBeforeCreate` (#4690); the failed-op re-create
+(#6958) fills names likewise.
 **`effectiveProperties` is honoured** (#1682): `create()` gets
 `previousState.properties`; a RETURNED bag replaces the record's `properties`
-wholesale, reporting none keeps it. Do not re-narrow that result type. Its
+wholesale, none keeps it. Do not re-narrow that result type. Its
 `attributes` are recorded too, after its `NoEcho` is registered
-(`recordNoEchoAttributeValues`, #4434), as for an update's.
+(`recordNoEchoAttributeValues`, #4434).
 
 **When the ROUTING DECISION is `cc-api`, both arms run the bag through
 `applyDefaultNameForFallback`** (#3199), filling a
-`FALLBACK_NAME_RULES` name the recorded bag leaves unset exactly as
+`FALLBACK_NAME_RULES` name the recorded bag leaves unset as
 `preparePropertiesForCcApi` does at the engine's three create sites;
 otherwise the replay is a FOURTH create site sending no name, and AWS mints
 one. The arm is picked by a CHANGED PHYSICAL ID (not journaled
 `wasReplaced: false`, #4615, nor a moved id left live, #6120) or a changed
 `Type` (fill keyed on the OLD type), so a create-only edit on a type whose id
-is NOT its name lands here nameless; a handler REJECTING a nameless create
-then fails the replay after delete-new-first dropped it.
+is NOT its name lands here nameless; a handler rejecting that
+fails the replay after delete-new-first dropped it.
 
 Decisions:
 
 - **The gate reads the registry's RETURNED `provisionedBy`**, not
   `previousState.provisionedBy`: the hint is absent on a pre-v7 record and a
-  provider-less type routes to CC anyway.
-- **An SDK route is untouched**: the provider mints the name.
+  provider-less type routes to CC.
+- **An SDK route is untouched**: its provider mints the name.
 - **The fill lands ONLY on the bag handed to `create()`, never on
   `resolvedPrevProps`**; the record is rebuilt from `prevRecord`, so "a recorded
   bag never holds a generated name" survives.
