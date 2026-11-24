@@ -328,6 +328,11 @@ vi.mock('@aws-sdk/client-elastic-load-balancing-v2', async () => {
 });
 
 import { createImportCommand } from '../../../src/cli/commands/import.js';
+import {
+  expectedNestedStackTags,
+  nestedRowsNeedingTagRun,
+} from '../../../src/deployment/nested-stack-tags.js';
+type StackStateLike = Record<string, unknown>;
 import { AwsClients } from '../../../src/utils/aws-clients.js';
 import { registerAllProviders } from '../../../src/provisioning/register-providers.js';
 import { stageLoadError } from '../../../src/synthesis/failed-stages.js';
@@ -8447,8 +8452,14 @@ describe('cdkd import', () => {
             {
               ...stackInfo(
                 'P',
-                template({ Mid: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'u' } } })
+                template({
+                  Mid: {
+                    Type: 'AWS::CloudFormation::Stack',
+                    Properties: { TemplateURL: 'u', Tags: [{ Key: 'tier', Value: 'mid' }] },
+                  },
+                })
               ),
+              tags: { team: 'root' },
               nestedTemplates: { Mid: midPath },
             },
           ],
@@ -8486,6 +8497,24 @@ describe('cdkd import', () => {
           ]),
         });
         mockReadDeployedStackTags.mockResolvedValue({ team: 'root' });
+        // A prior record of the middle stack carries a stale field, which the
+        // migration must replace (it is restored by the record carry).
+        mockGetState.mockImplementation(async (stack: string) =>
+          stack === 'P~Mid'
+            ? {
+                state: {
+                  version: 13,
+                  stackName: 'P~Mid',
+                  region: 'us-east-1',
+                  resources: {},
+                  outputs: {},
+                  lastModified: 0,
+                  nestedStackTags: { Grand: { stale: 'x' } },
+                },
+                etag: '"e"',
+              }
+            : null
+        );
         const stackRow = (tags: unknown) => ({
           Type: 'AWS::CloudFormation::Stack',
           Properties: { TemplateURL: 'u', Tags: tags },
@@ -8505,6 +8534,24 @@ describe('cdkd import', () => {
           { Key: 'g', Value: '1' },
         ]);
         expect(savedNestedStackTags('P')).toEqual({ Mid: { team: 'root', tier: 'mid' } });
+        // Nothing changed since the migration, so the next deploy re-runs no row.
+        const savedP = (
+          mockSaveState.mock.calls as unknown as [string, string, StackStateLike][]
+        ).find((c) => c[0] === 'P')![2];
+        expect(
+          nestedRowsNeedingTagRun(
+            expectedNestedStackTags(
+              template({
+                Mid: {
+                  Type: 'AWS::CloudFormation::Stack',
+                  Properties: { TemplateURL: 'u', Tags: [{ Key: 'tier', Value: 'mid' }] },
+                },
+              }),
+              { team: 'root' }
+            ),
+            savedP as never
+          ).size
+        ).toBe(0);
         expect(savedNestedStackTags('P~Mid')).toEqual({
           Grand: { team: 'root', tier: 'mid', g: '1' },
         });
