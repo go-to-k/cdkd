@@ -211,4 +211,46 @@ describe('DeployEngine - a reader of VPC endpoint NetworkInterfaceIds (#6939)', 
     expect(updateCallFor('Reader')).toBeUndefined();
     expect(mockEc2Send).not.toHaveBeenCalled();
   });
+
+  it('updates a DnsEntries reader when only PrivateDnsEnabled changes', async () => {
+    mockEc2Send.mockResolvedValue({
+      VpcEndpoints: [
+        {
+          VpcEndpointId: ID,
+          State: 'available',
+          DnsEntries: [
+            { DnsName: 'vpce-1.sts.us-east-1.vpce.amazonaws.com', HostedZoneId: 'Z7HUB' },
+            { DnsName: 'sts.us-east-1.amazonaws.com', HostedZoneId: 'Z0578' },
+          ],
+        },
+      ],
+    });
+    const tpl = template(['subnet-a']);
+    (tpl.Resources['Endpoint']!.Properties as Record<string, unknown>)['PrivateDnsEnabled'] = true;
+    tpl.Resources['Reader']!.Properties = {
+      Name: '/app/enis',
+      Type: 'String',
+      Value: { 'Fn::Join': [',', { 'Fn::GetAtt': ['Endpoint', 'DnsEntries'] }] },
+    };
+    stateBackend.getState.mockImplementation(() => {
+      const state = priorState();
+      state.resources['Endpoint']!.attributes = {
+        Id: ID,
+        DnsEntries: ['Z7HUB:vpce-1.sts.us-east-1.vpce.amazonaws.com'],
+      };
+      state.resources['Reader']!.properties = {
+        Name: '/app/enis',
+        Type: 'String',
+        Value: 'Z7HUB:vpce-1.sts.us-east-1.vpce.amazonaws.com',
+      };
+      return Promise.resolve({ state, etag: 'etag-old' });
+    });
+    await makeEngine().deploy(STACK, tpl);
+
+    const reader = updateCallFor('Reader');
+    expect(reader).toBeDefined();
+    expect((reader![3] as Record<string, unknown>)['Value']).toBe(
+      'Z7HUB:vpce-1.sts.us-east-1.vpce.amazonaws.com,Z0578:sts.us-east-1.amazonaws.com'
+    );
+  });
 });

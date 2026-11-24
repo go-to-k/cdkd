@@ -26,6 +26,11 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 import { EC2VPCEndpointProvider } from '../../../src/provisioning/providers/ec2-vpc-endpoint-provider.js';
 import { hasCreatedBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
 import { isMarkedNotGone } from '../../../src/provisioning/not-gone.js';
+import {
+  disarmInterruptWatchForTests,
+  interruptWatchTestSeam,
+  isInterruptedWaitError,
+} from '../../../src/provisioning/interrupt-watch.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import {
   ProvisioningError,
@@ -660,6 +665,47 @@ describe('EC2VPCEndpointProvider (#6939)', () => {
       const error = await provider().delete('Endpoint', ID, TYPE).catch((e: unknown) => e);
       expect(error).toBeInstanceOf(ProvisioningError);
       expect(isMarkedNotGone(error)).toBe(true);
+    });
+  });
+
+  describe('review round 2', () => {
+    it('sends no PrivateDnsEnabled when a non-Interface endpoint drops it', async () => {
+      mockSend.mockImplementation((cmd: unknown) =>
+        Promise.resolve(cmd instanceof DescribeVpcEndpointsCommand ? described({ State: 'available' }) : {})
+      );
+      const gateway = { VpcId: 'vpc-1', ServiceName: 'com.amazonaws.us-east-1.s3', VpcEndpointType: 'Gateway' };
+      await provider().update('Endpoint', ID, TYPE, gateway, { ...gateway, PrivateDnsEnabled: true });
+      expect(sent(ModifyVpcEndpointCommand)).toHaveLength(0);
+    });
+
+    describe('with the command owning interrupts', () => {
+      beforeEach(() => {
+        disarmInterruptWatchForTests();
+        interruptWatchTestSeam.commandOwnsInterrupts = () => true;
+      });
+      afterEach(() => {
+        disarmInterruptWatchForTests();
+        delete interruptWatchTestSeam.commandOwnsInterrupts;
+      });
+
+      it('stops the available wait on Ctrl-C, the endpoint marked as created', async () => {
+        mockSend.mockImplementation((cmd: unknown) =>
+          cmd instanceof CreateVpcEndpointCommand
+            ? Promise.resolve({ VpcEndpoint: endpoint() })
+            : Promise.resolve(described({ State: 'pending' }))
+        );
+        const p = provider();
+        // Bounded, so a wait that ignored the interrupt fails on its deadline.
+        p.endpointWait.timeoutMs = 1_000;
+        p.endpointWait.sleep = () => {
+          process.emit('SIGINT');
+          return Promise.resolve();
+        };
+        const error = await p.create('Endpoint', TYPE, interfaceProps()).catch((e: unknown) => e);
+        expect(isInterruptedWaitError(error)).toBe(true);
+        expect(hasCreatedBeforeFailure(error)).toBe(true);
+        expect(sent(DescribeVpcEndpointsCommand)).toHaveLength(1);
+      });
     });
   });
 });

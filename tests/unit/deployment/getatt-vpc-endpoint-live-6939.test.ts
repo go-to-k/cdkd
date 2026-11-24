@@ -22,6 +22,11 @@ import { IntrinsicFunctionResolver } from '../../../src/deployment/intrinsic-fun
 import { vpcEndpointAttributeWait } from '../../../src/deployment/intrinsic-resolver/getatt-construct-core.js';
 import type { ResolverContext } from '../../../src/deployment/intrinsic-resolver/support.js';
 import { IntrinsicResolutionRefusalError } from '../../../src/utils/error-handler.js';
+import {
+  disarmInterruptWatchForTests,
+  interruptWatchTestSeam,
+  isInterruptedWaitError,
+} from '../../../src/provisioning/interrupt-watch.js';
 
 const ID = 'vpce-0123456789abcdef0';
 
@@ -160,5 +165,30 @@ describe('Fn::GetAtt AWS::EC2::VPCEndpoint live arm (#6939)', () => {
     await expect(
       resolver.resolve({ 'Fn::GetAtt': ['Endpoint', 'CreationTimestamp'] }, context())
     ).rejects.toThrow(/reported no CreationTimestamp/);
+  });
+
+  describe('with the command owning interrupts', () => {
+    beforeEach(() => {
+      disarmInterruptWatchForTests();
+      interruptWatchTestSeam.commandOwnsInterrupts = () => true;
+    });
+    afterEach(() => {
+      disarmInterruptWatchForTests();
+      delete interruptWatchTestSeam.commandOwnsInterrupts;
+    });
+
+    it('stops the pending wait on Ctrl-C', async () => {
+      mockEc2Send.mockResolvedValue(endpoint('pending'));
+      vpcEndpointAttributeWait.sleep = () => {
+        process.emit('SIGINT');
+        return Promise.resolve();
+      };
+      const resolver = new IntrinsicFunctionResolver();
+      const error = await resolver
+        .resolve({ 'Fn::GetAtt': ['Endpoint', 'NetworkInterfaceIds'] }, context())
+        .catch((e: unknown) => e);
+      expect(isInterruptedWaitError(error)).toBe(true);
+      expect(mockEc2Send).toHaveBeenCalledTimes(2);
+    });
   });
 });
