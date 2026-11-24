@@ -581,10 +581,6 @@ export async function applyTagDiff(
  *     with `DescribeStream`.
  */
 /**
- * go-to-k/cdkd#5487: `readCurrentState`, with `ShardCount` the OPEN shard
- * count the update compares (`readCurrentState` counts closed shards too).
- */
-/**
  * go-to-k/cdkd#5503: warn about each live shard-level metric outside
  * `named`. It is left enabled, and the warning says how to disable it.
  * Best-effort: a failed read only loses the warning.

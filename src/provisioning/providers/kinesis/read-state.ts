@@ -4,6 +4,7 @@ import {
   DescribeStreamSummaryCommand,
   ListTagsForStreamCommand,
   ResourceNotFoundException,
+  type Shard,
 } from '@aws-sdk/client-kinesis';
 import { isUsableAttemptedName } from '../../../state/unsettled-properties.js';
 import { normalizeAwsTagsToCfn } from '../../import-helpers.js';
@@ -46,6 +47,11 @@ export function getDriftUnorderedPaths(
   return ['DesiredShardLevelMetrics'];
 }
 
+/**
+ * go-to-k/cdkd#5487: `readCurrentState`, with `ShardCount` the OPEN shard
+ * count the update compares, read even for an ON_DEMAND stream, which
+ * `readCurrentState` reports without one.
+ */
 export async function readUnsettled(
   this: KinesisStreamProvider,
   physicalId: string,
@@ -119,6 +125,23 @@ export async function unsettledInTransition(
 }
 
 /**
+ * The stream's open shard count: `DescribeStreamSummary`'s `OpenShardCount`,
+ * else the shards on `DescribeStream`'s page with no ending sequence number
+ * (a closed shard has one). `undefined` when neither is readable, or when the
+ * page is not the whole list (`HasMoreShards`), which would undercount.
+ */
+function openShardCount(
+  summaryCount: number | undefined,
+  shards: readonly Shard[] | undefined,
+  hasMoreShards: boolean | undefined
+): number | undefined {
+  if (typeof summaryCount === 'number') return summaryCount;
+  if (!shards || hasMoreShards === true) return undefined;
+  return shards.filter((shard) => shard.SequenceNumberRange?.EndingSequenceNumber === undefined)
+    .length;
+}
+
+/**
  * Read the AWS-current Kinesis stream configuration in CFn-property shape.
  *
  * Issues `DescribeStream` and surfaces the keys cdkd's `create()`
@@ -128,9 +151,9 @@ export async function unsettledInTransition(
  * `MaxRecordSizeInKiB` via a follow-up `DescribeStreamSummary` (the field is
  * absent from `DescribeStream`'s `StreamDescription` shape).
  *
- * `ShardCount` is reported as the count of `Shards[]` in the stream
- * description (only present for PROVISIONED-mode streams; ON_DEMAND
- * mode reports an empty list).
+ * `ShardCount` is reported as the OPEN shard count (PROVISIONED-mode
+ * streams only), never the length of `Shards[]`, which also lists closed
+ * shards.
  *
  * Returns `RESOURCE_NOT_FOUND` when the stream is gone (`ResourceNotFoundException`).
  *
@@ -165,15 +188,6 @@ export async function readCurrentState(
   const streamMode = stream.StreamModeDetails?.StreamMode;
   if (streamMode !== undefined) {
     result['StreamModeDetails'] = { StreamMode: streamMode };
-  }
-  // Class 1 — `ShardCount` is PROVISIONED-only. AWS rejects
-  // `UpdateShardCount` on ON_DEMAND streams; emitting a `ShardCount`
-  // placeholder there would surface as a `cdkd drift --revert`
-  // failure on the round-trip. ON_DEMAND streams report shards too
-  // (capacity is managed by AWS), so gating on `Shards.length` is
-  // not enough — the type discriminator is `StreamMode`.
-  if (streamMode === 'PROVISIONED' && stream.Shards && stream.Shards.length > 0) {
-    result['ShardCount'] = stream.Shards.length;
   }
   if (stream.RetentionPeriodHours !== undefined) {
     result['RetentionPeriodHours'] = stream.RetentionPeriodHours;
@@ -211,6 +225,26 @@ export async function readCurrentState(
     const summaryResp = await this.getClient().send(
       new DescribeStreamSummaryCommand({ StreamName: physicalId })
     );
+    // Class 1 — `ShardCount` is PROVISIONED-only. AWS rejects
+    // `UpdateShardCount` on ON_DEMAND streams; emitting a `ShardCount`
+    // placeholder there would surface as a `cdkd drift --revert`
+    // failure on the round-trip. ON_DEMAND streams report shards too
+    // (capacity is managed by AWS), so the type discriminator is
+    // `StreamMode`.
+    //
+    // go-to-k/cdkd#6933: the OPEN shard count, which is what the template's
+    // `ShardCount` and `UpdateShardCount` mean. `DescribeStream`'s `Shards`
+    // also lists every CLOSED parent a reshard leaves for the retention
+    // period (and stops at 100 per page), so counting it reported, recorded
+    // and reverted a wrong count after any reshard.
+    const openShards = openShardCount(
+      summaryResp.StreamDescriptionSummary?.OpenShardCount,
+      stream.Shards,
+      stream.HasMoreShards
+    );
+    if (streamMode === 'PROVISIONED' && openShards !== undefined && openShards > 0) {
+      result['ShardCount'] = openShards;
+    }
     const maxRecordSize = summaryResp.StreamDescriptionSummary?.MaxRecordSizeInKiB;
     if (maxRecordSize !== undefined) result['MaxRecordSizeInKiB'] = maxRecordSize;
     // go-to-k/cdkd#2762: present for ON_DEMAND streams only, so

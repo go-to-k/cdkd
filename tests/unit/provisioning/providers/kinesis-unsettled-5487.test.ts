@@ -142,8 +142,8 @@ describe('Kinesis stream unsettled properties (go-to-k/cdkd#5487)', () => {
       string,
       unknown
     >;
-    // readCurrentState's own count (open + closed) when ShardCount is not asked for.
-    expect(withoutShards['ShardCount']).toBe(3);
+    // readCurrentState's own count is the open one too (go-to-k/cdkd#6933).
+    expect(withoutShards['ShardCount']).toBe(1);
   });
 
   it('an unsettled mode switch compares the live open shard count, not the record', async () => {

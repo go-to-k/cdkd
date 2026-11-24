@@ -12,6 +12,9 @@
 #
 # Phases:
 #   1. Deploy a PROVISIONED (1 shard) stream. Assert AWS reports PROVISIONED.
+#   1b. Reshard it to 2 out of band: `cdkd drift` must report ShardCount 1 -> 2
+#      (the closed parent shard not counted), `--revert` must bring it back to
+#      1 open shard, and the next drift must be clean (go-to-k/cdkd#6933).
 #   2. Re-deploy with CDKD_TEST_UPDATE=true (ON_DEMAND). Assert AWS now reports
 #      ON_DEMAND (the switch actually reached AWS, not just cdkd state).
 #   2c. Re-deploy with CDKD_TEST_REMOVAL=true: the second stream's
@@ -195,6 +198,60 @@ echo "    create-path DesiredShardLevelMetrics + MaxRecordSizeInKiB reached AWS"
 RDS_CREATE="$(distribution_strategy "${STRATEGY_STREAM_NAME}")"
 echo "    AWS RecordDistributionStrategy on ${STRATEGY_STREAM_NAME} (Phase 1): ${RDS_CREATE}"
 assert_eq "RecordDistributionStrategy after Phase 1 (create path)" "AUTO" "${RDS_CREATE}"
+
+# --- Phase 1b: drift after an out-of-band reshard (go-to-k/cdkd#6933) ----
+# A reshard leaves its CLOSED parent shards listed for the retention period.
+# drift used to count them: 1 -> 2 read as 3, and after --revert brought the
+# stream back to 1 open shard, drift read 4 and reported drift that was not there.
+open_shards() {
+  aws kinesis describe-stream-summary --stream-name "${STREAM_NAME}" --region "${REGION}" \
+    --query 'StreamDescriptionSummary.OpenShardCount' --output text
+}
+wait_stream_active() {
+  local status i
+  for i in $(seq 1 60); do
+    status="$(aws kinesis describe-stream-summary --stream-name "${STREAM_NAME}" --region "${REGION}" \
+      --query 'StreamDescriptionSummary.StreamStatus' --output text)" || return 1
+    [ "${status}" = "ACTIVE" ] && return 0
+    sleep 5
+  done
+  echo "FAIL: ${STREAM_NAME} did not return to ACTIVE (last: ${status})" >&2
+  exit 1
+}
+echo "==> Phase 1b: reshard ${STREAM_NAME} 1 -> 2 out of band, then cdkd drift / --revert"
+STREAM_LID="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" \
+  | jq -r --arg n "${STREAM_NAME}" '.resources | to_entries[] | select(.value.physicalId == $n) | .key')"
+if [ -z "${STREAM_LID}" ]; then
+  echo "FAIL: no state record has physicalId ${STREAM_NAME}" >&2
+  exit 1
+fi
+aws kinesis update-shard-count --stream-name "${STREAM_NAME}" --region "${REGION}" \
+  --target-shard-count 2 --scaling-type UNIFORM_SCALING >/dev/null
+wait_stream_active || exit 1
+assert_eq "OpenShardCount after the out-of-band reshard" "2" "$(open_shards)"
+set +e
+DRIFT_1B="$(node "${LOCAL_DIST}" drift "${STACK}" --json --state-bucket "${STATE_BUCKET}" --region "${REGION}")"
+DRIFT_1B_RC=$?
+set -e
+assert_eq "cdkd drift exit after the reshard" "1" "${DRIFT_1B_RC}"
+SHARDS_1B="$(jq -r --arg l "${STREAM_LID}" \
+  '.[0].drifted[] | select(.logicalId == $l) | .changes[] | select(.path == "ShardCount") | "\(.stateValue)->\(.awsValue)"' \
+  <<<"${DRIFT_1B}")"
+echo "    cdkd drift ShardCount: ${SHARDS_1B}"
+assert_eq "drift ShardCount (open shards only, closed parent not counted)" "1->2" "${SHARDS_1B}"
+
+node "${LOCAL_DIST}" drift "${STACK}" --revert --yes --state-bucket "${STATE_BUCKET}" --region "${REGION}"
+wait_stream_active || exit 1
+assert_eq "OpenShardCount after drift --revert" "1" "$(open_shards)"
+TOTAL_SHARDS="$(aws kinesis list-shards --stream-name "${STREAM_NAME}" --region "${REGION}" \
+  --query 'length(Shards)' --output text)"
+echo "    shards listed after --revert (open + closed): ${TOTAL_SHARDS}"
+if [ "${TOTAL_SHARDS}" -le 1 ]; then
+  echo "FAIL: expected closed parent shards to be listed, so the next drift can tell open from all" >&2
+  exit 1
+fi
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}"
+echo "    drift is clean with ${TOTAL_SHARDS} shards listed and 1 open"
 
 # --- Phase 2: switch to ON_DEMAND (must actually reach AWS) ------------
 echo "==> Phase 2: re-deploy as ON_DEMAND (StreamMode switch via UpdateStreamMode)"
