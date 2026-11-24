@@ -132,7 +132,10 @@ import {
   applyExportedStackTags,
   flipStackToUpdateComplete,
 } from '../../../src/cli/commands/export/changeset.js';
-import { exportedStackTagsByStack } from '../../../src/cli/commands/export/exported-stack-tags.js';
+import {
+  exportedStackTagsByStack,
+  refuseFlipTagBudget,
+} from '../../../src/cli/commands/export/exported-stack-tags.js';
 import { readDeployedStackTags } from '../../../src/cli/commands/import/deployed-properties.js';
 
 function client(send: (cmd: SentCommand) => Promise<unknown>) {
@@ -314,6 +317,30 @@ describe('exportedStackTagsByStack (go-to-k/cdkd#6887)', () => {
     expect(String(warn.mock.calls[0]![0])).toContain(
       "The Tags of nested stack row C in 'R' are not literal"
     );
+  });
+});
+
+describe('refuseFlipTagBudget (go-to-k/cdkd#6902)', () => {
+  const n = (count: number): Record<string, string> =>
+    Object.fromEntries(Array.from({ length: count }, (_, i) => [`k${i}`, 'v']));
+
+  it('lets the ROOT hold 50: it takes no flip tag', () => {
+    expect(() => refuseFlipTagBudget(new Map([['R', n(50)]]), 'R')).not.toThrow();
+  });
+
+  it('lets a nested stack hold 49, refuses 50 and 51, naming every one', () => {
+    expect(() => refuseFlipTagBudget(new Map([['R', {}], ['R~A', n(49)]]), 'R')).not.toThrow();
+    expect(() =>
+      refuseFlipTagBudget(
+        new Map([
+          ['R', {}],
+          ['R~A', n(50)],
+          ['R~B', n(51)],
+          ['R~C', n(49)],
+        ]),
+        'R'
+      )
+    ).toThrow("These nested stacks have no room for it: 'R~A' (50 stack tags), 'R~B' (51 stack tags).");
   });
 });
 

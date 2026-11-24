@@ -1214,7 +1214,9 @@ describe('runPerStackImportLoop — stack tags (go-to-k/cdkd#6887)', () => {
 
   async function run(
     rowTags: unknown,
-    rootStackTags: Record<string, string> | undefined
+    rootStackTags: Record<string, string> | undefined,
+    refused?: (error: Error) => void,
+    dryRun = false
   ): Promise<SendCall[]> {
     const childPath = join(tmpRoot, 'Child.nested.template.json');
     writeFileSync(
@@ -1247,7 +1249,9 @@ describe('runPerStackImportLoop — stack tags (go-to-k/cdkd#6887)', () => {
     });
     const { manager: lockManager } = buildLockManager();
     const { client: cfnClient, calls } = buildCfnClient();
-    const result = await runPerStackImportLoop({
+    let result: Awaited<ReturnType<typeof runPerStackImportLoop>>;
+    try {
+      result = await runPerStackImportLoop({
       lockRecovery: { stateBucket: 'bkt' },
       rootStackName: 'Root',
       rootRegion: 'us-east-1',
@@ -1289,12 +1293,17 @@ describe('runPerStackImportLoop — stack tags (go-to-k/cdkd#6887)', () => {
         ssmClient: UNUSED_SSM,
       },
       options: {
-        dryRun: false,
+        dryRun,
         yes: true,
         includeNonImportable: false,
         recreateImportUnsupported: true,
       },
     });
+    } catch (error) {
+      if (!refused) throw error;
+      refused(error as Error);
+      return calls;
+    }
     expect(result.outcome).toBe('success');
     return calls;
   }
@@ -1346,6 +1355,42 @@ describe('runPerStackImportLoop — stack tags (go-to-k/cdkd#6887)', () => {
     expect(warnSpy.mock.calls.flat().join('\n')).toContain(
       "The Tags of nested stack row Child in 'Root' are not literal"
     );
+  });
+
+  // go-to-k/cdkd#6902: CloudFormation refuses more than 50 stack tags
+  // (`Tags must have length less than or equal to 50`, measured), and the flip
+  // adds one to the child's, so a child at 50 is refused before any changeset.
+  const nTags = (n: number): Record<string, string> =>
+    Object.fromEntries(Array.from({ length: n }, (_, i) => [`k${i}`, 'v']));
+  it('exports a child with 49 stack tags: its flip sends 50', async () => {
+    const calls = await run(undefined, nTags(49));
+    const flip = calls.find(
+      (c) => c.name === 'UpdateStack' && c.input['StackName'] === 'Root-Child'
+    )!;
+    expect((flip.input['Tags'] as unknown[]).length).toBe(50);
+  });
+  it.each([50, 51])('refuses a child with %i stack tags before any changeset, naming it', async (n) => {
+    let refusal: Error | undefined;
+    const calls = await run(undefined, nTags(n), (error) => {
+      refusal = error;
+    });
+    expect(refusal?.message).toContain(
+      `These nested stacks have no room for it: 'Root~Child' (${n} stack tags)`
+    );
+    expect(refusal?.message).toContain('Nothing was changed.');
+    expect(calls.filter((c) => c.name === 'CreateChangeSet' || c.name === 'UpdateStack')).toEqual([]);
+  });
+  it('refuses on --dry-run too: a plan that cannot run is not reported as one that can', async () => {
+    let refusal: Error | undefined;
+    await run(
+      undefined,
+      nTags(50),
+      (error) => {
+        refusal = error;
+      },
+      true
+    );
+    expect(refusal?.message).toContain("'Root~Child' (50 stack tags)");
   });
 
   it('makes no root tag update for a stack without stack tags', async () => {
