@@ -7,15 +7,15 @@ const { mockEcrSend, mockEcrDestroy, mockRunDocker } = vi.hoisted(() => ({
 }));
 
 vi.mock('@aws-sdk/client-ecr', () => ({
-  ECRClient: vi.fn().mockImplementation(() => ({
+  ECRClient: vi.fn(() => ({
     send: mockEcrSend,
     destroy: mockEcrDestroy,
   })),
-  GetAuthorizationTokenCommand: vi.fn().mockImplementation((input) => ({
+  GetAuthorizationTokenCommand: vi.fn((input) => ({
     ...input,
     _type: 'GetAuthorizationToken',
   })),
-  DescribeImagesCommand: vi.fn().mockImplementation((input) => ({
+  DescribeImagesCommand: vi.fn((input) => ({
     ...input,
     _type: 'DescribeImages',
   })),

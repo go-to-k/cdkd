@@ -20,12 +20,12 @@ import AdmZip from 'adm-zip';
 
 const mockS3Send = vi.fn();
 vi.mock('@aws-sdk/client-s3', () => ({
-  S3Client: vi.fn().mockImplementation(() => ({
+  S3Client: vi.fn(() => ({
     send: mockS3Send,
     destroy: vi.fn(),
   })),
-  HeadObjectCommand: vi.fn().mockImplementation((input) => ({ ...input, _type: 'HeadObject' })),
-  PutObjectCommand: vi.fn().mockImplementation((input) => ({ ...input, _type: 'PutObject' })),
+  HeadObjectCommand: vi.fn((input) => ({ ...input, _type: 'HeadObject' })),
+  PutObjectCommand: vi.fn((input) => ({ ...input, _type: 'PutObject' })),
 }));
 
 const { FileAssetPublisher } = await import('../../../src/assets/file-asset-publisher.js');

@@ -20,18 +20,18 @@ import {
 // must be mocked or every test would issue a LIVE GetCallerIdentity
 // (PR 1015 reviewer catch: 22ms -> 15s + offline flakiness).
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation(() => ({
+  STSClient: vi.fn(() => ({
     send: vi.fn().mockResolvedValue({ Account: '111111111111' }),
     destroy: vi.fn(),
   })),
-  GetCallerIdentityCommand: vi.fn().mockImplementation((input) => ({ ...input })),
+  GetCallerIdentityCommand: vi.fn((input) => ({ ...input })),
 }));
 
 vi.mock('@aws-sdk/client-s3', async () => {
   const actual = await vi.importActual<typeof import('@aws-sdk/client-s3')>('@aws-sdk/client-s3');
   return {
     ...actual,
-    S3Client: vi.fn().mockImplementation(() => ({
+    S3Client: vi.fn(() => ({
       send: vi.fn(),
     })),
   };

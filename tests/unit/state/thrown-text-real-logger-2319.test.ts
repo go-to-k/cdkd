@@ -15,14 +15,14 @@ import { recordLogOnlyValue, SECRET_MASK } from '../../../src/deployment/secret-
 import type { StateBackendConfig } from '../../../src/types/config.js';
 
 vi.mock('../../../src/utils/expected-bucket-owner.js', () => ({
-  expectedOwnerParam: vi.fn().mockResolvedValue({}),
+  expectedOwnerParam: vi.fn(async () => ({})),
 }));
 
 vi.mock('../../../src/utils/aws-region-resolver.js', async () => {
   const actual = await vi.importActual<typeof import('../../../src/utils/aws-region-resolver.js')>(
     '../../../src/utils/aws-region-resolver.js'
   );
-  return { ...actual, resolveBucketRegion: vi.fn().mockResolvedValue('us-east-1') };
+  return { ...actual, resolveBucketRegion: vi.fn(async () => 'us-east-1') };
 });
 
 const SECRET = 'debug-secret-k3';

@@ -1,18 +1,16 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 // Mock @aws-sdk/client-s3
 const mockS3Send = vi.fn();
 const mockS3Destroy = vi.fn();
 vi.mock('@aws-sdk/client-s3', () => ({
-  S3Client: vi.fn().mockImplementation(() => ({
+  S3Client: vi.fn(() => ({
     send: mockS3Send,
     destroy: mockS3Destroy,
   })),
-  HeadObjectCommand: vi.fn().mockImplementation((input) => ({ ...input, _type: 'HeadObject' })),
-  PutObjectCommand: vi.fn().mockImplementation((input) => ({ ...input, _type: 'PutObject' })),
-  AbortMultipartUploadCommand: vi
-    .fn()
-    .mockImplementation((input) => ({ ...input, _type: 'AbortMultipartUpload' })),
+  HeadObjectCommand: vi.fn((input) => ({ ...input, _type: 'HeadObject' })),
+  PutObjectCommand: vi.fn((input) => ({ ...input, _type: 'PutObject' })),
+  AbortMultipartUploadCommand: vi.fn((input) => ({ ...input, _type: 'AbortMultipartUpload' })),
 }));
 
 // Mock @aws-sdk/lib-storage: the multipart path above MULTIPART_UPLOAD_THRESHOLD.
@@ -21,7 +19,7 @@ const mockUploadDone = vi.fn();
 /** What the mocked Upload reports as its `uploadId` (set per case). */
 const mockUpload = vi.hoisted(() => ({ uploadId: undefined as string | undefined }));
 vi.mock('@aws-sdk/lib-storage', () => ({
-  Upload: vi.fn().mockImplementation(() => ({
+  Upload: vi.fn(() => ({
     done: mockUploadDone,
     get uploadId() {
       return mockUpload.uploadId;
@@ -33,8 +31,8 @@ vi.mock('@aws-sdk/lib-storage', () => ({
 // that it is the uploaded Body and that a failed upload releases it.
 const mockStream = vi.hoisted(() => ({ destroy: vi.fn() }));
 vi.mock('node:fs', () => ({
-  createReadStream: vi.fn().mockReturnValue(mockStream),
-  statSync: vi.fn().mockReturnValue({ size: 1024, isDirectory: () => false }),
+  createReadStream: vi.fn(() => mockStream),
+  statSync: vi.fn(() => ({ size: 1024, isDirectory: () => false })),
 }));
 
 // Mock archiver - emits data/end events like a real archive stream.
@@ -43,7 +41,7 @@ vi.mock('node:fs', () => ({
 // export shape at all, which is why `file-asset-publisher-zip-real.test.ts`
 // exercises the unmocked archiver alongside this file.
 vi.mock('archiver', () => ({
-  ZipArchive: vi.fn().mockImplementation(() => {
+  ZipArchive: vi.fn(() => {
     const handlers: Record<string, ((...args: unknown[]) => void)[]> = {};
     const archive = {
       on: vi.fn().mockImplementation((event: string, handler: (...args: unknown[]) => void) => {
@@ -73,7 +71,7 @@ vi.mock('archiver', () => ({
 
 // Mock node:stream (no longer used by file-asset-publisher but kept for safety)
 vi.mock('node:stream', () => ({
-  PassThrough: vi.fn().mockImplementation(() => {
+  PassThrough: vi.fn(() => {
     const handlers: Record<string, Function[]> = {};
     return {
       on: vi.fn().mockImplementation((event: string, handler: Function) => {
@@ -143,6 +141,10 @@ describe('FileAssetPublisher', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // `clearAllMocks` keeps a case's `statSync` `mockReturnValue` (a large
+    // size, a directory): reset back to the factory's `vi.fn(impl)` default so
+    // it never leaks into a later case.
+    vi.mocked(statSync).mockReset();
     publisher = new FileAssetPublisher();
   });
 
@@ -196,14 +198,6 @@ describe('FileAssetPublisher', () => {
       }
       return {};
     };
-    // `clearAllMocks` keeps a `mockReturnValue`: put the file-level default back
-    // so a large size does not leak into the cases below this block.
-    afterEach(() => {
-      vi.mocked(statSync).mockReturnValue({
-        size: 1024,
-        isDirectory: () => false,
-      } as ReturnType<typeof statSync>);
-    });
     const publishFile = (asset = makeFileAsset()): Promise<void> =>
       publisher.publish('abc123', asset, '/tmp/cdk.out', '123456789012', 'us-east-1', '/tmp/cdk.out');
 

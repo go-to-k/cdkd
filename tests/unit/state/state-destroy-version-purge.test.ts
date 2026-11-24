@@ -13,11 +13,11 @@ import { clearReplicationProbeCache } from '../../../src/state/s3-replication-pu
  */
 
 vi.mock('../../../src/utils/bucket-region-client.js', () => ({
-  rebuildClientForBucketRegion: vi.fn().mockResolvedValue(null),
+  rebuildClientForBucketRegion: vi.fn(async () => null),
 }));
 
 vi.mock('../../../src/utils/expected-bucket-owner.js', () => ({
-  expectedOwnerParam: vi.fn().mockResolvedValue({ ExpectedBucketOwner: '999999999999' }),
+  expectedOwnerParam: vi.fn(async () => ({ ExpectedBucketOwner: '999999999999' })),
 }));
 
 const warnSpy = vi.hoisted(() => vi.fn());
@@ -27,7 +27,9 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: warnSpy,
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) {
+      return this;
+    }),
   };
   return {
     getLogger: () => ({

@@ -28,38 +28,24 @@ const { mockS3Send, mockLoggerDebug, mockLoggerInfo, mockLoggerWarn } = vi.hoist
 }));
 
 vi.mock('@aws-sdk/client-s3', () => ({
-  S3Client: vi.fn().mockImplementation((cfg?: { region?: string }) => ({
+  S3Client: vi.fn((cfg?: { region?: string }) => ({
     send: mockS3Send,
     destroy: vi.fn(),
     config: { region: async () => cfg?.region ?? 'us-east-1' },
   })),
-  HeadBucketCommand: vi.fn().mockImplementation((input) => ({ ...input, _type: 'HeadBucket' })),
-  CreateBucketCommand: vi.fn().mockImplementation((input) => ({ ...input, _type: 'CreateBucket' })),
-  GetBucketLocationCommand: vi
-    .fn()
-    .mockImplementation((input) => ({ ...input, _type: 'GetBucketLocation' })),
-  PutBucketEncryptionCommand: vi
-    .fn()
-    .mockImplementation((input) => ({ ...input, _type: 'PutBucketEncryption' })),
-  PutPublicAccessBlockCommand: vi
-    .fn()
-    .mockImplementation((input) => ({ ...input, _type: 'PutPublicAccessBlock' })),
-  PutBucketPolicyCommand: vi
-    .fn()
-    .mockImplementation((input) => ({ ...input, _type: 'PutBucketPolicy' })),
+  HeadBucketCommand: vi.fn((input) => ({ ...input, _type: 'HeadBucket' })),
+  CreateBucketCommand: vi.fn((input) => ({ ...input, _type: 'CreateBucket' })),
+  GetBucketLocationCommand: vi.fn((input) => ({ ...input, _type: 'GetBucketLocation' })),
+  PutBucketEncryptionCommand: vi.fn((input) => ({ ...input, _type: 'PutBucketEncryption' })),
+  PutPublicAccessBlockCommand: vi.fn((input) => ({ ...input, _type: 'PutPublicAccessBlock' })),
+  PutBucketPolicyCommand: vi.fn((input) => ({ ...input, _type: 'PutBucketPolicy' })),
 }));
 
 vi.mock('@aws-sdk/client-ecr', () => ({
-  ECRClient: vi.fn().mockImplementation(() => ({ send: vi.fn().mockResolvedValue({}), destroy: vi.fn() })),
-  DescribeRepositoriesCommand: vi
-    .fn()
-    .mockImplementation((input) => ({ ...input, _type: 'DescribeRepositories' })),
-  CreateRepositoryCommand: vi
-    .fn()
-    .mockImplementation((input) => ({ ...input, _type: 'CreateRepository' })),
-  PutImageTagMutabilityCommand: vi
-    .fn()
-    .mockImplementation((input) => ({ ...input, _type: 'PutImageTagMutability' })),
+  ECRClient: vi.fn(() => ({ send: vi.fn().mockResolvedValue({}), destroy: vi.fn() })),
+  DescribeRepositoriesCommand: vi.fn((input) => ({ ...input, _type: 'DescribeRepositories' })),
+  CreateRepositoryCommand: vi.fn((input) => ({ ...input, _type: 'CreateRepository' })),
+  PutImageTagMutabilityCommand: vi.fn((input) => ({ ...input, _type: 'PutImageTagMutability' })),
 }));
 
 vi.mock('../../../src/utils/logger.js', () => {

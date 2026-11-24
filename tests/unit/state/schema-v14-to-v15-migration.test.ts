@@ -32,11 +32,11 @@ import {
  * (`schema-v15-to-v16-migration.test.ts`).
  */
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation(() => ({
+  STSClient: vi.fn(() => ({
     send: vi.fn().mockResolvedValue({ Account: '999999999999' }),
     destroy: vi.fn(),
   })),
-  GetCallerIdentityCommand: vi.fn().mockImplementation((input) => ({ ...input })),
+  GetCallerIdentityCommand: vi.fn((input) => ({ ...input })),
 }));
 
 vi.mock('../../../src/utils/aws-region-resolver.js', async () => {

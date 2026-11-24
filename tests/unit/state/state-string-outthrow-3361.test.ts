@@ -43,11 +43,11 @@ vi.mock('../../../src/utils/logger.js', () => {
 // nor the region resolver should run; mocked anyway so a regression there
 // fails here rather than issuing a live call.
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation(() => ({
+  STSClient: vi.fn(() => ({
     send: vi.fn().mockResolvedValue({ Account: '111111111111' }),
     destroy: vi.fn(),
   })),
-  GetCallerIdentityCommand: vi.fn().mockImplementation((input) => ({ ...input })),
+  GetCallerIdentityCommand: vi.fn((input) => ({ ...input })),
 }));
 
 /** What `describeAwsFailure(x).detail` renders for a value `String()` cannot convert. */

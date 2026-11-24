@@ -36,18 +36,18 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation(() => ({
+  STSClient: vi.fn(() => ({
     send: vi.fn().mockResolvedValue({ Account: '111111111111' }),
     destroy: vi.fn(),
   })),
-  GetCallerIdentityCommand: vi.fn().mockImplementation((input) => ({ ...input })),
+  GetCallerIdentityCommand: vi.fn((input) => ({ ...input })),
 }));
 
 vi.mock('@aws-sdk/client-s3', async () => {
   const actual = await vi.importActual<typeof import('@aws-sdk/client-s3')>('@aws-sdk/client-s3');
   return {
     ...actual,
-    S3Client: vi.fn().mockImplementation(() => ({ send: vi.fn() })),
+    S3Client: vi.fn(() => ({ send: vi.fn() })),
   };
 });
 

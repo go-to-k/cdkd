@@ -20,44 +20,26 @@ vi.mock('@aws-sdk/client-s3', () => ({
   // from it rather than from the `region` OPTION, because `cdkd bootstrap`
   // passes a shared client whose region can differ from that option — see the
   // comment at the `PutBucketPolicyCommand` call site (issue #1794 review).
-  S3Client: vi.fn().mockImplementation((cfg?: { region?: string }) => ({
+  S3Client: vi.fn((cfg?: { region?: string }) => ({
     send: mockS3Send,
     destroy: vi.fn(),
     config: { region: async () => cfg?.region ?? 'us-east-1' },
   })),
-  HeadBucketCommand: vi.fn().mockImplementation((input) => ({ ...input, _type: 'HeadBucket' })),
-  CreateBucketCommand: vi.fn().mockImplementation((input) => ({ ...input, _type: 'CreateBucket' })),
-  GetBucketLocationCommand: vi
-    .fn()
-    .mockImplementation((input) => ({ ...input, _type: 'GetBucketLocation' })),
-  PutBucketEncryptionCommand: vi
-    .fn()
-    .mockImplementation((input) => ({ ...input, _type: 'PutBucketEncryption' })),
-  PutPublicAccessBlockCommand: vi
-    .fn()
-    .mockImplementation((input) => ({ ...input, _type: 'PutPublicAccessBlock' })),
-  PutBucketPolicyCommand: vi
-    .fn()
-    .mockImplementation((input) => ({ ...input, _type: 'PutBucketPolicy' })),
-  GetBucketLifecycleConfigurationCommand: vi
-    .fn()
-    .mockImplementation((input) => ({ ...input, _type: 'GetBucketLifecycleConfiguration' })),
-  PutBucketLifecycleConfigurationCommand: vi
-    .fn()
-    .mockImplementation((input) => ({ ...input, _type: 'PutBucketLifecycleConfiguration' })),
+  HeadBucketCommand: vi.fn((input) => ({ ...input, _type: 'HeadBucket' })),
+  CreateBucketCommand: vi.fn((input) => ({ ...input, _type: 'CreateBucket' })),
+  GetBucketLocationCommand: vi.fn((input) => ({ ...input, _type: 'GetBucketLocation' })),
+  PutBucketEncryptionCommand: vi.fn((input) => ({ ...input, _type: 'PutBucketEncryption' })),
+  PutPublicAccessBlockCommand: vi.fn((input) => ({ ...input, _type: 'PutPublicAccessBlock' })),
+  PutBucketPolicyCommand: vi.fn((input) => ({ ...input, _type: 'PutBucketPolicy' })),
+  GetBucketLifecycleConfigurationCommand: vi.fn((input) => ({ ...input, _type: 'GetBucketLifecycleConfiguration' })),
+  PutBucketLifecycleConfigurationCommand: vi.fn((input) => ({ ...input, _type: 'PutBucketLifecycleConfiguration' })),
 }));
 
 vi.mock('@aws-sdk/client-ecr', () => ({
-  ECRClient: vi.fn().mockImplementation(() => ({ send: mockEcrSend, destroy: vi.fn() })),
-  DescribeRepositoriesCommand: vi
-    .fn()
-    .mockImplementation((input) => ({ ...input, _type: 'DescribeRepositories' })),
-  CreateRepositoryCommand: vi
-    .fn()
-    .mockImplementation((input) => ({ ...input, _type: 'CreateRepository' })),
-  PutImageTagMutabilityCommand: vi
-    .fn()
-    .mockImplementation((input) => ({ ...input, _type: 'PutImageTagMutability' })),
+  ECRClient: vi.fn(() => ({ send: mockEcrSend, destroy: vi.fn() })),
+  DescribeRepositoriesCommand: vi.fn((input) => ({ ...input, _type: 'DescribeRepositories' })),
+  CreateRepositoryCommand: vi.fn((input) => ({ ...input, _type: 'CreateRepository' })),
+  PutImageTagMutabilityCommand: vi.fn((input) => ({ ...input, _type: 'PutImageTagMutability' })),
 }));
 
 vi.mock('../../../src/utils/logger.js', () => ({

@@ -7,9 +7,9 @@ const { mockS3Send, mockEcrSend, mockLoggerWarn } = vi.hoisted(() => ({
 }));
 
 vi.mock('@aws-sdk/client-s3', () => {
-  const command = (type: string) => vi.fn().mockImplementation((input) => ({ ...input, _type: type }));
+  const command = (type: string) => vi.fn((input) => ({ ...input, _type: type }));
   return {
-    S3Client: vi.fn().mockImplementation((cfg?: { region?: string }) => ({
+    S3Client: vi.fn((cfg?: { region?: string }) => ({
       send: mockS3Send,
       destroy: vi.fn(),
       config: { region: async () => cfg?.region ?? 'us-east-1' },
@@ -24,9 +24,9 @@ vi.mock('@aws-sdk/client-s3', () => {
 });
 
 vi.mock('@aws-sdk/client-ecr', () => {
-  const command = (type: string) => vi.fn().mockImplementation((input) => ({ ...input, _type: type }));
+  const command = (type: string) => vi.fn((input) => ({ ...input, _type: type }));
   return {
-    ECRClient: vi.fn().mockImplementation(() => ({ send: mockEcrSend, destroy: vi.fn() })),
+    ECRClient: vi.fn(() => ({ send: mockEcrSend, destroy: vi.fn() })),
     DescribeRepositoriesCommand: command('DescribeRepositories'),
     CreateRepositoryCommand: command('CreateRepository'),
     PutImageTagMutabilityCommand: command('PutImageTagMutability'),

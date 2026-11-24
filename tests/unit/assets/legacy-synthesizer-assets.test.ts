@@ -9,19 +9,19 @@ const { mockCfnSend, mockCfnDestroy } = vi.hoisted(() => ({
 }));
 
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation(() => ({
+  STSClient: vi.fn(() => ({
     send: vi.fn(async () => ({ Account: '123456789012' })),
     destroy: vi.fn(),
   })),
-  GetCallerIdentityCommand: vi.fn().mockImplementation((input) => ({ ...input })),
+  GetCallerIdentityCommand: vi.fn((input) => ({ ...input })),
 }));
 
 vi.mock('@aws-sdk/client-cloudformation', () => ({
-  CloudFormationClient: vi.fn().mockImplementation(() => ({
+  CloudFormationClient: vi.fn(() => ({
     send: mockCfnSend,
     destroy: mockCfnDestroy,
   })),
-  DescribeStacksCommand: vi.fn().mockImplementation((input) => ({ ...input, _type: 'DescribeStacks' })),
+  DescribeStacksCommand: vi.fn((input) => ({ ...input, _type: 'DescribeStacks' })),
 }));
 
 import {

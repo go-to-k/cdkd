@@ -12,29 +12,25 @@ const { mockLoggerInfo, mockLoggerDebug, mockStsSend } = vi.hoisted(() => ({
 // createAssetRedirectResolver lazily imports the STS client to resolve the
 // caller account id; intercept it so the happy-path test needs no AWS.
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation(() => ({ send: mockStsSend, destroy: vi.fn() })),
-  GetCallerIdentityCommand: vi.fn().mockImplementation((input) => ({ ...input })),
+  STSClient: vi.fn(() => ({ send: mockStsSend, destroy: vi.fn() })),
+  GetCallerIdentityCommand: vi.fn((input) => ({ ...input })),
 }));
 
 // AssetModeResolver's marker verification constructs region-scoped S3 / ECR
 // clients — mock them so cdkd-assets-mode resolution succeeds offline.
 vi.mock('@aws-sdk/client-s3', () => ({
-  S3Client: vi
-    .fn()
-    .mockImplementation(() => ({ send: vi.fn().mockResolvedValue({}), destroy: vi.fn() })),
-  HeadBucketCommand: vi.fn().mockImplementation((input) => ({ ...input })),
-  CreateBucketCommand: vi.fn().mockImplementation((input) => ({ ...input })),
-  PutBucketEncryptionCommand: vi.fn().mockImplementation((input) => ({ ...input })),
-  PutPublicAccessBlockCommand: vi.fn().mockImplementation((input) => ({ ...input })),
-  PutBucketPolicyCommand: vi.fn().mockImplementation((input) => ({ ...input })),
+  S3Client: vi.fn(() => ({ send: vi.fn().mockResolvedValue({}), destroy: vi.fn() })),
+  HeadBucketCommand: vi.fn((input) => ({ ...input })),
+  CreateBucketCommand: vi.fn((input) => ({ ...input })),
+  PutBucketEncryptionCommand: vi.fn((input) => ({ ...input })),
+  PutPublicAccessBlockCommand: vi.fn((input) => ({ ...input })),
+  PutBucketPolicyCommand: vi.fn((input) => ({ ...input })),
 }));
 vi.mock('@aws-sdk/client-ecr', () => ({
-  ECRClient: vi
-    .fn()
-    .mockImplementation(() => ({ send: vi.fn().mockResolvedValue({}), destroy: vi.fn() })),
-  DescribeRepositoriesCommand: vi.fn().mockImplementation((input) => ({ ...input })),
-  CreateRepositoryCommand: vi.fn().mockImplementation((input) => ({ ...input })),
-  PutImageTagMutabilityCommand: vi.fn().mockImplementation((input) => ({ ...input })),
+  ECRClient: vi.fn(() => ({ send: vi.fn().mockResolvedValue({}), destroy: vi.fn() })),
+  DescribeRepositoriesCommand: vi.fn((input) => ({ ...input })),
+  CreateRepositoryCommand: vi.fn((input) => ({ ...input })),
+  PutImageTagMutabilityCommand: vi.fn((input) => ({ ...input })),
 }));
 
 vi.mock('../../../src/utils/logger.js', () => ({
