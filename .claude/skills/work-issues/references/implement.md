@@ -3,7 +3,7 @@
 ## 5. One tree per lane, then implement
 
 Stages 5–8 run in a lane agent per issue; real-AWS integ and merge (§9)
-stay with the parent, so a lane stops at merge-ready.
+stay with the parent, so a lane stops at its push.
 
 ### 5-a. The tree
 
@@ -23,8 +23,7 @@ vp run build                 # ...and no dist/ for CLI-spawning tests
 LIFE, never absence: "someone is here" means STOP.
 
 ```bash
-# The FIRST line is the anchor: every probe under it describes THIS shell's
-# tree, so a silently reset cwd (gotchas.md) shows IN THE OUTPUT.
+# The FIRST line anchors: a silently reset cwd (gotchas.md) shows IN THE OUTPUT.
 git rev-parse --show-toplevel   # STOP unless you meant to adopt this tree
 git status --porcelain          # non-empty: someone's uncommitted work
 git branch --show-current
@@ -69,14 +68,17 @@ done                                                               # RIGHT
   A change that REFUSES what it used to accept (warn → refuse) also greps the
   property through `tests/integration/*/{lib,verify.sh}` before claiming "no
   fixture impact": fixtures deploy malformed values ON PURPOSE (#3780).
-- **Count the population BEFORE the fix, assert it afterwards.** A fix REMOVING
+- **Count the population BEFORE the fix, assert it afterwards** — a checker's
+  UNGATED class (`unresolved`) included, asserted by the END STATE, not its
+  verdict (#6928: helper-set mock defaults passed it, failed under
+  `mockReset: true`). A fix REMOVING
   a behaviour owes a second count: the assertions that it happens, which stay green when it stops (§8-d).
   A masking fix's population is every SINK the value reaches, each `warn` that
   names the error CLASS included (a test puts the secret IN the class), and the
   lane prompt NAMES each one (#5248).
 - A defect this lane is NOT fixing gets FILED (`filing.md`, §5-f) — a PR-body
   "residual" or "not acted on" note is not filing: once merged it is never
-  read again (the #6871 run: four lanes, the parent filed #6891-#6893, #6902).
+  read again (#6871).
 
 ### 5-c. The fix itself
 
@@ -152,7 +154,7 @@ ANCHORS on AWS's documented constraint or ≥2 samples, `+` where no length is
 documented (#6512); and a fixture passing `--recreate-via-cc-api` a
 `STATEFUL_TYPES` type adds `--force-stateful-recreation` (#6512), and **the REPORT
 SHAPE — the FINAL report IS the deliverable**, since a lane's tool output
-never reaches you. **Name the parent's `SendMessage` address, `main`** (a guessed one fails), and say a
+never reaches you. **Name the parent's `SendMessage` address, `main`**, and say a
 mid-task report ends NOTHING: the lane goes on unless the parent SAYS stop.
 Never wait on a quiet lane: list the agents; send "REPORT ONLY" to any
 `completed`, or running with a frozen tool count and its PR green (#5593); ask
@@ -163,7 +165,7 @@ unasked. A lane reporting "CI pending": read
 (#6110). Read
 a completion when it arrives, and check the PR and tree before believing it —
 a per-item table's counts and verdicts come from its ROWS, never its headline
-(3 of 6 probe lanes' summaries contradicted their rows, #6628); a
+(#6628); a
 completion still waiting on a reply you already sent crossed it: resend the
 reply (#6512).
 A subagent's Bash bypasses the PreToolUse hooks.
@@ -175,9 +177,9 @@ A subagent's Bash bypasses the PreToolUse hooks.
   bare `tests` / `tests/unit` directory included), to the lane AND to every
   reviewer it dispatches — the lane copies the ban verbatim into each reviewer
   prompt; run it yourself, serially, and start ANY vitest of yours only while
-  no lane's is running** — concurrent suites trip the 600s watchdog in
-  untouched files (#6871 run: a reviewer re-ran `tests/unit` in its extract
-  after a kill).
+  no lane's is running** — concurrent suites trip the 600s watchdog (#6871).
+  Remote `rx --vitest` runs the FULL suite (capped) whatever files follow:
+  named files go `rx -- vp test run <files>` (#6928).
   Each runs `vp test run <its own suite>`, its files spelled out or inside
   `bash -c`: zsh passes an unquoted `$files` as ONE argument. In any shell an
   EMPTY list (a `$(ls <glob>)` matching nothing) runs the FULL suite: guard it.
@@ -185,9 +187,8 @@ A subagent's Bash bypasses the PreToolUse hooks.
   via `run_in_background` with a log redirect and wake on ITS exit — never a
   per-line watcher (`tail -F`, a line-emitting `Monitor`).
   A turn ended with nothing in the background is final, so a lane's last
-  message is merge-ready or a blocker, never "waiting"; a MERGE-READY one
-  leaves nothing there, CI watchers included: the parent's integ takes that
-  tree next (#5114).
+  message is its push or a blocker, never "waiting", and leaves nothing
+  there, CI watchers included: the parent's integ takes that tree (#5114).
 - **Every ad hoc `aws` call, a throwaway probe included, carries
   `AWS_CLI_AUTO_PROMPT=off AWS_PAGER=`**: the profile's auto-prompt hangs on a
   rejected command, and `/run-integ` sets them on `verify.sh` alone. Make

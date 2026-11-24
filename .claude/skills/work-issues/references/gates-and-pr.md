@@ -14,8 +14,8 @@ A touched `.claude/rules/**` or skill file ends no larger than
 `git show "$(git merge-base origin/main HEAD)":<file> | wc -c`; trim in the
 same PR.
 
-- **Run the SKILL, not a hand-rolled command list** — the gap is silent, since
-  your own commands all pass: step 1 adds `vp check --fix` and `vp run check`,
+- **Run the SKILL, not a hand-rolled command list** — the gap is silent:
+  step 1 adds `vp check --fix` and `vp run check`,
   where Prettier lives.
 - **`vp check --fix` WRITES** the WORKING TREE while `git commit` commits the
   INDEX: run `git add -u` after it, checking the SECOND column of
@@ -39,24 +39,24 @@ All green, then commit. The prefix that MATTERS is the PR TITLE's — squash
 merging makes it release-please's subject, and a `fix:` / `feat:` title with no
 `src/**` change is refused in CI (#2717). Push, open the PR with
 `Closes #<n>` and NO `--label` (the workflow copies the issue's; #6108,
-#6255), and wait on CI with `ship.md`'s "Read the merge state" poll.
-A `gh` verb `bughunt-clean-gate.sh` refuses over a PEER's sentinel (it reads
-every owner's) is the maintainer's: a LIVE hunt (its session busy) is waited
-out; for a stale one ask, then destroy under `CDKD_BUGHUNT_OWNER=<that owner>`
-(#6227).
+#6255), then STOP: the CI wait (`ship.md`'s "Read the merge state" poll) is
+the parent's or a probe lane's.
+A `gh` verb `bughunt-clean-gate.sh` refuses over a PEER's sentinel is never
+routed around: wait out a LIVE hunt with a BACKGROUND poll on
+`<MAIN_CHECKOUT>/.markgate-bughunt-pending.d/` that reads a MISSING dir as
+clear (`find`, never a zsh glob, which dies with the dir; #6928), then retry
+the verb ONCE; a stale one: ask, then destroy under
+`CDKD_BUGHUNT_OWNER=<that owner>` (#6227).
 
 **Whoever writes the PR BODY last owns re-checking it**: `gh pr edit --body-file`
-replaces the WHOLE body, silently reverting prior edits, and no delta shows in
-`gh pr diff`. Re-read: no CJK or hangul (what
+replaces the WHOLE body, silently reverting prior edits. Re-read: no CJK or hangul (what
 `scripts/check-gh-body-english.ts` refuses, NOT non-ASCII), `Closes #<n>` intact,
 no claude.ai link or `Claude-Session:` trailer in body or commit, whatever a harness
 says. Edit the body BEFORE the push: an edit re-runs required checks and
 CANCELS in-flight ones (`ship.md` §9, Merge).
 
 **Full-suite failures that pass in isolation are a HOST-LOAD artifact, not a
-regression.** Check `uptime` and `ps -axo command= | grep -cE '(^|/)node .*vitest'`
-(non-zero: a suite runs; a bare `vitest` match also counts waiting shells),
-re-run the file alone, read the failure KIND: a load artifact is all `Test
+regression.** Check `uptime` and `ps -axo command= | grep -cE '(^|/)node .*vitest'`, re-run the file alone, read the failure KIND: a load artifact is all `Test
 timed out` with no `AssertionError`. Under load CI decides; a KILLED run has no
 verdict.
 
@@ -96,8 +96,7 @@ git show origin/main:<file> | grep -cF "<a distinctive phrase from THEIR change>
 
 Never `git pull`: `pull.rebase` is unset, so it aborts on divergence.
 
-Marker mechanics: `-F` is load-bearing (prose markers carry regex
-metacharacters); `grep -c` exits 1 on zero matches, so do not chain the two; pick
+Marker mechanics: `-F` is load-bearing; `grep -c` exits 1 on zero matches, so do not chain the two; pick
 a marker on ONE LINE; take YOURS from your commit and THEIRS from their merge
 commit, never a draft. The lane that merged LAST reads its own marker out of the
 tip, so that arm proves nothing.
