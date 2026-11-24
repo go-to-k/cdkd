@@ -363,6 +363,7 @@ A wait that runs out fails the update.
 | CloudFront distribution | Disable, then wait |
 | Kinesis stream, Firehose delivery stream | Until the stream is gone |
 | Lambda network connector | Until the connector is gone |
+| Amazon Connect instance | Until `DeleteInstance` is accepted: an instance refuses it for its first 20 s or so. The instance is gone from `DescribeInstance` at once, but its alias stays reserved for a few seconds more, so a create that reuses the alias waits for it to be released, up to 3 minutes |
 | ECS service | Until `INACTIVE` |
 | DynamoDB table, DynamoDB global table and its replicas | Until the table is gone, in every replica region |
 | RDS, DocumentDB and Neptune cluster or instance, ElastiCache cache cluster | Until it is gone |

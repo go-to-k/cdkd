@@ -6,6 +6,7 @@ import {
   DescribeInstanceCommand,
   ListInstanceAttributesCommand,
   ListInstancesCommand,
+  InvalidRequestException,
   ResourceNotFoundException,
   TagResourceCommand,
   UntagResourceCommand,
@@ -56,6 +57,7 @@ import { connectInstanceIdOf } from '../../../../src/provisioning/connect-instan
 import { RESOURCE_NOT_FOUND } from '../../../../src/types/resource.js';
 import { createdBeforeFailure } from '../../../../src/provisioning/auxiliary-failure.js';
 import { isInterruptedWaitError } from '../../../../src/provisioning/interrupt-watch.js';
+import { isMarkedNotGone } from '../../../../src/provisioning/not-gone.js';
 
 const TYPE = 'AWS::Connect::Instance';
 const ID = '11111111-2222-3333-4444-555555555555';
@@ -270,6 +272,56 @@ describe('ConnectInstanceProvider', () => {
         /Connect instance Inst entered CREATION_FAILED/
       );
       expect(sentOf(DeleteInstanceCommand).map((c) => c.input)).toEqual([{ InstanceId: ID }]);
+    });
+
+    it('waits out an alias a just-deleted instance still holds', async () => {
+      scriptCreate({ statuses: ['ACTIVE'] });
+      const base = mockSend.getMockImplementation()!;
+      let refusals = 2;
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof CreateInstanceCommand && refusals-- > 0) {
+          return Promise.reject(
+            new InvalidRequestException({ message: 'Invalid Input. Instance alias is already used.', $metadata: {} })
+          );
+        }
+        if (cmd instanceof ListInstancesCommand) return Promise.resolve({ InstanceSummaryList: [] });
+        return base(cmd);
+      });
+
+      expect((await provider.create('Inst', TYPE, baseProps())).physicalId).toBe(ARN);
+      const tokens = sentOf(CreateInstanceCommand).map((c) => c.input.ClientToken);
+      expect(tokens).toHaveLength(3);
+      expect(new Set(tokens).size).toBe(1);
+    });
+
+    it('fails at once on an alias a listed instance holds', async () => {
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof CreateInstanceCommand) {
+          return Promise.reject(
+            new InvalidRequestException({ message: 'Invalid Input. Instance alias is already used.', $metadata: {} })
+          );
+        }
+        if (cmd instanceof ListInstancesCommand) {
+          return Promise.resolve({ InstanceSummaryList: [{ Id: 'other', InstanceAlias: 'my-alias' }] });
+        }
+        return Promise.resolve({});
+      });
+
+      await expect(provider.create('Inst', TYPE, baseProps())).rejects.toThrow(/Failed to create Connect instance Inst/);
+      expect(sentOf(CreateInstanceCommand)).toHaveLength(1);
+    });
+
+    it('retries the cleanup delete of an instance too young to accept it', async () => {
+      scriptCreate({ statuses: ['CREATION_FAILED'] });
+      const base = mockSend.getMockImplementation()!;
+      let refusals = 2;
+      mockSend.mockImplementation((cmd: unknown) =>
+        cmd instanceof DeleteInstanceCommand && refusals-- > 0 ? Promise.reject(notFound()) : base(cmd)
+      );
+
+      const error = await provider.create('Inst', TYPE, baseProps()).catch((e: unknown) => e);
+      expect(sentOf(DeleteInstanceCommand)).toHaveLength(3);
+      expect(createdBeforeFailure(error, 'Inst', TYPE)).toBeUndefined();
     });
 
     it("keeps AWS's StatusReason out of the thrown message", async () => {
@@ -517,6 +569,30 @@ describe('ConnectInstanceProvider', () => {
       mockSend.mockResolvedValue({});
       await provider.delete('Inst', ARN, TYPE);
       expect(sentOf(DeleteInstanceCommand).map((c) => c.input)).toEqual([{ InstanceId: ID }]);
+    });
+
+    it('retries a delete the instance answers not-found to while DescribeInstance still finds it', async () => {
+      let refusals = 2;
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof DeleteInstanceCommand && refusals-- > 0) return Promise.reject(notFound());
+        if (cmd instanceof DescribeInstanceCommand) return Promise.resolve({ Instance: { Id: ID, Arn: ARN } });
+        return Promise.resolve({});
+      });
+      await provider.delete('Inst', ARN, TYPE, undefined, { expectedRegion: 'us-east-1' });
+      expect(sentOf(DeleteInstanceCommand)).toHaveLength(3);
+    });
+
+    it('never reads a not-found as gone while DescribeInstance still finds the instance', async () => {
+      provider.instanceWait = { pollIntervalMs: 0, timeoutMs: 0, sleep: () => Promise.resolve() };
+      mockSend.mockImplementation((cmd: unknown) =>
+        cmd instanceof DescribeInstanceCommand
+          ? Promise.resolve({ Instance: { Id: ID, Arn: ARN } })
+          : Promise.reject(notFound())
+      );
+      const error = await provider
+        .delete('Inst', ARN, TYPE, undefined, { expectedRegion: 'us-east-1' })
+        .catch((e: unknown) => e);
+      expect(isMarkedNotGone(error)).toBe(true);
     });
 
     it('treats not-found as already deleted', async () => {

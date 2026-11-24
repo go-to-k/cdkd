@@ -9,6 +9,7 @@ import {
   TagResourceCommand,
   UntagResourceCommand,
   UpdateInstanceAttributeCommand,
+  InvalidRequestException,
   ResourceNotFoundException,
   type CreateInstanceCommandInput,
   type DirectoryType,
@@ -328,7 +329,7 @@ export class ConnectInstanceProvider implements ResourceProvider {
     this.logger.debug(mask(`Creating Connect instance ${logicalId}: ${alias ?? '(no alias)'}`));
     let arn: string | undefined;
     try {
-      const response = await this.getClient().send(new CreateInstanceCommand(input));
+      const response = await this.createInstance(input, alias, logicalId, mask);
       arn = response.Arn;
       if (!arn) {
         throw new ProvisioningError(
@@ -413,6 +414,87 @@ export class ConnectInstanceProvider implements ResourceProvider {
     }
   }
 
+  /**
+   * `CreateInstance`, waiting out an alias a just-deleted instance still
+   * holds. A deleted instance's alias stays reserved for a few seconds after
+   * `DeleteInstance` returns and the instance is gone from `ListInstances`
+   * (measured, us-east-1, go-to-k/cdkd#6912: "Instance alias is already
+   * used." 0-13 s after the delete), so a destroy followed by a deploy, or a
+   * delete-first replacement, would fail. The refusal is retried only while
+   * no listed instance holds the alias: one that does is a real collision and
+   * fails at once. A refused create made nothing, and the retry resends the
+   * same `ClientToken`.
+   */
+  private async createInstance(
+    input: CreateInstanceCommandInput,
+    alias: string | undefined,
+    logicalId: string,
+    mask: MaskerFn
+  ): Promise<{ Id?: string | undefined; Arn?: string | undefined }> {
+    const releaseDeadline = Date.now() + this.aliasReleaseWaitMs;
+    for (;;) {
+      try {
+        return await this.getClient().send(new CreateInstanceCommand(input));
+      } catch (error) {
+        if (
+          alias === undefined ||
+          !(error instanceof InvalidRequestException) ||
+          !/alias is already used/i.test(error.message) ||
+          Date.now() >= releaseDeadline ||
+          (await this.aliasIsListed(alias))
+        ) {
+          throw error;
+        }
+        this.logger.debug(
+          mask(`Connect instance ${logicalId}: alias ${alias} still being released, retrying`)
+        );
+        await this.instanceWait.sleep(this.instanceWait.pollIntervalMs);
+      }
+    }
+  }
+
+  /** How long a create waits for a just-deleted instance's alias to be released. */
+  aliasReleaseWaitMs = 180_000;
+
+  /** Whether a listed instance holds `alias`. */
+  private async aliasIsListed(alias: string): Promise<boolean> {
+    let nextToken: string | undefined;
+    do {
+      const page = await this.getClient().send(new ListInstancesCommand({ NextToken: nextToken }));
+      if (page.InstanceSummaryList?.some((s) => s.InstanceAlias === alias)) return true;
+      nextToken = page.NextToken;
+    } while (nextToken);
+    return false;
+  }
+
+  /**
+   * `DeleteInstance`, confirmed. An instance in its first seconds answers
+   * `DeleteInstance` with not-found while `DescribeInstance` already finds it
+   * (measured, go-to-k/cdkd#6912: refused for about 20 s after
+   * `CreateInstance`), so a not-found is checked with `DescribeInstance`, and
+   * the delete is retried while the instance is still there. `'gone'` means
+   * the first answer was not-found and the instance is not there either.
+   */
+  private async deleteInstanceConfirmed(instanceId: string): Promise<'deleted' | 'gone'> {
+    const deadline = Date.now() + this.instanceWait.timeoutMs;
+    for (;;) {
+      try {
+        await this.getClient().send(new DeleteInstanceCommand({ InstanceId: instanceId }));
+        return 'deleted';
+      } catch (error) {
+        if (!(error instanceof ResourceNotFoundException)) throw error;
+        try {
+          await this.getClient().send(new DescribeInstanceCommand({ InstanceId: instanceId }));
+        } catch (describeError) {
+          if (describeError instanceof ResourceNotFoundException) return 'gone';
+          throw describeError;
+        }
+        if (Date.now() >= deadline) throw error;
+        await this.instanceWait.sleep(this.instanceWait.pollIntervalMs);
+      }
+    }
+  }
+
   /** The wall-clock end of one create's waits, capped by `--resource-timeout`. */
   private deadline(): number {
     const userTimeoutMs = resolvedResourceTimeoutMs(RESOURCE_TYPE);
@@ -440,18 +522,13 @@ export class ConnectInstanceProvider implements ResourceProvider {
     onGone: () => void
   ): Promise<ProvisioningError> {
     try {
-      await this.getClient().send(
-        new DeleteInstanceCommand({ InstanceId: connectInstanceIdOf(arn) })
-      );
+      // Confirmed, since a failure in the instance's first seconds reaches
+      // here while DeleteInstance still answers not-found for it.
+      await this.deleteInstanceConfirmed(connectInstanceIdOf(arn));
       retractCreatedResource(logicalId, resourceType, arn);
       onGone();
       return thrown;
     } catch (cleanupError) {
-      if (cleanupError instanceof ResourceNotFoundException) {
-        retractCreatedResource(logicalId, resourceType, arn);
-        onGone();
-        return thrown;
-      }
       const failure = describeAwsFailure(cleanupError);
       this.logger.debug(
         mask(`Failed to delete Connect instance ${arn} after its create failed: ${failure.detail}`)
@@ -712,25 +789,10 @@ export class ConnectInstanceProvider implements ResourceProvider {
   ): Promise<void> {
     this.logger.debug(safeMsg`Deleting Connect instance ${logicalId}: ${physicalId}`);
     const mask = maskerOrIdentity(context?.maskSecrets);
+    let outcome: 'deleted' | 'gone';
     try {
-      await this.getClient().send(
-        new DeleteInstanceCommand({ InstanceId: connectInstanceIdOf(physicalId) })
-      );
+      outcome = await this.deleteInstanceConfirmed(connectInstanceIdOf(physicalId));
     } catch (error) {
-      if (error instanceof ResourceNotFoundException) {
-        // The id is addressed in the CLIENT's region: a client in another
-        // region than the ARN or the record answers 404 for a live instance.
-        const clientRegion = await this.getClient().config.region();
-        assertRegionMatch(
-          clientRegion,
-          context?.expectedRegion ?? arnRegionOf(physicalId),
-          resourceType,
-          logicalId,
-          physicalId
-        );
-        this.logger.debug(safeMsg`Connect instance ${physicalId} does not exist, skipping`);
-        return;
-      }
       const cause = error instanceof Error ? error : undefined;
       const failure = this.wrapMaskedError(
         mask,
@@ -744,10 +806,23 @@ export class ConnectInstanceProvider implements ResourceProvider {
             cause
           )
       );
-      // Only the typed not-found above means this instance is gone.
+      // A not-found here is an instance DescribeInstance still finds past the
+      // retry window: never read as gone.
       throw error instanceof Error && error.name.includes('NotFound')
         ? markNotGone(failure)
         : failure;
+    }
+    if (outcome === 'gone') {
+      // The id is addressed in the CLIENT's region: a client in another
+      // region than the ARN or the record answers 404 for a live instance.
+      assertRegionMatch(
+        await this.getClient().config.region(),
+        context?.expectedRegion ?? arnRegionOf(physicalId),
+        resourceType,
+        logicalId,
+        physicalId
+      );
+      this.logger.debug(safeMsg`Connect instance ${physicalId} does not exist, skipping`);
     }
   }
 
