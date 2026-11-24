@@ -516,8 +516,9 @@ reasons, for the categories where the data is not obvious:
 - **Edge / identifier immutability.** For an `AWS::CloudFront::Distribution`
   the URL changes, which breaks consumers, and propagation takes roughly 20
   minutes. `AWS::SMSVOICE::PhoneNumber`, `AWS::SMSVOICE::SenderId` and
-  `AWS::Connect::PhoneNumber` are the same class: a release returns the identifier to the pool, the replacement
-  gets a different one, and the original may be unobtainable.
+  `AWS::Connect::PhoneNumber` are the same class: a release returns the
+  identifier to the pool, the replacement gets a different one, and the
+  original may be unobtainable.
 
 ## Log group retention
 

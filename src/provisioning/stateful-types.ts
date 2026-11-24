@@ -575,7 +575,9 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   // ships `DeletionProtectionEnabled` on both, which is the same judgement.
   'AWS::SMSVOICE::PhoneNumber',
   'AWS::SMSVOICE::SenderId',
-  // A claimed Connect number is released on delete in the same way.
+  // A claimed Connect number is released on delete in the same way. Unlike
+  // the two SMS Voice types, AWS ships no deletion protection for it: the
+  // release alone puts it here.
   'AWS::Connect::PhoneNumber',
 ]);
 
