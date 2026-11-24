@@ -38,7 +38,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 }));
 
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation(() => ({
+  STSClient: vi.fn(() => ({
     send: vi.fn(async () => ({ Account: '111122223333' })),
     destroy: vi.fn(),
   })),
@@ -62,7 +62,7 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
 }));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
-  AwsClients: vi.fn().mockImplementation(() => ({
+  AwsClients: vi.fn(() => ({
     get s3() {
       return {};
     },
@@ -79,7 +79,7 @@ vi.mock('../../../src/utils/role-arn.js', () => ({
 }));
 
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({
+  S3StateBackend: vi.fn(() => ({
     destroyClient: vi.fn(),
     verifyBucketExists: vi.fn(async () => undefined),
     listStacks: vi.fn(async () => []),
@@ -88,11 +88,11 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
 }));
 
 vi.mock('../../../src/state/export-index-store.js', () => ({
-  ExportIndexStore: vi.fn().mockImplementation(() => ({})),
+  ExportIndexStore: vi.fn(() => ({})),
 }));
 
 vi.mock('../../../src/state/lock-manager.js', () => ({
-  LockManager: vi.fn().mockImplementation(() => ({
+  LockManager: vi.fn(() => ({
     acquireLock: vi.fn().mockResolvedValue(true),
     releaseLock: vi.fn(),
     settleDeferredPurges: vi.fn().mockResolvedValue(undefined),
@@ -100,7 +100,7 @@ vi.mock('../../../src/state/lock-manager.js', () => ({
 }));
 
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({
-  ProviderRegistry: vi.fn().mockImplementation(() => ({
+  ProviderRegistry: vi.fn(() => ({
     setCustomResourceResponseBucket: vi.fn(),
     getProvider: vi.fn(),
   })),
@@ -120,11 +120,11 @@ vi.mock('../../../src/provisioning/nested-stack-context.js', () => ({
 }));
 
 vi.mock('../../../src/analyzer/dag-builder.js', () => ({
-  DagBuilder: vi.fn().mockImplementation(() => ({})),
+  DagBuilder: vi.fn(() => ({})),
 }));
 
 vi.mock('../../../src/analyzer/diff-calculator.js', () => ({
-  DiffCalculator: vi.fn().mockImplementation(() => ({})),
+  DiffCalculator: vi.fn(() => ({})),
 }));
 
 // Hoisted so the OPTIONS the command passes are observable, not just the
@@ -132,7 +132,7 @@ vi.mock('../../../src/analyzer/diff-calculator.js', () => ({
 // (go-to-k/cdkd#3489) is wired here and nowhere else on the deploy path.
 const addAssetsToGraphMock = vi.hoisted(() => vi.fn(() => [] as string[]));
 vi.mock('../../../src/assets/asset-publisher.js', () => ({
-  AssetPublisher: vi.fn().mockImplementation(() => ({
+  AssetPublisher: vi.fn(() => ({
     addAssetsToGraph: addAssetsToGraphMock,
     executeNode: vi.fn(async () => undefined),
   })),
@@ -148,7 +148,7 @@ const modeResolveSpy = vi.hoisted(() => vi.fn(async () => ({ mode: 'legacy' })))
 const loadPublishableManifestMock = vi.hoisted(() => vi.fn(() => null as unknown));
 
 vi.mock('../../../src/assets/asset-storage.js', () => ({
-  AssetModeResolver: vi.fn().mockImplementation(() => ({ resolve: modeResolveSpy })),
+  AssetModeResolver: vi.fn(() => ({ resolve: modeResolveSpy })),
 }));
 
 vi.mock('../../../src/assets/asset-redirect.js', async (importOriginal) => {
@@ -191,7 +191,7 @@ const failingStacks = vi.hoisted(() => new Set<string>());
 const cancelledStacks = vi.hoisted(() => new Set<string>());
 
 vi.mock('../../../src/deployment/deploy-engine.js', () => ({
-  DeployEngine: vi.fn().mockImplementation(() => ({
+  DeployEngine: vi.fn(() => ({
     deploy: vi.fn(async (stackName: string) => {
       if (cancelledStacks.has(stackName)) {
         throw new DeployCancelledError(`cancelled ${stackName}`);
@@ -225,7 +225,7 @@ const synthStacks = vi.hoisted(() => ({ value: [] as unknown[] }));
 const synthError = vi.hoisted(() => ({ value: undefined as Error | undefined }));
 
 vi.mock('../../../src/synthesis/synthesizer.js', () => ({
-  Synthesizer: vi.fn().mockImplementation(() => ({
+  Synthesizer: vi.fn(() => ({
     synthesize: vi.fn(async () => {
       if (synthError.value) throw synthError.value;
       return { stacks: synthStacks.value };
@@ -736,7 +736,7 @@ describe('deploy hands the RAW region spelling to the marker resolver (issue #20
   });
 
   afterEach(() => {
-    loadPublishableManifestMock.mockReturnValue(null);
+    loadPublishableManifestMock.mockReset();
   });
 
   it("passes the stack's assetOutdir to addAssetsToGraph as the containment bound", async () => {

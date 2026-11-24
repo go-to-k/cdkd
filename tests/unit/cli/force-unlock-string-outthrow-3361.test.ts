@@ -29,7 +29,7 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
 }));
 
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
-  AwsClients: vi.fn().mockImplementation(() => ({
+  AwsClients: vi.fn(() => ({
     get s3() {
       return {};
     },
@@ -41,7 +41,7 @@ vi.mock('../../../src/utils/aws-clients.ts', () => ({
 
 const mockListStacks = vi.fn<() => Promise<Array<{ stackName: string; region?: string }>>>();
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({
+  S3StateBackend: vi.fn(() => ({
     destroyClient: vi.fn(),
     listStacks: mockListStacks,
   })),
@@ -49,7 +49,7 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
 
 const mockForceReleaseLock = vi.fn<(stackName: string, region?: string) => Promise<void>>();
 vi.mock('../../../src/state/lock-manager.js', () => ({
-  LockManager: vi.fn().mockImplementation(() => ({
+  LockManager: vi.fn(() => ({
     forceReleaseLock: mockForceReleaseLock,
     getLockInfo: vi.fn(async () => null),
   })),

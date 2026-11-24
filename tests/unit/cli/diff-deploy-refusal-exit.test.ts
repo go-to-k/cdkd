@@ -38,7 +38,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 
 const mockSynthesize = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/synthesis/synthesizer.js', () => ({
-  Synthesizer: vi.fn().mockImplementation(() => ({
+  Synthesizer: vi.fn(() => ({
     synthesize: mockSynthesize,
     expandMacrosForStacks: vi.fn(async () => undefined),
   })),
@@ -55,7 +55,7 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
 }));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
-  AwsClients: vi.fn().mockImplementation(() => ({ s3: {}, destroy: vi.fn() })),
+  AwsClients: vi.fn(() => ({ s3: {}, destroy: vi.fn() })),
   setAwsClients: vi.fn(),
   getAwsClients: vi.fn(() => ({ destroy: vi.fn() })),
   // The adoption preview runs in the stack's AWS scope (go-to-k/cdkd#3456).
@@ -67,7 +67,7 @@ vi.mock('../../../src/utils/role-arn.js', () => ({
 }));
 
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({
+  S3StateBackend: vi.fn(() => ({
     destroyClient: vi.fn(),
     getState: vi.fn(async () => {
       stateForDiff.reads += 1;
@@ -83,7 +83,7 @@ vi.mock('../../../src/provisioning/register-providers.js', () => ({
 }));
 
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({
-  ProviderRegistry: vi.fn().mockImplementation(() => ({ getProvider: vi.fn(), ccRouteUnavailableReason: vi.fn() })),
+  ProviderRegistry: vi.fn(() => ({ getProvider: vi.fn(), ccRouteUnavailableReason: vi.fn() })),
 }));
 
 import { createDiffCommand } from '../../../src/cli/commands/diff.js';

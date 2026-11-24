@@ -43,7 +43,7 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', async (importO
     await importOriginal<typeof import('../../../src/deployment/intrinsic-function-resolver.js')>();
   return {
     ...actual,
-    IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
+    IntrinsicFunctionResolver: vi.fn(() => ({
       // Pass-through: every fixture value below is a literal or a token this
       // resolver is expected to leave alone, which is what the diff's
       // `skipDynamicReferences` context does for a secret reference.

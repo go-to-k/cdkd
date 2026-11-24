@@ -66,7 +66,7 @@ vi.mock('@aws-sdk/client-sts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-sts')>();
   return {
     ...actual,
-    STSClient: vi.fn().mockImplementation((opts?: { region?: string }) => ({
+    STSClient: vi.fn((opts?: { region?: string }) => ({
       send: mockStsSend,
       config: { region: async () => opts?.region ?? sdkChain.region },
       destroy: vi.fn(),
@@ -75,7 +75,7 @@ vi.mock('@aws-sdk/client-sts', async (importOriginal) => {
 });
 
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
-  AwsClients: vi.fn().mockImplementation((opts?: { region?: string }) => ({
+  AwsClients: vi.fn((opts?: { region?: string }) => ({
     get s3() {
       return {
         send: mockS3Send,
@@ -117,7 +117,7 @@ vi.mock('../../../src/utils/error-handler.js', async (importOriginal) => {
 });
 
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({
+  S3StateBackend: vi.fn(() => ({
     putRawObject: vi.fn(),
     // Load-bearing since issue #2029: the region reconciliation probes for an
     // existing bootstrap marker through this. Without it the call is
@@ -137,7 +137,7 @@ vi.mock('@aws-sdk/client-ecr', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-ecr')>();
   return {
     ...actual,
-    ECRClient: vi.fn().mockImplementation(() => ({ send: vi.fn(), destroy: vi.fn() })),
+    ECRClient: vi.fn(() => ({ send: vi.fn(), destroy: vi.fn() })),
   };
 });
 

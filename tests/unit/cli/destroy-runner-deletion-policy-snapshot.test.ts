@@ -47,8 +47,6 @@ vi.mock('../../../src/provisioning/final-snapshot.js', async () => {
   const actual = await vi.importActual<
     typeof import('../../../src/provisioning/final-snapshot.js')
   >('../../../src/provisioning/final-snapshot.js');
-  // The real refusal, observed: a case can pin WHICH error refused the delete.
-  mockCcRoutedFinalSnapshotError.mockImplementation(actual.ccRoutedFinalSnapshotError);
   return {
     ...actual,
     createPreDeleteFinalSnapshot: mockCreatePreDeleteFinalSnapshot,
@@ -70,6 +68,12 @@ vi.mock('../../../src/utils/live-renderer.js', () => ({
 
 import { TRANSIENT_RESOLUTION_MESSAGE } from '../../../src/provisioning/secret-principal-resolution.js';
 import { runDestroyForStack } from '../../../src/cli/commands/destroy-runner.js';
+
+// The real refusal, observed: a case can pin WHICH error refused the delete
+// (installed in beforeEach, where mockReset cannot wipe it).
+const { ccRoutedFinalSnapshotError: realCcRoutedFinalSnapshotError } = await vi.importActual<
+  typeof import('../../../src/provisioning/final-snapshot.js')
+>('../../../src/provisioning/final-snapshot.js');
 
 const REGION = 'us-east-1';
 
@@ -158,6 +162,7 @@ describe('runDestroyForStack — DeletionPolicy: Snapshot (#1352)', () => {
     mockDeleteState.mockResolvedValue(undefined);
     mockProviderDelete.mockResolvedValue(undefined);
     mockCreatePreDeleteFinalSnapshot.mockResolvedValue('snap-unit');
+    mockCcRoutedFinalSnapshotError.mockImplementation(realCcRoutedFinalSnapshotError);
   });
 
   // go-to-k/cdkd#6770: neither a destroy nor a deploy's teardown of a removed
@@ -579,7 +584,8 @@ describe('runDestroyForStack — DeletionPolicy: Snapshot (#1352)', () => {
 
     it('cc-api-routed: refused with the Cloud Control final-snapshot error, no delete', async () => {
       const state = makeState({ Db: res({ provisionedBy: 'cc-api' }) });
-      const result = await runDestroyForStack('TestStack', state, makeCtx());
+      const record = vi.fn();
+      const result = await runDestroyForStack('TestStack', state, makeCtx({ eventRecorder: { record } }));
       expect(result.errorCount).toBe(1);
       expect(mockProviderDelete).not.toHaveBeenCalled();
       expect(mockCcRoutedFinalSnapshotError).toHaveBeenCalledWith(
@@ -587,6 +593,12 @@ describe('runDestroyForStack — DeletionPolicy: Snapshot (#1352)', () => {
         'AWS::RDS::DBInstance',
         '--skip-final-snapshot'
       );
+      // WHICH error refused: the real builder's text, as the failure event records it.
+      const failed = record.mock.calls
+        .map((c) => c[0] as { eventType: string; error?: { message?: string } })
+        .filter((e) => e.eventType === 'RESOURCE_FAILED');
+      expect(failed).toHaveLength(1);
+      expect(failed[0].error?.message).toContain('which has no final-snapshot delete parameter');
     });
   });
 

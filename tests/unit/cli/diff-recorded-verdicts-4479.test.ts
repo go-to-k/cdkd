@@ -40,7 +40,7 @@ vi.mock('@aws-sdk/client-secrets-manager', async (importOriginal) => {
   const actual = (await importOriginal()) as object;
   return {
     ...actual,
-    SecretsManagerClient: vi.fn().mockImplementation(() => ({
+    SecretsManagerClient: vi.fn(() => ({
       send: secretSend,
       config: { region: () => Promise.resolve('us-east-1') },
       destroy: () => undefined,
@@ -54,7 +54,7 @@ vi.mock('@aws-sdk/client-sts', async (importOriginal) => {
   const actual = (await importOriginal()) as object;
   return {
     ...actual,
-    STSClient: vi.fn().mockImplementation(() => ({
+    STSClient: vi.fn(() => ({
       send: vi.fn().mockResolvedValue({
         Account: '123456789012',
         Arn: 'arn:aws:iam::123456789012:root',

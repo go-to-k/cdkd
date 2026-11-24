@@ -30,7 +30,7 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
 }));
 
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
-  AwsClients: vi.fn().mockImplementation(() => ({
+  AwsClients: vi.fn(() => ({
     get s3() {
       return {};
     },
@@ -44,7 +44,7 @@ const mockVerifyBucketExists = vi.fn<() => Promise<void>>();
 const mockListRawKeys = vi.fn<(prefix: string) => Promise<string[]>>();
 const mockGetRawObject = vi.fn<(key: string) => Promise<string | null>>();
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({
+  S3StateBackend: vi.fn(() => ({
     destroyClient: vi.fn(),
     prefix: 'cdkd',
     verifyBucketExists: mockVerifyBucketExists,

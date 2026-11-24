@@ -29,7 +29,7 @@ const caller = vi.hoisted(() => ({
   send: undefined as undefined | ReturnType<typeof vi.fn>,
 }));
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation(() => ({
+  STSClient: vi.fn(() => ({
     config: { region: async (): Promise<string> => 'eu-west-1' },
     send: vi.fn(),
     destroy: vi.fn(),
@@ -43,7 +43,7 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
 }));
 
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
-  AwsClients: vi.fn().mockImplementation(() => ({
+  AwsClients: vi.fn(() => ({
     get s3() {
       return {};
     },
@@ -65,7 +65,7 @@ vi.mock('../../../src/utils/role-arn.js', () => ({
 }));
 
 vi.mock('../../../src/state/export-index-store.js', () => ({
-  ExportIndexStore: vi.fn().mockImplementation(() => ({
+  ExportIndexStore: vi.fn(() => ({
     removeStack: vi.fn(async () => undefined),
     removeStackIfPresent: vi.fn(async () => undefined),
   })),
@@ -75,7 +75,7 @@ vi.mock('../../../src/state/export-index-store.js', () => ({
 const held = vi.hoisted(() => ({ regions: [] as string[], names: ['Shared'] }));
 const getState = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({
+  S3StateBackend: vi.fn(() => ({
     destroyClient: vi.fn(),
     listStacks: vi.fn(async () =>
       held.names.flatMap((stackName) => held.regions.map((region) => ({ stackName, region })))
@@ -88,14 +88,14 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
 }));
 
 vi.mock('../../../src/state/lock-manager.js', () => ({
-  LockManager: vi.fn().mockImplementation(() => ({
+  LockManager: vi.fn(() => ({
     acquireLock: vi.fn().mockResolvedValue(true),
     releaseLock: vi.fn(),
   })),
 }));
 
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({
-  ProviderRegistry: vi.fn().mockImplementation(() => ({
+  ProviderRegistry: vi.fn(() => ({
     setCustomResourceResponseBucket: vi.fn(),
     getProvider: vi.fn(),
   })),
@@ -119,7 +119,7 @@ vi.mock('../../../src/cli/commands/deployment-events-run.js', () => ({
 
 const synthesize = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/synthesis/synthesizer.js', () => ({
-  Synthesizer: vi.fn().mockImplementation(() => ({ synthesize })),
+  Synthesizer: vi.fn(() => ({ synthesize })),
 }));
 
 import { createDestroyCommand } from '../../../src/cli/commands/destroy.js';

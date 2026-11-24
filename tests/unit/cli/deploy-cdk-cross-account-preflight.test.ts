@@ -39,7 +39,7 @@ vi.mock('@aws-sdk/client-sts', () => ({
   // Counted on `send` (the account lookup), not on construction: since
   // go-to-k/cdkd#2100 the region resolution builds a throwaway STS client
   // that only reads `config.region` and never sends, before any pre-flight.
-  STSClient: vi.fn().mockImplementation(() => ({
+  STSClient: vi.fn(() => ({
     send: vi.fn(async () => {
       stsCtorSpy();
       return { Account: '111122223333' };
@@ -66,7 +66,7 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
 }));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
-  AwsClients: vi.fn().mockImplementation(() => ({
+  AwsClients: vi.fn(() => ({
     get s3() {
       return {};
     },
@@ -86,7 +86,7 @@ vi.mock('../../../src/utils/role-arn.js', async () => ({
 }));
 
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => ({
+  S3StateBackend: vi.fn(() => ({
     destroyClient: vi.fn(),
     verifyBucketExists: vi.fn(async () => undefined),
     listStacks: vi.fn(async () => []),
@@ -95,11 +95,11 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
 }));
 
 vi.mock('../../../src/state/export-index-store.js', () => ({
-  ExportIndexStore: vi.fn().mockImplementation(() => ({})),
+  ExportIndexStore: vi.fn(() => ({})),
 }));
 
 vi.mock('../../../src/state/lock-manager.js', () => ({
-  LockManager: vi.fn().mockImplementation(() => {
+  LockManager: vi.fn(() => {
     lockManagerCtorSpy();
     return {
       acquireLock: vi.fn().mockResolvedValue(true),
@@ -110,7 +110,7 @@ vi.mock('../../../src/state/lock-manager.js', () => ({
 }));
 
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({
-  ProviderRegistry: vi.fn().mockImplementation(() => ({
+  ProviderRegistry: vi.fn(() => ({
     setCustomResourceResponseBucket: vi.fn(),
     getProvider: vi.fn(),
   })),
@@ -130,22 +130,22 @@ vi.mock('../../../src/provisioning/nested-stack-context.js', () => ({
 }));
 
 vi.mock('../../../src/analyzer/dag-builder.js', () => ({
-  DagBuilder: vi.fn().mockImplementation(() => ({})),
+  DagBuilder: vi.fn(() => ({})),
 }));
 
 vi.mock('../../../src/analyzer/diff-calculator.js', () => ({
-  DiffCalculator: vi.fn().mockImplementation(() => ({})),
+  DiffCalculator: vi.fn(() => ({})),
 }));
 
 vi.mock('../../../src/assets/asset-publisher.js', () => ({
-  AssetPublisher: vi.fn().mockImplementation(() => {
+  AssetPublisher: vi.fn(() => {
     assetPublisherCtorSpy();
     return { addAssetsToGraph: vi.fn(() => []), executeNode: vi.fn(async () => undefined) };
   }),
 }));
 
 vi.mock('../../../src/assets/asset-storage.js', () => ({
-  AssetModeResolver: vi.fn().mockImplementation(() => ({
+  AssetModeResolver: vi.fn(() => ({
     resolve: vi.fn(async () => ({ mode: 'legacy' })),
   })),
 }));
@@ -161,7 +161,7 @@ vi.mock('../../../src/cli/commands/deployment-events-run.js', () => ({
 }));
 
 vi.mock('../../../src/deployment/deploy-engine.js', () => ({
-  DeployEngine: vi.fn().mockImplementation((...args: unknown[]) => {
+  DeployEngine: vi.fn((...args: unknown[]) => {
     engineCtorSpy(...args);
     return {
       deploy: engineDeploySpy.mockImplementation(async (stackName: string) => ({
@@ -183,7 +183,7 @@ vi.mock('../../../src/deployment/deploy-engine.js', () => ({
 const synthStacks = vi.hoisted(() => ({ value: [] as unknown[] }));
 
 vi.mock('../../../src/synthesis/synthesizer.js', () => ({
-  Synthesizer: vi.fn().mockImplementation(() => ({
+  Synthesizer: vi.fn(() => ({
     synthesize: vi.fn(async () => ({ stacks: synthStacks.value })),
     expandMacrosForStacks: expandMacrosSpy,
   })),

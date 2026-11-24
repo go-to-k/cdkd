@@ -44,7 +44,7 @@ vi.mock('../../../src/provisioning/cloud-control-provider.js', async () => {
   };
 });
 vi.mock('../../../src/utils/aws-clients.js', () => ({
-  AwsClients: vi.fn().mockImplementation(() => ({ destroy: vi.fn() })),
+  AwsClients: vi.fn(() => ({ destroy: vi.fn() })),
   setAwsClients: vi.fn(),
   getAwsClients: vi.fn(),
 }));
