@@ -12,8 +12,7 @@ paths:
 - **Import test APIs from `'vite-plus/test'`, never `'vitest'`** — a bare
   `'vitest'` resolves locally but fails `vp run typecheck:test` with TS2307.
 - **`os.tmpdir()` is a per-run directory**: `tests/run-tmpdir-setup.ts` points
-  `TMPDIR` at `cdkd-vitest-*` and removes it when the run ends normally, so a
-  forgotten `mkdtempSync` cleanup does not pile up in the user's temp directory.
+  `TMPDIR` at `cdkd-vitest-*` and removes it when the run ends normally.
 - **A green run must print nothing**: `tests/setup.ts` buffers raw stdout/stderr
   and replays only on FAILURE — [test-stream-fence.md](test-stream-fence.md).
 - **Mocking `src/utils/aws-clients.js` does NOT isolate a provider that builds
@@ -39,11 +38,14 @@ paths:
 - Enforced at RUNTIME by `tests/once-leak-detector.ts`, OFF unless
   `CDKD_ONCE_LEAK_DETECT=1`, which CI's `unit-tests` job sets. `once-leak-canary.test.ts` leaks
   deliberately and the `detector canary` step requires a failure carrying the
-  detector's OWN wording — do not "fix" its priming. The allow-list grandfathers
-  whole FILES; fix a file and DROP its entry (`vp run gen:once-leak-allowlist`).
-- MEASURE consumption before pinning `toHaveBeenCalledTimes(N)`: the pin catches
-  a call-COUNT change, while a SURPLUS primer leaves the count unchanged and only
-  the detector sees it. Fixing the priming beats draining.
+  detector's OWN wording — do not "fix" its priming. Fix a file and DROP its
+  allow-list entry (`vp run gen:once-leak-allowlist`).
+- MEASURE consumption before pinning `toHaveBeenCalledTimes(N)`: a SURPLUS
+  primer leaves the count unchanged and only the detector sees it.
+- **Set a mock default in `beforeEach` / a test, or as `vi.fn(impl)`**:
+  elsewhere (module scope, `describe` body, `vi.mock` factory, `vi.hoisted`,
+  other hooks) `mockReset` wipes it (#6928). `check-module-scope-mock-defaults.ts`
+  refuses a new one; its per-file allow-list only shrinks.
 
 ## Mutation probes
 
@@ -173,8 +175,7 @@ Each is the shape a fixture must take; the named test blocks a wrong change.
   (`integ-fixture-host-architecture.test.ts`.)
 - **A secret-seeding fixture sweeps S3 OBJECT VERSIONS and asserts zero** —
   versioning is on, so `aws s3 rm` writes a DELETE MARKER and every prior version
-  stays readable, a disclosure outliving the run
-  ([#2096](https://github.com/go-to-k/cdkd/issues/2096)). Sweep the PREFIX, never
+  stays readable, a disclosure outliving the run (#2096). Sweep the PREFIX, never
   a key list (`rollback-journal.json`, `lock.json` and `deployments/**` hold
   copies too), plus the two SIBLING prefixes that are not descendants: a
   nested-stack child at `cdkd/<Parent>~<Child>/<region>/`, and the shared exports
@@ -209,7 +210,7 @@ Each is the shape a fixture must take; the named test blocks a wrong change.
   pattern must be unable to match empty — the shortest literal prefix YOUR scope
   has plus `?*`, since a guard that never matches leaks silently. **The refusal
   warns on stderr with the words `teardown sweep refused`**
-  ([#2690](https://github.com/go-to-k/cdkd/issues/2690) keys on that phrase).
+  (#2690 keys on that phrase).
 - **An assertion reads ONLY its subject**: a state record by logical id, never
   `| first` over a type that may gain a second; cdkd's own lines, never all of
   `cdkd diff` (it carries aws-cdk-lib `WARNING <Prop>:` lines); a read's rc, not
