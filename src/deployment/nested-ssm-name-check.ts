@@ -45,7 +45,8 @@ export interface NestedSsmNameCheck {
   forcedRows: Set<string>;
   /**
    * Rows that would be forced but whose record holds a value cdkd stores
-   * masked: updating one would reach the redacted-read refusal (#2274) and
+   * masked, other than a `NoEcho` parameter's at a `noEchoLeaves` coordinate
+   * (go-to-k/cdkd#6906): updating one would reach the redacted-read refusal (#2274) and
    * fail a deploy of a stack nobody changed, so it is left for the next
    * deploy that changes that nested stack (named, never forced, and the
    * stack is still marked: the check would only find it again).
