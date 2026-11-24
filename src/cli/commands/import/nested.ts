@@ -45,7 +45,9 @@ import { resolveImportedProperties } from './resolve-properties.js';
 import {
   deployedPropertiesOf,
   overlayDeployedProperties,
+  migratedNestedStackTags,
   nestedChildStackTags,
+  withMigratedNestedStackTags,
   readDeployedTemplate,
   withDeployedDefinitions,
 } from './deployed-properties.js';
@@ -477,6 +479,12 @@ export async function importNestedStackChildrenRecursive(args: {
       } else if (childStackInstanceId !== undefined) {
         childStackState.stackInstanceId = childStackInstanceId;
       }
+      // go-to-k/cdkd#6900: what each grandchild row's child was migrated with,
+      // AFTER the carry above, which would bring back a prior record's field.
+      withMigratedNestedStackTags(
+        childStackState,
+        migratedNestedStackTags(childStackTags, childDeployedTemplate, childTreeNode.nested.keys())
+      );
 
       // Resolve intrinsics in child Properties (same reason as root —
       // sub-resource provider deletes read resolved props), populate

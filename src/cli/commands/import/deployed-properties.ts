@@ -158,6 +158,39 @@ export function nestedChildStackTags(
   return tags;
 }
 
+/**
+ * go-to-k/cdkd#6900 — a migrated stack's `nestedStackTags` record: per nested
+ * row, the tags its child records ({@link nestedChildStackTags}), which is
+ * what the child's resources hold. Without it the next deploy reads every
+ * tagged row as `{}` and re-runs its child once for nothing. A row with no
+ * tags is omitted, and the field with them, as a deploy writes it.
+ */
+export function migratedNestedStackTags(
+  stackTags: Readonly<Record<string, string>>,
+  deployedTemplate: CloudFormationTemplate | undefined,
+  rowLogicalIds: Iterable<string>
+): Record<string, Record<string, string>> | undefined {
+  const field: Record<string, Record<string, string>> = {};
+  for (const logicalId of rowLogicalIds) {
+    const tags = nestedChildStackTags(stackTags, deployedTemplate, logicalId);
+    if (Object.keys(tags).length > 0) defineOwnKey(field, logicalId, tags);
+  }
+  return Object.keys(field).length > 0 ? field : undefined;
+}
+
+/**
+ * `state` with its `nestedStackTags` replaced by `field` (removed when
+ * `undefined`): a migration rebuilds the record, so a carried field is stale.
+ */
+export function withMigratedNestedStackTags<T extends { nestedStackTags?: unknown }>(
+  state: T,
+  field: Record<string, Record<string, string>> | undefined
+): T {
+  if (field === undefined) delete state.nestedStackTags;
+  else state.nestedStackTags = field;
+  return state;
+}
+
 /** The names a properties tree refers to, by kind. */
 interface ReferencedNames {
   /** `Ref`, `Fn::GetAtt` and `Fn::Sub` targets: a parameter, resource or pseudo parameter. */

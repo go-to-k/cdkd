@@ -18,6 +18,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import type { StackState } from '../../../src/types/state.js';
 // Type-only import — erased at runtime, so it does NOT trigger the
 // `vi.mock('../../../src/cli/commands/retire-cfn-stack.js', ...)` factory
 // below. Re-typing the hoisted `mockGetCfnResourceTree` spy against the
@@ -328,6 +329,10 @@ vi.mock('@aws-sdk/client-elastic-load-balancing-v2', async () => {
 });
 
 import { createImportCommand } from '../../../src/cli/commands/import.js';
+import {
+  expectedNestedStackTags,
+  nestedRowsNeedingTagRun,
+} from '../../../src/deployment/nested-stack-tags.js';
 import { AwsClients } from '../../../src/utils/aws-clients.js';
 import { registerAllProviders } from '../../../src/provisioning/register-providers.js';
 import { stageLoadError } from '../../../src/synthesis/failed-stages.js';
@@ -8300,6 +8305,12 @@ describe('cdkd import', () => {
         nested: new Map(),
       });
     }
+    function savedNestedStackTags(stack: string): unknown {
+      const call = (mockSaveState.mock.calls as unknown as [string, string, { nestedStackTags?: unknown }][]).find(
+        (c) => c[0] === stack
+      )!;
+      return call[2].nestedStackTags;
+    }
     function savedTags(stack = 'S'): unknown {
       const call = (
         mockSaveState.mock.calls as unknown as [
@@ -8360,6 +8371,64 @@ describe('cdkd import', () => {
       expect(mockPrepareRetirement).not.toHaveBeenCalled();
     });
 
+    it('drops a carried nestedStackTags field when the migrated nested stack has no tags (go-to-k/cdkd#6900)', async () => {
+      const tmpdirPath = mkdtempSync(join(tmpdir(), 'cdkd-import-stale-nested-tags-'));
+      try {
+        const childPath = join(tmpdirPath, 'Child.nested.template.json');
+        writeFileSync(childPath, JSON.stringify(topicTemplate()));
+        const tmpl = template({
+          Child: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'u' } },
+        });
+        mockSynthesize.mockResolvedValue({
+          stacks: [{ ...stackInfo('P', tmpl), nestedTemplates: { Child: childPath } }],
+        });
+        mockGetState.mockImplementation(async (stack: string) =>
+          stack === 'P'
+            ? {
+                state: {
+                  version: 13,
+                  stackName: 'P',
+                  region: 'us-east-1',
+                  resources: {},
+                  outputs: {},
+                  lastModified: 0,
+                  nestedStackTags: { Stale: { a: 'b' } },
+                },
+                etag: '"e"',
+              }
+            : null
+        );
+        mockHasProvider.mockImplementation((t: string) => t !== 'AWS::CloudFormation::Stack');
+        mockGetProvider.mockReturnValue({
+          import: vi.fn(async () => ({ physicalId: 'topic-arn', attributes: {} })),
+        });
+        const childArn = 'arn:aws:cloudformation:us-east-1:123:stack/Child/uuid';
+        mockGetCfnResourceTree.mockResolvedValue({
+          stackName: 'P',
+          physicalId: 'P',
+          resources: new Map([['Child', childArn]]),
+          nested: new Map([
+            [
+              'Child',
+              {
+                stackName: childArn,
+                physicalId: childArn,
+                resources: new Map([['Topic', 'topic-arn']]),
+                nested: new Map(),
+              },
+            ],
+          ]),
+        });
+
+        await runImport(['import', 'P', '--app', 'x', '--yes', '--force', '--migrate-from-cloudformation']);
+
+        expect(errorSpy.mock.calls.map((c) => String(c[0])).join('\n')).toBe('');
+        expect(savedNestedStackTags('P')).toBeUndefined();
+      } finally {
+        rmSync(tmpdirPath, { recursive: true, force: true });
+      }
+    });
+
     it("threads each level's tags down: a grandchild records the middle row's tags too", async () => {
       const tmpdirPath = mkdtempSync(join(tmpdir(), 'cdkd-import-3level-stack-tags-'));
       try {
@@ -8383,8 +8452,14 @@ describe('cdkd import', () => {
             {
               ...stackInfo(
                 'P',
-                template({ Mid: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'u' } } })
+                template({
+                  Mid: {
+                    Type: 'AWS::CloudFormation::Stack',
+                    Properties: { TemplateURL: 'u', Tags: [{ Key: 'tier', Value: 'mid' }] },
+                  },
+                })
               ),
+              tags: { team: 'root' },
               nestedTemplates: { Mid: midPath },
             },
           ],
@@ -8422,6 +8497,24 @@ describe('cdkd import', () => {
           ]),
         });
         mockReadDeployedStackTags.mockResolvedValue({ team: 'root' });
+        // A prior record of the middle stack carries a stale field, which the
+        // migration must replace (it is restored by the record carry).
+        mockGetState.mockImplementation(async (stack: string) =>
+          stack === 'P~Mid'
+            ? {
+                state: {
+                  version: 13,
+                  stackName: 'P~Mid',
+                  region: 'us-east-1',
+                  resources: {},
+                  outputs: {},
+                  lastModified: 0,
+                  nestedStackTags: { Grand: { stale: 'x' } },
+                },
+                etag: '"e"',
+              }
+            : null
+        );
         const stackRow = (tags: unknown) => ({
           Type: 'AWS::CloudFormation::Stack',
           Properties: { TemplateURL: 'u', Tags: tags },
@@ -8440,6 +8533,28 @@ describe('cdkd import', () => {
           { Key: 'tier', Value: 'mid' },
           { Key: 'g', Value: '1' },
         ]);
+        expect(savedNestedStackTags('P')).toEqual({ Mid: { team: 'root', tier: 'mid' } });
+        // Nothing changed since the migration, so the next deploy re-runs no row.
+        const savedP = (
+          mockSaveState.mock.calls as unknown as [string, string, StackState][]
+        ).find((c) => c[0] === 'P')![2];
+        expect(
+          nestedRowsNeedingTagRun(
+            expectedNestedStackTags(
+              template({
+                Mid: {
+                  Type: 'AWS::CloudFormation::Stack',
+                  Properties: { TemplateURL: 'u', Tags: [{ Key: 'tier', Value: 'mid' }] },
+                },
+              }),
+              { team: 'root' }
+            ),
+            savedP
+          ).size
+        ).toBe(0);
+        expect(savedNestedStackTags('P~Mid')).toEqual({
+          Grand: { team: 'root', tier: 'mid', g: '1' },
+        });
       } finally {
         rmSync(tmpdirPath, { recursive: true, force: true });
       }
@@ -8515,6 +8630,10 @@ describe('cdkd import', () => {
           { Key: 'team', Value: 'parent' },
           { Key: 'row', Value: 'child' },
         ]);
+        // go-to-k/cdkd#6900: the parent records what the child was migrated
+        // with, so the next deploy does not re-run it for its tags.
+        expect(savedNestedStackTags('P')).toEqual({ Child: { team: 'parent', row: 'child' } });
+        expect(savedNestedStackTags('P~Child')).toBeUndefined();
       } finally {
         rmSync(tmpdirPath, { recursive: true, force: true });
       }

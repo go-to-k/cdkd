@@ -33,8 +33,10 @@ import { resolveImportedProperties } from './resolve-properties.js';
 import {
   deployedPropertiesOf,
   overlayDeployedProperties,
+  migratedNestedStackTags,
   readDeployedStackTags,
   readDeployedTemplate,
+  withMigratedNestedStackTags,
   withDeployedDefinitions,
 } from './deployed-properties.js';
 import { applyStackTagsToTemplate } from '../../../provisioning/stack-tag-targets.js';
@@ -316,6 +318,17 @@ export async function runLockedImport(ctx: LockedImportContext): Promise<void> {
       targetRegion,
       lockRecovery
     );
+    // go-to-k/cdkd#6900: what each nested row's child was migrated with.
+    if (migrationCfnStackName !== undefined && migrationTree !== undefined) {
+      withMigratedNestedStackTags(
+        assembled,
+        migratedNestedStackTags(
+          recordStackTags ?? {},
+          deployedTemplate,
+          migrationTree.nested.keys()
+        )
+      );
+    }
     return assembled;
   };
   let stackState = assembleStackState();
