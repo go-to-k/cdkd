@@ -96,17 +96,19 @@ SDK client, `package.json` + `pnpm-lock.yaml`; a backfill (`_todo-backfill.json`
 rows) adds `sdk-unwired-guard-key-disjointness.test.ts`, whose literal floors
 fall as keys get wired — to just under the NEW measured count, never a round
 number below it — and which no basename grep finds
-(#5611); one wiring the LAST open rows adds `tests/unit/scripts/`
-`{diagnose-schema-refresh,umbrella-checklist-no-deps}.test.ts`, whose cases
-read the LIVE map's pending rows: re-anchor them on synthetic maps (#6942), the
+(#5611), the
 type's `sdk-wire-cases-<N>.ts` bag — a basename-grep hit to TAKE, not filter:
 the harness fails until it carries or exempts each newly handled key (#6087) —
 plus
 the file that DECLARES the type's `handledProperties` (`grep -rn "'<Type>'"
 src/provisioning/providers/*-provider.ts`: the facade, never the split
-module) with every file of its delegate directory the wiring edits (`ls
+module), plus every file of its delegate directory the wiring edits (`ls
 src/provisioning/providers/<facade basename minus -provider>/`: ACM's
-create/read/update live there, #6942) and, for a `writeOnlyProperties` key, the drift `neverRead` list; a member
+create/read/update live there, #6942) and, for a `writeOnlyProperties` key,
+the drift `neverRead` list; a backfill wiring the LAST open rows adds
+`tests/unit/scripts/{diagnose-schema-refresh,umbrella-checklist-no-deps}.test.ts`,
+whose cases read the LIVE map's pending rows — re-anchor them on synthetic
+maps (#6942); a member
 sent off its CFn path (its own command, a renamed field) adds its
 `sdk-wire-member-renames.ts` entry, plus `sdk-wire-call-roots.ts` when that
 command is sent more than once per resource (#5630); and the
