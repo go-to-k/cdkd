@@ -474,6 +474,19 @@ print(" ".join(r["physicalId"] for r in rs.values() if r.get("resourceType") == 
       *) echo "[verify] FAIL: expected UPDATE_COMPLETE / IMPORT_COMPLETE, got ${STATUS}"; exit 1 ;;
     esac
 
+    echo "[verify] step 4a: the CFn stack holds the stack tag, set after phase 2 (go-to-k/cdkd#6887)"
+    STACK_TAG="$(aws cloudformation describe-stacks --stack-name "${CFN_STACK}" --region "${REGION}" \
+      --query "Stacks[0].Tags[?Key=='cdkd-integ-stack-tag'].Value | [0]" --output text)"
+    if [ "${STACK_TAG}" != "export-6887" ]; then
+      echo "[verify] FAIL: stack tag cdkd-integ-stack-tag is '${STACK_TAG}', expected 'export-6887'"
+      exit 1
+    fi
+    if grep -q "were not set" /tmp/verify-export.log; then
+      echo "[verify] FAIL: the export warned that the stack tags were not set"
+      exit 1
+    fi
+    echo "[verify] step 4a ok"
+
     echo "[verify] step 4b: verify imported resource types present"
     RESOURCES="$(aws cloudformation list-stack-resources --stack-name "${CFN_STACK}" --region "${REGION}" \
       --query 'StackResourceSummaries[].ResourceType' --output text)"

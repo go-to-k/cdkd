@@ -223,6 +223,17 @@ describes it.
 cdkd deletes its state record only after the last changeset completes. A
 failure before that point leaves the record intact.
 
+### Stack tags
+
+A stack with [stack tags](cli-deploy.md#stack-tags) (`tags` in the CDK
+`StackProps`) gets them on its CloudFormation stack, as `cdk deploy` passes
+them. CloudFormation refuses stack tags on an IMPORT changeset that creates a
+stack, so cdkd sets them with one more stack update after the last changeset.
+That update re-applies the tags to the stack's resources, which already hold
+them from `cdkd deploy`. If it fails, the export still completes and cdkd
+warns: the next `cdk deploy` sets the stack tags. A stack without stack tags
+makes no extra call.
+
 ### When a changeset fails
 
 cdkd fetches the CloudFormation stack events and prints the failure reason for

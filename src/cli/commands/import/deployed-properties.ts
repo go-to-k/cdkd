@@ -1,5 +1,9 @@
 import { isDeepStrictEqual } from 'node:util';
-import { GetTemplateCommand, type CloudFormationClient } from '@aws-sdk/client-cloudformation';
+import {
+  DescribeStacksCommand,
+  GetTemplateCommand,
+  type CloudFormationClient,
+} from '@aws-sdk/client-cloudformation';
 import { parseCfnTemplate } from '../../yaml-cfn.js';
 import { NESTED_STACK_RESOURCE_TYPE, cfnFailureText } from '../retire-cfn-stack.js';
 import { safeMsg } from '../../../utils/display-safe.js';
@@ -77,6 +81,81 @@ export async function readDeployedTemplate(
     throw refuse('the template CloudFormation last deployed has no Resources section.');
   }
   return parsed as unknown as CloudFormationTemplate;
+}
+
+/**
+ * go-to-k/cdkd#6887 — the stack tags a CloudFormation stack holds, which
+ * CloudFormation propagated to every taggable resource of the stack: what a
+ * migration records in each resource's tag property, since that is what AWS
+ * holds (the deployed template carries the resources' own tags only). `aws:`
+ * keys are CloudFormation's own and never a stack tag a template can pass.
+ * `stackName` may be a stack ARN (a nested child).
+ *
+ * Throws on any failure, the message ending in `consequence`, as
+ * {@link readDeployedTemplate} does.
+ */
+export async function readDeployedStackTags(
+  cfnClient: CloudFormationClient,
+  stackName: string,
+  consequence: string
+): Promise<Record<string, string>> {
+  let tags: ReadonlyArray<{ Key?: string | undefined; Value?: string | undefined }>;
+  try {
+    const response = await cfnClient.send(new DescribeStacksCommand({ StackName: stackName }));
+    const stack = response.Stacks?.[0];
+    if (stack === undefined) throw new Error('the stack was not returned');
+    tags = stack.Tags ?? [];
+  } catch (err) {
+    throw new Error(
+      `--migrate-from-cloudformation: ` +
+        safeMsg`reading the stack tags of the CloudFormation stack failed: ${cfnFailureText(err)}.` +
+        ` ${consequence}`
+    );
+  }
+  const read: Record<string, string> = {};
+  for (const { Key: key, Value: value } of tags) {
+    if (typeof key !== 'string' || typeof value !== 'string' || key.startsWith('aws:')) continue;
+    defineOwnKey(read, key, value);
+  }
+  return read;
+}
+
+/**
+ * go-to-k/cdkd#6887 — the stack tags a migrated nested child records on its
+ * resources: its parent's (as recorded) plus each entry of the row's `Tags` in
+ * the PARENT's deployed template that is a literal pair, the row's winning, as
+ * CloudFormation tags a nested stack. Never the child stack's tags as AWS
+ * reports them: an entry CloudFormation resolved (a `Ref` to a `NoEcho`
+ * parameter, a dynamic reference) would put the plaintext value in state, so
+ * such an entry, and one whose key cannot be read, is not recorded at all (the
+ * next deploy then re-sends it, never a secret).
+ */
+export function nestedChildStackTags(
+  parentStackTags: Readonly<Record<string, string>>,
+  parentDeployedTemplate: CloudFormationTemplate | undefined,
+  rowLogicalId: string
+): Record<string, string> {
+  const tags: Record<string, string> = {};
+  for (const [key, value] of Object.entries(parentStackTags)) defineOwnKey(tags, key, value);
+  const resources = parentDeployedTemplate?.Resources;
+  const row =
+    resources !== undefined && hasOwn(resources, rowLogicalId)
+      ? resources[rowLogicalId]
+      : undefined;
+  const rowTags: unknown = row?.Properties?.['Tags'];
+  if (!Array.isArray(rowTags)) return tags;
+  for (const entry of rowTags as unknown[]) {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const { Key: key, Value: value } = entry as Record<string, unknown>;
+    if (typeof key !== 'string') continue;
+    if (typeof value === 'string' && !value.includes('{{resolve:')) {
+      defineOwnKey(tags, key, value);
+    } else {
+      // The parent's value for the key is not this stack's any more either.
+      delete tags[key];
+    }
+  }
+  return tags;
 }
 
 /** The names a properties tree refers to, by kind. */

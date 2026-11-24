@@ -89,7 +89,11 @@ import {
   preDeleteListingLines,
   preDeleteManualCommands,
 } from './pre-delete.js';
-import { executeImportChangeSet, executeUpdateChangeSet } from './changeset.js';
+import {
+  applyExportedStackTags,
+  executeImportChangeSet,
+  executeUpdateChangeSet,
+} from './changeset.js';
 
 export async function exportCommand(
   stackArg: string | undefined,
@@ -164,6 +168,8 @@ export async function exportCommand(
     let template: Record<string, unknown>;
     // The synthesized stack, when the template came from synth (#6421).
     let legacyAssetStack: StackInfo | undefined;
+    // The manifest's stack tags (go-to-k/cdkd#6887); none for `--template`.
+    let stackTags: Record<string, string> | undefined;
     let resolvedStackName: string;
     let synthedRegion: string | undefined;
     // The format we will re-emit the template in when we send phase-1 /
@@ -258,6 +264,7 @@ export async function exportCommand(
       refuseFailedLookups([stackInfo], result.stacks, result.failedLookups);
       template = stackInfo.template as unknown as Record<string, unknown>;
       legacyAssetStack = stackInfo;
+      stackTags = stackInfo.tags;
       resolvedStackName = stackInfo.stackName;
       synthedRegion = stackInfo.region;
       // Null-prototype on the ABSENT arm too (issue go-to-k/cdkd#3480).
@@ -527,6 +534,7 @@ export async function exportCommand(
             childMap: childOverrides,
           },
           rootParameters: rootParametersForNested,
+          rootStackTags: stackTags,
           deps: {
             cfnClient: awsClients.cloudFormation,
             ec2Client: awsClients.ec2,
@@ -924,6 +932,14 @@ export async function exportCommand(
           );
         }
       }
+
+      // go-to-k/cdkd#6887: the stack tags, after the last change set.
+      await applyExportedStackTags(
+        awsClients.cloudFormation,
+        cfnStackName,
+        cfnParameters,
+        stackTags
+      );
 
       // Delete cdkd state for the migrated stack. Done AFTER phase 2 so a
       // phase-2 failure leaves state intact for recovery (see catch above).

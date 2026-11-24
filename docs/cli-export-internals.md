@@ -199,7 +199,9 @@ Between phases each non-root stack is flipped from `IMPORT_COMPLETE` to
 `UPDATE_COMPLETE` by a no-op tag-only `UpdateStack`, because AWS rejects
 `IMPORT_COMPLETE` as a non-importable status for nesting. The flip adds a
 transient `cdkd:nested-export-flip` tag, which phase 1B then forwards verbatim
-into the parent template.
+into the parent template. The update replaces the stack's whole tag set and
+re-tags its resources to match, so the flip also sends the stack's own
+[stack tags](cli-export-nested-stacks.md#stack-tags).
 
 There is no single-changeset alternative: AWS rejects `IncludeNestedStacks` on
 an IMPORT changeset outright (`ValidationError: IncludeNestedStacks is not

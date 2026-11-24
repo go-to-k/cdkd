@@ -98,6 +98,10 @@ property is an intrinsic function (an `Fn::If`, say), or holds a tag whose key
 is not a literal, is left as the template declares it, with a warning. A stack
 with no tags makes no extra calls.
 
+[`cdkd import`](import.md#after-the-import) records each resource with the
+stack tags merged in, and [`cdkd export`](cli-export.md#stack-tags) gives the
+CloudFormation stack it creates the same stack tags.
+
 ## Options
 
 Run `cdkd deploy --help` for the same list in the terminal. The flags are

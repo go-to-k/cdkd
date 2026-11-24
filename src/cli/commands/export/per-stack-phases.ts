@@ -23,6 +23,7 @@ import { type TemplateFormat } from '../../yaml-cfn.js';
 import {
   executeUpdateChangeSet,
   fetchCfnStackTemplate,
+  applyExportedStackTags,
   flipStackToUpdateComplete,
   submitImportChangeSet,
 } from './changeset.js';
@@ -117,6 +118,8 @@ export interface PerStackImportPhasesContext {
   cfnStackNameOf: (cdkdName: string) => string;
   perStackPlans: PerStackPlan[];
   paramsByCdkdName: Map<string, Parameter[]>;
+  /** Per cdkd stack name, its CloudFormation stack's stack tags (go-to-k/cdkd#6887). */
+  stackTagsByCdkdName: Map<string, Record<string, string>>;
   sessionIntrinsicSkipped: Map<string, string[]>;
   cfnArnByCdkdName: Map<string, string>;
   uploadCleanups: Array<() => Promise<void>>;
@@ -143,6 +146,7 @@ export async function runPerStackImportPhases(
     cfnStackNameOf,
     perStackPlans,
     paramsByCdkdName,
+    stackTagsByCdkdName,
     sessionIntrinsicSkipped,
     cfnArnByCdkdName,
     uploadCleanups,
@@ -162,6 +166,7 @@ export async function runPerStackImportPhases(
     // child's intrinsic-valued Parameters were resolved against its
     // parent's state, with any unresolvable ones already warned about).
     const stackParameters = paramsByCdkdName.get(plan.cdkdName) ?? [];
+    const stackTags = stackTagsByCdkdName.get(plan.cdkdName) ?? {};
 
     // A step between this stack's Phase 1A and its phase 2 that has no
     // failure message of its own: its CloudFormation stack exists by then,
@@ -284,7 +289,7 @@ export async function runPerStackImportPhases(
       await afterImport(
         'The no-op tag update moving its CloudFormation stack out of IMPORT_COMPLETE',
         'imported',
-        () => flipStackToUpdateComplete(deps.cfnClient, plan.cfnName, stackParameters)
+        () => flipStackToUpdateComplete(deps.cfnClient, plan.cfnName, stackParameters, stackTags)
       );
     }
 
@@ -485,7 +490,7 @@ export async function runPerStackImportPhases(
           'The no-op tag update moving its CloudFormation stack back out of IMPORT_COMPLETE ' +
             'after its nested-child adoption',
           'adopted',
-          () => flipStackToUpdateComplete(deps.cfnClient, plan.cfnName, stackParameters)
+          () => flipStackToUpdateComplete(deps.cfnClient, plan.cfnName, stackParameters, stackTags)
         );
       }
     }
@@ -594,6 +599,12 @@ export async function runPerStackImportPhases(
           `(${plan.phase2Creates.length} non-importable CREATE, ` +
           `${plan.recreateBeforePhase2.length} re-CREATE).`
       );
+    }
+
+    // go-to-k/cdkd#6887: the root's stack tags, after its last change set (a
+    // non-root stack took its own with each flip above).
+    if (plan.cdkdName === rootStackName) {
+      await applyExportedStackTags(deps.cfnClient, plan.cfnName, stackParameters, stackTags);
     }
   }
 

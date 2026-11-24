@@ -45,9 +45,11 @@ import { resolveImportedProperties } from './resolve-properties.js';
 import {
   deployedPropertiesOf,
   overlayDeployedProperties,
+  nestedChildStackTags,
   readDeployedTemplate,
   withDeployedDefinitions,
 } from './deployed-properties.js';
+import { applyStackTagsToTemplate } from '../../../provisioning/stack-tag-targets.js';
 import {
   buildStackState,
   rebuiltLogicalIdsFrom,
@@ -217,6 +219,10 @@ export async function importNestedStackChildrenRecursive(args: {
   /** AssemblyReader-built `childLogicalId → local template file path` index for the parent's direct children. */
   parentNestedTemplates: Record<string, string>;
   parentTree: CfnStackResourceTree;
+  /** The parent's stack tags as its records carry them (go-to-k/cdkd#6887). */
+  parentStackTags: Readonly<Record<string, string>>;
+  /** The template CloudFormation last deployed for the parent; its rows' `Tags` reach each child. */
+  parentDeployedTemplate: CloudFormationTemplate | undefined;
   /** Nested-stack logical ids from the root down to the PARENT; `[]` at the root. */
   nestedPath: string[];
   /**
@@ -365,7 +371,19 @@ export async function importNestedStackChildrenRecursive(args: {
         logger,
         displaySafe(childStackName)
       );
-      const childRecordTemplate = childOverlay.template;
+      // go-to-k/cdkd#6887: this child's stack tags (the parent's plus its
+      // row's literal own, never a value CloudFormation resolved), merged into
+      // each taggable resource's record, as the root's are.
+      const childStackTags = nestedChildStackTags(
+        args.parentStackTags,
+        args.parentDeployedTemplate,
+        childLogicalId
+      );
+      const childRecordTemplate = await applyStackTagsToTemplate(
+        childOverlay.template,
+        childStackTags,
+        (line) => logger.warn(line)
+      );
 
       // Dispatch + collect rows (same shape as the root's dispatch loop).
       const rows: ImportRow[] = [];
@@ -536,6 +554,8 @@ export async function importNestedStackChildrenRecursive(args: {
             childTemplatePath
           ),
           parentTree: childTreeNode,
+          parentStackTags: childStackTags,
+          parentDeployedTemplate: childDeployedTemplate,
           nestedPath: [...args.nestedPath, childLogicalId],
           replaced: args.replaced,
           stateBackend,

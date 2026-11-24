@@ -73,6 +73,8 @@ const mockReadDeployedTemplate = vi.hoisted(() =>
 vi.mock('../../../src/cli/commands/import/deployed-properties.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../src/cli/commands/import/deployed-properties.js')>()),
   readDeployedTemplate: mockReadDeployedTemplate,
+  // go-to-k/cdkd#6887: the migrated stack holds no stack tags.
+  readDeployedStackTags: vi.fn(async () => ({})),
 }));
 
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
