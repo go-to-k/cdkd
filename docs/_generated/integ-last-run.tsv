@@ -167,7 +167,7 @@ dynamodb-streams	2026-11-20T11:50:48Z	PASS	268	verify.sh	PR6652 be63cc056, us-we
 dynamodb-table-policy-baseline	2026-11-22T05:45:00Z	PASS	190	verify.sh	PR6814 2ae78b7f6, us-east-1, rc ok, orph clean
 dynamodb-tableclass-switch	2026-11-06T16:03:56Z	PASS	75	verify.sh	post-hoc on main after #5841 split; rc ok, orph clean
 dynamodb-ttl-attr-change	2026-11-19T06:52:45Z	PASS	1900	verify.sh	#6600 final: rc ok, destroy 0 errors, orph clean
-ec2-eip-instance-association	2026-11-21T15:34:28Z	PASS	101	verify.sh	rc ok, orph clean
+ec2-eip-instance-association	2026-11-24T20:15:56Z	PASS	181	verify.sh	rc ok, orph clean; Phase 3 --no-wait EIP waits for instance
 ec2-instance	2026-11-23T08:55:56Z	PASS	809	verify.sh	rc 0, orph clean (#6867 SsmAssociations ARN/name; merge-base b70da242f)
 ec2-instance-fanout	2026-11-23T08:55:56Z	PASS	178	verify.sh	rc 0, orph clean (#6867)
 ec2-instance-volume-attachment-drift	2026-11-22T03:31:56Z	PASS	220	verify.sh	d2646a6f6 #6759 part a, rc 0, 0 leftovers
@@ -377,6 +377,8 @@ nested-stack-secret	2026-11-23T19:53:15Z	PASS	381	verify.sh	rc ok, orph clean; #
 nested-stack-transform	2026-11-16T09:13:05Z	PASS	150	verify.sh	rc ok, orph clean
 nlb-quic-server-id	2026-11-10T17:00:47Z	PASS	241	verify.sh	rc ok, orph clean
 nlb-source-nat	2026-11-21T21:07:36Z	PASS	350	verify.sh	rc ok, orph clean (PR 6795 0162f3918)
+no-wait-cr-nat-egress	2026-11-24T20:15:56Z	PASS	872	verify.sh	rc ok, orph clean; --no-wait NAT readiness wait before Probe
+no-wait-getatt-rds-endpoint	2026-11-24T20:15:56Z	PASS	474	verify.sh	rc ok, orph clean; GetAtt endpoint readiness wait
 nodejs-function	2026-11-04T05:36:33Z	PASS	79	verify.sh	batch 4; rc ok, 0 orph
 noecho-named-producer	2026-11-04T19:47:52Z	PASS	105	verify.sh	rc ok, orph clean
 noecho-parameter-masking	2026-11-22T02:46:37Z	PASS	1232	verify.sh	rc ok, orph clean, sha 3116c9288 (#6813 sub-read errors)
