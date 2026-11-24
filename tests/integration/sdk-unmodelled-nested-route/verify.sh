@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
-# verify.sh -- cdkd Cloud Control route for nested members the AWS SDK does not
-# model (issue 6690), on AWS::CloudFront::Distribution and AWS::Route53::HostedZone.
+# verify.sh -- cdkd Cloud Control route for nested members the SDK route
+# cannot send (issue 6690) on AWS::Route53::HostedZone, and the SDK route for
+# CloudFront OriginHttpVersion once the SDK models it (issue 6932).
 #
 # Phases: deploy plain on the SDK route -> add the members: the deploy says why
-# it routes, both move to Cloud Control on the SAME ids and AWS holds the
-# values -> drift clean -> remove the members: still Cloud Control, which
-# clears them -> a plain change returns both to the SDK provider, same ids ->
-# destroy + gone-probes.
+# the zone routes, it moves to Cloud Control on the SAME id; the distribution
+# stays on the SDK provider, which sends and reads back OriginHttpVersion ->
+# drift clean -> recreate the distribution on Cloud Control (the record an
+# older cdkd left) -> its next change returns it to the SDK provider, same id,
+# member kept -> remove the members: the zone stays on Cloud Control, which
+# clears it; the SDK provider clears the distribution's -> a plain change
+# returns the zone to the SDK provider, same id -> destroy + gone-probes.
 
 set -euo pipefail
 
@@ -96,6 +100,17 @@ live_origin_http() { # usage: live_origin_http <distribution-id>
   local props
   props=$(cc_props AWS::CloudFront::Distribution "$1") || return 1
   printf '%s' "${props}" | jq -r '.DistributionConfig.Origins[0].CustomOriginConfig.OriginHttpVersion // "absent"'
+}
+
+# What the provider's own read-back (the snapshot drift compares against)
+# recorded for the member. A record without the snapshot fails rather than
+# reading "absent".
+assert_observed_origin_http() { # usage: assert_observed_origin_http <phase-label> <http1.1|absent>
+  local got
+  [ "$(record "${DIST}" '.observedProperties | type')" = "object" ] ||
+    { echo "FAIL: $1: ${DIST} has no observedProperties, so its read-back cannot be checked" >&2; exit 1; }
+  got=$(record "${DIST}" '.observedProperties.DistributionConfig.Origins[0].CustomOriginConfig.OriginHttpVersion // "absent"')
+  [ "${got}" = "$2" ] || { echo "FAIL: $1: ${DIST}'s read-back holds OriginHttpVersion '${got}', expected '$2'" >&2; exit 1; }
 }
 
 # The authorizer's first audience, read through Cloud Control (the AWS CLI's
@@ -193,32 +208,34 @@ GR=$(live_guardrail "${ZID}") || { echo "FAIL: phase 1: cannot read zone ${ZID} 
 [ "${GR}" = "DISABLED" ] || { echo "FAIL: phase 1: zone ${ZID} starts with NS_OCCLUSION_CHECK ${GR}, not DISABLED" >&2; exit 1; }
 HV=$(live_origin_http "${DID}") || { echo "FAIL: phase 1: cannot read distribution ${DID} through Cloud Control" >&2; exit 1; }
 # The witness: an origin that never set it reads it ABSENT, so http1.1 later
-# can only be the routed value.
-[ "${HV}" = "absent" ] || { echo "FAIL: phase 1: distribution ${DID} starts with OriginHttpVersion '${HV}', so http1.1 could not witness the route" >&2; exit 1; }
+# can only be the value cdkd sent.
+[ "${HV}" = "absent" ] || { echo "FAIL: phase 1: distribution ${DID} starts with OriginHttpVersion '${HV}', so http1.1 could not witness the send" >&2; exit 1; }
 echo "    OK: all on the SDK route (zone ${ZID}, distribution ${DID}, JWT authorizer ${AID})"
 
-echo "==> Phase 2: add the members -- THE ARM: both move to Cloud Control on the same ids"
+echo "==> Phase 2: add the members -- the zone moves to Cloud Control; the distribution stays on the SDK provider"
 deploy route "${LOG_DIR}/route.log"
 # The user is told why. Sentinel: the route line must also carry the reason,
 # so a reworded reason fails here instead of passing on the route line alone.
-for pair in "${DIST}:OriginHttpVersion is not modelled by the AWS SDK client" \
-  "${ZONE}:ChangeGuardrails is not modelled by the AWS SDK client"; do
-  id="${pair%%:*}" reason="${pair#*:}"
-  line=$(grep -F "${id} (" "${LOG_DIR}/route.log" | grep -F 'routing via Cloud Control API' || true)
-  [ -n "${line}" ] || { echo "FAIL: phase 2: the deploy never said ${id} routes via Cloud Control" >&2; exit 1; }
-  grep -qF "${reason}" <<<"${line}" || { echo "FAIL: phase 2: ${id}'s route line lacks its reason '${reason}': ${line}" >&2; exit 1; }
-done
+line=$(grep -F "${ZONE} (" "${LOG_DIR}/route.log" | grep -F 'routing via Cloud Control API' || true)
+[ -n "${line}" ] || { echo "FAIL: phase 2: the deploy never said ${ZONE} routes via Cloud Control" >&2; exit 1; }
+reason="ChangeGuardrails is not modelled by the AWS SDK client"
+grep -qF "${reason}" <<<"${line}" || { echo "FAIL: phase 2: ${ZONE}'s route line lacks its reason '${reason}': ${line}" >&2; exit 1; }
+if grep -F "${DIST} (" "${LOG_DIR}/route.log" | grep -qF 'routing via Cloud Control API'; then
+  echo "FAIL: phase 2: the deploy routed ${DIST} via Cloud Control for a member the SDK provider sends (issue 6932)" >&2
+  exit 1
+fi
 load_state
 assert_layer "phase 2" "${ZONE}" cc-api
-assert_layer "phase 2" "${DIST}" cc-api
+assert_layer "phase 2" "${DIST}" sdk
 assert_id "phase 2" "${ZONE}" "${ZID}"
 assert_id "phase 2" "${DIST}" "${DID}"
 GR=$(live_guardrail "${ZID}") || { echo "FAIL: phase 2: cannot read zone ${ZID} through Cloud Control" >&2; exit 1; }
 [ "${GR}" = "ENABLED" ] || { echo "FAIL: phase 2: NS_OCCLUSION_CHECK is ${GR} on ${ZID}; the member never reached AWS" >&2; exit 1; }
 HV=$(live_origin_http "${DID}") || { echo "FAIL: phase 2: cannot read distribution ${DID} through Cloud Control" >&2; exit 1; }
-[ "${HV}" = "http1.1" ] || { echo "FAIL: phase 2: OriginHttpVersion is ${HV} on ${DID}; the member never reached AWS" >&2; exit 1; }
+[ "${HV}" = "http1.1" ] || { echo "FAIL: phase 2: OriginHttpVersion is ${HV} on ${DID}; the SDK provider never sent it" >&2; exit 1; }
+assert_observed_origin_http "phase 2 (SDK read-back)" http1.1
 assert_comments "phase 2" a
-echo "    OK: both on Cloud Control, same ids, NS_OCCLUSION_CHECK ENABLED, OriginHttpVersion http1.1"
+echo "    OK: zone on Cloud Control (same id, NS_OCCLUSION_CHECK ENABLED); distribution on the SDK route holding OriginHttpVersion http1.1"
 
 echo "==> Phase 3: no drift on the routed records"
 DRIFT_JSON="${LOG_DIR}/drift.json"
@@ -239,33 +256,69 @@ for id in "${ZONE}" "${DIST}" "${AUTH}"; do
 done
 echo "    OK: zone, distribution and JWT authorizer clean (rc=0)"
 
-echo "==> Phase 4: remove the members -- Cloud Control stays and clears them"
+echo "==> Phase 4: recreate the distribution on Cloud Control -- the record a cdkd before issue 6932 left"
+# CloudFront::Distribution is in STATEFUL_TYPES, so cdkd refuses to recreate it
+# without --force-stateful-recreation. It holds no data here.
+SDK_DID="${DID}"
+env CDKD_TEST_PHASE=route \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+    --recreate-via-cc-api "${DIST}" --force-stateful-recreation --yes 2>&1 | tee "${LOG_DIR}/recreate.log"
+load_state
+# Without this every assertion of phase 5 would be vacuous.
+assert_layer "phase 4" "${DIST}" cc-api
+DID=$(record "${DIST}" '.physicalId')
+[ "${DID}" != "${SDK_DID}" ] || { echo "FAIL: phase 4: the recreate kept ${DIST}'s id ${SDK_DID}" >&2; exit 1; }
+assert_gone "phase 4: the SDK-created distribution ${SDK_DID} survived its recreate" \
+  aws cloudfront get-distribution --id "${SDK_DID}"
+assert_layer "phase 4" "${ZONE}" cc-api
+assert_id "phase 4" "${ZONE}" "${ZID}"
+HV=$(live_origin_http "${DID}") || { echo "FAIL: phase 4: cannot read distribution ${DID} through Cloud Control" >&2; exit 1; }
+[ "${HV}" = "http1.1" ] || { echo "FAIL: phase 4: OriginHttpVersion is ${HV} on the Cloud Control distribution ${DID}" >&2; exit 1; }
+echo "    OK: distribution ${DID} recorded on Cloud Control holding OriginHttpVersion http1.1"
+
+echo "==> Phase 5: THE 6932 ARM -- its next change returns the distribution to the SDK provider, same id, member kept"
+deploy return "${LOG_DIR}/return.log"
+load_state
+assert_layer "phase 5" "${DIST}" sdk
+assert_id "phase 5" "${DIST}" "${DID}"
+# Still declaring ChangeGuardrails, the zone stays on Cloud Control for its
+# comment change.
+assert_layer "phase 5" "${ZONE}" cc-api
+assert_id "phase 5" "${ZONE}" "${ZID}"
+assert_comments "phase 5" c
+HV=$(live_origin_http "${DID}") || { echo "FAIL: phase 5: cannot read distribution ${DID} through Cloud Control" >&2; exit 1; }
+[ "${HV}" = "http1.1" ] || { echo "FAIL: phase 5: the SDK provider's update left OriginHttpVersion '${HV}' on ${DID}" >&2; exit 1; }
+assert_observed_origin_http "phase 5 (SDK read-back after the return)" http1.1
+echo "    OK: distribution back on the SDK route, same id, OriginHttpVersion http1.1 kept"
+
+echo "==> Phase 6: remove the members -- the zone's Cloud Control and the distribution's SDK provider clear them"
 deploy removal "${LOG_DIR}/removal.log"
 load_state
-# The SDK provider cannot unset what it cannot send: the removal deploy is
-# Cloud Control's.
-assert_layer "phase 4" "${ZONE}" cc-api
-assert_layer "phase 4" "${DIST}" cc-api
-assert_id "phase 4" "${ZONE}" "${ZID}"
-assert_id "phase 4" "${DIST}" "${DID}"
-GR=$(live_guardrail "${ZID}") || { echo "FAIL: phase 4: cannot read zone ${ZID} through Cloud Control" >&2; exit 1; }
-[ "${GR}" = "DISABLED" ] || { echo "FAIL: phase 4: NS_OCCLUSION_CHECK is ${GR} on ${ZID} after its removal" >&2; exit 1; }
-HV=$(live_origin_http "${DID}") || { echo "FAIL: phase 4: cannot read distribution ${DID} through Cloud Control" >&2; exit 1; }
-[ "${HV}" = "absent" ] || { echo "FAIL: phase 4: OriginHttpVersion is '${HV}' on ${DID} after its removal" >&2; exit 1; }
-echo "    OK: still Cloud Control, members cleared (guardrail DISABLED, OriginHttpVersion ${HV})"
+# The SDK provider cannot unset what it cannot send: the zone's removal
+# deploy is Cloud Control's.
+assert_layer "phase 6" "${ZONE}" cc-api
+assert_layer "phase 6" "${DIST}" sdk
+assert_id "phase 6" "${ZONE}" "${ZID}"
+assert_id "phase 6" "${DIST}" "${DID}"
+GR=$(live_guardrail "${ZID}") || { echo "FAIL: phase 6: cannot read zone ${ZID} through Cloud Control" >&2; exit 1; }
+[ "${GR}" = "DISABLED" ] || { echo "FAIL: phase 6: NS_OCCLUSION_CHECK is ${GR} on ${ZID} after its removal" >&2; exit 1; }
+HV=$(live_origin_http "${DID}") || { echo "FAIL: phase 6: cannot read distribution ${DID} through Cloud Control" >&2; exit 1; }
+[ "${HV}" = "absent" ] || { echo "FAIL: phase 6: OriginHttpVersion is '${HV}' on ${DID} after its removal" >&2; exit 1; }
+assert_observed_origin_http "phase 6 (SDK read-back after the removal)" absent
+echo "    OK: members cleared (guardrail DISABLED on Cloud Control, OriginHttpVersion ${HV} on the SDK route)"
 
-echo "==> Phase 5: a plain change returns both to the SDK provider, same ids"
+echo "==> Phase 7: a plain change returns the zone to the SDK provider, same ids"
 deploy back "${LOG_DIR}/back.log"
 load_state
-assert_layer "phase 5" "${ZONE}" sdk
-assert_layer "phase 5" "${DIST}" sdk
-assert_id "phase 5" "${ZONE}" "${ZID}"
-assert_id "phase 5" "${DIST}" "${DID}"
-assert_comments "phase 5" b
-assert_jwt "phase 5 (JWT authorizer updated on the SDK route)" b
-echo "    OK: both back on the SDK route, update applied in place; JWT audience updated in place"
+assert_layer "phase 7" "${ZONE}" sdk
+assert_layer "phase 7" "${DIST}" sdk
+assert_id "phase 7" "${ZONE}" "${ZID}"
+assert_id "phase 7" "${DIST}" "${DID}"
+assert_comments "phase 7" b
+assert_jwt "phase 7 (JWT authorizer updated on the SDK route)" b
+echo "    OK: both on the SDK route, update applied in place; JWT audience updated in place"
 
-echo "==> Phase 6: Destroy + gone-probes"
+echo "==> Phase 8: Destroy + gone-probes"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 assert_gone "hosted zone ${ZID} survived destroy" \
   aws route53 get-hosted-zone --id "${ZID}"
@@ -277,4 +330,4 @@ assert_gone "state file ${STATE_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: destroyed clean"
 
-echo "[verify] PASS -- sdk-unmodelled-nested-route (nested members routed through Cloud Control on live resources)"
+echo "[verify] PASS -- sdk-unmodelled-nested-route (zone routed through Cloud Control for its nested members; OriginHttpVersion on the SDK route)"

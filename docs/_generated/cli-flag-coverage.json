@@ -615,6 +615,7 @@
         "rollback-sqs-cooldown",
         "s3-lifecycle",
         "sdk-to-cc-autoroute",
+        "sdk-unmodelled-nested-route",
         "type-change-replacement",
         "update-replace"
       ]
@@ -1295,7 +1296,8 @@
         "scheduler-custom-group",
         "schema-v10-to-v11-migration",
         "sdk-ccapi-crossref",
-        "sdk-to-cc-autoroute"
+        "sdk-to-cc-autoroute",
+        "sdk-unmodelled-nested-route"
       ]
     },
     {

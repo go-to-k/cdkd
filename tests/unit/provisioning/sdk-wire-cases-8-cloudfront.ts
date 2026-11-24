@@ -176,6 +176,7 @@ const DISTRIBUTION_FULL: Bag = {
           HTTPPort: 8080,
           HTTPSPort: 8443,
           IpAddressType: 'dualstack',
+          OriginHttpVersion: 'http2',
           OriginKeepaliveTimeout: 6,
           OriginMtlsConfig: {
             ClientCertificateArn: `arn:aws:acm:us-east-1:${ACCOUNT}:certificate/c1`,
@@ -204,6 +205,7 @@ const DISTRIBUTION_FULL: Bag = {
           OriginReadTimeout: 32,
         },
         VpcOriginConfig: {
+          OriginHttpVersion: 'http1.1',
           OriginKeepaliveTimeout: 7,
           OriginReadTimeout: 33,
           OwnerAccountId: '222222222222',

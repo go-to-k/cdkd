@@ -24,6 +24,20 @@ import {
 const DISTRIBUTION = 'AWS::CloudFront::Distribution';
 const ZONE = 'AWS::Route53::HostedZone';
 
+function zone(features: Record<string, unknown>): Record<string, unknown> {
+  return { Name: 'example.com', HostedZoneConfig: { Comment: 'c' }, HostedZoneFeatures: features };
+}
+
+const GUARDED = zone({
+  EnableAcceleratedRecovery: true,
+  ChangeGuardrails: [
+    { Name: 'NS_OCCLUSION_CHECK', Status: 'DISABLED' },
+    { Name: 'DNSSEC_CHECK', Status: 'ENABLED' },
+  ],
+  EnablePublicDNSFallback: true,
+});
+const PLAIN = zone({ EnableAcceleratedRecovery: true });
+
 function distribution(origin: Record<string, unknown>): Record<string, unknown> {
   return {
     DistributionConfig: {
@@ -37,10 +51,11 @@ function distribution(origin: Record<string, unknown>): Record<string, unknown> 
   };
 }
 
-const HTTP2 = distribution({
-  CustomOriginConfig: { OriginProtocolPolicy: 'https-only', OriginHttpVersion: 'http2' },
+// @aws-sdk/client-cloudfront models OriginHttpVersion since 3.1175.0
+// (go-to-k/cdkd#6932), so it is no longer declared.
+const HTTP_VERSION = distribution({
+  CustomOriginConfig: { OriginProtocolPolicy: 'https-only', OriginHttpVersion: 'http1.1' },
 });
-const PLAIN = distribution({ CustomOriginConfig: { OriginProtocolPolicy: 'https-only' } });
 
 function registry(): ProviderRegistry {
   const r = new ProviderRegistry();
@@ -71,45 +86,32 @@ describe('the declaration', () => {
         paths++;
       }
     }
-    expect(paths).toBeGreaterThanOrEqual(7);
+    expect(paths).toBeGreaterThanOrEqual(5);
   });
 });
 
 describe('findSdkUnmodelledNestedProperties', () => {
-  it('finds a member inside any array element, and names the top-level once', () => {
-    expect(findSdkUnmodelledNestedProperties(DISTRIBUTION, HTTP2)).toEqual([
+  it('finds a member in a non-empty array, and names the top-level once', () => {
+    expect(findSdkUnmodelledNestedProperties(ZONE, GUARDED)).toEqual([
       {
-        property: 'DistributionConfig',
-        rationale: sdkUnmodelledNestedRationale(
-          'DistributionConfig.Origins.CustomOriginConfig.OriginHttpVersion'
-        ),
+        property: 'HostedZoneFeatures',
+        rationale: sdkUnmodelledNestedRationale('HostedZoneFeatures.ChangeGuardrails'),
       },
-    ]);
-    const vpc = distribution({ VpcOriginConfig: { VpcOriginId: 'vo-1', OriginHttpVersion: 'http1.1' } });
-    expect(findSdkUnmodelledNestedProperties(DISTRIBUTION, vpc).map((r) => r.property)).toEqual([
-      'DistributionConfig',
     ]);
   });
 
   it.each([
-    ['a plain distribution', DISTRIBUTION, PLAIN],
+    ['a zone using only modelled members', ZONE, PLAIN],
+    ['a null member', ZONE, zone({ EnableAcceleratedRecovery: true, EnablePublicDNSFallback: null })],
+    ['an empty guardrail list', ZONE, zone({ ChangeGuardrails: [] })],
+    ['a distribution setting OriginHttpVersion', DISTRIBUTION, HTTP_VERSION],
     [
-      'a null member',
+      'a distribution setting VpcOriginConfig.OriginHttpVersion',
       DISTRIBUTION,
-      distribution({ CustomOriginConfig: { OriginProtocolPolicy: 'https-only', OriginHttpVersion: null } }),
-    ],
-    ['an empty guardrail list', ZONE, { Name: 'example.com', HostedZoneFeatures: { ChangeGuardrails: [] } }],
-    [
-      'a zone using only modelled members',
-      ZONE,
-      {
-        Name: 'example.com',
-        HostedZoneConfig: { Comment: 'c' },
-        HostedZoneFeatures: { EnableAcceleratedRecovery: true },
-      },
+      distribution({ VpcOriginConfig: { VpcOriginId: 'vo-1', OriginHttpVersion: 'http1.1' } }),
     ],
     ['a type with no declaration', 'AWS::SQS::Queue', { QueueName: 'q' }],
-    ['no bag', DISTRIBUTION, undefined],
+    ['no bag', ZONE, undefined],
   ])('finds nothing on %s', (_label, type, bag) => {
     expect(findSdkUnmodelledNestedProperties(type, bag)).toEqual([]);
   });
@@ -131,25 +133,22 @@ describe('findSdkUnmodelledNestedProperties', () => {
 describe('routing', () => {
   it('routes the resource through Cloud Control, and a plain one stays on the SDK provider', () => {
     const r = registry();
-    const routed = r.getProviderFor({ resourceType: DISTRIBUTION, properties: HTTP2 });
+    const routed = r.getProviderFor({ resourceType: ZONE, properties: GUARDED });
     expect(routed.provisionedBy).toBe('cc-api');
     expect(routed.provider).toBe(r.getCloudControlProvider());
-    expect(r.getProviderFor({ resourceType: DISTRIBUTION, properties: PLAIN }).provisionedBy).toBe('sdk');
-
-    const zone = { Name: 'example.com', HostedZoneFeatures: { EnablePublicDNSFallback: true } };
-    expect(r.getProviderFor({ resourceType: ZONE, properties: zone }).provisionedBy).toBe('cc-api');
+    expect(r.getProviderFor({ resourceType: ZONE, properties: PLAIN }).provisionedBy).toBe('sdk');
   });
 
   it('is a route, not a drop: the record and diff narrowings never see it', () => {
-    expect(findSdkUnwiredProperties(DISTRIBUTION, HTTP2)).toEqual([]);
-    expect(findActionableSdkUnwired(DISTRIBUTION, HTTP2, new Set()).map((d) => d.property)).toEqual([
-      'DistributionConfig',
+    expect(findSdkUnwiredProperties(ZONE, GUARDED)).toEqual([]);
+    expect(findActionableSdkUnwired(ZONE, GUARDED, new Set()).map((d) => d.property)).toEqual([
+      'HostedZoneFeatures',
     ]);
   });
 
   it('--prefer-sdk-route on the top-level keeps the SDK route', () => {
-    const allowed = new Set([`${DISTRIBUTION}:DistributionConfig`]);
-    expect(findActionableSdkUnwired(DISTRIBUTION, HTTP2, allowed)).toEqual([]);
+    const allowed = new Set([`${ZONE}:HostedZoneFeatures`]);
+    expect(findActionableSdkUnwired(ZONE, GUARDED, allowed)).toEqual([]);
   });
 
   it('tells the user why the resource goes through Cloud Control', () => {
@@ -157,47 +156,74 @@ describe('routing', () => {
     const logger = { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() };
     (r as unknown as { logger: typeof logger }).logger = logger;
     r.reportSdkUnwiredDecisions([
-      { logicalId: 'Dist', resourceType: DISTRIBUTION, properties: HTTP2 },
-      { logicalId: 'Plain', resourceType: DISTRIBUTION, properties: PLAIN },
+      { logicalId: 'Zone', resourceType: ZONE, properties: GUARDED },
+      { logicalId: 'Plain', resourceType: ZONE, properties: PLAIN },
     ]);
     expect(logger.warn).not.toHaveBeenCalled();
     expect(logger.info).toHaveBeenCalledTimes(1);
     const line = logger.info.mock.calls[0]![0] as string;
-    expect(line).toContain('Dist (AWS::CloudFront::Distribution): routing via Cloud Control API');
-    expect(line).toContain(
-      'DistributionConfig: DistributionConfig.Origins.CustomOriginConfig.OriginHttpVersion is not modelled'
-    );
+    expect(line).toContain('Zone (AWS::Route53::HostedZone): routing via Cloud Control API');
+    expect(line).toContain('HostedZoneFeatures: HostedZoneFeatures.ChangeGuardrails is not modelled');
     expect(line).not.toContain('does not yet wire');
-    expect(line).toContain(`--prefer-sdk-route ${DISTRIBUTION}:DistributionConfig`);
+    expect(line).toContain(`--prefer-sdk-route ${ZONE}:HostedZoneFeatures`);
   });
 
   it('warns when --prefer-sdk-route keeps the resource where the member is dropped', () => {
     const r = registry();
     const logger = { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() };
     (r as unknown as { logger: typeof logger }).logger = logger;
-    r.allowUnsupportedProperties([`${DISTRIBUTION}:DistributionConfig`]);
-    expect(r.getProviderFor({ resourceType: DISTRIBUTION, properties: HTTP2 }).provisionedBy).toBe('sdk');
+    r.allowUnsupportedProperties([`${ZONE}:HostedZoneFeatures`]);
+    expect(r.getProviderFor({ resourceType: ZONE, properties: GUARDED }).provisionedBy).toBe('sdk');
     r.reportSdkUnwiredDecisions([
-      { logicalId: 'Dist', resourceType: DISTRIBUTION, properties: HTTP2 },
-      { logicalId: 'Plain', resourceType: DISTRIBUTION, properties: PLAIN },
+      { logicalId: 'Zone', resourceType: ZONE, properties: GUARDED },
+      { logicalId: 'Plain', resourceType: ZONE, properties: PLAIN },
     ]);
     expect(logger.info).not.toHaveBeenCalled();
     expect(logger.warn).toHaveBeenCalledTimes(1);
     const line = logger.warn.mock.calls[0]![0] as string;
-    expect(line).toContain('Dist (AWS::CloudFront::Distribution): --prefer-sdk-route keeps');
-    expect(line).toContain('OriginHttpVersion is not modelled');
+    expect(line).toContain('Zone (AWS::Route53::HostedZone): --prefer-sdk-route keeps');
+    expect(line).toContain('ChangeGuardrails is not modelled');
   });
 
   it('keeps a Cloud-Control-recorded resource there until BOTH bags drop the member', () => {
     const back = (desired: Record<string, unknown>, previous: Record<string, unknown>): boolean =>
       wouldReturnToSdkProvider({
-        resourceType: DISTRIBUTION,
+        resourceType: ZONE,
         desiredProperties: desired,
         previousProperties: previous,
       });
-    expect(back(HTTP2, HTTP2)).toBe(false);
+    expect(back(GUARDED, GUARDED)).toBe(false);
     // The removal deploy: Cloud Control must clear the member it applied.
-    expect(back(PLAIN, HTTP2)).toBe(false);
+    expect(back(PLAIN, GUARDED)).toBe(false);
     expect(back(PLAIN, PLAIN)).toBe(true);
+  });
+});
+
+describe('a distribution setting OriginHttpVersion (go-to-k/cdkd#6932)', () => {
+  it('stays on the SDK provider, which sends and reads back the member', () => {
+    const r = registry();
+    expect(r.getProviderFor({ resourceType: DISTRIBUTION, properties: HTTP_VERSION }).provisionedBy).toBe(
+      'sdk'
+    );
+    expect(findActionableSdkUnwired(DISTRIBUTION, HTTP_VERSION, new Set())).toEqual([]);
+
+    const provider = new CloudFrontDistributionProvider();
+    const config = HTTP_VERSION['DistributionConfig'] as Record<string, unknown>;
+    const sdk = provider.convertToSdkFormat(config);
+    const items = (sdk['Origins'] as { Items: Array<Record<string, Record<string, unknown>>> }).Items;
+    expect(items[1]!['CustomOriginConfig']!['OriginHttpVersion']).toBe('http1.1');
+    const cfn = provider.convertToCfnFormat(sdk);
+    const origins = cfn['Origins'] as Array<Record<string, Record<string, unknown>>>;
+    expect(origins[1]!['CustomOriginConfig']!['OriginHttpVersion']).toBe('http1.1');
+  });
+
+  it('returns a distribution recorded on Cloud Control for the member to the SDK provider', () => {
+    expect(
+      wouldReturnToSdkProvider({
+        resourceType: DISTRIBUTION,
+        desiredProperties: HTTP_VERSION,
+        previousProperties: HTTP_VERSION,
+      })
+    ).toBe(true);
   });
 });
