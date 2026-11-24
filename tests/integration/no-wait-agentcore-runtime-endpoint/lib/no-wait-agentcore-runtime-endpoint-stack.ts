@@ -25,6 +25,8 @@ export const ENDPOINT_NAME = 'live';
  * reached AWS at once and the deploy failed with that refusal.
  *
  * A CodeConfiguration (managed Python) runtime: no container image to build.
+ * `CDKD_TEST_UPDATE=true` changes its environment, so the update mints a new
+ * version and the endpoint is updated to it (the same refusal applies).
  *
  * covers: AWS::BedrockAgentCore::Runtime
  * covers: AWS::BedrockAgentCore::RuntimeEndpoint
@@ -40,6 +42,8 @@ export class NoWaitAgentcoreRuntimeEndpointStack extends cdk.Stack {
         runtime: AgentCoreRuntime.PYTHON_3_12,
         entrypoint: ['app.py'],
       }),
+      // CDKD_TEST_UPDATE changes the runtime, so its update mints a new version.
+      environmentVariables: { PHASE: process.env.CDKD_TEST_UPDATE === 'true' ? '2' : '1' },
     });
     const endpoint = runtime.addEndpoint(ENDPOINT_NAME);
 

@@ -51,12 +51,15 @@ function scope(
 }
 
 describe('refusal edges awaited under --no-wait (#6962)', () => {
+  let savedNoWait: string | undefined;
   beforeEach(() => {
     mockCloudControlSend.mockReset();
+    savedNoWait = process.env['CDKD_NO_WAIT'];
     process.env['CDKD_NO_WAIT'] = 'true';
   });
   afterEach(() => {
-    delete process.env['CDKD_NO_WAIT'];
+    if (savedNoWait === undefined) delete process.env['CDKD_NO_WAIT'];
+    else process.env['CDKD_NO_WAIT'] = savedNoWait;
   });
 
   it("a runtime endpoint waits for its runtime's deferred readiness, by id", async () => {
@@ -156,4 +159,42 @@ describe('refusal edges awaited under --no-wait (#6962)', () => {
     );
     expect(order[0]).toBe('runtime ready');
   });
+
+  it.each([
+    ['create', (p: CloudControlProvider) => p.create('Endpoint', ENDPOINT, { AgentRuntimeId: RUNTIME_ID, Name: 'live' })],
+    [
+      'update',
+      (p: CloudControlProvider) =>
+        p.update(
+          'Endpoint',
+          'endpoint-arn',
+          ENDPOINT,
+          { AgentRuntimeId: RUNTIME_ID, Name: 'live', AgentRuntimeVersion: '2' },
+          { AgentRuntimeId: RUNTIME_ID, Name: 'live', AgentRuntimeVersion: '1' }
+        ),
+    ],
+  ] as const)(
+    'a runtime that ends failed fails the endpoint %s with its error, before any Cloud Control call',
+    async (_label, run) => {
+      const failure = new Error('Runtime (AWS::BedrockAgentCore::Runtime) did not become ready: CREATE_FAILED');
+      const error = await withDeferredReadinessScope(
+        scope(() => Promise.reject(failure)),
+        () => run(new CloudControlProvider())
+      ).catch((e: unknown) => e);
+      expect(error).toBe(failure);
+      expect((error as Error).message).toContain('AWS::BedrockAgentCore::Runtime');
+      expect(mockCloudControlSend).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([[undefined], [''], [42], [{ Ref: 'Runtime' }]])(
+    'an AgentRuntimeId of %j is a no-op',
+    async (value) => {
+      const lookup = vi.fn(() => Promise.resolve());
+      await withDeferredReadinessScope(scope(lookup), () =>
+        awaitRefusalEdgeTarget('Endpoint', ENDPOINT, { AgentRuntimeId: value })
+      );
+      expect(lookup).not.toHaveBeenCalled();
+    }
+  );
 });

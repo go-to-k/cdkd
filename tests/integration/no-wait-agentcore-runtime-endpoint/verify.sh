@@ -13,13 +13,15 @@
 # are READY. Before #6962 the endpoint's create reached AWS at once and the
 # deploy failed with that ConflictException.
 #
-# Phase 2 destroys and asserts the endpoint, the runtime and the state file
+# Phase 2 redeploys with a changed runtime (a new version) under --no-wait:
+# the endpoint's update to the new version waits the same way, and ends READY
+# on it. Phase 3 destroys and asserts the endpoint, the runtime and the state file
 # are gone.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
 #   AWS_REGION   — defaults to us-east-1
-# Runtime: ~3 min.
+# Runtime: ~5 min.
 
 set -euo pipefail
 
@@ -133,14 +135,17 @@ state_json() { aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGIO
 # --- Phase 1: deploy with --no-wait ----------------------------------------
 echo "==> Phase 1: deploy --no-wait"
 DEPLOY_LOG="$(mktemp)"
-if ! node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+if ! env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
   --yes --no-wait 2>&1 | tee "${DEPLOY_LOG}"; then
   echo "FAIL: the --no-wait deploy failed (before #6962: ConflictException, the runtime was still CREATING)" >&2
   exit 1
 fi
 DEPLOY_OUT="$(cat "${DEPLOY_LOG}")"
-if ! grep -qE 'Runtime[0-9A-F]+ \(AWS::BedrockAgentCore::Runtime\), whose readiness wait --no-wait skipped: (RuntimeEndpointlive[0-9A-F]+ is created or updated on it|Fn::GetAtt)' <<<"${DEPLOY_OUT}"; then
-  echo "FAIL: the deploy printed no readiness wait for the runtime before its endpoint" >&2
+# The rule-3 wait, and only it: the runtime's create records AgentRuntimeVersion,
+# so no Fn::GetAtt of the endpoint needs the runtime ready.
+WAIT_LINE='Runtime[0-9A-F]+ \(AWS::BedrockAgentCore::Runtime\), whose readiness wait --no-wait skipped: RuntimeEndpointlive[0-9A-F]+ is created or updated on it, and AWS refuses a runtime endpoint'
+if ! grep -qE "${WAIT_LINE}" <<<"${DEPLOY_OUT}"; then
+  echo "FAIL: the deploy printed no rule-3 readiness wait for the runtime before its endpoint" >&2
   exit 1
 fi
 echo "    OK: the endpoint waited for the runtime --no-wait had not waited for"
@@ -163,9 +168,50 @@ for _ in $(seq 1 30); do
 done
 [ "${ENDPOINT_STATUS}" = "READY" ] || { echo "FAIL: endpoint ${ENDPOINT_NAME} is '${ENDPOINT_STATUS}', not READY" >&2; exit 1; }
 echo "    OK: endpoint ${ENDPOINT_NAME} is READY"
+VERSION_1="$(aws bedrock-agentcore-control get-agent-runtime --agent-runtime-id "${RUNTIME_ID}" \
+  --region "${REGION}" --query agentRuntimeVersion --output text)"
 
-# --- Phase 2: destroy -------------------------------------------------------
-echo "==> Phase 2: destroy"
+# --- Phase 2: a changed runtime (a new version) under --no-wait -------------
+# The runtime's update mints a new version and returns while it is UPDATING;
+# the endpoint's update to that version is refused until the runtime is READY,
+# so it must wait for the runtime's skipped wait again.
+echo "==> Phase 2: deploy --no-wait with a changed runtime"
+: >"${DEPLOY_LOG}"
+if ! CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+  --yes --no-wait 2>&1 | tee "${DEPLOY_LOG}"; then
+  echo "FAIL: the --no-wait update deploy failed" >&2
+  exit 1
+fi
+DEPLOY_OUT="$(cat "${DEPLOY_LOG}")"
+if ! grep -qE "${WAIT_LINE}" <<<"${DEPLOY_OUT}"; then
+  echo "FAIL: the update deploy printed no rule-3 readiness wait for the runtime before its endpoint" >&2
+  exit 1
+fi
+VERSION_2="$(aws bedrock-agentcore-control get-agent-runtime --agent-runtime-id "${RUNTIME_ID}" \
+  --region "${REGION}" --query agentRuntimeVersion --output text)"
+if [ "${VERSION_2}" = "${VERSION_1}" ]; then
+  echo "FAIL: the runtime is still on version ${VERSION_1}: the update minted no new version" >&2
+  exit 1
+fi
+ENDPOINT_STATUS=""
+ENDPOINT_VERSION=""
+for _ in $(seq 1 30); do
+  ENDPOINT_STATUS="$(aws bedrock-agentcore-control get-agent-runtime-endpoint --agent-runtime-id "${RUNTIME_ID}" \
+    --endpoint-name "${ENDPOINT_NAME}" --region "${REGION}" --query status --output text)"
+  ENDPOINT_VERSION="$(aws bedrock-agentcore-control get-agent-runtime-endpoint --agent-runtime-id "${RUNTIME_ID}" \
+    --endpoint-name "${ENDPOINT_NAME}" --region "${REGION}" --query liveVersion --output text)"
+  [ "${ENDPOINT_STATUS}" = "READY" ] && [ "${ENDPOINT_VERSION}" = "${VERSION_2}" ] && break
+  case "${ENDPOINT_STATUS}" in *FAILED*) break ;; esac
+  sleep 5
+done
+if [ "${ENDPOINT_STATUS}" != "READY" ] || [ "${ENDPOINT_VERSION}" != "${VERSION_2}" ]; then
+  echo "FAIL: endpoint ${ENDPOINT_NAME} is '${ENDPOINT_STATUS}' on version '${ENDPOINT_VERSION}', expected READY on ${VERSION_2}" >&2
+  exit 1
+fi
+echo "    OK: endpoint ${ENDPOINT_NAME} is READY on the new runtime version ${VERSION_2}"
+
+# --- Phase 3: destroy -------------------------------------------------------
+echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
 assert_gone "endpoint ${ENDPOINT_NAME} of ${RUNTIME_ID} still exists after destroy" \
