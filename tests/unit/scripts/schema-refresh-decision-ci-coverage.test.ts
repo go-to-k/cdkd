@@ -1066,17 +1066,22 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
     expect(strategy['fail-fast'], `${CI_UNIT_JOB} must set fail-fast: false`).toBe(false);
   });
 
-  it('applies the same complete shard matrix to the once-leak run', () => {
-    // The detector sees only the files its shard runs, so a gap in this
-    // matrix is a gap in leak detection — the same 1..n claim as above, for
-    // the second job that runs the suite.
-    const strategy = ci.jobs['once-leak-detect']?.strategy;
-    expect(strategy?.matrix, 'once-leak-detect must shard exactly like unit-tests').toEqual(
-      ci.jobs[CI_UNIT_JOB].strategy.matrix
-    );
-    expect(ciCommandLines('once-leak-detect')).toContain(
-      'vp run test:once-leak --shard=${{ matrix.shard }}/${{ strategy.job-total }}'
-    );
+  it('arms the once-leak detector on the one suite run, and proves it still rejects', () => {
+    // The detector runs inside the sharded unit suite rather than as a second
+    // full run. It sees only the files its shard runs, so
+    // the complete 1..n matrix asserted above is what keeps detection whole;
+    // this pins that the suite step is the one that arms it.
+    const steps = (ci.jobs[CI_UNIT_JOB].steps ?? []) as Array<{
+      name?: string;
+      run?: string;
+      if?: string;
+      env?: Record<string, string>;
+    }>;
+    const suite = steps.find((s) => /^vp run test --shard=/m.test(s.run?.trim() ?? ''));
+    expect(suite?.env?.['CDKD_ONCE_LEAK_DETECT'], 'the unit-suite step must arm the detector').toBe('1');
+    const canary = steps.find((s) => s.run?.includes('vp run test:once-leak-canary'));
+    expect(canary, 'the detector canary step must run in the unit-suite job').toBeDefined();
+    expect(canary?.run).toContain("grep -q 'primed by an EARLIER test' canary.log");
   });
 
   it('arms pipefail BEFORE the piped unit-suite run, which is what makes it red', () => {

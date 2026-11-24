@@ -15,7 +15,7 @@ const allowList = JSON.parse(readFileSync(allowListPath, 'utf8')) as {
 /**
  * Static guards on the `*Once`-leak allow-list (issue #1618).
  *
- * The CI job `once-leak-detect` proves the detector still catches NEW leaks.
+ * CI's `detector canary` step proves the detector still catches NEW leaks.
  * These tests guard the other direction — that the grandfather list does not
  * quietly grow, and that an entry cannot outlive the leak it excuses. A stale
  * entry is not a correctness bug (the file simply keeps its exemption), but it

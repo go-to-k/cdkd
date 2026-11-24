@@ -292,8 +292,7 @@ jobs:
       - run: vp run audit:provider-secret-mask:check
 
   # The unit suite, split across a matrix by `vitest --shard`. Unsharded it
-  # took ~19 min on a 4-vCPU runner (and `once-leak-detect` ~29), which set
-  # CI's wall clock; a 3-way split measured each part at ~10 min (go-to-k/
+  # took ~19 min on a 4-vCPU runner, which set CI's wall clock; a 3-way split measured each part at ~10 min (go-to-k/
   # cdkd#6143), the per-shard install and build being the only duplicated
   # cost. `--shard=<i>/<n>` partitions
   # the test FILES, so the union of the shards is the whole suite: the shard
@@ -301,8 +300,7 @@ jobs:
   # than written a second time. `fail-fast: false` so one red shard does not
   # cancel the others and hide their verdicts.
   #
-  # Changing the shard count is a one-line edit to `matrix.shard` here (and
-  # the identical list on `once-leak-detect`). More shards shorten the wall
+  # Changing the shard count is a one-line edit to `matrix.shard` here. More shards shorten the wall
   # clock but take more of the account's concurrent-job allowance per run.
   unit-tests:
     runs-on: ubuntu-latest
@@ -358,9 +356,9 @@ jobs:
       # CDKD_EXPECT_DIST is set ONLY here, because this is the only job that
       # builds before running the suite. `tests/unit/cli/version.test.ts` skips
       # itself when `dist/` is absent -- correct for a contributor who has not
-      # built, and correct for `once-leak-detect`, which does not build either.
-      # Keying the loud assertion on a bare `CI` reddened that job (and
-      # `runtime-compat` when it ran the suite); keying it on the build is what
+      # built. Keying the loud assertion on a bare `CI` reddened the jobs that
+      # ran the suite without building (`runtime-compat`, and the former
+      # `once-leak-detect`); keying it on the build is what
       # actually says "dist was produced, so a skip here means the step order
       # regressed".
       # Assert the suite actually RAN, not merely that the step exited 0.
@@ -389,86 +387,26 @@ jobs:
           fi
         env:
           CDKD_EXPECT_DIST: "1"
-
-      # A test that writes into the repo and does not clean up must red CI.
-      # Before the suite was sharded out of check-build-test this was caught
-      # by accident: the generated-matrix step there ran AFTER the suite and
-      # reds on any tracked change or untracked file. That step now runs on a
-      # tree no test has touched, so the guard lives here, after each shard.
-      - name: the suite left the working tree clean
-        run: |
-          dirty=$(git status --porcelain --untracked-files=all)
-          if [ -n "${dirty}" ]; then
-            echo "::error::unit tests modified or created files in the repository:"
-            echo "${dirty}"
-            exit 1
-          fi
-
-  # Issue #1618 — run the unit suite a second time with the runtime
-  # `*Once`-leak detector armed, so a test that primes more mock responses than
-  # its code path consumes fails HERE instead of silently shifting every later
-  # test in its file by one response.
-  #
-  # A separate job rather than a step in unit-tests: it is a full second
-  # suite run, as long as the unit suite itself, so it runs in parallel
-  # instead of doubling every shard. It is also why the detector is
-  # env-gated OFF by default — the normal `vp run test` is byte-for-byte
-  # unaffected by the `vi.fn` patch, so a detector that breaks (e.g. on an
-  # `@vitest/spy` upgrade) fails HERE and is never mistaken for a test failure.
-  #
-  # The files in tests/once-leak-allowlist.json are grandfathered. Fixing one
-  # and dropping it from the list is the intended ratchet direction; adding a
-  # new entry is not, and a new test file that leaks fails this job.
-  once-leak-detect:
-    runs-on: ubuntu-latest
-    # observed at least 459 s per shard at 4 shards (go-to-k/cdkd#6145; 1538 s
-    # unsharded). Same cap as unit-tests: it runs the same suite, sharded the
-    # same way, so the two grow together.
-    timeout-minutes: 45
-    permissions:
-      contents: read
-    # Sharded exactly like `unit-tests` (see there). The detector flags a
-    # primer consumed by a DIFFERENT TEST, and tests only share mock state
-    # within one file, so partitioning by file loses no detection.
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4]
-    steps:
-      # Same reason as unit-tests: this job runs the unit suite too, so it
-      # reaches the same `origin/main` projection and would fail closed without
-      # the full history.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
-        with:
-          fetch-depth: 0
-
-      - uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1
-        with:
-          node-version: "24"
-          cache: true
-          run-install: false
-
-      - run: vp install --frozen-lockfile
-      # zsh for the paste harness (`tests/unit/utils/paste-harness.ts`), which
-      # runs every pasted span under bash AND zsh and FAILS under `CI` when zsh
-      # is missing (go-to-k/cdkd#3950): macOS pastes into zsh by default, and
-      # the two shells disagree on an unquoted `(` after a displayed value.
-      - name: install zsh for the paste harness
-        timeout-minutes: 12  # why: see the unit-tests step above; this comment also keeps the line distinct, since workflow-job-hardening.test.ts expects exactly one repeated timeout-minutes line
-        run: |
-          if ! { sudo apt-get update -qq && sudo apt-get install -y -qq zsh; }; then
-            echo "::warning::apt could not install zsh; falling back to Homebrew"
-            /home/linuxbrew/.linuxbrew/bin/brew install zsh
-            sudo ln -sf /home/linuxbrew/.linuxbrew/bin/zsh /usr/local/bin/zsh
-          fi
-          zsh -f -c 'exit 0'
-      - run: vp run test:once-leak --shard=${{ matrix.shard }}/${{ strategy.job-total }}
+          # Issue #1618: the runtime `*Once`-leak detector, armed on the one
+          # suite run CI makes. A test that primes more mock responses than its
+          # code path consumes fails here instead of silently shifting every
+          # later test in its file by one response. Sharding loses no detection:
+          # tests share mock state only within one file, and `--shard`
+          # partitions by file. The files in tests/once-leak-allowlist.json are
+          # grandfathered; dropping a fixed one is the intended ratchet
+          # direction, adding a new entry is not. A detector failure names
+          # itself ("primed by an EARLIER test"), so it is not mistaken for an
+          # ordinary test failure. (This used to be a separate
+          # job that ran the whole suite a second time.)
+          CDKD_ONCE_LEAK_DETECT: "1"
 
       # Prove the detector still REJECTS, not just that it ran. With the
       # grandfather list honoured, "the detector went dead" and "the tree is
       # clean" produce the identical green result above — the vacuous pass
       # .claude/rules/testing.md forbids for any checker. The canary suite
-      # leaks on purpose, so ignoring the allow-list MUST fail it.
+      # leaks on purpose, so ignoring the allow-list MUST fail it. It is one
+      # file and takes seconds, so every shard runs it: a step `if:` would let
+      # ci-ok count a skip as a pass (ci-ok-gate.test.ts refuses one).
       - name: detector canary — a known leak must still be caught
         run: |
           set +e
@@ -483,6 +421,22 @@ jobs:
           # is dead. That is the exact vacuous pass the step exists to close.
           if [ "${rc}" -eq 0 ] || ! grep -q 'primed by an EARLIER test' canary.log; then
             echo "::error::the *Once-leak detector did not report the deliberate leak in tests/unit/scripts/once-leak-canary.test.ts (exit ${rc}). Either the detector has gone dead (check @vitest/spy internals and the vi.fn patch in tests/setup.ts), or the canary file itself is missing / broken."
+            exit 1
+          fi
+          # The log is written into the checkout; the next step requires a clean tree.
+          rm -f canary.log
+
+      # A test that writes into the repo and does not clean up must red CI.
+      # Before the suite was sharded out of check-build-test this was caught
+      # by accident: the generated-matrix step there ran AFTER the suite and
+      # reds on any tracked change or untracked file. That step now runs on a
+      # tree no test has touched, so the guard lives here, after each shard.
+      - name: the suite left the working tree clean
+        run: |
+          dirty=$(git status --porcelain --untracked-files=all)
+          if [ -n "${dirty}" ]; then
+            echo "::error::unit tests modified or created files in the repository:"
+            echo "${dirty}"
             exit 1
           fi
 
@@ -672,7 +626,7 @@ jobs:
   ci-ok:
     if: always()
     needs:
-      [check-build-test, unit-tests, once-leak-detect, runtime-compat, windows-env-precedence, release-pr-not-stale]
+      [check-build-test, unit-tests, runtime-compat, windows-env-precedence, release-pr-not-stale]
     runs-on: ubuntu-latest
     # observed at least 5 s -- a shell loop over five strings.
     timeout-minutes: 10
@@ -685,7 +639,7 @@ jobs:
       # Must equal the length of `needs:` above. Both halves are read out of
       # this file by tests/unit/scripts/ci-ok-gate.test.ts, which also asserts
       # `needs:` covers every other job — so this cannot drift silently.
-      EXPECTED_UPSTREAM: '6'
+      EXPECTED_UPSTREAM: '5'
     steps:
       - name: every upstream job succeeded or was skipped
         run: |
