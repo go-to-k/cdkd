@@ -77,6 +77,27 @@ export const CONNECT_INSTANCE_ATTRIBUTE_TYPES: Readonly<Record<string, InstanceA
   AutoMuteAgentOnHold: 'AUTO_MUTE_AGENT_ON_HOLD',
 };
 
+/**
+ * The attributes a new instance turns on by itself while it is still
+ * CREATION_IN_PROGRESS, after it already accepts writes (measured, us-east-1,
+ * go-to-k/cdkd#6912: readable about 16-20 s after `CreateInstance`, these in
+ * two batches at about 33 s and 38 s, ACTIVE at about 56 s). A write that
+ * lands before its default does is overwritten, so the create writes the
+ * other `Attributes` members only once every one of these reads `true`, or the
+ * instance is ACTIVE (a region or account whose defaults differ falls back to
+ * that).
+ */
+export const CONNECT_INSTANCE_ASYNC_DEFAULTS: readonly InstanceAttributeType[] = [
+  'MESSAGE_STREAMING',
+  'MULTI_PARTY_CHAT_CONFERENCE',
+  'MULTI_PARTY_CONFERENCE',
+  'AUTO_RESOLVE_BEST_VOICES',
+  'CONTACT_LENS',
+  'EARLY_MEDIA',
+  'ENHANCED_CHAT_MONITORING',
+  'ENHANCED_CONTACT_MONITORING',
+];
+
 /** The two `Attributes` members `CreateInstance` itself takes; the rest go through `UpdateInstanceAttribute`. */
 const CREATE_CALL_ATTRIBUTES = new Set(['InboundCalls', 'OutboundCalls']);
 
@@ -320,9 +341,18 @@ export class ConnectInstanceProvider implements ResourceProvider {
       const instanceId = response.Id ?? connectInstanceIdOf(arn);
 
       const deadline = this.deadline();
-      let instance = await this.waitForInstance(instanceId, logicalId, 'ready', deadline, mask);
-      for (const [key, flag] of attributes) {
-        if (CREATE_CALL_ATTRIBUTES.has(key)) continue;
+      const written = [...attributes].filter(([key]) => !CREATE_CALL_ATTRIBUTES.has(key));
+      // With members to write, wait for the instance's own defaults to land
+      // first (CONNECT_INSTANCE_ASYNC_DEFAULTS); with none, readiness (the
+      // point dependents can be created) is enough.
+      let instance = await this.waitForInstance(
+        instanceId,
+        logicalId,
+        written.length > 0 ? 'settled' : 'ready',
+        deadline,
+        mask
+      );
+      for (const [key, flag] of written) {
         await this.updateAttribute(instanceId, key, flag, deadline, logicalId, mask);
       }
       const noWait = process.env['CDKD_NO_WAIT'] === 'true';
@@ -332,6 +362,19 @@ export class ConnectInstanceProvider implements ResourceProvider {
         );
       } else {
         instance = await this.waitForInstance(instanceId, logicalId, 'active', deadline, mask);
+        // A default that landed after its write would have overwritten it:
+        // read the members back once ACTIVE and write any that differ.
+        if (written.length > 0) {
+          const live = attributesFromList(await this.listAttributes(instanceId));
+          for (const [key, flag] of written) {
+            // Only a value AWS reports and that differs is a reversion.
+            if (live[key] === undefined || live[key] === flag) continue;
+            this.logger.debug(
+              mask(`Connect instance ${logicalId}: ${key} reverted, writing it again`)
+            );
+            await this.updateAttribute(instanceId, key, flag, deadline, logicalId, mask);
+          }
+        }
       }
       createToken.release();
       // Under --no-wait the status read is the readiness one, which a later
@@ -435,7 +478,7 @@ export class ConnectInstanceProvider implements ResourceProvider {
   private async waitForInstance(
     instanceId: string,
     logicalId: string,
-    until: 'ready' | 'active',
+    until: 'ready' | 'settled' | 'active',
     deadline: number,
     mask: MaskerFn
   ): Promise<Instance | undefined> {
@@ -476,6 +519,11 @@ export class ConnectInstanceProvider implements ResourceProvider {
               })
             );
             ready = true;
+          } else if (until === 'settled') {
+            const live = new Map(
+              (await this.listAttributes(instanceId)).map((a) => [a.AttributeType, a.Value])
+            );
+            ready = CONNECT_INSTANCE_ASYNC_DEFAULTS.every((type) => live.get(type) === 'true');
           }
         } catch (error) {
           if (error instanceof ProvisioningError) throw error;
@@ -491,7 +539,7 @@ export class ConnectInstanceProvider implements ResourceProvider {
         if (Date.now() >= deadline) {
           throw markNonRetryable(
             new ProvisioningError(
-              safeMsg`Connect instance ${logicalId} was still ${instance?.InstanceStatus ?? 'unreadable'} when its ${until === 'ready' ? 'readiness' : 'ACTIVE'} wait ran out`,
+              safeMsg`Connect instance ${logicalId} was still ${instance?.InstanceStatus ?? 'unreadable'} when its ${until === 'active' ? 'ACTIVE' : 'readiness'} wait ran out`,
               RESOURCE_TYPE,
               logicalId,
               instance?.Arn
@@ -703,6 +751,22 @@ export class ConnectInstanceProvider implements ResourceProvider {
     }
   }
 
+  /** Every page of `ListInstanceAttributes`. */
+  private async listAttributes(
+    instanceId: string
+  ): Promise<Array<{ AttributeType?: string | undefined; Value?: string | undefined }>> {
+    const list: Array<{ AttributeType?: string | undefined; Value?: string | undefined }> = [];
+    let nextToken: string | undefined;
+    do {
+      const page = await this.getClient().send(
+        new ListInstanceAttributesCommand({ InstanceId: instanceId, NextToken: nextToken })
+      );
+      list.push(...(page.Attributes ?? []));
+      nextToken = page.NextToken;
+    } while (nextToken);
+    return list;
+  }
+
   async getAttribute(
     physicalId: string,
     _resourceType: string,
@@ -733,15 +797,7 @@ export class ConnectInstanceProvider implements ResourceProvider {
         await this.getClient().send(new DescribeInstanceCommand({ InstanceId: instanceId }))
       ).Instance;
       if (!instance) return RESOURCE_NOT_FOUND;
-      const list: Array<{ AttributeType?: string | undefined; Value?: string | undefined }> = [];
-      let nextToken: string | undefined;
-      do {
-        const page = await this.getClient().send(
-          new ListInstanceAttributesCommand({ InstanceId: instanceId, NextToken: nextToken })
-        );
-        list.push(...(page.Attributes ?? []));
-        nextToken = page.NextToken;
-      } while (nextToken);
+      const list = await this.listAttributes(instanceId);
       const result: Record<string, unknown> = {};
       if (instance.IdentityManagementType !== undefined) {
         result['IdentityManagementType'] = instance.IdentityManagementType;

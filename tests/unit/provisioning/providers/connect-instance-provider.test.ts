@@ -48,6 +48,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
 });
 
 import {
+  CONNECT_INSTANCE_ASYNC_DEFAULTS,
   CONNECT_INSTANCE_ATTRIBUTE_TYPES,
   ConnectInstanceProvider,
 } from '../../../../src/provisioning/providers/connect-instance-provider.js';
@@ -87,16 +88,43 @@ function baseProps(extra: Record<string, unknown> = {}): Record<string, unknown>
 function scriptCreate(options: {
   statuses: string[];
   attrNotFound?: number;
+  /** ListInstanceAttributes answers this many times before the async defaults read `true`. */
+  defaultsPending?: number;
+  /** Attribute types a default resets to `true` once ACTIVE is read (a late default). */
+  lateDefaults?: string[];
   createdResponse?: { Id?: string; Arn?: string };
 }): void {
   let describe = 0;
   let attr = options.attrNotFound ?? 0;
+  let pending = options.defaultsPending ?? 0;
+  const live = new Map<string, string>();
   mockSend.mockImplementation((cmd: unknown) => {
+    if (cmd instanceof UpdateInstanceAttributeCommand) {
+      live.set(String(cmd.input.AttributeType), String(cmd.input.Value));
+      return Promise.resolve({});
+    }
+    if (cmd instanceof ListInstanceAttributesCommand) {
+      if (attr > 0) {
+        attr--;
+        return Promise.reject(notFound());
+      }
+      const settled = pending-- <= 0;
+      return Promise.resolve({
+        Attributes: [
+          ...CONNECT_INSTANCE_ASYNC_DEFAULTS.filter((t) => !live.has(t)).map((t) => ({
+            AttributeType: t,
+            Value: String(settled),
+          })),
+          ...[...live].map(([AttributeType, Value]) => ({ AttributeType, Value })),
+        ],
+      });
+    }
     if (cmd instanceof CreateInstanceCommand) {
       return Promise.resolve(options.createdResponse ?? { Id: ID, Arn: ARN });
     }
     if (cmd instanceof DescribeInstanceCommand) {
       const status = options.statuses[Math.min(describe++, options.statuses.length - 1)];
+      if (status === 'ACTIVE') for (const t of options.lateDefaults ?? []) live.set(t, 'true');
       return Promise.resolve({
         Instance: {
           Id: ID,
@@ -179,6 +207,47 @@ describe('ConnectInstanceProvider', () => {
       expect(order.indexOf('UpdateInstanceAttributeCommand')).toBeGreaterThan(
         order.lastIndexOf('DescribeInstanceAttributeCommand')
       );
+    });
+
+    it('writes the attributes only once the instance has set its own defaults', async () => {
+      scriptCreate({ statuses: ['CREATION_IN_PROGRESS', 'CREATION_IN_PROGRESS', 'CREATION_IN_PROGRESS', 'ACTIVE'], defaultsPending: 2 });
+
+      await provider.create('Inst', TYPE, baseProps());
+
+      const order = mockSend.mock.calls.map((c) => (c[0] as object).constructor.name);
+      const firstWrite = order.indexOf('UpdateInstanceAttributeCommand');
+      // Two unsettled listings, then the settled one, then the write.
+      expect(order.slice(0, firstWrite).filter((n) => n === 'ListInstanceAttributesCommand')).toHaveLength(3);
+      expect(sentOf(DescribeInstanceAttributeCommand)).toHaveLength(0);
+    });
+
+    it('with no attribute to write waits only for readiness, not for the defaults', async () => {
+      process.env['CDKD_NO_WAIT'] = 'true';
+      scriptCreate({ statuses: ['CREATION_IN_PROGRESS'], defaultsPending: 100 });
+
+      await provider.create('Inst', TYPE, baseProps({ Attributes: { InboundCalls: true, OutboundCalls: true } }));
+
+      expect(sentOf(DescribeInstanceAttributeCommand)).toHaveLength(1);
+      expect(sentOf(ListInstanceAttributesCommand)).toHaveLength(0);
+    });
+
+    it('writes again, once ACTIVE, an attribute a late default overwrote', async () => {
+      scriptCreate({
+        statuses: ['CREATION_IN_PROGRESS', 'CREATION_IN_PROGRESS', 'ACTIVE'],
+        lateDefaults: ['EARLY_MEDIA', 'CONTACTFLOW_LOGS'],
+      });
+
+      await provider.create(
+        'Inst',
+        TYPE,
+        baseProps({ Attributes: { InboundCalls: true, OutboundCalls: true, EarlyMedia: false, ContactflowLogs: true } })
+      );
+
+      expect(sentOf(UpdateInstanceAttributeCommand).map((c) => `${c.input.AttributeType}=${c.input.Value}`)).toEqual([
+        'EARLY_MEDIA=false',
+        'CONTACTFLOW_LOGS=true',
+        'EARLY_MEDIA=false',
+      ]);
     });
 
     it('under --no-wait returns once the attributes are applied, without the ACTIVE wait', async () => {

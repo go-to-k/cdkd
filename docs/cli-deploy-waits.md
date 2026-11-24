@@ -120,9 +120,12 @@ available first.
 
 ### `AWS::Connect::Instance`
 
-cdkd returns once the instance accepts dependent calls, about 20-25 s after
-`CreateInstance`, while it is still `CREATION_IN_PROGRESS`, and after it has
-applied the declared `Attributes`. Storage configs, contact flows, Lambda
+cdkd returns while the instance is still `CREATION_IN_PROGRESS`: once it
+accepts dependent calls, about 20 s after `CreateInstance`, or, when the
+template declares an `Attributes` member besides `InboundCalls` and
+`OutboundCalls`, once the instance has turned on its own default attributes
+(about 40 s) and cdkd has written the declared ones. A write made before those
+defaults land would be overwritten by them. Storage configs, contact flows, Lambda
 associations and the other resources that reference the instance are created
 then, and they stay in place when the instance turns `ACTIVE`. The instance
 can still end `CREATION_FAILED` after the deploy returns, and that does not
