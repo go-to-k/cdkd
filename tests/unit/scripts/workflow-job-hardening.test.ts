@@ -704,16 +704,16 @@ describe('the audit fails against real code', () => {
   });
 
   it('a removed timeout in a MIDDLE job is reported, naming only that job', () => {
-    // `once-leak-detect` is the third of five jobs and shares its value with
+    // `unit-tests` is the second of the file's jobs and shares its value with
     // `check-build-test` ABOVE it. That combination is what discriminates the
     // helper's LOWER bound: with `i >= start` dropped, the delete also takes the
     // earlier job's identical line. The round-4 probe picked `check-build-test`
     // — the FIRST job — which by construction cannot see a missing lower bound,
     // the same blind spot as the round-3 probes all targeting last jobs.
     const audit = auditMutatedCopy((dir) => {
-      deleteJobTimeout(dir, 'ci.yml', 'once-leak-detect');
+      deleteJobTimeout(dir, 'ci.yml', 'unit-tests');
     });
-    expect(render(audit.findings)).toEqual(['ci.yml / once-leak-detect: no-timeout']);
+    expect(render(audit.findings)).toEqual(['ci.yml / unit-tests: no-timeout']);
   });
 
   it('a removed timeout in a NON-LAST job is reported, naming only that job', () => {
@@ -721,8 +721,8 @@ describe('the audit fails against real code', () => {
     // file-unique value, so both helpers' job-scoping was unfenced: `end = -1`
     // (scope to end of file) and collapsing the delete filter to `line !==
     // target` (delete every identical line anywhere) both stayed green.
-    // `check-build-test` is the FIRST of five jobs in `ci.yml` and shares its
-    // value with `once-leak-detect`, so it discriminates both mutations.
+    // `check-build-test` is the FIRST job in `ci.yml` and shares its value
+    // with `unit-tests`, so it discriminates both mutations.
     const audit = auditMutatedCopy((dir) => {
       deleteJobTimeout(dir, 'ci.yml', 'check-build-test');
     });

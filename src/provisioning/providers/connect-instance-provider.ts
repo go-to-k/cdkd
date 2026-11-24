@@ -82,11 +82,16 @@ export const CONNECT_INSTANCE_ATTRIBUTE_TYPES: Readonly<Record<string, InstanceA
  * The attributes a new instance turns on by itself while it is still
  * CREATION_IN_PROGRESS, after it already accepts writes (measured, us-east-1,
  * go-to-k/cdkd#6912: readable about 16-20 s after `CreateInstance`, these in
- * two batches at about 33 s and 38 s, ACTIVE at about 56 s). A write that
- * lands before its default does is overwritten, so the create writes the
- * other `Attributes` members only once every one of these reads `true`, or the
- * instance is ACTIVE (a region or account whose defaults differ falls back to
- * that).
+ * two batches at about 33 s and 38 s, ACTIVE at about 56 s). A `false` written
+ * before its default lands is overwritten, so a create that declares one of
+ * these `false` writes the other `Attributes` members only once every one of
+ * these reads `true`, or the instance is ACTIVE (a region or account whose
+ * defaults differ falls back to that). A `true`, or a member outside this
+ * list, written at readiness stays (measured: `ContactflowLogs`,
+ * `ContactLens` and `EarlyMedia` `true` kept; `AutoResolveBestVoices` `false`
+ * overwritten). Only a default-mode create reads the members back once
+ * ACTIVE: under `--no-wait`, a region whose late defaults reach a member
+ * outside this list would leave that member's `false` overwritten.
  */
 export const CONNECT_INSTANCE_ASYNC_DEFAULTS: readonly InstanceAttributeType[] = [
   'MESSAGE_STREAMING',
@@ -343,13 +348,22 @@ export class ConnectInstanceProvider implements ResourceProvider {
 
       const deadline = this.deadline();
       const written = [...attributes].filter(([key]) => !CREATE_CALL_ATTRIBUTES.has(key));
-      // With members to write, wait for the instance's own defaults to land
-      // first (CONNECT_INSTANCE_ASYNC_DEFAULTS); with none, readiness (the
-      // point dependents can be created) is enough.
+      // Only a `false` for one of CONNECT_INSTANCE_ASYNC_DEFAULTS can be
+      // overwritten by a default that lands after it: only that waits for the
+      // defaults first. Anything else is safe to write at readiness (the point
+      // dependents can be created): a `true` matches the default, and a member
+      // outside the list has no late default (measured, go-to-k/cdkd#6912).
+      const mustSettle = written.some(
+        ([key, flag]) =>
+          !flag &&
+          CONNECT_INSTANCE_ASYNC_DEFAULTS.includes(
+            CONNECT_INSTANCE_ATTRIBUTE_TYPES[key] as InstanceAttributeType
+          )
+      );
       let instance = await this.waitForInstance(
         instanceId,
         logicalId,
-        written.length > 0 ? 'settled' : 'ready',
+        mustSettle ? 'settled' : 'ready',
         deadline,
         mask
       );
