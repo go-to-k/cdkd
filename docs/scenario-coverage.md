@@ -239,6 +239,7 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 - [`dynamodb-table-policy-baseline`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/dynamodb-table-policy-baseline/)
 - [`dynamodb-tableclass-switch`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/dynamodb-tableclass-switch/)
 - [`dynamodb-ttl-attr-change`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/dynamodb-ttl-attr-change/)
+- [`ec2-association-replace`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/ec2-association-replace/)
 - [`ec2-eip-instance-association`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/ec2-eip-instance-association/)
 - [`ec2-instance-fanout`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/ec2-instance-fanout/)
 - [`ec2-instance-volume-attachment-drift`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/ec2-instance-volume-attachment-drift/)

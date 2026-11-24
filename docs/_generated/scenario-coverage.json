@@ -1287,6 +1287,11 @@
       "scenarios": []
     },
     {
+      "name": "ec2-association-replace",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "ec2-eip-instance-association",
       "annotated": false,
       "scenarios": []
@@ -4338,6 +4343,7 @@
     "dynamodb-table-policy-baseline",
     "dynamodb-tableclass-switch",
     "dynamodb-ttl-attr-change",
+    "ec2-association-replace",
     "ec2-eip-instance-association",
     "ec2-instance-fanout",
     "ec2-instance-volume-attachment-drift",

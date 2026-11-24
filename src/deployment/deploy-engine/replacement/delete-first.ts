@@ -40,7 +40,9 @@ import type { ReplacementRunState, ReplacementDeps } from './run-state.js';
  * custom-named resource: delete the old name holder, then re-create it
  * under the same name. Shared by the create-first collision catch (issue
  * #960 follow-up) and the name-idempotent same-id guard (issue #1238) so
- * the two --replace escape hatches cannot drift apart.
+ * the two --replace escape hatches cannot drift apart. go-to-k/cdkd#6958: also
+ * the plain-deploy replacement of a `replacesDeleteFirst` type, which AWS
+ * refuses create-first.
  */
 export async function replaceDeleteFirstAndRecreate(
   run: ReplacementRunState,

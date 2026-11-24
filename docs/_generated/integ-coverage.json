@@ -1892,6 +1892,7 @@
         "drift-revert-arrays",
         "drift-revert-vpc",
         "drift-sg-sibling-rules",
+        "ec2-association-replace",
         "ec2-eip-instance-association",
         "ec2-instance",
         "ec2-instance-fanout",
@@ -2049,6 +2050,11 @@
         ],
         "drift-sg-sibling-rules": [
           "l2"
+        ],
+        "ec2-association-replace": [
+          "l1",
+          "l2",
+          "literal"
         ],
         "ec2-eip-instance-association": [
           "l2"
@@ -2296,6 +2302,7 @@
         "drift-revert-arrays",
         "drift-revert-vpc",
         "drift-sg-sibling-rules",
+        "ec2-association-replace",
         "ec2-eip-instance-association",
         "ec2-instance",
         "ec2-instance-fanout",
@@ -2443,6 +2450,9 @@
           "l2"
         ],
         "drift-sg-sibling-rules": [
+          "l2"
+        ],
+        "ec2-association-replace": [
           "l2"
         ],
         "ec2-eip-instance-association": [
@@ -2718,6 +2728,7 @@
         "drift-revert-arrays",
         "drift-revert-vpc",
         "drift-sg-sibling-rules",
+        "ec2-association-replace",
         "ec2-eip-instance-association",
         "ec2-instance",
         "ec2-instance-fanout",
@@ -2869,6 +2880,10 @@
         ],
         "drift-sg-sibling-rules": [
           "l2"
+        ],
+        "ec2-association-replace": [
+          "l2",
+          "literal"
         ],
         "ec2-eip-instance-association": [
           "l2"
@@ -3113,6 +3128,7 @@
         "drift-revert-arrays",
         "drift-revert-vpc",
         "drift-sg-sibling-rules",
+        "ec2-association-replace",
         "ec2-eip-instance-association",
         "ec2-instance",
         "ec2-instance-fanout",
@@ -3269,6 +3285,11 @@
         ],
         "drift-sg-sibling-rules": [
           "l2"
+        ],
+        "ec2-association-replace": [
+          "l1",
+          "l2",
+          "literal"
         ],
         "ec2-eip-instance-association": [
           "l2"
@@ -3834,6 +3855,7 @@
         "drift-revert-arrays",
         "drift-revert-vpc",
         "drift-sg-sibling-rules",
+        "ec2-association-replace",
         "ec2-eip-instance-association",
         "ec2-instance",
         "ec2-instance-fanout",
@@ -4003,6 +4025,11 @@
         ],
         "drift-sg-sibling-rules": [
           "l2"
+        ],
+        "ec2-association-replace": [
+          "l1",
+          "l2",
+          "literal"
         ],
         "ec2-eip-instance-association": [
           "l2"
@@ -4301,6 +4328,7 @@
         "drift-revert-arrays",
         "drift-revert-vpc",
         "drift-sg-sibling-rules",
+        "ec2-association-replace",
         "ec2-eip-instance-association",
         "ec2-instance",
         "ec2-instance-fanout",
@@ -4449,6 +4477,11 @@
         ],
         "drift-sg-sibling-rules": [
           "l2"
+        ],
+        "ec2-association-replace": [
+          "l1",
+          "l2",
+          "literal"
         ],
         "ec2-eip-instance-association": [
           "l2"
@@ -4686,6 +4719,7 @@
         "drift-revert-arrays",
         "drift-revert-vpc",
         "drift-sg-sibling-rules",
+        "ec2-association-replace",
         "ec2-eip-instance-association",
         "ec2-instance",
         "ec2-instance-fanout",
@@ -4870,6 +4904,11 @@
         ],
         "drift-sg-sibling-rules": [
           "l2"
+        ],
+        "ec2-association-replace": [
+          "l1",
+          "l2",
+          "literal"
         ],
         "ec2-eip-instance-association": [
           "l2"
@@ -5202,6 +5241,7 @@
         "drift-revert-arrays",
         "drift-revert-vpc",
         "drift-sg-sibling-rules",
+        "ec2-association-replace",
         "ec2-eip-instance-association",
         "ec2-instance",
         "ec2-instance-fanout",
@@ -5354,6 +5394,11 @@
         ],
         "drift-sg-sibling-rules": [
           "l2"
+        ],
+        "ec2-association-replace": [
+          "l1",
+          "l2",
+          "literal"
         ],
         "ec2-eip-instance-association": [
           "l2"
