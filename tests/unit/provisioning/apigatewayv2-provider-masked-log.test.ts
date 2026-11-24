@@ -34,7 +34,7 @@ vi.mock('@aws-sdk/client-apigatewayv2', async (importOriginal) => {
   const orig = (await importOriginal()) as Record<string, unknown>;
   return {
     ...orig,
-    ApiGatewayV2Client: vi.fn().mockImplementation(() => ({
+    ApiGatewayV2Client: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -47,8 +47,7 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', async (importO
 });
 
 vi.mock('../../../src/utils/logger.js', () => {
-  const child = { debug: debugSpy, info: vi.fn(), warn: warnSpy, error: vi.fn(), child: vi.fn() };
-  child.child = vi.fn().mockReturnValue(child);
+  const child = { debug: debugSpy, info: vi.fn(), warn: warnSpy, error: vi.fn(), child: vi.fn((): unknown => child) };
   return { getLogger: () => child };
 });
 

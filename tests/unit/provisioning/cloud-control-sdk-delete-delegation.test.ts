@@ -21,14 +21,14 @@ const ccRegion = vi.hoisted(() => ({ value: 'us-east-1' as string | undefined })
 const mockNeptuneDelete = vi.hoisted(() => vi.fn());
 const mockNeptuneCtor = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/provisioning/providers/neptune-provider.js', () => ({
-  NeptuneProvider: vi.fn().mockImplementation((options?: { region?: string }) => {
+  NeptuneProvider: vi.fn((options?: { region?: string }) => {
     mockNeptuneCtor(options);
     return { delete: mockNeptuneDelete };
   }),
 }));
 
 vi.mock('../../../src/provisioning/providers/rds-provider.js', () => ({
-  RDSProvider: vi.fn().mockImplementation((options?: { region?: string }) => {
+  RDSProvider: vi.fn((options?: { region?: string }) => {
     mockRdsCtor(options);
     return { delete: mockRdsDelete };
   }),
@@ -50,7 +50,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: warnSpy,
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

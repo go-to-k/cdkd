@@ -13,7 +13,7 @@ vi.mock('@aws-sdk/client-docdb', async (importOriginal) => {
   const orig = (await importOriginal()) as Record<string, unknown>;
   return {
     ...orig,
-    DocDBClient: vi.fn().mockImplementation(() => ({
+    DocDBClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),

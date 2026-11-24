@@ -38,7 +38,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: (...args: unknown[]) => warnSpy(...args),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({
@@ -52,7 +52,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 vi.mock('@aws-sdk/s3-request-presigner', () => ({
-  getSignedUrl: vi.fn().mockResolvedValue('https://s3.example.com/presigned-url'),
+  getSignedUrl: vi.fn(async () => 'https://s3.example.com/presigned-url'),
 }));
 
 import { CustomResourceProvider } from '../../../src/provisioning/providers/custom-resource-provider.js';

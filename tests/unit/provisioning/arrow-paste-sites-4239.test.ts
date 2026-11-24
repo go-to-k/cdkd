@@ -43,11 +43,11 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 }));
 vi.mock('@aws-sdk/client-kinesis', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-kinesis')>();
-  return { ...actual, KinesisClient: vi.fn().mockImplementation(() => client) };
+  return { ...actual, KinesisClient: vi.fn(() => client) };
 });
 vi.mock('@aws-sdk/client-codecommit', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-codecommit')>();
-  return { ...actual, CodeCommitClient: vi.fn().mockImplementation(() => client) };
+  return { ...actual, CodeCommitClient: vi.fn(() => client) };
 });
 
 import { IAMRoleProvider } from '../../../src/provisioning/providers/iam-role-provider.js';

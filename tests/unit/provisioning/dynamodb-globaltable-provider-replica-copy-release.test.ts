@@ -1,17 +1,20 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { ResourceNotFoundException } from '@aws-sdk/client-dynamodb';
 
-const { mockSend, childLogger, watchLabels } = vi.hoisted(() => ({
-  watchLabels: [] as string[],
-  mockSend: vi.fn(),
-  childLogger: {
+const { mockSend, childLogger, watchLabels } = vi.hoisted(() => {
+  const childLogger = {
     debug: vi.fn(),
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn(),
-  },
-}));
+    child: vi.fn((): unknown => childLogger),
+  };
+  return {
+    watchLabels: [] as string[],
+    mockSend: vi.fn(),
+    childLogger,
+  };
+});
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
@@ -27,7 +30,7 @@ vi.mock('@aws-sdk/client-dynamodb', async (importOriginal) => {
   const { getAwsClients } = await import('../../../src/utils/aws-clients.js');
   return {
     ...actual,
-    DynamoDBClient: vi.fn().mockImplementation((cfg: { region?: string } | undefined) =>
+    DynamoDBClient: vi.fn((cfg: { region?: string } | undefined) =>
       cfg?.region === 'us-east-1' ? getAwsClients().dynamoDB : new actual.DynamoDBClient(cfg ?? {})
     ),
   };
@@ -47,7 +50,6 @@ vi.mock('../../../src/provisioning/interrupt-watch.js', async (importOriginal) =
 });
 
 vi.mock('../../../src/utils/logger.js', () => {
-  childLogger.child.mockReturnValue(childLogger);
   return {
     getLogger: () => ({
       child: () => childLogger,

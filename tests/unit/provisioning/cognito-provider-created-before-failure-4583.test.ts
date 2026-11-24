@@ -10,7 +10,7 @@ vi.mock('@aws-sdk/client-cognito-identity-provider', async () => {
   const actual = await vi.importActual('@aws-sdk/client-cognito-identity-provider');
   return {
     ...actual,
-    CognitoIdentityProviderClient: vi.fn().mockImplementation(() => ({
+    CognitoIdentityProviderClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),

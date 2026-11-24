@@ -15,7 +15,7 @@ vi.mock('@aws-sdk/client-rds', async () => {
   const actual = await vi.importActual('@aws-sdk/client-rds');
   return {
     ...actual,
-    RDSClient: vi.fn().mockImplementation(() => ({
+    RDSClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -25,7 +25,7 @@ vi.mock('@aws-sdk/client-neptune', async () => {
   const actual = await vi.importActual('@aws-sdk/client-neptune');
   return {
     ...actual,
-    NeptuneClient: vi.fn().mockImplementation(() => ({
+    NeptuneClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -35,7 +35,7 @@ vi.mock('@aws-sdk/client-docdb', async () => {
   const actual = await vi.importActual('@aws-sdk/client-docdb');
   return {
     ...actual,
-    DocDBClient: vi.fn().mockImplementation(() => ({
+    DocDBClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -45,7 +45,7 @@ vi.mock('@aws-sdk/client-elasticache', async () => {
   const actual = await vi.importActual('@aws-sdk/client-elasticache');
   return {
     ...actual,
-    ElastiCacheClient: vi.fn().mockImplementation(() => ({
+    ElastiCacheClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -58,7 +58,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

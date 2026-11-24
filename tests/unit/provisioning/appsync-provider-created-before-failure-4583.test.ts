@@ -12,7 +12,7 @@ vi.mock('@aws-sdk/client-appsync', async () => {
   );
   return {
     ...actual,
-    AppSyncClient: vi.fn().mockImplementation(() => ({
+    AppSyncClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),

@@ -25,15 +25,15 @@ const stubClient = vi.hoisted(
 
 vi.mock('@aws-sdk/client-ec2', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('@aws-sdk/client-ec2');
-  return { ...actual, EC2Client: vi.fn().mockImplementation(stubClient) };
+  return { ...actual, EC2Client: vi.fn(stubClient) };
 });
 vi.mock('@aws-sdk/client-glue', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('@aws-sdk/client-glue');
-  return { ...actual, GlueClient: vi.fn().mockImplementation(stubClient) };
+  return { ...actual, GlueClient: vi.fn(stubClient) };
 });
 vi.mock('@aws-sdk/client-appsync', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('@aws-sdk/client-appsync');
-  return { ...actual, AppSyncClient: vi.fn().mockImplementation(stubClient) };
+  return { ...actual, AppSyncClient: vi.fn(stubClient) };
 });
 
 vi.mock('../../../src/utils/logger.js', () => {
@@ -42,7 +42,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: warnSpy,
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

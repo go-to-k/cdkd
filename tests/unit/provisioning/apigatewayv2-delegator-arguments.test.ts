@@ -29,7 +29,7 @@ vi.mock('@aws-sdk/client-apigatewayv2', async (importOriginal) => {
   const orig = (await importOriginal()) as Record<string, unknown>;
   return {
     ...orig,
-    ApiGatewayV2Client: vi.fn().mockImplementation(() => ({
+    ApiGatewayV2Client: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),

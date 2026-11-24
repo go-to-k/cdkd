@@ -7,7 +7,7 @@ const mockEc2Send = vi.fn();
 // AutoScaling client.
 const mockAsgDelete = vi.fn();
 vi.mock('../../../src/provisioning/providers/asg-provider.js', () => ({
-  ASGProvider: vi.fn().mockImplementation(() => ({ delete: mockAsgDelete })),
+  ASGProvider: vi.fn(() => ({ delete: mockAsgDelete })),
 }));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({

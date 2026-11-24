@@ -30,9 +30,7 @@ vi.mock('@aws-sdk/client-dynamodb', async (importOriginal) => {
   const { sdkClientStandIn } = await import('./create-retry-4639-harness.js');
   return {
     ...actual,
-    DynamoDBClient: vi
-      .fn()
-      .mockImplementation((cfg: { region?: string } | undefined) =>
+    DynamoDBClient: vi.fn((cfg: { region?: string } | undefined) =>
         sdkClientStandIn(cfg?.region ?? 'unset')
       ),
   };
@@ -44,7 +42,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

@@ -24,7 +24,7 @@ vi.mock('@aws-sdk/client-apigatewayv2', async (importOriginal) => {
   const orig = (await importOriginal()) as Record<string, unknown>;
   return {
     ...orig,
-    ApiGatewayV2Client: vi.fn().mockImplementation(() => ({
+    ApiGatewayV2Client: vi.fn(() => ({
       send: mockSend,
       config: { region: regionFn },
     })),
@@ -41,8 +41,7 @@ const warn = vi.fn();
 /** Hoisted like `warn`: an inline `vi.fn()` leaves the debug line unassertable. */
 const debug = vi.fn();
 vi.mock('../../../src/utils/logger.js', () => {
-  const child = { debug, info: vi.fn(), warn, error: vi.fn(), child: vi.fn() };
-  child.child = vi.fn().mockReturnValue(child);
+  const child = { debug, info: vi.fn(), warn, error: vi.fn(), child: vi.fn((): unknown => child) };
   return { getLogger: () => child };
 });
 

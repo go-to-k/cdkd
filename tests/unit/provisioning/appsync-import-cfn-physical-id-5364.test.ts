@@ -15,7 +15,7 @@ vi.mock('@aws-sdk/client-appsync', async () => {
   );
   return {
     ...actual,
-    AppSyncClient: vi.fn().mockImplementation(() => ({
+    AppSyncClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -23,11 +23,11 @@ vi.mock('@aws-sdk/client-appsync', async () => {
 });
 
 vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
-  getAccountInfo: vi.fn().mockResolvedValue({
+  getAccountInfo: vi.fn(async () => ({
     partition: 'aws',
     region: 'us-east-1',
     accountId: '123456789012',
-  }),
+  })),
 }));
 
 vi.mock('../../../src/utils/logger.js', () => {

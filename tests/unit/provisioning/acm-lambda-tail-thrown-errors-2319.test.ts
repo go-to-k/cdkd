@@ -40,11 +40,11 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 // the SDK package (no 5xx replay); route it to the same mock.
 vi.mock('@aws-sdk/client-lambda', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@aws-sdk/client-lambda')>()),
-  LambdaClient: vi.fn().mockImplementation(fakeClient),
+  LambdaClient: vi.fn(fakeClient),
 }));
 vi.mock('@aws-sdk/client-lambda-web', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@aws-sdk/client-lambda-web')>()),
-  LambdaWebClient: vi.fn().mockImplementation(fakeClient),
+  LambdaWebClient: vi.fn(fakeClient),
 }));
 vi.mock('../../../src/provisioning/providers/lambda-web-function-arns.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
@@ -56,7 +56,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

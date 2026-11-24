@@ -29,7 +29,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: (...args: unknown[]) => infoSpy(...args),
     warn: (...args: unknown[]) => warnSpy(...args),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

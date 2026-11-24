@@ -14,7 +14,7 @@ vi.mock('@aws-sdk/client-docdb', async (importOriginal) => {
   const orig = (await importOriginal()) as Record<string, unknown>;
   return {
     ...orig,
-    DocDBClient: vi.fn().mockImplementation(() => ({
+    DocDBClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -25,7 +25,7 @@ vi.mock('@aws-sdk/client-rds', async (importOriginal) => {
   const orig = (await importOriginal()) as Record<string, unknown>;
   return {
     ...orig,
-    RDSClient: vi.fn().mockImplementation(() => ({
+    RDSClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),

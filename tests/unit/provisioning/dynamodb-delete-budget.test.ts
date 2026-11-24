@@ -66,7 +66,7 @@ vi.mock('@aws-sdk/client-dynamodb', async () => {
   );
   return {
     ...actual,
-    DynamoDBClient: vi.fn().mockImplementation((cfg: { region?: string } | undefined) => ({
+    DynamoDBClient: vi.fn((cfg: { region?: string } | undefined) => ({
       send: mockSend,
       config: { region: () => Promise.resolve(cfg?.region ?? 'us-east-1') },
     })),
@@ -80,7 +80,7 @@ vi.mock('@aws-sdk/client-application-auto-scaling', async () => {
     );
   return {
     ...actual,
-    ApplicationAutoScalingClient: vi.fn().mockImplementation(() => ({
+    ApplicationAutoScalingClient: vi.fn(() => ({
       send: mockAutoScalingSend,
     })),
   };

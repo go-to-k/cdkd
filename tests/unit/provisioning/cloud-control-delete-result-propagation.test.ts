@@ -24,7 +24,7 @@ const warnSpy = vi.hoisted(() => vi.fn());
 const debugSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../src/provisioning/providers/asg-provider.js', () => ({
-  ASGProvider: vi.fn().mockImplementation(() => ({ delete: mockAsgDelete })),
+  ASGProvider: vi.fn(() => ({ delete: mockAsgDelete })),
 }));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
@@ -43,7 +43,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: warnSpy,
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

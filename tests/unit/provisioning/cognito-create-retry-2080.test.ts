@@ -22,7 +22,7 @@ vi.mock('@aws-sdk/client-cognito-identity-provider', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-cognito-identity-provider')>();
   return {
     ...actual,
-    CognitoIdentityProviderClient: vi.fn().mockImplementation(() => {
+    CognitoIdentityProviderClient: vi.fn(() => {
       const config = {
         region: () => clientRegion(),
         retryStrategy: async (): Promise<unknown> => baseStrategy,
@@ -44,7 +44,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: warnSpy,
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   };
   return {
     getLogger: () => ({

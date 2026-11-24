@@ -9,7 +9,7 @@ vi.mock('@aws-sdk/client-appsync', async () => {
   );
   return {
     ...actual,
-    AppSyncClient: vi.fn().mockImplementation(() => ({
+    AppSyncClient: vi.fn(() => ({
       send: mockSend,
       config: { region: () => Promise.resolve('us-east-1') },
     })),
@@ -39,7 +39,7 @@ const { childLogger } = vi.hoisted(() => ({
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) { return this; }),
   },
 }));
 

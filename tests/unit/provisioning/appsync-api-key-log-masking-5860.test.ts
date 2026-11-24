@@ -26,7 +26,7 @@ vi.mock('@aws-sdk/client-appsync', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-appsync')>();
   return {
     ...actual,
-    AppSyncClient: vi.fn().mockImplementation(() => ({
+    AppSyncClient: vi.fn(() => ({
       send: mockSend,
       config: {
         region: () => Promise.resolve('us-east-1'),
