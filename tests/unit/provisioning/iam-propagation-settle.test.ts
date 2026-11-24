@@ -241,8 +241,60 @@ describe('the IAM providers report the settle after a write', () => {
     );
   });
 
+  it('AWS::IAM::Policy update', async () => {
+    const scope = scopeFor('HandlerPolicy', 'AWS::IAM::Policy');
+    const previous = { PolicyName: 'handler-policy', PolicyDocument: document, Roles: ['handler-role'] };
+    await withDeferredReadinessScope(scope, () =>
+      new IAMPolicyProvider().update(
+        'HandlerPolicy',
+        'handler-policy',
+        'AWS::IAM::Policy',
+        { ...previous, PolicyDocument: { ...document, Statement: [...document.Statement, document.Statement[0]] } },
+        previous
+      )
+    );
+    expect(scope.deferred.get('handler-policy')?.kind).toBe('iam-propagation');
+  });
+
+  it('AWS::IAM::Role update', async () => {
+    const scope = scopeFor('HandlerRole', 'AWS::IAM::Role');
+    const previous = { RoleName: 'handler-role', AssumeRolePolicyDocument: document };
+    await withDeferredReadinessScope(scope, () =>
+      new IAMRoleProvider().update(
+        'HandlerRole',
+        'handler-role',
+        'AWS::IAM::Role',
+        { ...previous, Policies: [{ PolicyName: 'inline', PolicyDocument: document }] },
+        previous
+      )
+    );
+    expect(scope.deferred.get('handler-role')?.kind).toBe('iam-propagation');
+  });
+
+  it('AWS::IAM::ManagedPolicy update', async () => {
+    const arn = 'arn:aws:iam::123456789012:policy/mp';
+    const scope = scopeFor('HandlerManagedPolicy', 'AWS::IAM::ManagedPolicy');
+    const previous = { ManagedPolicyName: 'mp', PolicyDocument: document, Roles: [] as string[] };
+    await withDeferredReadinessScope(scope, () =>
+      new IAMManagedPolicyProvider().update(
+        'HandlerManagedPolicy',
+        arn,
+        'AWS::IAM::ManagedPolicy',
+        { ...previous, Roles: ['handler-role'] },
+        previous
+      )
+    );
+    expect(scope.deferred.get(arn)?.kind).toBe('iam-propagation');
+  });
+
   it('a failed write reports nothing', async () => {
-    mockSend.mockRejectedValue(Object.assign(new Error('denied'), { name: 'AccessDenied' }));
+    mockSend.mockRejectedValue(
+      Object.assign(new Error('User is not authorized to perform this action'), {
+        name: 'AccessDeniedException',
+        $fault: 'client',
+        $metadata: { httpStatusCode: 403 },
+      })
+    );
     const scope = scopeFor('HandlerPolicy', 'AWS::IAM::Policy');
     await expect(
       withDeferredReadinessScope(scope, () =>
