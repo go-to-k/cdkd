@@ -292,12 +292,26 @@ describe('module-scope mock-default checker', () => {
       expect(buildReport(root, { files: {} }).newFiles).toEqual([]);
     });
 
-    it('does not follow a helper its own file already calls', () => {
+    it('follows a helper its own file also calls safely: the importer is its own context', () => {
       const { root } = scratchRoot(
         { 'h.ts': `${HELPER}beforeEach(() => { forwarded(); });\n`, 'a.test.ts': `import { forwarded } from './h.js';\nforwarded();` },
         { files: {} }
       );
-      expect(buildReport(root, { files: {} }).newFiles).toEqual([]);
+      expect(buildReport(root, { files: {} }).newFiles.map((f) => f.file)).toEqual(['tests/unit/a.test.ts']);
+    });
+
+    it('follows the helpers an exported helper calls, whatever else calls them', () => {
+      const helper =
+        `function inner() { return vi.fn().mockReturnValue(1); }\n` +
+        `const o = { go() { return inner(); } };\n` +
+        `export function outer() { return inner(); }\n`;
+      const { root } = scratchRoot(
+        { 'h.ts': helper, 'a.test.ts': `vi.mock('y', async () => ({ x: (await import('./h.js')).outer() }));` },
+        { files: {} }
+      );
+      const report = buildReport(root, { files: {} });
+      expect(report.newFiles.map((f) => f.file)).toEqual(['tests/unit/a.test.ts']);
+      expect(report.newFiles[0]!.refused).toHaveLength(1);
     });
   });
 

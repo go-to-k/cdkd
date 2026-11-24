@@ -52,18 +52,19 @@
  * Resolution is by NAME, so two same-named helpers in different scopes are
  * merged (fail-closed).
  *
- * ACROSS FILES, one hop: a helper NOTHING in its own file calls (an exported
- * one, like `tests/unit/provisioning/s3-create-client-forward.ts`'s
- * `forwardedS3Client`) is resolved at each importing call site — a static named
- * or namespace import, `const { f } = await import('./x.js')`, or
- * `(await import('./x.js')).f()`. Called from a refused context, each of its
- * setters is a refused site OF THE IMPORTING FILE, `via` naming the helper; the
- * helper's own file counts them `unresolved`.
+ * ACROSS FILES, one hop: an imported helper (like
+ * `tests/unit/provisioning/s3-create-client-forward.ts`'s `forwardedS3Client`)
+ * is resolved at each importing call site — a static named or namespace import,
+ * `const { f } = await import('./x.js')`, or `(await import('./x.js')).f()`.
+ * Called from a refused context, every setter the helper reaches (through the
+ * in-file helpers it calls too) is a refused site OF THE IMPORTING FILE, `via`
+ * naming the helper. The helper's own file judges them by its own calls.
  *
  * WHAT THIS DOES NOT CATCH (bounded, and counted as `unresolved`)
  * --------------------------------------------------------------
  *  1. An exported helper called only from another module's helper (the hop is
- *     one deep), or from a file outside `tests/unit`, or via a bare specifier;
+ *     one deep), from a file outside `tests/unit`, via a bare specifier, a
+ *     barrel re-export (`export { f } from './h.js'`) or a directory import;
  *     and an anonymous `export default function`.
  *  2. A function that is neither a named helper nor a call argument: an object
  *     or class METHOD, a property value, an array element (an `it.each` table
@@ -288,8 +289,9 @@ export interface FileAnalysis {
   readonly sites: readonly Site[];
   readonly parseErrors: number;
   /**
-   * Setter sites inside a helper NOTHING in this file calls, keyed by that
-   * helper's name: they run wherever an importing file calls it.
+   * Every setter site a named helper reaches (its own body plus the in-file
+   * helpers it calls), keyed by helper name: they run wherever an importing
+   * file calls it.
    */
   readonly pendingByHelper: Readonly<Record<string, readonly { line: number; setter: string }[]>>;
   /** Calls into other modules made from a refused context. */
@@ -299,8 +301,6 @@ export interface FileAnalysis {
 interface Resolution {
   readonly context: Context;
   readonly via: readonly string[];
-  /** For `unresolved`: the reference-less helper the chain ends at, if any. */
-  readonly orphan?: string;
 }
 
 /** refused > unresolved > safe: a helper is as bad as its worst caller. */
@@ -429,7 +429,8 @@ export function analyzeSource(fileName: string, text: string): FileAnalysis {
   visit(source, refused('module-scope'));
 
   // Resolve each helper to its WORST reference's context (refused, then
-  // unresolved, then safe). A reference-less helper is an orphan: unresolved
+  // unresolved, then safe). A reference-less helper is unresolved here; an
+  // importing file resolves it (`pendingByHelper`).
   // here, and left for an importing file to resolve.
   const resolved = new Map<string, Resolution>();
   const resolving = new Set<string>();
@@ -439,7 +440,7 @@ export function analyzeSource(fileName: string, text: string): FileAnalysis {
     if (resolving.has(name)) return { context: UNRESOLVED, via: [] };
     resolving.add(name);
     const mine = references.filter((reference) => reference.name === name);
-    let best: Resolution | undefined = mine.length === 0 ? { context: UNRESOLVED, via: [], orphan: name } : undefined;
+    let best: Resolution | undefined = mine.length === 0 ? { context: UNRESOLVED, via: [] } : undefined;
     for (const reference of mine) {
       const outcome = resolveContext(reference.context);
       if (best === undefined || RANK[outcome.context.kind] > RANK[best.context.kind]) {
@@ -459,9 +460,8 @@ export function analyzeSource(fileName: string, text: string): FileAnalysis {
         : { context, via: [] };
 
   const sites: Site[] = [];
-  const pendingByHelper: Record<string, { line: number; setter: string }[]> = {};
   for (const raw of rawSites) {
-    const { context, via, orphan } = resolveContext(raw.context);
+    const { context, via } = resolveContext(raw.context);
     if (context.kind === 'refused') {
       sites.push({
         line: raw.line,
@@ -473,9 +473,38 @@ export function analyzeSource(fileName: string, text: string): FileAnalysis {
       continue;
     }
     sites.push({ line: raw.line, setter: raw.setter, verdict: context.kind === 'safe' ? 'safe' : 'unresolved' });
-    if (context.kind !== 'safe' && orphan !== undefined) {
-      (pendingByHelper[orphan] ??= []).push({ line: raw.line, setter: raw.setter });
+  }
+
+  // What each helper reaches, transitively through in-file helper calls —
+  // regardless of how THIS file calls it, since an importer's call site is a
+  // context of its own.
+  const directSites = new Map<string, { line: number; setter: string }[]>();
+  for (const raw of rawSites) {
+    if (raw.context.kind !== 'helper') continue;
+    const list = directSites.get(raw.context.name) ?? [];
+    list.push({ line: raw.line, setter: raw.setter });
+    directSites.set(raw.context.name, list);
+  }
+  const calls = new Map<string, Set<string>>();
+  for (const reference of references) {
+    if (reference.context.kind !== 'helper' || !helpers.has(reference.name)) continue;
+    const set = calls.get(reference.context.name) ?? new Set<string>();
+    set.add(reference.name);
+    calls.set(reference.context.name, set);
+  }
+  const pendingByHelper: Record<string, { line: number; setter: string }[]> = {};
+  for (const helper of helpers) {
+    const seen = new Set<string>();
+    const stack = [helper];
+    const reached: { line: number; setter: string }[] = [];
+    while (stack.length > 0) {
+      const current = stack.pop()!;
+      if (seen.has(current)) continue;
+      seen.add(current);
+      reached.push(...(directSites.get(current) ?? []));
+      stack.push(...(calls.get(current) ?? []));
     }
+    if (reached.length > 0) pendingByHelper[helper] = reached;
   }
 
   const refusedExternalCalls: ExternalCall[] = [];
