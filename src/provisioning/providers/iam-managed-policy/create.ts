@@ -21,6 +21,7 @@ import {
   principalsOf,
   policyIdentityToken,
 } from './shared.js';
+import { deferIamPropagationSettle } from '../../iam-propagation-settle.js';
 
 export async function create(
   this: IAMManagedPolicyProvider,
@@ -223,6 +224,8 @@ export async function create(
           log.debug
         )
       : policy;
+    // A custom resource downstream waits for IAM to propagate this write.
+    deferIamPropagationSettle(logicalId, resourceType, policyArn);
     return {
       physicalId: policyArn,
       attributes: managedPolicyAttributes(policyArn, readBack),

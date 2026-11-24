@@ -297,6 +297,18 @@ cdkd invokes the Lambda function behind an
 `Active` with `LastUpdateStatus: Successful`. Without that wait the invoke
 fails with `The function is currently in the following state: Pending`.
 
+The same invoke also waits for IAM to propagate the permissions this deploy
+wrote upstream of the custom resource: an `AWS::IAM::Role`, `AWS::IAM::Policy`
+or `AWS::IAM::ManagedPolicy` created or updated in the deploy holds the invoke
+until 10 seconds after its write, and only for what remains of that time. IAM
+accepts a write at once but applies it later, and a handler that runs before
+then is denied. Under the CDK `Provider` framework that denial costs up to five
+minutes, because its `onEvent` waits for the user handler before giving up.
+Nothing else waits for
+an IAM write: a function using the role, or a `Fn::GetAtt` of its `Arn`,
+proceeds at once. The deploy prints one `Waiting for IAM to propagate` line
+per custom resource that waits.
+
 The wait belongs to that invoke only. An ordinary Lambda create or update
 returns as soon as the API call returns. When a deploy updates a function that
 is still `Pending` from its create, AWS refuses the change, so cdkd then waits

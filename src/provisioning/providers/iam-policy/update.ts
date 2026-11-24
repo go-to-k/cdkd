@@ -22,6 +22,7 @@ import {
 } from './principal-identity.js';
 import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 import { holdsSecretDerivedEntry } from '../../iam-policy-targets.js';
+import { deferIamPropagationSettle } from '../../iam-propagation-settle.js';
 
 /**
  * Update an IAM inline policy
@@ -442,6 +443,8 @@ export async function update(
     // the bare name.
     const newPhysicalId = isDriftRevert(context) ? physicalId : newPolicyName;
 
+    // A custom resource downstream waits for IAM to propagate this write.
+    deferIamPropagationSettle(logicalId, resourceType, newPhysicalId);
     return {
       physicalId: newPhysicalId,
       wasReplaced: false,

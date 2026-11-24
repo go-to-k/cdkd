@@ -18,6 +18,7 @@ import { reportCreatedResource, retractCreatedResource } from '../../created-res
 import { iamEntityLeftByThisCreate } from '../iam-replay-adopt.js';
 import type { CreateContext, ResourceCreateResult } from '../../../types/resource.js';
 import { roleIdentityToken } from './shared.js';
+import { deferIamPropagationSettle } from '../../iam-propagation-settle.js';
 
 /**
  * Create an IAM role
@@ -244,6 +245,8 @@ export async function create(
       RoleId: role?.RoleId,
     };
 
+    // A custom resource downstream waits for IAM to propagate this write.
+    deferIamPropagationSettle(logicalId, resourceType, roleName);
     return {
       physicalId: roleName,
       attributes,

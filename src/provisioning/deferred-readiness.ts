@@ -51,7 +51,21 @@ export type ReadinessWait = (signal: AbortSignal) => Promise<unknown>;
 export interface DeferredReadinessEntry {
   readonly wait: ReadinessWait;
   readonly inContext: <R>(fn: () => R) => R;
+  /** What the wait is for; words the line its first need prints. Absent: `skipped-wait`. */
+  readonly kind?: ReadinessKind;
 }
+
+/**
+ * Why a resource's readiness is deferred:
+ *
+ * - `skipped-wait`: a wait the provider skipped under `--no-wait`
+ *   (go-to-k/cdkd#6940).
+ * - `iam-propagation`: an IAM permission write that AWS has accepted but not
+ *   yet propagated. Only code running during the deploy with that permission
+ *   (a custom resource's handler) needs it settled; see
+ *   `iam-propagation-settle.ts`.
+ */
+export type ReadinessKind = 'skipped-wait' | 'iam-propagation';
 
 /**
  * Throw when the deploy aborted the wait (`signal`), for a provider's own
@@ -137,20 +151,22 @@ function anchoredScope(
 }
 
 /**
- * Report a readiness wait the provider skipped under `--no-wait`. Anchored to
- * the operation the engine bound: a call for another logical id or type (a
+ * Report a readiness wait the provider skipped under `--no-wait` (or, with
+ * `kind`, another readiness the deploy runs only where it is needed). Anchored
+ * to the operation the engine bound: a call for another logical id or type (a
  * helper provisioning something else) reports nothing.
  */
 export function deferReadiness(
   logicalId: string,
   resourceType: string,
   physicalId: string,
-  wait: ReadinessWait
+  wait: ReadinessWait,
+  kind: ReadinessKind = 'skipped-wait'
 ): void {
   if (typeof physicalId !== 'string' || physicalId === '') return;
   const scope = anchoredScope(logicalId, resourceType);
   if (scope === undefined) return;
-  scope.deferred.set(physicalId, { wait, inContext: AsyncLocalStorage.snapshot() });
+  scope.deferred.set(physicalId, { wait, inContext: AsyncLocalStorage.snapshot(), kind });
 }
 
 /**

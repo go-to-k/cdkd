@@ -34,6 +34,11 @@ interface DeferredEntry {
   promise?: Promise<void>;
 }
 
+/** Whether `entry` is an IAM propagation settle (`iam-propagation-settle.ts`). */
+function isIamPropagation(entry: DeferredEntry): boolean {
+  return entry.waits[0]?.kind === 'iam-propagation';
+}
+
 /** How often a running readiness wait looks at the engine's interrupt flag. */
 export const deferredReadinessPoll = { intervalMs: 500 };
 
@@ -127,10 +132,28 @@ export class DeferredReadinessRun {
     });
   }
 
-  /** {@link awaitReady} for each of `logicalIds` that was deferred, concurrently. */
+  /**
+   * {@link awaitReady} for each of `logicalIds` that was deferred, concurrently.
+   * The IAM propagation settles this need starts are named on ONE line: a
+   * custom resource commonly waits for its handler's role and policy and, two
+   * hops up, its function's role and policy.
+   */
   async awaitAll(logicalIds: Iterable<string>, reason: string): Promise<void> {
+    const ids = [...logicalIds];
+    const startingSettles = ids.filter((id) => {
+      const entry = this.entries.get(id);
+      return entry !== undefined && entry.promise === undefined && isIamPropagation(entry);
+    });
+    if (startingSettles.length > 0) {
+      this.deps.logger.info(
+        startingSettles.reduce(
+          (text, id) => this.mask(id, text),
+          safeMsg`Waiting for IAM to propagate ${String(startingSettles.length)} permission write(s) of this deploy (${startingSettles.join(', ')}): ${reason}`
+        )
+      );
+    }
     const waits: Promise<void>[] = [];
-    for (const id of logicalIds) {
+    for (const id of ids) {
       const wait = this.awaitReady(id, reason);
       if (wait !== undefined) waits.push(wait);
     }
@@ -166,12 +189,22 @@ export class DeferredReadinessRun {
 
   private async run(logicalId: string, entry: DeferredEntry, reason: string): Promise<void> {
     const { resourceType, operation } = entry;
-    this.deps.logger.info(
-      this.mask(
-        logicalId,
-        safeMsg`Waiting for ${logicalId} (${resourceType}), whose readiness wait --no-wait skipped: ${reason}`
-      )
-    );
+    if (isIamPropagation(entry)) {
+      // Named on the consumer's one line (`awaitAll`); per resource only in debug.
+      this.deps.logger.debug(
+        this.mask(
+          logicalId,
+          safeMsg`Waiting for IAM to propagate ${logicalId} (${resourceType}), written moments ago: ${reason}`
+        )
+      );
+    } else {
+      this.deps.logger.info(
+        this.mask(
+          logicalId,
+          safeMsg`Waiting for ${logicalId} (${resourceType}), whose readiness wait --no-wait skipped: ${reason}`
+        )
+      );
+    }
     const controller = new AbortController();
     const watch = startInterruptWatch(`Readiness wait for ${logicalId}`);
     let poll: NodeJS.Timeout | undefined;
