@@ -4235,8 +4235,8 @@ describe('CognitoUserPoolProvider', () => {
 
     // Every case here is a plain update with no Schema change and no
     // MFA-routed property, so the call sequence is exactly
-    // UpdateUserPool -> DescribeUserPool (pinned per test — the once-leak
-    // rule's companion guard).
+    // UpdateUserPool -> DescribeUserPool (pinned per test, so a primer this
+    // path stops consuming fails here instead of being reset away unseen).
     function primeUpdate() {
       mockSend.mockResolvedValueOnce({});
       mockSend.mockResolvedValueOnce({

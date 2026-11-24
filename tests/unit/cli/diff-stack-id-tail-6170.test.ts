@@ -38,10 +38,12 @@ vi.mock('@aws-sdk/client-sts', async (importOriginal) => {
   return {
     ...actual,
     STSClient: vi.fn(() => ({
-      send: vi.fn().mockResolvedValue({
+      // `vi.fn(impl)`: a client built in one test is reused by the next, and
+      // `mockReset` would wipe a `.mockResolvedValue(...)` set on it.
+      send: vi.fn(async () => ({
         Account: '123456789012',
         Arn: 'arn:aws:iam::123456789012:user/test',
-      }),
+      })),
       destroy: vi.fn(),
     })),
   };

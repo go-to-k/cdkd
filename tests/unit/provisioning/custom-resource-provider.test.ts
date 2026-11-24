@@ -71,11 +71,10 @@ describe('CustomResourceProvider', () => {
   let provider: CustomResourceProvider;
 
   beforeEach(() => {
-    // mockReset (not clearAllMocks) so any unconsumed `mockResolvedValueOnce`
-    // queue items from a failing earlier test do not leak into the next test.
-    // (CR sendRequest now does `waitUntilFunctionActiveV2` + `waitUntilFunctionUpdatedV2`
-    // before every Lambda Invoke; tests that forget those mocks would otherwise
-    // pollute later tests with stale queued responses.)
+    // Explicit resets, redundant with `mockReset: true` in vite.config.ts,
+    // which resets every mock before each test. (CR sendRequest now does
+    // `waitUntilFunctionActiveV2` + `waitUntilFunctionUpdatedV2` before every
+    // Lambda Invoke, so each test primes those waits itself.)
     mockLambdaSend.mockReset();
     mockSnsSend.mockReset();
     mockS3Send.mockReset();

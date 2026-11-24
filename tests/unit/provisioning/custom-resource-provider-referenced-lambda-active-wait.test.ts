@@ -32,7 +32,9 @@ vi.mock('../../../src/utils/logger.js', () => {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
+    child: vi.fn(function (this: unknown) {
+      return this;
+    }),
   };
   return {
     getLogger: () => ({
@@ -46,7 +48,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 vi.mock('@aws-sdk/s3-request-presigner', () => ({
-  getSignedUrl: vi.fn().mockResolvedValue('https://s3.example.com/presigned-url'),
+  getSignedUrl: vi.fn(async () => 'https://s3.example.com/presigned-url'),
 }));
 
 // The readiness waiters are replaced so their calls can be ordered against the

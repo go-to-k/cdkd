@@ -987,7 +987,7 @@ describe('IAMRoleProvider', () => {
       };
       const findUpdateInput = () => {
         // Pins that mockUpdateFlow() primed exactly what the flow consumes
-        // — an over-priming leaks into the next test (issue #1655).
+        // — an over-priming means the test misreads the path (issue #1655).
         expect(mockSend).toHaveBeenCalledTimes(2);
         const updateCall = mockSend.mock.calls.find((c) => c[0] instanceof UpdateRoleCommand);
         expect(updateCall).toBeDefined();
@@ -1100,11 +1100,9 @@ describe('IAMRoleProvider', () => {
   });
 
   describe('import', () => {
-    // Deliberately NO `mockSend.mockReset()` drain here. It used to guard
-    // against responses leaked by the update tests above, which no longer
-    // leak (issue #1655) — and a drain would make any FUTURE leak crossing
-    // into this block invisible to the detector, re-grandfathering the tail
-    // of a file this issue just un-grandfathered.
+    // No `mockSend.mockReset()` drain of its own: `mockReset: true` in
+    // `vite.config.ts` resets every mock before each test (issue #6928), so
+    // nothing the update tests above primed can reach this block.
 
     const importInput = (overrides: Record<string, unknown> = {}) => ({
       logicalId: 'MyRole',

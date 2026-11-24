@@ -588,8 +588,8 @@ describe('ApiGatewayProvider read-update round-trip', () => {
       next: Record<string, unknown>,
       prev: Record<string, unknown>
     ): Promise<Array<{ op: string; path: string; value?: string }> | undefined> {
-      // No queued response: a once-value a no-op case never consumes would
-      // leak into the next test (`clearAllMocks` keeps it).
+      // No queued response: a no-op case would never consume a once-value,
+      // so priming one would describe a call the path does not make.
       await provider.update(
         'AuthLogical',
         'auth-1',

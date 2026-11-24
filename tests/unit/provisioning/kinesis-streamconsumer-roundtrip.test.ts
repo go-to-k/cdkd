@@ -56,8 +56,8 @@ describe('KinesisStreamConsumerProvider', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    // clearAllMocks keeps implementations; restore vi.fn()'s default so a
-    // case that routes via mockImplementation does not leak into the next.
+    // Restores vi.fn()'s default answer explicitly; `mockReset: true` in
+    // vite.config.ts already resets every mock before each test.
     mockSend.mockImplementation(() => undefined);
     provider = new KinesisStreamConsumerProvider();
   });

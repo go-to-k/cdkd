@@ -375,16 +375,16 @@ describe('the fence assumes tests within a file run serially', () => {
 
       for (const file of files) {
         // Comments are stripped before matching, so PROSE about concurrency is
-        // not an offender. Without it the critic reports itself and
-        // `once-leak-detector.test.ts`, both of which discuss the spellings
-        // below in comments — and the natural workaround, rewording the prose,
-        // breaks again the next time someone explains the rule.
+        // not an offender. Without it the critic reports itself, since it
+        // discusses the spellings below in comments — and the natural
+        // workaround, rewording the prose, breaks again the next time someone
+        // explains the rule.
         const text = stripComments(readFileSync(file, 'utf8'));
         // Two spellings, because vitest has two. The modifier form is matched
         // as a CALL or a chain rather than by the words `it` / `test` /
         // `describe`, so a chained modifier cannot slip past -- and because
-        // this file and `once-leak-detector.test.ts` both discuss the modifier
-        // in prose, where a bare-word match would report them as offenders.
+        // this file discusses the modifier in prose, where a bare-word match
+        // would report it as an offender.
         // The second is the options-object form, `it('x', { concurrent: true },
         // fn)`, which carries no modifier at all.
         if (/\.concurrent\s*[(.<]/.test(text) || /concurrent\s*:\s*true/.test(text)) {

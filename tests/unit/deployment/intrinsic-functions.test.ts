@@ -705,9 +705,10 @@ describe('IntrinsicFunctionResolver - Fn::GetAZs', () => {
     // Exactly ONE `*Once` primer, and the single EC2 call this case expects
     // consumes it. Priming the second call too would leave an unconsumed
     // primer in the queue precisely BECAUSE the cache hit means there is no
-    // second call, and it would then be consumed by an unrelated later test --
-    // the leak `vp run test:once-leak` exists to catch (issue #1618). Measured
-    // here: a two-primer version reddened `should return sorted AZ names`.
+    // second call: a primer describing a call the path never makes (issue
+    // #1618). Before `mockReset: true` that primer leaked into a later test;
+    // measured then, a two-primer version reddened `should return sorted AZ
+    // names`.
     mockEc2Send.mockResolvedValueOnce({
       AvailabilityZones: [{ ZoneName: 'zz-primed-1a', State: 'available' }],
     });

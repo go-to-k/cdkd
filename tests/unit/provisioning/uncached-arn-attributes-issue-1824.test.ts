@@ -119,7 +119,8 @@ describe('issue #1824 — uncached ARN attributes resolve through Fn::GetAtt', (
 
   beforeEach(() => {
     vi.clearAllMocks();
-    // Drain any `*Once` queue so a primer can never leak into a later test.
+    // Explicit resets, redundant with `mockReset: true` in vite.config.ts,
+    // which resets every mock before each test.
     mockRdsSend.mockReset();
     mockSsmSend.mockReset();
     mockStsSend.mockReset();

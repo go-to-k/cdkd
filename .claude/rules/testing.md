@@ -31,23 +31,18 @@ paths:
   walks or copies the real tree uses `tests/contended-case-timeout.ts`, on
   `spawnSync` too.
 
-### A `*Once` primer must be consumed by the test that primed it (mandatory)
+### Every mock is reset before each test (mandatory)
 
-- `vi.clearAllMocks()` clears call RECORDS but does NOT drain the `*Once` queue
-  (`mockReset` does). A leaked primer shifts every later call in the file, and
-  the shifted test still PASSES via absence assertions.
-- Enforced at RUNTIME by `tests/once-leak-detector.ts`, OFF unless
-  `CDKD_ONCE_LEAK_DETECT=1`, which CI's `unit-tests` job sets. `once-leak-canary.test.ts` leaks
-  deliberately and the `detector canary` step requires a failure carrying the
-  detector's OWN wording — do not "fix" its priming. The allow-list grandfathers
-  whole FILES; fix a file and DROP its entry (`vp run gen:once-leak-allowlist`).
-- MEASURE consumption before pinning `toHaveBeenCalledTimes(N)`: the pin catches
-  a call-COUNT change, while a SURPLUS primer leaves the count unchanged and only
-  the detector sees it. Fixing the priming beats draining.
-- **Set a mock default in `beforeEach` / a test, or as `vi.fn(impl)`**:
-  elsewhere (module scope, `describe` body, `vi.mock` factory, `vi.hoisted`,
-  other hooks) `mockReset` wipes it (#6928). `check-module-scope-mock-defaults.ts`
-  refuses a new one; its per-file allow-list only shrinks.
+- `mockReset: true` (`vite.config.ts`, #6928) drains the `*Once` queue, which
+  `vi.clearAllMocks()` does not, so a leaked primer cannot shift a later test.
+- It also WIPES a default set outside `beforeEach` / a test (module scope,
+  `describe` body, `vi.mock` factory, `vi.hoisted`, other hooks); a wiped
+  default returns `undefined`, which absence assertions still accept. **Set a
+  default in `beforeEach` / a test, or as `vi.fn(impl)`**, which survives.
+  `check-module-scope-mock-defaults.ts` refuses every other site; no allow-list.
+- A test needing an EARLIER test's state is wrong: set it in its own
+  `beforeEach`. MEASURE consumption before pinning `toHaveBeenCalledTimes(N)`:
+  the pin catches a call-COUNT change, never a SURPLUS primer.
 
 ## Mutation probes
 

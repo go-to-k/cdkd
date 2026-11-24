@@ -2218,8 +2218,9 @@ describe('replayRollback — DeletionPolicy: Snapshot on a rolled-back CREATE (#
   } as unknown as NonNullable<RollbackExecutorContext['finalSnapshotClients']>;
 
   beforeEach(() => {
-    // mockReset (not mockClear): a `mockRejectedValueOnce` queued by a test
-    // that never consumed it would otherwise leak into the next one.
+    // Explicit reset, redundant with `mockReset: true` in vite.config.ts, which
+    // resets every mock before each test. The default answer below is re-set
+    // after it.
     vi.mocked(createPreDeleteFinalSnapshot).mockReset();
     vi.mocked(createPreDeleteFinalSnapshot).mockResolvedValue('snap-1');
   });

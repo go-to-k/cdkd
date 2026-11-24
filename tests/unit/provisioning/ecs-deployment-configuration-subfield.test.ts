@@ -150,9 +150,9 @@ describe('ECS Service DeploymentConfiguration sub-field semantics (#1225)', () =
   ): Promise<unknown> => {
     mockSend.mockResolvedValueOnce(updateResponse);
     const result = await provider.update('Svc', SERVICE_ARN, TYPE, props, prev);
-    // Same rationale as the #1806 block's helper: this file drains its `*Once`
-    // queue, so the leak detector can never flag it and nothing else would
-    // notice the update path starting to issue a second call.
+    // Same rationale as the #1806 block's helper: every mock is reset before
+    // each test, so an unconsumed primer is drained silently and nothing else
+    // would notice the update path starting to issue a second call.
     expect(mockSend).toHaveBeenCalledTimes(1);
     return result;
   };
@@ -466,11 +466,11 @@ describe('ECS Service DeploymentConfiguration optional nested blocks (#1806)', (
 
   /**
    * Primes exactly ONE response and asserts exactly one send was consumed.
-   * The count pin lives here rather than in each test because this file drains
-   * its `*Once` queue in `beforeEach` — which is correct, but means the
-   * once-leak detector can never flag it, so nothing else would notice the
-   * update path starting to issue a second call (the change that silently
-   * invalidates a priming). See `.claude/rules/testing.md`.
+   * The count pin lives here rather than in each test because every mock is
+   * reset before each test (`mockReset: true`) — which is correct, but drains
+   * an unconsumed primer silently, so nothing else would notice the update
+   * path starting to issue a second call (the change that silently invalidates
+   * a priming). See `.claude/rules/testing.md`.
    */
   const update = async (
     props: Record<string, unknown>,

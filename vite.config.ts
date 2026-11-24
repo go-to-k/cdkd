@@ -96,6 +96,12 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     setupFiles: ['./tests/setup.ts'],
+    // Reset every mock before each test (issue #6928): it drains a `*Once`
+    // primer a test left unconsumed, which `clearAllMocks` does not, so the
+    // primer cannot shift a later test's calls. It also wipes any default set
+    // outside `beforeEach` / a test, which `vi.fn(impl)` survives;
+    // `scripts/check-module-scope-mock-defaults.ts` refuses such a default.
+    mockReset: true,
     // Materialises the gitignored docs/changelog-cdkd.md before any suite
     // runs. Two suites read it by PATH -- a link-target check cannot be
     // satisfied in memory -- and a fresh clone does not have it, so both were
@@ -303,8 +309,8 @@ export default defineConfig({
         command: 'vp check',
         cache: false,
       },
-      // NOT cached, for the same reason `typecheck` / `typecheck:test` /
-      // `test:once-leak` below are not: a correctness gate must never replay a
+      // NOT cached, for the same reason `typecheck` / `typecheck:test` below
+      // are not: a correctness gate must never replay a
       // cached green. The cache cost two distinct false greens here rather than
       // one.
       //
@@ -340,34 +346,11 @@ export default defineConfig({
         command: 'vp test run --coverage',
         cache: false,
       },
-      // Issue #1618 — the unit suite with the runtime `*Once`-leak detector
-      // armed. `vp test run` rather than `vp run test` on purpose: the latter
-      // USED to be cached, with a key that ignores env vars, so it could replay
-      // an earlier green summary and report "no leaks" without having looked.
-      // Nothing caches any more, but the direct spelling is still the one to
-      // use — see the `test` task above.
-      'test:once-leak': {
-        command: 'CDKD_ONCE_LEAK_DETECT=1 vp test run',
-        cache: false,
-      },
-      // Runs the deliberately-leaking canary suite with the grandfather list
-      // ignored. Expected to FAIL — CI inverts the exit code. See the
-      // `detector canary` step in .github/workflows/ci.yml.
-      'test:once-leak-canary': {
-        command:
-          'CDKD_ONCE_LEAK_DETECT=1 CDKD_ONCE_LEAK_IGNORE_ALLOWLIST=1 ' +
-          'vp test run tests/unit/scripts/once-leak-canary.test.ts',
-        cache: false,
-      },
-      'gen:once-leak-allowlist': {
-        command: 'node --experimental-strip-types scripts/gen-once-leak-allowlist.ts',
-        cache: false,
-      },
-      // Issue #6928 step 1 — no NEW mock default where `mockReset` would wipe
-      // it (module scope, a describe body, a vi.mock factory, vi.hoisted,
+      // Issue #6928 — no mock default where `mockReset: true` (above) wipes it
+      // (module scope, a describe body, a vi.mock factory, vi.hoisted,
       // beforeAll / afterAll / afterEach). The unit suite
       // (`module-scope-mock-defaults.test.ts`) is what CI enforces; this is the
-      // same verdict from the command line. Its allow-list only shrinks.
+      // same verdict from the command line.
       'audit:module-scope-mock-defaults:check': {
         command: 'node --experimental-strip-types scripts/check-module-scope-mock-defaults.ts --check',
         cache: false,

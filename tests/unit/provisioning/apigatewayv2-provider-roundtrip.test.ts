@@ -640,8 +640,8 @@ describe('ApiGatewayV2Provider update() removal semantics (#1160, #5004)', () =>
 
   beforeEach(() => {
     vi.clearAllMocks();
-    // clearAllMocks keeps implementations, so a test that sets one with
-    // mockImplementation would leak it into the next test on a failed assertion.
+    // Redundant with `mockReset: true` in vite.config.ts, which resets every
+    // mock before each test; kept explicit.
     mockSend.mockReset();
     provider = new ApiGatewayV2Provider();
   });

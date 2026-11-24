@@ -102,7 +102,7 @@ type InsightsAnswer = { status: string; mode?: string } | Error;
 
 /**
  * Dispatch by COMMAND, never `*Once`: the number of `DescribeTable` calls is
- * not the subject, and a surplus primer would leak into the next test.
+ * not the subject, and a `*Once` chain would pin it.
  */
 function primeAws(
   initialIndexNames: string[],

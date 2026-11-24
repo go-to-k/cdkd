@@ -63,8 +63,8 @@ describe('ServiceDiscoveryProvider — ServiceAttributes backfill (#609)', () =>
 
   beforeEach(() => {
     vi.clearAllMocks();
-    // clearAllMocks keeps implementations; restore vi.fn()'s default so a
-    // case that routes via mockImplementation does not leak into the next.
+    // Restores vi.fn()'s default answer explicitly; `mockReset: true` in
+    // vite.config.ts already resets every mock before each test.
     mockSend.mockImplementation(() => undefined);
     provider = new ServiceDiscoveryProvider();
   });
@@ -227,7 +227,7 @@ describe('ServiceDiscoveryProvider — ServiceAttributes backfill (#609)', () =>
       // #3515: `!(k in newAttrs)` saw `constructor` on Object.prototype, so the
       // removed attribute was never deleted and stayed live on AWS.
       // Route by command type (no `*Once` queue): pre-fix the path sends
-      // nothing, so a sequential primer would leak into a later case.
+      // nothing, so a sequential primer would sit unconsumed.
       mockSend.mockImplementation((cmd: unknown) => {
         if (
           cmd instanceof DeleteServiceAttributesCommand ||

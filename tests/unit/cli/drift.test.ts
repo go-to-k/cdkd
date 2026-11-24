@@ -6234,6 +6234,27 @@ describe('buildRevertNewProperties (pure helper)', () => {
 });
 
 describe('cdkd drift --revert (placeholder isolation regression)', () => {
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+
+  // This block's own defaults. It used to run on the ones the `cdkd drift`
+  // suite above left set, which `mockReset` now wipes before each test.
+  beforeEach(() => {
+    mockVerifyBucketExists.mockResolvedValue(undefined);
+    mockSaveState.mockResolvedValue('"etag-2"');
+    mockAcquireLock.mockResolvedValue(true);
+    mockReleaseLock.mockResolvedValue(undefined);
+    mockRegistryShouldSkip.mockReturnValue(false);
+    mockCcReadCurrentState.mockResolvedValue(undefined);
+    mockReadOnlyPropertyPaths.mockResolvedValue(undefined);
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('__exit__');
+    }) as never);
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+  });
+
   it('passes AWS-current values for non-drifted keys (does not silently clear them on diff-based providers)', async () => {
     // Regression covering the audit finding: SNS / IAM Role / ELBv2
     // diff `JSON.stringify(newVal) !== JSON.stringify(oldVal)` and

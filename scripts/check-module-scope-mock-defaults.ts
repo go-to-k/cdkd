@@ -1,17 +1,16 @@
 /**
- * Module-scope mock-default fence for `tests/unit/**` (issue #6928, step 1).
+ * Mock-default fence for `tests/unit/**` (issue #6928).
  *
  * WHAT THIS CHECKS
  * ----------------
  * A mock behavior installed where `mockReset` would WIPE it before a test
- * runs. Issue #6928's goal is `mockReset: true` in `vite.config.ts`, which
- * calls `vi.resetAllMocks()` before EVERY test attempt (vitest's
- * `onBeforeTryTask` -> `clearModuleMocks`), after `beforeAll` and before
- * `beforeEach`. A default set anywhere but a `beforeEach` or a test body is
- * gone by then, and a wiped default returns `undefined`, which absence
- * assertions still accept (#1618: 1181 tests failed, and the rest were worse).
- * This check stops the population from GROWING; issue #6928 step 2 migrates
- * the grandfathered files and step 3 deletes the allow-list.
+ * runs. `vite.config.ts` sets `mockReset: true`, which calls
+ * `vi.resetAllMocks()` before EVERY test attempt (vitest's `onBeforeTryTask`
+ * -> `clearModuleMocks`), after `beforeAll` and before `beforeEach`. A default
+ * set anywhere but a `beforeEach` or a test body is gone by then, and a wiped
+ * default returns `undefined`, which absence assertions still accept — the
+ * test goes silently vacuous instead of red. Every such site is refused; there
+ * is no allow-list.
  *
  * THE CALL SHAPES (what `mockReset` wipes, read from `@vitest/spy`)
  * ---------------------------------------------------------------
@@ -75,36 +74,27 @@
  *     custom test function (`const myTest = test.extend(...)`; `myTest(...)` is
  *     read as an ordinary call, so its body inherits — fail-closed).
  * `unresolved` sites are reported in `--json` so the bound stays visible; they
- * are NOT gated, so a new one does not fail the run.
- *
- * THE ALLOW-LIST SHRINKS, NEVER GROWS
- * -----------------------------------
- * `tests/module-scope-mock-defaults-allowlist.json` maps each grandfathered file
- * to its EXACT refused-site count. Every direction fails with its own message:
- * an unlisted file with a refused site (NEW), a listed file whose count rose
- * (GREW), a listed file whose count fell (LOWER: edit the number, or run
- * `--update`), a listed file now clean (STALE: delete the entry), a listed file
- * that no longer exists (DEAD). `--update` only lowers or removes entries; it
- * never adds one or raises a count, so it cannot launder a new default. The
- * unit is a COUNT, so a listed file that moves one default into `beforeEach`
- * and adds another elsewhere in the same change still matches.
+ * are NOT gated, so a new one does not fail the run. Bound 2 is real: a setter
+ * on a mock a `vi.mock` factory's closure builds (a client class as
+ * `vi.fn().mockImplementation(...)`, a long-lived client's `send`) is wiped
+ * by the reset too; suites went red that way when `mockReset: true` landed
+ * (#6928). Spell it `vi.fn(impl)`.
  *
  * WHAT DEFENDS THIS CHECKER FROM ITSELF
  * -------------------------------------
  * A parse diagnostic in any scanned file fails the run (an unparsed file reads
- * exactly like a clean one), as does an empty scan, and `--update` refuses
- * both. The unit suite `tests/unit/scripts/module-scope-mock-defaults.test.ts`
- * pins each shape above on synthetic sources and floors the real tree's file
- * and safe-site counts.
+ * exactly like a clean one), as does an empty scan. The unit suite
+ * `tests/unit/scripts/module-scope-mock-defaults.test.ts` pins each shape above
+ * on synthetic sources, floors the real tree's file and safe-site counts, and
+ * fails if `vite.config.ts` stops setting `mockReset: true`.
  *
  * USAGE
  *   node --experimental-strip-types scripts/check-module-scope-mock-defaults.ts --check
  *   ... --json                    machine-readable report
- *   ... --update                  shrink the allow-list to the current tree
- *   ... --root=<dir> --allow-list=<file>   test seam: scan a scratch copy
+ *   ... --root=<dir>              test seam: scan a scratch copy
  */
 
-import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -116,7 +106,6 @@ import ts from 'typescript-v6';
 const REPO_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 /** The scanned tree, relative to the scan root (the repo, or a scratch copy). */
 export const SCAN_SUBDIR = 'tests/unit';
-export const ALLOW_LIST_PATH = join(REPO_ROOT, 'tests/module-scope-mock-defaults-allowlist.json');
 
 /** Every setter whose effect `mockReset()` undoes (see the header). */
 export const SETTERS: ReadonlySet<string> = new Set([
@@ -549,16 +538,6 @@ function* walkTypeScriptFiles(dir: string): Generator<string> {
   }
 }
 
-export interface AllowList {
-  readonly $comment?: string;
-  /** Repo-relative path -> exact refused-site count. */
-  readonly files: Readonly<Record<string, number>>;
-}
-
-export function readAllowList(path: string = ALLOW_LIST_PATH): AllowList {
-  return JSON.parse(readFileSync(path, 'utf8')) as AllowList;
-}
-
 export interface FileReport {
   readonly file: string;
   readonly refused: readonly Site[];
@@ -567,18 +546,8 @@ export interface FileReport {
 export interface Report {
   readonly filesScanned: number;
   readonly parseErrors: readonly string[];
-  /** Refused sites per file, every file with at least one. */
+  /** Refused sites per file, every file with at least one. Each one fails the check. */
   readonly offenders: readonly FileReport[];
-  /** Offending files not on the list. */
-  readonly newFiles: readonly FileReport[];
-  /** Listed files whose count ROSE: { file, listed, actual }. */
-  readonly grew: readonly { file: string; listed: number; actual: number }[];
-  /** Listed files whose count FELL but is not zero. */
-  readonly lower: readonly { file: string; listed: number; actual: number }[];
-  /** Listed files that are clean now. */
-  readonly stale: readonly string[];
-  /** Listed files that do not exist. */
-  readonly dead: readonly string[];
   readonly totals: {
     readonly safe: number;
     readonly refused: number;
@@ -588,8 +557,7 @@ export interface Report {
   readonly unresolvedSites: readonly { file: string; line: number; setter: string }[];
 }
 
-export function buildReport(scanRoot: string = REPO_ROOT, allowList?: AllowList): Report {
-  const allow = allowList ?? readAllowList();
+export function buildReport(scanRoot: string = REPO_ROOT): Report {
   const dir = join(scanRoot, SCAN_SUBDIR);
   const parseErrors: string[] = [];
   const offenders: FileReport[] = [];
@@ -645,117 +613,54 @@ export function buildReport(scanRoot: string = REPO_ROOT, allowList?: AllowList)
   }
   offenders.sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
 
-  const listed = allow.files;
-  const newFiles: FileReport[] = [];
-  const grew: { file: string; listed: number; actual: number }[] = [];
-  const lower: { file: string; listed: number; actual: number }[] = [];
-  const offending = new Map(offenders.map((o) => [o.file, o]));
-  for (const offender of offenders) {
-    const count = Object.hasOwn(listed, offender.file) ? listed[offender.file] : undefined;
-    if (count === undefined) newFiles.push(offender);
-    else if (offender.refused.length > count) {
-      grew.push({ file: offender.file, listed: count, actual: offender.refused.length });
-    } else if (offender.refused.length < count) {
-      lower.push({ file: offender.file, listed: count, actual: offender.refused.length });
-    }
-  }
-  const stale: string[] = [];
-  const dead: string[] = [];
-  for (const file of Object.keys(listed).sort()) {
-    if (!scanned.has(file)) dead.push(file);
-    else if (!offending.has(file)) stale.push(file);
-  }
-
   return {
     filesScanned: scanned.size,
     parseErrors,
     offenders,
-    newFiles,
-    grew,
-    lower,
-    stale,
-    dead,
     totals: { safe, refused: refusedTotal, unresolved, byReason },
     unresolvedSites,
   };
 }
 
 export function reportFails(report: Report): boolean {
-  return (
-    report.filesScanned === 0 ||
-    report.parseErrors.length > 0 ||
-    report.newFiles.length > 0 ||
-    report.grew.length > 0 ||
-    report.lower.length > 0 ||
-    report.stale.length > 0 ||
-    report.dead.length > 0
-  );
-}
-
-/** The allow-list `--update` writes: only lowered counts and removed entries. */
-export function shrunkAllowList(allow: AllowList, report: Report): AllowList {
-  const actual = new Map(report.offenders.map((o) => [o.file, o.refused.length]));
-  const files: Record<string, number> = {};
-  for (const file of Object.keys(allow.files).sort()) {
-    const now = actual.get(file);
-    if (now === undefined || now === 0) continue;
-    files[file] = Math.min(now, allow.files[file]);
-  }
-  return { ...(allow.$comment !== undefined ? { $comment: allow.$comment } : {}), files };
+  return report.filesScanned === 0 || report.parseErrors.length > 0 || report.offenders.length > 0;
 }
 
 const TAG = '[module-scope-mock-defaults]';
 
 function main(): void {
   const args = process.argv.slice(2);
-  const rootArg = args.find((a) => a.startsWith('--root='));
-  const allowArg = args.find((a) => a.startsWith('--allow-list='));
-  const scanRoot = rootArg === undefined ? REPO_ROOT : resolve(rootArg.slice('--root='.length));
-  const allowPath = allowArg === undefined ? ALLOW_LIST_PATH : resolve(allowArg.slice('--allow-list='.length));
-  const allow = readAllowList(allowPath);
-  const report = buildReport(scanRoot, allow);
-
-  if (args.includes('--update')) {
-    if (report.filesScanned === 0 || report.parseErrors.length > 0) {
-      console.error(`${TAG} --update refused: ${report.filesScanned} files scanned, ${report.parseErrors.length} unparsable`);
-      process.exitCode = 1;
-      return;
-    }
-    writeFileSync(allowPath, `${JSON.stringify(shrunkAllowList(allow, report), null, 2)}\n`);
-    console.log(`${TAG} allow-list shrunk to the current tree (never grown): ${allowPath}`);
+  // Refuse what this command does not take, the removed `--update` and
+  // `--allow-list=` included: ignoring one would print a report and exit 0.
+  const unknown = args.filter((a) => a !== '--check' && a !== '--json' && !a.startsWith('--root='));
+  if (unknown.length > 0) {
+    console.error(`${TAG} unknown argument(s): ${unknown.join(' ')} (takes --check, --json, --root=<dir>)`);
+    process.exitCode = 1;
     return;
   }
+  const rootArg = args.find((a) => a.startsWith('--root='));
+  const scanRoot = rootArg === undefined ? REPO_ROOT : resolve(rootArg.slice('--root='.length));
+  const report = buildReport(scanRoot);
+
   if (args.includes('--json')) {
     console.log(JSON.stringify(report, null, 2));
   } else {
     console.log(
       `${TAG} ${report.filesScanned} files: ${report.totals.refused} refused sites in ` +
-        `${report.offenders.length} files (${Object.keys(allow.files).length} grandfathered), ` +
-        `${report.totals.safe} safe, ${report.totals.unresolved} unresolved.`
+        `${report.offenders.length} files, ${report.totals.safe} safe, ${report.totals.unresolved} unresolved.`
     );
   }
   if (report.filesScanned === 0) console.error(`${TAG} scanned NO files under ${SCAN_SUBDIR}`);
   for (const file of report.parseErrors) console.error(`  PARSE  ${file} has parse errors`);
-  for (const offender of report.newFiles) {
+  for (const offender of report.offenders) {
     for (const site of offender.refused) {
       const via = site.via ? ` via ${site.via.join(' -> ')}()` : '';
       console.error(
-        `  NEW    ${offender.file}:${site.line} .${site.setter}() in ${site.reason}${via} — ` +
-          'move it into beforeEach (after vi.resetAllMocks()) or give the mock its default as vi.fn(impl)'
+        `  REFUSED ${offender.file}:${site.line} .${site.setter}() in ${site.reason}${via} — ` +
+          'mockReset wipes it before every test; move it into beforeEach or give the mock its default as vi.fn(impl)'
       );
     }
   }
-  for (const g of report.grew) {
-    console.error(
-      `  GREW   ${g.file}: ${g.actual} refused sites, allow-list says ${g.listed} — ` +
-        'a grandfathered file may not gain a module-scope default (--json lists them)'
-    );
-  }
-  for (const l of report.lower) {
-    console.error(`  LOWER  ${l.file}: ${l.actual} refused sites now, allow-list says ${l.listed} — lower the entry (or --update)`);
-  }
-  for (const file of report.stale) console.error(`  STALE  ${file} is clean now — delete its entry (or --update)`);
-  for (const file of report.dead) console.error(`  DEAD   ${file} does not exist — delete its entry (or --update)`);
 
   if (args.includes('--check') && reportFails(report)) process.exitCode = 1;
 }

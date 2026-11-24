@@ -92,8 +92,7 @@ function warnings(): string {
 /**
  * Answer every command generically instead of priming a `*Once` queue: these
  * tests drive whole `create()` / `update()` flows whose call SEQUENCE is not
- * what they are about, and an over-primed queue leaks into the next test (the
- * `once-leak-detect` class).
+ * what they are about, so a queue would pin a sequence nothing here asserts.
  */
 function primeGeneric(live?: { billingMode?: string; indexes?: unknown[] }): void {
   mockSend.mockImplementation((cmd: unknown) => {

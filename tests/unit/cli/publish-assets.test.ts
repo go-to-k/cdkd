@@ -175,6 +175,28 @@ async function runCmd(
   };
 }
 
+/**
+ * Default `addAssetsToGraph` impl: actually populate the supplied graph so a
+ * subsequent `graph.execute(...)` runs `executeNode`. Tests can override this
+ * with mockReturnValue / mockImplementationOnce. Called from each top-level
+ * describe's `beforeEach`, since `mockReset` wipes it before every test.
+ */
+function primeAddAssetsToGraph(): void {
+  mockAddAssetsToGraph.mockImplementation(
+    (graph: { addNode: (n: unknown) => void }, _manifest: string, opts: { nodePrefix?: string }) => {
+      const id = `asset-publish:${opts.nodePrefix ?? ''}file:default`;
+      graph.addNode({
+        id,
+        type: 'asset-publish',
+        dependencies: new Set(),
+        state: 'pending',
+        data: {},
+      });
+      return [id];
+    }
+  );
+}
+
 describe('cdkd publish-assets', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -183,22 +205,7 @@ describe('cdkd publish-assets', () => {
     mockStsSend.mockResolvedValue({ Account: '111111111111' });
     mockExecuteNode.mockResolvedValue(undefined);
 
-    // Default `addAssetsToGraph` impl: actually populate the supplied graph
-    // so a subsequent `graph.execute(...)` runs `executeNode`. Tests can
-    // override this with mockReturnValue / mockImplementationOnce.
-    mockAddAssetsToGraph.mockImplementation(
-      (graph: { addNode: (n: unknown) => void }, _manifest: string, opts: { nodePrefix?: string }) => {
-        const id = `asset-publish:${opts.nodePrefix ?? ''}file:default`;
-        graph.addNode({
-          id,
-          type: 'asset-publish',
-          dependencies: new Set(),
-          state: 'pending',
-          data: {},
-        });
-        return [id];
-      }
-    );
+    primeAddAssetsToGraph();
   });
 
   describe('synth + publish', () => {
@@ -574,9 +581,9 @@ describe('cdkd publish-assets', () => {
       };
     }
 
-    // NOTE: use *Once variants for per-test stubbing — `vi.clearAllMocks()`
-    // in the top-level beforeEach clears call history but NOT implementations,
-    // so a plain mockReturnValue would leak into later tests.
+    // NOTE: per-test stubs below use *Once variants. `mockReset: true`
+    // resets every mock before each test, so neither form leaks into a later
+    // test; *Once keeps each stub scoped to the one call it describes.
     it('passes the §6 redirect table to addAssetsToGraph in cdkd-assets mode', async () => {
       mockResolveStateBucketWithDefault.mockResolvedValueOnce('test-bucket');
       mockLoadPublishableManifest.mockReturnValueOnce(publishableManifest());
@@ -691,6 +698,7 @@ describe('cdkd publish-assets and a failed context lookup (go-to-k/cdkd#5807)', 
     mockResolveApp.mockReturnValue('node app.ts');
     mockStsSend.mockResolvedValue({ Account: '111111111111' });
     mockExecuteNode.mockResolvedValue(undefined);
+    primeAddAssetsToGraph();
     mockSynthesize.mockResolvedValue({
       stacks: [
         makeStack({ stackName: 'Other' }),

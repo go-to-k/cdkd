@@ -695,6 +695,13 @@ describe('DynamoDBTableProvider PITR / TTL wiring', () => {
   });
 
   describe('readCurrentState', () => {
+    // The reads after DescribeTimeToLive (Kinesis streaming destinations and
+    // the rest) answer empty. Set here rather than inherited from an earlier
+    // test's `mockImplementation`, which `mockReset` wipes.
+    beforeEach(() => {
+      mockSend.mockResolvedValue({});
+    });
+
     function primeBase(): void {
       mockSend.mockResolvedValueOnce({
         Table: { TableName: TABLE_NAME, TableArn: TABLE_ARN },

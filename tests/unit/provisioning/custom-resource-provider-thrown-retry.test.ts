@@ -8,8 +8,7 @@ import { IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS } from '../../../src/deployment/
 //
 // Kept in its own file for the same reason that one is: command-name dispatch
 // rather than ordered `*Once` queues, and the paths here span several
-// invocation attempts. No `*Once` primers are used anywhere in this file, so
-// nothing can leak into a later test.
+// invocation attempts. No `*Once` primers are used anywhere in this file.
 //
 // BOTH polarities are pinned per arm, deliberately: a test that only asserts
 // the retry cannot tell the fix from a blanket wrapper that reintroduces the

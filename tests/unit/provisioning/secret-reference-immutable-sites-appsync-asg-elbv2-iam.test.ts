@@ -266,10 +266,9 @@ function run(
 
 beforeEach(() => {
   vi.clearAllMocks();
-  // A reset, not only a clear: a clear keeps a `mockRejectedValueOnce` queue a
-  // case left unconsumed, which would leak into the next case. Only the
-  // per-case fakes: a global reset would also wipe the mocked SDK client
-  // constructors' implementations.
+  // Explicit resets of the per-case fakes, redundant with `mockReset: true` in
+  // vite.config.ts, which resets every mock before each test (the mocked SDK
+  // client constructors are `vi.fn(impl)`, which the reset restores).
   mockSend.mockReset();
   mockGetAccountInfo.mockReset();
   fakeAws();
