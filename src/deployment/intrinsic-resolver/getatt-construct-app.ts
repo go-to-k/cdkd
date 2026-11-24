@@ -15,6 +15,7 @@ import { graphQLSchemaCfnId } from './ref-values.js';
 import { DescribeAvailabilityZonesCommand } from '@aws-sdk/client-ec2';
 import { secretPhysicalIdSegment } from '../../provisioning/secret-physical-id.js';
 import { startInterruptWatch } from '../../provisioning/interrupt-watch.js';
+import { isThrottlingError, isTransientServerError } from '../retryable-errors.js';
 import { connectInstanceIdOf } from '../../provisioning/connect-instance-id.js';
 
 /**
@@ -50,7 +51,11 @@ export async function constructAttributeForAppTypes(
       attributeName === 'CreatedTime' ||
       attributeName === 'InstanceStatus'
     ) {
-      const read = async (): Promise<{ status: string | undefined; value: string | undefined }> => {
+      const read = async (): Promise<{
+        status: string | undefined;
+        value: string | undefined;
+        transient?: true;
+      }> => {
         try {
           const { DescribeInstanceCommand } = await import('@aws-sdk/client-connect');
           const connect = await resolver.clients.connectClient();
@@ -69,6 +74,10 @@ export async function constructAttributeForAppTypes(
             value: typeof value === 'string' && value !== '' ? value : undefined,
           };
         } catch (err) {
+          // A throttled or 5xx read during the ServiceRole wait keeps polling.
+          if (isThrottlingError(err) || isTransientServerError(err)) {
+            return { status: undefined, value: undefined, transient: true };
+          }
           return refuseUnservedAttribute(resolver, {
             logicalId,
             attributeName,
@@ -82,18 +91,16 @@ export async function constructAttributeForAppTypes(
         }
       };
       let observed = await read();
-      if (
-        attributeName === 'ServiceRole' &&
+      const pending = (): boolean =>
         observed.value === undefined &&
-        observed.status === 'CREATION_IN_PROGRESS'
-      ) {
+        (observed.status === 'CREATION_IN_PROGRESS' || observed.transient === true);
+      if (attributeName === 'ServiceRole' ? pending() : observed.transient === true) {
         const watch = startInterruptWatch(`Connect instance ${logicalId} attribute wait`);
         try {
           for (
             let poll = 0;
             poll < connectInstanceAttributeWait.polls &&
-            observed.value === undefined &&
-            observed.status === 'CREATION_IN_PROGRESS';
+            (attributeName === 'ServiceRole' ? pending() : observed.transient === true);
             poll++
           ) {
             if (watch.isInterrupted()) throw watch.onInterrupted();
@@ -116,6 +123,12 @@ export async function constructAttributeForAppTypes(
         remedy:
           'Check the instance with `aws connect describe-instance` (a CREATION_FAILED one names its StatusReason), then deploy again once it is ACTIVE.',
       };
+      if (observed.transient === true) {
+        return refuseUnservedAttribute(resolver, {
+          ...refusal,
+          observed: 'DescribeInstance stayed throttled or failing past the attribute wait',
+        });
+      }
       if (observed.status === 'CREATION_IN_PROGRESS') {
         return refuseUnservedAttribute(resolver, {
           ...refusal,

@@ -49,7 +49,7 @@ function context(): ResolverContext {
         resourceType: 'AWS::Connect::Instance',
         properties: {},
         // What a `--no-wait` create records.
-        attributes: { Id: ID, Arn: ARN, InstanceStatus: 'CREATION_IN_PROGRESS' },
+        attributes: { Id: ID, Arn: ARN },
         dependencies: [],
       },
     },
@@ -82,7 +82,7 @@ describe('Fn::GetAtt AWS::Connect::Instance live arm (#6912)', () => {
     expect(sleep).toHaveBeenCalledTimes(2);
   });
 
-  it('serves a recorded attribute and Arn / Id without a read', async () => {
+  it('serves Arn / Id from the physical id without a read', async () => {
     const resolver = new IntrinsicFunctionResolver();
     expect(await resolver.resolve({ 'Fn::GetAtt': ['Inst', 'Id'] }, context())).toBe(ID);
     expect(await resolver.resolve({ 'Fn::GetAtt': ['Inst', 'Arn'] }, context())).toBe(ARN);
@@ -98,6 +98,23 @@ describe('Fn::GetAtt AWS::Connect::Instance live arm (#6912)', () => {
     expect(error).toBeInstanceOf(IntrinsicResolutionRefusalError);
     expect(String(error)).toMatch(/stayed CREATION_IN_PROGRESS/);
     expect(mockConnectSend).toHaveBeenCalledTimes(4);
+  });
+
+  it('keeps polling through a throttled read during the ServiceRole wait', async () => {
+    mockConnectSend
+      .mockRejectedValueOnce(Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' }))
+      .mockResolvedValueOnce(instance({ InstanceStatus: 'ACTIVE', ServiceRole: ROLE }));
+    const resolver = new IntrinsicFunctionResolver();
+    expect(await resolver.resolve({ 'Fn::GetAtt': ['Inst', 'ServiceRole'] }, context())).toBe(ROLE);
+    expect(sleep).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads InstanceStatus live when the record lacks it (a --no-wait create), without waiting', async () => {
+    mockConnectSend.mockResolvedValue(instance({ InstanceStatus: 'ACTIVE' }));
+    const ctx = context();
+    const resolver = new IntrinsicFunctionResolver();
+    expect(await resolver.resolve({ 'Fn::GetAtt': ['Inst', 'InstanceStatus'] }, ctx)).toBe('ACTIVE');
+    expect(sleep).not.toHaveBeenCalled();
   });
 
   it('refuses a CREATION_FAILED instance without waiting', async () => {

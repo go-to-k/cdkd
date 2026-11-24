@@ -132,13 +132,16 @@ function attributesFromList(
 }
 
 /** The record's read-only attributes from one `DescribeInstance` answer. */
-function attributesOf(instance: Instance | undefined): Record<string, unknown> {
+function attributesOf(
+  instance: Instance | undefined,
+  withoutStatus = false
+): Record<string, unknown> {
   return definedAttributes({
     Id: instance?.Id,
     Arn: instance?.Arn,
     ServiceRole: instance?.ServiceRole,
     CreatedTime: instance?.CreatedTime?.toISOString(),
-    InstanceStatus: instance?.InstanceStatus,
+    InstanceStatus: withoutStatus ? undefined : instance?.InstanceStatus,
   });
 }
 
@@ -322,7 +325,8 @@ export class ConnectInstanceProvider implements ResourceProvider {
         if (CREATE_CALL_ATTRIBUTES.has(key)) continue;
         await this.updateAttribute(instanceId, key, flag, deadline, logicalId, mask);
       }
-      if (process.env['CDKD_NO_WAIT'] === 'true') {
+      const noWait = process.env['CDKD_NO_WAIT'] === 'true';
+      if (noWait) {
         this.logger.debug(
           mask(`Skipping the ACTIVE wait for Connect instance ${logicalId} (CDKD_NO_WAIT=true)`)
         );
@@ -330,9 +334,12 @@ export class ConnectInstanceProvider implements ResourceProvider {
         instance = await this.waitForInstance(instanceId, logicalId, 'active', deadline, mask);
       }
       createToken.release();
+      // Under --no-wait the status read is the readiness one, which a later
+      // GetAtt would be answered from long after it stopped being true: left
+      // out, so that GetAtt reads the instance live.
       return {
         physicalId: arn,
-        attributes: { ...attributesOf(instance), Id: instanceId, Arn: arn },
+        attributes: { ...attributesOf(instance, noWait), Id: instanceId, Arn: arn },
       };
     } catch (error) {
       if (isInterruptedWaitError(error)) throw error;
@@ -353,7 +360,11 @@ export class ConnectInstanceProvider implements ResourceProvider {
                 )
             );
       if (arn !== undefined) {
-        thrown = await this.retireFailedCreate(thrown, logicalId, resourceType, arn, mask);
+        // The token is retired once the instance it minted is gone, so a
+        // retry creates afresh instead of being handed the deleted instance.
+        thrown = await this.retireFailedCreate(thrown, logicalId, resourceType, arn, mask, () =>
+          createToken.release()
+        );
       }
       throw thrown;
     }
@@ -382,17 +393,20 @@ export class ConnectInstanceProvider implements ResourceProvider {
     logicalId: string,
     resourceType: string,
     arn: string,
-    mask: MaskerFn
+    mask: MaskerFn,
+    onGone: () => void
   ): Promise<ProvisioningError> {
     try {
       await this.getClient().send(
         new DeleteInstanceCommand({ InstanceId: connectInstanceIdOf(arn) })
       );
       retractCreatedResource(logicalId, resourceType, arn);
+      onGone();
       return thrown;
     } catch (cleanupError) {
       if (cleanupError instanceof ResourceNotFoundException) {
         retractCreatedResource(logicalId, resourceType, arn);
+        onGone();
         return thrown;
       }
       const failure = describeAwsFailure(cleanupError);
@@ -613,7 +627,7 @@ export class ConnectInstanceProvider implements ResourceProvider {
       if (error instanceof ResourceNotFoundException) {
         assertRegionMatch(
           await this.getClient().config.region(),
-          context?.expectedRegion,
+          context?.expectedRegion ?? arnRegionOf(physicalId),
           resourceType,
           logicalId,
           physicalId

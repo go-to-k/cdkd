@@ -309,8 +309,8 @@ return leaves unfinished, and what `--full-wait` does when a wait runs out.
     right after the deploy that added it, waits for the association;
   - releasing the gateway's last associated address waits until another
     address the template keeps has associated.
-- **CloudFront, `AWS::Lambda::MicrovmImage` and `AWS::BedrockAgentCore::Runtime`
-  through Cloud Control.** cdkd provisions common resource types by calling
+- **CloudFront, `AWS::Lambda::MicrovmImage`, `AWS::BedrockAgentCore::Runtime`,
+  `AWS::Events::Archive` and `AWS::Connect::Instance` through Cloud Control.** cdkd provisions common resource types by calling
   the service's own API, and the rest through the AWS Cloud Control API. The
   early return in the table applies only to the first route. A resource of
   these types that is routed through Cloud Control waits for its final state

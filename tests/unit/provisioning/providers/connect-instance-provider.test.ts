@@ -189,7 +189,7 @@ describe('ConnectInstanceProvider', () => {
 
       expect(result.physicalId).toBe(ARN);
       expect(result.attributes?.['ServiceRole']).toBeUndefined();
-      expect(result.attributes?.['InstanceStatus']).toBe('CREATION_IN_PROGRESS');
+      expect(result.attributes?.['InstanceStatus']).toBeUndefined();
       expect(sentOf(UpdateInstanceAttributeCommand)).toHaveLength(1);
       expect(sentOf(DescribeInstanceCommand)).toHaveLength(1);
     });
@@ -201,6 +201,21 @@ describe('ConnectInstanceProvider', () => {
         /Connect instance Inst entered CREATION_FAILED/
       );
       expect(sentOf(DeleteInstanceCommand).map((c) => c.input)).toEqual([{ InstanceId: ID }]);
+    });
+
+    it("keeps AWS's StatusReason out of the thrown message", async () => {
+      scriptCreate({ statuses: ['CREATION_FAILED'] });
+      const error = await provider.create('Inst', TYPE, baseProps()).catch((e: unknown) => e);
+      expect(String(error)).not.toContain('boom');
+    });
+
+    it('retires the ClientToken of an instance its failed create deleted, so a retry creates afresh', async () => {
+      scriptCreate({ statuses: ['CREATION_FAILED'] });
+      await provider.create('Retry', TYPE, baseProps()).catch(() => undefined);
+      await provider.create('Retry', TYPE, baseProps()).catch(() => undefined);
+      const [first, second] = sentOf(CreateInstanceCommand).map((c) => c.input.ClientToken);
+      expect(first).toEqual(expect.any(String));
+      expect(second).not.toBe(first);
     });
 
     it('a failed cleanup delete names the survivor as created before the failure', async () => {
@@ -226,20 +241,55 @@ describe('ConnectInstanceProvider', () => {
       expect(sentOf(DeleteInstanceCommand)).toHaveLength(0);
     });
 
-    it('a wait that runs out fails the create and deletes the instance', async () => {
+    it('a readiness wait that runs out fails the create and deletes the instance', async () => {
+      // Readiness never comes (status reads, the attribute stays 404) and the
+      // deadline is now: the 404 itself ends the wait.
       provider.instanceWait = { pollIntervalMs: 0, timeoutMs: 0, sleep: () => Promise.resolve() };
+      scriptCreate({ statuses: ['CREATION_IN_PROGRESS'], attrNotFound: 100 });
+
+      await expect(provider.create('Inst', TYPE, baseProps())).rejects.toThrow(
+        /Failed to create Connect instance Inst/
+      );
+      expect(sentOf(DeleteInstanceCommand)).toHaveLength(1);
+    });
+
+    it('an ACTIVE wait that runs out fails the create with the status it was left in', async () => {
+      let now = 1_000_000;
+      const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+      provider.instanceWait = {
+        pollIntervalMs: 1_000,
+        timeoutMs: 10_000,
+        sleep: (ms: number) => {
+          now += ms;
+          return Promise.resolve();
+        },
+      };
       scriptCreate({ statuses: ['CREATION_IN_PROGRESS'] });
+      try {
+        await expect(provider.create('Inst', TYPE, baseProps())).rejects.toThrow(
+          /Connect instance Inst was still CREATION_IN_PROGRESS when its ACTIVE wait ran out/
+        );
+      } finally {
+        clock.mockRestore();
+      }
+      expect(sentOf(DeleteInstanceCommand)).toHaveLength(1);
+    });
+
+    it('retries an attribute write the instance is not ready for yet', async () => {
+      scriptCreate({ statuses: ['CREATION_IN_PROGRESS', 'ACTIVE'] });
+      const base = mockSend.getMockImplementation()!;
+      let refusals = 2;
       mockSend.mockImplementation((cmd: unknown) => {
-        if (cmd instanceof CreateInstanceCommand) return Promise.resolve({ Id: ID, Arn: ARN });
-        if (cmd instanceof DescribeInstanceCommand) {
-          return Promise.resolve({ Instance: { Arn: ARN, InstanceStatus: 'CREATION_IN_PROGRESS' } });
+        if (cmd instanceof UpdateInstanceAttributeCommand && refusals > 0) {
+          refusals--;
+          return Promise.reject(notFound());
         }
-        if (cmd instanceof DescribeInstanceAttributeCommand) return Promise.reject(notFound());
-        return Promise.resolve({});
+        return base(cmd);
       });
 
-      await expect(provider.create('Inst', TYPE, baseProps())).rejects.toThrow();
-      expect(sentOf(DeleteInstanceCommand)).toHaveLength(1);
+      await provider.create('Inst', TYPE, baseProps());
+      expect(sentOf(UpdateInstanceAttributeCommand)).toHaveLength(3);
+      expect(sentOf(DeleteInstanceCommand)).toHaveLength(0);
     });
 
     it.each([
@@ -305,6 +355,91 @@ describe('ConnectInstanceProvider', () => {
     it('sends nothing when nothing changed', async () => {
       await provider.update('Inst', ARN, TYPE, baseProps(), baseProps());
       expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('re-sends every declared attribute and tag when a failed update left them unsettled', async () => {
+      mockSend.mockResolvedValue({});
+      const markUnsettled = vi.fn();
+      await provider.update(
+        'Inst',
+        ARN,
+        TYPE,
+        baseProps({ Tags: [{ Key: 'a', Value: '1' }] }),
+        baseProps({ Tags: [{ Key: 'a', Value: '1' }] }),
+        { unsettledProperties: new Set(['Attributes', 'Tags']), markUnsettled }
+      );
+      expect(sentOf(UpdateInstanceAttributeCommand).map((c) => c.input.AttributeType)).toEqual([
+        'INBOUND_CALLS',
+        'OUTBOUND_CALLS',
+        'CONTACTFLOW_LOGS',
+      ]);
+      expect(sentOf(TagResourceCommand)[0]?.input).toEqual({ resourceArn: ARN, tags: { a: '1' } });
+      expect(markUnsettled).toHaveBeenCalledWith('Attributes');
+      expect(markUnsettled).toHaveBeenCalledWith('Tags');
+    });
+
+    it('marks Attributes unsettled before an attribute write', async () => {
+      mockSend.mockRejectedValue(Object.assign(new Error('denied'), { name: 'AccessDeniedException' }));
+      const markUnsettled = vi.fn();
+      await expect(
+        provider.update(
+          'Inst',
+          ARN,
+          TYPE,
+          baseProps({ Attributes: { InboundCalls: false, OutboundCalls: false } }),
+          baseProps(),
+          { markUnsettled }
+        )
+      ).rejects.toThrow(/Failed to update Connect instance Inst/);
+      expect(markUnsettled).toHaveBeenCalledWith('Attributes');
+    });
+
+    it('refuses a malformed template Attributes before any call', async () => {
+      await expect(
+        provider.update('Inst', ARN, TYPE, baseProps({ Attributes: { InboundCalls: 'maybe', OutboundCalls: true } }), baseProps())
+      ).rejects.toThrow(/InboundCalls/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['a rollback replay', { replayingState: true }],
+      ['a drift revert', { desiredFromAwsReadback: true }],
+    ])('applies the usable members of a malformed state-borne Attributes on %s, with a warning', async (_label, ctx) => {
+      mockSend.mockResolvedValue({});
+      await provider.update(
+        'Inst',
+        ARN,
+        TYPE,
+        baseProps({ Attributes: { InboundCalls: 'maybe', OutboundCalls: true, ContactflowLogs: true } }),
+        baseProps({ Attributes: { InboundCalls: true, OutboundCalls: false, ContactflowLogs: true } }),
+        ctx
+      );
+      expect(sentOf(UpdateInstanceAttributeCommand).map((c) => c.input)).toEqual([
+        { InstanceId: ID, AttributeType: 'OUTBOUND_CALLS', Value: 'true' },
+      ]);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('only its usable members are applied'));
+    });
+
+    it('refuses an update from a client in another region than the record, before any write', async () => {
+      await expect(
+        provider.update('Inst', ARN, TYPE, baseProps({ Attributes: { InboundCalls: false, OutboundCalls: false } }), baseProps(), {
+          expectedRegion: 'eu-west-1',
+        })
+      ).rejects.toThrow(/eu-west-1/);
+      expect(sentOf(UpdateInstanceAttributeCommand)).toHaveLength(0);
+    });
+  });
+
+  describe('getAttribute', () => {
+    it('answers Arn and Id from the physical id, and the rest from DescribeInstance', async () => {
+      mockSend.mockResolvedValue({
+        Instance: { Id: ID, Arn: ARN, InstanceStatus: 'ACTIVE', ServiceRole: ROLE, CreatedTime: CREATED },
+      });
+      expect(await provider.getAttribute(ARN, TYPE, 'Arn')).toBe(ARN);
+      expect(await provider.getAttribute(ARN, TYPE, 'Id')).toBe(ID);
+      expect(mockSend).not.toHaveBeenCalled();
+      expect(await provider.getAttribute(ARN, TYPE, 'ServiceRole')).toBe(ROLE);
+      expect(await provider.getAttribute(ARN, TYPE, 'CreatedTime')).toBe(CREATED.toISOString());
     });
   });
 
