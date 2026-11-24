@@ -176,7 +176,8 @@ A subagent's Bash bypasses the PreToolUse hooks.
   reviewer it dispatches — the lane copies the ban verbatim into each reviewer
   prompt; run it yourself, serially, and start ANY vitest of yours only while
   no lane's is running** — concurrent suites trip the 600s watchdog in
-  untouched files (#6871 run: a reviewer re-ran `tests/unit` in its extract after a kill).
+  untouched files (#6871 run: a reviewer re-ran `tests/unit` in its extract
+  after a kill).
   Each runs `vp test run <its own suite>`, its files spelled out or inside
   `bash -c`: zsh passes an unquoted `$files` as ONE argument. In any shell an
   EMPTY list (a `$(ls <glob>)` matching nothing) runs the FULL suite: guard it.
