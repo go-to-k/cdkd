@@ -96,14 +96,22 @@ describe('createLocalStartAlbCommand', () => {
     expect(parsed.opts().stateBucket).toBe('cdkd-state-123');
   });
 
-  it('parses --lb-port as a variadic that builds an array', () => {
+  it('parses a repeated --lb-port into an array, one value per flag', () => {
     const fresh = createLocalStartAlbCommand();
     fresh.action(() => {});
     const parsed = fresh.parse(
-      ['My/Alb', '--lb-port', '80=8080', '443=8443'],
+      ['My/Alb', '--lb-port', '80=8080', '--lb-port', '443=8443'],
       { from: 'user' }
     );
     expect(parsed.opts().lbPort).toEqual(['80=8080', '443=8443']);
+  });
+
+  it('keeps a target written after --lb-port (go-to-k/cdkd#6911)', () => {
+    const fresh = createLocalStartAlbCommand();
+    fresh.action(() => {});
+    const parsed = fresh.parse(['--lb-port', '80=8080', 'My/Alb'], { from: 'user' });
+    expect(parsed.opts().lbPort).toEqual(['80=8080']);
+    expect(parsed.args).toEqual(['My/Alb']);
   });
 
   it('parses --tls as a boolean flag (no value)', () => {

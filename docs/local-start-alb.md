@@ -73,7 +73,7 @@ requirements.
 | Flag | Default | Description |
 | --- | --- | --- |
 | `[targets...]` | picker | The load balancers to serve. |
-| `--lb-port <listenerPort=hostPort...>` | same port | Bind one listener on another host port. Repeatable. |
+| `--lb-port <listenerPort=hostPort>` | same port | Bind one listener on another host port. Repeatable. |
 | `--assume-host <[listenerPort=]host>` | request `Host` | Treat every request as if it carried this `Host`, for routing and for the target. Repeatable. |
 | `--tls` | off | Serve HTTPS listeners over HTTPS. |
 | `--tls-cert <path>` | — | PEM server certificate. Requires `--tls-key`. |
@@ -118,11 +118,11 @@ mean what they mean on that command, and that page explains them:
 | `--no-pull` | off | Skip `docker pull` for every image. |
 | `--no-build` | off | Reuse the image built last time for a CDK asset. |
 | `--ecr-role-arn <arn>` | — | Role to assume before authenticating to ECR. |
-| `--image-override <service=dockerfile or dockerfile...>` | — | Build a service's image from a local Dockerfile. |
-| `--image-build-arg <KEY=VAL...>` | — | `docker build --build-arg` for override builds. |
-| `--image-build-secret <id=src...>` | — | `docker build --secret` for override builds. |
-| `--image-target <stage or svc=stage...>` | — | `docker build --target` for override builds. |
-| `--image-context <dir or svc=dir...>` | the Dockerfile's directory | `docker build` context for override builds. |
+| `--image-override <service=dockerfile or dockerfile>` | — | Build a service's image from a local Dockerfile. |
+| `--image-build-arg <KEY=VAL>` | — | `docker build --build-arg` for override builds. |
+| `--image-build-secret <id=src>` | — | `docker build --secret` for override builds. |
+| `--image-target <stage or svc=stage>` | — | `docker build --target` for override builds. |
+| `--image-context <dir or svc=dir>` | the Dockerfile's directory | `docker build` context for override builds. |
 | `--no-interactive-overrides` | off | Do not prompt for Dockerfiles at startup. |
 | `--strict-overrides` | off | Refuse to start while a service still runs a deployed image. |
 
