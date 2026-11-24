@@ -1424,8 +1424,8 @@ describe('Glue CatalogId move refusal (issue #3756)', () => {
     connectionProvider = new GlueConnectionProvider();
   });
 
-  // This block primes STS itself (beforeEach); OLDER blocks further down rely
-  // on the default answer, which mockReset restores from vi.fn(impl).
+  // This block primes STS itself (beforeEach); mockReset hands any later block
+  // that reaches STS the vi.fn(impl) default answer back.
   afterEach(() => {
     mockStsSend.mockReset();
   });
