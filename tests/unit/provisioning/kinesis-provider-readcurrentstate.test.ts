@@ -83,6 +83,135 @@ describe('KinesisStreamProvider.readCurrentState', () => {
     });
   });
 
+  // go-to-k/cdkd#6933: after a reshard, `Shards` also lists the CLOSED
+  // parents (an ending sequence number) for the retention period. Counting
+  // them made drift report 1 -> 4 on a 1-shard stream, and recorded a baseline
+  // `drift --revert` then sent to UpdateShardCount.
+  it('reports the OPEN shard count, not the closed parents a reshard leaves', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        StreamDescription: {
+          StreamName: 'mystream',
+          StreamModeDetails: { StreamMode: 'PROVISIONED' },
+          Shards: [
+            { ShardId: 's-0', SequenceNumberRange: { StartingSequenceNumber: '1', EndingSequenceNumber: '2' } },
+            { ShardId: 's-1', SequenceNumberRange: { StartingSequenceNumber: '3', EndingSequenceNumber: '4' } },
+            { ShardId: 's-2', SequenceNumberRange: { StartingSequenceNumber: '3', EndingSequenceNumber: '5' } },
+            { ShardId: 's-3', SequenceNumberRange: { StartingSequenceNumber: '6' } },
+          ],
+          RetentionPeriodHours: 48,
+          EncryptionType: 'NONE',
+        },
+      })
+      .mockResolvedValueOnce({ StreamDescriptionSummary: { OpenShardCount: 1 } })
+      .mockResolvedValueOnce({ Tags: [] });
+
+    const result = (await provider.readCurrentState('mystream', 'L', 'AWS::Kinesis::Stream')) as Record<
+      string,
+      unknown
+    >;
+
+    expect(mockSend).toHaveBeenCalledTimes(3);
+    expect(result['ShardCount']).toBe(1);
+  });
+
+  it('prefers the summary OpenShardCount over the first DescribeStream page', async () => {
+    // A stream past 100 shards: the first page is capped, the summary is not.
+    mockSend
+      .mockResolvedValueOnce({
+        StreamDescription: {
+          StreamName: 'mystream',
+          StreamModeDetails: { StreamMode: 'PROVISIONED' },
+          Shards: Array.from({ length: 100 }, (_, i) => ({ ShardId: `s-${i}` })),
+          HasMoreShards: true,
+          RetentionPeriodHours: 24,
+          EncryptionType: 'NONE',
+        },
+      })
+      .mockResolvedValueOnce({ StreamDescriptionSummary: { OpenShardCount: 150 } })
+      .mockResolvedValueOnce({ Tags: [] });
+
+    const result = (await provider.readCurrentState('mystream', 'L', 'AWS::Kinesis::Stream')) as Record<
+      string,
+      unknown
+    >;
+
+    expect(result['ShardCount']).toBe(150);
+  });
+
+  it('without a summary count, counts only the page shards that are still open', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        StreamDescription: {
+          StreamName: 'mystream',
+          StreamModeDetails: { StreamMode: 'PROVISIONED' },
+          Shards: [
+            { ShardId: 's-0', SequenceNumberRange: { StartingSequenceNumber: '1', EndingSequenceNumber: '2' } },
+            { ShardId: 's-1', SequenceNumberRange: { StartingSequenceNumber: '3' } },
+            { ShardId: 's-2', SequenceNumberRange: { StartingSequenceNumber: '3' } },
+          ],
+          RetentionPeriodHours: 24,
+          EncryptionType: 'NONE',
+        },
+      })
+      .mockResolvedValueOnce({ StreamDescriptionSummary: {} })
+      .mockResolvedValueOnce({ Tags: [] });
+
+    const result = (await provider.readCurrentState('mystream', 'L', 'AWS::Kinesis::Stream')) as Record<
+      string,
+      unknown
+    >;
+
+    expect(result['ShardCount']).toBe(2);
+  });
+
+  it('without a summary count, omits ShardCount when the page is not the whole list', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        StreamDescription: {
+          StreamName: 'mystream',
+          StreamModeDetails: { StreamMode: 'PROVISIONED' },
+          Shards: Array.from({ length: 100 }, (_, i) => ({ ShardId: `s-${i}` })),
+          HasMoreShards: true,
+          RetentionPeriodHours: 24,
+          EncryptionType: 'NONE',
+        },
+      })
+      .mockResolvedValueOnce({ StreamDescriptionSummary: {} })
+      .mockResolvedValueOnce({ Tags: [] });
+
+    const result = (await provider.readCurrentState('mystream', 'L', 'AWS::Kinesis::Stream')) as Record<
+      string,
+      unknown
+    >;
+
+    expect('ShardCount' in result).toBe(false);
+  });
+
+  it('omits ShardCount for an ON_DEMAND stream even though AWS reports an OpenShardCount', async () => {
+    // AWS rejects UpdateShardCount on ON_DEMAND, so a ShardCount here would
+    // become a failing `drift --revert`.
+    mockSend
+      .mockResolvedValueOnce({
+        StreamDescription: {
+          StreamName: 'mystream',
+          StreamModeDetails: { StreamMode: 'ON_DEMAND' },
+          Shards: [{ ShardId: 's-0' }, { ShardId: 's-1' }, { ShardId: 's-2' }, { ShardId: 's-3' }],
+          RetentionPeriodHours: 24,
+          EncryptionType: 'NONE',
+        },
+      })
+      .mockResolvedValueOnce({ StreamDescriptionSummary: { OpenShardCount: 4 } })
+      .mockResolvedValueOnce({ Tags: [] });
+
+    const result = (await provider.readCurrentState('mystream', 'L', 'AWS::Kinesis::Stream')) as Record<
+      string,
+      unknown
+    >;
+
+    expect('ShardCount' in result).toBe(false);
+  });
+
   it('emits StreamEncryption with EncryptionType=NONE placeholder when stream is unencrypted', async () => {
     mockSend
       .mockResolvedValueOnce({

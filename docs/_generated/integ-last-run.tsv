@@ -44,7 +44,7 @@ bootstrap-free-region	2026-11-04T07:51:26Z	PASS	140	verify.sh	rc 0, 0 orphans; c
 bucket-deployment	2026-11-13T07:46:30Z	PASS	95	verify.sh	rc 0, destroy clean, 0 orphans, no incomplete MPU (#6184)
 budgets	2026-11-21T11:32:52Z	PASS	134	verify.sh	rc 0, 0 orphans (PR #6763)
 budgets-action	2026-11-22T19:57:01Z	PASS	95	verify.sh	rc ok, orph clean; race hit: 4 Budgets assume refusals retried (#6845)
-cache-streaming	2026-11-21T21:07:36Z	PASS	3507	verify.sh	rc ok, orph clean (PR 6795 0162f3918)
+cache-streaming	2026-11-24T15:26:28Z	PASS	3369	verify.sh	rc ok, orph clean (#6933 sweep)
 cc-abandoned-create-resume	2026-11-05T03:51:49Z	PASS	120	verify.sh	rc ok, orph clean; fixture ran vp run build
 cc-api-fallback	2026-11-21T08:55:26Z	PASS	230	verify.sh	rc 0, orph clean (PR 6721 9efccc8+main)
 cc-api-fallback-transitions	2026-11-21T08:55:26Z	PASS	115	verify.sh	rc 0, orph clean (PR 6721 9efccc8+main)
@@ -72,7 +72,7 @@ cc-to-sdk-reroute-ecs-service	2026-11-03T04:12:32Z	PASS	261	verify.sh	rc ok, orp
 cc-to-sdk-reroute-hosted-zone	2026-11-02T17:29:26Z	PASS	177	verify.sh	PR #5662 c63dba225 rc ok, orph clean
 cc-to-sdk-reroute-mount-target	2026-11-03T04:12:32Z	PASS	296	verify.sh	rc ok, orph clean, 4750ae2de
 cc-to-sdk-reroute-rest-api	2026-11-12T12:51:48Z	PASS	296	verify.sh	rc ok, orph clean, destroy 0 errors
-cc-write-only-create-only	2026-11-06T16:34:39Z	PASS	160	verify.sh	#5878 cloud-control split head; rc ok, orph clean
+cc-write-only-create-only	2026-11-24T14:19:31Z	PASS	160	verify.sh	rc ok, orph clean (#6933 sweep)
 cc-write-only-secret-version	2026-11-22T22:18:54Z	PASS	4195	verify.sh	rc ok, orph clean, versions swept; PR6847 final SHA c5828291f: phase 5 rollback logged the not-settled info line and re-sent the revert (#6843)
 cdk-cross-account-lookup-role	2026-11-05T11:58:48Z	PASS	175	verify.sh	sweep n7 rc ok, orph clean; shared bucket (lookup role reads the default bucket)
 ci-cd	2026-11-04T18:07:14Z	PASS	55	verify.sh	rc 0 in us-east-1, destroy clean, orph clean
@@ -132,7 +132,7 @@ destroy-data-guard	2026-11-21T01:28:31Z	PASS	92	verify.sh	PR6710 run at bf25fb0b
 destroy-failed-delete-keeps-dependencies	2026-11-07T16:28:42Z	PASS	66	verify.sh	#6026 destroy-runner split head; rc ok, orph clean
 destroy-interrupt	2026-11-19T08:29:09Z	PASS	370	verify.sh	rc 0; 1 auto-created /aws/lambda log group deleted; orphans clean
 destroy-manifest-deps	2026-11-11T17:17:53Z	PASS	246	verify.sh	rc ok, orph clean, XR log-group sweep ok
-destroy-nested-cross-region	2026-11-12T11:22:31Z	PASS	296	verify.sh	rc ok, orph clean; #6140 (us-east-1)
+destroy-nested-cross-region	2026-11-24T14:20:36Z	PASS	225	verify.sh	rc ok, orph clean (#6933 sweep)
 diff-fail-on-destructive	2026-11-21T06:02:26Z	PASS	95	verify.sh	rc ok, orph clean (#6713 plan)
 diff-intrinsic-target-change	2026-11-10T15:28:15Z	PASS	75	verify.sh	rc ok, orph clean
 dlm-lifecycle-policy	2026-11-23T13:34:11Z	PASS	170	verify.sh	rc ok, orph clean
@@ -157,9 +157,9 @@ dynamodb-autoscaling	2026-11-19T14:40:15Z	PASS	153	verify.sh	#6626 HEAD 341ad3ed
 dynamodb-fix-forward-orphan	2026-11-20T19:36:46Z	PASS	172	verify.sh	PR6691 84afba18c; rc ok, orph clean; own bucket
 dynamodb-globaltable	2026-11-23T10:10:37Z	PASS	2359	verify.sh	PR6863 dac3948ef, us-east-1 CDKD_INTEG_MULTI_REGION=1 own state bucket, rc 0, orph clean
 dynamodb-globaltable-implied-stream	2026-11-23T10:10:37Z	PASS	343	verify.sh	PR6863 dac3948ef, us-east-1 own state bucket, rc 0, orph clean
-dynamodb-globaltable-replica-settings	2026-11-23T10:10:37Z	PASS	3827	verify.sh	PR6863 dac3948ef, us-west-2 own state bucket, rc 0, orph clean
+dynamodb-globaltable-replica-settings	2026-11-24T15:36:45Z	PASS	3986	verify.sh	rc ok, orph clean (#6933 sweep)
 dynamodb-gsi-update	2026-11-23T10:10:37Z	PASS	4794	verify.sh	PR6863 dac3948ef, us-west-2 own state bucket, rc 0, orph clean
-dynamodb-ondemand	2026-11-21T13:51:47Z	PASS	485	verify.sh	rc ok, orph clean; #6778 insights transient
+dynamodb-ondemand	2026-11-24T14:39:11Z	PASS	532	verify.sh	rc ok, orph clean (#6933 sweep)
 dynamodb-sse	2026-10-29T16:45:21Z	PASS	53	verify.sh	rc ok, orph clean; #5514 table gone straight after destroy, probe without wait RED
 dynamodb-stream-filter	2026-11-23T08:26:12Z	PASS	164	verify.sh	PR6859 11e38d61f us-east-1 rc ok, orph clean
 dynamodb-streams	2026-11-20T11:50:48Z	PASS	268	verify.sh	PR6652 be63cc056, us-west-2; rc 0, revert-identity kept identity x1, orph clean
@@ -219,7 +219,7 @@ generated-name-lifecycle	2026-11-05T03:45:05Z	PASS	946	verify.sh	rc=0, own temp 
 generated-name-security-group	2026-11-05T03:29:19Z	PASS	95	verify.sh	rc=0, own temp bucket, destroy clean, orphan scan clean (state+iam+lambda+logs+sg+ddb)
 getatt-appsync-s3express-s3tables	2026-11-21T20:42:30Z	PASS	66	verify.sh	final PASS line, destroy clean, orph clean, shared state bucket
 getatt-asg-arn-rule-name	2026-11-17T03:42:27Z	PASS	135	verify.sh	rc ok, destroy 0 errors, orph clean; at 607f11bb9 (#6479)
-getatt-cache-kinesis-lambda-ec2	2026-11-14T19:24:51Z	PASS	757	verify.sh	rc ok, orph clean
+getatt-cache-kinesis-lambda-ec2	2026-11-24T14:30:05Z	FAIL	794	verify.sh	phase 2 Redis update: maintenance window overlaps the AWS-chosen snapshot window (fixture, not cdkd); orph clean
 getatt-cloudtrail-appsync	2026-11-14T06:03:17Z	PASS	99	verify.sh	rc ok, orph clean incl. CR log group; CFn A/B measured all three (#6242)
 getatt-fallback-guard	2026-11-04T21:15:18Z	PASS	140	verify.sh	rc 0, orphans clean (state+AWS, us-east-1)
 getatt-iam-waf-s3vectors-evaluator	2026-11-21T20:42:30Z	PASS	135	verify.sh	final PASS line, destroy clean, orph clean, shared state bucket
@@ -272,8 +272,8 @@ intrinsic-functions	2026-11-04T05:57:23Z	PASS	32	standard	deploy+destroy rc 0, o
 intrinsics-torture	2026-11-07T00:07:33Z	PASS	50	verify.sh	#5938 ssm-parameter split head; rc ok, orph clean
 intrinsics-torture-2	2026-11-04T08:44:47Z	PASS	45	verify.sh	rc 0, 14/14 checks, destroy clean, orph clean (own state bucket)
 iot-topic-rule-role	2026-11-18T15:35:34Z	PASS	105	verify.sh	us-east-1, rc ok, orph clean; fails without the #6559 pattern
-kinesis-esm-filter	2026-11-06T21:02:05Z	PASS	91	verify.sh	#5918 kinesis split head; rc ok, orph clean
-kinesis-stream-mode-switch	2026-11-22T02:46:37Z	PASS	180	verify.sh	rc ok, orph clean, sha 3116c9288 (#6813 sub-read errors)
+kinesis-esm-filter	2026-11-24T14:18:16Z	PASS	85	verify.sh	rc ok, orph clean (#6933 sweep)
+kinesis-stream-mode-switch	2026-11-24T15:50:36Z	PASS	259	verify.sh	rc ok, orph clean, sha a285cb7f0 (#6933 open shard count, Phase 1b)
 kms-encryption	2026-11-22T03:31:56Z	PASS	151	verify.sh	d2646a6f6 #6759 part a, rc 0, 0 leftovers
 lambda	2026-11-24T05:54:34Z	PASS	135	verify.sh	rc ok, orph clean (#6899 @bdc1448b)
 lambda-accelerator-config	2026-11-21T17:25:48Z	PASS	923	verify.sh	SDK route create/update/removal-refused/destroy; rc ok, orph clean (us-east-1, 1 subnet, 4-vCPU GPU)
@@ -346,7 +346,7 @@ local-start-service	2026-11-15T19:03:18Z	PASS	91	verify.sh	cdk-local 0.168.6; rc
 local-start-service-watch-fast	2026-11-12T13:54:58Z	PASS	50	verify.sh	cdk-local 0.163.0 PR6157; rc ok, orph clean (earlier FAIL = peer lane port 8087)
 local-start-web-function	2026-11-10T16:12:55Z	PASS	20	verify.sh	rc ok, docker clean, orph clean
 local-start-web-function-from-state	2026-11-10T16:12:16Z	PASS	100	verify.sh	rc ok, docker clean, orph clean
-log-pipeline	2026-11-05T02:51:36Z	PASS	100	standard	deploy+destroy ok (12 deleted, 0 errors); orph clean
+log-pipeline	2026-11-24T14:45:23Z	PASS	140	standard	deploy+destroy ok; orph clean (#6933 sweep)
 loggroup-class-guard	2026-11-08T04:01:35Z	PASS	113	verify.sh	#6039 deletion-protection-compensation split head; rc ok, orph clean
 loggroup-kms-associate	2026-11-06T20:47:47Z	PASS	52	verify.sh	#5916 logs-loggroup split head; rc ok, orph clean
 loggroup-never-expire-guard	2026-11-06T20:49:53Z	PASS	116	verify.sh	#5916 logs-loggroup split head; rc ok, orph clean
@@ -436,7 +436,7 @@ require-approval-broadening	2026-11-04T17:48:59Z	PASS	81	verify.sh	rc ok, destro
 retain-orphan-redeploy	2026-11-20T19:04:37Z	PASS	201	verify.sh	rc ok, orph clean, own state bucket, head 870be8d13 (#6702)
 retain-orphan-secret	2026-11-04T22:39:07Z	PASS	85	verify.sh	rc ok, no plaintext in any S3 version, orph clean, own temp state bucket
 rollback-attribute-only-revert	2026-11-18T05:18:35Z	PASS	90	verify.sh	rc ok, orph clean (PR #6531)
-rollback-command	2026-11-21T12:57:30Z	PASS	867	verify.sh	rc ok, orph clean (#6762 run)
+rollback-command	2026-11-24T14:31:41Z	PASS	890	verify.sh	rc ok, orph clean (#6933 sweep)
 rollback-cross-region-secret	2026-11-20T11:50:48Z	PASS	298	verify.sh	PR6652 be63cc056, us-west-2+us-east-1; own state bucket (deleted); rc 0, kept identity x2, orph clean
 rollback-deletion-policy-snapshot	2026-11-04T20:33:20Z	PASS	102	verify.sh	re-run after review fix: verify.sh state check treats missing .resources map as FAIL (unreadable); PASS through it, VolumeSnap record removed; orph clean us-east-1
 rollback-explicit-name-rewrite	2026-11-20T16:18:33Z	PASS	195	verify.sh	rc ok, orph clean, own state bucket, head 27ba68d76 (#6692)
