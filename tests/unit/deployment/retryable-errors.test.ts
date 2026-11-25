@@ -477,6 +477,18 @@ describe('isRetryableTransientError', () => {
       expect(isIamPropagationError(affirmative)).toBe(false);
     });
 
+    it('retries the Logs subscription filter Lambda-permission rejection on the dense cadence (#6989)', () => {
+      // Verbatim from a failed `cdkd deploy` (Cloud Control route) that
+      // replaced the filter's destination function; a re-run succeeded.
+      const lambdaDest =
+        'UPDATE failed for LgSubD4ECBAA9: Invalid request provided: AWS::Logs::SubscriptionFilter. Could not execute the lambda function. Make sure you have given CloudWatch Logs permission to execute your function. (Service: CloudWatchLogs, Status Code: 400, Request ID: ab38a6b0-cca6-4b4d-b161-14a8ab4370f2) (SDK Attempt Count: 1)';
+      expect(isRetryableTransientError(new Error(lambdaDest), lambdaDest)).toBe(true);
+      expect(isIamPropagationError(lambdaDest)).toBe(true);
+      // Another service's "could not execute" wording stays unmatched.
+      const other = 'Could not execute the lambda function. The function returned an error.';
+      expect(isRetryableTransientError(new Error(other), other)).toBe(false);
+    });
+
     it('retries the IoT topic rule assume-role rejection on the dense cadence (#6559)', () => {
       const iot =
         'CREATE failed for Rule: AWS IoT (iot.amazonaws.com) is unable to assume role (sts:AssumeRole) on resource: arn:aws:iam::111122223333:role/Stack-RuleRole. If the role was just created or updated, please try again in a few seconds. (Service: Iot, Status Code: 400)';
