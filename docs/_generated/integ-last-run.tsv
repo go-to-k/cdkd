@@ -283,7 +283,7 @@ lambda-accelerator-config	2026-11-21T17:25:48Z	PASS	923	verify.sh	SDK route crea
 lambda-alias-provisioned-concurrency	2026-11-17T09:08:06Z	PASS	265	verify.sh	rc ok, orph clean (#6437 PR #6483)
 lambda-arch-switch	2026-11-06T18:48:58Z	PASS	66	verify.sh	#5901 lambda-function split head; rc ok, orph clean
 lambda-capacity-provider-default-name	2026-11-22T05:45:21Z	PASS	596	verify.sh	rc ok, orph clean; at 16461a57b (#6816, #6759 sub-read errors)
-lambda-config-field-removal	2026-11-22T05:45:21Z	PASS	145	verify.sh	rc ok, orph clean; at 16461a57b (#6816, #6759 sub-read errors)
+lambda-config-field-removal	2026-11-25T18:42:23Z	PASS	120	verify.sh	rc ok, orph clean; at c13c45025 (#6996 RecursiveLoop reset to Terminate)
 lambda-destinations	2026-11-10T15:32:23Z	PASS	100	verify.sh	rc ok, orph clean
 lambda-durable-replacement	2026-11-05T03:23:13Z	PASS	125	verify.sh	rc=0, own temp bucket, destroy clean, orphan scan clean (state+iam+lambda+logs+sg+ddb)
 lambda-env-removal	2026-11-16T07:29:03Z	PASS	71	verify.sh	#6403 UpdateInProgress retry head; rc ok, orph clean
