@@ -82,7 +82,7 @@ cloudtrail-trail	2026-11-22T03:31:56Z	PASS	360	verify.sh	d2646a6f6 #6759 part a,
 cloudwatch	2026-11-22T02:46:37Z	PASS	271	verify.sh	rc ok, orph clean, sha 3116c9288 (#6813 sub-read errors)
 cloudwatch-anomaly-detector	2026-11-22T05:59:15Z	PASS	111	verify.sh	#6810 run at b9718f87f; rc ok, orph clean (us-east-1)
 cloudwatch-metric-stream-default-name	2026-11-18T14:11:36Z	PASS	205	verify.sh	rc ok, orph clean; rerun with clean-diff line fix, both diff phases clean (#6555 PR #6556)
-codebuild-project	2026-11-19T12:17:26Z	PASS	170	verify.sh	#6620 f519ac2dd; rc ok, orph clean, member baseline OK x1
+codebuild-project	2026-11-25T05:17:47Z	PASS	221	verify.sh	rc ok, orph clean; Phase 1b cc-api recreate + back to sdk ok
 codebuild-webhook	2026-11-02T13:36:25Z	PASS	111	verify.sh	rc ok, destroy 0 errors, 0 orphans, 0 hooks left (#5627 Triggers; pre-fix red at Phase 1)
 codecommit	2026-11-23T12:11:05Z	PASS	193	verify.sh	PR6876 828e1c821 us-east-1 rc ok, orph clean (duration not timed; see logs)
 codedeploy-lambda-deployment-group	2026-11-17T09:08:06Z	PASS	1182	verify.sh	rc ok, orph clean (#6437 PR #6483)
