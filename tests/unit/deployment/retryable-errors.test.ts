@@ -2081,6 +2081,77 @@ describe('API Gateway v2 per-API mutation contention (#1607)', () => {
   });
 });
 
+describe('EventBridge (eventsv2) per-bus Subscriber contention (#6944)', () => {
+  // The inner `CREATE failed ...` message cut from the first live failure's
+  // log line (2026-11-24, ap-northeast-1, cdkd 0.368.1): one of three
+  // AWS::EventsV2::Subscriber siblings of one event bus, created in parallel
+  // through Cloud Control. Six siblings then failed the same way on 4 of 4
+  // deploys, on a different subset each time.
+  const createMsg =
+    'CREATE failed for Subfilter: This resource was modified concurrently. Please retry your request. ' +
+    '(Service: EventBridgeV2, Status Code: 409, Request ID: bf0a41b3-effc-4cc5-aa28-6aae3aa99c29) (SDK Attempt Count: 1)';
+
+  it('classifies the concurrent-modification 409 as retryable', () => {
+    expect(isRetryableTransientError(new Error(createMsg), createMsg)).toBe(true);
+  });
+
+  // These cases model a Cloud Control handler failure without structured SDK
+  // error information (error name, HTTP status) and verify that the message
+  // is sufficient for the handler codes below. The code Cloud Control
+  // reported live was not captured.
+  it.each([undefined, 'ResourceConflict', 'GeneralServiceException', 'AlreadyExists'])(
+    'retries it as a Cloud Control handler failure (ccErrorCode %s)',
+    (code) => {
+      const error = new CloudControlOperationFailedError(
+        createMsg,
+        'AWS::EventsV2::Subscriber',
+        'Subfilter',
+        undefined,
+        code,
+        'CREATE'
+      );
+      expect(isRetryableTransientError(error, error.message)).toBe(true);
+    }
+  );
+
+  it('retries it when an outer wrapper keeps the sentence in its own message', () => {
+    const cause = new CloudControlOperationFailedError(
+      createMsg,
+      'AWS::EventsV2::Subscriber',
+      'Subfilter',
+      undefined,
+      undefined,
+      'CREATE'
+    );
+    const wrapped = new Error(`Failed to create resource Subfilter: ${createMsg}`, { cause });
+    expect(isRetryableTransientError(wrapped, wrapped.message)).toBe(true);
+  });
+
+  it('matches by exactly its own entry', () => {
+    // No broader pattern already covers the sentence, so removing the entry
+    // is what stops the retry.
+    expect(RETRYABLE_ERROR_MESSAGE_PATTERNS.filter((p) => createMsg.includes(p))).toEqual([
+      'This resource was modified concurrently',
+    ]);
+  });
+
+  it('keeps the pattern out of the dense IAM-propagation cadence', () => {
+    // Load-shaped contention: the service is asking for backoff.
+    expect(isIamPropagationError(createMsg)).toBe(false);
+  });
+
+  it('does not classify an unrelated EventBridge 409 as retryable', () => {
+    // Verbatim from the same session: deleting a bus that still has a
+    // Subscriber. A dependency refusal (the Subscriber has to be deleted or
+    // revoked first), not contention between parallel calls.
+    const msg =
+      'DELETE failed for Bus: The event bus cannot be deleted because it has one or more subscribers that are ' +
+      'not revoked. Delete or revoke them and retry. (Service: EventBridgeV2, Status Code: 409, ' +
+      'Request ID: e6a5766e-01d3-4a56-a6af-8f1131254d9e) (SDK Attempt Count: 1)';
+    expect(isRetryableTransientError(new Error(msg), msg)).toBe(false);
+  });
+});
+
 /**
  * Issue #1778: a cdkd-authored refusal is terminal by DECLARATION, so no
  * wording — in the message, in an interpolated logical id, in a
