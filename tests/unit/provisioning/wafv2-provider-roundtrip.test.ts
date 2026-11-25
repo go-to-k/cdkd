@@ -197,11 +197,88 @@ describe('WAFv2WebACLProvider read-update round-trip', () => {
 
     // Class 2 — empty Description must be sanitized to undefined.
     expect(input['Description']).toBeUndefined();
-    // Empty-array / empty-map placeholders are accepted by AWS as
-    // "no rules / no custom response bodies / no token domains" and
-    // legitimately reach the wire as-is.
+    // Empty-array placeholders are accepted by AWS as "no rules / no token
+    // domains" and reach the wire as-is.
     expect(input['Rules']).toEqual([]);
+    expect(input['TokenDomains']).toEqual([]);
+    // go-to-k/cdkd#6986: the empty `CustomResponseBodies` map is NOT accepted
+    // (measured: `Value '{}' at 'customResponseBodies' failed to satisfy
+    // constraint: Member must have length greater than or equal to 1`), so it
+    // is omitted, which the whole-replace UpdateWebACL reads as "none".
+    expect(input['CustomResponseBodies']).toBeUndefined();
     // GetWebACL ran for LockToken acquisition.
     expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetWebACLCommand);
+  });
+
+  describe('CustomResponseBodies on the wire (go-to-k/cdkd#6986)', () => {
+    const base: Record<string, unknown> = {
+      Name: 'my-acl',
+      Scope: 'REGIONAL',
+      DefaultAction: { Allow: {} },
+      Rules: [],
+      VisibilityConfig: {
+        SampledRequestsEnabled: true,
+        CloudWatchMetricsEnabled: true,
+        MetricName: 'm',
+      },
+    };
+    const bodies = {
+      blocked: { ContentType: 'TEXT_PLAIN', Content: 'blocked' },
+    };
+
+    function primeUpdate(): void {
+      mockSend
+        .mockResolvedValueOnce({ WebACL: { Id: 'abc-123', Name: 'my-acl' }, LockToken: 'lt' })
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({ WebACL: { Id: 'abc-123', Name: 'my-acl', Capacity: 2 } });
+    }
+
+    function sentUpdate(): Record<string, unknown> {
+      const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateWebACLCommand);
+      expect(call).toBeDefined();
+      return call![0].input as Record<string, unknown>;
+    }
+
+    it('drift --revert: the readback {} is omitted from UpdateWebACL', async () => {
+      // The revert's desired bag is the deploy-time readback, which spells a
+      // web ACL without custom bodies as `{}`.
+      const desired = { ...base, DefaultAction: { Allow: {} }, CustomResponseBodies: {} };
+      const previous = { ...base, DefaultAction: { Block: {} }, CustomResponseBodies: {} };
+      primeUpdate();
+
+      await provider.update('L', ARN, RESOURCE_TYPE, desired, previous, {
+        desiredFromAwsReadback: true,
+      });
+
+      const input = sentUpdate();
+      expect(input['CustomResponseBodies']).toBeUndefined();
+      expect(input['DefaultAction']).toEqual({ Allow: {} });
+    });
+
+    it('a declared non-empty map is still sent on update', async () => {
+      primeUpdate();
+
+      await provider.update(
+        'L',
+        ARN,
+        RESOURCE_TYPE,
+        { ...base, CustomResponseBodies: bodies },
+        { ...base, CustomResponseBodies: {} }
+      );
+
+      expect(sentUpdate()['CustomResponseBodies']).toEqual(bodies);
+    });
+
+    it('create omits an empty map and sends a declared one', async () => {
+      mockSend.mockResolvedValueOnce({ Summary: { ARN, Id: 'abc-123' } });
+      await provider.create('L', RESOURCE_TYPE, { ...base, CustomResponseBodies: {} });
+      mockSend.mockResolvedValueOnce({ Summary: { ARN, Id: 'abc-123' } });
+      await provider.create('L2', RESOURCE_TYPE, { ...base, CustomResponseBodies: bodies });
+
+      const creates = mockSend.mock.calls
+        .filter((c) => c[0] instanceof CreateWebACLCommand)
+        .map((c) => (c[0].input as Record<string, unknown>)['CustomResponseBodies']);
+      expect(creates).toEqual([undefined, bodies]);
+    });
   });
 });

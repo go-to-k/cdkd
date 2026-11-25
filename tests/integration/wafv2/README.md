@@ -24,6 +24,9 @@ No associated resources (ALB, API Gateway, etc.) are created to keep the example
   a 400 `WAFInvalidParameterException` naming `ApplicationAttribute` on both the
   Cloud Control and SDK routes, and on three shapes sent directly with the AWS
   CLI.
+- Issue #6986: `cdkd drift --revert` of an out-of-band default action flip on
+  a web ACL that declares no `CustomResponseBodies` (the readback records `{}`,
+  which `UpdateWebACL` refuses unless it is omitted).
 
 ## Run
 

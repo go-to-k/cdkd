@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
-import type { Rule, ApplicationConfig, WebACL } from '@aws-sdk/client-wafv2';
+import type { Rule, ApplicationConfig, CustomResponseBody, WebACL } from '@aws-sdk/client-wafv2';
 import { definedAttributes } from '../../attribute-map.js';
 
 /**
@@ -25,6 +25,23 @@ export function sanitizeDescription(value: unknown): string | undefined {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The `CustomResponseBodies` member for `CreateWebACL` / `UpdateWebACL`, or
+ * `undefined` for an EMPTY map (go-to-k/cdkd#6986). The API refuses a present
+ * map with no entry (`Member must have length greater than or equal to 1`),
+ * and `readCurrentState` reads a web ACL without custom bodies as `{}`, so
+ * `drift --revert`, whose desired bag is that readback, sent it on every
+ * revert. Omitting the member is what `{}` means: both calls replace the web
+ * ACL whole, so the omitted member leaves no custom response bodies. Any other
+ * value is forwarded unchanged.
+ */
+export function customResponseBodiesForWire(
+  value: unknown
+): Record<string, CustomResponseBody> | undefined {
+  if (isPlainObject(value) && Object.keys(value).length === 0) return undefined;
+  return value as Record<string, CustomResponseBody> | undefined;
 }
 
 /**

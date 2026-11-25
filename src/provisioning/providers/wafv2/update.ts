@@ -9,7 +9,6 @@ import {
   type VisibilityConfig,
   type CaptchaConfig,
   type ChallengeConfig,
-  type CustomResponseBody,
   type AssociationConfig,
   type DataProtectionConfig,
   type OnSourceDDoSProtectionConfig,
@@ -24,6 +23,7 @@ import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../../t
 import type { ResourceUpdateResult, UpdateContext } from '../../../types/resource.js';
 import { parseWebACLArn } from '../wafv2-arn.js';
 import {
+  customResponseBodiesForWire,
   sanitizeDescription,
   applicationConfigForUpdate,
   toSdkRules,
@@ -94,9 +94,7 @@ export async function update(
         Description: sanitizeDescription(properties['Description']),
         Rules: toSdkRules(properties['Rules']),
         VisibilityConfig: properties['VisibilityConfig'] as VisibilityConfig,
-        CustomResponseBodies: properties['CustomResponseBodies'] as
-          | Record<string, CustomResponseBody>
-          | undefined,
+        CustomResponseBodies: customResponseBodiesForWire(properties['CustomResponseBodies']),
         CaptchaConfig: properties['CaptchaConfig'] as CaptchaConfig | undefined,
         ChallengeConfig: properties['ChallengeConfig'] as ChallengeConfig | undefined,
         TokenDomains: properties['TokenDomains'] as string[] | undefined,
