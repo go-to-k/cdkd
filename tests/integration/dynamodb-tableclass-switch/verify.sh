@@ -15,7 +15,11 @@
 #   2. Re-deploy with CDKD_TEST_UPDATE=true (STANDARD_INFREQUENT_ACCESS).
 #      Assert AWS now reports STANDARD_INFREQUENT_ACCESS (the switch actually
 #      reached AWS, not just cdkd state).
-#   3. Destroy + assert the table is gone and the cdkd state file is removed.
+#      The same deploy flips a second table (CombinedTable) from
+#      PAY_PER_REQUEST to PROVISIONED AND switches its class: DynamoDB refuses a
+#      TableClass change sharing an UpdateTable with anything else, so cdkd
+#      sends it alone (go-to-k/cdkd#6995). Assert both changes reached AWS.
+#   3. Destroy + assert both tables are gone and the cdkd state file is removed.
 #
 # AWS allows at most two TableClass switches per table per 30-day window; each
 # run creates a fresh auto-named table and performs exactly one switch.
@@ -112,9 +116,9 @@ fi
 echo "==> Pre-run cleanup"
 cleanup
 
-table_name() {
+table_name() { # usage: table_name <output key>
   aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null |
-    python3 -c 'import json,sys; s=json.load(sys.stdin); print(s["outputs"]["TableName"])'
+    python3 -c 'import json,sys; s=json.load(sys.stdin); print(s["outputs"][sys.argv[1]])' "$1"
 }
 
 table_class() {
@@ -136,8 +140,10 @@ echo "==> Phase 1: deploy STANDARD table"
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
-TABLE="$(table_name)"
+TABLE="$(table_name TableName)"
 echo "    table: ${TABLE}"
+COMBINED="$(table_name CombinedTableName)"
+echo "    combined table: ${COMBINED}"
 
 CLASS_P1="$(table_class "${TABLE}")"
 echo "    AWS table class (Phase 1): ${CLASS_P1}"
@@ -159,6 +165,23 @@ if [ "${CLASS_P2}" != "STANDARD_INFREQUENT_ACCESS" ]; then
 fi
 echo "    table class switched (reached AWS, not just cdkd state)"
 
+# The deploy above would have failed on the combined table before the fix
+# ("TableClass modification must be the only operation in the request").
+CLASS_C2="$(table_class "${COMBINED}")"
+BILLING_C2="$(aws dynamodb describe-table --table-name "${COMBINED}" --region "${REGION}" \
+  --query '[Table.BillingModeSummary.BillingMode, Table.ProvisionedThroughput.ReadCapacityUnits, Table.ProvisionedThroughput.WriteCapacityUnits]' \
+  --output text)"
+echo "    combined table (Phase 2): class ${CLASS_C2}, billing ${BILLING_C2}"
+if [ "${CLASS_C2}" != "STANDARD_INFREQUENT_ACCESS" ]; then
+  echo "FAIL: expected the combined table at STANDARD_INFREQUENT_ACCESS after Phase 2, got '${CLASS_C2}'" >&2
+  exit 1
+fi
+if [ "$(tr -s '[:space:]' ' ' <<<"${BILLING_C2}" | sed 's/ $//')" != "PROVISIONED 2 2" ]; then
+  echo "FAIL: expected the combined table at PROVISIONED 2/2 after Phase 2, got '${BILLING_C2}'" >&2
+  exit 1
+fi
+echo "    class switch and billing flip in one deploy both reached AWS"
+
 # --- Phase 3: destroy ----------------------------------------------------
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
@@ -166,6 +189,7 @@ node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --regio
 # DeleteTable is async: always enter the poll loop (a transient error on the
 # FIRST describe must not be mistaken for NotFound and skip the deletion
 # check), accept DELETING, and poll until fully gone.
+for TABLE in "${TABLE}" "${COMBINED}"; do
 table_gone=""
 for attempt in $(seq 1 15); do
   STATUS="$(aws dynamodb describe-table --table-name "${TABLE}" --region "${REGION}" \
@@ -188,9 +212,10 @@ if [ -z "${table_gone}" ]; then
   echo "FAIL: table ${TABLE} did not finish deleting within ~60s" >&2
   exit 1
 fi
-echo "    table deleted"
+echo "    table ${TABLE} deleted"
+done
 
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
 
-echo "[verify] PASS — DynamoDB TableClass switch (STANDARD -> STANDARD_INFREQUENT_ACCESS) reaches AWS, all 3 phases passed"
+echo "[verify] PASS — DynamoDB TableClass switch (STANDARD -> STANDARD_INFREQUENT_ACCESS) reaches AWS, and with a BillingMode flip in the same deploy, all 3 phases passed"

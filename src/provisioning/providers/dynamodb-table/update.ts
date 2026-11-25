@@ -770,7 +770,8 @@ export async function update(
       liveIndexes,
       desiredIndexByName,
       preFlipDeletedIndexNames,
-      gsiHandledByBillingFlip
+      gsiHandledByBillingFlip,
+      table
     );
 
     await applyThroughputUpdates.call(

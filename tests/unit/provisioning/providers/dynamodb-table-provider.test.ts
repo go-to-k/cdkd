@@ -1320,6 +1320,16 @@ describe('DynamoDBTableProvider backfill (#609)', () => {
     });
 
     it('reverts to STANDARD when the TableClass property is removed', async () => {
+      // The live table holds the recorded class; a live STANDARD table would
+      // need no call (go-to-k/cdkd#6995).
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof DescribeTableCommand) {
+          return Promise.resolve(
+            activeTable({ TableClassSummary: { TableClass: 'STANDARD_INFREQUENT_ACCESS' } })
+          );
+        }
+        return Promise.resolve({});
+      });
       await provider.update(
         'MyTable',
         'MyTable',
@@ -1403,7 +1413,7 @@ describe('DynamoDBTableProvider backfill (#609)', () => {
       expect(input.ProvisionedThroughput).toBeUndefined();
     });
 
-    it('combines TableClass with a real BillingMode switch in one UpdateTable', async () => {
+    it('sends TableClass in its own UpdateTable after a real BillingMode switch', async () => {
       await provider.update(
         'MyTable',
         'MyTable',
@@ -1417,18 +1427,20 @@ describe('DynamoDBTableProvider backfill (#609)', () => {
         { ...baseCreateProps, TableClass: 'STANDARD' }
       );
 
-      const input = inputOfCommand(UpdateTableCommand) as {
-        TableClass?: string;
-        BillingMode?: string;
-        ProvisionedThroughput?: { ReadCapacityUnits?: number };
-      };
-      expect(input.TableClass).toBe('STANDARD_INFREQUENT_ACCESS');
-      expect(input.BillingMode).toBe('PROVISIONED');
-      expect(input.ProvisionedThroughput?.ReadCapacityUnits).toBe(2);
-      // The class change and the billing switch must be folded into a SINGLE
-      // UpdateTable — DynamoDB rejects a second UpdateTable while the first is
-      // still applying, so a two-call implementation would fail the deploy.
-      expect(countOfCommand(UpdateTableCommand)).toBe(1);
+      const inputs = mockSend.mock.calls
+        .filter((call) => call[0] instanceof UpdateTableCommand)
+        .map((call) => (call[0] as { input: Record<string, unknown> }).input);
+      // DynamoDB refuses a TableClass change sharing an UpdateTable with
+      // anything else ("TableClass modification must be the only operation in
+      // the request", measured in go-to-k/cdkd#6995), so the class goes in a
+      // second call once the billing switch has settled.
+      expect(inputs).toHaveLength(2);
+      expect(inputs[0]).toMatchObject({
+        BillingMode: 'PROVISIONED',
+        ProvisionedThroughput: { ReadCapacityUnits: 2, WriteCapacityUnits: 2 },
+      });
+      expect(inputs[0]).not.toHaveProperty('TableClass');
+      expect(inputs[1]).toEqual({ TableName: 'MyTable', TableClass: 'STANDARD_INFREQUENT_ACCESS' });
     });
   });
 
