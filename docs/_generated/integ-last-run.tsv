@@ -32,7 +32,7 @@ asset-auto-create	2026-11-04T07:52:45Z	PASS	195	verify.sh	rc ok, orph clean; eu-
 asset-bootstrap	2026-11-13T08:51:46Z	PASS	165	verify.sh	rc ok, orph clean; eu-west-2, bucket lifecycle rule set (#6185 PR #6196)
 asset-migration	2026-11-13T08:51:46Z	PASS	616	verify.sh	rc 0 in eu-west-1, 0 orphans; abort-MPU lifecycle rule verified on live bucket (#6185 PR #6196)
 athena-workgroup-update	2026-11-18T21:22:04Z	PASS	170	verify.sh	rc ok, orph clean; 9d60a35; no retry
-aws-custom-resource	2026-11-06T16:04:01Z	PASS	80	verify.sh	post-hoc on main after #5879 split; rc ok, orph clean
+aws-custom-resource	2026-11-25T07:06:26Z	PASS	100	verify.sh	rc ok, orph clean, PR #6968 f350f555
 backup	2026-11-04T19:21:11Z	PASS	83	verify.sh	rc ok, orph clean; no Backup vault/recovery-point leak, no lambda log groups
 basic	2026-11-25T03:30:44Z	PASS	102	standard	rc ok, orph clean; #6970
 batch	2026-11-04T05:26:26Z	PASS	94	standard	batch 3 (rc=0, destroy 12 deleted 0 errors); no CE/queue/ENI/VPC leftovers; account clean
@@ -115,7 +115,7 @@ custom-resource-masked-service-token	2026-11-04T19:07:50Z	PASS	155	verify.sh	rc 
 custom-resource-noecho-nested	2026-11-11T19:34:00Z	PASS	1414	verify.sh	rc ok, 8 stacks destroyed 0 err, orph clean (#6117 set)
 custom-resource-payload-types	2026-11-14T19:25:11Z	PASS	150	verify.sh	rc ok, orph clean
 custom-resource-physid-replace	2026-11-16T23:47:53Z	PASS	456	verify.sh	rc ok, orph clean (#6466 PR #6467)
-custom-resource-provider	2026-11-23T13:25:53Z	PASS	703	verify.sh	rc ok, orph clean (#6872)
+custom-resource-provider	2026-11-25T07:06:26Z	PASS	295	verify.sh	rc ok, orph clean, PR #6968 f350f555: 2 settle INFO lines per deploy, 0 transient-authz
 custom-resource-resolved-secret	2026-11-05T04:09:30Z	PASS	341	verify.sh	rc ok on main 8547010bb dist, own temp state bucket, destroy 0 errors, orph clean (state keys + live resources, us-east-1/us-west-2); #4009 refusals + clean destroy; no stray Lambda log groups
 custom-resource-service-token-change	2026-11-06T16:04:59Z	PASS	135	verify.sh	post-hoc on main after #5879 split; rc ok, orph clean
 data-analytics	2026-11-06T17:24:03Z	PASS	128	verify.sh	#5896 firehose split head; rc ok, orph clean
@@ -241,7 +241,7 @@ iam-access-key	2026-11-21T21:51:13Z	PASS	146	verify.sh	rc ok, orph clean (PR 679
 iam-managed-policy	2026-11-23T13:42:26Z	PASS	195	verify.sh	rc ok, orph clean (#6880)
 iam-oidc-provider	2026-11-22T17:56:50Z	PASS	120	verify.sh	fictitious per-run example.com issuer; rc ok, 0 errors, orph clean; real GitHub provider untouched
 iam-profile-policy-fix-forward-orphan	2026-11-21T18:10:10Z	PASS	135	verify.sh	rc ok, orph clean
-iam-propagation-stress	2026-11-20T20:50:16Z	PASS	110	verify.sh	rc ok, orph clean, 3x AFTER at 92e003a70 (#6703); destroy span med 15587ms vs BEFORE 15546ms
+iam-propagation-stress	2026-11-25T07:06:26Z	PASS	101	verify.sh	rc ok, orph clean, PR #6968 f350f555 (no CR consumer)
 iam-recreate-reattach	2026-11-22T06:53:39Z	PASS	290	verify.sh	rc ok, orph clean
 iam-role-fix-forward-orphan	2026-11-23T13:42:26Z	PASS	115	verify.sh	rc ok, orph clean (#6880)
 iam-role-policies-drift-clean	2026-11-23T13:42:26Z	PASS	657	verify.sh	rc ok, orph clean (#6880)
