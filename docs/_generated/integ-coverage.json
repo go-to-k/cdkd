@@ -9624,6 +9624,7 @@
         "propagation-races-2",
         "recreate-nested-logical-id-collision",
         "recreate-via-cc-api",
+        "removal-delete-failure-kept",
         "retain-orphan-redeploy",
         "rollback-command",
         "rollback-observed-baseline-refresh",
@@ -9833,6 +9834,9 @@
         ],
         "recreate-via-cc-api": [
           "l1"
+        ],
+        "removal-delete-failure-kept": [
+          "l2"
         ],
         "retain-orphan-redeploy": [
           "literal"
@@ -10541,6 +10545,7 @@
         "refactor-command",
         "refactor-lambda-version",
         "refactor-move",
+        "removal-delete-failure-kept",
         "rename-refactor",
         "replace-predelete-snapshot-failed-rollback",
         "replace-snapshot-failed-rollback",
@@ -10791,6 +10796,9 @@
           "l2"
         ],
         "refactor-move": [
+          "l2"
+        ],
+        "removal-delete-failure-kept": [
           "l2"
         ],
         "rename-refactor": [

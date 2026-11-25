@@ -53,6 +53,7 @@ import { retiredNameGenerationsAfter } from '../../state/name-generation.js';
 import { type ReportedCreateToSettle, recordUnsettledMarks } from './execute/helpers.js';
 import { enqueueLostChildren } from './execute/lost-children.js';
 import { provisionCreateUpdateNode } from './execute/provision-node.js';
+import { RemovalDeletesKept } from './execute/removal-delete-kept.js';
 import { settleFailedDeployRecords } from './execute/failed-deploy-records.js';
 import { rollbackFailedDeploy } from './execute/rollback-after-failure.js';
 import type { DeployRun } from './execute/run.js';
@@ -424,6 +425,7 @@ async function executeDeploymentBody(
       const deleteDeps = buildDeletionDependencies(deleteChanges, currentState, engine.logger);
       const deletes = new DagExecutor<ResourceChange>(phaseScope);
       deleteExecutor = deletes;
+      const removalKept = new RemovalDeletesKept();
       for (const id of deleteChanges) {
         deletes.add({
           id,
@@ -443,6 +445,23 @@ async function executeDeploymentBody(
             const previousState = currentState.resources[logicalId]
               ? { ...currentState.resources[logicalId] }
               : undefined;
+
+            // go-to-k/cdkd#6969: a resource whose dependent's delete failed
+            // and was kept stays, record and all.
+            const blocker = removalKept.blockerOf(node.dependencies);
+            if (blocker !== undefined) {
+              removalKept.keepBlocked(
+                engine,
+                logicalId,
+                change,
+                blocker,
+                previousState,
+                stackName,
+                actualCounts,
+                progress
+              );
+              return;
+            }
 
             let deleteOutcome: ResourceOutcomeSignal | void;
             try {
@@ -465,6 +484,20 @@ async function executeDeploymentBody(
                 `${logicalId} ${change.resourceType}`
               );
             } catch (provisionError) {
+              // go-to-k/cdkd#6969: kept, as CloudFormation's cleanup phase
+              // keeps the update; only an interrupt fails the deploy here.
+              if (
+                removalKept.keepFailure(
+                  engine,
+                  logicalId,
+                  change,
+                  provisionError,
+                  actualCounts,
+                  progress
+                )
+              ) {
+                return;
+              }
               engine.interrupted = true;
               engine.interruptCause ??= 'sibling-failure';
               // #1198: a failed DELETE leaves the resource in place — the

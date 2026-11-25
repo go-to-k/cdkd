@@ -7,9 +7,9 @@
  * `NestedStackProvider.delete` that `cdkd destroy` does. #1777 made that method
  * THROW when the child stack's own destroy reported `errorCount > 0`, so the
  * blast radius is wider than the destroy path alone: a `cdkd deploy` that drops
- * a nested stack whose child cannot be destroyed now FAILS the deploy (and
- * triggers its rollback) where it previously recorded the row as deleted and
- * carried on.
+ * a nested stack whose child cannot be destroyed now FAILS the row (the DELETE
+ * executor keeps the record and counts it not deleted, go-to-k/cdkd#6969)
+ * where it previously recorded the row as deleted and carried on.
  *
  * That asymmetry is the point, and it is why this file exists rather than being
  * folded into the destroy-side coverage: this call site treats the child's THROW

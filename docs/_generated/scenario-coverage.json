@@ -2751,6 +2751,11 @@
       "scenarios": []
     },
     {
+      "name": "removal-delete-failure-kept",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "remove-protection",
       "annotated": true,
       "scenarios": [
@@ -4500,6 +4505,7 @@
     "refactor-lambda-version",
     "refactor-move",
     "remote-nested-stack-refusal",
+    "removal-delete-failure-kept",
     "remove-protection-compensation",
     "remove-protection-journaled-orphan",
     "rename-refactor",

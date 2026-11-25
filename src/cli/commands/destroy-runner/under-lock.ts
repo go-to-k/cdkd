@@ -469,7 +469,7 @@ export async function destroyStackUnderLock({
     // DELETE_FAILED leaves them; resources unrelated to it are still deleted, as CloudFormation
     // also does. A dependency always sits on a LATER deletion level than its dependent, so marking
     // it when the dependent's delete settles is in time. A SKIP does not block: like the deploy
-    // engine's DELETE phase, which stops on a failure but not on a skip, the destroy still deletes
+    // engine's DELETE phase, which keeps a failure's dependencies but not a skip's (#6969), the destroy still deletes
     // what a skipped resource depends on -- the custom-resource skip flow relies on its backing
     // Lambda being gone for the re-run.
     const blockedBy = new Map<string, string>();
