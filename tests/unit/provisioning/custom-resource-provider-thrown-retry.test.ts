@@ -1107,6 +1107,8 @@ describe('the shared pattern list this classifier consumes (#3174 M5)', () => {
       // front door, before any state machine exists, so it is decided before
       // an execution environment is engaged.
       "is not authorized to create managed-rule",
+      // Issue #6989 -- see its EXAMINED_NON_FRONT_DOOR entry below.
+      "Could not execute the lambda function. Make sure you have given CloudWatch Logs permission",
       "Cannot access stream",
       "Please ensure the role can perform",
       "KMS key is invalid for CreateGrant",
@@ -1216,12 +1218,19 @@ describe('the shared pattern list this classifier consumes (#3174 M5)', () => {
       // the substring names `ConnectorOperatorRole`, the connector resource's
       // own property, which no CR `Invoke` or SNS `Publish` failure carries.
       'due to invalid ConnectorOperatorRole permissions',
+      // Issue #6989, argument (a) for both `Invoke` and `Publish`. CloudWatch
+      // Logs refusing `PutSubscriptionFilter` (under Cloud Control) because it
+      // cannot yet see the destination function's permission. Unreachable
+      // here: the substring names "CloudWatch Logs permission", Logs' own
+      // advice about its own principal, which no CR `Invoke` or SNS `Publish`
+      // failure carries.
+      'Could not execute the lambda function. Make sure you have given CloudWatch Logs permission',
     ];
     // Cardinality FIRST, and asserted rather than derived: an empty list
     // satisfies both the loop (which then runs no assertion at all) and a
     // `length <` comparison, so either alone lets this case pass while
     // asserting nothing. Raising the number is the deliberate act.
-    expect(EXAMINED_NON_FRONT_DOOR).toHaveLength(12);
+    expect(EXAMINED_NON_FRONT_DOOR).toHaveLength(13);
     // DISTINCT, or the length is satisfied by the same entry twice -- and the
     // name would then credit two examined members where there is one.
     expect(new Set(EXAMINED_NON_FRONT_DOOR).size).toBe(EXAMINED_NON_FRONT_DOOR.length);

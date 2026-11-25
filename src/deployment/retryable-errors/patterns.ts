@@ -512,6 +512,18 @@ export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // deploy with a brand-new role, logging AND a `.sync` task; the windows
   // observed one at a time are the evidence, the composition is derived.
   'is not authorized to create managed-rule',
+  // CloudWatch Logs `PutSubscriptionFilter` with a Lambda destination
+  // (issue #6989): Logs checks the function's resource policy, and right after
+  // a NEW function and its `logs.amazonaws.com` permission are created the
+  // check can fail with "Could not execute the lambda function. Make sure you
+  // have given CloudWatch Logs permission to execute your function." A probe
+  // (us-east-1, 2026-11-25: create-function, add-permission, then
+  // put-subscription-filter at once) got it on 2 of 13 first calls, each
+  // succeeding about 1s later. Anchored on Logs' sentence through
+  // "CloudWatch Logs permission"; a function that genuinely lacks the
+  // permission spends the bounded budget before surfacing. The Kinesis
+  // destination's wording is `Could not deliver test message` below.
+  'Could not execute the lambda function. Make sure you have given CloudWatch Logs permission',
   // DynamoDB Streams / Kinesis: IAM role not yet propagated
   'Cannot access stream',
   'Please ensure the role can perform',
