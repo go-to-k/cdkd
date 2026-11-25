@@ -131,6 +131,54 @@ describe('DynamoDBGlobalTableProvider StreamViewType change (#7000)', () => {
     expect(provider.attributeCache.get(injectiveKey(TABLE_NAME, 'Arn'))).toBe('arn:table');
   });
 
+  it('a rollback after a failed enable sends only the enable', async () => {
+    // The forward deploy disabled the stream and its enable failed: the replay
+    // asks for the old view type over a live, disabled stream.
+    mockSend.mockResolvedValue({
+      Table: {
+        ...(describeResponse(undefined)['Table'] as Record<string, unknown>),
+        StreamSpecification: { StreamEnabled: false, StreamViewType: 'NEW_IMAGE' },
+      },
+    });
+
+    await provider.update(
+      'Table',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      props('NEW_IMAGE'),
+      props('NEW_AND_OLD_IMAGES')
+    );
+
+    const streamCalls = updateInputs().filter((i) => 'StreamSpecification' in i);
+    expect(streamCalls.map((i) => i['StreamSpecification'])).toEqual([
+      { StreamEnabled: true, StreamViewType: 'NEW_IMAGE' },
+    ]);
+  });
+
+  it('never disables the stream of a table replicated to another region', async () => {
+    const base = describeResponse('NEW_IMAGE')['Table'] as Record<string, unknown>;
+    mockSend.mockResolvedValue({
+      Table: {
+        ...base,
+        Replicas: [
+          { RegionName: 'us-east-1', ReplicaStatus: 'ACTIVE' },
+          { RegionName: 'eu-west-1', ReplicaStatus: 'ACTIVE' },
+        ],
+      },
+    });
+    const replicated = (viewType: string): Record<string, unknown> => ({
+      ...props(viewType),
+      Replicas: [{ Region: 'us-east-1' }, { Region: 'eu-west-1' }],
+    });
+
+    await provider
+      .update('Table', TABLE_NAME, RESOURCE_TYPE, replicated('NEW_AND_OLD_IMAGES'), replicated('NEW_IMAGE'))
+      .catch(() => undefined);
+
+    const streamCalls = updateInputs().filter((i) => 'StreamSpecification' in i);
+    expect(streamCalls.some((i) => (i['StreamSpecification'] as Record<string, unknown>)['StreamEnabled'] === false)).toBe(false);
+  });
+
   it('enables a stream the table does not have without a disable first', async () => {
     mockSend.mockResolvedValue(describeResponse(undefined));
     const previous = { ...props('NEW_IMAGE') };

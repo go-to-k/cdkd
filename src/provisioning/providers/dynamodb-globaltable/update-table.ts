@@ -327,10 +327,13 @@ export async function updatePhaseTable(
     // disabled first and the flat call below enables the new one, as the
     // table provider does. The wait between the two is load-bearing: the
     // enable is refused while the table is still UPDATING. Read off the
-    // DescribeTable the plan already made, so it costs no call.
+    // DescribeTable the plan already made, so it costs no call. A table with
+    // a replica in another region keeps its stream (replication needs it), so
+    // nothing is disabled there and AWS answers the enable as before.
     const liveStream = describeResp.Table?.StreamSpecification;
     const desiredStream = flatUpdate.StreamSpecification;
     if (
+      !liveHasCrossRegionReplica &&
       desiredStream?.StreamEnabled === true &&
       liveStream?.StreamEnabled === true &&
       liveStream.StreamViewType !== desiredStream.StreamViewType
