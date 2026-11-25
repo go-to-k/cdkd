@@ -286,7 +286,7 @@ export async function deleteInIdLogScope(
   // records. Its verdict is propagated, as the ASG delegate's is.
   if (context?.removeProtection === true && resourceType === 'AWS::EMR::Cluster') {
     this.logger.debug(
-      `Delegating protected EMR cluster ${logicalId} delete to the SDK EMRClusterProvider (Cloud Control cannot lift termination protection)`
+      safeMsg`Delegating protected EMR cluster ${logicalId} delete to the SDK EMRClusterProvider (Cloud Control cannot lift termination protection)`
     );
     const { EMRClusterProvider } = await import('../providers/emr-cluster-provider.js');
     return withIndeterminateGuard(
