@@ -143,6 +143,16 @@ export const IN_PLACE_UPDATE_ATTRS_MOVED_BY: Readonly<
     NetworkInterfaceIds: new Set(['SubnetIds']),
     DnsEntries: new Set(['SubnetIds', 'PrivateDnsEnabled', 'DnsOptions', 'IpAddressType']),
   }),
+  // go-to-k/cdkd#6999: a stream view type change (or a stream turned off and
+  // on) disables the old stream and mints a new ARN, so an event source mapping
+  // reading `StreamArn` must follow it; its `EventSourceArn` is create-only, so
+  // the mapping is replaced, as CloudFormation does.
+  'AWS::DynamoDB::Table': Object.freeze({
+    StreamArn: new Set(['StreamSpecification']),
+  }),
+  'AWS::DynamoDB::GlobalTable': Object.freeze({
+    StreamArn: new Set(['StreamSpecification']),
+  }),
 });
 
 /**

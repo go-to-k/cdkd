@@ -1,11 +1,15 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import { DynamoEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 
 /** The table name `verify.sh` sweeps and asserts by. */
 export const STREAM_MEMBERS_TABLE_NAME = 'cdkd-stream-members-test-table';
 /** The one tag the stream declares. */
 export const STREAM_TAG = { Key: 'cdkd-stream-owner', Value: 'integ-3458' };
+/** The stream consumer `verify.sh` reads the event source mapping of. */
+export const STREAM_CONSUMER_NAME = 'cdkd-stream-members-consumer';
 
 /**
  * Integ probe for `StreamSpecification.ResourcePolicy` and
@@ -17,8 +21,12 @@ export const STREAM_TAG = { Key: 'cdkd-stream-owner', Value: 'integ-3458' };
  * the STREAM arn, re-applies both after a `StreamViewType` change mints a new
  * arn, and removes both when they leave a block whose stream stays.
  *
- * Its OWN stack and table: the sibling stack wires an EventSourceMapping to its
- * stream, and the view-type change below replaces the stream arn.
+ * Its OWN stack and table, so the view-type change below, which replaces the
+ * stream arn, touches nothing the sibling stack asserts. Its own consumer, in
+ * every phase, is the reader of that arn: the view-type change must replace
+ * the consumer's event source mapping onto the new stream in the same deploy,
+ * as CloudFormation does, instead of leaving it on the disabled old stream
+ * (issue #6999).
  *
  * `CDKD_TEST_UPDATE` is a comma-separated token list, MONOTONIC across phases:
  *
@@ -46,6 +54,16 @@ export class DynamodbStreamMembersStack extends cdk.Stack {
         ? dynamodb.StreamViewType.KEYS_ONLY
         : dynamodb.StreamViewType.NEW_IMAGE,
     });
+
+    const consumer = new lambda.Function(this, 'Consumer', {
+      functionName: STREAM_CONSUMER_NAME,
+      runtime: lambda.Runtime.NODEJS_22_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromInline('exports.handler = async () => ({});'),
+    });
+    consumer.addEventSource(
+      new DynamoEventSource(table, { startingPosition: lambda.StartingPosition.LATEST, batchSize: 1 })
+    );
 
     if (tokens.has('removed')) return;
     const cfnTable = table.node.defaultChild as dynamodb.CfnTable;

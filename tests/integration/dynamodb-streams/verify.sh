@@ -24,7 +24,8 @@
 #   M1. create with both members -> both are on the STREAM arn, the table arn
 #       has neither, and `cdkd drift` is clean on BOTH baselines
 #   M2. `StreamViewType` change -> a NEW stream arn carrying both, the recorded
-#       `StreamArn` attribute updated, drift clean
+#       `StreamArn` attribute updated, the stack's consumer mapping moved onto
+#       the new arn in the same deploy (issue #6999), drift clean
 #   M3. out-of-band `delete-resource-policy` -> reported as drift on the member,
 #       restored by `cdkd drift --revert`
 #   M4. both members removed -> no policy, no tags, SAME stream arn, drift clean
@@ -96,6 +97,7 @@ MEMBERS_TABLE="cdkd-stream-members-test-table"
 MEMBERS_TAG_KEY="cdkd-stream-owner"
 MEMBERS_TAG_VALUE="integ-3458"
 MEMBERS_POLICY_SID="CdkdIntegStreamRead"
+MEMBERS_CONSUMER="cdkd-stream-members-consumer"
 # Scratch files, declared HERE so `cleanup` sweeps them on every exit path.
 DRIFT_JSON="${TMPDIR:-/tmp}/cdkd-3458-drift.$$.json"
 MEMBERS_STATE_JSON="${TMPDIR:-/tmp}/cdkd-3458-state.$$.json"
@@ -142,6 +144,7 @@ cleanup() {
   # second, so a `state destroy` that dies half way is never the only thing
   # between the table and a leak (`state destroy` treats a gone table as deleted).
   reap_members_table "${MEMBERS_TABLE}"
+  aws lambda delete-function --function-name "${MEMBERS_CONSUMER}" --region "${REGION}" >/dev/null 2>&1
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${MEMBERS_STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
     # Destroy under CDKD_TEST_UPDATE=true so the synthesized template matches
@@ -471,6 +474,20 @@ recorded_stream_arn() {
   jq -r '[.resources[] | select(.resourceType == "AWS::DynamoDB::Table") | .attributes.StreamArn] | first // ""' "${MEMBERS_STATE_JSON}"
 }
 
+members_esm_arns() { # -> the consumer's mappings' EventSourceArn, one line each
+  aws lambda list-event-source-mappings --function-name "${MEMBERS_CONSUMER}" --region "${REGION}" \
+    --query 'EventSourceMappings[].EventSourceArn' --output json | jq -r '.[]'
+}
+assert_esm_on() { # usage: assert_esm_on <stream arn> <label>
+  local arns
+  arns="$(members_esm_arns)" || return 1
+  if [ "${arns}" != "$1" ]; then
+    echo "FAIL (issue #6999): the consumer's event source mapping reads '${arns}', expected exactly the stream '$1' ($2)" >&2
+    return 1
+  fi
+  echo "    OK: the consumer's mapping reads the stream arn ($2)"
+}
+
 echo "==> Phase M1: create a table whose stream block declares ResourcePolicy + Tags (issue #3458)"
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${MEMBERS_STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
@@ -488,6 +505,7 @@ esac
 wait_members_on "${STREAM_ARN_1}" "${EXPECTED_STATEMENT}" "${MEMBERS_TAG_VALUE}" "create, stream arn"
 # The TABLE arn must carry neither: they are the STREAM's.
 wait_members_on "${MEMBERS_TABLE_ARN}" "none" "none" "create, table arn"
+assert_esm_on "${STREAM_ARN_1}" "create" || exit 1
 
 members_state
 if [ "$(recorded_stream_arn)" != "${STREAM_ARN_1}" ]; then
@@ -537,6 +555,9 @@ if [ "${MEMBERS_VIEW}" != "KEYS_ONLY" ]; then
   exit 1
 fi
 wait_members_on "${STREAM_ARN_2}" "${EXPECTED_STATEMENT}" "${MEMBERS_TAG_VALUE}" "view-type change, NEW stream arn"
+# Without #6999 the deploy reports success while the mapping stays on the
+# disabled first stream, and drift reports nothing.
+assert_esm_on "${STREAM_ARN_2}" "view-type change" || exit 1
 members_state
 if [ "$(recorded_stream_arn)" != "${STREAM_ARN_2}" ]; then
   echo "FAIL (issue #3458): recorded StreamArn '$(recorded_stream_arn)' was not updated to the new arn '${STREAM_ARN_2}'" >&2
@@ -598,6 +619,7 @@ if [ "$(members_stream_arn)" != "${STREAM_ARN_2}" ]; then
   exit 1
 fi
 wait_members_on "${STREAM_ARN_2}" "none" "none" "members removed"
+assert_esm_on "${STREAM_ARN_2}" "members removed, stream kept" || exit 1
 assert_members_drift_clean "M4, after the removal"
 
 echo "==> Phase M5: destroy the members stack"
@@ -616,8 +638,10 @@ if [ -z "${MEMBERS_GONE}" ]; then
   exit 1
 fi
 echo "    OK: the members table is gone"
+assert_gone "consumer ${MEMBERS_CONSUMER} still exists after destroy" aws lambda get-function --function-name "${MEMBERS_CONSUMER}" --region "${REGION}"
+echo "    OK: the members consumer is gone"
 assert_gone "state file s3://${STATE_BUCKET}/${MEMBERS_STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${MEMBERS_STATE_KEY}"
 echo "    OK: the members state file is gone"
 
 echo ""
-echo "==> dynamodb-streams test passed (WarmThroughput + ESM backfills #609 + StreamSpecification enable-on-UPDATE #977 + stream ResourcePolicy / Tags #3458 + clean destroy)"
+echo "==> dynamodb-streams test passed (WarmThroughput + ESM backfills #609 + StreamSpecification enable-on-UPDATE #977 + stream ResourcePolicy / Tags #3458 + consumer follows a new stream arn #6999 + clean destroy)"
