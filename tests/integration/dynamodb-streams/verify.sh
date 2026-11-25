@@ -474,13 +474,20 @@ recorded_stream_arn() {
   jq -r '[.resources[] | select(.resourceType == "AWS::DynamoDB::Table") | .attributes.StreamArn] | first // ""' "${MEMBERS_STATE_JSON}"
 }
 
-members_esm_arns() { # -> the consumer's mappings' EventSourceArn, one line each
+# The consumer's mappings, one EventSourceArn per line, leaving out one Lambda
+# is still deleting: the M2 replacement creates the new mapping first, and the
+# old one lingers in `Deleting` after the deploy returns.
+members_esm_arns() {
   aws lambda list-event-source-mappings --function-name "${MEMBERS_CONSUMER}" --region "${REGION}" \
-    --query 'EventSourceMappings[].EventSourceArn' --output json | jq -r '.[]'
+    --query "EventSourceMappings[?State!='Deleting'].EventSourceArn" --output json | jq -r '.[]'
 }
 assert_esm_on() { # usage: assert_esm_on <stream arn> <label>
-  local arns
-  arns="$(members_esm_arns)" || return 1
+  local arns=""
+  for _ in $(seq 1 12); do
+    arns="$(members_esm_arns)" || return 1
+    [ "${arns}" = "$1" ] && break
+    sleep 5
+  done
   if [ "${arns}" != "$1" ]; then
     echo "FAIL (issue #6999): the consumer's event source mapping reads '${arns}', expected exactly the stream '$1' ($2)" >&2
     return 1
@@ -620,6 +627,9 @@ if [ "$(members_stream_arn)" != "${STREAM_ARN_2}" ]; then
 fi
 wait_members_on "${STREAM_ARN_2}" "none" "none" "members removed"
 assert_esm_on "${STREAM_ARN_2}" "members removed, stream kept" || exit 1
+MEMBERS_ESM_UUID="$(aws lambda list-event-source-mappings --function-name "${MEMBERS_CONSUMER}" --region "${REGION}" \
+  --query "EventSourceMappings[?State!='Deleting'].UUID" --output json | jq -r '.[0] // ""')"
+[ -n "${MEMBERS_ESM_UUID}" ] || { echo "FAIL (issue #6999): no live event source mapping on ${MEMBERS_CONSUMER}" >&2; exit 1; }
 assert_members_drift_clean "M4, after the removal"
 
 echo "==> Phase M5: destroy the members stack"
@@ -640,6 +650,19 @@ fi
 echo "    OK: the members table is gone"
 assert_gone "consumer ${MEMBERS_CONSUMER} still exists after destroy" aws lambda get-function --function-name "${MEMBERS_CONSUMER}" --region "${REGION}"
 echo "    OK: the members consumer is gone"
+MEMBERS_ESM_GONE=""
+for _ in $(seq 1 24); do
+  if gone_probe aws lambda get-event-source-mapping --uuid "${MEMBERS_ESM_UUID}" --region "${REGION}"; then
+    MEMBERS_ESM_GONE=1
+    break
+  fi
+  sleep 5
+done
+if [ -z "${MEMBERS_ESM_GONE}" ]; then
+  echo "FAIL (issue #6999): event source mapping ${MEMBERS_ESM_UUID} still exists ~2min after destroy" >&2
+  exit 1
+fi
+echo "    OK: the members consumer's mapping is gone"
 assert_gone "state file s3://${STATE_BUCKET}/${MEMBERS_STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${MEMBERS_STATE_KEY}"
 echo "    OK: the members state file is gone"
 

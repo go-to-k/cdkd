@@ -138,6 +138,25 @@ describe('a reader of a DynamoDB StreamArn follows a stream change (#6999)', () 
     }
   );
 
+  it('a stream Tags / ResourcePolicy edit keeps the ARN and does not promote the mapping', async () => {
+    const type = 'AWS::DynamoDB::Table';
+    const before = { ...KEY, StreamSpecification: { StreamViewType: 'NEW_IMAGE' } };
+    const after = {
+      ...KEY,
+      StreamSpecification: { StreamViewType: 'NEW_IMAGE', Tags: [{ Key: 'k', Value: 'v' }] },
+    };
+    const state = stateWith(type, before);
+
+    const changes = await new DiffCalculator().calculateDiff(
+      state,
+      templateWith(type, after),
+      resolverFor(state)
+    );
+
+    expect(changes.get('Table')?.changeType).toBe('UPDATE');
+    expect(changes.get('Esm')?.changeType).toBe('NO_CHANGE');
+  });
+
   it('a table update that leaves StreamSpecification alone does not promote the mapping', async () => {
     const type = 'AWS::DynamoDB::Table';
     const stream = { StreamSpecification: { StreamViewType: 'NEW_IMAGE' } };

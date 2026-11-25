@@ -143,10 +143,11 @@ export const IN_PLACE_UPDATE_ATTRS_MOVED_BY: Readonly<
     NetworkInterfaceIds: new Set(['SubnetIds']),
     DnsEntries: new Set(['SubnetIds', 'PrivateDnsEnabled', 'DnsOptions', 'IpAddressType']),
   }),
-  // go-to-k/cdkd#6999: a stream view type change (or a stream turned off and
-  // on) disables the old stream and mints a new ARN, so an event source mapping
+  // go-to-k/cdkd#6999: turning the stream on, or changing its view type,
+  // disables the old stream and mints a new ARN, so an event source mapping
   // reading `StreamArn` must follow it; its `EventSourceArn` is create-only, so
-  // the mapping is replaced, as CloudFormation does.
+  // the mapping is replaced, as CloudFormation does. A `ResourcePolicy` /
+  // `Tags`-only edit keeps the ARN: `IN_PLACE_UPDATE_ATTR_MOVE_TESTS`.
   'AWS::DynamoDB::Table': Object.freeze({
     StreamArn: new Set(['StreamSpecification']),
   }),
@@ -156,19 +157,79 @@ export const IN_PLACE_UPDATE_ATTRS_MOVED_BY: Readonly<
 });
 
 /**
+ * A DynamoDB `StreamSpecification`'s view type, `null` for no stream, or
+ * `undefined` when the block cannot be read (an intrinsic, a malformed value).
+ */
+function streamViewTypeOf(spec: unknown): string | null | undefined {
+  if (spec === undefined || spec === null) return null;
+  if (typeof spec !== 'object' || Array.isArray(spec)) return undefined;
+  const viewType = (spec as Record<string, unknown>)['StreamViewType'];
+  return typeof viewType === 'string' ? viewType : undefined;
+}
+
+/**
+ * Whether a change of `StreamSpecification` from `oldValue` to `newValue`
+ * mints a new stream ARN: the view type moved, or the stream was turned on or
+ * off. An unreadable side answers `true` (the reader is promoted, and the
+ * engine skips it if the value did not move).
+ */
+function streamSpecificationMovesStreamArn(oldValue: unknown, newValue: unknown): boolean {
+  const before = streamViewTypeOf(oldValue);
+  const after = streamViewTypeOf(newValue);
+  if (before === undefined || after === undefined) return true;
+  return before !== after;
+}
+
+/**
+ * Narrower tests for rows of {@link IN_PLACE_UPDATE_ATTRS_MOVED_BY}: per type
+ * -> attribute -> property, whether that property's change from the recorded
+ * to the desired value moves the attribute. A row with no test moves on any
+ * change of the property. `export-change-guard.ts` reads the answer too, so a
+ * test keeps an export from being refused over an edit that leaves it alone.
+ */
+export const IN_PLACE_UPDATE_ATTR_MOVE_TESTS: Readonly<
+  Record<
+    string,
+    Readonly<
+      Record<string, Readonly<Record<string, (oldValue: unknown, newValue: unknown) => boolean>>>
+    >
+  >
+> = Object.freeze({
+  'AWS::DynamoDB::Table': Object.freeze({
+    StreamArn: Object.freeze({ StreamSpecification: streamSpecificationMovesStreamArn }),
+  }),
+  'AWS::DynamoDB::GlobalTable': Object.freeze({
+    StreamArn: Object.freeze({ StreamSpecification: streamSpecificationMovesStreamArn }),
+  }),
+});
+
+/**
  * Whether `attr` of an in-place-updated `type` moves with one of `changed`
- * (top-level property names), per {@link IN_PLACE_UPDATE_ATTRS_MOVED_BY}.
- * `Object.hasOwn` on both levels: type and attribute are template text.
+ * (top-level property names), per {@link IN_PLACE_UPDATE_ATTRS_MOVED_BY},
+ * narrowed by {@link IN_PLACE_UPDATE_ATTR_MOVE_TESTS} when `valuesOf` hands
+ * over a changed property's recorded and desired values.
+ * `Object.hasOwn` on every level: type, attribute and property are template text.
  */
 export function attributeMovedByChangedProperty(
   type: string,
   attr: string,
-  changed: ReadonlySet<string>
+  changed: ReadonlySet<string>,
+  valuesOf?: (prop: string) => { oldValue: unknown; newValue: unknown } | undefined
 ): boolean {
   if (!Object.hasOwn(IN_PLACE_UPDATE_ATTRS_MOVED_BY, type)) return false;
   const byAttr = IN_PLACE_UPDATE_ATTRS_MOVED_BY[type]!;
   if (!Object.hasOwn(byAttr, attr)) return false;
-  return [...byAttr[attr]!].some((prop) => changed.has(prop));
+  const tests =
+    Object.hasOwn(IN_PLACE_UPDATE_ATTR_MOVE_TESTS, type) &&
+    Object.hasOwn(IN_PLACE_UPDATE_ATTR_MOVE_TESTS[type]!, attr)
+      ? IN_PLACE_UPDATE_ATTR_MOVE_TESTS[type]![attr]!
+      : undefined;
+  return [...byAttr[attr]!].some((prop) => {
+    if (!changed.has(prop)) return false;
+    const test = tests !== undefined && Object.hasOwn(tests, prop) ? tests[prop] : undefined;
+    const values = test !== undefined ? valuesOf?.(prop) : undefined;
+    return test === undefined || values === undefined || test(values.oldValue, values.newValue);
+  });
 }
 
 /**

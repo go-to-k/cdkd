@@ -555,6 +555,45 @@ describe('findAffectedExports: what moves an exported value', () => {
       ]);
     }
   );
+
+  // go-to-k/cdkd#6999: a cross-stack `DynamoEventSource` imports the table's
+  // stream ARN, which moves only when the stream is turned on or off or its
+  // view type changes, not on a ResourcePolicy / Tags edit of the stream.
+  it.each(['AWS::DynamoDB::Table', 'AWS::DynamoDB::GlobalTable'])(
+    'counts a %s StreamArn as changed only when the stream view type moves',
+    async (resourceType) => {
+      const value = exported({ 'Fn::GetAtt': ['Q', 'StreamArn'] });
+      const edit = (oldValue: unknown, newValue: unknown) =>
+        new Map([
+          [
+            'Q',
+            change({
+              changeType: 'UPDATE',
+              resourceType,
+              propertyChanges: [
+                { path: 'StreamSpecification', oldValue, newValue, requiresReplacement: false },
+              ],
+            }),
+          ],
+        ]);
+      const tags = [{ Key: 'k', Value: 'v' }];
+      expect(
+        await run(
+          value,
+          edit({ StreamViewType: 'NEW_IMAGE' }, { StreamViewType: 'NEW_IMAGE', Tags: tags })
+        )
+      ).toEqual([]);
+      expect(
+        await run(
+          value,
+          edit({ StreamViewType: 'NEW_IMAGE' }, { StreamViewType: 'NEW_AND_OLD_IMAGES' })
+        )
+      ).toEqual([{ exportName: EXPORT, reason: 'changed' }]);
+      expect(await run(value, edit(undefined, { StreamViewType: 'NEW_IMAGE' }))).toEqual([
+        { exportName: EXPORT, reason: 'changed' },
+      ]);
+    }
+  );
 });
 
 /**
