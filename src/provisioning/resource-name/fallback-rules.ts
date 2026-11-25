@@ -251,7 +251,8 @@ export const FALLBACK_NAME_RULES: Record<string, GeneratedNameRule> = {
   },
   'AWS::WAFv2::WebACL': { nameProperty: 'Name', options: { maxLength: 128 } },
   // CreateProject: 2-150 characters. A legacy stack's SDK provider named the
-  // project after the bare logical id; Cloud Control has no handlers for it.
+  // project after the bare logical id, and a Cloud Control create uses the
+  // rule's name.
   'AWS::CodeBuild::Project': {
     nameProperty: 'Name',
     options: { maxLength: 150 },
@@ -373,6 +374,14 @@ export const FALLBACK_NAME_RULES: Record<string, GeneratedNameRule> = {
     nameProperty: 'Name',
     options: { maxLength: 255 },
     legacy: { sdk: 'logicalId', cloudControl: 'none' },
+    notAdopted: true,
+  },
+  // Budgets allows 100 characters. Cloud Control had no handlers for the type
+  // until 2026-09, so there is no legacy Cloud Control name to keep.
+  'AWS::Budgets::Budget': {
+    nameProperty: 'BudgetName',
+    nestedIn: 'Budget',
+    options: { maxLength: 100, allowedPattern: /[^a-zA-Z0-9\-_.]/g },
     notAdopted: true,
   },
   'AWS::Glue::Connection': {

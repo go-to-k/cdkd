@@ -83,6 +83,16 @@ export interface CoverageReport {
   readonly tier1: readonly string[];
   readonly tier2: readonly string[];
   readonly tier3: readonly string[];
+  /**
+   * The Tier 1 types AWS reports `NON_PROVISIONABLE`: an SDK provider is
+   * registered, but Cloud Control has no handlers for them. The measured side
+   * of `SDK_PROVIDER_NON_PROVISIONABLE_TYPES`, which
+   * `sdk-provider-non-provisionable-measured.test.ts` binds to this list, so a
+   * refresh that finds AWS gave one of them handlers fails instead of keeping
+   * its Cloud Control route closed. Present only when the partition was given
+   * `knownProvisioningTypes` (every `--regenerate` run).
+   */
+  readonly tier1NonProvisionable?: readonly string[];
 }
 
 /**
@@ -413,6 +423,7 @@ export async function partitionCoverage(
   // dedupe at ITS boundary for exactly that reason. Fixing it here is what
   // lets that consumer-side guard become redundant rather than load-bearing.
   const tier1: string[] = [];
+  const tier1NonProvisionable: string[] = [];
   const nonTier1: string[] = [];
   const seen = new Set<string>();
   for (const typeName of allTypes) {
@@ -422,6 +433,9 @@ export async function partitionCoverage(
     seen.add(typeName);
     if (registeredTypes.has(typeName)) {
       tier1.push(typeName);
+      if (options.knownProvisioningTypes?.get(typeName) === 'NON_PROVISIONABLE') {
+        tier1NonProvisionable.push(typeName);
+      }
     } else {
       nonTier1.push(typeName);
     }
@@ -484,6 +498,9 @@ export async function partitionCoverage(
     tier1,
     tier2,
     tier3,
+    ...(options.knownProvisioningTypes !== undefined && {
+      tier1NonProvisionable: [...tier1NonProvisionable].sort(),
+    }),
     ...(undetermined.length > 0 && { undetermined: [...undetermined].sort() }),
   };
 }

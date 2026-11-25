@@ -9,9 +9,9 @@ const SESSION_LOG_GROUP_NAME = '/cdkd-integ/emr-cluster/session';
 
 /**
  * Minimal single-node EMR-on-EC2 fixture for the AWS::EMR::Cluster SDK
- * provider (issue #1043). The type is ProvisioningType: NON_PROVISIONABLE,
- * so no Cloud Control fallback exists — this fixture is the end-to-end proof
- * of the SDK provider. Built on the L1 `emr.CfnCluster` (aws-cdk-lib ships no
+ * provider (issue #1043). The type was ProvisioningType: NON_PROVISIONABLE
+ * when the provider landed (AWS has since given it Cloud Control handlers) —
+ * this fixture is the end-to-end proof of the SDK provider. Built on the L1 `emr.CfnCluster` (aws-cdk-lib ships no
  * L2 for EMR clusters).
  *
  * covers: AWS::EMR::Cluster

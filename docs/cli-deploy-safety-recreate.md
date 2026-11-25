@@ -321,7 +321,7 @@ that stack. A resource inside a nested stack cannot be recreated with them.
 - **The same resource's property cannot also be in `--prefer-sdk-route`.** The
   two flags ask for opposite things, and cdkd refuses before it touches
   anything.
-- **A type Cloud Control cannot create** (`AWS::CodeBuild::Project`,
+- **A type Cloud Control cannot create** (`AWS::FSx::FileSystem`,
   `AWS::IAM::Policy`), or one whose SDK provider opts out of Cloud Control, is
   refused before anything is touched, with no bypass.
 - **A type whose Cloud Control handler cannot manage it**

@@ -68,7 +68,7 @@ describe('coverage ccRouteUnavailable matches NON_PROVISIONABLE, disableCcApiFal
   });
 
   it('every SDK_PROVIDER_NON_PROVISIONABLE_TYPES member is registered and has a coverage record', () => {
-    expect(SDK_PROVIDER_NON_PROVISIONABLE_TYPES.size).toBeGreaterThanOrEqual(19);
+    expect(SDK_PROVIDER_NON_PROVISIONABLE_TYPES.size).toBeGreaterThanOrEqual(15);
     for (const type of SDK_PROVIDER_NON_PROVISIONABLE_TYPES) {
       expect(providers.has(type), type).toBe(true);
       expect(PROPERTY_COVERAGE_BY_TYPE.get(type)?.ccRouteUnavailable, type).toBe(true);

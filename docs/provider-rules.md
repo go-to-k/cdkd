@@ -2813,7 +2813,7 @@ A template property in neither `handledProperties` nor the allow set normally
 auto-routes the resource through Cloud Control (issue #614), and so does a key
 the schema snapshot does not know (#3713). If your provider covers a
 `ProvisioningType: NON_PROVISIONABLE` type (e.g. `AWS::FSx::FileSystem`,
-`AWS::CodeBuild::Project`), that route target does not exist — Cloud Control
+`AWS::IAM::Policy`), that route target does not exist — Cloud Control
 has no handlers — and the generated Tier 3 set cannot catch it: it excludes
 SDK-covered types by design, so `isNonProvisionable()` returns false once the
 audit is regenerated after your provider is registered. Add the type to
@@ -2829,6 +2829,15 @@ and it is per TYPE, so a provider class that also serves provisionable types
 (`EC2Provider` for `AWS::EC2::NetworkAclEntry`) needs nothing else.
 `property-coverage-cc-fallback-binding.test.ts` fails while a registered type is
 still in the Tier 3 set and missing from the list.
+
+The list goes stale when AWS gives a type Cloud Control handlers. The daily
+provider-coverage refresh records the registered types AWS still reports
+`NON_PROVISIONABLE` (`tier1NonProvisionable` in
+`docs/_generated/provider-coverage.json`), and
+`sdk-provider-non-provisionable-measured.test.ts` fails when the list and that
+measurement disagree. Then take the type out of the list (and drop a
+`disableCcApiFallback` its provider kept for the same reason), or keep it with
+the reason Cloud Control cannot address cdkd's resource.
 
 `readonly disableCcApiFallback = true;` on a provider class is the other
 opt-out: it covers every type the class serves, for a provider that must not

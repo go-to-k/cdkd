@@ -1,8 +1,9 @@
 /**
  * Helpers shared by the two DocumentDB providers, `DocDBProvider` (DB cluster
- * and instance) and `DocDBSubnetGroupProvider`. They are two classes because
- * `disableCcApiFallback` is provider-level and only the cluster and instance
- * types lack Cloud Control handlers (issue #3866).
+ * and instance) and `DocDBSubnetGroupProvider`. They became two classes when
+ * `DocDBProvider` declared the provider-level `disableCcApiFallback` (issue
+ * #3866); the cluster's closed Cloud Control route is now per type
+ * (`SDK_PROVIDER_NON_PROVISIONABLE_TYPES`), and the instance has handlers.
  */
 import {
   AddTagsToResourceCommand,

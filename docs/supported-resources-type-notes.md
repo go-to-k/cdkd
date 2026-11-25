@@ -110,12 +110,14 @@ cannot manage it, so cdkd's SDK provider is the only path for it.
 ## EMR on EC2
 
 cdkd deploys EMR clusters, instance groups and instance fleets with SDK
-providers. AWS marks `AWS::EMR::Cluster` `NON_PROVISIONABLE`, which means Cloud
-Control cannot manage it, so there is no other path. `AWS::EMR::InstanceGroupConfig`
-and `AWS::EMR::InstanceFleetConfig` have been `FULLY_MUTABLE`, with Cloud
-Control handlers, since registry versions created on 2025-10-23 (`aws
-cloudformation describe-type --type RESOURCE --type-name <type>`); cdkd still
-deploys them with its SDK providers. Each has a one-hour timeout per resource.
+providers. `AWS::EMR::Cluster` has Cloud Control handlers (`FULLY_MUTABLE`)
+since its registry version created on 2024-10-15, so a cluster whose template
+sets a property the SDK provider does not know yet is deployed through Cloud
+Control instead. `AWS::EMR::InstanceGroupConfig` and
+`AWS::EMR::InstanceFleetConfig` have been `FULLY_MUTABLE`, with Cloud Control
+handlers, since registry versions created on 2025-10-23 (`aws cloudformation
+describe-type --type RESOURCE --type-name <type>`); cdkd still deploys them with
+its SDK providers. Each has a one-hour timeout per resource.
 
 | Type | Updates in place | Delete |
 | --- | --- | --- |

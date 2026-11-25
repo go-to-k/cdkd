@@ -566,9 +566,10 @@ export function refStateLookupFromResource(
 }
 
 /**
- * The `Ref` value of an `AWS::Glue::Table` — its table name — from cdkd's
- * `<databaseName>|<tableName>` physical id, or `undefined` for a pipe-free id
- * (which the caller passes through unchanged).
+ * The `Ref` value of an `AWS::Glue::Table` — its table name — from the SDK
+ * provider's `<databaseName>|<tableName>` physical id or Cloud Control's
+ * `<catalogId>|<databaseName>|<tableName>` one, or `undefined` for a pipe-free
+ * id (which the caller passes through unchanged).
  *
  * EITHER name may contain `|` (a table name since issue #1672, a database name
  * since #3892; AWS accepts both and CloudFormation manages such tables), so
@@ -581,7 +582,8 @@ export function refStateLookupFromResource(
  *    (`properties`, then `attributes`) — the table name is everything after
  *    `<DatabaseName>|`. Every current writer records it: `createTable` in
  *    `properties`, resolved; `importTable` also in `attributes`, for a record
- *    whose `properties` keep an unresolved intrinsic.
+ *    whose `properties` keep an unresolved intrinsic. A Cloud Control id
+ *    anchors on `<CatalogId>|<DatabaseName>|` instead.
  * 2. Otherwise everything after the FIRST `|`. For a two-segment id that is
  *    exact, and a two-segment id never consults state, so an ordinary table's
  *    `Ref` reads nothing but its id, as it always has. For a longer id it is a
@@ -621,6 +623,20 @@ export function glueTableRefFromPhysicalId(
     if (anchor !== undefined && carriesSecretMask(anchor)) return anchor;
     const tableName = segmentAfterAnchor(physicalId, anchor);
     if (tableName !== undefined) return tableName;
+    // A table Cloud Control created is recorded under its identifier,
+    // `<CatalogId>|<DatabaseName>|<Name>` (#6975).
+    const catalogId = stateLookup(['CatalogId'], { preferCleanValue: true });
+    if (
+      typeof catalogId === 'string' &&
+      typeof anchor === 'string' &&
+      !carriesSecretMask(catalogId)
+    ) {
+      const ccTableName = segmentAfterAnchor(
+        physicalId,
+        `${catalogId}${COMPOSITE_ID_SEPARATOR}${anchor}`
+      );
+      if (ccTableName !== undefined) return ccTableName;
+    }
   }
   return physicalId.substring(firstPipe + 1);
 }

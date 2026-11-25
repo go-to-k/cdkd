@@ -1324,6 +1324,7 @@
       "flag": "--recreate-via-sdk-provider",
       "integs": [
         "alb",
+        "codebuild-project",
         "recreate-mixed-direction",
         "recreate-via-sdk-provider",
         "sdk-to-cc-autoroute"

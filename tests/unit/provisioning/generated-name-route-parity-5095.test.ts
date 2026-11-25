@@ -48,7 +48,9 @@ const ccProps = (type: string): Record<string, unknown> =>
     ? { LocationName: ZONE }
     : type === 'AWS::Glue::Connection'
       ? { ConnectionInput: { ConnectionType: 'JDBC' } }
-      : {};
+      : type === 'AWS::Budgets::Budget'
+        ? { Budget: { BudgetType: 'COST' } }
+        : {};
 /** The value at `path` (a Glue connection's name is `ConnectionInput.Name`). */
 const at = (bag: Record<string, unknown>, path: readonly string[]): unknown =>
   path.reduce<unknown>((v, k) => (v as Record<string, unknown> | undefined)?.[k], bag);
@@ -73,6 +75,7 @@ const OLD_SDK: Record<string, (id: string) => string> = {
   'AWS::AutoScaling::AutoScalingGroup': gen({ maxLength: 255 }),
   'AWS::CloudWatch::Alarm': gen({ maxLength: 256 }),
   'AWS::CloudTrail::Trail': (id) => id,
+  'AWS::Budgets::Budget': gen({ maxLength: 100, allowedPattern: /[^a-zA-Z0-9\-_.]/g }),
   'AWS::CodeBuild::Project': (id) => id,
   'AWS::CodeCommit::Repository': gen({ maxLength: 100 }),
   'AWS::Cognito::UserPool': gen({ maxLength: 128 }),
@@ -506,14 +509,12 @@ describe('every SDK provider names an un-named resource through the rule (#5095)
     const own = files.filter((f) =>
       /\bgenerateResourceName\(\s*logicalId\b/.test(readFileSync(join(dir, f), 'utf-8'))
     );
-    // A budget's name is nested (`Budget.BudgetName`) and the type has no
-    // Cloud Control route in cdkd, so it has no rule. A Lambda permission has
+    // A Lambda permission has
     // no name property: its statement id is generated (go-to-k/cdkd#5137),
     // and Cloud Control's handler picks its own, so there is no rule to share.
     // A Route 53 record set group has no name property and no Cloud Control
     // route either; its generated name is only its `Ref` (go-to-k/cdkd#6540).
     expect(own).toEqual([
-      'budgets-budget/create.ts',
       'lambda-permission-provider.ts',
       'route53/record-set-group-shape.ts',
     ]);

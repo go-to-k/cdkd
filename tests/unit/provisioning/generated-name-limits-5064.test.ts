@@ -74,7 +74,9 @@ describe('generated names fit their name property (#5064)', () => {
       ? { LocationName: ZONE }
       : type === 'AWS::Glue::Connection'
         ? { ConnectionInput: { ConnectionType: 'JDBC' } }
-        : {};
+        : type === 'AWS::Budgets::Budget'
+          ? { Budget: { BudgetType: 'COST' } }
+          : {};
   /** The value at a dotted `nameProperty` (a Glue connection's `ConnectionInput.Name`). */
   const at = (bag: Record<string, unknown>, path: string): unknown =>
     path.split('.').reduce<unknown>((v, k) => (v as Record<string, unknown> | undefined)?.[k], bag);
@@ -101,7 +103,7 @@ describe('generated names fit their name property (#5064)', () => {
     'AWS::S3Vectors::VectorBucket',
     'AWS::ServiceDiscovery::Service',
     'AWS::Events::Archive',
-    // CodeBuild has no Cloud Control handlers; its old rule still names it.
+    // CodeBuild's legacy Cloud Control fill is its rule's name, not the bare id.
     ...BARE_LOGICAL_ID.filter((t) => t !== 'AWS::CodeBuild::Project'),
   ];
   const fits = (name: string, limit: Limit): void => {

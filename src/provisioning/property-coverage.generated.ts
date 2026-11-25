@@ -664,7 +664,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Id']),
       primaryIdentifier: new Set<string>(['Id']),
-      ccRouteUnavailable: true,
+      ccRouteUnavailable: false,
     },
   ],
   [
@@ -925,7 +925,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn']),
       primaryIdentifier: new Set<string>(['Name']),
-      ccRouteUnavailable: true,
+      ccRouteUnavailable: false,
     },
   ],
   [
@@ -1099,7 +1099,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Endpoint', 'Port']),
       primaryIdentifier: new Set<string>(['DBInstanceIdentifier']),
-      ccRouteUnavailable: true,
+      ccRouteUnavailable: false,
     },
   ],
   [
@@ -1947,7 +1947,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Id', 'MasterPublicDNS']),
       primaryIdentifier: new Set<string>(['Id']),
-      ccRouteUnavailable: true,
+      ccRouteUnavailable: false,
     },
   ],
   [
@@ -1967,7 +1967,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['InstanceFleetId']),
       primaryIdentifier: new Set<string>(['ClusterId', 'InstanceFleetId']),
-      ccRouteUnavailable: true,
+      ccRouteUnavailable: false,
     },
   ],
   [
@@ -1990,7 +1990,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['InstanceGroupId']),
       primaryIdentifier: new Set<string>(['InstanceGroupId', 'JobFlowId']),
-      ccRouteUnavailable: true,
+      ccRouteUnavailable: false,
     },
   ],
   [
@@ -2194,7 +2194,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(),
       primaryIdentifier: new Set<string>(['CatalogId', 'DatabaseName', 'Name']),
-      ccRouteUnavailable: true,
+      ccRouteUnavailable: false,
     },
   ],
   [

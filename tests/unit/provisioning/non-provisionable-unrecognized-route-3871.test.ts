@@ -4,7 +4,7 @@
  * unrecognized-property route) must keep it on the SDK provider with a warn,
  * never auto-route it to Cloud Control, which has no handlers for it.
  *
- * The opt-out is per TYPE (`SDK_PROVIDER_NON_PROVISIONABLE_TYPES`), so four of
+ * The opt-out is per TYPE (`SDK_PROVIDER_NON_PROVISIONABLE_TYPES`), so three of
  * these types share a provider instance with types Cloud Control CAN manage;
  * those siblings must keep their route. Runs through the REAL registration.
  */
@@ -32,15 +32,17 @@ function realRegistry(): { registry: ProviderRegistry; warn: ReturnType<typeof v
   return { registry, warn };
 }
 
-/** The eleven types that still had a Cloud Control route before #3871. */
+/**
+ * The types that still had a Cloud Control route before #3871 and are still
+ * `NON_PROVISIONABLE` (`AWS::Budgets::Budget` and `AWS::Glue::Table` have
+ * since gained Cloud Control handlers and their route).
+ */
 const FIXED = [
   'AWS::AppSync::GraphQLSchema',
   'AWS::BedrockAgentCore::Browser',
   'AWS::BedrockAgentCore::CodeInterpreter',
-  'AWS::Budgets::Budget',
   'AWS::CloudFormation::WaitConditionHandle',
   'AWS::EC2::NetworkAclEntry',
-  'AWS::Glue::Table',
   'AWS::IAM::Policy',
   'AWS::IAM::UserToGroupAddition',
   'AWS::SNS::TopicPolicy',
@@ -51,7 +53,6 @@ const FIXED = [
 const CO_HOSTED: ReadonlyArray<{ type: string; sibling: string }> = [
   { type: 'AWS::AppSync::GraphQLSchema', sibling: 'AWS::AppSync::GraphQLApi' },
   { type: 'AWS::EC2::NetworkAclEntry', sibling: 'AWS::EC2::NetworkAcl' },
-  { type: 'AWS::Glue::Table', sibling: 'AWS::Glue::Database' },
   { type: 'AWS::IAM::UserToGroupAddition', sibling: 'AWS::IAM::Group' },
 ];
 

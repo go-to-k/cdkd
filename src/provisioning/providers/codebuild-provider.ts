@@ -57,15 +57,6 @@ export class CodeBuildProvider implements ResourceProvider {
   /** Re-read schedule of the post-write baseline capture; tests set it to zeros. */
   ownWriteRereadDelaysMs: readonly number[] = OWN_WRITE_REREAD_DELAYS_MS;
 
-  /**
-   * `AWS::CodeBuild::Project` is `ProvisioningType: NON_PROVISIONABLE` — Cloud
-   * Control has no handlers for it — so the #614 SDK-unwired auto-route must
-   * not send a template using an unhandled property to CC, where it
-   * fails mid-deploy with an opaque UnsupportedActionException. With this
-   * opt-out the registry refuses such a template pre-flight (issue #3866).
-   */
-  readonly disableCcApiFallback = true;
-
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
       'AWS::CodeBuild::Project',

@@ -315,7 +315,8 @@ trap '(exit 143); cleanup; exit 143' TERM
 # Issue #3866 (a NON_PROVISIONABLE type's SDK-unwired property is refused
 # pre-flight) was step 1b here until go-to-k/cdkd#5667 wired DocDB restore:
 # neither DocDB type has an SDK-unwired property left, so the deploy succeeded
-# (go-to-k/cdkd#6012). No NON_PROVISIONABLE type with an SDK provider has one
+# (go-to-k/cdkd#6012; DBInstance has since gained Cloud Control handlers,
+# DBCluster is still NON_PROVISIONABLE). No NON_PROVISIONABLE type with an SDK provider has one
 # today; tests/unit/provisioning/non-provisionable-cc-route-refusal-3866.test.ts
 # pins the refusal on a mocked coverage entry, and nested-stack-replace-guard
 # pins the same refusal live on the disableCcApiFallback arm. Restore a live

@@ -99,6 +99,24 @@ describe('generateResourceName with a stack instance id (#5064)', () => {
     expect(props).toEqual({ CapacityProviderName: `MyStack-Provider-${expectedSuffix(ID, 'Provider')}` });
   });
 
+  it("fills a Cloud Control budget's nested BudgetName with its SDK provider's name", () => {
+    const options = { maxLength: 100, allowedPattern: /[^a-zA-Z0-9\-_.]/g };
+    for (const scope of [legacy, v13]) {
+      expect(
+        scope('MyStack', () =>
+          applyDefaultNameForFallback('Monthly', 'AWS::Budgets::Budget', {
+            Budget: { BudgetType: 'COST' },
+          })
+        )
+      ).toEqual({
+        Budget: {
+          BudgetType: 'COST',
+          BudgetName: scope('MyStack', () => generateResourceName('Monthly', options)),
+        },
+      });
+    }
+  });
+
   it('never changes a declared name, prefixed or not', () => {
     expect(
       v13('MyStack', () => generateResourceNameWithFallback('my-role', 'R', { maxLength: 64 }))

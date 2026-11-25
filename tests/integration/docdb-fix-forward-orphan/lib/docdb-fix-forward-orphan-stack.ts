@@ -20,7 +20,8 @@ import * as docdb from 'aws-cdk-lib/aws-docdb';
  *   delete the earlier two, proven different by their live resource ids.
  *
  * Every property set on the clusters and the instance is one the DocDB SDK
- * provider handles (it has no Cloud Control route), so all stay on the SDK
+ * provider handles (DBCluster has no Cloud Control route; DBInstance gained
+ * one, but only for properties the SDK provider does not handle), so all stay on the SDK
  * route, where `isSameResource` lives. The master password is a literal: no
  * instance is reachable (isolated subnets), and verify.sh sweeps the state
  * prefix's object versions, since the journal's `attemptedProperties` carry it.

@@ -278,6 +278,29 @@ export async function deleteInIdLogScope(
     );
   }
 
+  // `--remove-protection` for an `AWS::EMR::Cluster` routed through Cloud
+  // Control (#6975: the type gained handlers, so an SDK-unhandled property
+  // sends it there). `TerminationProtected` makes `DeleteResource` fail, and
+  // the SDK provider owns the flip-then-terminate sequence and its #2204
+  // compensation, addressing the cluster by the same `j-` id Cloud Control
+  // records. Its verdict is propagated, as the ASG delegate's is.
+  if (context?.removeProtection === true && resourceType === 'AWS::EMR::Cluster') {
+    this.logger.debug(
+      safeMsg`Delegating protected EMR cluster ${logicalId} delete to the SDK EMRClusterProvider (Cloud Control cannot lift termination protection)`
+    );
+    const { EMRClusterProvider } = await import('../providers/emr-cluster-provider.js');
+    return withIndeterminateGuard(
+      await new EMRClusterProvider().delete(
+        logicalId,
+        physicalId,
+        resourceType,
+        properties,
+        context
+      ),
+      indeterminateGuard
+    );
+  }
+
   // go-to-k/cdkd#6666: a record holding an AWS-minted id (an IAM role's
   // `RoleId`, an RDS instance's `DbiResourceId`, ...) is compared with the
   // live resource holding its name before anything below sends a request,

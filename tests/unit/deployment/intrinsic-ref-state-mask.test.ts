@@ -305,6 +305,23 @@ describe('resolveRef records a redacted read instead of shipping the mask (#2847
       expect(lookup(['TableName'], { preferCleanValue: true })).toBe('orders');
     });
 
+    // #6975: a table Cloud Control created records its identifier,
+    // `<CatalogId>|<DatabaseName>|<Name>`, which the DatabaseName anchor
+    // alone does not prefix.
+    it.each([
+      ['123456789012|mydb|orders', 'mydb', 'orders'],
+      ['123456789012|x|y|t', 'x|y', 't'],
+      ['123456789012|mydb|a|b', 'mydb', 'a|b'],
+    ])('places the table name in the Cloud Control id %s', async (physicalId, db, table) => {
+      const context = contextFor({
+        resourceType: 'AWS::Glue::Table',
+        physicalId,
+        properties: { CatalogId: '123456789012', DatabaseName: db },
+      });
+
+      await expect(resolver.resolve({ Ref: 'T' }, context)).resolves.toBe(table);
+    });
+
     it('serves the MASK, not a guess, when no bag is declared', async () => {
       const context = contextFor({
         resourceType: 'AWS::Glue::Table',

@@ -312,6 +312,11 @@
       "schemaMaxLength": 64,
       "schemaMinLength": 1,
       "schemaPattern": "[a-zA-Z0-9._-]+"
+    },
+    "AWS::Budgets::Budget": {
+      "nameProperty": "Budget.BudgetName",
+      "apiMaxLength": 100,
+      "apiSource": "CreateBudget Budget.BudgetName"
     }
   }
 }

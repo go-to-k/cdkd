@@ -351,16 +351,19 @@ export function registerAllProviders(registry: ProviderRegistry, classes: Provid
   // future unhandled property.
   registry.register('AWS::FSx::FileSystem', new FSxFileSystemProvider());
 
-  // EMR — NON_PROVISIONABLE in the CFn registry, so no Cloud Control
-  // fallback exists (issue #1043). RunJobFlow-backed create + limited
+  // EMR — NON_PROVISIONABLE in the CFn registry when this provider landed
+  // (issue #1043); Cloud Control has had handlers for it since, so an
+  // SDK-unhandled property routes there. RunJobFlow-backed create + limited
   // mutable update surface (termination protection / visibility /
   // step concurrency / managed-scaling / auto-termination / tags);
   // everything else is createOnly → replacement.
   registry.register('AWS::EMR::Cluster', new EMRClusterProvider());
 
   // EMR InstanceGroupConfig / InstanceFleetConfig — also NON_PROVISIONABLE
-  // (issue #1070). These add a standalone instance group / fleet to an
-  // EXISTING cluster (referenced by JobFlowId / ClusterId) via
+  // when these providers landed (issue #1070), FULLY_MUTABLE since 2025-10;
+  // an SDK-unhandled property routes them via Cloud Control. These add a
+  // standalone instance group / fleet to an EXISTING cluster (referenced by
+  // JobFlowId / ClusterId) via
   // AddInstanceGroups / AddInstanceFleet, with a limited mutable update
   // surface (resize + config); delete has no standalone AWS API, so it is a
   // no-op that relies on the parent cluster's TerminateJobFlows (best-effort
