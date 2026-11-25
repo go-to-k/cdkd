@@ -17,6 +17,7 @@ export { typeChangeNameQuestion, checkedReplacementNameChange } from './replacem
 export { createFirstThenDeleteOld } from './replacement/create-first.js';
 export { deleteReplacedAfterCreate } from './replacement/delete-replaced.js';
 export {
+  deleteDeferredUsersOfRemovals,
   retryDeferredReplacedDeletes,
   warnUnretriedReplacedDeletes,
 } from './replacement/deferred-deletes.js';

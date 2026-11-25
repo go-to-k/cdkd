@@ -344,8 +344,9 @@ The outcome depends on whether the replacement deletes first or creates first.
 - **Create first: the deploy completes with a warning** that the old resource
   could not be deleted. cdkd deletes the old resource after the rest of the
   deploy succeeds; in a nested stack, after the whole stack tree's deploy
-  succeeds. An IAM inline policy is deleted right after the new one is
-  created. A failed
+  succeeds. An old resource that still uses a resource the template removed
+  is deleted right before that removal instead. An IAM inline policy is
+  deleted right after the new one is created. A failed
   delete of one is retried once, after the rest of the deploy (in a nested
   stack, after the whole stack tree's deploy succeeds). That clears a
   refusal from a dependent that still used the old resource, but not

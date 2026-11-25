@@ -8177,6 +8177,7 @@
         "ref-shape-compound-cc-ids",
         "refactor-lambda-version",
         "rename-refactor",
+        "replaced-user-of-removed-resource",
         "rollback-failure-injection",
         "rollback-regenerated-secret",
         "s3-asset-deploy",
@@ -8627,6 +8628,9 @@
         "rename-refactor": [
           "l2",
           "literal"
+        ],
+        "replaced-user-of-removed-resource": [
+          "l2"
         ],
         "rollback-failure-injection": [
           "l2"

@@ -2803,6 +2803,11 @@
       "scenarios": []
     },
     {
+      "name": "replaced-user-of-removed-resource",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "replacement-fanout",
       "annotated": true,
       "scenarios": [
@@ -4519,6 +4524,7 @@
     "replace-squatter-refusal",
     "replaced-delete-failed-rollback",
     "replaced-queue-topic-failed-rollback",
+    "replaced-user-of-removed-resource",
     "replacement-immutable-name",
     "replacement-rename-onto-holder",
     "require-approval-broadening",

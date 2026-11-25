@@ -77,82 +77,82 @@ export async function retryDeferredReplacedDeletes(
       safeMsg`Deleting the old physical id of ${movedIds} replaced custom resource(s)`
     );
   }
-  const retryOne = async (logicalId: string, entry: DeferredReplacedDelete): Promise<void> => {
-    const guards: ReportedDeleteGuard[] = [];
-    try {
-      await withPrintingSecrets(secretNameBagFor(deps.secretsRun(), logicalId), () =>
-        withStackRecords(deps.stackRecordsView(), () =>
-          collectDeleteGuards(guards, async () => {
-            deps.logger.info(
-              safeMsg`  Deleting old ${logicalId} (${displayPhysicalId(entry.resourceType, entry.physicalId)})...`
-            );
-            try {
-              await entry.retry();
-            } catch {
-              // `deleteReplacedAfterCreate` catches the provider's own error;
-              // anything else must not strand the entries still queued. Its
-              // text is not shown: nothing masked it.
-              deps.logger.warn(
-                safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${displayPhysicalId(entry.resourceType, entry.physicalId)}): the retry failed unexpectedly`
-              );
-            }
-          })
-        )
-      );
-    } finally {
-      // As `provisionResource` emits the row's guards (issue #2422).
-      for (const guard of guards) {
-        deps.recordEvent({
-          eventType: 'RESOURCE_GUARD_INDETERMINATE',
-          stackName,
-          operation: 'DELETE',
-          logicalId,
-          resourceType: guard.resourceType,
-          ...(guard.provisionedBy && { provisionedBy: guard.provisionedBy }),
-          ...(guard.physicalId && {
-            physicalId: maskSecretsInText(
-              guard.physicalId,
-              deps.secretsRun().perResourceSecrets.get(logicalId) ?? EMPTY_SECRETS
-            ),
-          }),
-          guard: guard.guard,
-          reason: guard.reason,
-        });
-      }
-    }
-    const skip = run.replacedDeleteSkips.get(logicalId);
-    if (skip === undefined) return;
-    run.replacedDeleteSkips.delete(logicalId);
-    // As `provisionResource` turns an inline skip into the row's partial
-    // update: counted once, and the survivor named in its own event.
-    if (entry.rowPartial !== true) {
-      counts.updated = Math.max(0, counts.updated - 1);
-      counts.updatePartial++;
-    }
-    deps.recordEvent({
-      eventType: 'RESOURCE_SKIPPED',
-      stackName,
-      operation: 'UPDATE',
-      logicalId,
-      resourceType: entry.resourceType,
-      ...(entry.provisionedBy && { provisionedBy: entry.provisionedBy }),
-      physicalId: entry.physicalId,
-      reason: skip,
-    });
-  };
-  // go-to-k/cdkd#6374: in waves, dependents first: an entry runs once no
-  // other pending entry depends on it (an old subnet before its old VPC). A
-  // cycle runs whatever is left at once, as before.
   const pending = new Map(deferred);
-  while (pending.size > 0) {
-    // A Ctrl-C between waves sends nothing more: what is left and recorded
-    // as superseded stays for the next deploy or `cdkd destroy`; what was
-    // deferred in memory only (go-to-k/cdkd#6445) is named, as no state
-    // tracks it.
-    if (deps.interrupted()) {
-      warnUnsentUntracked(run, deps, pending);
-      break;
+  await runInWaves(run, deps, stackName, counts, pending);
+  // A Ctrl-C between waves sends nothing more: what is left and recorded as
+  // superseded stays for the next deploy or `cdkd destroy`; what was deferred
+  // in memory only (go-to-k/cdkd#6445) is named, as no state tracks it.
+  if (pending.size > 0) warnUnsentUntracked(run, deps, pending);
+}
+
+/**
+ * go-to-k/cdkd#6977: deletes, before the deploy's removal deletes, every
+ * deferred old copy that still uses a resource removed from the template
+ * (an old alias pointing at a removed old version), and the deferred old
+ * copies using those. CloudFormation's cleanup phase deletes both kinds in
+ * one dependency order; deleting the removed resource first is refused by
+ * AWS while the old copy still uses it. The deploy's creates and updates are
+ * done by then, so nothing left in it still needs these old copies.
+ *
+ * `removedDependencies` answers a removed record's own dependencies. When a
+ * removed resource uses one of the old copies taken here, no order deletes
+ * both correctly in two passes, so nothing is taken and the cleanup phase
+ * deletes them as before.
+ */
+export async function deleteDeferredUsersOfRemovals(
+  run: ReplacementRunState,
+  deps: ReplacementDeps,
+  stackName: string,
+  counts: { updated: number; updatePartial: number },
+  removedIds: ReadonlySet<string>,
+  removedDependencies: (logicalId: string) => readonly string[]
+): Promise<void> {
+  const deferred = run.deferredReplacedDeletes;
+  if (deferred === undefined || deferred.size === 0 || removedIds.size === 0) return;
+  const users = (entry: DeferredReplacedDelete, ids: { has(id: string): boolean }): boolean =>
+    (entry.dependencies ?? []).some((dep) => ids.has(dep));
+  const taken = new Map<string, DeferredReplacedDelete>();
+  for (const [logicalId, entry] of deferred) {
+    if (!removedIds.has(logicalId) && users(entry, removedIds)) taken.set(logicalId, entry);
+  }
+  if (taken.size === 0) return;
+  // The old copies using a taken one go before it, as in the cleanup phase.
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const [logicalId, entry] of deferred) {
+      if (taken.has(logicalId) || !users(entry, taken)) continue;
+      taken.set(logicalId, entry);
+      grew = true;
     }
+  }
+  for (const removed of removedIds) {
+    if (removedDependencies(removed).some((dep) => dep !== removed && taken.has(dep))) return;
+  }
+  for (const logicalId of taken.keys()) deferred.delete(logicalId);
+  deps.logger.info(
+    safeMsg`Deleting the old resource of ${taken.size} replaced resource(s) first: they use a resource removed from the template`
+  );
+  await runInWaves(run, deps, stackName, counts, taken);
+  // Interrupted between waves: what is left goes back to the cleanup pass,
+  // whose interrupted and failed arms report it.
+  for (const [logicalId, entry] of taken) deferred.set(logicalId, entry);
+}
+
+/**
+ * go-to-k/cdkd#6374: in waves, dependents first: an entry runs once no other
+ * pending entry depends on it (an old subnet before its old VPC). A cycle runs
+ * whatever is left at once. Each entry run is removed from `pending`; on a
+ * Ctrl-C between waves the rest stays in it.
+ */
+async function runInWaves(
+  run: ReplacementRunState,
+  deps: ReplacementDeps,
+  stackName: string,
+  counts: { updated: number; updatePartial: number },
+  pending: Map<string, DeferredReplacedDelete>
+): Promise<void> {
+  while (pending.size > 0) {
+    if (deps.interrupted()) return;
     const dependedOn = new Set<string>();
     for (const [logicalId, entry] of pending) {
       for (const dep of entry.dependencies ?? []) {
@@ -166,11 +166,87 @@ export async function retryDeferredReplacedDeletes(
     await Promise.all(
       Array.from({ length: workers }, async () => {
         for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
-          await retryOne(...next);
+          await retryOne(run, deps, stackName, counts, ...next);
         }
       })
     );
   }
+}
+
+/**
+ * One deferred delete, under the scopes its row's inline delete had: the
+ * row's printing registry, the stack's records, and a delete-guard sink
+ * emitted as the row's. A skip makes the row a partial update.
+ */
+async function retryOne(
+  run: ReplacementRunState,
+  deps: ReplacementDeps,
+  stackName: string,
+  counts: { updated: number; updatePartial: number },
+  logicalId: string,
+  entry: DeferredReplacedDelete
+): Promise<void> {
+  const guards: ReportedDeleteGuard[] = [];
+  try {
+    await withPrintingSecrets(secretNameBagFor(deps.secretsRun(), logicalId), () =>
+      withStackRecords(deps.stackRecordsView(), () =>
+        collectDeleteGuards(guards, async () => {
+          deps.logger.info(
+            safeMsg`  Deleting old ${logicalId} (${displayPhysicalId(entry.resourceType, entry.physicalId)})...`
+          );
+          try {
+            await entry.retry();
+          } catch {
+            // `deleteReplacedAfterCreate` catches the provider's own error;
+            // anything else must not strand the entries still queued. Its
+            // text is not shown: nothing masked it.
+            deps.logger.warn(
+              safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${displayPhysicalId(entry.resourceType, entry.physicalId)}): the retry failed unexpectedly`
+            );
+          }
+        })
+      )
+    );
+  } finally {
+    // As `provisionResource` emits the row's guards (issue #2422).
+    for (const guard of guards) {
+      deps.recordEvent({
+        eventType: 'RESOURCE_GUARD_INDETERMINATE',
+        stackName,
+        operation: 'DELETE',
+        logicalId,
+        resourceType: guard.resourceType,
+        ...(guard.provisionedBy && { provisionedBy: guard.provisionedBy }),
+        ...(guard.physicalId && {
+          physicalId: maskSecretsInText(
+            guard.physicalId,
+            deps.secretsRun().perResourceSecrets.get(logicalId) ?? EMPTY_SECRETS
+          ),
+        }),
+        guard: guard.guard,
+        reason: guard.reason,
+      });
+    }
+  }
+  const skip = run.replacedDeleteSkips.get(logicalId);
+  if (skip === undefined) return;
+  run.replacedDeleteSkips.delete(logicalId);
+  // As `provisionResource` turns an inline skip into the row's partial
+  // update: counted once, and the survivor named in its own event.
+  if (entry.rowPartial !== true) {
+    counts.updated = Math.max(0, counts.updated - 1);
+    counts.updatePartial++;
+  }
+  deps.recordEvent({
+    eventType: 'RESOURCE_SKIPPED',
+    stackName,
+    operation: 'UPDATE',
+    logicalId,
+    resourceType: entry.resourceType,
+    ...(entry.provisionedBy && { provisionedBy: entry.provisionedBy }),
+    physicalId: entry.physicalId,
+    reason: skip,
+  });
 }
 
 /**

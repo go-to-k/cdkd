@@ -634,7 +634,10 @@ finished, each under that child's lock, and then its own, so a child's old
 resource goes before the parent's old resource it used (issue
 [#6398](https://github.com/go-to-k/cdkd/issues/6398)). A top-level deploy that
 fails sends none of these deletes, and its rollback takes the old resources
-back.
+back. The exception is an old resource that still uses a resource its stack's
+template removed: it is deleted right before that removal, in the child's own
+deploy, and a rollback re-creates it (issue
+[#6977](https://github.com/go-to-k/cdkd/issues/6977)).
 
 Adoption of an existing CFn-managed nested-stack hierarchy uses `cdkd import
 --migrate-from-cloudformation` (issue
