@@ -15,7 +15,12 @@ import {
   isSupersededResourceRecord,
   supersededResourcesOf,
 } from '../superseded-resources.js';
-import { retryDeferredReplacedDeletes, warnUnretriedReplacedDeletes } from './replacement.js';
+import {
+  deleteDeferredUsersOfRemovals,
+  retryDeferredReplacedDeletes,
+  warnUnretriedReplacedDeletes,
+} from './replacement.js';
+import { recordedDependencies } from './dependencies.js';
 import { retryCarriedSupersededResources } from './superseded-retry.js';
 import { isConditionFailure } from '../../state/s3-state-backend/shared.js';
 
@@ -53,24 +58,63 @@ export async function runCleanupPhase(
       counts
     );
   } finally {
-    // go-to-k/cdkd#2631: the ops were journaled with the FIRST failure's
-    // verdict; a retry that failed differently (a waiter that gave up)
-    // must not leave a later rollback re-adopting on the first one —
-    // nor a retry pass that threw before returning.
-    for (const op of completedOperations) {
-      if (op.changeType !== 'UPDATE') continue;
-      const verdict = engine.replacementRun.replacedOldMaySurvive.get(op.logicalId);
-      // A retry that deleted it dropped the verdict: so does the op.
-      if (verdict !== undefined) op.oldResourceMaySurvive = verdict;
-      else delete op.oldResourceMaySurvive;
-      // go-to-k/cdkd#6621: the generation rides only beside `'deferred'`.
-      if (verdict !== 'deferred') delete op.oldResourceIdentity;
-    }
+    restampReplacedVerdicts(engine, completedOperations);
   }
   // go-to-k/cdkd#5111: an earlier deploy's, after this deploy's own.
   await retryCarriedSupersededResources(engine, host, carried, resources, {
     waitInUse: releasedSomething,
   });
+}
+
+/**
+ * go-to-k/cdkd#6977: before the deploy's removal deletes, the deferred old
+ * copies that still use a removed resource, dependents first
+ * (`deleteDeferredUsersOfRemovals`). Their ops are re-stamped at once: a
+ * later failure's rollback must re-create an old copy deleted here, never
+ * re-adopt it on the journaled `'deferred'` verdict.
+ */
+export async function deleteUsersOfRemovalsFirst(
+  engine: DeployEngine,
+  stackName: string,
+  counts: { updated: number; updatePartial: number },
+  removedIds: ReadonlySet<string>,
+  currentState: StackState,
+  completedOperations: CompletedOperation[]
+): Promise<void> {
+  try {
+    await deleteDeferredUsersOfRemovals(
+      engine.replacementRun,
+      engine.replacementDeps(),
+      stackName,
+      counts,
+      removedIds,
+      recordedDependencies(currentState.resources)
+    );
+  } finally {
+    restampReplacedVerdicts(engine, completedOperations);
+  }
+}
+
+/**
+ * go-to-k/cdkd#2631: the ops were journaled with the FIRST failure's verdict;
+ * a retry that failed differently (a waiter that gave up) must not leave a
+ * later rollback re-adopting on the first one — nor a retry pass that threw
+ * before returning, nor an old copy deleted before the removals
+ * (go-to-k/cdkd#6977) that a later failure's rollback would re-adopt.
+ */
+export function restampReplacedVerdicts(
+  engine: DeployEngine,
+  completedOperations: CompletedOperation[]
+): void {
+  for (const op of completedOperations) {
+    if (op.changeType !== 'UPDATE') continue;
+    const verdict = engine.replacementRun.replacedOldMaySurvive.get(op.logicalId);
+    // A retry that deleted it dropped the verdict: so does the op.
+    if (verdict !== undefined) op.oldResourceMaySurvive = verdict;
+    else delete op.oldResourceMaySurvive;
+    // go-to-k/cdkd#6621: the generation rides only beside `'deferred'`.
+    if (verdict !== 'deferred') delete op.oldResourceIdentity;
+  }
 }
 
 /**

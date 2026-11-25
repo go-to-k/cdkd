@@ -13,6 +13,8 @@ import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { executeDeployment } from '../../../src/deployment/deploy-engine/execute.js';
 import { supersededResourcesOf } from '../../../src/deployment/superseded-resources.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
+import { InterruptedWaitError } from '../../../src/provisioning/interrupt-watch.js';
+import type { CompletedOperation } from '../../../src/deployment/rollback-executor.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 
@@ -64,6 +66,22 @@ vi.mock('../../../src/utils/live-renderer.js', () => ({
   }),
 }));
 
+// Each journal segment the engine writes, as a clone taken before the write.
+const journalTap = vi.hoisted(() => ({ push: (_ops: unknown): void => {} }));
+vi.mock('../../../src/deployment/deploy-engine/rollback.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../src/deployment/deploy-engine/rollback.js')>();
+  return {
+    ...actual,
+    writeRollbackJournalSegment: vi.fn(
+      async (...args: Parameters<typeof actual.writeRollbackJournalSegment>) => {
+        journalTap.push(structuredClone(args[2]));
+        return actual.writeRollbackJournalSegment(...args);
+      }
+    ),
+  };
+});
+
 /** Types `canRecordSuperseded` accepts, so their old copies are deferred. */
 const ALIAS = 'AWS::Lambda::WebFunctionRevision';
 const VERSION = 'AWS::Lambda::Version';
@@ -114,6 +132,9 @@ describe('an old copy using a removed resource is deleted before it (go-to-k/cdk
   /** physical id -> the ids whose liveness makes AWS refuse its delete. */
   let usedBy: Map<string, string[]>;
   let order: string[];
+  /** physical id -> the error its delete throws. */
+  let failDelete: Map<string, () => Error>;
+  let journaled: CompletedOperation[][];
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -122,6 +143,9 @@ describe('an old copy using a removed resource is deleted before it (go-to-k/cdk
     live = new Set();
     usedBy = new Map();
     order = [];
+    failDelete = new Map();
+    journaled = [];
+    journalTap.push = (ops) => journaled.push(ops as CompletedOperation[]);
     provider = {
       create: vi.fn(async (logicalId: string) => {
         const physicalId = `${logicalId}-new`;
@@ -136,6 +160,8 @@ describe('an old copy using a removed resource is deleted before it (go-to-k/cdk
       })),
       delete: vi.fn(async (_logicalId: string, physicalId: string) => {
         order.push(`delete ${physicalId}`);
+        const failure = failDelete.get(physicalId);
+        if (failure !== undefined) throw failure();
         const user = (usedBy.get(physicalId) ?? []).find((id) => live.has(id));
         if (user !== undefined) {
           throw awsError(
@@ -196,6 +222,13 @@ describe('an old copy using a removed resource is deleted before it (go-to-k/cdk
     templateDeps?: Record<string, string[]>;
     levels: string[][];
   }): Promise<{ state: StackState; actualCounts: Record<string, number> }> {
+    return deployOn(makeEngine(opts.templateDeps ?? {}), opts);
+  }
+
+  async function deployOn(
+    engine: DeployEngine,
+    opts: Parameters<typeof deploy>[0]
+  ): Promise<{ state: StackState; actualCounts: Record<string, number> }> {
     const resources: Record<string, ResourceState> = {};
     for (const id of opts.replaced) {
       resources[id] = record(`${id}-old`, ALIAS, opts.recordDeps[id]);
@@ -223,7 +256,7 @@ describe('an old copy using a removed resource is deleted before it (go-to-k/cdk
       ...opts.removed.map(([id, type]) => [id, deleteChange(id, type)] as [string, ResourceChange]),
     ]);
     return (await executeDeployment(
-      makeEngine(opts.templateDeps ?? {}),
+      engine,
       template,
       currentState,
       changes,
@@ -318,5 +351,29 @@ describe('an old copy using a removed resource is deleted before it (go-to-k/cdk
     expect(at('delete Perm-old')).toBeLessThan(at('delete Alias-old'));
     expect(at('delete OldVersion-old')).toBeLessThan(at('delete Alias-old'));
     expect(printed.info.join('\n')).not.toContain('replaced resource(s) first');
+  });
+
+  it('a removal interrupted after them journals the old copy as deleted, so a rollback re-creates it', async () => {
+    usedBy.set('OldVersion-old', ['Alias-old']);
+    failDelete.set('OldVersion-old', () => new InterruptedWaitError('Delete of OldVersion'));
+    const engine = makeEngine({});
+
+    await expect(
+      deployOn(engine, {
+        replaced: ['Alias'],
+        removed: [['OldVersion', VERSION]],
+        recordDeps: { Alias: ['OldVersion'] },
+        levels: [['Alias']],
+      })
+    ).rejects.toThrow();
+
+    expect(at('delete Alias-old')).toBeLessThan(at('delete OldVersion-old'));
+    expect(live.has('Alias-old')).toBe(false);
+    const op = journaled.flat().find((o) => o.logicalId === 'Alias');
+    expect(op?.changeType).toBe('UPDATE');
+    // Gone, not 'deferred': the rollback re-creates the old alias rather than
+    // re-adopting a deleted id.
+    expect(op?.oldResourceMaySurvive).toBeUndefined();
+    expect(op?.oldResourceIdentity).toBeUndefined();
   });
 });
