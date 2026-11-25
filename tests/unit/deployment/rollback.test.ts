@@ -288,8 +288,7 @@ describe('DeployEngine - Rollback (event-driven dispatch)', () => {
 
   it('saves state reflecting partial deletion when a DELETE fails mid-phase', async () => {
     // 3 DELETE changes dispatched concurrently. provider.delete throws for B.
-    // A and C complete normally. Pre-rollback state save (in deploy-engine's
-    // catch path) MUST reflect that A and C are gone but B remains — otherwise
+    // A and C complete normally. The saved state MUST reflect that A and C are gone but B remains — otherwise
     // the next deploy will think A/C still exist and skip them, leaving them
     // orphaned in AWS.
     const template: CloudFormationTemplate = { Resources: {} }; // empty new template = all DELETE
@@ -313,7 +312,10 @@ describe('DeployEngine - Rollback (event-driven dispatch)', () => {
       noRollback: true, // suppress no-op DELETE rollback path; focus on state save
     });
 
-    await expect(engine.deploy(stackName, template)).rejects.toThrow(/Failed to delete resource B/);
+    // go-to-k/cdkd#6969: the failed removal delete is kept and the deploy completes.
+    const result = await engine.deploy(stackName, template);
+    expect(result.deleteSkipped).toBe(1);
+    expect(result.deleted).toBe(2);
 
     // Inspect the most recent saveState call (could be pre-rollback or post-).
     const calls = mockStateBackend.saveState.mock.calls;

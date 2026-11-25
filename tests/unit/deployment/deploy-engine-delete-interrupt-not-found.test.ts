@@ -233,9 +233,10 @@ describe('DeployEngine DELETE — an interrupt is never "already deleted" (#2053
     expect(refusal?.message).toContain('NotFoundException');
     deleteError = refusal;
 
-    await expect(buildEngine().deploy(STACK, template)).rejects.toThrow(
-      new RegExp(`Failed to delete resource ${NEEDLE}`)
-    );
+    // go-to-k/cdkd#6969: a removal delete that fails is kept, not thrown.
+    const result = await buildEngine().deploy(STACK, template);
+    expect(result.deleteSkipped).toBe(1);
+    expect(result.deleted).toBe(0);
 
     expect(persistedResources()[NEEDLE]).toMatchObject({ physicalId: `phys-${NEEDLE}` });
   });
@@ -269,9 +270,10 @@ describe('DeployEngine DELETE — an interrupt is never "already deleted" (#2053
     // own shape — it names the resource whose delete failed, which is what
     // distinguishes this from the already-deleted path (which throws nothing
     // and drops the row instead).
-    await expect(buildEngine().deploy(STACK, template)).rejects.toThrow(
-      new RegExp(`Failed to delete resource ${NEEDLE}`)
-    );
+    // go-to-k/cdkd#6969: a removal delete that fails is kept, not thrown.
+    const result = await buildEngine().deploy(STACK, template);
+    expect(result.deleteSkipped).toBe(1);
+    expect(result.deleted).toBe(0);
 
     expect(persistedResources()[NEEDLE]).toMatchObject({ physicalId: `phys-${NEEDLE}` });
   });
@@ -287,9 +289,10 @@ describe('DeployEngine DELETE — an interrupt is never "already deleted" (#2053
     expect(isMarkedNonRetryable(notGone)).toBe(false);
     deleteError = notGone;
 
-    await expect(buildEngine().deploy(STACK, template)).rejects.toThrow(
-      new RegExp(`Failed to delete resource ${NEEDLE}`)
-    );
+    // go-to-k/cdkd#6969: a removal delete that fails is kept, not thrown.
+    const result = await buildEngine().deploy(STACK, template);
+    expect(result.deleteSkipped).toBe(1);
+    expect(result.deleted).toBe(0);
 
     expect(persistedResources()[NEEDLE]).toMatchObject({ physicalId: `phys-${NEEDLE}` });
   });
@@ -329,7 +332,8 @@ describe('DeployEngine DELETE — an interrupt is never "already deleted" (#2053
 
       // 1 attempt + 3 retries (`delete.ts` passes 3): the mark cost no retry.
       expect(deleteCalls).toBe(4);
-      expect(String(rejected)).toMatch(new RegExp(`Failed to delete resource ${NEEDLE}`));
+      // go-to-k/cdkd#6969: kept, not thrown; the CONTROL below drops the row.
+      expect(rejected).toBeUndefined();
       expect(persistedResources()[NEEDLE]).toMatchObject({ physicalId: `phys-${NEEDLE}` });
     });
 
@@ -366,9 +370,10 @@ describe('DeployEngine DELETE — an interrupt is never "already deleted" (#2053
   it('MARKED, the same nested child-failure message keeps the state row (#1889)', async () => {
     deleteError = markNonRetryable(new Error(nestedChildFailure()));
 
-    await expect(buildEngine().deploy(STACK, template)).rejects.toThrow(
-      new RegExp(`Failed to delete resource ${NEEDLE}`)
-    );
+    // go-to-k/cdkd#6969: a removal delete that fails is kept, not thrown.
+    const result = await buildEngine().deploy(STACK, template);
+    expect(result.deleteSkipped).toBe(1);
+    expect(result.deleted).toBe(0);
 
     expect(persistedResources()[NEEDLE]).toMatchObject({ physicalId: `phys-${NEEDLE}` });
   });
