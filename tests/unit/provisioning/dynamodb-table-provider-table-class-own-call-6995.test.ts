@@ -92,6 +92,12 @@ describe('DynamoDBTableProvider sends a TableClass change in its own UpdateTable
       },
       { TableName: TABLE_NAME, TableClass: 'STANDARD_INFREQUENT_ACCESS' },
     ]);
+    // The class call waits for the billing call to settle: DynamoDB refuses an
+    // UpdateTable on a table still UPDATING.
+    const names = mockSend.mock.calls.map((c) => c[0].constructor.name as string);
+    const firstUpdate = names.indexOf('UpdateTableCommand');
+    const secondUpdate = names.indexOf('UpdateTableCommand', firstUpdate + 1);
+    expect(names.slice(firstUpdate + 1, secondUpdate)).toContain('DescribeTableCommand');
   });
 
   it('splits a capacity change and a TableClass removal into two calls', async () => {
