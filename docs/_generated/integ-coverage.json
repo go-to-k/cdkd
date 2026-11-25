@@ -1577,6 +1577,7 @@
         "globaltable-delete-protection-preflight",
         "globaltable-fix-forward-orphan",
         "globaltable-keyschema-replace",
+        "globaltable-stream-view-type",
         "globaltable-template-baseline-drift",
         "lambda",
         "rollback-replay-effective-props",
@@ -1603,6 +1604,10 @@
           "l1"
         ],
         "globaltable-keyschema-replace": [
+          "l2",
+          "literal"
+        ],
+        "globaltable-stream-view-type": [
           "l2",
           "literal"
         ],
@@ -8112,6 +8117,7 @@
         "getatt-cache-kinesis-lambda-ec2",
         "getatt-iam-waf-s3vectors-evaluator",
         "getatt-rds-docdb-attributes",
+        "globaltable-stream-view-type",
         "iam-propagation-stress",
         "iam-role-policies-drift-clean",
         "iam-role-prefixed-name-update",
@@ -8384,6 +8390,9 @@
           "l2"
         ],
         "getatt-rds-docdb-attributes": [
+          "l2"
+        ],
+        "globaltable-stream-view-type": [
           "l2"
         ],
         "iam-propagation-stress": [

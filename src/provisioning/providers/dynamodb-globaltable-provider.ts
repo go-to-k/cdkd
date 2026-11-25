@@ -232,13 +232,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
 
   /**
    * Caches `getAttribute(physicalId, attribute)` results for the lifetime
-   * of this provider instance (one deploy run). Safe under the current
-   * `update()` contract because `update()` cannot mid-deploy mutate
-   * StreamArn / Arn / TableId — those are AWS-managed identifiers that
-   * only change on REPLACEMENT (which destroys the provider instance).
-   * If a future PR adds a stream toggle path that flips StreamArn on the
-   * same physicalId, the cache must be invalidated on the matching
-   * UpdateTable success.
+   * of this provider instance (one deploy run). `Arn` / `TableId` change
+   * only on REPLACEMENT. `StreamArn` also changes when `update()` enables a
+   * stream or changes its view type (go-to-k/cdkd#7000), so that `UpdateTable`
+   * drops the cached `StreamArn` (`dynamodb-globaltable/update-table.ts`).
    */
   attributeCache = new Map<string, unknown>();
 

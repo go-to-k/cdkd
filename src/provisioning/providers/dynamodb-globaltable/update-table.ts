@@ -6,6 +6,7 @@ import {
   type UpdateTableCommandInput,
 } from '@aws-sdk/client-dynamodb';
 import { ProvisioningError } from '../../../utils/error-handler.js';
+import { injectiveKey } from '../../../state/record-keys.js';
 import { markUnsettled } from './projection.js';
 import { TABLE_READ_PROVISIONED_KEY, TABLE_WRITE_PROVISIONED_KEY } from './replica-shape.js';
 import { derivePerCallProvisionedThroughput, autoScalingTargetKey } from './capacity.js';
@@ -321,6 +322,33 @@ export async function updatePhaseTable(
     if (flatUpdate.OnDemandThroughput !== undefined) {
       markUnsettled('WriteOnDemandThroughputSettings', 'ReadOnDemandThroughputSettings');
     }
+    // go-to-k/cdkd#7000: DynamoDB refuses a new view type on an ENABLED
+    // stream ("Table already has an enabled stream"), so the live stream is
+    // disabled first and the flat call below enables the new one, as the
+    // table provider does. The wait between the two is load-bearing: the
+    // enable is refused while the table is still UPDATING. Read off the
+    // DescribeTable the plan already made, so it costs no call.
+    const liveStream = describeResp.Table?.StreamSpecification;
+    const desiredStream = flatUpdate.StreamSpecification;
+    if (
+      desiredStream?.StreamEnabled === true &&
+      liveStream?.StreamEnabled === true &&
+      liveStream.StreamViewType !== desiredStream.StreamViewType
+    ) {
+      await this.dynamoDBClient.send(
+        new UpdateTableCommand({
+          TableName: physicalId,
+          StreamSpecification: { StreamEnabled: false },
+        })
+      );
+      await this.waitForTableActiveAfterUpdate(
+        physicalId,
+        logicalId,
+        undefined,
+        undefined,
+        maskSecrets
+      );
+    }
     await this.dynamoDBClient.send(new UpdateTableCommand(flatUpdate));
     await this.waitForTableActiveAfterUpdate(
       physicalId,
@@ -329,6 +357,11 @@ export async function updatePhaseTable(
       undefined,
       maskSecrets
     );
+    // A stream enabled or re-enabled here has a new arn, so a cached
+    // `Fn::GetAtt [Table, StreamArn]` answer is stale.
+    if (desiredStream !== undefined) {
+      this.attributeCache.delete(injectiveKey(physicalId, 'StreamArn'));
+    }
   }
   // DynamoDB takes a table-class change and an encryption change each as
   // the ONLY operation of its UpdateTable (measured 2026-10-26 on a
