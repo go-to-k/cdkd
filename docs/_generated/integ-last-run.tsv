@@ -34,7 +34,7 @@ asset-migration	2026-11-13T08:51:46Z	PASS	616	verify.sh	rc 0 in eu-west-1, 0 orp
 athena-workgroup-update	2026-11-18T21:22:04Z	PASS	170	verify.sh	rc ok, orph clean; 9d60a35; no retry
 aws-custom-resource	2026-11-06T16:04:01Z	PASS	80	verify.sh	post-hoc on main after #5879 split; rc ok, orph clean
 backup	2026-11-04T19:21:11Z	PASS	83	verify.sh	rc ok, orph clean; no Backup vault/recovery-point leak, no lambda log groups
-basic	2026-11-20T11:06:50Z	PASS	95	standard	CDKD_TEST_FAIL=true rollback path then destroy, rc ok, orph clean; #6679 d7cb3dddb
+basic	2026-11-25T03:30:44Z	PASS	102	standard	rc ok, orph clean; #6970
 batch	2026-11-04T05:26:26Z	PASS	94	standard	batch 3 (rc=0, destroy 12 deleted 0 errors); no CE/queue/ENI/VPC leftovers; account clean
 bedrock-agentcore	2026-11-07T00:37:38Z	PASS	506	verify.sh	#5941 agentcore-runtime split head; rc ok, orph clean
 bench-ccapi	2026-11-05T11:21:32Z	PASS	82	standard	sweep n7 own bucket; destroy 0 errors, 0 orphans
@@ -538,7 +538,7 @@ subnet-mappublicip-removal	2026-11-15T12:58:41Z	PASS	90	verify.sh	rc ok, orph cl
 synthetics-canary	2026-11-18T13:56:57Z	PASS	175	verify.sh	rc ok, orph clean; marker re-set after comment-only commit e44c0ae38 (#6553 PR #6554)
 tags-propagation	2026-11-23T19:48:57Z	PASS	396	verify.sh	rc ok, orph clean; #6886 deploy --tags replaces stack tags
 termination-protection	2026-11-05T10:11:05Z	PASS	60	verify.sh	rc ok, orph clean
-throttle-wide-dag	2026-11-05T12:05:22Z	PASS	241	verify.sh	rc ok, orph clean
+throttle-wide-dag	2026-11-25T03:30:44Z	PASS	267	verify.sh	rc ok, orph clean; #6970 EventsV2 pattern
 type-change-replacement	2026-11-21T12:40:02Z	PASS	225	verify.sh	rc ok, orph clean (#6762 run)
 unrecognized-key-autoroute	2026-11-03T14:15:44Z	PASS	90	verify.sh	rc ok, orph clean; #5695 sdkUnwired rename
 update-deleted-outside	2026-11-11T11:02:54Z	PASS	139	verify.sh	rc ok, orph clean
