@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # verify.sh — cdkd AWS::EMR::Cluster SDK provider integ (issue #1043).
 #
-# The type is ProvisioningType: NON_PROVISIONABLE, so there is no Cloud
-# Control fallback — this fixture proves the new SDK provider end to end with
+# The type was ProvisioningType: NON_PROVISIONABLE when the provider landed
+# (AWS has since given it Cloud Control handlers) — this fixture proves the
+# SDK provider end to end with
 # the smallest / cheapest legal shape: a single master node (1x m5.xlarge, no
 # core/task), emr-7.9.0, in a public subnet.
 #

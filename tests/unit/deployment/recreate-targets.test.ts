@@ -20,7 +20,7 @@ import {
   probeAndRevalidateStateful,
   type RecreateTarget,
 } from '../../../src/deployment/recreate-targets.js';
-import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
 import { loadProviderClasses, registerAllProviders } from '../../../src/provisioning/register-providers.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
@@ -2483,14 +2483,14 @@ describe('--recreate-via-cc-api on a type Cloud Control cannot create (#3887)', 
   }
 
   it('refuses a NON_PROVISIONABLE SDK type, naming why and that nothing was changed', () => {
-    const v = validate('AWS::CodeBuild::Project', 'AWS::CodeBuild::Project');
+    const v = validate('AWS::FSx::FileSystem', 'AWS::FSx::FileSystem');
     expect(v.blockedNoCcRoute.map((t) => [t.logicalId, t.templateType])).toEqual([
-      ['Target', 'AWS::CodeBuild::Project'],
+      ['Target', 'AWS::FSx::FileSystem'],
     ]);
     const error = renderRecreateTargetsErrors(v);
     expect(error).toContain('--recreate-via-cc-api named 1 resource(s) of types Cloud Control API cannot create:');
     expect(error).toContain(
-      '  - Target (AWS::CodeBuild::Project) — ProvisioningType: NON_PROVISIONABLE — Cloud Control has no handlers for it'
+      '  - Target (AWS::FSx::FileSystem) — ProvisioningType: NON_PROVISIONABLE — Cloud Control has no handlers for it'
     );
     expect(error).toContain('None of these resources was touched.');
     expect(error).toContain('There is no bypass flag.');
@@ -2503,10 +2503,30 @@ describe('--recreate-via-cc-api on a type Cloud Control cannot create (#3887)', 
   });
 
   it('refuses a provisionable type whose provider opts out of Cloud Control, via the registry predicate', () => {
-    // AWS::EMR::InstanceGroupConfig: not NON_PROVISIONABLE, provider declares
-    // disableCcApiFallback — only the registry knows.
-    expect(validate('AWS::EMR::InstanceGroupConfig', 'AWS::EMR::InstanceGroupConfig', { withRegistry: false }).blockedNoCcRoute).toEqual([]);
-    const v = validate('AWS::EMR::InstanceGroupConfig', 'AWS::EMR::InstanceGroupConfig');
+    // No registered provider opts a provisionable type out today but the
+    // nested stack, which has its own refusal, so the opt-out is a stub
+    // registered over a provisionable type: only the registry knows.
+    const optedOut = new ProviderRegistry();
+    optedOut.register('AWS::SQS::Queue', {
+      disableCcApiFallback: true,
+      create: vi.fn(),
+      update: vi.fn(),
+      delete: vi.fn(),
+    } as unknown as ResourceProvider);
+    const run = (withRegistry: boolean) =>
+      validateRecreateTargets({
+        template: { Resources: { Target: { Type: 'AWS::SQS::Queue', Properties: {} } } },
+        state: st('S', { Target: res('AWS::SQS::Queue', { physicalId: 'phys', provisionedBy: 'sdk' }) }),
+        recreateViaCcApi: ['Target'],
+        recreateViaSdkProvider: [],
+        allowUnsupportedProperties: new Set(),
+        forceStatefulRecreation: true,
+        ...(withRegistry && {
+          ccRouteUnavailableReason: (rt: string) => optedOut.ccRouteUnavailableReason(rt),
+        }),
+      });
+    expect(run(false).blockedNoCcRoute).toEqual([]);
+    const v = run(true);
     expect(v.blockedNoCcRoute.map((t) => t.logicalId)).toEqual(['Target']);
     expect(v.blockedNoCcRoute[0]!.reason).toContain('disableCcApiFallback');
   });
@@ -2551,12 +2571,12 @@ describe('--recreate-via-cc-api on a type Cloud Control cannot create (#3887)', 
   });
 
   it('judges the TEMPLATE type, which the Cloud Control create runs on', () => {
-    expect(validate('AWS::CodeBuild::Project', 'AWS::Lambda::Function').blockedNoCcRoute.map((t) => t.templateType)).toEqual(['AWS::CodeBuild::Project']);
-    expect(validate('AWS::Lambda::Function', 'AWS::CodeBuild::Project').blockedNoCcRoute).toEqual([]);
+    expect(validate('AWS::FSx::FileSystem', 'AWS::Lambda::Function').blockedNoCcRoute.map((t) => t.templateType)).toEqual(['AWS::FSx::FileSystem']);
+    expect(validate('AWS::Lambda::Function', 'AWS::FSx::FileSystem').blockedNoCcRoute).toEqual([]);
   });
 
   it('does not apply to --recreate-via-sdk-provider, whose create runs on the SDK provider', () => {
-    const v = validate('AWS::CodeBuild::Project', 'AWS::CodeBuild::Project', {
+    const v = validate('AWS::FSx::FileSystem', 'AWS::FSx::FileSystem', {
       direction: 'to-sdk',
       provisionedBy: 'cc-api',
     });

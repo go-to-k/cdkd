@@ -186,10 +186,6 @@ describe('CodeBuildProvider Triggers (go-to-k/cdkd#5627)', () => {
       expect(atWebhook).toEqual({ physicalId: 'proj' });
     });
 
-    it('keeps the type off Cloud Control, which has no handlers for it', () => {
-      expect(provider.disableCcApiFallback).toBe(true);
-    });
-
     it('sends a declared empty FilterGroups', async () => {
       await provider.create('L', TYPE, { ...BASE, Triggers: { Webhook: true, FilterGroups: [] } });
       expect(inputOf('CreateWebhookCommand')).toEqual({ projectName: 'proj', filterGroups: [] });

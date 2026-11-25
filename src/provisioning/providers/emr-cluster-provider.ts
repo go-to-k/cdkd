@@ -97,9 +97,10 @@ const EMR_DECLARED_POLICY_KEYS: readonly string[] = [
 /**
  * SDK Provider for `AWS::EMR::Cluster` (EMR on EC2).
  *
- * The type is `ProvisioningType: NON_PROVISIONABLE` in the CFn registry, so
- * cdkd's Cloud Control fallback cannot handle it (issue #1043) — pre-flight
- * would otherwise reject it via `unsupported-types.generated.ts`.
+ * The type was `ProvisioningType: NON_PROVISIONABLE` when this provider
+ * landed (issue #1043); AWS has since given it Cloud Control handlers, so a
+ * property this provider does not handle routes the resource through Cloud
+ * Control.
  *
  * Lifecycle — a cluster is a stateful, per-instance-hour-billed resource, so
  * every path is polled to completion:
@@ -130,16 +131,6 @@ const EMR_DECLARED_POLICY_KEYS: readonly string[] = [
  * Provider`), so slow EMR creates/terminates don't require `--resource-timeout`.
  */
 export class EMRClusterProvider implements ResourceProvider {
-  /**
-   * Cloud Control has NO handlers for this type (`ProvisioningType:
-   * NON_PROVISIONABLE`), so the deploy engine's #614 SDK-unwired auto-route
-   * MUST NOT send an unhandled-property EMR template to CC — it would fail at
-   * provisioning time with an opaque UnsupportedActionException. With this
-   * opt-out the ProviderRegistry rejects such templates pre-flight with a
-   * clear error instead.
-   */
-  readonly disableCcApiFallback = true;
-
   client: EMRClient | undefined;
   createClient: EMRClient | undefined;
   readonly providerRegion = ambientRegion();

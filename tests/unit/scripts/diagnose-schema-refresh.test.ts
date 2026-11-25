@@ -3639,7 +3639,7 @@ describe('the unroutable-type sources', () => {
       readFileSync(join(REPO_ROOT, 'src/provisioning/unsupported-types.ts'), 'utf-8')
     );
     expect([...parsed].sort()).toEqual([...SDK_PROVIDER_NON_PROVISIONABLE_TYPES].sort());
-    expect(parsed.size).toBeGreaterThanOrEqual(19);
+    expect(parsed.size).toBeGreaterThanOrEqual(15);
     expect(() => parseSdkNonProvisionableTypes('export const OTHER = 1;\n')).toThrow(
       /could not read SDK_PROVIDER_NON_PROVISIONABLE_TYPES/
     );

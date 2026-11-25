@@ -131,20 +131,6 @@ export class DocDBProvider implements ResourceProvider {
   readonly protectionFlips = new ProtectionFlipRegistry();
 
   /**
-   * `AWS::DocDB::DBCluster` and `AWS::DocDB::DBInstance` are
-   * `ProvisioningType: NON_PROVISIONABLE` — Cloud Control has no handlers for
-   * them — so the #614 SDK-unwired auto-route must not send a template using
-   * an unhandled property to CC, where it fails mid-deploy with an
-   * opaque UnsupportedActionException. With this opt-out the registry refuses
-   * such a template pre-flight (issue #3866).
-   *
-   * The flag is per PROVIDER, which is why `AWS::DocDB::DBSubnetGroup` — a
-   * type Cloud Control CAN manage — lives in `DocDBSubnetGroupProvider`, keeping
-   * its Cloud Control route. Do not register it on this class again.
-   */
-  readonly disableCcApiFallback = true;
-
-  /**
    * Issue #1160 (`ResourceProvider.removalHandledInUpdate`): every handled
    * property of both types, each removal handled by `update()`, so the shared
    * caller warns about none of them.

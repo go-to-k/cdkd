@@ -6,9 +6,9 @@ import type { Construct } from 'constructs';
 
 /**
  * Minimal fixture for the AWS::EMR::InstanceGroupConfig SDK provider
- * (issue #1070). Both InstanceGroupConfig and InstanceFleetConfig are
- * ProvisioningType: NON_PROVISIONABLE, so no Cloud Control fallback exists —
- * this fixture is the end-to-end proof of the InstanceGroupConfig SDK
+ * (issue #1070). Both InstanceGroupConfig and InstanceFleetConfig were
+ * ProvisioningType: NON_PROVISIONABLE when the providers landed (AWS has since
+ * given them Cloud Control handlers) — this fixture is the end-to-end proof of the InstanceGroupConfig SDK
  * provider.
  *
  * A cluster is created group-based (its master is a `masterInstanceGroup`), so

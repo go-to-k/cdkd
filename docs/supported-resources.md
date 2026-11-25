@@ -133,7 +133,7 @@ Control sends the whole property map to AWS.
 ### A type Cloud Control cannot serve
 
 Some types have an SDK provider but no working Cloud Control route:
-`AWS::CodeBuild::Project` is one. Cloud Control has no handlers for it, or
+`AWS::FSx::FileSystem` is one. Cloud Control has no handlers for it, or
 its SDK provider opts out of the fallback. If the template sets a property
 that provider does not write and the schema knows, cdkd refuses the deploy
 before it touches any resource in that stack. It does not route the resource, because Cloud Control

@@ -2,9 +2,9 @@
 
 Integration test for the `AWS::EMR::InstanceGroupConfig` SDK provider
 (issue #1070). Both `AWS::EMR::InstanceGroupConfig` and
-`AWS::EMR::InstanceFleetConfig` are `ProvisioningType: NON_PROVISIONABLE`,
-so no Cloud Control fallback exists. These types add a standalone instance
-group / fleet to an EXISTING cluster (referenced by `JobFlowId` /
+`AWS::EMR::InstanceFleetConfig` were `ProvisioningType: NON_PROVISIONABLE`
+when the providers landed (AWS has since given them Cloud Control
+handlers). These types add a standalone instance group / fleet to an EXISTING cluster (referenced by `JobFlowId` /
 `ClusterId`), rather than declaring it inline in `Cluster.Instances`. Built
 on the L1 `emr.CfnInstanceGroupConfig` (aws-cdk-lib ships no L2).
 

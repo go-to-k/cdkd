@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-11-24T14:49:14.921Z",
+  "generatedAt": "2026-11-25T04:34:10.825Z",
   "summary": {
     "tier1Count": 149,
     "tier2Count": 1681,
@@ -2166,5 +2166,22 @@
     "AWS::WorkSpaces::WorkspaceBundle",
     "AWS::WorkSpaces::WorkspaceImage",
     "Alexa::ASK::Skill"
+  ],
+  "tier1NonProvisionable": [
+    "AWS::AppSync::GraphQLSchema",
+    "AWS::BedrockAgentCore::Browser",
+    "AWS::BedrockAgentCore::CodeInterpreter",
+    "AWS::CloudFormation::WaitCondition",
+    "AWS::CloudFormation::WaitConditionHandle",
+    "AWS::CloudWatch::AnomalyDetector",
+    "AWS::DocDB::DBCluster",
+    "AWS::EC2::NetworkAclEntry",
+    "AWS::FSx::FileSystem",
+    "AWS::IAM::AccessKey",
+    "AWS::IAM::Policy",
+    "AWS::IAM::UserToGroupAddition",
+    "AWS::Route53::RecordSetGroup",
+    "AWS::SNS::TopicPolicy",
+    "AWS::SQS::QueuePolicy"
   ]
 }

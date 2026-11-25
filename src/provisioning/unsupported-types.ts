@@ -33,33 +33,28 @@ export function isNonProvisionable(resourceType: string): boolean {
  *
  * Membership is a MEASUREMENT: `aws cloudformation list-types --visibility
  * PUBLIC --type RESOURCE --provisioning-type NON_PROVISIONABLE`, intersected
- * with `register-providers.ts`. A provider added for a Tier 3 type must add the
- * type here; `property-coverage-cc-fallback-binding.test.ts` fails while a
- * registered type is still in the generated set and missing here. Keep it
- * sorted, one `'AWS::...'` literal per line: the property-coverage generator
- * and the schema-refresh diagnosis read it as text.
- *
- * `AWS::CloudWatch::AnomalyDetector` stays although AWS has since given it
- * Cloud Control handlers: its physicalId is a cdkd-derived descriptor the
- * handlers cannot address, so the SDK provider must remain its only route
- * (#4668).
+ * with `register-providers.ts`, recorded by the daily provider-coverage audit
+ * as `tier1NonProvisionable` in `docs/_generated/provider-coverage.json`.
+ * `sdk-provider-non-provisionable-measured.test.ts` binds this set to that
+ * list in both directions, so a refresh that finds AWS gave a type handlers
+ * fails until the type leaves the set (and its provider drops any
+ * `disableCcApiFallback` kept for the same reason) or is kept with a stated
+ * reason there. A provider added for a Tier 3 type must add the type here;
+ * `property-coverage-cc-fallback-binding.test.ts` fails while a registered type
+ * is still in the generated set and missing here. Keep it sorted, one
+ * `'AWS::...'` literal per line: the property-coverage generator and the
+ * schema-refresh diagnosis read it as text.
  */
 export const SDK_PROVIDER_NON_PROVISIONABLE_TYPES: ReadonlySet<string> = new Set([
   'AWS::AppSync::GraphQLSchema',
   'AWS::BedrockAgentCore::Browser',
   'AWS::BedrockAgentCore::CodeInterpreter',
-  'AWS::Budgets::Budget',
   'AWS::CloudFormation::WaitCondition',
   'AWS::CloudFormation::WaitConditionHandle',
   'AWS::CloudWatch::AnomalyDetector',
-  'AWS::CodeBuild::Project',
   'AWS::DocDB::DBCluster',
-  'AWS::DocDB::DBInstance',
   'AWS::EC2::NetworkAclEntry',
-  'AWS::EMR::Cluster',
-  'AWS::EMR::InstanceFleetConfig',
   'AWS::FSx::FileSystem',
-  'AWS::Glue::Table',
   'AWS::IAM::AccessKey',
   'AWS::IAM::Policy',
   'AWS::IAM::UserToGroupAddition',

@@ -1,6 +1,7 @@
 /**
- * Issue #3866: `AWS::DocDB::DBCluster` and `AWS::DocDB::DBInstance` are
- * `ProvisioningType: NON_PROVISIONABLE`, so a
+ * Issue #3866: `AWS::DocDB::DBCluster` is `ProvisioningType:
+ * NON_PROVISIONABLE` (`AWS::DocDB::DBInstance` was too, until AWS gave it
+ * Cloud Control handlers), so a
  * template using one of their SDK providers' SDK-unwired properties must be
  * REFUSED pre-flight rather than auto-routed to Cloud Control, which has no
  * handlers for them. `AWS::DocDB::DBSubnetGroup` is provisionable and must
@@ -41,6 +42,7 @@ vi.mock('../../../src/provisioning/property-coverage.generated.js', async (impor
 import { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
 import { loadProviderClasses, registerAllProviders } from '../../../src/provisioning/register-providers.js';
 import { PROPERTY_COVERAGE_BY_TYPE } from '../../../src/provisioning/property-coverage.js';
+import { hasNoCloudControlHandlers } from '../../../src/provisioning/unsupported-types.js';
 
 const providerClasses = await loadProviderClasses();
 
@@ -133,7 +135,7 @@ describe('NON_PROVISIONABLE SDK types refuse the Cloud Control auto-route (#3866
         const registry = realRegistry();
         const decision = registry.getProviderFor({ resourceType, properties: handled });
         expect(decision.provisionedBy).toBe('sdk');
-        expect(decision.provider.disableCcApiFallback).toBe(true);
+        expect(hasNoCloudControlHandlers(resourceType)).toBe(true);
       });
     });
   }
@@ -175,4 +177,36 @@ describe('AWS::DocDB::DBSubnetGroup keeps its Cloud Control route (#3866)', () =
     });
     expect(decision.provisionedBy).toBe('sdk');
   });
+});
+
+// AWS gave these types Cloud Control handlers after their SDK providers
+// landed, so their Cloud Control route is open again.
+describe('SDK types AWS has since made provisionable take the Cloud Control auto-route', () => {
+  const OPENED: ReadonlyArray<{ resourceType: string; handled: Record<string, unknown> }> = [
+    { resourceType: 'AWS::DocDB::DBInstance', handled: { DBClusterIdentifier: 'c' } },
+    { resourceType: 'AWS::CodeBuild::Project', handled: { Name: 'p' } },
+    { resourceType: 'AWS::EMR::Cluster', handled: { Name: 'c' } },
+    { resourceType: 'AWS::Budgets::Budget', handled: { Budget: { BudgetType: 'COST' } } },
+    // These two record a physical id Cloud Control does not take (it wants
+    // `<CatalogId>|<DatabaseName>|<Name>` / `<ClusterId>|<InstanceFleetId>`),
+    // so the route serves a resource Cloud Control creates; an SDK-created
+    // one moved there fails its update with #4904's remedy, as any such type.
+    { resourceType: 'AWS::Glue::Table', handled: { DatabaseName: 'd' } },
+    { resourceType: 'AWS::EMR::InstanceFleetConfig', handled: { ClusterId: 'j-1' } },
+    { resourceType: 'AWS::EMR::InstanceGroupConfig', handled: { JobFlowId: 'j-1' } },
+  ];
+  for (const { resourceType, handled } of OPENED) {
+    it(`${resourceType}: an unrecognized property routes via Cloud Control`, () => {
+      expect(hasNoCloudControlHandlers(resourceType)).toBe(false);
+      expect(PROPERTY_COVERAGE_BY_TYPE.get(resourceType)?.ccRouteUnavailable).toBe(false);
+      const registry = realRegistry();
+      expect(registry.getProviderFor({ resourceType }).provider.disableCcApiFallback).not.toBe(true);
+      const decision = registry.getProviderFor({
+        resourceType,
+        properties: { ...handled, NotYetInTheSchemaSnapshot: 'x' },
+      });
+      expect(decision.provisionedBy).toBe('cc-api');
+      expect(decision.ccRouteReason?.properties).toEqual(['NotYetInTheSchemaSnapshot']);
+    });
+  }
 });

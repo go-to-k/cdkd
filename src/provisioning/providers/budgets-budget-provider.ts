@@ -69,9 +69,9 @@ import {
 /**
  * SDK Provider for AWS::Budgets::Budget (issue #1041).
  *
- * The type is `ProvisioningType: NON_PROVISIONABLE`, so the Cloud Control
- * fallback cannot handle it — without this provider cdkd's pre-flight
- * rejects the type outright.
+ * The type was `ProvisioningType: NON_PROVISIONABLE` when this provider
+ * landed; AWS has since given it Cloud Control handlers, so a property this
+ * provider does not handle routes the resource through Cloud Control.
  *
  * **Global endpoint / region semantics**: the Budgets API is a global,
  * per-account service served from `us-east-1`. The `@aws-sdk/client-budgets`

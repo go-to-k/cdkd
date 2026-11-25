@@ -4,8 +4,9 @@ Integration test for the `AWS::EMR::InstanceFleetConfig` SDK provider and for
 every `InstanceTypeConfigs` CFn -> SDK conversion site (issue #1400,
 closing the coverage gap #1383 left behind).
 
-`AWS::EMR::InstanceGroupConfig` and `AWS::EMR::InstanceFleetConfig` are both
-`ProvisioningType: NON_PROVISIONABLE`, so no Cloud Control fallback exists.
+`AWS::EMR::InstanceGroupConfig` and `AWS::EMR::InstanceFleetConfig` were both
+`ProvisioningType: NON_PROVISIONABLE` when the providers landed (AWS has since
+given them Cloud Control handlers).
 A cluster's instance-collection type is fixed at create (groups XOR fleets),
 so ONE cluster can exercise only ONE of the two. The sibling
 `emr-instance-configs` fixture covers the GROUP half; this one covers the

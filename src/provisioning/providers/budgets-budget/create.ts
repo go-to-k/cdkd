@@ -1,7 +1,7 @@
 import { CreateBudgetCommand } from '@aws-sdk/client-budgets';
 import type { BudgetsBudgetProvider } from '../budgets-budget-provider.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
-import { generateResourceName } from '../../resource-name.js';
+import { generatedNameFor } from '../../resource-name.js';
 import type { CreateContext, ResourceCreateResult } from '../../../types/resource.js';
 import { maskerOrIdentity } from '../../masked-retry-logger.js';
 
@@ -32,14 +32,11 @@ export async function create(
   // generator would silently mutate names like "My Team Budget" and desync
   // the physical id from the template (breaking import's explicit-name
   // lookup). Only the logical-id fallback goes through the conservative
-  // generator.
+  // generator, under the rule a Cloud Control create fills the same name by.
   const name =
     typeof rawName === 'string' && rawName.length > 0
       ? rawName
-      : generateResourceName(logicalId, {
-          maxLength: 100,
-          allowedPattern: /[^a-zA-Z0-9\-_.]/g,
-        });
+      : generatedNameFor('AWS::Budgets::Budget', logicalId);
 
   // go-to-k/cdkd#3989: refused before any call, so a malformed list never
   // creates a budget missing the alerts or tags the template declares.

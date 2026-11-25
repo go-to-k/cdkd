@@ -226,8 +226,7 @@ in AWS.
 
 A resource your template does not name gets the same generated name on either
 layer, so moving it between layers or recreating it on the other one never
-changes the name cdkd expects. cdkd never sends a CodeBuild project or a
-budget through Cloud Control, so their SDK providers always name them.
+changes the name cdkd expects.
 
 An `AWS::Lambda::Permission` has no name property; its statement id is the
 name. The SDK provider generates it as `<StackName>-<LogicalId>-<suffix>`, as
@@ -241,7 +240,7 @@ each layer gave before:
 | Type | SDK provider | Cloud Control |
 | --- | --- | --- |
 | `AWS::Logs::LogGroup` | `/cdkd/<StackName>-<LogicalId>` | `<StackName>-<LogicalId>` |
-| `AWS::CodeBuild::Project` | `<LogicalId>` | No Cloud Control route |
+| `AWS::CodeBuild::Project` | `<LogicalId>` | `<StackName>-<LogicalId>` |
 | Auto Scaling group, DynamoDB global table, ECS task definition family, Lambda network connector, EventBridge pipe, EventBridge Scheduler schedule | `<StackName>-<LogicalId>` | Named by AWS |
 | EC2 security group, CloudTrail trail, Glue job, crawler, connection and trigger, Firehose delivery stream | `<LogicalId>` | Named by AWS |
 

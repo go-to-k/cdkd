@@ -27,8 +27,9 @@
 #
 # Then destroys and confirms a clean teardown.
 #
-# Phase 1b asserts `--recreate-via-cc-api` on the deployed project is refused
-# and leaves it intact (issue #3887).
+# Phase 1b moves the deployed project onto Cloud Control with
+# `--recreate-via-cc-api` (refused while the type had no Cloud Control
+# handlers, issue #3887) and back with `--recreate-via-sdk-provider`.
 #
 # Required env vars:
 #   STATE_BUCKET - cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -277,8 +278,8 @@ assert_field "projectVisibility"               '.projectVisibility'      'PUBLIC
 ROLE_ARN_P1="$(project_field '.serviceRole')"
 assert_field "resourceAccessRole (the service role)" '.resourceAccessRole' "${ROLE_ARN_P1}"
 # Routing guard: the reads above prove the pair reached AWS, not which layer
-# sent it. Declaring either used to be refused pre-flight (no Cloud Control
-# route), so the SDK provider is the only layer that can have.
+# sent it. The type now has a Cloud Control route too, so the recorded
+# provisionedBy is what says the SDK provider sent them.
 PROVISIONED_BY_P1="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r \
   '[.resources[] | select(.resourceType == "AWS::CodeBuild::Project") | .provisionedBy // "sdk"] | join(" ")')"
 if [ "${PROVISIONED_BY_P1}" != "sdk" ]; then
@@ -320,53 +321,60 @@ for _lid in ${CB_LIDS}; do
     "Phase 1 (the PUBLIC_READ write)"
 done
 
-# --- Phase 1b: issue #3887 recreate refusal ----------------------------
-# AWS::CodeBuild::Project has no Cloud Control handlers. `--recreate-via-cc-api`
-# deletes the resource through its SDK provider BEFORE asking Cloud Control to
-# create the replacement, so the refusal must come before any delete. This
-# redeploys the Phase 1 template unchanged, and a recreate target whose diff was
-# NO_CHANGE was ignored until #2651 was fixed, so the pre-#3887 binary exited 0
-# here: the exit code and the refusal wording discriminate. The project is also
-# asserted untouched -- same ARN and same creation time, since the ARN alone is
-# derived from the fixed name and survives a same-name re-create.
-echo "==> Phase 1b: --recreate-via-cc-api on the project is refused, project intact (issue #3887)"
+# --- Phase 1b: the Cloud Control route, both ways ----------------------
+# AWS::CodeBuild::Project had no Cloud Control handlers when its SDK provider
+# landed, so `--recreate-via-cc-api` was refused (#3887). AWS has since made it
+# FULLY_MUTABLE, so the recreate now moves the project onto Cloud Control: the
+# project is deleted through its SDK provider and re-created by Cloud Control
+# under the same name (a new creation time proves the re-create; the ARN is
+# derived from the name and survives it). `--recreate-via-sdk-provider` then
+# moves it back, so the later phases still exercise the SDK provider.
+echo "==> Phase 1b: --recreate-via-cc-api moves the project onto Cloud Control, and back"
 PROJECT_LID="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r \
   '[.resources | to_entries[] | select(.value.resourceType == "AWS::CodeBuild::Project") | .key] | first // ""')"
 if [ -z "${PROJECT_LID}" ]; then
   echo "FAIL: could not read the project's logical id from ${STATE_KEY}" >&2
   exit 1
 fi
-if RECREATE_OUT="$(node "${LOCAL_DIST}" deploy "${STACK}" \
+node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --recreate-via-cc-api "${PROJECT_LID}" \
-  --yes 2>&1)"; then
-  printf '%s\n' "${RECREATE_OUT}" >&2
-  echo "FAIL: Phase 1b deploy exited 0; --recreate-via-cc-api on AWS::CodeBuild::Project must be refused" >&2
+  --yes
+ROUTE_P1B="$(state_field "${PROJECT_LID}" .provisionedBy)"
+if [ "${ROUTE_P1B}" != "cc-api" ]; then
+  echo "FAIL: after --recreate-via-cc-api the project is recorded provisionedBy '${ROUTE_P1B}', expected 'cc-api'" >&2
   exit 1
 fi
-RECREATE_PLAIN="$(printf '%s\n' "${RECREATE_OUT}" | sed 's/\x1b\[[0-9;]*m//g')"
-printf '%s\n' "${RECREATE_PLAIN}" >&2
-for needle in \
-  'resource(s) of types Cloud Control API cannot create:' \
-  "  - ${PROJECT_LID} (AWS::CodeBuild::Project) — ProvisioningType: NON_PROVISIONABLE" \
-  'None of these resources was touched.'; do
-  if ! grep -qF -- "${needle}" <<<"${RECREATE_PLAIN}"; then
-    echo "FAIL: Phase 1b output lacks the recreate refusal wording: '${needle}'" >&2
-    exit 1
-  fi
-done
 PROJECT_ARN_P1B="$(project_field '.arn')"
 if [ "${PROJECT_ARN_P1B}" != "${PROJECT_ARN_P1}" ]; then
-  echo "FAIL: the refused recreate touched the project (ARN ${PROJECT_ARN_P1} -> ${PROJECT_ARN_P1B}); it must be left intact" >&2
+  echo "FAIL: the Cloud Control re-create changed the project ARN (${PROJECT_ARN_P1} -> ${PROJECT_ARN_P1B})" >&2
   exit 1
 fi
 PROJECT_CREATED_P1B="$(project_field '.created')"
-if [ "${PROJECT_CREATED_P1B}" != "${PROJECT_CREATED_P1}" ]; then
-  echo "FAIL: the refused recreate re-created the project (created ${PROJECT_CREATED_P1} -> ${PROJECT_CREATED_P1B}); it must be left intact" >&2
+if [ "${PROJECT_CREATED_P1B}" = "${PROJECT_CREATED_P1}" ]; then
+  echo "FAIL: --recreate-via-cc-api did not re-create the project (created ${PROJECT_CREATED_P1} unchanged)" >&2
   exit 1
 fi
-echo "    ok: recreate refused, project intact (${PROJECT_ARN_P1B}, created ${PROJECT_CREATED_P1B})"
+assert_field "vpcConfig.vpcId survives the Cloud Control re-create" '.vpcConfig.vpcId' "${VPC_ID}"
+echo "    ok: project re-created by Cloud Control (created ${PROJECT_CREATED_P1B})"
+
+node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --recreate-via-sdk-provider "${PROJECT_LID}" \
+  --yes
+ROUTE_P1C="$(state_field "${PROJECT_LID}" .provisionedBy)"
+if [ "${ROUTE_P1C}" != "sdk" ]; then
+  echo "FAIL: after --recreate-via-sdk-provider the project is recorded provisionedBy '${ROUTE_P1C}', expected 'sdk'" >&2
+  exit 1
+fi
+PROJECT_CREATED_P1C="$(project_field '.created')"
+if [ "${PROJECT_CREATED_P1C}" = "${PROJECT_CREATED_P1B}" ]; then
+  echo "FAIL: --recreate-via-sdk-provider did not re-create the project (created ${PROJECT_CREATED_P1B} unchanged)" >&2
+  exit 1
+fi
+echo "    ok: project back on its SDK provider (created ${PROJECT_CREATED_P1C})"
 
 # --- Phase 2: removal redeploy ---------------------------------------
 echo "==> Phase 2: redeploy with CDKD_TEST_REMOVAL=true (drops the optional fields)"

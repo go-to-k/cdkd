@@ -44,10 +44,10 @@ export function resetEMRInstanceFleetCreateRetryStateForTests(): void {
  *
  * This type adds a standalone instance fleet (MASTER / CORE / TASK) to an
  * EXISTING EMR cluster (referenced by `ClusterId`), rather than declaring the
- * fleet inline in `AWS::EMR::Cluster.Instances`. It is
- * `ProvisioningType: NON_PROVISIONABLE` in the CFn registry, so Cloud Control
- * cannot handle it — pre-flight would otherwise reject it via
- * `unsupported-types.generated.ts`.
+ * fleet inline in `AWS::EMR::Cluster.Instances`. It was
+ * `ProvisioningType: NON_PROVISIONABLE` when this provider landed; AWS has
+ * since given it Cloud Control handlers, so a property this provider does not
+ * handle routes the resource through Cloud Control.
  *
  * Lifecycle:
  *  - `create` → `AddInstanceFleet` + poll `ListInstanceFleets` until the new
@@ -84,16 +84,6 @@ export function resetEMRInstanceFleetCreateRetryStateForTests(): void {
  * does not require `--resource-timeout`.
  */
 export class EMRInstanceFleetConfigProvider implements ResourceProvider {
-  /**
-   * Cloud Control has NO handlers for this type
-   * (`ProvisioningType: NON_PROVISIONABLE`), so the deploy engine's #614
-   * SDK-unwired auto-route MUST NOT send an unhandled-property template to CC
-   * — it would fail at provisioning time with an opaque
-   * UnsupportedActionException. With this opt-out the ProviderRegistry rejects
-   * such templates pre-flight with a clear error instead.
-   */
-  readonly disableCcApiFallback = true;
-
   private client: EMRClient | undefined;
   private createClient: EMRClient | undefined;
   private readonly providerRegion = ambientRegion();
