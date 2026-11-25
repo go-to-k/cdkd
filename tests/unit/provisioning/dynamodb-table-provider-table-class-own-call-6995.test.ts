@@ -101,6 +101,7 @@ describe('DynamoDBTableProvider sends a TableClass change in its own UpdateTable
         TableArn: TABLE_ARN,
         TableStatus: 'ACTIVE',
         BillingModeSummary: { BillingMode: 'PROVISIONED' },
+        TableClassSummary: { TableClass: 'STANDARD_INFREQUENT_ACCESS' },
       },
     });
     await provider.update(
@@ -169,6 +170,64 @@ describe('DynamoDBTableProvider sends a TableClass change in its own UpdateTable
         ProvisionedThroughput: { ReadCapacityUnits: 2, WriteCapacityUnits: 2 },
       },
       { TableName: TABLE_NAME, TableClass: 'STANDARD_INFREQUENT_ACCESS' },
+    ]);
+  });
+
+  it('treats a live table with no BillingModeSummary as PROVISIONED on a retry', async () => {
+    // DescribeTable leaves out BillingModeSummary for a table that was never
+    // on demand. A capacity change already live must not be re-sent there.
+    mockSend.mockResolvedValue({
+      Table: {
+        TableName: TABLE_NAME,
+        TableArn: TABLE_ARN,
+        TableStatus: 'ACTIVE',
+        ProvisionedThroughput: { ReadCapacityUnits: 2, WriteCapacityUnits: 2 },
+      },
+    });
+    await provider.update(
+      'MyTable',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      {
+        ...baseProps,
+        ProvisionedThroughput: { ReadCapacityUnits: 2, WriteCapacityUnits: 2 },
+        TableClass: 'STANDARD_INFREQUENT_ACCESS',
+      },
+      { ...baseProps, ProvisionedThroughput: { ReadCapacityUnits: 1, WriteCapacityUnits: 1 } }
+    );
+    expect(updateInputs()).toEqual([
+      { TableName: TABLE_NAME, TableClass: 'STANDARD_INFREQUENT_ACCESS' },
+    ]);
+  });
+
+  it('does not re-send a TableClass the live table already holds (a retry)', async () => {
+    mockSend.mockResolvedValue({
+      Table: {
+        TableName: TABLE_NAME,
+        TableArn: TABLE_ARN,
+        TableStatus: 'ACTIVE',
+        BillingModeSummary: { BillingMode: 'PAY_PER_REQUEST' },
+        TableClassSummary: { TableClass: 'STANDARD_INFREQUENT_ACCESS' },
+      },
+    });
+    await provider.update(
+      'MyTable',
+      TABLE_NAME,
+      RESOURCE_TYPE,
+      {
+        ...baseProps,
+        BillingMode: 'PROVISIONED',
+        ProvisionedThroughput: { ReadCapacityUnits: 2, WriteCapacityUnits: 2 },
+        TableClass: 'STANDARD_INFREQUENT_ACCESS',
+      },
+      { ...baseProps, BillingMode: 'PAY_PER_REQUEST' }
+    );
+    expect(updateInputs()).toEqual([
+      {
+        TableName: TABLE_NAME,
+        BillingMode: 'PROVISIONED',
+        ProvisionedThroughput: { ReadCapacityUnits: 2, WriteCapacityUnits: 2 },
+      },
     ]);
   });
 

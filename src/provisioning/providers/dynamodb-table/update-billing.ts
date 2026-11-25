@@ -47,16 +47,35 @@ export async function applyBillingModeUpdate(
   gsiHandledByBillingFlip: Set<string>,
   liveTable: TableDescription | undefined
 ): Promise<void> {
-  // The TableClass change goes in a call of its own after this one (below),
-  // so a failure of that call leaves this one applied, and the engine's
-  // retry of the update then finds the billing / capacity change already
+  // A removed TableClass property reverts to the DynamoDB default
+  // (STANDARD) — matches CFn, which reverts an absent property to the
+  // type default rather than leaving the old value in place.
+  //
+  // DynamoDB refuses a TableClass change sharing an UpdateTable with
+  // anything else ("TableClass modification must be the only operation in
+  // the request", go-to-k/cdkd#6995), so with a billing / capacity change in
+  // the same deploy it goes in its own call after that one settles —
+  // CloudFormation completes the combined update.
+  //
+  // Once the two are separate calls, a failure after the first leaves it
+  // applied, and the engine's retry of the update finds that change already
   // live. Re-sending it is a call AWS rejects ("The provisioned throughput
-  // for the table will not change"), which would replace the real failure
-  // (go-to-k/cdkd#6995). Skip the send; the marks below still name the keys,
-  // since AWS no longer holds their pre-deploy values.
+  // for the table will not change"), which would replace the real failure,
+  // so a change the live table already holds is not sent again. Its
+  // unsettled mark from the earlier attempt stays on the engine.
   const sendBilling =
-    billingOrThroughputChanged && !billingChangeAlreadyLive(properties, billingMode, liveTable);
-  if (sendBilling || tableClassChanged) {
+    billingOrThroughputChanged &&
+    !billingChangeAlreadyLive(properties, billingMode, liveBillingMode, liveTable);
+  const desiredTableClass = normalizeTableClass(properties['TableClass']);
+  const tableClassInput: UpdateTableCommandInput | undefined =
+    tableClassChanged &&
+    !(
+      liveTable !== undefined &&
+      (liveTable.TableClassSummary?.TableClass ?? 'STANDARD') === desiredTableClass
+    )
+      ? { TableName: physicalId, TableClass: desiredTableClass }
+      : undefined;
+  if (sendBilling || tableClassInput !== undefined) {
     const updateInput: UpdateTableCommandInput = { TableName: physicalId };
     // Always defined now that both sides normalize, so the call can never
     // again go out with only a `TableName` — the empty-UpdateTable shape
@@ -64,18 +83,6 @@ export async function applyBillingModeUpdate(
     if (sendBilling) {
       updateInput.BillingMode = billingMode;
     }
-    // A removed TableClass property reverts to the DynamoDB default
-    // (STANDARD) — matches CFn, which reverts an absent property to the
-    // type default rather than leaving the old value in place.
-    //
-    // DynamoDB refuses a TableClass change sharing an UpdateTable with
-    // anything else ("TableClass modification must be the only operation in
-    // the request", go-to-k/cdkd#6995), so with a billing / capacity change
-    // in the same deploy it goes in its own call after that one settles —
-    // CloudFormation completes the combined update.
-    const tableClassInput: UpdateTableCommandInput | undefined = tableClassChanged
-      ? { TableName: physicalId, TableClass: normalizeTableClass(properties['TableClass']) }
-      : undefined;
     // PAY_PER_REQUEST rejects ProvisionedThroughput; PROVISIONED requires
     // it, so forward the caps whenever the resolved mode is PROVISIONED.
     // Gated on sendBilling so a TableClass-only change does
@@ -262,17 +269,20 @@ export async function applyBillingModeUpdate(
 
 /**
  * Whether the live table already holds the billing mode and table-level
- * capacity this update would send. An unreadable live table, or a desired
- * capacity that is absent or unusable, answers `false`: the call goes out as
+ * capacity this update would send. No live table, or a desired capacity that
+ * is absent or unusable, answers `false`: the call goes out as
  * it did before go-to-k/cdkd#6995.
  */
 function billingChangeAlreadyLive(
   properties: Record<string, unknown>,
   billingMode: 'PROVISIONED' | 'PAY_PER_REQUEST',
+  liveBillingMode: 'PROVISIONED' | 'PAY_PER_REQUEST',
   liveTable: TableDescription | undefined
 ): boolean {
-  const liveMode = liveTable?.BillingModeSummary?.BillingMode;
-  if (liveMode === undefined || liveMode !== billingMode) return false;
+  // `liveBillingMode` is `update()`'s reading: DescribeTable leaves out
+  // `BillingModeSummary` for a table that was never on demand, which is
+  // PROVISIONED.
+  if (liveTable === undefined || liveBillingMode !== billingMode) return false;
   if (billingMode === 'PAY_PER_REQUEST') return true;
   const pt = properties['ProvisionedThroughput'];
   const read = readCapacityNumber(pt, 'ReadCapacityUnits');
@@ -280,8 +290,8 @@ function billingChangeAlreadyLive(
   return (
     read !== undefined &&
     write !== undefined &&
-    read === liveTable?.ProvisionedThroughput?.ReadCapacityUnits &&
-    write === liveTable?.ProvisionedThroughput?.WriteCapacityUnits
+    read === liveTable.ProvisionedThroughput?.ReadCapacityUnits &&
+    write === liveTable.ProvisionedThroughput?.WriteCapacityUnits
   );
 }
 
