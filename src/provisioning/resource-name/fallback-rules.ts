@@ -251,8 +251,8 @@ export const FALLBACK_NAME_RULES: Record<string, GeneratedNameRule> = {
   },
   'AWS::WAFv2::WebACL': { nameProperty: 'Name', options: { maxLength: 128 } },
   // CreateProject: 2-150 characters. A legacy stack's SDK provider named the
-  // project after the bare logical id, and its Cloud Control create the rule's
-  // name.
+  // project after the bare logical id, and a Cloud Control create uses the
+  // rule's name.
   'AWS::CodeBuild::Project': {
     nameProperty: 'Name',
     options: { maxLength: 150 },

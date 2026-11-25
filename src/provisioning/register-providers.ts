@@ -361,8 +361,9 @@ export function registerAllProviders(registry: ProviderRegistry, classes: Provid
 
   // EMR InstanceGroupConfig / InstanceFleetConfig — also NON_PROVISIONABLE
   // when these providers landed (issue #1070), FULLY_MUTABLE since 2025-10;
-  // an SDK-unhandled property routes them via Cloud Control. These add a standalone instance group / fleet to an
-  // EXISTING cluster (referenced by JobFlowId / ClusterId) via
+  // an SDK-unhandled property routes them via Cloud Control. These add a
+  // standalone instance group / fleet to an EXISTING cluster (referenced by
+  // JobFlowId / ClusterId) via
   // AddInstanceGroups / AddInstanceFleet, with a limited mutable update
   // surface (resize + config); delete has no standalone AWS API, so it is a
   // no-op that relies on the parent cluster's TerminateJobFlows (best-effort

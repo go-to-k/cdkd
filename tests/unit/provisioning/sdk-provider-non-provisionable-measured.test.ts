@@ -20,6 +20,9 @@ import { loadProviderClasses, registerAllProviders } from '../../../src/provisio
 import type { ResourceProvider } from '../../../src/types/resource.js';
 import { SDK_PROVIDER_NON_PROVISIONABLE_TYPES } from '../../../src/provisioning/unsupported-types.js';
 
+// Empty today. If AWS gives `AWS::CloudWatch::AnomalyDetector` handlers, keep
+// it here rather than opening its route: its physical id is a cdkd-derived
+// metric descriptor, which Cloud Control's handlers cannot address (#4668).
 const KEPT_DESPITE_CC_HANDLERS: ReadonlyMap<string, string> = new Map([]);
 
 /**

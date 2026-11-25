@@ -86,7 +86,7 @@ A type with no SDK provider always goes through Cloud Control, and every
 property in the template is sent.
 
 A type with an SDK provider that Cloud Control cannot serve, such as
-`AWS::CodeBuild::Project`, has no route to move to. If the template sets a
+`AWS::FSx::FileSystem`, has no route to move to. If the template sets a
 property that provider does not write and the bundled schema knows, cdkd
 refuses the deploy before it touches any resource in that stack. The error names the type,
 the property and the reason. Remove the property, or pass
@@ -251,9 +251,9 @@ tear the stack down.
 
 ```bash
 cdkd deploy MyStack \
-  --allow-unsupported-types AWS::AppMesh::Mesh,AWS::Budgets::Budget
+  --allow-unsupported-types AWS::AppMesh::Mesh,AWS::AppMesh::Route
 cdkd destroy MyStack \
-  --allow-unsupported-types AWS::AppMesh::Mesh,AWS::Budgets::Budget
+  --allow-unsupported-types AWS::AppMesh::Mesh,AWS::AppMesh::Route
 ```
 
 Cloud Control will likely still fail for these types. The flag helps when AWS

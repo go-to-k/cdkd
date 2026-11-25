@@ -599,6 +599,25 @@ describe('partitionCoverage', () => {
     expect(report.generatedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
+  it('records the registered types AWS reports NON_PROVISIONABLE as tier1NonProvisionable (#6975)', async () => {
+    const known = new Map([
+      ['AWS::Z::Registered', 'NON_PROVISIONABLE'],
+      ['AWS::A::Registered', 'NON_PROVISIONABLE'],
+      ['AWS::M::Registered', 'FULLY_MUTABLE'],
+      ['AWS::U::Unregistered', 'NON_PROVISIONABLE'],
+    ]);
+    const registered = new Set(['AWS::Z::Registered', 'AWS::A::Registered', 'AWS::M::Registered']);
+    const client = buildClient({});
+    const report = await partitionCoverage(client, registered, known.keys(), {
+      knownProvisioningTypes: known,
+    });
+    expect(report.tier1NonProvisionable).toEqual(['AWS::A::Registered', 'AWS::Z::Registered']);
+    expect(report.tier3).toEqual(['AWS::U::Unregistered']);
+
+    const unmeasured = await partitionCoverage(client, registered, ['AWS::Z::Registered']);
+    expect(unmeasured).not.toHaveProperty('tier1NonProvisionable');
+  });
+
   it('retries a transient TRANSPORT failure instead of calling it Tier 3', async () => {
     // Measured 2026-09-04 (issue #2571): one `socket hang up` during a
     // 1737-type walk classified `AWS::OpenSearchService::Domain` as
