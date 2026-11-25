@@ -88,11 +88,15 @@ the deploy succeeds, which is CloudFormation's order. Under
 for an EBS volume, a Redshift cluster or an ElastiCache replication group
 too: cdkd snapshots the old copy right before it deletes it, never before the
 create. An IAM inline policy is the one case deleted right after the new one
-is created. An `AWS::EC2::VPCGatewayAttachment` or
-`AWS::EC2::SubnetRouteTableAssociation` is deleted before its replacement is
-created, as CloudFormation does: AWS refuses a second gateway on a VPC or a
-second route table on a subnet. Such a replacement happens when a VPC's CIDR
-changes or a subnet moves to another route table. A CIDR change deploys while
+is created. An `AWS::EC2::VPCGatewayAttachment`,
+`AWS::EC2::SubnetRouteTableAssociation` or `AWS::EC2::EIPAssociation` is
+deleted before its replacement is created, as CloudFormation does: AWS refuses
+a second gateway on a VPC, a second route table on a subnet, or a second
+association of an Elastic IP. Such a replacement happens when a VPC's CIDR
+changes, a subnet moves to another route table, or an instance holding an
+Elastic IP is replaced (a new AMI, or changed user data with
+`userDataCausesReplacement`); until the new association exists, the Elastic IP
+is attached to nothing. A CIDR change deploys while
 the old VPC holds no public address; with a NAT gateway, an Elastic IP or an
 instance with a public IP in it, AWS refuses to detach the gateway, and the
 deploy fails after its retries, as CloudFormation's does, with the old

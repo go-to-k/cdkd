@@ -10,14 +10,18 @@
  *   VPC per gateway (a VPN gateway attaches to one VPC at a time).
  * - `AWS::EC2::SubnetRouteTableAssociation`: one route table association per
  *   subnet.
+ * - `AWS::EC2::EIPAssociation` (#6990): one association per Elastic IP, and
+ *   one Elastic IP per private address. Its `InstanceId` changes whenever a
+ *   CDK `ec2.Instance` is replaced (a new AMI, or user data with
+ *   `userDataCausesReplacement`).
  *
- * CloudFormation's events for both read "Requested update requires the
+ * CloudFormation's events for all three read "Requested update requires the
  * replacement of the existing resource; deleting existing resource, then
  * creating a new one." `AWS::EC2::SubnetNetworkAclAssociation` takes the same
  * CloudFormation path but is NOT listed: its create replaces the subnet's
  * current association, so cdkd's create-first order already succeeds there.
  *
- * Neither type holds anything beyond its recorded properties, so a failed
+ * None of them holds anything beyond its recorded properties, so a failed
  * deploy's rollback re-creates the old link whole, the failed op's replay
  * included (`recreate-failed-replaced-deleted`). A LEAF: the deploy engine,
  * the rollback plan and the plan note (`analyzer/destructive-changes.ts`)
@@ -31,6 +35,7 @@
 const DELETE_FIRST_REPLACEMENT_TYPES: ReadonlySet<string> = new Set([
   'AWS::EC2::VPCGatewayAttachment',
   'AWS::EC2::SubnetRouteTableAssociation',
+  'AWS::EC2::EIPAssociation',
 ]);
 
 /**
