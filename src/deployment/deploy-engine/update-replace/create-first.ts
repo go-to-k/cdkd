@@ -101,8 +101,9 @@ export async function replaceCreateFirst(
     );
   }
   // go-to-k/cdkd#6958: AWS lets the old copy of these links block the new one
-  // (`Resource.AlreadyAssociated`: one gateway per VPC, one route table
-  // association per subnet), so they are replaced delete-first, as
+  // (one gateway per VPC, one route table association per subnet, one
+  // association per Elastic IP: `delete-first-replacement-types.ts`), so they
+  // are replaced delete-first, as
   // CloudFormation replaces them. Through the `--replace` helper, so the
   // journal records `oldDeletedBeforeCreate` and a failed deploy's rollback
   // deletes the new copy, then re-creates the old one. `UpdateReplacePolicy:

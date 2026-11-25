@@ -19,17 +19,25 @@
 #   4. Deploy CDKD_TEST_UPDATE=move,cidr: Net is replaced (10.63.0.0/16), its
 #      gateway is attached to the new VPC with an active default route, and
 #      the old VPC is gone.
-#   5. Deploy CDKD_TEST_UPDATE=move,cidr,failatt (Att -> VpcC, which already
+#   4b. CDKD_TEST_UPDATE=move,cidr,eip gives the instance in VpcC another AMI,
+#      which replaces it under the same logical id (create-first, the old one
+#      deleted in the cleanup phase), so its Elastic IP association EipAssoc
+#      is replaced (go-to-k/cdkd#6990): the
+#      diff names it a delete-first replacement, the deploy succeeds, and the
+#      Elastic IP is associated with the new instance. Every later phase keeps
+#      the eip token.
+#   5. Deploy CDKD_TEST_UPDATE=move,cidr,eip,failatt (Att -> VpcC, which already
 #      holds IgwC): cdkd deletes the old attachment first, AWS refuses the new
 #      one, the deploy fails, and the automatic rollback re-creates the old
 #      attachment (issue #6958): Igw is attached to VpcB again, IgwC to VpcC,
 #      and state's Att names that attachment.
-#   6. Deploy CDKD_TEST_UPDATE=move,cidr,failassoc (RtAssoc -> RtC, a route
+#   6. Deploy CDKD_TEST_UPDATE=move,cidr,eip,failassoc (RtAssoc -> RtC, a route
 #      table of another VPC): the same, for the association: the subnet is
 #      associated with RtB again and state's RtAssoc names that association.
-#   7. `cdkd diff --fail` of move,cidr reports no changes, and `cdkd drift`
-#      reports neither Att nor RtAssoc drifted.
-#   8. Destroy: every VPC, every gateway and the state file are gone.
+#   7. `cdkd diff --fail` of move,cidr,eip reports no changes, and `cdkd drift`
+#      reports none of Att, RtAssoc and EipAssoc drifted.
+#   8. Destroy: every VPC, every gateway, the Elastic IP and the state file are
+#      gone.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -108,6 +116,14 @@ default_route_state() { # $1 = subnet id -> the state of its route table's 0.0.0
   aws ec2 describe-route-tables --filters "Name=association.subnet-id,Values=$1" --region "${REGION}" \
     --query "join(' ', RouteTables[].Routes[] | [?DestinationCidrBlock=='0.0.0.0/0'].State)" --output text || return 1
 }
+eip_instance() { # $1 = allocation id -> the instance it is associated with
+  aws ec2 describe-addresses --allocation-ids "$1" --region "${REGION}" \
+    --query 'Addresses[0].InstanceId' --output text || return 1
+}
+instance_state() { # $1 = instance id
+  aws ec2 describe-instances --instance-ids "$1" --region "${REGION}" \
+    --query 'Reservations[0].Instances[0].State.Name' --output text || return 1
+}
 expect_eq() { # $1 = what, $2 = got, $3 = want
   if [ "$2" != "$3" ]; then
     echo "FAIL: $1 is '$2', expected '$3'" >&2
@@ -149,6 +165,21 @@ if [ ! -f "${LOCAL_DIST}" ]; then
   exit 1
 fi
 
+# Two AMIs, resolved once so a new AMI release mid-run replaces nothing.
+CDKD_TEST_AMI_A="$(aws ssm get-parameter --region "${REGION}" \
+  --name /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64 \
+  --query Parameter.Value --output text)"
+CDKD_TEST_AMI_B="$(aws ssm get-parameter --region "${REGION}" \
+  --name /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2 \
+  --query Parameter.Value --output text)"
+for ami in "${CDKD_TEST_AMI_A}" "${CDKD_TEST_AMI_B}"; do
+  case "${ami}" in
+    ami-?*) ;;
+    *) echo "FAIL: an AMI id is '${ami}'" >&2; exit 1 ;;
+  esac
+done
+export CDKD_TEST_AMI_A CDKD_TEST_AMI_B
+
 echo "==> Installing fixture deps"
 if [ ! -d node_modules ]; then
   npm install
@@ -174,14 +205,18 @@ NET_IGW="$(output NetIgwId)"
 NET_SUBNET_OLD="$(output NetSubnetId)"
 VPC_C="$(output VpcCId)"
 IGW_C="$(output IgwCId)"
-for v in "${VPC_C}" "${IGW_C}" "${VPC_A}" "${VPC_B}" "${IGW}" "${SUBNET}" "${RT_A}" "${RT_B}" "${NET_VPC_OLD}" "${NET_IGW}" "${NET_SUBNET_OLD}"; do
+INST_OLD="$(output InstId)"
+EIP_ALLOC="$(output EipAllocationId)"
+for v in "${INST_OLD}" "${EIP_ALLOC}" "${VPC_C}" "${IGW_C}" "${VPC_A}" "${VPC_B}" "${IGW}" "${SUBNET}" "${RT_A}" "${RT_B}" "${NET_VPC_OLD}" "${NET_IGW}" "${NET_SUBNET_OLD}"; do
   case "${v}" in
-    vpc-?* | igw-?* | subnet-?* | rtb-?*) ;;
+    vpc-?* | igw-?* | subnet-?* | rtb-?* | i-?* | eipalloc-?*) ;;
     *) echo "FAIL: an output id is '${v}'" >&2; exit 1 ;;
   esac
 done
 ATT_ID_1="$(physical_id Att)"
 ASSOC_ID_1="$(physical_id RtAssoc)"
+EIP_ASSOC_ID_1="$(physical_id EipAssoc)"
+expect_eq "the Elastic IP's instance" "$(eip_instance "${EIP_ALLOC}")" "${INST_OLD}"
 expect_eq "Igw's attached VPCs" "$(igw_vpcs "${IGW}")" "${VPC_A}"
 expect_eq "IgwC's attached VPCs" "$(igw_vpcs "${IGW_C}")" "${VPC_C}"
 expect_eq "the subnet's route table" "$(subnet_route_table "${SUBNET}")" "${RT_A}"
@@ -260,10 +295,64 @@ assert_gone "Net's old VPC ${NET_VPC_OLD} still exists after its replacement" \
 expect_eq "Igw's attached VPCs after the CIDR change" "$(igw_vpcs "${IGW}")" "${VPC_B}"
 echo "    Net replaced (${NET_VPC_OLD} -> ${NET_VPC_NEW}), ${NET_IGW} re-attached, old VPC gone"
 
-# --- Phase 5: a refused re-attach is rolled back ------------------------------
-echo "==> Phase 5: deploy CDKD_TEST_UPDATE=move,cidr,failatt (expected to fail and roll back)"
+# --- Phase 4b: replace the instance holding the Elastic IP -------------------
+echo "==> Phase 4b: cdkd diff + deploy CDKD_TEST_UPDATE=move,cidr,eip (the instance is replaced)"
 set +e
-fail_out=$(CDKD_TEST_UPDATE=move,cidr,failatt node "${LOCAL_DIST}" deploy "${STACK}" \
+diff_out=$(CDKD_TEST_UPDATE=move,cidr,eip node "${LOCAL_DIST}" diff "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --fail-on=destructive </dev/null 2>&1)
+diff_rc=$?
+set -e
+diff_txt=$(printf '%s' "${diff_out}" | sed $'s/\033\[[0-9;]*m//g')
+# Sentinel: the replacement line itself, independent of the note. The
+# association follows its replaced instance, so it MAY be replaced.
+if ! grep -qE "EipAssoc (will|may) be replaced" <<<"${diff_txt}"; then
+  echo "FAIL: cdkd diff --fail-on=destructive listed no replacement of EipAssoc" >&2
+  echo "${diff_txt}" >&2
+  exit 1
+fi
+if ! grep -qE "EipAssoc (will|may) be replaced — the deploy deletes the old resource before creating its replacement" <<<"${diff_txt}"; then
+  echo "FAIL: EipAssoc's replacement line does not say the old one is deleted first (issue #6990)" >&2
+  echo "${diff_txt}" >&2
+  exit 1
+fi
+expect_eq "diff --fail-on=destructive exit code for the eip change" "${diff_rc}" "1"
+eip_out=$(CDKD_TEST_UPDATE=move,cidr,eip node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes </dev/null 2>&1) || {
+  echo "FAIL: the eip deploy failed (issue #6990: a create-first association is refused)" >&2
+  echo "${eip_out}" >&2
+  exit 1
+}
+if ! grep -q "allows one link at a time — deleting old EipAssoc" <<<"${eip_out}"; then
+  echo "FAIL: the eip deploy did not replace EipAssoc delete-first" >&2
+  echo "${eip_out}" >&2
+  exit 1
+fi
+INST_NEW="$(output InstId)"
+case "${INST_NEW}" in
+  i-?*) ;;
+  *) echo "FAIL: the instance id after the eip deploy is '${INST_NEW}'" >&2; exit 1 ;;
+esac
+if [ "${INST_NEW}" = "${INST_OLD}" ]; then
+  echo "FAIL: the instance was not replaced (${INST_OLD})" >&2
+  exit 1
+fi
+expect_eq "the Elastic IP's instance after the replacement" "$(eip_instance "${EIP_ALLOC}")" "${INST_NEW}"
+EIP_ASSOC_ID_2="$(physical_id EipAssoc)"
+if [ -z "${EIP_ASSOC_ID_2}" ] || [ "${EIP_ASSOC_ID_2}" = "${EIP_ASSOC_ID_1}" ]; then
+  echo "FAIL: EipAssoc's record was not replaced ('${EIP_ASSOC_ID_1}' -> '${EIP_ASSOC_ID_2}')" >&2
+  exit 1
+fi
+old_state="$(instance_state "${INST_OLD}")"
+case "${old_state}" in
+  shutting-down | terminated) ;;
+  *) echo "FAIL: the old instance ${INST_OLD} is '${old_state}' after its replacement" >&2; exit 1 ;;
+esac
+echo "    the instance was replaced (${INST_OLD} -> ${INST_NEW}) and the Elastic IP followed it"
+
+# --- Phase 5: a refused re-attach is rolled back ------------------------------
+echo "==> Phase 5: deploy CDKD_TEST_UPDATE=move,cidr,eip,failatt (expected to fail and roll back)"
+set +e
+fail_out=$(CDKD_TEST_UPDATE=move,cidr,eip,failatt node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes </dev/null 2>&1)
 fail_rc=$?
 set -e
@@ -285,9 +374,9 @@ expect_eq "state's Att record after the rollback" "$(physical_id Att)" "${ATT_ID
 echo "    the refused attach was rolled back: Igw is attached to ${VPC_B} again"
 
 # --- Phase 6: a refused re-association is rolled back -------------------------
-echo "==> Phase 6: deploy CDKD_TEST_UPDATE=move,cidr,failassoc (expected to fail and roll back)"
+echo "==> Phase 6: deploy CDKD_TEST_UPDATE=move,cidr,eip,failassoc (expected to fail and roll back)"
 set +e
-fail_out=$(CDKD_TEST_UPDATE=move,cidr,failassoc node "${LOCAL_DIST}" deploy "${STACK}" \
+fail_out=$(CDKD_TEST_UPDATE=move,cidr,eip,failassoc node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes </dev/null 2>&1)
 fail_rc=$?
 set -e
@@ -313,7 +402,7 @@ echo "    the refused association was rolled back: the subnet is on ${RT_B} agai
 # --- Phase 7: state matches the last good version ------------------------------
 echo "==> Phase 7: cdkd diff --fail and cdkd drift after the rollbacks"
 set +e
-diff_out=$(CDKD_TEST_UPDATE=move,cidr node "${LOCAL_DIST}" diff "${STACK}" --state-bucket "${STATE_BUCKET}" \
+diff_out=$(CDKD_TEST_UPDATE=move,cidr,eip node "${LOCAL_DIST}" diff "${STACK}" --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" --fail </dev/null 2>&1)
 diff_rc=$?
 set -e
@@ -330,8 +419,8 @@ if [ "$(jq -r 'if type == "array" and length > 0 then "yes" else "no" end' <<<"$
   echo "FAIL: cdkd drift --json produced no stack report: ${drift_out}" >&2
   exit 1
 fi
-drifted=$(jq '[.[].drifted[] | select(.logicalId == "Att" or .logicalId == "RtAssoc")] | length' <<<"${drift_out}")
-expect_eq "drifted Att / RtAssoc after the rollbacks" "${drifted}" "0"
+drifted=$(jq '[.[].drifted[] | select(.logicalId == "Att" or .logicalId == "RtAssoc" or .logicalId == "EipAssoc")] | length' <<<"${drift_out}")
+expect_eq "drifted Att / RtAssoc / EipAssoc after the rollbacks" "${drifted}" "0"
 echo "    no changes, no drift"
 
 # --- Phase 8: destroy --------------------------------------------------------
@@ -345,8 +434,10 @@ for gw in "${IGW}" "${IGW_C}" "${NET_IGW}"; do
   assert_gone "internet gateway ${gw} still exists after destroy" \
     aws ec2 describe-internet-gateways --internet-gateway-ids "${gw}" --region "${REGION}"
 done
+assert_gone "Elastic IP ${EIP_ALLOC} still exists after destroy" \
+  aws ec2 describe-addresses --allocation-ids "${EIP_ALLOC}" --region "${REGION}"
 assert_gone "state file ${STATE_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 
 trap - EXIT INT TERM
-echo "[verify] PASS — gateway attachment and route table association replaced delete-first (move), Net's VPC replaced on a CIDR change with its gateway re-attached, refused re-attach and re-association rolled back to the old links, destroyed clean"
+echo "[verify] PASS — gateway attachment and route table association replaced delete-first (move), Net's VPC replaced on a CIDR change with its gateway re-attached, an instance replaced with its Elastic IP association re-created delete-first, refused re-attach and re-association rolled back to the old links, destroyed clean"

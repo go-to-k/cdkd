@@ -1800,12 +1800,17 @@
     {
       "resourceType": "AWS::EC2::EIP",
       "integs": [
+        "ec2-association-replace",
         "ec2-eip-instance-association",
         "ec2-vpc",
         "export",
         "vpc-nat-gateway"
       ],
       "signals": {
+        "ec2-association-replace": [
+          "l1",
+          "literal"
+        ],
         "ec2-eip-instance-association": [
           "l1",
           "literal"
@@ -1826,6 +1831,7 @@
       "integs": [
         "creation-policy-cfn-init",
         "deletion-ordering-complex",
+        "ec2-association-replace",
         "ec2-eip-instance-association",
         "ec2-instance",
         "ec2-instance-fanout",
@@ -1843,6 +1849,10 @@
         ],
         "deletion-ordering-complex": [
           "l2"
+        ],
+        "ec2-association-replace": [
+          "l1",
+          "literal"
         ],
         "ec2-eip-instance-association": [
           "l1"
@@ -12020,6 +12030,7 @@
     "AWS::DataSync::Task",
     "AWS::DocDB::DBClusterParameterGroup",
     "AWS::DocDB::GlobalCluster",
+    "AWS::EC2::EIPAssociation",
     "AWS::EC2::IPAM",
     "AWS::EC2::IPAMPool",
     "AWS::EC2::IPAMPoolCidr",

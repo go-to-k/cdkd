@@ -30,6 +30,18 @@ import type { Construct } from 'constructs';
  *   which already holds its own gateway `IgwC` (a VPC holds one);
  *   `failassoc` moves `RtAssoc` to `RtC`, a route table of ANOTHER VPC.
  *   `VpcC`, `IgwC`, `AttC` and `RtC` are part of every version.
+ * - `eip` (go-to-k/cdkd#6990): the instance `Inst` in `VpcC` gets another
+ *   AMI, which replaces it under the same logical id (create-first, the old
+ *   instance deleted in the cleanup phase), as a new AMI does to a CDK
+ *   `ec2.Instance`; so the Elastic IP association `EipAssoc` is replaced too.
+ *   AWS allows one association per Elastic IP, so cdkd deletes the old one
+ *   first. The two AMI ids come from `CDKD_TEST_AMI_A` / `CDKD_TEST_AMI_B`,
+ *   which verify.sh resolves once per run, so a new AMI release mid-run
+ *   replaces nothing.
+ *
+ * covers: AWS::EC2::EIPAssociation
+ * covers: AWS::EC2::EIP
+ * covers: AWS::EC2::Instance
  */
 export class Ec2AssociationReplaceStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -40,6 +52,7 @@ export class Ec2AssociationReplaceStack extends cdk.Stack {
     const cidr = modes.has('cidr');
     const failAtt = modes.has('failatt');
     const failAssoc = modes.has('failassoc');
+    const eip = modes.has('eip');
 
     // --- L1 arm --------------------------------------------------------------
     const vpcA = new ec2.CfnVPC(this, 'VpcA', { cidrBlock: '10.60.0.0/16' });
@@ -82,6 +95,34 @@ export class Ec2AssociationReplaceStack extends cdk.Stack {
     });
     assoc.overrideLogicalId('RtAssoc');
 
+    // --- Elastic IP arm (#6990) -----------------------------------------------
+    // VpcC holds an internet gateway in every version, which an Elastic IP
+    // association needs.
+    const subnetC = new ec2.CfnSubnet(this, 'SubnetC', {
+      vpcId: vpcC.ref,
+      cidrBlock: '10.64.0.0/24',
+      availabilityZone: cdk.Fn.select(0, cdk.Fn.getAzs()),
+    });
+    subnetC.overrideLogicalId('SubnetC');
+    const amiA = process.env.CDKD_TEST_AMI_A;
+    const amiB = process.env.CDKD_TEST_AMI_B;
+    const inst = new ec2.CfnInstance(this, 'Inst', {
+      imageId:
+        (eip ? amiB : amiA) ?? ec2.MachineImage.latestAmazonLinux2023().getImage(this).imageId,
+      instanceType: 't3.nano',
+      subnetId: subnetC.ref,
+    });
+    inst.overrideLogicalId('Inst');
+    inst.addDependency(attC);
+    const address = new ec2.CfnEIP(this, 'Eip', { domain: 'vpc' });
+    address.overrideLogicalId('Eip');
+    address.addDependency(attC);
+    const eipAssoc = new ec2.CfnEIPAssociation(this, 'EipAssoc', {
+      allocationId: address.attrAllocationId,
+      instanceId: inst.ref,
+    });
+    eipAssoc.overrideLogicalId('EipAssoc');
+
     // --- L2 arm --------------------------------------------------------------
     const net = new ec2.Vpc(this, 'Net', {
       ipAddresses: ec2.IpAddresses.cidr(cidr ? '10.63.0.0/16' : '10.62.0.0/16'),
@@ -102,6 +143,8 @@ export class Ec2AssociationReplaceStack extends cdk.Stack {
     out('RtBId', rtB.ref);
     out('VpcCId', vpcC.ref);
     out('IgwCId', igwC.ref);
+    out('InstId', inst.ref);
+    out('EipAllocationId', address.attrAllocationId);
     out('NetVpcId', net.vpcId);
     out('NetIgwId', net.internetGatewayId!);
     out('NetSubnetId', net.publicSubnets[0]!.subnetId);
