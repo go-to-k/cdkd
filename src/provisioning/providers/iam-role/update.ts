@@ -42,6 +42,7 @@ import type {
 } from '../../../types/resource.js';
 import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 import { holdsSecretDerivedEntry } from '../../iam-policy-targets.js';
+import { deferIamPropagationSettle } from '../../iam-propagation-settle.js';
 
 /**
  * Update an IAM role
@@ -455,6 +456,8 @@ export async function update(
       RoleId: getRoleResponse.Role?.RoleId,
     };
 
+    // A custom resource downstream waits for IAM to propagate this write.
+    deferIamPropagationSettle(logicalId, resourceType, physicalId);
     return {
       physicalId,
       wasReplaced: false,

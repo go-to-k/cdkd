@@ -28,6 +28,7 @@ import {
   PRINCIPAL_NAMES,
   type ManagedPolicyReadBack,
 } from './shared.js';
+import { deferIamPropagationSettle } from '../../iam-propagation-settle.js';
 
 export async function update(
   this: IAMManagedPolicyProvider,
@@ -422,6 +423,8 @@ export async function update(
           log.debug
         )
       : carried;
+    // A custom resource downstream waits for IAM to propagate this write.
+    deferIamPropagationSettle(logicalId, resourceType, physicalId);
     return {
       physicalId,
       wasReplaced: false,

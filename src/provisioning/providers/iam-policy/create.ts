@@ -26,6 +26,7 @@ import type { CreateContext, ResourceCreateResult } from '../../../types/resourc
 import { type AttachedPrincipals, readPolicyTargetLists } from './shared.js';
 import { RecordedIdentityError } from '../../recorded-identity.js';
 import { assertInlinePolicyAttachTargets } from './principal-identity.js';
+import { deferIamPropagationSettle } from '../../iam-propagation-settle.js';
 
 /**
  * Create an IAM inline policy
@@ -153,6 +154,8 @@ export async function create(
     // For inline policies, physical ID is the policy name
     const physicalId = policyName;
 
+    // A custom resource downstream waits for IAM to propagate this write.
+    deferIamPropagationSettle(logicalId, resourceType, physicalId);
     return {
       physicalId,
       attributes: {
