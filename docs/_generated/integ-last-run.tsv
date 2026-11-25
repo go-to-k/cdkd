@@ -491,7 +491,7 @@ schema-v9-to-v10-migration	2026-11-04T19:35:08Z	PASS	140	verify.sh	rc ok, orph c
 scrub-nested-child	2026-11-04T20:29:26Z	PASS	150	verify.sh	rc 0, destroy 0 errors, 0 surviving state versions; us-east-1; own temp state bucket
 sdk-ccapi-crossref	2026-11-18T22:09:14Z	PASS	136	verify.sh	rc ok, destroy 0 errors, orph clean; Discoverer as the CC type; at f07e65185 (#6579)
 sdk-to-cc-autoroute	2026-11-07T08:40:09Z	PASS	235	verify.sh	PR #5946 f7e8b6577 rc ok, orph clean
-sdk-to-cc-identifier	2026-11-25T06:14:40Z	PASS	75	verify.sh	rc ok, orph clean; rerun at 2d1424d41 (#6976)
+sdk-to-cc-identifier	2026-11-25T06:59:42Z	PASS	70	verify.sh	rc ok, orph clean; rerun at dc81f732f (#6976)
 sdk-unmodelled-nested-route	2026-11-24T14:17:10Z	PASS	513	verify.sh	rc ok, orph clean; zone SDK->CC->SDK same id, distribution OriginHttpVersion on SDK route incl. CC->SDK return
 secret-derived-immutable-names	2026-11-21T02:46:03Z	PASS	1018	verify.sh	rc ok, orph clean, own state bucket, head 812542cb9 (#6736)
 secret-substring-literal	2026-11-14T17:45:48Z	PASS	100	verify.sh	rc ok, orph clean, versions swept
