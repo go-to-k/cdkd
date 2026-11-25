@@ -74,10 +74,10 @@ describe('removal declarations (issue #1160)', () => {
 
   it('a removed UNDECLARED key on an audited type is reported, and the bag is unchanged', () => {
     const desired = { Name: 'n' };
-    const prep = prepareRemovalForUpdate(provider, TYPE, desired, { Name: 'n', RecursiveLoop: 'Allow' });
+    const prep = prepareRemovalForUpdate(provider, TYPE, desired, { Name: 'n', UnresetProp: 'Allow' });
     expect(prep.properties).toBe(desired);
     expect(prep.injected).toEqual([]);
-    expect(prep.unhandled).toEqual(['RecursiveLoop']);
+    expect(prep.unhandled).toEqual(['UnresetProp']);
   });
 
   it('a removed key the type handles in update() is not reported', () => {
@@ -117,8 +117,8 @@ describe('removal declarations (issue #1160)', () => {
   });
 
   it('removalWarning names every property on one line', () => {
-    expect(removalWarning('Fn', 'AWS::Lambda::Function', ['RecursiveLoop'])).toBe(
-      'Fn (AWS::Lambda::Function): property RecursiveLoop was removed from the template; cdkd leaves the current AWS value in place (CloudFormation would reset it to its default).'
+    expect(removalWarning('Fn', 'AWS::Lambda::Function', ['UnresetProp'])).toBe(
+      'Fn (AWS::Lambda::Function): property UnresetProp was removed from the template; cdkd leaves the current AWS value in place (CloudFormation would reset it to its default).'
     );
     expect(removalWarning('Fn\nforged', 'T', ['A', 'B'])).not.toContain('\n');
     expect(removalWarning('Fn', 'T', ['A', 'B'])).toContain('properties A, B were removed');
