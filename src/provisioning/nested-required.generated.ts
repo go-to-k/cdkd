@@ -171,6 +171,7 @@ export const NESTED_REQUIRED: ReadonlyMap<string, ReadonlyMap<string, readonly s
       ['CapacityProviderConfiguration', ['CapacityProviderArn']],
       ['FilesystemConfigurations.CapacityProviderVolume', ['MountPath', 'VolumeName']],
       ['FilesystemConfigurations.EfsAccessPoint', ['AccessPointArn', 'MountPath']],
+      ['FilesystemConfigurations.S3BucketMount', ['Bucket', 'MountPath']],
       ['FilesystemConfigurations.S3FilesAccessPoint', ['AccessPointArn', 'MountPath']],
       ['FilesystemConfigurations.SessionStorage', ['MountPath']],
       ['HooksConfiguration.Build.Warmup', ['Action']],

@@ -369,7 +369,7 @@ const RUNTIME_CASE: TypeCase = {
             PrivateEndpointOverrides: [{ Domain: 'idp.example', PrivateEndpoint: fresh(MANAGED_VPC) }],
           },
         },
-        // The FilesystemConfiguration union's other two members.
+        // The FilesystemConfiguration union's other three members.
         FilesystemConfigurations: [
           {
             S3FilesAccessPoint: {
@@ -378,6 +378,15 @@ const RUNTIME_CASE: TypeCase = {
             },
           },
           { CapacityProviderVolume: { VolumeName: 'vol-1', MountPath: '/mnt/vol' } },
+          {
+            S3BucketMount: {
+              Bucket: 'mount-bucket',
+              MountPath: '/mnt/bucket',
+              Prefix: 'data/',
+              S3BucketOwner: ACCOUNT,
+              S3BucketRegion: 'us-east-1',
+            },
+          },
         ],
       },
       expectedRemovalThrows: RUNTIME_REQUIRED,

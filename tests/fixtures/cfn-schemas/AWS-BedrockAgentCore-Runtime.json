@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::BedrockAgentCore::Runtime",
-  "generatedAt": "2026-11-19",
+  "generatedAt": "2026-11-25",
   "properties": [
     "AgentRuntimeArn",
     "AgentRuntimeArtifact",
@@ -107,9 +107,14 @@
     ],
     "FilesystemConfigurations": [
       "AccessPointArn",
+      "Bucket",
       "CapacityProviderVolume",
       "EfsAccessPoint",
       "MountPath",
+      "Prefix",
+      "S3BucketMount",
+      "S3BucketOwner",
+      "S3BucketRegion",
       "S3FilesAccessPoint",
       "SessionStorage",
       "VolumeName"
@@ -206,6 +211,12 @@
       "EfsAccessPoint",
       "EfsAccessPoint.AccessPointArn",
       "EfsAccessPoint.MountPath",
+      "S3BucketMount",
+      "S3BucketMount.Bucket",
+      "S3BucketMount.MountPath",
+      "S3BucketMount.Prefix",
+      "S3BucketMount.S3BucketOwner",
+      "S3BucketMount.S3BucketRegion",
       "S3FilesAccessPoint",
       "S3FilesAccessPoint.AccessPointArn",
       "S3FilesAccessPoint.MountPath",
@@ -346,11 +357,19 @@
       "VolumeName": "scalar",
       "MountPath": "scalar"
     },
+    "S3BucketMountConfiguration": {
+      "Bucket": "scalar",
+      "MountPath": "scalar",
+      "Prefix": "scalar",
+      "S3BucketOwner": "scalar",
+      "S3BucketRegion": "scalar"
+    },
     "FilesystemConfiguration": {
       "SessionStorage": "object",
       "EfsAccessPoint": "object",
       "S3FilesAccessPoint": "object",
-      "CapacityProviderVolume": "object"
+      "CapacityProviderVolume": "object",
+      "S3BucketMount": "object"
     },
     "RuntimeHooksConfiguration": {
       "Build": "object"
@@ -448,6 +467,10 @@
       "MountPath",
       "VolumeName"
     ],
+    "S3BucketMountConfiguration": [
+      "Bucket",
+      "MountPath"
+    ],
     "LifecycleHook": [
       "Action"
     ],
@@ -514,6 +537,10 @@
     ],
     "FilesystemConfigurations.EfsAccessPoint": [
       "AccessPointArn",
+      "MountPath"
+    ],
+    "FilesystemConfigurations.S3BucketMount": [
+      "Bucket",
       "MountPath"
     ],
     "FilesystemConfigurations.S3FilesAccessPoint": [
@@ -587,6 +614,7 @@
     "FilesystemConfigurations[]": "object",
     "FilesystemConfigurations[].CapacityProviderVolume": "object",
     "FilesystemConfigurations[].EfsAccessPoint": "object",
+    "FilesystemConfigurations[].S3BucketMount": "object",
     "FilesystemConfigurations[].S3FilesAccessPoint": "object",
     "FilesystemConfigurations[].SessionStorage": "object",
     "HooksConfiguration": "object",
@@ -689,6 +717,12 @@
     "FilesystemConfigurations[].EfsAccessPoint": "object",
     "FilesystemConfigurations[].EfsAccessPoint.AccessPointArn": "string",
     "FilesystemConfigurations[].EfsAccessPoint.MountPath": "string",
+    "FilesystemConfigurations[].S3BucketMount": "object",
+    "FilesystemConfigurations[].S3BucketMount.Bucket": "string",
+    "FilesystemConfigurations[].S3BucketMount.MountPath": "string",
+    "FilesystemConfigurations[].S3BucketMount.Prefix": "string",
+    "FilesystemConfigurations[].S3BucketMount.S3BucketOwner": "string",
+    "FilesystemConfigurations[].S3BucketMount.S3BucketRegion": "string",
     "FilesystemConfigurations[].S3FilesAccessPoint": "object",
     "FilesystemConfigurations[].S3FilesAccessPoint.AccessPointArn": "string",
     "FilesystemConfigurations[].S3FilesAccessPoint.MountPath": "string",
