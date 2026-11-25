@@ -238,9 +238,9 @@ A run with both errors and skips prints each remedy separately.
 
 `cdkd deploy` is affected too. Removing a nested stack from your template
 makes the deploy delete it. If a resource in the nested stack then fails to
-delete, the deploy fails and the resources deployed beside it roll back.
-Check that a nested stack destroys cleanly before you remove it from the
-template.
+delete, the deploy keeps the nested stack's entry and exits `2`, as for any
+removed resource whose delete fails (see the list below), and the next deploy
+retries the child's destroy.
 
 ## Skips during `cdkd deploy`
 
@@ -255,7 +255,12 @@ given. cdkd keeps the entry, so the next deploy tries the delete again. Pass
 What the deploy does depends on which delete was skipped:
 
 - **A resource removed from the template.** The deploy warns, keeps the entry
-  and counts it under `Skipped (not deleted)`.
+  and counts it under `Skipped (not deleted)`. A delete AWS refuses (a bucket
+  that still holds objects, a Lambda version an alias still routes to) is
+  handled the same way: the deploy's other changes stay applied, as
+  CloudFormation's cleanup phase keeps them, and every resource the kept one
+  depends on is kept with it. An interrupted delete, or one past its
+  `--resource-timeout`, still fails the deploy.
 - **The old resource of a replacement** (`--replace`, `--recreate-via-*`, or
   an update AWS cannot apply in place). The resource fails. Otherwise the new
   resource would run beside a live old one, or collide with its name.

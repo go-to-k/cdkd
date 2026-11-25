@@ -1187,7 +1187,8 @@ untouched, as is `CustomResourceProvider`'s backing-Lambda-is-gone pre-check —
 those mean the resource IS gone. The deploy-engine / rollback-executor callers
 consume the return value as of issue
 [#1762](https://github.com/go-to-k/cdkd/issues/1762): the template-removal
-DELETE warns and keeps the record, a replacement delete fails the resource, and
+DELETE warns and keeps the record (as it does when that delete throws,
+[#6969](https://github.com/go-to-k/cdkd/issues/6969)), a replacement delete fails the resource, and
 a rollback delete counts as a per-op failure — except at the arm that deletes
 the NEW resource after the old one was already re-created, where the delete is
 best-effort and a skip only warns.

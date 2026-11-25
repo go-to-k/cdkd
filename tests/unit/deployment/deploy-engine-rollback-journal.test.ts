@@ -23,7 +23,13 @@ import {
 } from '../../../src/provisioning/created-resource-sink.js';
 import { classifyFailedOp } from '../../../src/deployment/rollback-executor.js';
 import { markWaitAbandoned } from '../../../src/provisioning/wait-abandoned.js';
-import { ProvisioningError } from '../../../src/utils/error-handler.js';
+import { ProvisioningError, ResourceTimeoutError } from '../../../src/utils/error-handler.js';
+
+// go-to-k/cdkd#6969: a template-removal DELETE that merely fails is kept and the
+// deploy completes, so a case needing a JOURNALED failed DELETE fails it the way
+// that still fails the deploy: its own --resource-timeout fired.
+const deleteDeadline = (logicalId: string, type: string): ResourceTimeoutError =>
+  new ResourceTimeoutError(logicalId, type, 'us-east-1', 1_000, 'DELETE', 1_000);
 import { RESOURCE_NOT_FOUND, type CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 import { ccAlreadyExistsError } from '../_aws-sdk-error.js';
@@ -475,7 +481,7 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
         }
       ).providerRegistry.getProviderFor().provider;
       provider.delete.mockImplementation((logicalId: string) =>
-        logicalId === 'B' ? Promise.reject(new Error('B delete failed')) : Promise.resolve(undefined)
+        logicalId === 'B' ? Promise.reject(deleteDeadline('B', 'AWS::SQS::Queue')) : Promise.resolve(undefined)
       );
       await expect(engine.deploy(stackName, template)).rejects.toThrow();
 
@@ -781,7 +787,7 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       }
     ).providerRegistry.getProviderFor().provider;
     provider.delete.mockImplementation((logicalId: string) =>
-      logicalId === 'D2' ? Promise.reject(new Error('delete failed: D2')) : Promise.resolve(undefined)
+      logicalId === 'D2' ? Promise.reject(deleteDeadline('D2', 'AWS::S3::Bucket')) : Promise.resolve(undefined)
     );
 
     await expect(engine.deploy(stackName, template)).rejects.toThrow();
@@ -830,9 +836,11 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     // D2's deploy-time delete fails; the rollback's delete of A (the created
     // resource) fails too, while D1's completed DELETE is skipped.
     provider.delete.mockImplementation((logicalId: string) =>
-      logicalId === 'D2' || logicalId === 'A'
-        ? Promise.reject(new Error(`delete failed: ${logicalId}`))
-        : Promise.resolve(undefined)
+      logicalId === 'D2'
+        ? Promise.reject(deleteDeadline('D2', 'AWS::S3::Bucket'))
+        : logicalId === 'A'
+          ? Promise.reject(new Error(`delete failed: ${logicalId}`))
+          : Promise.resolve(undefined)
     );
 
     await expect(engine.deploy(stackName, template)).rejects.toThrow();
@@ -4060,7 +4068,7 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
         };
       }
     ).providerRegistry.getProviderFor().provider;
-    provider.delete.mockRejectedValue(new Error('delete failed: D'));
+    provider.delete.mockRejectedValue(deleteDeadline('D', 'AWS::S3::Bucket'));
     await expect(engine.deploy(stackName, template)).rejects.toThrow();
     const seg = journal.appendRollbackJournalSegment.mock.calls[0]![2];
     const failed = seg.failedOperations.find((o: { logicalId: string }) => o.logicalId === 'D');
