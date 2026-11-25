@@ -301,7 +301,7 @@ lambda-snapstart	2026-11-04T06:31:22Z	PASS	190	verify.sh	rc ok, orph clean
 lambda-url-authtype-replay	2026-11-05T03:01:10Z	PASS	130	verify.sh	rc 0, live URL stayed IAM-guarded in all phases; orph clean
 lambda-versioning	2026-11-25T08:13:59Z	PASS	80	standard	destroy 0 err, orph clean (#6977 set)
 lambda-vpc-update-while-pending	2026-11-19T08:29:09Z	PASS	405	verify.sh	rc ok, Pending wait line seen, orph clean
-lambda-web-function-revision-replace	2026-11-25T08:13:59Z	FAIL	270	verify.sh	phase 2 sentinel: old Revision inline delete not refused (deleted OK), 2/2 runs; destroy clean, orph clean (#6977 set); same FAIL on main 752e433a4: stale since #6397 (deletes deferred to cleanup), not #6977
+lambda-web-function-revision-replace	2026-11-25T08:45:26Z	PASS	476	verify.sh	rc ok, orph clean (sentinel accepts cleanup-phase deferral)
 launchtemplate-asg-inplace	2026-11-20T10:54:34Z	PASS	276	verify.sh	PR6652 be63cc056, rc ok, revert-identity kept+no replacement, orph clean (eu-west-1)
 legacy-bucket-name-fallback	2026-11-04T05:26:26Z	PASS	22	standard	standard flow only; legacy-name fallback scenario not exercised (manual scaffold per README); explicit --state-bucket, destroy 1 deleted 0 errors; account clean
 legacy-state-migration	2026-11-04T05:17:34Z	PASS	25	standard	own temp bucket (deleted); legacy v1 key migrated to region key, destroy clean; orph clean

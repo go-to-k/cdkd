@@ -3,10 +3,11 @@
 # (go-to-k/cdkd#4900).
 #
 # A code change replaces the AWS::Lambda::WebFunctionRevision. cdkd creates the
-# new revision, then tries to delete the old one while the endpoint still
-# routes to it, and AWS refuses (409 ConflictException). Before the fix the
-# old revision was left in AWS, untracked; now the delete is retried once the
-# endpoint has moved, so exactly one revision remains.
+# new revision while the endpoint still routes to the old one, which AWS
+# refuses to delete (409 ConflictException). Before #4900 the old revision was
+# left in AWS, untracked. Its delete now waits until the endpoint has moved --
+# the cleanup phase since #6397, or a retry after the DAG for a delete sent
+# inline -- so exactly one revision remains.
 #
 # The code object lives in a versioned bucket this script owns: a new object
 # version changes the revision's create-only BuildConfig.
@@ -230,8 +231,11 @@ assert_route() { # usage: assert_route <phase> <provisionedBy>
   echo "    OK: Revision, Endpoint and RegionalEndpoint recorded provisionedBy=$2 after $1"
 }
 
-# A code change: the revision is replaced, its inline delete is refused while
-# the endpoint routes to it, and the retry deletes it once the endpoint moved.
+# A code change: the revision is replaced, and the old one is deleted only once
+# the endpoint has moved off it. Since go-to-k/cdkd#6397 the delete waits for
+# the cleanup phase; a delete still sent inline is refused while the endpoint
+# routes to the old revision and retried after the DAG (#4900). Either way the
+# old revision must not be deleted before the endpoint moved.
 assert_replaced() { # usage: assert_replaced <phase> <deploy-output> <old-revision>
   local out
   # The summary lines carry ANSI colors between the words the checks match.
@@ -244,10 +248,16 @@ assert_replaced() { # usage: assert_replaced <phase> <deploy-output> <old-revisi
     echo "FAIL: $1: the old revision's delete failed for good (#4900)" >&2
     exit 1
   fi
-  # Sentinel: the inline delete must have been refused and retried, or the
-  # fixture passes without reaching the fix.
-  if ! grep -q 'Could not delete old Revision' <<<"${out}"; then
-    echo "FAIL: $1: the inline delete was not refused -- the retry path was not exercised" >&2
+  # Sentinel: the old revision's delete must have waited -- deferred to the
+  # cleanup phase, or refused inline and retried -- or the fixture passes
+  # without reaching the case where the endpoint still routes to it.
+  if ! grep -qF "Old Revision ($3) is deleted after the rest of the deploy succeeds" <<<"${out}" \
+    && ! grep -q 'Could not delete old Revision' <<<"${out}"; then
+    if grep -qF "Deleting old Revision ($3)" <<<"${out}"; then
+      echo "FAIL: $1: the old revision's delete neither waited for the cleanup phase nor was retried, in a wording this fixture parses -- update the marker" >&2
+    else
+      echo "FAIL: $1: the old revision's delete did not wait for the endpoint to move" >&2
+    fi
     exit 1
   fi
   if ! grep -q "Old Revision ($3) deleted" <<<"${out}"; then
