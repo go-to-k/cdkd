@@ -26,6 +26,7 @@
  */
 import { getPrimaryIdentifierFields } from './cc-import-identifier.js';
 import { COMPOSITE_ID_SEPARATOR } from './composite-id.js';
+import { getPropertyCoverage } from './property-coverage.js';
 import { SECRET_MASK } from '../deployment/secret-redaction.js';
 
 export interface SdkRecordForCc {
@@ -72,6 +73,21 @@ export async function ccIdentifierFromSdkRecord(record: SdkRecordForCc): Promise
     if (own === '' || (at !== fields.length - 1 && own.includes(COMPOSITE_ID_SEPARATOR))) {
       return record.physicalId;
     }
+    // A field the template can set (a record set's `SetIdentifier`, an ECS
+    // service's `Cluster`, a WAF ACL's generated `Name`) is usually UNSET when
+    // missing, not held by the SDK id. It is taken from the SDK id only when
+    // that id visibly is a composite of the known fields plus it: a known
+    // prefix was stripped and no other known value is left in the rest (a
+    // Glue table's `<db>|<table>` qualifies; `Z|name|A` does not). A field
+    // the type mints (a deployment id) is never template-set, so the SDK id
+    // holds it.
+    if (getPropertyCoverage(record.resourceType)?.handled.has(fields[at]!) !== false) {
+      const rest = own.split(COMPOSITE_ID_SEPARATOR);
+      if (own === record.physicalId || values.some((v) => v !== undefined && rest.includes(v))) {
+        return record.physicalId;
+      }
+    }
+    if (values.includes(own)) return record.physicalId;
     values[at] = own;
   }
   return values.join(COMPOSITE_ID_SEPARATOR);

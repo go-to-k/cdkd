@@ -18,6 +18,9 @@ const SCHEMA: Record<string, readonly string[]> = {
   'AWS::EMR::InstanceFleetConfig': ['ClusterId', 'InstanceFleetId'],
   'AWS::EC2::EIP': ['PublicIp', 'AllocationId'],
   'AWS::SQS::Queue': ['QueueUrl'],
+  'AWS::Route53::RecordSet': ['Name', 'HostedZoneId', 'Type', 'SetIdentifier'],
+  'AWS::ECS::Service': ['ServiceArn', 'Cluster'],
+  'AWS::WAFv2::WebACL': ['Name', 'Id', 'Scope'],
 };
 
 beforeEach(() => {
@@ -71,6 +74,25 @@ describe('ccIdentifierFromSdkRecord (#6976)', () => {
     ['a secret reference', 'AWS::ApiGateway::Deployment', 'd', { RestApiId: '{{resolve:ssm:/x}}' }],
     ['a `|` in a known field', 'AWS::ApiGateway::Deployment', 'd', { RestApiId: 'a|b' }],
     ['a `|` in a middle missing field', 'AWS::EC2::EIP', 'a|b', { AllocationId: 'eipalloc-1' }],
+    // The missing field is one the template left unset, not one the SDK id holds.
+    [
+      'a record set without SetIdentifier',
+      'AWS::Route53::RecordSet',
+      'Z1|www.example.com.|A',
+      { HostedZoneId: 'Z1', Name: 'www.example.com.', Type: 'A' },
+    ],
+    [
+      'an ECS service on the default cluster',
+      'AWS::ECS::Service',
+      'arn:aws:ecs:us-east-1:1:service/default/s',
+      { ServiceArn: 'arn:aws:ecs:us-east-1:1:service/default/s' },
+    ],
+    [
+      'an unnamed web ACL',
+      'AWS::WAFv2::WebACL',
+      'arn:aws:wafv2:us-east-1:1:regional/webacl/n/id1',
+      { Id: 'id1', Scope: 'REGIONAL' },
+    ],
   ])('keeps the SDK id for %s', async (_label, resourceType, physicalId, properties) => {
     await expect(ccIdentifierFromSdkRecord({ resourceType, physicalId, properties })).resolves.toBe(
       physicalId

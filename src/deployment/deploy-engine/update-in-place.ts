@@ -589,7 +589,7 @@ export async function updateInPlace(
           movesToCcApi
             ? safeMsg`${logicalId} (${resourceType}) needs a replacement for this change, which cdkd ` +
                 `does not run on the deploy that moves it from its SDK provider to Cloud Control. ` +
-                safeMsg`Re-run with --prefer-sdk-route for the property that moves it, or replace it with --recreate-via-cc-api ${logicalId}.`
+                safeMsg`Re-run with --prefer-sdk-route ${(updateDecision.ccRouteReason?.properties ?? ['<Property>']).map((p) => `${resourceType}:${p}`).join(',')} to keep it on the SDK provider, or replace it with --recreate-via-cc-api ${logicalId}.`
             : safeMsg`${logicalId} (${resourceType}) needs a replacement for this change, which cdkd ` +
                 `does not run on the deploy that moves it from Cloud Control to its SDK provider. ` +
                 safeMsg`Re-run with --pin-cc-api ${logicalId} to replace it through Cloud Control.`,
@@ -660,7 +660,8 @@ export async function updateInPlace(
           logicalId,
           resourceType,
           updateDecision.ccRouteReason.properties,
-          engine.options.parentStackInfo !== undefined
+          engine.options.parentStackInfo !== undefined,
+          currentResource.physicalId !== recordedResource.physicalId
         );
         // go-to-k/cdkd#2319: appended to AWS's own error, the remedy would be
         // dropped with AWS's text when the event recorder reduces that error
