@@ -44,25 +44,41 @@ export async function applyBillingModeUpdate(
   liveIndexes: GlobalSecondaryIndexDescription[],
   desiredIndexByName: Map<string, Record<string, unknown>>,
   preFlipDeletedIndexNames: Set<string>,
-  gsiHandledByBillingFlip: Set<string>
+  gsiHandledByBillingFlip: Set<string>,
+  liveTable: TableDescription | undefined
 ): Promise<void> {
-  if (billingOrThroughputChanged || tableClassChanged) {
+  // The TableClass change goes in a call of its own after this one (below),
+  // so a failure of that call leaves this one applied, and the engine's
+  // retry of the update then finds the billing / capacity change already
+  // live. Re-sending it is a call AWS rejects ("The provisioned throughput
+  // for the table will not change"), which would replace the real failure
+  // (go-to-k/cdkd#6995). Skip the send; the marks below still name the keys,
+  // since AWS no longer holds their pre-deploy values.
+  const sendBilling =
+    billingOrThroughputChanged && !billingChangeAlreadyLive(properties, billingMode, liveTable);
+  if (sendBilling || tableClassChanged) {
     const updateInput: UpdateTableCommandInput = { TableName: physicalId };
     // Always defined now that both sides normalize, so the call can never
     // again go out with only a `TableName` — the empty-UpdateTable shape
     // issue #1553 is about.
-    if (billingOrThroughputChanged) {
+    if (sendBilling) {
       updateInput.BillingMode = billingMode;
     }
-    if (tableClassChanged) {
-      // A removed TableClass property reverts to the DynamoDB default
-      // (STANDARD) — matches CFn, which reverts an absent property to the
-      // type default rather than leaving the old value in place.
-      updateInput.TableClass = normalizeTableClass(properties['TableClass']);
-    }
+    // A removed TableClass property reverts to the DynamoDB default
+    // (STANDARD) — matches CFn, which reverts an absent property to the
+    // type default rather than leaving the old value in place.
+    //
+    // DynamoDB refuses a TableClass change sharing an UpdateTable with
+    // anything else ("TableClass modification must be the only operation in
+    // the request", go-to-k/cdkd#6995), so with a billing / capacity change
+    // in the same deploy it goes in its own call after that one settles —
+    // CloudFormation completes the combined update.
+    const tableClassInput: UpdateTableCommandInput | undefined = tableClassChanged
+      ? { TableName: physicalId, TableClass: normalizeTableClass(properties['TableClass']) }
+      : undefined;
     // PAY_PER_REQUEST rejects ProvisionedThroughput; PROVISIONED requires
     // it, so forward the caps whenever the resolved mode is PROVISIONED.
-    // Gated on billingOrThroughputChanged so a TableClass-only change does
+    // Gated on sendBilling so a TableClass-only change does
     // not re-assert the current throughput — AWS rejects an UpdateTable
     // whose requested throughput equals the table's current value.
     //
@@ -73,11 +89,7 @@ export async function applyBillingModeUpdate(
     // the missing member, and a pre-flight throw on the UPDATE path would
     // fire on a rollback / `drift --revert` replay of a state record the
     // user cannot edit.
-    if (
-      billingOrThroughputChanged &&
-      billingMode !== 'PAY_PER_REQUEST' &&
-      properties['ProvisionedThroughput']
-    ) {
+    if (sendBilling && billingMode !== 'PAY_PER_REQUEST' && properties['ProvisionedThroughput']) {
       // Same reader as `create()` (issue #3147), so the two table-level
       // forwarders and `hasUsableTableCapacity` all answer from one
       // grammar: an absent member takes the 5 default, a DECLARED one
@@ -138,7 +150,7 @@ export async function applyBillingModeUpdate(
       (live) => typeof live.IndexName !== 'string' || !preFlipDeletedIndexNames.has(live.IndexName)
     );
     if (
-      billingOrThroughputChanged &&
+      sendBilling &&
       billingMode === 'PROVISIONED' &&
       liveBillingMode === 'PAY_PER_REQUEST' &&
       flipLiveIndexes.length > 0
@@ -204,9 +216,15 @@ export async function applyBillingModeUpdate(
     ) {
       markUnsettled('ProvisionedThroughput');
     }
-    if (tableClassChanged) markUnsettled('TableClass');
     if (updateInput.GlobalSecondaryIndexUpdates !== undefined) {
       markUnsettled('GlobalSecondaryIndexes');
+    }
+    if (!sendBilling && tableClassInput !== undefined) {
+      // TableClass alone: the one call below is that change.
+      markUnsettled('TableClass');
+      await this.dynamoDBClient.send(new UpdateTableCommand(tableClassInput));
+      await this.waitForTableActiveAfterUpdate(physicalId, TABLE_ACTIVE_WAIT_ATTEMPTS);
+      return;
     }
     await this.dynamoDBClient.send(new UpdateTableCommand(updateInput));
     // UpdateTable is async; wait for ACTIVE so later branches (and any
@@ -231,10 +249,40 @@ export async function applyBillingModeUpdate(
     } else {
       await this.waitForTableActiveAfterUpdate(physicalId, TABLE_ACTIVE_WAIT_ATTEMPTS);
     }
+    if (tableClassInput !== undefined) {
+      markUnsettled('TableClass');
+      await this.dynamoDBClient.send(new UpdateTableCommand(tableClassInput));
+      await this.waitForTableActiveAfterUpdate(physicalId, TABLE_ACTIVE_WAIT_ATTEMPTS);
+    }
     this.logger.debug(
       `Updated BillingMode/ProvisionedThroughput/TableClass on DynamoDB table ${physicalId}`
     );
   }
+}
+
+/**
+ * Whether the live table already holds the billing mode and table-level
+ * capacity this update would send. An unreadable live table, or a desired
+ * capacity that is absent or unusable, answers `false`: the call goes out as
+ * it did before go-to-k/cdkd#6995.
+ */
+function billingChangeAlreadyLive(
+  properties: Record<string, unknown>,
+  billingMode: 'PROVISIONED' | 'PAY_PER_REQUEST',
+  liveTable: TableDescription | undefined
+): boolean {
+  const liveMode = liveTable?.BillingModeSummary?.BillingMode;
+  if (liveMode === undefined || liveMode !== billingMode) return false;
+  if (billingMode === 'PAY_PER_REQUEST') return true;
+  const pt = properties['ProvisionedThroughput'];
+  const read = readCapacityNumber(pt, 'ReadCapacityUnits');
+  const write = readCapacityNumber(pt, 'WriteCapacityUnits');
+  return (
+    read !== undefined &&
+    write !== undefined &&
+    read === liveTable?.ProvisionedThroughput?.ReadCapacityUnits &&
+    write === liveTable?.ProvisionedThroughput?.WriteCapacityUnits
+  );
 }
 
 /**

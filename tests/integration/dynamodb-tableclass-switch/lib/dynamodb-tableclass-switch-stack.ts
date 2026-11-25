@@ -34,5 +34,24 @@ export class DynamodbTableclassSwitchStack extends cdk.Stack {
     });
 
     new cdk.CfnOutput(this, 'TableName', { value: table.tableName });
+
+    // go-to-k/cdkd#6995: the same class switch in the SAME deploy as a
+    // BillingMode flip to PROVISIONED. DynamoDB refuses a TableClass change
+    // sharing an UpdateTable with anything else, so cdkd must send it in a
+    // call of its own; CloudFormation completes this update.
+    const combined = new dynamodb.Table(this, 'CombinedTable', {
+      partitionKey: { name: 'pk', type: dynamodb.AttributeType.STRING },
+      billingMode: toInfrequentAccess
+        ? dynamodb.BillingMode.PROVISIONED
+        : dynamodb.BillingMode.PAY_PER_REQUEST,
+      readCapacity: toInfrequentAccess ? 2 : undefined,
+      writeCapacity: toInfrequentAccess ? 2 : undefined,
+      tableClass: toInfrequentAccess
+        ? dynamodb.TableClass.STANDARD_INFREQUENT_ACCESS
+        : dynamodb.TableClass.STANDARD,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    new cdk.CfnOutput(this, 'CombinedTableName', { value: combined.tableName });
   }
 }
