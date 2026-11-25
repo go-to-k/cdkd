@@ -30,10 +30,14 @@ import type { Construct } from 'constructs';
  *   which already holds its own gateway `IgwC` (a VPC holds one);
  *   `failassoc` moves `RtAssoc` to `RtC`, a route table of ANOTHER VPC.
  *   `VpcC`, `IgwC`, `AttC` and `RtC` are part of every version.
- * - `eip` (go-to-k/cdkd#6990): the instance in `VpcC` is replaced (its
- *   logical id changes, as `userDataCausesReplacement` makes it), so the
- *   Elastic IP association `EipAssoc` is replaced too: AWS allows one
- *   association per Elastic IP, so cdkd deletes the old one first.
+ * - `eip` (go-to-k/cdkd#6990): the instance `Inst` in `VpcC` gets another
+ *   AMI, which replaces it under the same logical id (create-first, the old
+ *   instance deleted in the cleanup phase), as a new AMI does to a CDK
+ *   `ec2.Instance`; so the Elastic IP association `EipAssoc` is replaced too.
+ *   AWS allows one association per Elastic IP, so cdkd deletes the old one
+ *   first. The two AMI ids come from `CDKD_TEST_AMI_A` / `CDKD_TEST_AMI_B`,
+ *   which verify.sh resolves once per run, so a new AMI release mid-run
+ *   replaces nothing.
  *
  * covers: AWS::EC2::EIPAssociation
  * covers: AWS::EC2::EIP
@@ -100,12 +104,15 @@ export class Ec2AssociationReplaceStack extends cdk.Stack {
       availabilityZone: cdk.Fn.select(0, cdk.Fn.getAzs()),
     });
     subnetC.overrideLogicalId('SubnetC');
-    const inst = new ec2.CfnInstance(this, eip ? 'InstB' : 'InstA', {
-      imageId: ec2.MachineImage.latestAmazonLinux2023().getImage(this).imageId,
+    const amiA = process.env.CDKD_TEST_AMI_A;
+    const amiB = process.env.CDKD_TEST_AMI_B;
+    const inst = new ec2.CfnInstance(this, 'Inst', {
+      imageId:
+        (eip ? amiB : amiA) ?? ec2.MachineImage.latestAmazonLinux2023().getImage(this).imageId,
       instanceType: 't3.nano',
       subnetId: subnetC.ref,
     });
-    inst.overrideLogicalId(eip ? 'InstB' : 'InstA');
+    inst.overrideLogicalId('Inst');
     inst.addDependency(attC);
     const address = new ec2.CfnEIP(this, 'Eip', { domain: 'vpc' });
     address.overrideLogicalId('Eip');

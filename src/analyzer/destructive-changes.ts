@@ -157,8 +157,9 @@ function destructiveImpactOf(
  * - a provider replacement (`providerReplacement`: an SNS subscription, a
  *   renamed Route 53 record set) is re-created inside `update()`;
  * - an IAM inline policy never is noted: its record restores it whole;
- * - a gateway attachment or a subnet route table association
- *   (`replacesDeleteFirst`, go-to-k/cdkd#6958) is deleted, then created,
+ * - a gateway attachment, a subnet route table association or an Elastic
+ *   IP association (`replacesDeleteFirst`, go-to-k/cdkd#6958) is deleted,
+ *   then created,
  *   unless the template keeps it (`UpdateReplacePolicy: Retain`).
  *
  * A create-first replacement waits for the cleanup phase. What the plan

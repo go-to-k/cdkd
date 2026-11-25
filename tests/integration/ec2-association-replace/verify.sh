@@ -19,8 +19,10 @@
 #   4. Deploy CDKD_TEST_UPDATE=move,cidr: Net is replaced (10.63.0.0/16), its
 #      gateway is attached to the new VPC with an active default route, and
 #      the old VPC is gone.
-#   4b. CDKD_TEST_UPDATE=move,cidr,eip replaces the instance in VpcC, so its
-#      Elastic IP association EipAssoc is replaced (go-to-k/cdkd#6990): the
+#   4b. CDKD_TEST_UPDATE=move,cidr,eip gives the instance in VpcC another AMI,
+#      which replaces it under the same logical id (create-first, the old one
+#      deleted in the cleanup phase), so its Elastic IP association EipAssoc
+#      is replaced (go-to-k/cdkd#6990): the
 #      diff names it a delete-first replacement, the deploy succeeds, and the
 #      Elastic IP is associated with the new instance. Every later phase keeps
 #      the eip token.
@@ -163,6 +165,21 @@ if [ ! -f "${LOCAL_DIST}" ]; then
   exit 1
 fi
 
+# Two AMIs, resolved once so a new AMI release mid-run replaces nothing.
+CDKD_TEST_AMI_A="$(aws ssm get-parameter --region "${REGION}" \
+  --name /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64 \
+  --query Parameter.Value --output text)"
+CDKD_TEST_AMI_B="$(aws ssm get-parameter --region "${REGION}" \
+  --name /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2 \
+  --query Parameter.Value --output text)"
+for ami in "${CDKD_TEST_AMI_A}" "${CDKD_TEST_AMI_B}"; do
+  case "${ami}" in
+    ami-?*) ;;
+    *) echo "FAIL: an AMI id is '${ami}'" >&2; exit 1 ;;
+  esac
+done
+export CDKD_TEST_AMI_A CDKD_TEST_AMI_B
+
 echo "==> Installing fixture deps"
 if [ ! -d node_modules ]; then
   npm install
@@ -286,13 +303,14 @@ diff_out=$(CDKD_TEST_UPDATE=move,cidr,eip node "${LOCAL_DIST}" diff "${STACK}" -
 diff_rc=$?
 set -e
 diff_txt=$(printf '%s' "${diff_out}" | sed $'s/\033\[[0-9;]*m//g')
-# Sentinel: the replacement line itself, independent of the note.
-if ! grep -q "EipAssoc will be replaced" <<<"${diff_txt}"; then
+# Sentinel: the replacement line itself, independent of the note. The
+# association follows its replaced instance, so it MAY be replaced.
+if ! grep -qE "EipAssoc (will|may) be replaced" <<<"${diff_txt}"; then
   echo "FAIL: cdkd diff --fail-on=destructive listed no replacement of EipAssoc" >&2
   echo "${diff_txt}" >&2
   exit 1
 fi
-if ! grep -q "EipAssoc will be replaced — the deploy deletes the old resource before creating its replacement" <<<"${diff_txt}"; then
+if ! grep -qE "EipAssoc (will|may) be replaced — the deploy deletes the old resource before creating its replacement" <<<"${diff_txt}"; then
   echo "FAIL: EipAssoc's replacement line does not say the old one is deleted first (issue #6990)" >&2
   echo "${diff_txt}" >&2
   exit 1

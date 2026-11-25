@@ -380,24 +380,18 @@ describe('a gateway attachment or a route table association is replaced delete-f
     expect(vi.mocked(provider.create).mock.calls[1]?.[3]).toMatchObject({ replayingState: true });
   });
 
-  it('a refused re-create of an association is rolled back the same way', async () => {
-    shape = SHAPES['association']!;
-    live = new Map([['link-a', { [shape.holder]: 'h-1', [shape.moved]: 'a' }]]);
-    refuseCreates = 1;
-    await expect(deploy({ engine: makeEngine({ noRollback: false }) })).rejects.toThrow();
-    expect(order).toEqual(['delete link-a', 'create link-b refused', 'create link-a-2']);
-    expect(saved.at(-1)!.resources['Link']!.physicalId).toBe('link-a-2');
-  });
-
-  it('a refused re-create of an Elastic IP association is rolled back the same way (#6990)', async () => {
-    shape = SHAPES['eip']!;
-    live = new Map([['link-a', { [shape.holder]: 'h-1', [shape.moved]: 'a' }]]);
-    refuseCreates = 1;
-    await expect(deploy({ engine: makeEngine({ noRollback: false }) })).rejects.toThrow();
-    expect(order).toEqual(['delete link-a', 'create link-b refused', 'create link-a-2']);
-    expect(live.get('link-a-2')).toEqual({ [shape.holder]: 'h-1', [shape.moved]: 'a' });
-    expect(saved.at(-1)!.resources['Link']!.physicalId).toBe('link-a-2');
-  });
+  it.each(['association', 'eip'])(
+    'a refused re-create of an %s is rolled back the same way',
+    async (name) => {
+      shape = SHAPES[name]!;
+      live = new Map([['link-a', { [shape.holder]: 'h-1', [shape.moved]: 'a' }]]);
+      refuseCreates = 1;
+      await expect(deploy({ engine: makeEngine({ noRollback: false }) })).rejects.toThrow();
+      expect(order).toEqual(['delete link-a', 'create link-b refused', 'create link-a-2']);
+      expect(live.get('link-a-2')).toEqual({ [shape.holder]: 'h-1', [shape.moved]: 'a' });
+      expect(saved.at(-1)!.resources['Link']!.physicalId).toBe('link-a-2');
+    }
+  );
 
   it('a failed re-create journals that the old link is already gone', async () => {
     provider.create = vi.fn(async () => {
