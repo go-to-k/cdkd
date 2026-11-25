@@ -232,6 +232,7 @@ getstackoutput-crossregion	2026-11-21T11:36:21Z	PASS	341	verify.sh	rc 0, own buc
 globaltable-delete-protection-preflight	2026-11-15T21:16:54Z	PASS	547	verify.sh	rc ok, orph clean (#6367); us-east-1 + us-west-2
 globaltable-fix-forward-orphan	2026-11-10T17:32:16Z	PASS	180	verify.sh	rc ok, orph clean; own bucket
 globaltable-keyschema-replace	2026-11-22T05:45:00Z	PASS	96	verify.sh	PR6814 2ae78b7f6, us-east-1, rc ok, orph clean
+globaltable-stream-view-type	2026-11-25T20:18:23Z	PASS	126	verify.sh	rc ok, orph clean
 globaltable-template-baseline-drift	2026-11-23T12:11:05Z	PASS	102	verify.sh	PR6876 828e1c821 us-east-1 rc ok, orph clean (duration not timed; see logs)
 glue-securityconfig-replace	2026-11-16T08:22:27Z	PASS	70	verify.sh	rc ok, orph clean (#6374 sweep)
 glue-update-hardening	2026-11-21T15:34:28Z	PASS	291	verify.sh	rc ok, orph clean
