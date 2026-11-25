@@ -172,11 +172,8 @@ export async function updateInPlace(
   // deploy. A normalizer refusing the id throws here, before any call to the
   // resource. It reads the RECORD's properties, not the desired (#6490).
   //
-  // go-to-k/cdkd#6976: the reverse move. A record its SDK provider wrote that
-  // this deploy routes to Cloud Control is addressed by the type's Cloud
-  // Control identifier, which the SDK id often is only one field of; the
-  // success write records it with `provisionedBy: 'cc-api'`, and a failed
-  // update writes nothing, as above.
+  // go-to-k/cdkd#6976: the reverse move, an SDK record routed to Cloud Control,
+  // is addressed (and on success recorded) by the Cloud Control identifier.
   const movesToCcApi =
     updateDecision.provisionedBy === 'cc-api' && recordedResource.provisionedBy !== 'cc-api';
   const currentResource: ResourceState =
