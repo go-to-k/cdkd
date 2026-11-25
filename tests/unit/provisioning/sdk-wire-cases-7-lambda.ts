@@ -201,12 +201,6 @@ const FUNCTION_CASE: TypeCase = {
       variants: { 'Code.S3ObjectStorageMode': 'COPY' },
       expectedSilent: {
         'update-remove:Code': CODE_REQUIRED_ON_UPDATE,
-        // Not a gap: a removed RecursiveLoop keeps its live value by design,
-        // and is the one config property left out of removalHandledInUpdate so
-        // the engine names the removal (removalHandledInUpdate in
-        // lambda-function-provider.ts, lambda-function/update.ts).
-        'update-remove:RecursiveLoop':
-          'a removed RecursiveLoop keeps its live value; left out of removalHandledInUpdate so the engine names it (removalHandledInUpdate in lambda-function-provider.ts, lambda-function/update.ts)',
         'create-vary:PackageType':
           'varied to Image, refused before any call beside CodeSigningConfigArn and RuntimeManagementConfig (refuseImageFunctionUnsupported); the container image bag varies it',
       },

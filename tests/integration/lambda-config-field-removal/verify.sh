@@ -33,10 +33,9 @@
 #       the backfill. The durable/tenancy function must keep its blocks (their
 #       removal is a replacement, not an in-place edit).
 #
-# Issue #1160 rider: `RecursiveLoop: Allow` is set in phase 1 and removed in
-# phase 2. cdkd declares no reset for it, so the phase-2 deploy must print ONE
-# warning naming it, and AWS must still hold `Allow` (the companion removals
-# above prove the update ran).
+# Issue #6996 rider: `RecursiveLoop: Allow` is set in phase 1 and removed in
+# phase 2. CloudFormation resets it to `Terminate`, and so must cdkd, with no
+# "left in place" warning naming it.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -329,28 +328,21 @@ if [ "${CS_AFTER}" != "GONE" ]; then
 fi
 echo "    RuntimeManagementConfig reset to Auto; code-signing config detached"
 
-# --- Phase 2c: issue #1160, the removal cdkd does NOT reset is named ---------
-# Sentinel: any line naming RecursiveLoop as removed must carry the rest of the
-# sentence too, so a reworded warning fails here instead of reading as absent.
+# --- Phase 2c: issue #6996, RecursiveLoop resets to Terminate ----------------
+# CloudFormation resets a removed RecursiveLoop to `Terminate` (measured on a
+# CFn A/B stack), so cdkd declares it and the deploy names no removal as left
+# in place: every property this phase removes is reset.
 WARN_LINES="$(printf '%s\n' "${DEPLOY2_OUT}" | grep -F 'removed from the template' || true)"
-if grep -qF 'RecursiveLoop' <<<"${WARN_LINES}" \
-  && ! grep -qF 'cdkd leaves the current AWS value in place' <<<"${WARN_LINES}"; then
-  echo "FAIL: the RecursiveLoop removal warning changed wording: ${WARN_LINES}" >&2; exit 1
-fi
-if ! grep -qF 'property RecursiveLoop was removed from the template' <<<"${WARN_LINES}"; then
-  echo "FAIL: no warning named the RecursiveLoop removal (got: '${WARN_LINES}')" >&2; exit 1
-fi
-# The six reset fields are DECLARED, so they must not be named as left in place.
-for declared in Timeout MemorySize Description Environment EphemeralStorage TracingConfig; do
+for declared in Timeout MemorySize Description Environment EphemeralStorage TracingConfig RecursiveLoop; do
   if grep -qw "${declared}" <<<"${WARN_LINES}"; then
     echo "FAIL: the removal warning names ${declared}, which cdkd resets: ${WARN_LINES}" >&2; exit 1
   fi
 done
 RL_AFTER="$(recursive_loop)"
-if [ "${RL_AFTER}" != "Allow" ]; then
-  echo "FAIL: RecursiveLoop changed after the removal (want Allow kept, got '${RL_AFTER}')" >&2; exit 1
+if [ "${RL_AFTER}" != "Terminate" ]; then
+  echo "FAIL: RecursiveLoop not reset to Terminate after removal (got '${RL_AFTER}')" >&2; exit 1
 fi
-echo "    RecursiveLoop removal warned and left in place (Allow)"
+echo "    RecursiveLoop reset to Terminate"
 
 # The durable/tenancy function keeps both blocks across the update — a drop
 # there would be a replacement, not an in-place edit (see the stack docstring).

@@ -178,17 +178,17 @@ describe('DeployEngine in-place UPDATE applies removalDefaults (issue #1160)', (
   });
 
   it('a removed UNDECLARED key on an audited type warns once and leaves the bag unchanged', async () => {
-    await deploy({ Role: 'r', RecursiveLoop: 'Allow', Description: 'd' }, { Role: 'r' });
+    await deploy({ Role: 'r', UnresetProp: 'Allow', Description: 'd' }, { Role: 'r' });
 
     expect(provider.update.mock.calls[0]![3]).toEqual({ Role: 'r' });
     expect(removalWarnings()).toEqual([
-      'Fn (AWS::Lambda::Function): properties RecursiveLoop, Description were removed from the template; cdkd leaves the current AWS value in place (CloudFormation would reset it to its default).',
+      'Fn (AWS::Lambda::Function): properties UnresetProp, Description were removed from the template; cdkd leaves the current AWS value in place (CloudFormation would reset it to its default).',
     ]);
   });
 
   it('a failed update prints no removal warning (nothing was left in place by an update)', async () => {
     provider.update.mockRejectedValue(new Error('AccessDenied'));
-    await expect(deploy({ Role: 'r', RecursiveLoop: 'Allow' }, { Role: 'r' })).rejects.toThrow();
+    await expect(deploy({ Role: 'r', UnresetProp: 'Allow' }, { Role: 'r' })).rejects.toThrow();
 
     expect(removalWarnings()).toEqual([]);
   });
@@ -204,7 +204,7 @@ describe('DeployEngine in-place UPDATE applies removalDefaults (issue #1160)', (
 
   it('a type with no removalHandledInUpdate entry is never warned about', async () => {
     provider.removalHandledInUpdate = new Map();
-    await deploy({ Role: 'r', RecursiveLoop: 'Allow' }, { Role: 'r' });
+    await deploy({ Role: 'r', UnresetProp: 'Allow' }, { Role: 'r' });
 
     expect(removalWarnings()).toEqual([]);
   });

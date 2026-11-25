@@ -155,14 +155,16 @@ export class LambdaFunctionProvider implements ResourceProvider {
         // LogFormat: 'Text' is the CFn default (Text format clears the
         // JSON-only ApplicationLogLevel / SystemLogLevel filters).
         ['LoggingConfig', { LogFormat: 'Text' }],
+        // 'Terminate' is the CFn default: a removal turns recursive-loop
+        // detection back on (#6996, measured on a CFn A/B stack).
+        ['RecursiveLoop', 'Terminate'],
       ]),
     ],
   ]);
 
   /**
    * Issue #1160 (`ResourceProvider.removalHandledInUpdate`): every other
-   * property whose removal `update()` handles. `RecursiveLoop` is absent on
-   * purpose: a removal keeps its live value, so the caller names it.
+   * property whose removal `update()` handles.
    */
   removalHandledInUpdate = new Map<string, ReadonlySet<string>>([
     [
