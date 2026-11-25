@@ -1634,6 +1634,11 @@
       "scenarios": []
     },
     {
+      "name": "globaltable-stream-view-type",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "globaltable-template-baseline-drift",
       "annotated": false,
       "scenarios": []
@@ -4403,6 +4408,7 @@
     "globaltable-delete-protection-preflight",
     "globaltable-fix-forward-orphan",
     "globaltable-keyschema-replace",
+    "globaltable-stream-view-type",
     "globaltable-template-baseline-drift",
     "glue-securityconfig-replace",
     "guardduty-detector-update",
