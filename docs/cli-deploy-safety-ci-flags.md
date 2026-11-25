@@ -138,8 +138,9 @@ not exist warns and keeps its `${...}` text.
 
 ## `--allow-unaddressed` (deploy)
 
-A deploy in which no resource failed can still leave a resource alive in AWS
-that cdkd was responsible for. That outcome exits `2`, as `cdkd destroy` does
+A deploy that applied the template can still leave a resource alive in AWS
+that cdkd was responsible for: a delete it skipped, or a resource removed from
+the template whose delete AWS refused. That outcome exits `2`, as `cdkd destroy` does
 for the same case. `--allow-unaddressed` makes it exit `0`.
 
 ```bash
