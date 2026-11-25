@@ -194,7 +194,9 @@ An in-place `UPDATE` also promotes a `NO_CHANGE` dependent that reads one of the
 updated resource's attributes through `Fn::GetAtt` / `Fn::Sub` when that
 attribute can move with the update — it names a property that changed, it is a
 derived attribute of the type (`AWS::EC2::LaunchTemplate`'s
-`LatestVersionNumber` / `DefaultVersionNumber`, issue #985), it is a nested
+`LatestVersionNumber` / `DefaultVersionNumber`, issue #985), it moves only
+with a named property (a DynamoDB table's `StreamArn` with its
+`StreamSpecification`, issue #6999), it is a nested
 stack's `Outputs.<Key>` (issue #3631), or the upstream is a custom resource,
 every attribute of which is its handler's response `Data` (issue #3662) and
 whose `Ref` its handler may move by answering an Update with a new

@@ -154,7 +154,9 @@ export function promoteInPlaceAttributeDependents(
           upstreamType !== undefined &&
           changedProps &&
           [...attrs].some((attr) =>
-            attributeMovedByChangedProperty(upstreamType, attr, changedProps)
+            attributeMovedByChangedProperty(upstreamType, attr, changedProps, (prop) =>
+              recordedAndDesiredOf(changes.get(upstreamId), prop)
+            )
           )
         ) {
           matched = true;
@@ -264,6 +266,19 @@ export function promoteInPlaceAttributeDependents(
     }
   }
   return added;
+}
+
+/**
+ * The recorded and desired values of `prop` in an upstream UPDATE, for the
+ * value tests of `IN_PLACE_UPDATE_ATTR_MOVE_TESTS`; `undefined` when the change
+ * carries no entry for it.
+ */
+export function recordedAndDesiredOf(
+  change: ResourceChange | undefined,
+  prop: string
+): { oldValue: unknown; newValue: unknown } | undefined {
+  const pc = change?.propertyChanges?.find((c) => c.path === prop);
+  return pc === undefined ? undefined : { oldValue: pc.oldValue, newValue: pc.newValue };
 }
 
 /**

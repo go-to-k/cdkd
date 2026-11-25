@@ -1,5 +1,8 @@
 import { isDeepStrictEqual } from 'node:util';
-import { extractGetAttRefs } from '../analyzer/diff-calculator/in-place-promotion.js';
+import {
+  extractGetAttRefs,
+  recordedAndDesiredOf,
+} from '../analyzer/diff-calculator/in-place-promotion.js';
 import {
   IN_PLACE_UPDATE_DERIVED_ATTRS,
   IN_PLACE_UPDATE_DERIVED_ATTR_PREFIXES,
@@ -232,7 +235,13 @@ function inPlaceUpdateMayMove(change: ResourceChange, reads: ReadonlySet<string>
   for (const attr of reads) {
     if (attr === REF_READ) continue;
     if (changed.has(attr) || derived?.has(attr) === true) return true;
-    if (attributeMovedByChangedProperty(type, attr, changed)) return true;
+    if (
+      attributeMovedByChangedProperty(type, attr, changed, (prop) =>
+        recordedAndDesiredOf(change, prop)
+      )
+    ) {
+      return true;
+    }
     if (prefixes?.some((prefix) => attr.startsWith(prefix)) === true) return true;
   }
   return false;
