@@ -154,8 +154,8 @@ drift-sns-sibling-subscription	2026-11-20T20:41:06Z	PASS	260	verify.sh	rc ok, or
 drift-verbatim-readback	2026-11-23T11:19:14Z	PASS	1725	verify.sh	rc ok, orph clean (#6857 6852 normalization audit)
 dsql	2026-11-04T06:43:31Z	PASS	180	verify.sh	rc ok, orph clean, own state bucket; no leaked log groups
 dynamic-ref-cross-region	2026-11-04T21:18:15Z	PASS	175	verify.sh	rc 0, us-east-1+us-west-2, orphans clean in both
-dynamodb-autoscaling	2026-11-19T14:40:15Z	PASS	153	verify.sh	#6626 HEAD 341ad3edc: rc ok, destroy 0 errors, orph clean
-dynamodb-fix-forward-orphan	2026-11-20T19:36:46Z	PASS	172	verify.sh	PR6691 84afba18c; rc ok, orph clean; own bucket
+dynamodb-autoscaling	2026-11-25T18:00:33Z	PASS	155	verify.sh	PR6997 152e7344b pre-review, us-east-1; rc ok, orph clean
+dynamodb-fix-forward-orphan	2026-11-25T18:51:15Z	PASS	180	verify.sh	PR6997 63e602f92 final; rc ok, orph clean; own bucket
 dynamodb-globaltable	2026-11-23T10:10:37Z	PASS	2359	verify.sh	PR6863 dac3948ef, us-east-1 CDKD_INTEG_MULTI_REGION=1 own state bucket, rc 0, orph clean
 dynamodb-globaltable-implied-stream	2026-11-23T10:10:37Z	PASS	343	verify.sh	PR6863 dac3948ef, us-east-1 own state bucket, rc 0, orph clean
 dynamodb-globaltable-replica-settings	2026-11-24T15:36:45Z	PASS	3986	verify.sh	rc ok, orph clean (#6933 sweep)
@@ -167,6 +167,14 @@ dynamodb-streams	2026-11-25T20:02:36Z	PASS	401	verify.sh	rc ok, orph clean; #699
 dynamodb-table-policy-baseline	2026-11-22T05:45:00Z	PASS	190	verify.sh	PR6814 2ae78b7f6, us-east-1, rc ok, orph clean
 dynamodb-tableclass-switch	2026-11-06T16:03:56Z	PASS	75	verify.sh	post-hoc on main after #5841 split; rc ok, orph clean
 dynamodb-ttl-attr-change	2026-11-19T06:52:45Z	PASS	1900	verify.sh	#6600 final: rc ok, destroy 0 errors, orph clean
+dynamodb-gsi-update	2026-11-25T20:24:06Z	PASS	4638	verify.sh	PR6997 63e602f92 final, us-east-1 own state bucket; rc 0, orph clean
+dynamodb-ondemand	2026-11-25T18:47:26Z	PASS	542	verify.sh	PR6997 63e602f92 final, us-east-1; rc ok, orph clean
+dynamodb-sse	2026-11-25T17:59:21Z	PASS	80	verify.sh	PR6997 152e7344b pre-review, us-east-1; rc ok, orph clean
+dynamodb-stream-filter	2026-11-25T18:00:52Z	PASS	175	verify.sh	PR6997 152e7344b pre-review, us-east-1; rc ok, orph clean
+dynamodb-streams	2026-11-25T18:04:08Z	PASS	381	verify.sh	PR6997 152e7344b pre-review, us-east-1; rc ok, orph clean
+dynamodb-table-policy-baseline	2026-11-25T18:02:02Z	PASS	230	verify.sh	PR6997 152e7344b pre-review, us-east-1; rc ok, orph clean
+dynamodb-tableclass-switch	2026-11-25T18:42:11Z	PASS	201	verify.sh	PR6997 63e602f92 final, us-east-1; combined billing+class arm; rc ok, orph clean
+dynamodb-ttl-attr-change	2026-11-25T18:29:59Z	PASS	1915	verify.sh	PR6997 152e7344b pre-review, own state bucket; rc ok, orph clean
 ec2-association-replace	2026-11-25T15:12:38Z	PASS	296	verify.sh	rc ok, orph clean, phase 4b EIP assoc replaced delete-first after AMI change (PR 6993)
 ec2-eip-instance-association	2026-11-24T20:15:56Z	PASS	181	verify.sh	rc ok, orph clean; Phase 3 --no-wait EIP waits for instance
 ec2-instance	2026-11-23T08:55:56Z	PASS	809	verify.sh	rc 0, orph clean (#6867 SsmAssociations ARN/name; merge-base b70da242f)
