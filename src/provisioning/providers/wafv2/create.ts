@@ -8,7 +8,6 @@ import {
   type Scope,
   type CaptchaConfig,
   type ChallengeConfig,
-  type CustomResponseBody,
   type AssociationConfig,
   type DataProtectionConfig,
   type OnSourceDDoSProtectionConfig,
@@ -24,7 +23,12 @@ import { ProvisioningError } from '../../../utils/error-handler.js';
 import { generatedNameFor } from '../../resource-name.js';
 import { refuseMalformedDesiredTags } from '../../tag-list.js';
 import type { ResourceCreateResult, CreateContext } from '../../../types/resource.js';
-import { sanitizeDescription, toSdkRules, webAclAttributes } from './shared.js';
+import {
+  customResponseBodiesForWire,
+  sanitizeDescription,
+  toSdkRules,
+  webAclAttributes,
+} from './shared.js';
 
 /**
  * Create a WAFv2 WebACL
@@ -66,9 +70,7 @@ export async function create(
         Rules: toSdkRules(properties['Rules']),
         VisibilityConfig: properties['VisibilityConfig'] as VisibilityConfig,
         ...(tags.length > 0 && { Tags: tags }),
-        CustomResponseBodies: properties['CustomResponseBodies'] as
-          | Record<string, CustomResponseBody>
-          | undefined,
+        CustomResponseBodies: customResponseBodiesForWire(properties['CustomResponseBodies']),
         CaptchaConfig: properties['CaptchaConfig'] as CaptchaConfig | undefined,
         ChallengeConfig: properties['ChallengeConfig'] as ChallengeConfig | undefined,
         TokenDomains: properties['TokenDomains'] as string[] | undefined,

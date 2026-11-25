@@ -23,6 +23,9 @@
 #   3  CDKD_TEST_WAF_REMOVAL=true: both dropped from the template. Data
 #      protection is cleared and the DDoS mode leaves ALWAYS_ON (whole
 #      replacement)
+#   3b the default action flipped to Block out of band; drift reports it and
+#      `drift --revert` restores Allow (#6986: the revert used to send the
+#      readback's empty CustomResponseBodies map, which UpdateWebACL refuses)
 #   4  destroy; assert every resource and the state file are gone
 #
 # PR #6884 rides the same phases with AnalyticsConfig: CROSS_REGION on the
@@ -311,6 +314,48 @@ fi
 echo "    ok: ALBLowReputationMode left ALWAYS_ON (now ${DDOS_MODE})"
 assert_acl "AnalyticsConfig reset to the scope default" '.AnalyticsConfig' 'null'
 drift_clean "drift clean after the removal" CDKD_TEST_WAF_REMOVAL=true
+
+# --- Phase 3b: drift --revert (go-to-k/cdkd#6986) -----------------------------
+# The template declares no CustomResponseBodies, so the deploy-time readback
+# records `{}`, and `--revert` sends its desired bag from that readback. Before
+# #6986 UpdateWebACL refused the empty map (ValidationException) and the
+# out-of-band default action stayed.
+echo "==> Phase 3b: flip the default action to Block out of band, then drift --revert"
+REVERT_ID="$(web_acl_id)"
+REVERT_TMP="${TMPDIR:-/tmp}/cdkd-6986-waf-update.$$.json"
+aws wafv2 get-web-acl --scope REGIONAL --region "${REGION}" \
+  --name "${WEB_ACL_NAME}" --id "${REVERT_ID}" --output json \
+  | jq '{Name: .WebACL.Name, Scope: "REGIONAL", Id: .WebACL.Id, LockToken: .LockToken,
+         DefaultAction: {Block: {}}, Rules: .WebACL.Rules, VisibilityConfig: .WebACL.VisibilityConfig}' \
+  > "${REVERT_TMP}"
+aws wafv2 update-web-acl --region "${REGION}" --cli-input-json "file://${REVERT_TMP}" >/dev/null
+rm -f "${REVERT_TMP}"
+assert_acl "default action flipped out of band" '.DefaultAction' '{"Block":{}}'
+assert_acl "no custom response bodies on the web ACL" '(.CustomResponseBodies // {} | length)' '0'
+# The arm is vacuous unless the revert's baseline really holds the empty map.
+OBSERVED_BODIES="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" \
+  | jq -c '.resources.WebAcl.observedProperties.CustomResponseBodies')"
+if [ "${OBSERVED_BODIES}" != '{}' ]; then
+  echo "FAIL: the WebAcl observedProperties.CustomResponseBodies is '${OBSERVED_BODIES}', expected '{}' -- the revert arm would not exercise #6986" >&2
+  exit 1
+fi
+echo "    ok: the revert baseline holds CustomResponseBodies {}"
+
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}"
+DRIFT_RC=$?
+set -e
+if [ "${DRIFT_RC}" -ne 1 ]; then
+  echo "FAIL: drift after the out-of-band default action flip exited ${DRIFT_RC}, expected 1 (drift detected)" >&2
+  exit 1
+fi
+echo "    ok: drift reported the flip (exit 1)"
+
+node "${LOCAL_DIST}" drift "${STACK}" --revert --yes \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}"
+assert_acl "default action restored by --revert" '.DefaultAction' '{"Allow":{}}'
+drift_clean "drift clean after the revert" CDKD_TEST_WAF_REMOVAL=true
 
 # --- Phase 4: destroy --------------------------------------------------------
 WEB_ACL_ID="$(web_acl_id)"
