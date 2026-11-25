@@ -290,7 +290,13 @@ export async function deleteInIdLogScope(
     );
     const { EMRClusterProvider } = await import('../providers/emr-cluster-provider.js');
     return withIndeterminateGuard(
-      await new EMRClusterProvider().delete(logicalId, physicalId, resourceType, properties, context),
+      await new EMRClusterProvider().delete(
+        logicalId,
+        physicalId,
+        resourceType,
+        properties,
+        context
+      ),
       indeterminateGuard
     );
   }

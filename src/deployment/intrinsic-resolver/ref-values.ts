@@ -626,8 +626,15 @@ export function glueTableRefFromPhysicalId(
     // A table Cloud Control created is recorded under its identifier,
     // `<CatalogId>|<DatabaseName>|<Name>` (#6975).
     const catalogId = stateLookup(['CatalogId'], { preferCleanValue: true });
-    if (typeof catalogId === 'string' && typeof anchor === 'string' && !carriesSecretMask(catalogId)) {
-      const ccTableName = segmentAfterAnchor(physicalId, `${catalogId}${COMPOSITE_ID_SEPARATOR}${anchor}`);
+    if (
+      typeof catalogId === 'string' &&
+      typeof anchor === 'string' &&
+      !carriesSecretMask(catalogId)
+    ) {
+      const ccTableName = segmentAfterAnchor(
+        physicalId,
+        `${catalogId}${COMPOSITE_ID_SEPARATOR}${anchor}`
+      );
       if (ccTableName !== undefined) return ccTableName;
     }
   }
