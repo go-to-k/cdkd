@@ -1,4 +1,5 @@
 import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
+import { ccIdentifierFromSdkRecord } from '../../provisioning/cc-identifier-from-sdk.js';
 import { identityWarner } from '../../provisioning/recorded-identity.js';
 import { cdkdRemedy, proseQuoted } from '../../utils/pasteable-command.js';
 import { revertUpdatePolicyContext } from '../deploy-engine/update-policy.js';
@@ -603,12 +604,19 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
   );
   // See {@link updateWithRollbackRetry} for why this is not a bare
   // `provider.update()` and not a bare `withRetry` either.
+  // go-to-k/cdkd#6976: a revert routed to Cloud Control over a record its
+  // SDK provider still owns (the forward update that moved it failed) is
+  // addressed by the Cloud Control identifier, as the forward update was.
+  const revertAddressedId =
+    revertVia === 'cc-api' && current.provisionedBy !== 'cc-api'
+      ? await ccIdentifierFromSdkRecord(current)
+      : current.physicalId;
   const revertResult = await inOriginalPrefix(() =>
     updateWithRollbackRetry(
       provider,
       [
         op.logicalId,
-        current.physicalId,
+        revertAddressedId,
         op.resourceType,
         desiredProps ?? {},
         // The PREVIOUS side is deliberately NOT guarded by issue #3203's

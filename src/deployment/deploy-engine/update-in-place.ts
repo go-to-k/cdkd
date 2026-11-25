@@ -37,6 +37,7 @@ import { withUnchangedSecretPrincipalLists } from '../../provisioning/iam-policy
 import { withRecreatedAttachmentsDropped } from '../child-of-recreated-parent.js';
 import { isInterruptedWaitError } from '../../provisioning/interrupt-watch.js';
 import { sdkAddressedRecord } from '../../provisioning/provider-registry.js';
+import { ccIdentifierFromSdkRecord } from '../../provisioning/cc-identifier-from-sdk.js';
 import { sdkMigrationNotice } from './update-in-place/sdk-migration-notice.js';
 import { ccAutoRouteUpdateFailureRemedy } from '../../provisioning/cc-autoroute-update-remedy.js';
 import {
@@ -170,10 +171,25 @@ export async function updateInPlace(
   // record keeps its Cloud Control id and layer for the rollback and the next
   // deploy. A normalizer refusing the id throws here, before any call to the
   // resource. It reads the RECORD's properties, not the desired (#6490).
+  //
+  // go-to-k/cdkd#6976: the reverse move. A record its SDK provider wrote that
+  // this deploy routes to Cloud Control is addressed by the type's Cloud
+  // Control identifier, which the SDK id often is only one field of; the
+  // success write records it with `provisionedBy: 'cc-api'`, and a failed
+  // update writes nothing, as above.
+  const movesToCcApi =
+    updateDecision.provisionedBy === 'cc-api' && recordedResource.provisionedBy !== 'cc-api';
   const currentResource: ResourceState =
     updateDecision.sdkMigration === true
       ? await sdkAddressedRecord(recordedResource, logicalId, engine.stackRegion)
-      : recordedResource;
+      : movesToCcApi
+        ? { ...recordedResource, physicalId: await ccIdentifierFromSdkRecord(recordedResource) }
+        : recordedResource;
+  if (movesToCcApi && currentResource.physicalId !== recordedResource.physicalId) {
+    engine.logger.info(
+      safeMsg`  ${logicalId}: moving to Cloud Control, addressed by its Cloud Control identifier`
+    );
+  }
   if (updateDecision.sdkMigration === true) {
     const idPreserved = currentResource.physicalId === recordedResource.physicalId;
     engine.logger.info(sdkMigrationNotice(logicalId, resourceType, idPreserved));
@@ -562,15 +578,21 @@ export async function updateInPlace(
     // Control one, so a same-name replacement would read as renamed and be
     // undone create-first, colliding with the live service. On Cloud Control
     // (`--pin-cc-api`) the replacement keeps one id form throughout.
+    // go-to-k/cdkd#6976: the same holds for the deploy that moves it the other
+    // way, onto Cloud Control under a translated id.
     if (
       (ccUnsupported || replaceOptIn) &&
       currentResource.physicalId !== recordedResource.physicalId
     ) {
       throw markNonRetryable(
         new CdkdError(
-          safeMsg`${logicalId} (${resourceType}) needs a replacement for this change, which cdkd ` +
-            `does not run on the deploy that moves it from Cloud Control to its SDK provider. ` +
-            safeMsg`Re-run with --pin-cc-api ${logicalId} to replace it through Cloud Control.`,
+          movesToCcApi
+            ? safeMsg`${logicalId} (${resourceType}) needs a replacement for this change, which cdkd ` +
+                `does not run on the deploy that moves it from its SDK provider to Cloud Control. ` +
+                safeMsg`Re-run with --prefer-sdk-route for the property that moves it, or replace it with --recreate-via-cc-api ${logicalId}.`
+            : safeMsg`${logicalId} (${resourceType}) needs a replacement for this change, which cdkd ` +
+                `does not run on the deploy that moves it from Cloud Control to its SDK provider. ` +
+                safeMsg`Re-run with --pin-cc-api ${logicalId} to replace it through Cloud Control.`,
           'SDK_MIGRATION_REPLACEMENT_REFUSED',
           updateError instanceof Error ? updateError : undefined
         )
