@@ -254,14 +254,14 @@ assert_replaced() { # usage: assert_replaced <phase> <deploy-output> <old-revisi
   if ! grep -qF "Old Revision ($3) is deleted after the rest of the deploy succeeds" <<<"${out}" \
     && ! grep -q 'Could not delete old Revision' <<<"${out}"; then
     if grep -qF "Deleting old Revision ($3)" <<<"${out}"; then
-      echo "FAIL: $1: the old revision's delete neither waited for the cleanup phase nor was retried, in a wording this fixture parses -- update the marker" >&2
+      echo "FAIL: $1: the old revision was deleted with neither the cleanup-phase deferral nor the inline retry line -- an inline delete before the endpoint moved, or a reworded marker (update it)" >&2
     else
-      echo "FAIL: $1: the old revision's delete did not wait for the endpoint to move" >&2
+      echo "FAIL: $1: no line deferring, retrying or deleting the old revision -- the deferral or delete wording changed (update the markers), or the delete was never sent" >&2
     fi
     exit 1
   fi
   if ! grep -q "Old Revision ($3) deleted" <<<"${out}"; then
-    echo "FAIL: $1: no retry line deleting $3" >&2
+    echo "FAIL: $1: no line deleting $3" >&2
     exit 1
   fi
 }
@@ -470,7 +470,7 @@ echo "    OK: Revision and Endpoint still recorded provisionedBy=cc-api"
 assert_serves v1
 
 # The revision replacement every later code change must repeat: replaced, the
-# inline delete refused and retried, exactly one revision left, the old one
+# old one's delete waiting until the endpoint moved, exactly one revision left, the old one
 # gone, the endpoints not recreated. Prints the remaining revision.
 replace_revision() { # usage: replace_revision <phase> <marker> <old-revision>
   local version out t0 rev
