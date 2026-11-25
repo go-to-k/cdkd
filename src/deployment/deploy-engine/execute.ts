@@ -1,7 +1,7 @@
 import { redactOutputs, rememberRecoverableMaskedOutputs } from './masking.js';
 import { phaseScopeForStack, timePhase } from '../../utils/phase-timings.js';
 import { writeRollbackJournalSegment } from './rollback.js';
-import { warnUnretriedReplacedDeletes } from './replacement.js';
+import { deleteDeferredUsersOfRemovals, warnUnretriedReplacedDeletes } from './replacement.js';
 import { queueNestedCleanup, runCleanupPhase } from './nested-cleanup.js';
 import {
   NestedCleanupQueue,
@@ -41,6 +41,7 @@ import {
   buildDeletionDependencies,
   hasPending,
   nearestMemberDependencies,
+  recordedDependencies,
 } from './dependencies.js';
 import { orderInlinePolicyWriters } from '../inline-policy-claims.js';
 import { withSharedDrainBudget } from '../drain-budget.js';
@@ -420,6 +421,16 @@ async function executeDeploymentBody(
 
     // Step 2: Process DELETE operations in reverse dependency order.
     if (deleteChanges.size > 0) {
+      // go-to-k/cdkd#6977: an old copy still using a removed resource goes first.
+      await deleteDeferredUsersOfRemovals(
+        engine.replacementRun,
+        engine.replacementDeps(),
+        stackName,
+        actualCounts,
+        deleteChanges,
+        recordedDependencies(currentState.resources)
+      );
+
       engine.logger.info(safeMsg`${red('Deleting')} ${red(deleteChanges.size)} resource(s)`);
 
       const deleteDeps = buildDeletionDependencies(deleteChanges, currentState, engine.logger);

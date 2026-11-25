@@ -21,6 +21,12 @@ top-level deploy that fails after a child finished still finds the child's old
 resource, and its revert of the child adopts it again.
 The plan labels such an operation `reverse-replace`.
 
+One old resource is deleted earlier: one that still uses a resource the deploy
+removes from the template, such as an old Lambda alias pointing at the removed
+old version. It goes right before the removal deletes, after every create and
+update. When the deploy fails after that, the rollback finds it gone and
+creates it again.
+
 The same wait applies to a record holding a NoEcho value and to a resource
 under `UpdateReplacePolicy: Snapshot`, whose final snapshot is taken when the
 old resource is deleted, after the rest of the deploy succeeds:
