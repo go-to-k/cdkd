@@ -36,7 +36,9 @@ export function ccAutoRouteUpdateFailureRemedy(
   logicalId: string,
   resourceType: string,
   autoRoutedProperties: readonly string[],
-  nestedChild = false
+  nestedChild = false,
+  /** go-to-k/cdkd#6976: the update was sent the Cloud Control identifier built from the record. */
+  idTranslated = false
 ): string {
   const id = LOGICAL_ID_FORMAT.test(logicalId) ? logicalId : '<logicalId>';
   const type = TYPE_FORMAT.test(resourceType) ? resourceType : '<Type>';
@@ -48,9 +50,11 @@ export function ccAutoRouteUpdateFailureRemedy(
   const preferSdk = `keep it on the SDK provider without sending ${them} with --prefer-sdk-route ${override}`;
   return (
     `\nThis update moved the resource from its SDK provider to Cloud Control API, ` +
-    `because the SDK provider does not handle ${shown}. Cloud Control addresses it by ` +
-    `the physical id the SDK provider recorded, and for some types that is not an ` +
-    `identifier Cloud Control accepts. ` +
+    `because the SDK provider does not handle ${shown}. ` +
+    (idTranslated
+      ? `cdkd addressed it by the Cloud Control identifier it built from the record. `
+      : `Cloud Control addresses it by the physical id the SDK provider recorded, and for ` +
+        `some types that is not an identifier Cloud Control accepts. `) +
     (nestedChild
       ? `It is in a nested stack, which --recreate-via-cc-api cannot address: ` +
         `${preferSdk}, or remove ${them} from the template.`

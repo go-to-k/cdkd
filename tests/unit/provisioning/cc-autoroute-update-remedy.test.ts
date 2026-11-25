@@ -52,4 +52,12 @@ describe('ccAutoRouteUpdateFailureRemedy (#4904)', () => {
     expect(isNameCollisionError(full)).toBe(false);
     expect(isRetryableTransientError(new Error(full), full)).toBe(false);
   });
+
+  it('says the Cloud Control identifier was sent when the move translated the id (#6976)', () => {
+    const note = ccAutoRouteUpdateFailureRemedy('Dep', 'AWS::ApiGateway::Deployment', ['StageDescription'], false, true);
+    expect(note).toContain('cdkd addressed it by the Cloud Control identifier it built from the record');
+    expect(note).not.toContain('the physical id the SDK provider recorded');
+    expect(isNotFoundMessage(note)).toBe(false);
+    expect(isRetryableTransientError(new Error(note), note)).toBe(false);
+  });
 });
