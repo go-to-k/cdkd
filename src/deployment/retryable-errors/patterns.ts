@@ -735,6 +735,24 @@ const OTHER_TRANSIENT_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // resources on each run, which is the signature of contention rather than of
   // a bad request. Issue #1607.
   'Unable to complete operation due to concurrent modification',
+  // EventBridge (the `eventsv2` API behind `AWS::EventsV2::*`) can refuse a
+  // `CreateSubscriber` that overlaps another one on the same event bus with an
+  // HTTP 409 asking for a retry ("This resource was modified concurrently.
+  // Please retry your request."). cdkd creates sibling Subscribers of one bus
+  // in parallel by design, so their creates can contend on the service side.
+  // The contention is load-shaped, so the entry belongs on
+  // the exponential half, like the API Gateway v2 one above. Observed live
+  // (2026-11-24, ap-northeast-1): on v0.368.1, six Subscribers on one bus
+  // failed 4 of 4 deploys, the refused set moving between runs, while one
+  // deploy of the same six created serially succeeded; parallel
+  // `create-subscriber` CLI calls reproduce the refusal without cdkd (as
+  // `ConcurrentModificationException`). With this entry, on a build of
+  // 2d00bb610, 3 of 3 deploys succeeded with 1, 2 and 6 matching retry lines.
+  // The match names the contention rather than the status code: another 409
+  // seen from the same service ("The event bus cannot be deleted because it
+  // has one or more subscribers ...") is a dependency refusal and stays
+  // unmatched. Issue #6944.
+  'This resource was modified concurrently',
 ];
 
 /**
