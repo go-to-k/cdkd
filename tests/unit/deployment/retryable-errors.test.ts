@@ -484,8 +484,10 @@ describe('isRetryableTransientError', () => {
         'UPDATE failed for LgSubD4ECBAA9: Invalid request provided: AWS::Logs::SubscriptionFilter. Could not execute the lambda function. Make sure you have given CloudWatch Logs permission to execute your function. (Service: CloudWatchLogs, Status Code: 400, Request ID: ab38a6b0-cca6-4b4d-b161-14a8ab4370f2) (SDK Attempt Count: 1)';
       expect(isRetryableTransientError(new Error(lambdaDest), lambdaDest)).toBe(true);
       expect(isIamPropagationError(lambdaDest)).toBe(true);
-      // Another service's "could not execute" wording stays unmatched.
-      const other = 'Could not execute the lambda function. The function returned an error.';
+      // The CloudWatch Logs clause carries the match: the same first sentence
+      // naming another service's permission stays unmatched.
+      const other =
+        'Could not execute the lambda function. Make sure you have given Kinesis Firehose permission to execute your function.';
       expect(isRetryableTransientError(new Error(other), other)).toBe(false);
     });
 
