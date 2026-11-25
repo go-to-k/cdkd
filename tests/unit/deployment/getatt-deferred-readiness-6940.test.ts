@@ -95,6 +95,25 @@ describe('Fn::GetAtt waits for a deferred readiness (#6940)', () => {
     expect(deferred.awaitReady).toHaveBeenCalledTimes(1);
   });
 
+  it("a just-written role's recorded Arn and RoleId never wait for its IAM settle (#6967)", async () => {
+    // The role reported an `iam-propagation` readiness: only a custom resource
+    // downstream waits for it. A function's `Role: !GetAtt Role.Arn` reads the
+    // record and proceeds.
+    const deferred: Deferred = {
+      awaitReady: vi.fn(() => Promise.resolve()),
+      readAfterReady: vi.fn(async (): Promise<StaleAttributeHealOutcome> => ({ kind: 'not-attempted' })),
+    };
+    const context = contextFor(
+      'AWS::IAM::Role',
+      'handler-role',
+      { Arn: 'arn:aws:iam::123456789012:role/handler-role', RoleId: 'AROA1' },
+      deferred
+    );
+    expect(await resolveGetAtt(context, 'Arn')).toBe('arn:aws:iam::123456789012:role/handler-role');
+    expect(await resolveGetAtt(context, 'RoleId')).toBe('AROA1');
+    expect(deferred.awaitReady).not.toHaveBeenCalled();
+  });
+
   it('a value that exists at once (a constructed ARN) never waits', async () => {
     const deferred: Deferred = {
       awaitReady: vi.fn(() => Promise.resolve()),

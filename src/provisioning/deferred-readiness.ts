@@ -53,6 +53,17 @@ export interface DeferredReadinessEntry {
   readonly inContext: <R>(fn: () => R) => R;
   /** What the wait is for; words the line its first need prints. Absent: `skipped-wait`. */
   readonly kind?: ReadinessKind;
+  /**
+   * For a wait with a known end (an IAM settle): how long it still has left,
+   * `0` once it would resolve at once. Absent: unknown.
+   */
+  readonly remainingMs?: () => number;
+}
+
+/** What {@link deferReadiness} records beside the wait. */
+export interface DeferReadinessOptions {
+  readonly kind?: ReadinessKind;
+  readonly remainingMs?: () => number;
 }
 
 /**
@@ -152,7 +163,7 @@ function anchoredScope(
 
 /**
  * Report a readiness wait the provider skipped under `--no-wait` (or, with
- * `kind`, another readiness the deploy runs only where it is needed). Anchored
+ * `options.kind`, another readiness the deploy runs only where it is needed). Anchored
  * to the operation the engine bound: a call for another logical id or type (a
  * helper provisioning something else) reports nothing.
  */
@@ -161,12 +172,17 @@ export function deferReadiness(
   resourceType: string,
   physicalId: string,
   wait: ReadinessWait,
-  kind: ReadinessKind = 'skipped-wait'
+  options: DeferReadinessOptions = {}
 ): void {
   if (typeof physicalId !== 'string' || physicalId === '') return;
   const scope = anchoredScope(logicalId, resourceType);
   if (scope === undefined) return;
-  scope.deferred.set(physicalId, { wait, inContext: AsyncLocalStorage.snapshot(), kind });
+  scope.deferred.set(physicalId, {
+    wait,
+    inContext: AsyncLocalStorage.snapshot(),
+    kind: options.kind ?? 'skipped-wait',
+    ...(options.remainingMs !== undefined && { remainingMs: options.remainingMs }),
+  });
 }
 
 /**

@@ -45,6 +45,7 @@ export function deferIamPropagationSettle(
   physicalId: string
 ): void {
   const settledAt = iamPropagationSettleClock.now() + IAM_PROPAGATION_SETTLE_MS;
+  const remainingMs = (): number => Math.max(0, settledAt - iamPropagationSettleClock.now());
   deferReadiness(
     logicalId,
     resourceType,
@@ -52,9 +53,9 @@ export function deferIamPropagationSettle(
     (signal) =>
       abortableSleep(
         (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-        Math.max(0, settledAt - iamPropagationSettleClock.now()),
+        remainingMs(),
         signal
       ),
-    'iam-propagation'
+    { kind: 'iam-propagation', remainingMs }
   );
 }

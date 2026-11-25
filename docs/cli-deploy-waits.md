@@ -306,8 +306,9 @@ then is denied. Under the CDK `Provider` framework that denial costs up to five
 minutes, because its `onEvent` waits for the user handler before giving up.
 Nothing else waits for
 an IAM write: a function using the role, or a `Fn::GetAtt` of its `Arn`,
-proceeds at once. The deploy prints one `Waiting for IAM to propagate` line
-per custom resource that waits.
+proceeds at once. The custom resource that starts a wait with time still left
+prints one `Waiting for IAM to propagate` line naming those writes; a write
+whose 10 seconds have already passed holds nothing and is not named.
 
 The wait belongs to that invoke only. An ordinary Lambda create or update
 returns as soon as the API call returns. When a deploy updates a function that

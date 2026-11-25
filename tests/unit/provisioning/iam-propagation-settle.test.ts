@@ -54,13 +54,16 @@ describe('deferIamPropagationSettle', () => {
     vi.useRealTimers();
   });
 
-  it('reports an iam-propagation wait for the physical id, unstarted', () => {
+  it('reports an iam-propagation wait for the physical id, unstarted', async () => {
     const scope = scopeFor('HandlerPolicy', 'AWS::IAM::Policy');
-    void withDeferredReadinessScope(scope, async () =>
+    await withDeferredReadinessScope(scope, async () =>
       deferIamPropagationSettle('HandlerPolicy', 'AWS::IAM::Policy', 'handler-policy')
     );
     expect([...scope.deferred.keys()]).toStrictEqual(['handler-policy']);
     expect(scope.deferred.get('handler-policy')!.kind).toBe('iam-propagation');
+    expect(scope.deferred.get('handler-policy')!.remainingMs!()).toBe(IAM_PROPAGATION_SETTLE_MS);
+    now += IAM_PROPAGATION_SETTLE_MS + 1;
+    expect(scope.deferred.get('handler-policy')!.remainingMs!()).toBe(0);
   });
 
   it('does nothing outside a deploy operation, or for another logical id', async () => {
@@ -122,13 +125,19 @@ describe('deferIamPropagationSettle', () => {
 describe('the wait line names IAM propagation, not --no-wait', () => {
   type LogFn = (message: string, ...args: unknown[]) => void;
 
-  function runWith(info: LogFn, debug: LogFn) {
+  function runWith(
+    info: LogFn,
+    debug: LogFn,
+    options: { remainingMs?: number; mask?: (logicalId: string, text: string) => string } = {}
+  ) {
     const run = new DeferredReadinessRun({
       logger: { info, debug },
       region: 'us-east-1',
       budget: () => ({ warnAfterMs: 60_000, timeoutMs: 120_000 }),
       interrupted: () => false,
+      ...(options.mask && { mask: options.mask }),
     });
+    const remainingMs = options.remainingMs ?? 5_000;
     for (const [id, type] of [
       ['HandlerRole', 'AWS::IAM::Role'],
       ['HandlerPolicy', 'AWS::IAM::Policy'],
@@ -138,7 +147,15 @@ describe('the wait line names IAM propagation, not --no-wait', () => {
         type,
         'CREATE',
         new Map([
-          [`${id}-phys`, { wait: async () => undefined, inContext: (fn) => fn(), kind: 'iam-propagation' }],
+          [
+            `${id}-phys`,
+            {
+              wait: async () => undefined,
+              inContext: (fn) => fn(),
+              kind: 'iam-propagation',
+              remainingMs: () => remainingMs,
+            },
+          ],
         ])
       );
     }
@@ -165,6 +182,32 @@ describe('the wait line names IAM propagation, not --no-wait', () => {
     );
   });
 
+  it('prints nothing when every settle has already passed: nothing waits', async () => {
+    const info = vi.fn<LogFn>();
+    const run = runWith(info, vi.fn<LogFn>(), { remainingMs: 0 });
+    await run.awaitAll(['HandlerRole', 'HandlerPolicy'], 'custom resource Seed is invoked after it');
+    expect(info).not.toHaveBeenCalled();
+  });
+
+  it("masks the line with each named settle's secrets", async () => {
+    const info = vi.fn<LogFn>();
+    const masked: string[] = [];
+    const mask = (logicalId: string, text: string): string => {
+      masked.push(logicalId);
+      return logicalId === 'HandlerPolicy' ? text.replaceAll('prod-billing-x7', '***') : text;
+    };
+    const run = runWith(info, vi.fn<LogFn>(), { mask });
+    await run.awaitAll(
+      ['HandlerRole', 'HandlerPolicy'],
+      'custom resource prod-billing-x7-seed is invoked after it'
+    );
+    const line = String(info.mock.calls[0]?.[0]);
+    expect(line).toContain('Waiting for IAM to propagate 2');
+    expect(line).toContain('custom resource ***-seed is invoked after it');
+    expect(line).not.toContain('prod-billing-x7');
+    expect(masked).toEqual(expect.arrayContaining(['HandlerRole', 'HandlerPolicy']));
+  });
+
   it('prints nothing for settles an earlier consumer already started', async () => {
     const info = vi.fn<LogFn>();
     const run = runWith(info, vi.fn<LogFn>());
@@ -180,22 +223,27 @@ describe('the IAM providers report the settle after a write', () => {
     mockSend.mockReset();
     mockSend.mockImplementation((command: { constructor: { name: string } }) => {
       switch (command.constructor.name) {
+        // Echo the requested name, so a replacement's new physical id comes through.
         case 'CreateRoleCommand':
+        case 'GetRoleCommand': {
+          const name = (command as unknown as { input: { RoleName?: string } }).input.RoleName ?? 'handler-role';
           return Promise.resolve({
-            Role: { RoleName: 'handler-role', Arn: 'arn:aws:iam::123456789012:role/handler-role', RoleId: 'AROA1' },
+            Role: { RoleName: name, Arn: `arn:aws:iam::123456789012:role/${name}`, RoleId: `AROA-${name}` },
           });
-        case 'GetRoleCommand':
-          return Promise.resolve({
-            Role: { RoleName: 'handler-role', Arn: 'arn:aws:iam::123456789012:role/handler-role', RoleId: 'AROA1' },
-          });
+        }
         case 'CreatePolicyCommand':
+        case 'GetPolicyCommand': {
+          const input = (command as unknown as { input: { PolicyName?: string; PolicyArn?: string } }).input;
+          const name = input.PolicyName ?? input.PolicyArn?.split('/').pop() ?? 'mp';
           return Promise.resolve({
-            Policy: { PolicyName: 'mp', Arn: 'arn:aws:iam::123456789012:policy/mp', PolicyId: 'ANPA1', DefaultVersionId: 'v1' },
+            Policy: {
+              PolicyName: name,
+              Arn: `arn:aws:iam::123456789012:policy/${name}`,
+              PolicyId: `ANPA-${name}`,
+              DefaultVersionId: 'v1',
+            },
           });
-        case 'GetPolicyCommand':
-          return Promise.resolve({
-            Policy: { PolicyName: 'mp', Arn: 'arn:aws:iam::123456789012:policy/mp', PolicyId: 'ANPA1', DefaultVersionId: 'v1' },
-          });
+        }
         default:
           return Promise.resolve({});
       }
@@ -287,6 +335,55 @@ describe('the IAM providers report the settle after a write', () => {
       )
     );
     expect(scope.deferred.get(arn)?.kind).toBe('iam-propagation');
+  });
+
+  it('AWS::IAM::Role replacing update (RoleName change) settles the NEW role', async () => {
+    const scope = scopeFor('HandlerRole', 'AWS::IAM::Role');
+    const previous = { RoleName: 'handler-role', AssumeRolePolicyDocument: document };
+    const result = await withDeferredReadinessScope(scope, () =>
+      new IAMRoleProvider().update(
+        'HandlerRole',
+        'handler-role',
+        'AWS::IAM::Role',
+        { ...previous, RoleName: 'handler-role-2' },
+        previous
+      )
+    );
+    expect(result.wasReplaced).toBe(true);
+    expect(scope.deferred.get('handler-role-2')?.kind).toBe('iam-propagation');
+  });
+
+  it('AWS::IAM::ManagedPolicy replacing update (name change) settles the NEW policy', async () => {
+    const scope = scopeFor('HandlerManagedPolicy', 'AWS::IAM::ManagedPolicy');
+    const previous = { ManagedPolicyName: 'mp', PolicyDocument: document };
+    const result = await withDeferredReadinessScope(scope, () =>
+      new IAMManagedPolicyProvider().update(
+        'HandlerManagedPolicy',
+        'arn:aws:iam::123456789012:policy/mp',
+        'AWS::IAM::ManagedPolicy',
+        { ...previous, ManagedPolicyName: 'mp-2' },
+        previous
+      )
+    );
+    expect(result.wasReplaced).toBe(true);
+    expect(scope.deferred.get('arn:aws:iam::123456789012:policy/mp-2')?.kind).toBe(
+      'iam-propagation'
+    );
+  });
+
+  it('AWS::IAM::Policy rename (in place, no replacement) settles under the new name', async () => {
+    const scope = scopeFor('HandlerPolicy', 'AWS::IAM::Policy');
+    const previous = { PolicyName: 'handler-policy', PolicyDocument: document, Roles: ['handler-role'] };
+    await withDeferredReadinessScope(scope, () =>
+      new IAMPolicyProvider().update(
+        'HandlerPolicy',
+        'handler-policy',
+        'AWS::IAM::Policy',
+        { ...previous, PolicyName: 'handler-policy-2' },
+        previous
+      )
+    );
+    expect(scope.deferred.get('handler-policy-2')?.kind).toBe('iam-propagation');
   });
 
   it('a failed write reports nothing', async () => {
