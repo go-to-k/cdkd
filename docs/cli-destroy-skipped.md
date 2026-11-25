@@ -259,7 +259,8 @@ What the deploy does depends on which delete was skipped:
   that still holds objects, a Lambda version an alias still routes to) is
   handled the same way: the deploy's other changes stay applied, as
   CloudFormation's cleanup phase keeps them, and every resource the kept one
-  depends on is kept with it. Only an interrupted delete fails the deploy.
+  depends on is kept with it. An interrupted delete, or one past its
+  `--resource-timeout`, still fails the deploy.
 - **The old resource of a replacement** (`--replace`, `--recreate-via-*`, or
   an update AWS cannot apply in place). The resource fails. Otherwise the new
   resource would run beside a live old one, or collide with its name.

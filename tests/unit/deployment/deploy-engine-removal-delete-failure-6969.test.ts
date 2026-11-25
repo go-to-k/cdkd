@@ -13,10 +13,11 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
-import { InterruptedWaitError } from '../../../src/provisioning/interrupt-watch.js';
+import { InterruptedWaitError, isInterruptedWaitError } from '../../../src/provisioning/interrupt-watch.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 import { getLogger } from '../../../src/utils/logger.js';
+import { ResourceTimeoutError } from '../../../src/utils/error-handler/base-errors.js';
 
 vi.mock('../../../src/utils/aws-clients.js', async (importOriginal) =>
   (await import('./_inert-cloudformation-client.js')).withInertCloudFormationClient(importOriginal)
@@ -57,6 +58,8 @@ const UPDATED = 'Updated';
 const FAILING = 'Failing';
 /** Removed too, and FAILING depends on it, so it must not be deleted. */
 const DEPENDENCY = 'Dependency';
+/** Removed, and DEPENDENCY depends on it: kept transitively. */
+const DEEP = 'Deep';
 /** Removed and unrelated to FAILING: still deleted. */
 const UNRELATED = 'Unrelated';
 
@@ -81,7 +84,8 @@ describe('DeployEngine.deploy() — a removed resource whose delete fails (#6969
     };
   }
 
-  function buildEngine(failure: Error) {
+  function buildEngine(failure: Error, beforeFailing?: (engine: DeployEngine) => void) {
+    let engineRef: DeployEngine | undefined;
     const provider = {
       create: vi.fn(),
       update: vi.fn().mockImplementation((logicalId: string, physicalId: string, _t: string, properties: Record<string, unknown>) => {
@@ -90,7 +94,9 @@ describe('DeployEngine.deploy() — a removed resource whose delete fails (#6969
       }),
       delete: vi.fn().mockImplementation((logicalId: string) => {
         deleteCalls.push(logicalId);
-        return logicalId === FAILING ? Promise.reject(failure) : Promise.resolve(undefined);
+        if (logicalId !== FAILING) return Promise.resolve(undefined);
+        beforeFailing?.(engineRef!);
+        return Promise.reject(failure);
       }),
     };
 
@@ -101,7 +107,8 @@ describe('DeployEngine.deploy() — a removed resource whose delete fails (#6969
       resources: {
         [UPDATED]: record(UPDATED),
         [FAILING]: record(FAILING, [DEPENDENCY]),
-        [DEPENDENCY]: record(DEPENDENCY),
+        [DEPENDENCY]: record(DEPENDENCY, [DEEP]),
+        [DEEP]: record(DEEP),
         [UNRELATED]: record(UNRELATED),
       },
       outputs: {},
@@ -124,6 +131,7 @@ describe('DeployEngine.deploy() — a removed resource whose delete fails (#6969
       ],
       [FAILING, deleteChange(FAILING)],
       [DEPENDENCY, deleteChange(DEPENDENCY)],
+      [DEEP, deleteChange(DEEP)],
       [UNRELATED, deleteChange(UNRELATED)],
     ]);
 
@@ -157,7 +165,7 @@ describe('DeployEngine.deploy() — a removed resource whose delete fails (#6969
       validateResourceTypes: vi.fn(),
       validateResourceProperties: vi.fn(),
     };
-    return new DeployEngine(
+    engineRef = new DeployEngine(
       mockStateBackend as never,
       {
         acquireLockWithRetry: vi.fn().mockResolvedValue(true),
@@ -173,6 +181,7 @@ describe('DeployEngine.deploy() — a removed resource whose delete fails (#6969
       { concurrency: 4, noRollback: false },
       'us-east-1'
     );
+    return engineRef;
   }
 
   const template: CloudFormationTemplate = {
@@ -191,7 +200,7 @@ describe('DeployEngine.deploy() — a removed resource whose delete fails (#6969
 
     const result = await engine.deploy(STACK, template);
 
-    expect(result.deleteSkipped).toBe(2);
+    expect(result.deleteSkipped).toBe(3);
     // The control: an unrelated removal is still deleted.
     expect(result.deleted).toBe(1);
     expect(result.updated).toBe(1);
@@ -199,28 +208,72 @@ describe('DeployEngine.deploy() — a removed resource whose delete fails (#6969
     // journal segment was written.
     expect(updateCalls).toEqual([{ logicalId: UPDATED, properties: { v: 2 } }]);
     expect(appendSegment).not.toHaveBeenCalled();
-    expect(lastSavedResources()).toEqual([DEPENDENCY, FAILING, UPDATED]);
+    expect(lastSavedResources()).toEqual([DEEP, DEPENDENCY, FAILING, UPDATED]);
     const warnings = vi.mocked(getLogger().warn).mock.calls.map((c) => String(c[0]));
     expect(warnings.some((w) => w.includes(`${FAILING} (${TYPE}) was removed from the template, but its delete failed`))).toBe(true);
   });
 
-  it('does not delete what the failed resource depends on', async () => {
+  it('does not delete what the failed resource depends on, transitively', async () => {
     const engine = buildEngine(new Error('The bucket you tried to delete is not empty'));
+    const recordEvent = vi.spyOn(engine, 'recordEvent');
 
     await engine.deploy(STACK, template);
 
     expect(deleteCalls.sort()).toEqual([FAILING, UNRELATED]);
     const lines = vi.mocked(getLogger().info).mock.calls.map((c) => String(c[0]));
-    expect(lines.some((l) => l.includes(DEPENDENCY) && l.includes(`${FAILING} depends on it and its delete failed`))).toBe(true);
+    // Both name FAILING as the blocker: DEEP inherits it through DEPENDENCY.
+    for (const kept of [DEPENDENCY, DEEP]) {
+      expect(
+        lines.some((l) => l.includes(kept) && l.includes(`not deleted (${FAILING} depends on it and its delete failed)`)),
+        kept
+      ).toBe(true);
+      expect(recordEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventType: 'RESOURCE_SKIPPED',
+          operation: 'DELETE',
+          logicalId: kept,
+          physicalId: `phys-${kept}`,
+          reason: `${FAILING} depends on it and its delete failed`,
+        })
+      );
+    }
   });
 
   it('still fails the deploy when the delete was interrupted', async () => {
     const engine = buildEngine(new InterruptedWaitError('Delete of Failing'));
 
-    await expect(engine.deploy(STACK, template)).rejects.toThrow();
+    const error = await engine.deploy(STACK, template).then(() => undefined, (e: unknown) => e);
+    expect(isInterruptedWaitError(error)).toBe(true);
 
-    // An interrupted deploy journals its operations for `cdkd rollback`.
+    // An interrupted deploy journals the failed DELETE for `cdkd rollback`.
     expect(appendSegment).toHaveBeenCalledOnce();
+    const segment = appendSegment.mock.calls[0]![2] as { failedOperations?: Array<{ logicalId: string; changeType: string }> };
+    expect(segment.failedOperations).toEqual(
+      expect.arrayContaining([expect.objectContaining({ logicalId: FAILING, changeType: 'DELETE' })])
+    );
+  });
+
+  it('still fails the deploy when the user interrupted it before the delete failed', async () => {
+    const engine = buildEngine(new Error('The bucket you tried to delete is not empty'), (e) => {
+      e.interrupted = true;
+    });
+
+    await expect(engine.deploy(STACK, template)).rejects.toThrow(`Failed to delete resource ${FAILING}`);
+
+    expect(appendSegment).toHaveBeenCalledOnce();
+    const segment = appendSegment.mock.calls[0]![2] as { failedOperations?: Array<{ logicalId: string; changeType: string }> };
+    expect(segment.failedOperations).toEqual(
+      expect.arrayContaining([expect.objectContaining({ logicalId: FAILING, changeType: 'DELETE' })])
+    );
+  });
+
+  it("still fails the deploy when its --resource-timeout fired (the delete keeps running)", async () => {
+    const engine = buildEngine(new ResourceTimeoutError(FAILING, TYPE, "us-east-1", 1_000, "DELETE", 1_000));
+
+    await expect(engine.deploy(STACK, template)).rejects.toThrow(`Failed to delete resource ${FAILING}`);
+
     expect(deleteCalls).not.toContain(DEPENDENCY);
+    const warnings = vi.mocked(getLogger().warn).mock.calls.map((c) => String(c[0]));
+    expect(warnings.some((w) => w.includes("its cdkd state record was KEPT"))).toBe(false);
   });
 });

@@ -11,11 +11,13 @@
  * a failed delete's dependencies (go-to-k/cdkd#5670).
  *
  * An interrupt still fails the deploy: the user stopped it, and the rollback or
- * journal is how an interrupted deploy is resumed.
+ * journal is how an interrupted deploy is resumed. So does a fired
+ * `--resource-timeout`, whose delete is still running.
  */
 import type { DeployEngine, ProvisionCounts } from '../../deploy-engine.js';
 import type { ResourceChange, ResourceState } from '../../../types/state.js';
 import { isInterruptedWaitError } from '../../../provisioning/interrupt-watch.js';
+import { deadlineFiredFor } from './helpers.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import { getLiveRenderer } from '../../../utils/live-renderer.js';
 import { formatResourceLine } from '../../../utils/resource-line.js';
@@ -38,7 +40,11 @@ export class RemovalDeletesKept {
     counts: ProvisionCounts,
     progress: { current: number; total: number } | undefined
   ): boolean {
-    if (engine.interrupted || isInterruptedWaitError(error)) return false;
+    // A fired deadline is not kept either: the delete keeps running after it
+    // and may still succeed, and the failure path's rollback waits for it.
+    if (engine.interrupted || isInterruptedWaitError(error) || deadlineFiredFor(error, logicalId)) {
+      return false;
+    }
     this.keptBy.set(logicalId, logicalId);
     if (progress) progress.current++;
     counts.deleteSkipped++;

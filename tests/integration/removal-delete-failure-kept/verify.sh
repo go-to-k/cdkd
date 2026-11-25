@@ -172,7 +172,12 @@ if ! grep -qF "${DATA_ID} (AWS::S3::Bucket) was removed from the template, but i
   fi
   echo "FAIL: Phase 2 exited 2 without reaching the bucket's delete" >&2; exit 1
 fi
-if ! grep -qF "${ANCHOR_ID}" "${SCRATCH}/phase2.plain" || ! grep -qF "${DATA_ID} depends on it and its delete failed" "${SCRATCH}/phase2.plain"; then
+# One line must carry both: the Anchor id also appears in the plan listing.
+ANCHOR_LINES="$(grep -F "${ANCHOR_ID}" "${SCRATCH}/phase2.plain" || true)"
+if ! grep -qF "${DATA_ID} depends on it and its delete failed" <<<"${ANCHOR_LINES}"; then
+  if grep -qF "not deleted (" <<<"${ANCHOR_LINES}"; then
+    echo "FAIL: Phase 2 kept ${ANCHOR_ID} in a wording this fixture does not parse — update the marker" >&2; exit 1
+  fi
   echo "FAIL: Phase 2 did not report ${ANCHOR_ID} kept because ${DATA_ID}'s delete failed" >&2; exit 1
 fi
 if [ "$(visibility "${MAIN_URL}")" != "60" ]; then
