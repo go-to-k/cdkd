@@ -163,7 +163,7 @@ dynamodb-gsi-update	2026-11-23T10:10:37Z	PASS	4794	verify.sh	PR6863 dac3948ef, u
 dynamodb-ondemand	2026-11-24T14:39:11Z	PASS	532	verify.sh	rc ok, orph clean (#6933 sweep)
 dynamodb-sse	2026-10-29T16:45:21Z	PASS	53	verify.sh	rc ok, orph clean; #5514 table gone straight after destroy, probe without wait RED
 dynamodb-stream-filter	2026-11-23T08:26:12Z	PASS	164	verify.sh	PR6859 11e38d61f us-east-1 rc ok, orph clean
-dynamodb-streams	2026-11-25T19:53:35Z	PASS	396	verify.sh	rc ok, orph clean; #6999 consumer follows new stream arn (PR #7002)
+dynamodb-streams	2026-11-25T20:02:36Z	PASS	401	verify.sh	rc ok, orph clean; #6999 consumer follows new stream arn, mapping-gone assert (PR #7002 831c3d637)
 dynamodb-table-policy-baseline	2026-11-22T05:45:00Z	PASS	190	verify.sh	PR6814 2ae78b7f6, us-east-1, rc ok, orph clean
 dynamodb-tableclass-switch	2026-11-06T16:03:56Z	PASS	75	verify.sh	post-hoc on main after #5841 split; rc ok, orph clean
 dynamodb-ttl-attr-change	2026-11-19T06:52:45Z	PASS	1900	verify.sh	#6600 final: rc ok, destroy 0 errors, orph clean
