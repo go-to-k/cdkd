@@ -86,8 +86,8 @@ export class LambdaConfigFieldRemovalStack extends cdk.Stack {
         UpdateRuntimeOn: 'FunctionUpdate',
       });
       cfnFn.addPropertyOverride('CodeSigningConfigArn', codeSigning.ref);
-      // Issue #1160: a removal cdkd does NOT reset (no `removalDefaults`
-      // entry), so the removal phase must WARN naming it, and AWS keeps it.
+      // Issue #6996: CloudFormation resets a removed RecursiveLoop to
+      // `Terminate`, so the removal phase asserts that reset.
       cfnFn.addPropertyOverride('RecursiveLoop', 'Allow');
     }
 

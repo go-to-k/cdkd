@@ -986,16 +986,15 @@ describe('LambdaFunctionProvider', () => {
       });
     });
 
-    it('update(): removing RecursiveLoop (Allow -> undefined) does NOT call PutFunctionRecursionConfig (no AWS reset sentinel)', async () => {
-      // PutFunctionRecursionConfig has no "clear / restore default"
-      // operation — `RecursiveLoop` accepts only `Allow` / `Terminate`,
-      // and absence from the API means "no change". So a template that
-      // drops the prop after previously setting it leaves AWS at the
-      // last-set value. This asymmetry diverges from the provider's
-      // `clearOnUpdateRemoval` pattern but matches the AWS API contract.
-      mockLambdaSend.mockResolvedValueOnce({
-        Configuration: { FunctionArn: 'arn', FunctionName: 'fn' },
-      });
+    it('update(): removing RecursiveLoop (Allow -> undefined) resets it to Terminate (#6996)', async () => {
+      // CloudFormation resets a removed RecursiveLoop to its default,
+      // `Terminate` (measured on a CFn A/B stack), turning recursive-loop
+      // detection back on. The `removalDefaults` declaration injects it.
+      mockLambdaSend
+        .mockResolvedValueOnce({}) // PutFunctionRecursionConfig
+        .mockResolvedValueOnce({
+          Configuration: { FunctionArn: 'arn', FunctionName: 'fn' },
+        });
 
       await provider.update(
         'RlFn',
@@ -1008,7 +1007,36 @@ describe('LambdaFunctionProvider', () => {
       const putCalls = mockLambdaSend.mock.calls.filter(
         (c) => c[0] instanceof PutFunctionRecursionConfigCommand
       );
+      expect(putCalls).toHaveLength(1);
+      expect((putCalls[0]![0] as PutFunctionRecursionConfigCommand).input).toEqual({
+        FunctionName: 'fn',
+        RecursiveLoop: 'Terminate',
+      });
+    });
+
+    it('update(): removing RecursiveLoop that was already Terminate sends nothing', async () => {
+      mockLambdaSend.mockResolvedValueOnce({
+        Configuration: { FunctionArn: 'arn', FunctionName: 'fn' },
+      });
+
+      await provider.update(
+        'RlFn',
+        'fn',
+        'AWS::Lambda::Function',
+        {},
+        { RecursiveLoop: 'Terminate' }
+      );
+
+      const putCalls = mockLambdaSend.mock.calls.filter(
+        (c) => c[0] instanceof PutFunctionRecursionConfigCommand
+      );
       expect(putCalls).toHaveLength(0);
+    });
+
+    it('declares RecursiveLoop: Terminate as its removal default (#6996)', () => {
+      expect(provider.removalDefaults.get('AWS::Lambda::Function')?.get('RecursiveLoop')).toBe(
+        'Terminate'
+      );
     });
 
     it('update(): unchanged RecursiveLoop produces zero PutFunctionRecursionConfig calls', async () => {
