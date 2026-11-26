@@ -25,6 +25,10 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
         if (command.input?.Name === '/pub/host') {
           return { Parameter: { Type: 'String', Value: 'pub.example.com' } };
         }
+        // A bare `ssm:` reference a SecureString answers: the diff skips it.
+        if (command.input?.Name === '/sec') {
+          return { Parameter: { Type: 'SecureString', Value: 'ciphertext' } };
+        }
         const e = new Error('ParameterNotFound');
         e.name = 'ParameterNotFound';
         throw e;
@@ -56,8 +60,10 @@ import type { DiffTreeNode } from '../../../src/cli/commands/diff-recursive/type
 import {
   SECURITY_TABLE_WITHHELD,
   ANY_TAG_KEY,
+  TAG_KEYS_TAINTED,
   maskPassedSecretChanges,
   mixedSecretTagKeys,
+  securityDiffWithPassedSecretWithheld,
   taintedNamesOf,
 } from '../../../src/cli/commands/diff-recursive/passed-secret-display.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
@@ -474,5 +480,117 @@ describe('mixedSecretTagKeys (#7068)', () => {
   it('stands for every key when a tainted tag spells no literal key', () => {
     const row = { Tags: [{ Key: { Ref: 'K' }, Value: { Ref: 'X' } }] };
     expect([...mixedSecretTagKeys(row, undefined, new Set(['X']), undefined)]).toEqual([ANY_TAG_KEY]);
+  });
+});
+
+describe('readers of a nested row output, by what the row passes (#7068 review)', () => {
+  const rowTemplate = (url: unknown) => ({
+    Parameters: { Sep: { Type: 'String' } },
+    Resources: {
+      Row: {
+        Type: 'AWS::CloudFormation::Stack',
+        Metadata: { 'aws:asset:path': 'child.json' },
+        Properties: { TemplateURL: 'https://s3.amazonaws.com/b/child.json', Parameters: { X: url } },
+      },
+      Reader: {
+        Type: 'AWS::SSM::Parameter',
+        Properties: { Type: 'String', Value: { 'Fn::GetAtt': ['Row', 'Outputs.Piece'] } },
+      },
+    },
+  });
+  const run = async (url: unknown, piece: string) => {
+    const states: Record<string, StackState> = {
+      Parent: stack('Parent', {
+        Row: {
+          ...record('AWS::CloudFormation::Stack', {
+            TemplateURL: 'https://s3.amazonaws.com/b/child.json',
+            Parameters: { X: 'old' },
+          }),
+          attributes: { 'Outputs.Piece': piece },
+        },
+        Reader: record('AWS::SSM::Parameter', { Type: 'String', Value: 'reader-old' }),
+      }),
+    };
+    return buildDiffTree({
+      stackName: 'Parent',
+      displayName: 'Parent',
+      region: 'us-east-1',
+      template: rowTemplate(url),
+      parameters: { Sep: 'Q7' },
+      nestedTemplates: { Row: join(dir, 'child.json') },
+      recursive: true,
+      stateBackend: {
+        getState: async (name: string) =>
+          states[name] ? { state: structuredClone(states[name]), etag: 'e' } : null,
+      },
+      diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
+    } as never);
+  };
+  const readerValue = (root: DiffTreeNode) =>
+    root.changes.get('Reader')?.propertyChanges?.find((change) => change.path === 'Value')
+      ?.newValue;
+
+  it('shows a reader of a row passing only a PUBLIC reference with text', async () => {
+    const root = await run({ 'Fn::Join': ['', ['https://', '{{resolve:ssm:/pub/host}}', '/x']] }, 'new-bucket');
+    expect(readerValue(root)).toBe('new-bucket');
+  });
+
+  it('masks a reader of a row passing a SecureString bare ssm reference with text', async () => {
+    const root = await run({ 'Fn::Join': ['', [{ Ref: 'Sep' }, '/', '{{resolve:ssm:/sec}}']] }, 'Q7');
+    expect(readerValue(root)).toBe('***');
+  });
+});
+
+describe('stack-tag keys and tag maps (#7068 review)', () => {
+  const tagChange = (path: string, newValue: unknown) =>
+    new Map([
+      [
+        'R',
+        {
+          logicalId: 'R',
+          changeType: 'UPDATE' as const,
+          resourceType: 'T',
+          propertyChanges: [{ path, oldValue: undefined, newValue, requiresReplacement: false }],
+        },
+      ],
+    ]);
+  const shownValue = (changes: ReturnType<typeof tagChange>, keys: string[]) =>
+    maskPassedSecretChanges(changes, { Resources: {} } as never, new Set(), new Set(keys)).get('R')
+      ?.propertyChanges?.[0]?.newValue;
+
+  it('taints every key when a row tag KEY is built from the secret', () => {
+    const row = { Tags: [{ Key: PIECE, Value: 'keyed' }] };
+    const keys = mixedSecretTagKeys(row, undefined, new Set(['X']), undefined);
+    expect([...keys].sort()).toEqual([ANY_TAG_KEY, TAG_KEYS_TAINTED].sort());
+    expect(shownValue(tagChange('Tags', [{ Key: 'Q7', Value: 'keyed' }]), [...keys])).toEqual([
+      { Key: '***', Value: '***' },
+    ]);
+    expect(shownValue(tagChange('Tags', { Q7: 'keyed' }), [...keys])).toBe('***');
+  });
+
+  it('masks a tag MAP property not named Tags', () => {
+    expect(shownValue(tagChange('UserPoolTags', { t: 'Q7', u: 'plain' }), ['t'])).toEqual({
+      t: '***',
+      u: 'plain',
+    });
+  });
+});
+
+describe('securityDiffWithPassedSecretWithheld (#7068 review)', () => {
+  it('keeps the table when only a seeded row changed and no statement reads it', async () => {
+    const securityDiff = async () => ({ broadening: true, rendered: 'TABLE' });
+    const changes = new Map([
+      ['Child', { logicalId: 'Child', changeType: 'UPDATE' as const, resourceType: 'AWS::CloudFormation::Stack' }],
+      ['Pol', { logicalId: 'Pol', changeType: 'UPDATE' as const, resourceType: 'AWS::IAM::Policy' }],
+    ]);
+    const template = {
+      Resources: {
+        Child: { Type: 'AWS::CloudFormation::Stack', Properties: {} },
+        Pol: { Type: 'AWS::IAM::Policy', Properties: { PolicyDocument: policy('arn:aws:s3:::unrelated') } },
+      },
+    };
+    const shown = securityDiffWithPassedSecretWithheld(securityDiff, changes, template as never, new Set(['Child']));
+    expect((await shown()).rendered).toBe('TABLE');
   });
 });

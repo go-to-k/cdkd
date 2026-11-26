@@ -75,21 +75,43 @@ function holdsMixedDynamicReference(value: unknown): boolean {
   return false;
 }
 
+/** A string holding a reference whose SPELLING says it is a secret. */
+function spellsSecretReference(value: string): boolean {
+  return SPELLED_SECRET_PREFIXES.some((prefix) => value.includes(prefix));
+}
+
+const SPELLED_SECRET_PREFIXES = ['{{resolve:secretsmanager:', '{{resolve:ssm-secure:'];
+
 /**
- * Does a TEMPLATE value compose a dynamic reference with something else: a
- * literal string mixing one, or an intrinsic one of whose strings holds one?
- * A value that is one whole token passes the reference through as it is.
+ * Does a TEMPLATE value compose a reference SPELLED secret
+ * (`secretsmanager:` / `ssm-secure:`) with other text: a literal string
+ * mixing one (an `Fn::Sub` body too), or an `Fn::Join` whose list holds one
+ * beside another element? A whole token, behind an `Fn::If` or not, passes
+ * the reference through as it is. A bare `{{resolve:ssm:` cannot be judged
+ * before resolution (a public `String` resolves away), so a row mixing one is
+ * seeded from its resolved values instead ({@link mixedSecretRowKeys}).
  */
 function templateMixesDynamicReference(value: unknown): boolean {
-  if (typeof value === 'string') return mixesDynamicReference(value);
-  if (value === null || typeof value !== 'object') return false;
   const pending: unknown[] = [value];
   const seen = new Set<object>();
   while (pending.length > 0) {
     const next = pending.pop();
-    if (typeof next === 'string' && next.includes('{{resolve:')) return true;
+    if (typeof next === 'string') {
+      if (spellsSecretReference(next) && !isSingleDynamicReferenceToken(next)) return true;
+      continue;
+    }
     if (next === null || typeof next !== 'object' || seen.has(next)) continue;
     seen.add(next);
+    const join = isRecord(next) ? next['Fn::Join'] : undefined;
+    if (Array.isArray(join) && Array.isArray(join[1])) {
+      const parts = join[1] as unknown[];
+      if (
+        parts.length > 1 &&
+        parts.some((part) => typeof part === 'string' && spellsSecretReference(part))
+      ) {
+        return true;
+      }
+    }
     pending.push(...Object.values(next as Record<string, unknown>));
   }
   return false;
@@ -110,6 +132,8 @@ function rowEntries(rowProperties: Record<string, unknown>): Array<[unknown, unk
 
 /** Stands for every tag key: a tainted tag whose key the template does not spell. */
 export const ANY_TAG_KEY = '*';
+/** Every tag KEY is tainted too: a key built from the secret. */
+export const TAG_KEYS_TAINTED = '*key*';
 
 /** Does `node` read any of `tainted` (a parameter or a resource id), through any intrinsic? */
 function readsTainted(node: unknown, tainted: ReadonlySet<string>): boolean {
@@ -155,9 +179,11 @@ export function mixedSecretRowKeys(
  */
 export function taintedNamesOf(
   template: CloudFormationTemplate,
-  passed: ReadonlySet<string> | undefined
+  passed: ReadonlySet<string> | undefined,
+  /** Rows the child walk found passing a mixed value once resolved. */
+  resolvedSeeds: Iterable<string> = []
 ): Set<string> {
-  const tainted = new Set<string>(passed ?? []);
+  const tainted = new Set<string>([...(passed ?? []), ...resolvedSeeds]);
   const resources = recordOf(template.Resources as unknown);
   for (const [logicalId, raw] of Object.entries(resources)) {
     const resource = recordOf(raw);
@@ -188,7 +214,9 @@ export function taintedNamesOf(
  * resource below it, so each such key is masked in the whole subtree. A tag
  * the row's template composes with a reference, or that reads a tainted name,
  * one whose resolved value mixes one, and every key `inherited` names. A
- * tainted tag whose key is not a literal stands for every key.
+ * tainted tag whose key is not a literal stands for every key
+ * ({@link ANY_TAG_KEY}), and a KEY built from the secret taints every key too
+ * ({@link TAG_KEYS_TAINTED}).
  */
 export function mixedSecretTagKeys(
   rowProperties: Record<string, unknown> | undefined,
@@ -201,12 +229,19 @@ export function mixedSecretTagKeys(
   const pairs: Array<[unknown, unknown]> = Array.isArray(tags)
     ? (tags as unknown[]).map((tag) => [recordOf(tag)['Key'], recordOf(tag)['Value']])
     : Object.entries(recordOf(tags));
+  const derived = (node: unknown): boolean =>
+    templateMixesDynamicReference(node) || readsTainted(node, tainted);
   for (const [key, value] of pairs) {
-    if (!templateMixesDynamicReference(value) && !readsTainted(value, tainted)) continue;
-    keys.add(typeof key === 'string' ? key : ANY_TAG_KEY);
+    // A KEY built from the secret: every key and value of the subtree's tags.
+    if (typeof key === 'string' ? mixesDynamicReference(key) : derived(key)) {
+      keys.add(ANY_TAG_KEY).add(TAG_KEYS_TAINTED);
+    } else if (derived(value)) {
+      keys.add(typeof key === 'string' ? key : ANY_TAG_KEY);
+    }
   }
   for (const [key, value] of Object.entries(resolvedTags ?? {})) {
-    if (mixesDynamicReference(value)) keys.add(key);
+    if (mixesDynamicReference(key)) keys.add(ANY_TAG_KEY).add(TAG_KEYS_TAINTED);
+    else if (mixesDynamicReference(value)) keys.add(key);
   }
   return keys;
 }
@@ -224,14 +259,17 @@ function maskTagValues(value: unknown, keys: ReadonlySet<string>, isMap: boolean
     return shown.every((element, index) => element === value[index]) ? value : shown;
   }
   if (!isRecord(value)) return value;
+  const isEntry = Object.hasOwn(value, 'Key') && Object.hasOwn(value, 'Value');
+  // A tag MAP whose keys may spell the secret: withheld whole.
+  if (!isEntry && isMap && keys.has(TAG_KEYS_TAINTED)) return SECRET_MASK;
   let changed = false;
   const shown: Record<string, unknown> = {};
-  const isEntry = Object.hasOwn(value, 'Key') && Object.hasOwn(value, 'Value');
   for (const [key, leaf] of Object.entries(value)) {
     let next: unknown;
-    if (isEntry && key === 'Value' && named(value['Key'])) next = SECRET_MASK;
+    if (isEntry && key === 'Key' && keys.has(TAG_KEYS_TAINTED)) next = SECRET_MASK;
+    else if (isEntry && key === 'Value' && named(value['Key'])) next = SECRET_MASK;
     else if (isMap && named(key) && !isRecord(leaf) && !Array.isArray(leaf)) next = SECRET_MASK;
-    else next = maskTagValues(leaf, keys, key === 'Tags');
+    else next = maskTagValues(leaf, keys, /tag/i.test(key));
     if (next !== leaf) changed = true;
     shown[key] = next;
   }
@@ -245,7 +283,8 @@ function maskTagProperty(change: PropertyChange, keys: ReadonlySet<string>): Pro
   let changed = false;
   for (const side of SIDES) {
     if (!Object.prototype.hasOwnProperty.call(change, side) || change[side] === undefined) continue;
-    const shown = maskTagValues(change[side], keys, change.path === 'Tags');
+    // Any tag property's own record is a tag MAP (`Tags`, `UserPoolTags`).
+    const shown = maskTagValues(change[side], keys, true);
     if (shown !== change[side]) {
       next[side] = shown;
       changed = true;
@@ -505,10 +544,22 @@ export function recordedValuesOf(
 export function securityDiffWithPassedSecretWithheld(
   securityDiff: () => Promise<SecurityDiff>,
   changes: ReadonlyMap<string, ResourceChange>,
+  template: CloudFormationTemplate,
   tainted: ReadonlySet<string>
 ): () => Promise<SecurityDiff> {
+  // A changed resource whose own properties READ a tainted name: a seeded
+  // nested row is no statement of its own.
+  const resources = recordOf(template.Resources as unknown);
   const touched = [...changes.values()].some(
-    (change) => change.changeType !== 'NO_CHANGE' && tainted.has(change.logicalId)
+    (change) =>
+      change.changeType !== 'NO_CHANGE' &&
+      tainted.has(change.logicalId) &&
+      readsTainted(
+        recordOf(
+          Object.hasOwn(resources, change.logicalId) ? resources[change.logicalId] : undefined
+        )['Properties'],
+        tainted
+      )
   );
   if (!touched) return securityDiff;
   return async () => {
