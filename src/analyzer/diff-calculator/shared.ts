@@ -111,8 +111,42 @@ export const IN_PLACE_UPDATE_DERIVED_ATTRS: Readonly<Record<string, ReadonlySet<
     // (CDK `addEndpoint()`) moves to it, as CloudFormation moves the endpoint;
     // if a tag-only update minted none, the re-resolve-and-skip drops the
     // promotion. The update records the version UpdateAgentRuntime answers.
-    'AWS::BedrockAgentCore::Runtime': new Set(['AgentRuntimeVersion']),
+    'AWS::BedrockAgentCore::Runtime': new Set(['AgentRuntimeVersion', 'LastUpdatedAt']),
+    // go-to-k/cdkd#7001: update timestamps every update call stamps (a
+    // Tags-only edit may not call it; the re-resolve-and-skip drops those).
+    'AWS::BedrockAgentCore::Evaluator': new Set(['UpdatedAt']),
+    'AWS::Lambda::WebFunctionEndpoint': new Set(['UpdatedAt']),
+    'AWS::Pipes::Pipe': new Set(['LastModifiedTime']),
   });
+
+/** What rebuilds a MicroVM image: the provider's `BUILD_AFFECTING_CFN_KEYS`. */
+const MICROVM_IMAGE_BUILD_KEYS = new Set([
+  'BaseImageArn',
+  'BaseImageVersion',
+  'BuildRoleArn',
+  'Description',
+  'CodeArtifact',
+  'Logging',
+  'EgressNetworkConnectors',
+  'CpuConfigurations',
+  'Resources',
+  'AdditionalOsCapabilities',
+  'Hooks',
+  'EnvironmentVariables',
+  'KmsKeyIdentifier',
+]);
+
+/** What mints a new Step Functions revision (measured: a tag edit or an identical update does not). */
+const STATE_MACHINE_REVISION_KEYS = new Set([
+  'Definition',
+  'DefinitionString',
+  'DefinitionS3Location',
+  'DefinitionSubstitutions',
+  'RoleArn',
+  'LoggingConfiguration',
+  'TracingConfiguration',
+  'EncryptionConfiguration',
+]);
 
 /**
  * go-to-k/cdkd#6913: derived attributes an in-place UPDATE moves only when one
@@ -131,9 +165,21 @@ export const IN_PLACE_UPDATE_ATTRS_MOVED_BY: Readonly<
   'AWS::RDS::DBCluster': Object.freeze({
     'MasterUserSecret.SecretArn': new Set(['ManageMasterUserPassword']),
     StorageThroughput: new Set(['StorageType', 'Iops', 'AllocatedStorage']),
+    // go-to-k/cdkd#7001: a Port change is modified in place.
+    Endpoint: new Set(['Port']),
+    'Endpoint.Port': new Set(['Port']),
   }),
   'AWS::RDS::DBInstance': Object.freeze({
     'MasterUserSecret.SecretArn': new Set(['ManageMasterUserPassword']),
+    // go-to-k/cdkd#7001: the port, CA and Multi-AZ standby are modified in place.
+    Endpoint: new Set(['Port']),
+    'Endpoint.Port': new Set(['Port']),
+    ListenerEndpoint: new Set(['Port']),
+    'ListenerEndpoint.Port': new Set(['Port']),
+    CertificateDetails: new Set(['CACertificateIdentifier']),
+    'CertificateDetails.CAIdentifier': new Set(['CACertificateIdentifier']),
+    'CertificateDetails.ValidTill': new Set(['CACertificateIdentifier']),
+    SecondaryAvailabilityZone: new Set(['MultiAZ']),
   }),
   // go-to-k/cdkd#6939: a subnet added or removed gains or loses an interface
   // and its zonal DNS name; private DNS, DNS options and the IP address type
@@ -153,6 +199,99 @@ export const IN_PLACE_UPDATE_ATTRS_MOVED_BY: Readonly<
   }),
   'AWS::DynamoDB::GlobalTable': Object.freeze({
     StreamArn: new Set(['StreamSpecification']),
+  }),
+  // go-to-k/cdkd#7001: the rest of the audit (`scripts/in-place-attr-classification.ts`
+  // carries each row's reason; `vp run audit:in-place-attr-coverage:check`).
+  'AWS::BedrockAgentCore::Evaluator': Object.freeze({
+    EvaluatorType: new Set(['EvaluatorConfig']),
+    Provider: new Set(['EvaluatorConfig']),
+  }),
+  'AWS::CloudFormation::WaitCondition': Object.freeze({
+    Data: new Set(['Handle', 'Count', 'Timeout']),
+  }),
+  'AWS::CloudTrail::Trail': Object.freeze({
+    SnsTopicArn: new Set(['SnsTopicName']),
+  }),
+  // UpdateRepositoryName renames in place; the ARN and clone URLs end in it.
+  'AWS::CodeCommit::Repository': Object.freeze({
+    Arn: new Set(['RepositoryName']),
+    Name: new Set(['RepositoryName']),
+    CloneUrlHttp: new Set(['RepositoryName']),
+    CloneUrlSsh: new Set(['RepositoryName']),
+  }),
+  'AWS::DocDB::DBCluster': Object.freeze({
+    ServerlessV2PlatformVersion: new Set(['EngineVersion']),
+  }),
+  'AWS::EC2::Subnet': Object.freeze({
+    Ipv6CidrBlocks: new Set(['Ipv6CidrBlock']),
+  }),
+  'AWS::EC2::VPCGatewayAttachment': Object.freeze({
+    AttachmentType: new Set(['InternetGatewayId', 'VpnGatewayId']),
+  }),
+  // UpdateUser / UpdateGroup move the principal to the new path, and the ARN
+  // carries it: a policy granting the old ARN would keep naming nothing.
+  'AWS::IAM::Group': Object.freeze({ Arn: new Set(['Path']) }),
+  'AWS::IAM::User': Object.freeze({ Arn: new Set(['Path']) }),
+  'AWS::IAM::ManagedPolicy': Object.freeze({
+    DefaultVersionId: new Set(['PolicyDocument']),
+    UpdateDate: new Set(['PolicyDocument']),
+    AttachmentCount: new Set(['Roles', 'Users', 'Groups']),
+  }),
+  'AWS::Kinesis::Stream': Object.freeze({
+    WarmThroughputObject: new Set(['WarmThroughputMiBps', 'StreamModeDetails']),
+  }),
+  'AWS::Lambda::Function': Object.freeze({
+    SnapStartResponse: new Set(['SnapStart']),
+    'SnapStartResponse.ApplyOn': new Set(['SnapStart']),
+    'SnapStartResponse.OptimizationStatus': new Set(['SnapStart']),
+  }),
+  'AWS::Lambda::MicrovmImage': Object.freeze({
+    LatestActiveImageVersion: MICROVM_IMAGE_BUILD_KEYS,
+    LatestFailedImageVersion: MICROVM_IMAGE_BUILD_KEYS,
+    UpdatedAt: MICROVM_IMAGE_BUILD_KEYS,
+  }),
+  'AWS::Lambda::NetworkConnector': Object.freeze({
+    LatestVersion: new Set(['Configuration', 'OperatorRole']),
+    LatestVersionArn: new Set(['Configuration', 'OperatorRole']),
+  }),
+  'AWS::Logs::DeliverySource': Object.freeze({
+    ResourceArns: new Set(['ResourceArn']),
+    Service: new Set(['ResourceArn']),
+  }),
+  'AWS::Neptune::DBCluster': Object.freeze({
+    Port: new Set(['DBPort']),
+  }),
+  'AWS::Pipes::Pipe': Object.freeze({
+    CurrentState: new Set(['DesiredState']),
+  }),
+  'AWS::S3::Bucket': Object.freeze({
+    'MetadataTableConfiguration.S3TablesDestination.TableArn': new Set([
+      'MetadataTableConfiguration',
+    ]),
+    'MetadataTableConfiguration.S3TablesDestination.TableNamespace': new Set([
+      'MetadataTableConfiguration',
+    ]),
+    'MetadataConfiguration.Destination': new Set(['MetadataConfiguration']),
+    'MetadataConfiguration.JournalTableConfiguration.TableName': new Set(['MetadataConfiguration']),
+    'MetadataConfiguration.JournalTableConfiguration.TableArn': new Set(['MetadataConfiguration']),
+    'MetadataConfiguration.InventoryTableConfiguration.TableName': new Set([
+      'MetadataConfiguration',
+    ]),
+    'MetadataConfiguration.InventoryTableConfiguration.TableArn': new Set([
+      'MetadataConfiguration',
+    ]),
+    'MetadataConfiguration.AnnotationTableConfiguration.TableName': new Set([
+      'MetadataConfiguration',
+    ]),
+    'MetadataConfiguration.AnnotationTableConfiguration.TableArn': new Set([
+      'MetadataConfiguration',
+    ]),
+  }),
+  'AWS::StepFunctions::StateMachine': Object.freeze({
+    StateMachineRevisionId: STATE_MACHINE_REVISION_KEYS,
+  }),
+  'AWS::WAFv2::WebACL': Object.freeze({
+    Capacity: new Set(['Rules']),
   }),
 });
 

@@ -559,6 +559,18 @@ export default defineConfig({
         command: 'node --experimental-strip-types scripts/gen-drift-readback-coverage.ts --check',
         cache: false,
       },
+      // Issue #7001: every read-only GetAtt attribute is classified for whether
+      // an in-place update moves it (SDK types by hand, Cloud Control types by
+      // rule or the committed baseline). Its `:check` compares the generated
+      // files itself, so it needs no `gen:all-matrices` entry to catch a stale one.
+      'gen:in-place-attr-coverage': {
+        command: 'node --experimental-strip-types scripts/gen-in-place-attr-coverage.ts',
+        cache: false,
+      },
+      'audit:in-place-attr-coverage:check': {
+        command: 'node --experimental-strip-types scripts/gen-in-place-attr-coverage.ts --check',
+        cache: false,
+      },
       // Issue #6676: the measured table of Cloud Control update paths; every type
       // measured as refusing has a registered fix or a recorded exemption.
       'gen:cc-update-measurements': {
