@@ -23,7 +23,10 @@
  * resolved (go-to-k/cdkd#7052): a non-empty value that differs from every
  * other value but the same unresolved one. A new resource's id or ARN cannot
  * equal the previous string, and the diff calls such a pair changed too
- * (`valuesEqual`). So does the diff's promoted-dependent probe (`undefined`,
+ * (`valuesEqual`). A value that resolves to the recorded one anyway (an
+ * attribute of a new resource, or a new export, holding the same key ARN) is a
+ * known RESIDUAL: that row is no ceiling, so the replacement stands, and the
+ * stateful guard refuses it without `--force-stateful-recreation`. So does the diff's promoted-dependent probe (`undefined`,
  * `undefined`): the field references a resource being replaced, so both sides
  * are non-empty and the value WILL move once it resolves. That answer is a
  * ceiling the engine lowers when the resolved value turns out unmoved, and
@@ -34,6 +37,7 @@
  * resolve to either value, so it keeps cdkd's previous verdict (no
  * replacement), except for the probe, which is a ceiling.
  */
+import { keyOrderFreeJson } from '../../deployment/deploy-value-equality.js';
 import type { ReplacementSiblings } from './types.js';
 
 /**
@@ -55,18 +59,6 @@ interface StringChange {
   readonly equal: boolean;
 }
 
-/** `JSON.stringify` with object keys sorted, so two spellings of one intrinsic compare equal. */
-function canonicalJson(value: unknown): string {
-  return JSON.stringify(value, (_key, node: unknown) => {
-    if (node === null || typeof node !== 'object' || Array.isArray(node)) return node;
-    const sorted = Object.create(null) as Record<string, unknown>;
-    for (const key of Object.keys(node).sort()) {
-      sorted[key] = (node as Record<string, unknown>)[key];
-    }
-    return sorted;
-  });
-}
-
 function javaString(value: unknown): JavaString {
   if (value === undefined || value === null) return null;
   return typeof value === 'string' ? value : UNRESOLVED;
@@ -82,7 +74,7 @@ function stringChange(oldValue: unknown, newValue: unknown): StringChange {
   const after = javaString(newValue);
   const equal =
     before === UNRESOLVED && after === UNRESOLVED
-      ? canonicalJson(oldValue) === canonicalJson(newValue)
+      ? keyOrderFreeJson(oldValue) === keyOrderFreeJson(newValue)
       : before === after;
   return { before, after, equal };
 }

@@ -1090,8 +1090,8 @@ PI_DIFF_OUT=$(CDKD_TEST_UPDATE=true CDKD_TEST_PARAM_GROUP=b CDKD_TEST_LOGS_REMOV
 PI_DIFF_RC=$?
 set -e
 PI_DIFF_TXT=$(printf '%s' "${PI_DIFF_OUT}" | sed $'s/\033\[[0-9;]*m//g')
-# Sentinels: the new key's CREATE and the property row itself, independent of
-# its replacement note.
+# Sentinels: the new key named in the diff and the property row itself,
+# independent of its replacement note.
 if ! grep -qE "PiKeyB[A-Za-z0-9]*" <<<"${PI_DIFF_TXT}" || ! grep -q -- "- PerformanceInsightsKMSKeyId:" <<<"${PI_DIFF_TXT}"; then
   echo "FAIL: phase 2c-pi: cdkd diff printed no PiKeyB create or no PerformanceInsightsKMSKeyId change" >&2
   echo "${PI_DIFF_TXT}" >&2
