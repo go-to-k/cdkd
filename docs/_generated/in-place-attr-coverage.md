@@ -13,7 +13,7 @@ Whether an in-place update moves each read-only `Fn::GetAtt` attribute (issue [#
 Source: `@aws-cdk/aws-service-spec` 0.1.235.
 
 - SDK-provider types: **131**, pairs classified by hand: **390** (moving: **66**)
-- Cloud Control types: **1584**, pairs: **5545** — by rule: `no-in-place-update` 1151, `creation-timestamp` 376, `own-identity` 812, `primary-identifier` 450, `arn-template` 59, `update-timestamp` 372, `creator` 26, `owner-account` 30, `identifier-arn-member` 68, `update-marker` 106; by hand: **37**; in the baseline: **2058**
+- Cloud Control types: **1584**, pairs: **5545** — by rule: `no-in-place-update` 1151, `creation-timestamp` 376, `own-identity` 812, `primary-identifier` 450, `arn-template` 59, `update-timestamp` 372, `creator` 26, `owner-account` 30, `identifier-arn-member` 68, `update-marker` 142, `parent-fixed` 2; by hand: **79**; in the baseline: **1978**
 
 ## SDK-provider types (hand classification)
 
@@ -802,6 +802,12 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235.
 
 ## Cloud Control types classified by hand
 
+- `AWS::APS::Workspace` `PrometheusEndpoint`: never — `aps-workspaces.<region>.../workspaces/<id>/`
+- `AWS::Amplify::Branch` `Arn`: never — `apps/<app>/branches/<create-only BranchName>`; PullRequestEnvironmentName is a backend
+- `AWS::Amplify::Webhook` `WebhookUrl`: never — built from the webhook id and its creation token
+- `AWS::AppSync::Api` `Dns`: never — the api id hosts, fixed for the api life
+- `AWS::AppSync::DomainName` `AppSyncDomainName`: never — the CloudFront host for the create-only DomainName
+- `AWS::Chatbot::MicrosoftTeamsChannelConfiguration` `Arn`: never — built from the create-only ConfigurationName; TeamsChannelName labels the channel
 - `AWS::Chime::AppInstance` `AppInstanceArn`: never — measured (cdkd-probe-7007-s2c): Name in place left it app-instance/2cf58ce3-...
 - `AWS::Chime::AppInstanceUser` `AppInstanceUserArn`: never — measured (cdkd-probe-7007-s2c): Name in place left it .../user/cdkd-probe-7007-user
 - `AWS::Chime::Channel` `Arn`: never — measured (cdkd-probe-7007-s3c): Name in place left it .../channel/fdc1ec1c-...
@@ -810,32 +816,68 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235.
 - `AWS::Chime::VoiceConnector` `VoiceConnectorArn`: never — measured (cdkd-probe-7007-s4b): Name in place left it vc/dv56tpxjyzqla7zpqp6swq
 - `AWS::Chime::VoiceConnector` `VoiceConnectorId`: never — measured (cdkd-probe-7007-s4b): Name in place left it dv56tpxjyzqla7zpqp6swq
 - `AWS::CleanRooms::Collaboration` `Arn`: never — measured (cdkd-probe-7007-s2c): Name in place left it collaboration/84408462-...
+- `AWS::CloudFront::StreamingDistribution` `DomainName`: never — the `d....cloudfront.net` host assigned at create
 - `AWS::CodeStarConnections::SyncConfiguration` `OwnerId`: moved by `RepositoryLinkId` — the owner of the repository the link points at
 - `AWS::CodeStarConnections::SyncConfiguration` `ProviderType`: moved by `RepositoryLinkId` — the provider of the repository the link points at
 - `AWS::CodeStarConnections::SyncConfiguration` `RepositoryName`: moved by `RepositoryLinkId` — the name of the repository the link points at
 - `AWS::ControlTower::LandingZone` `LatestAvailableVersion`: never — the newest landing zone version AWS offers, a service catalog
+- `AWS::DataSync::LocationAzureBlob` `LocationUri`: moved by `Subdirectory` — the container URL and subdirectory
+- `AWS::DataSync::LocationFSxWindows` `LocationUri`: never — built from create-only inputs only
+- `AWS::DataSync::LocationHDFS` `LocationUri`: moved by `Subdirectory`, `NameNodes` — `hdfs://<name node>:<port>/<subdirectory>/`
+- `AWS::DataSync::LocationNFS` `LocationUri`: moved by `Subdirectory` — `nfs://<host>/<subdirectory>/`
+- `AWS::DataSync::LocationObjectStorage` `LocationUri`: moved by `Subdirectory`, `ServerPort`, `ServerProtocol` — the object store host, bucket and subdirectory
+- `AWS::DataSync::LocationSMB` `LocationUri`: moved by `Subdirectory` — `smb://<host>/<subdirectory>/`
 - `AWS::DataSync::Task` `TaskArn`: never — measured (cdkd-probe-7007-s4b): Name in place left it task/task-0be708b518a40c674
 - `AWS::Deadline::Budget` `Arn`: never — measured (cdkd-probe-7007-s3c): DisplayName in place left it .../budget/budget-4a2b9e7f...
 - `AWS::Deadline::Budget` `BudgetId`: never — measured (cdkd-probe-7007-s3c): DisplayName in place left it budget-4a2b9e7f...
+- `AWS::Deadline::Monitor` `Url`: moved by `Subdomain` — the monitor subdomain host
 - `AWS::Deadline::Queue` `Arn`: never — measured (cdkd-probe-7007-s2c): DisplayName in place left it .../queue/queue-f632d873...
 - `AWS::Deadline::Queue` `QueueId`: never — measured (cdkd-probe-7007-s2c): DisplayName in place left it queue-f632d873...
 - `AWS::EC2::GatewayRouteTableAssociation` `AssociationId`: moved by `RouteTableId` — ReplaceRouteTableAssociation mints a new association id
 - `AWS::EC2::LaunchTemplate` `DefaultVersionNumber`: any-update — the new version becomes the default when the update sets it
 - `AWS::EC2::LaunchTemplate` `LatestVersionNumber`: any-update — a LaunchTemplateData edit mints the next version
 - `AWS::EC2::PrefixList` `Arn`: never — measured (cdkd-probe-7007-s1): PrefixListName in place left it prefix-list/pl-0d520b78fc4478f52
+- `AWS::ElastiCache::ServerlessCache` `ARN`: never — `serverlesscache:<create-only name>`; FinalSnapshotName names the final snapshot
+- `AWS::Events::Endpoint` `EndpointUrl`: never — `<endpoint id>.endpoint.events.amazonaws.com`
+- `AWS::FMS::ApplicationsList` `ListId`: never — PutAppsList updates the list its ListId names; the name is a field
+- `AWS::FMS::ProtocolsList` `ListId`: never — PutProtocolsList updates the list its ListId names; the name is a field
 - `AWS::Glue::UserDefinedFunction` `Arn`: never — measured (cdkd-probe-7007-s2c): ClassName / OwnerName in place left it .../<db>/<create-only name>
+- `AWS::HealthLake::FHIRDatastore` `DatastoreEndpoint`: never — built from the datastore id
 - `AWS::IAM::ServerCertificate` `Arn`: never — measured (cdkd-probe-7007-s1): Path in place left it server-certificate/cdkd-probe-7007-a/cdkd-probe-7007-cert
 - `AWS::IVSChat::LoggingConfiguration` `Id`: never — measured (cdkd-probe-7007-s3c): Name in place left it r2zbNTcYVRdc
 - `AWS::IVSChat::Room` `Id`: never — measured (cdkd-probe-7007-s1): Name in place left it 8NJl1byAY7iO
+- `AWS::IoTFleetHub::Application` `ApplicationUrl`: never — built from the application id; UpdateApplication takes name and description only
+- `AWS::IoTWireless::WirelessDeviceImportTask` `Arn`: never — `ImportTask/<id>`; DestinationName names a destination
 - `AWS::KinesisVideo::Stream` `Arn`: never — measured (cdkd-probe-7007-s1): DeviceName in place left it stream/<create-only name>/1795710281819
 - `AWS::Lex::Bot` `Arn`: never — measured (cdkd-probe-7007-s3c): Name in place left it bot/8ACWASRH4S
 - `AWS::Lex::BotAlias` `Arn`: never — measured (cdkd-probe-7007-s3c): BotAliasName in place left it bot-alias/8ACWASRH4S/7ETHCRHKIG
+- `AWS::Lightsail::Distribution` `DistributionArn`: never — `Distribution/<uuid>`; CertificateName attaches a certificate
+- `AWS::Lightsail::Instance` `InstanceArn`: never — `Instance/<uuid>`; KeyPairName names a key pair
+- `AWS::Lightsail::LoadBalancer` `LoadBalancerArn`: never — `LoadBalancer/<uuid>`; TlsPolicyName names a TLS policy
+- `AWS::MediaConnect::FlowOutput` `OutputArn`: never — `output:<id>:<create-only Name>`; NdiProgramName is an NDI setting
+- `AWS::MediaConnect::FlowSource` `SourceArn`: never — `source:<id>:<create-only Name>`; VpcInterfaceName names an interface
+- `AWS::MediaLive::CloudWatchAlarmTemplate` `Arn`: never — `cloudwatch-alarm-template:<id>`; UpdateCloudWatchAlarmTemplate keeps the id
+- `AWS::MediaLive::CloudWatchAlarmTemplate` `Id`: never — the minted id; UpdateCloudWatchAlarmTemplate names the template by it
+- `AWS::MediaPackage::OriginEndpoint` `Arn`: never — `origin_endpoints/<create-only Id>`; ManifestName names the manifest
+- `AWS::MediaPackageV2::Channel` `IngestEndpoints`: never — assigned per channel at create; InputType is create-only
+- `AWS::MediaTailor::PlaybackConfiguration` `PlaybackConfigurationArn`: never — built from the create-only Name; TranscodeProfileName names a profile
+- `AWS::MemoryDB::Cluster` `ARN`: never — `cluster/<create-only ClusterName>`; the in-place names are a parameter group, ACL and snapshot
 - `AWS::ODB::CloudExadataInfrastructure` `DbServerVersion`: never — the database server software level, moved by Oracle maintenance
 - `AWS::ODB::CloudExadataInfrastructure` `StorageServerVersion`: never — the storage server software level, moved by Oracle maintenance
+- `AWS::OpenSearchServerless::Collection` `CollectionEndpoint`: never — `<collection id>.<region>.aoss.amazonaws.com`
+- `AWS::OpenSearchServerless::Collection` `DashboardEndpoint`: never — built from the collection id
+- `AWS::OpenSearchServerless::Collection` `FipsEndpoints`: never — built from the collection id
+- `AWS::PCS::Cluster` `Endpoints`: never — the cluster networking is create-only
+- `AWS::RDS::DBShardGroup` `Endpoint`: never — built from the create-only identifier; PubliclyAccessible is create-only
 - `AWS::Redshift::Snapshot` `ClusterVersion`: never — the source cluster version, captured when the snapshot was taken
 - `AWS::Redshift::Snapshot` `EngineFullVersion`: never — the source engine version, captured when the snapshot was taken
+- `AWS::Route53RecoveryReadiness::ReadinessCheck` `ReadinessCheckArn`: never — built from the create-only ReadinessCheckName; ResourceSetName names a set
 - `AWS::Route53Resolver::FirewallRuleGroupAssociation` `Arn`: never — measured (cdkd-probe-7007-s3c): Name in place left it .../rslvr-frgassoc-ad8eaddd39cc403a
 - `AWS::Route53Resolver::ResolverRule` `Arn`: never — measured (cdkd-probe-7007-s1): Name only in place left it resolver-rule/rslvr-rr-b961c68a7e1e43908
+- `AWS::SageMaker::Space` `SpaceArn`: never — `space/<create-only domain>/<create-only SpaceName>`; SpaceDisplayName is a label
+- `AWS::SageMaker::Space` `Url`: never — built from the create-only domain and space name
+- `AWS::StorageGateway::NFSFileShare` `FileShareId`: never — the share id; UpdateNFSFileShare takes FileShareARN and FileShareName
+- `AWS::StorageGateway::SMBFileShare` `FileShareId`: never — the share id; UpdateSMBFileShare takes FileShareARN and FileShareName
 - `AWS::WellArchitected::Workload` `WorkloadId`: never — measured (cdkd-probe-7007-s3c): WorkloadName in place left it d407459bb0b58e882b630018989ed8fb
 - `AWS::XRay::Group` `GroupARN`: never — measured (cdkd-probe-7007-s1): GroupName in place left it group/<old name>/NIY2T2OJ...
 - `AWS::XRay::SamplingRule` `RuleARN`: never — measured (cdkd-probe-7007-s1): SamplingRule.RuleName in place left it sampling-rule/<old name>
@@ -1059,7 +1101,7 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::GuardDuty::TrustedEntitySet` | `UpdatedAt` |
 | `AWS::HealthImaging::Datastore` | `UpdatedAt` |
 | `AWS::IdentityStore::User` | `UpdatedAt`, `UpdatedBy` |
-| `AWS::ImageBuilder::Image` | `LatestVersion` |
+| `AWS::ImageBuilder::Image` | `LatestVersion`, `LatestVersion.Arn`, `LatestVersion.Major`, `LatestVersion.Minor`, `LatestVersion.Patch` |
 | `AWS::InspectorV2::CodeSecurityIntegration` | `LastUpdatedAt` |
 | `AWS::InspectorV2::Connector` | `LastUpdatedAt` |
 | `AWS::InternetMonitor::Monitor` | `ModifiedAt` |
@@ -1135,6 +1177,7 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::NetworkSecurityManager::Rule` | `UpdatedAt`, `Version` |
 | `AWS::NetworkSecurityManager::Scope` | `UpdatedAt`, `Version` |
 | `AWS::NetworkSecurityManager::Template` | `UpdatedAt`, `Version` |
+| `AWS::NotificationsContacts::EmailContact` | `EmailContact.UpdateTime` |
 | `AWS::ObservabilityAdmin::DatasetIntegration` | `UpdatedAt` |
 | `AWS::Omics::AnnotationStore` | `UpdateTime` |
 | `AWS::Omics::SequenceStore` | `UpdateTime` |
@@ -1158,7 +1201,7 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::QuickSight::ApprovalPolicy` | `UpdatedAt` |
 | `AWS::QuickSight::Brand` | `LastUpdatedTime`, `VersionId`, `VersionStatus` |
 | `AWS::QuickSight::DLPSetting` | `UpdatedAt` |
-| `AWS::QuickSight::Dashboard` | `LastUpdatedTime`, `Version` |
+| `AWS::QuickSight::Dashboard` | `LastUpdatedTime`, `Version`, `Version.Arn`, `Version.CreatedTime`, `Version.DataSetArns`, `Version.Description`, `Version.Errors`, `Version.Sheets`, `Version.SourceEntityArn`, `Version.Status`, `Version.ThemeArn`, `Version.VersionNumber` |
 | `AWS::QuickSight::DataSet` | `LastUpdatedTime` |
 | `AWS::QuickSight::DataSource` | `LastUpdatedTime` |
 | `AWS::QuickSight::Flow` | `LastUpdatedTime` |
@@ -1167,8 +1210,8 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::QuickSight::LimitsProfile` | `UpdatedAt` |
 | `AWS::QuickSight::OAuthClientApplication` | `LastUpdatedTime` |
 | `AWS::QuickSight::Space` | `UpdatedAt` |
-| `AWS::QuickSight::Template` | `LastUpdatedTime`, `Version` |
-| `AWS::QuickSight::Theme` | `LastUpdatedTime`, `Version` |
+| `AWS::QuickSight::Template` | `LastUpdatedTime`, `Version`, `Version.CreatedTime`, `Version.DataSetConfigurations`, `Version.Description`, `Version.Errors`, `Version.Sheets`, `Version.SourceEntityArn`, `Version.Status`, `Version.ThemeArn`, `Version.VersionNumber` |
+| `AWS::QuickSight::Theme` | `LastUpdatedTime`, `Version`, `Version.Arn`, `Version.BaseThemeId`, `Version.Configuration`, `Version.Configuration.DataColorPalette`, `Version.Configuration.Sheet`, `Version.Configuration.Typography`, `Version.Configuration.UIColorPalette`, `Version.CreatedTime`, `Version.Description`, `Version.Errors`, `Version.Status`, `Version.VersionNumber` |
 | `AWS::QuickSight::VPCConnection` | `LastUpdatedTime` |
 | `AWS::RAM::PermissionAssociation` | `LastUpdatedTime`, `PermissionVersion` |
 | `AWS::RAM::PrincipalAssociation` | `LastUpdatedTime` |
@@ -1262,7 +1305,6 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::ACMPCA::CertificateAuthority` | 1 |
 | `AWS::ACMPCA::CertificateAuthorityActivation` | 1 |
 | `AWS::APS::Scraper` | 1 |
-| `AWS::APS::Workspace` | 1 |
 | `AWS::ARCRegionSwitch::Plan` | 4 |
 | `AWS::AWSExternalAnthropic::Workspace` | 1 |
 | `AWS::AgentRegistry::Registry` | 2 |
@@ -1270,9 +1312,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::AmazonMQ::Broker` | 9 |
 | `AWS::AmazonMQ::Configuration` | 1 |
 | `AWS::Amplify::App` | 2 |
-| `AWS::Amplify::Branch` | 1 |
 | `AWS::Amplify::Domain` | 5 |
-| `AWS::Amplify::Webhook` | 1 |
 | `AWS::ApiGateway::DomainName` | 4 |
 | `AWS::ApiGateway::DomainNameV2` | 1 |
 | `AWS::ApiGatewayV2::DomainName` | 2 |
@@ -1295,8 +1335,8 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::AppRunner::Service` | 2 |
 | `AWS::AppRunner::VpcIngressConnection` | 2 |
 | `AWS::AppStream::ImageBuilder` | 1 |
-| `AWS::AppSync::Api` | 3 |
-| `AWS::AppSync::DomainName` | 2 |
+| `AWS::AppSync::Api` | 2 |
+| `AWS::AppSync::DomainName` | 1 |
 | `AWS::AppSync::DomainNameApiAssociation` | 1 |
 | `AWS::AppSync::FunctionConfiguration` | 2 |
 | `AWS::AppSync::SourceApiAssociation` | 7 |
@@ -1375,7 +1415,6 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Cases::Layout` | 2 |
 | `AWS::Cases::Template` | 2 |
 | `AWS::CertificateManager::AcmeEndpoint` | 1 |
-| `AWS::Chatbot::MicrosoftTeamsChannelConfiguration` | 1 |
 | `AWS::Chime::AppInstanceBot` | 1 |
 | `AWS::Chime::Channel` | 2 |
 | `AWS::Chime::ChannelFlow` | 1 |
@@ -1401,7 +1440,6 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::CloudFront::DistributionTenant` | 2 |
 | `AWS::CloudFront::Function` | 2 |
 | `AWS::CloudFront::KeyValueStore` | 1 |
-| `AWS::CloudFront::StreamingDistribution` | 1 |
 | `AWS::CloudFront::TrustStore` | 2 |
 | `AWS::CloudFront::VpcOrigin` | 2 |
 | `AWS::CloudHSM::Cluster` | 5 |
@@ -1470,12 +1508,11 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::DSQL::Cluster` | 6 |
 | `AWS::DataExchange::DataSet` | 1 |
 | `AWS::DataSync::Agent` | 2 |
-| `AWS::DataSync::LocationAzureBlob` | 3 |
-| `AWS::DataSync::LocationFSxWindows` | 3 |
-| `AWS::DataSync::LocationHDFS` | 3 |
-| `AWS::DataSync::LocationNFS` | 1 |
-| `AWS::DataSync::LocationObjectStorage` | 3 |
-| `AWS::DataSync::LocationSMB` | 3 |
+| `AWS::DataSync::LocationAzureBlob` | 2 |
+| `AWS::DataSync::LocationFSxWindows` | 2 |
+| `AWS::DataSync::LocationHDFS` | 2 |
+| `AWS::DataSync::LocationObjectStorage` | 2 |
+| `AWS::DataSync::LocationSMB` | 2 |
 | `AWS::DataSync::Task` | 3 |
 | `AWS::DataZone::Connection` | 5 |
 | `AWS::DataZone::DataSource` | 7 |
@@ -1493,7 +1530,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Deadline::Budget` | 1 |
 | `AWS::Deadline::Fleet` | 6 |
 | `AWS::Deadline::Limit` | 1 |
-| `AWS::Deadline::Monitor` | 2 |
+| `AWS::Deadline::Monitor` | 1 |
 | `AWS::Deadline::QueueEnvironment` | 1 |
 | `AWS::DevOpsAgent::AgentSpace` | 8 |
 | `AWS::DevOpsAgent::Asset` | 1 |
@@ -1548,7 +1585,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::ElastiCache::GlobalReplicationGroup` | 2 |
 | `AWS::ElastiCache::ParameterGroup` | 1 |
 | `AWS::ElastiCache::ReplicationGroup` | 15 |
-| `AWS::ElastiCache::ServerlessCache` | 6 |
+| `AWS::ElastiCache::ServerlessCache` | 5 |
 | `AWS::ElastiCache::User` | 1 |
 | `AWS::ElastiCache::UserGroup` | 1 |
 | `AWS::ElasticBeanstalk::ConfigurationTemplate` | 1 |
@@ -1561,13 +1598,11 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::EventSchemas::Discoverer` | 1 |
 | `AWS::Events::ApiDestination` | 1 |
 | `AWS::Events::Connection` | 4 |
-| `AWS::Events::Endpoint` | 3 |
+| `AWS::Events::Endpoint` | 2 |
 | `AWS::EventsV2::EventBus` | 1 |
 | `AWS::EventsV2::EventSource` | 2 |
 | `AWS::EventsV2::Subscriber` | 1 |
 | `AWS::Evidently::Segment` | 1 |
-| `AWS::FMS::ApplicationsList` | 1 |
-| `AWS::FMS::ProtocolsList` | 1 |
 | `AWS::FSx::DataRepositoryAssociation` | 1 |
 | `AWS::FSx::FileCache` | 8 |
 | `AWS::FSx::Snapshot` | 1 |
@@ -1604,7 +1639,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::GuardDuty::PublishingDestination` | 2 |
 | `AWS::GuardDuty::ThreatEntitySet` | 2 |
 | `AWS::GuardDuty::TrustedEntitySet` | 2 |
-| `AWS::HealthLake::FHIRDatastore` | 4 |
+| `AWS::HealthLake::FHIRDatastore` | 1 |
 | `AWS::IAM::ServiceLinkedRole` | 1 |
 | `AWS::IAM::VirtualMFADevice` | 1 |
 | `AWS::IVS::Channel` | 2 |
@@ -1612,7 +1647,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::IVS::Stage` | 1 |
 | `AWS::IVSChat::LoggingConfiguration` | 1 |
 | `AWS::IdentityStore::User` | 1 |
-| `AWS::ImageBuilder::Image` | 7 |
+| `AWS::ImageBuilder::Image` | 3 |
 | `AWS::ImageBuilder::ImagePipeline` | 1 |
 | `AWS::InspectorV2::CisScanConfiguration` | 1 |
 | `AWS::InspectorV2::CodeSecurityIntegration` | 4 |
@@ -1629,7 +1664,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::IoT::TopicRuleDestination` | 1 |
 | `AWS::IoTAnalytics::Dataset` | 1 |
 | `AWS::IoTCoreDeviceAdvisor::SuiteDefinition` | 1 |
-| `AWS::IoTFleetHub::Application` | 8 |
+| `AWS::IoTFleetHub::Application` | 7 |
 | `AWS::IoTFleetWise::Campaign` | 1 |
 | `AWS::IoTFleetWise::SignalCatalog` | 5 |
 | `AWS::IoTSiteWise::Pipeline` | 1 |
@@ -1644,7 +1679,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::IoTWireless::PartnerAccount` | 1 |
 | `AWS::IoTWireless::TaskDefinition` | 1 |
 | `AWS::IoTWireless::WirelessDevice` | 1 |
-| `AWS::IoTWireless::WirelessDeviceImportTask` | 8 |
+| `AWS::IoTWireless::WirelessDeviceImportTask` | 7 |
 | `AWS::Kendra::DataSource` | 1 |
 | `AWS::Kendra::FeaturedResultsSet` | 2 |
 | `AWS::Kendra::QuerySuggestionsBlockList` | 2 |
@@ -1664,10 +1699,9 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Lightsail::Bucket` | 3 |
 | `AWS::Lightsail::Container` | 3 |
 | `AWS::Lightsail::Disk` | 10 |
-| `AWS::Lightsail::Distribution` | 3 |
+| `AWS::Lightsail::Distribution` | 2 |
 | `AWS::Lightsail::Domain` | 3 |
-| `AWS::Lightsail::Instance` | 16 |
-| `AWS::Lightsail::LoadBalancer` | 1 |
+| `AWS::Lightsail::Instance` | 15 |
 | `AWS::Lightsail::LoadBalancerTlsCertificate` | 1 |
 | `AWS::Lightsail::StaticIp` | 2 |
 | `AWS::Logs::LogAnomalyDetector` | 2 |
@@ -1688,8 +1722,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::MediaConnect::DestinationEndpoint` | 8 |
 | `AWS::MediaConnect::Flow` | 9 |
 | `AWS::MediaConnect::FlowMediaStream` | 1 |
-| `AWS::MediaConnect::FlowOutput` | 1 |
-| `AWS::MediaConnect::FlowSource` | 6 |
+| `AWS::MediaConnect::FlowSource` | 5 |
 | `AWS::MediaConnect::FlowVpcInterface` | 1 |
 | `AWS::MediaConnect::RouterInput` | 14 |
 | `AWS::MediaConnect::RouterNetworkInterface` | 4 |
@@ -1697,7 +1730,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::MediaConnect::SourceEndpoint` | 8 |
 | `AWS::MediaLive::Channel` | 2 |
 | `AWS::MediaLive::ChannelPlacementGroup` | 3 |
-| `AWS::MediaLive::CloudWatchAlarmTemplate` | 3 |
+| `AWS::MediaLive::CloudWatchAlarmTemplate` | 1 |
 | `AWS::MediaLive::Cluster` | 2 |
 | `AWS::MediaLive::EventBridgeRuleTemplate` | 3 |
 | `AWS::MediaLive::Input` | 8 |
@@ -1708,16 +1741,16 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::MediaLive::Node` | 6 |
 | `AWS::MediaLive::SdiSource` | 2 |
 | `AWS::MediaLive::SignalMap` | 12 |
-| `AWS::MediaPackage::OriginEndpoint` | 2 |
+| `AWS::MediaPackage::OriginEndpoint` | 1 |
 | `AWS::MediaPackage::PackagingGroup` | 1 |
-| `AWS::MediaPackageV2::Channel` | 3 |
+| `AWS::MediaPackageV2::Channel` | 2 |
 | `AWS::MediaPackageV2::ChannelGroup` | 1 |
 | `AWS::MediaPackageV2::OriginEndpoint` | 4 |
 | `AWS::MediaStore::Container` | 1 |
-| `AWS::MediaTailor::PlaybackConfiguration` | 5 |
+| `AWS::MediaTailor::PlaybackConfiguration` | 4 |
 | `AWS::MediaTailor::Program` | 3 |
 | `AWS::MemoryDB::ACL` | 1 |
-| `AWS::MemoryDB::Cluster` | 5 |
+| `AWS::MemoryDB::Cluster` | 4 |
 | `AWS::MemoryDB::MultiRegionCluster` | 2 |
 | `AWS::MemoryDB::SubnetGroup` | 1 |
 | `AWS::MemoryDB::User` | 1 |
@@ -1752,7 +1785,6 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::NimbleStudio::StudioComponent` | 1 |
 | `AWS::Notifications::EventRule` | 2 |
 | `AWS::Notifications::NotificationConfiguration` | 1 |
-| `AWS::NotificationsContacts::EmailContact` | 1 |
 | `AWS::ODB::CloudAutonomousVmCluster` | 26 |
 | `AWS::ODB::CloudExadataInfrastructure` | 17 |
 | `AWS::ODB::CloudVmCluster` | 13 |
@@ -1771,7 +1803,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Omics::Workflow` | 3 |
 | `AWS::Omics::WorkflowVersion` | 2 |
 | `AWS::OpenSearch::DataSource` | 1 |
-| `AWS::OpenSearchServerless::Collection` | 4 |
+| `AWS::OpenSearchServerless::Collection` | 1 |
 | `AWS::OpenSearchServerless::SecurityConfig` | 3 |
 | `AWS::OpenSearchService::Domain` | 17 |
 | `AWS::OpsWorks::Instance` | 4 |
@@ -1781,7 +1813,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Organizations::OrganizationalUnit` | 2 |
 | `AWS::Organizations::Policy` | 2 |
 | `AWS::Outposts::Outpost` | 3 |
-| `AWS::PCS::Cluster` | 3 |
+| `AWS::PCS::Cluster` | 2 |
 | `AWS::PCS::ComputeNodeGroup` | 4 |
 | `AWS::PCS::Queue` | 2 |
 | `AWS::Panorama::Package` | 5 |
@@ -1809,7 +1841,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::QuickSight::ApprovalPolicy` | 1 |
 | `AWS::QuickSight::Brand` | 1 |
 | `AWS::QuickSight::DLPSetting` | 2 |
-| `AWS::QuickSight::Dashboard` | 12 |
+| `AWS::QuickSight::Dashboard` | 2 |
 | `AWS::QuickSight::DataSet` | 3 |
 | `AWS::QuickSight::DataSource` | 2 |
 | `AWS::QuickSight::Flow` | 3 |
@@ -1817,8 +1849,8 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::QuickSight::KnowledgeBase` | 6 |
 | `AWS::QuickSight::LimitsProfile` | 1 |
 | `AWS::QuickSight::Space` | 1 |
-| `AWS::QuickSight::Template` | 10 |
-| `AWS::QuickSight::Theme` | 14 |
+| `AWS::QuickSight::Template` | 1 |
+| `AWS::QuickSight::Theme` | 2 |
 | `AWS::QuickSight::Topic` | 1 |
 | `AWS::QuickSight::TopicV2` | 1 |
 | `AWS::QuickSight::VPCConnection` | 4 |
@@ -1826,7 +1858,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::RAM::ResourceShare` | 2 |
 | `AWS::RDS::CustomDBEngineVersion` | 1 |
 | `AWS::RDS::DBClusterEndpoint` | 4 |
-| `AWS::RDS::DBShardGroup` | 2 |
+| `AWS::RDS::DBShardGroup` | 1 |
 | `AWS::RDS::GlobalCluster` | 1 |
 | `AWS::RTBFabric::InboundExternalLink` | 2 |
 | `AWS::RTBFabric::Link` | 2 |
@@ -1870,7 +1902,6 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Route53RecoveryControl::RoutingControl` | 2 |
 | `AWS::Route53RecoveryControl::SafetyRule` | 2 |
 | `AWS::Route53RecoveryReadiness::Cell` | 1 |
-| `AWS::Route53RecoveryReadiness::ReadinessCheck` | 1 |
 | `AWS::Route53Resolver::FirewallConfig` | 1 |
 | `AWS::Route53Resolver::FirewallDomainList` | 4 |
 | `AWS::Route53Resolver::FirewallRuleGroup` | 5 |
@@ -1923,7 +1954,6 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::SageMaker::ModelPackageGroup` | 1 |
 | `AWS::SageMaker::PartnerApp` | 1 |
 | `AWS::SageMaker::Project` | 1 |
-| `AWS::SageMaker::Space` | 2 |
 | `AWS::SageMaker::TrialComponent` | 1 |
 | `AWS::SageMaker::Workforce` | 1 |
 | `AWS::SecurityAgent::Application` | 3 |
@@ -1948,8 +1978,8 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::ServiceCatalog::CloudFormationProvisionedProduct` | 3 |
 | `AWS::ServiceCatalog::Portfolio` | 1 |
 | `AWS::ServiceCatalogAppRegistry::Application` | 3 |
-| `AWS::StorageGateway::NFSFileShare` | 3 |
-| `AWS::StorageGateway::SMBFileShare` | 3 |
+| `AWS::StorageGateway::NFSFileShare` | 2 |
+| `AWS::StorageGateway::SMBFileShare` | 2 |
 | `AWS::Synthetics::Canary` | 3 |
 | `AWS::Timestream::InfluxDBCluster` | 9 |
 | `AWS::Timestream::InfluxDBInstance` | 7 |

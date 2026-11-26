@@ -185,6 +185,135 @@ export function mergeDisjoint(a: Classification, b: Classification): Classificat
   return { ...a, ...b };
 }
 
+/**
+ * go-to-k/cdkd#7007: Cloud Control pairs settled from the service's API model
+ * and documented formats (no probe). An ARN or id the service mints, or a
+ * host built from create-only inputs, never moves; an address the update API
+ * rewrites moves with the property it takes.
+ */
+const REASONED: Classification = {
+  // An in-place name property of these types names ANOTHER resource (a key
+  // pair, a certificate, a parameter group); the ARN is `<Type>/<uuid>` or
+  // carries only the create-only name.
+  'AWS::Lightsail::Distribution': {
+    DistributionArn: never('`Distribution/<uuid>`; CertificateName attaches a certificate'),
+  },
+  'AWS::Lightsail::Instance': {
+    InstanceArn: never('`Instance/<uuid>`; KeyPairName names a key pair'),
+  },
+  'AWS::Lightsail::LoadBalancer': {
+    LoadBalancerArn: never('`LoadBalancer/<uuid>`; TlsPolicyName names a TLS policy'),
+  },
+  'AWS::MemoryDB::Cluster': {
+    ARN: never('`cluster/<create-only ClusterName>`; the in-place names are a parameter group, ACL and snapshot'),
+  },
+  'AWS::ElastiCache::ServerlessCache': {
+    ARN: never('`serverlesscache:<create-only name>`; FinalSnapshotName names the final snapshot'),
+  },
+  'AWS::MediaTailor::PlaybackConfiguration': {
+    PlaybackConfigurationArn: never('built from the create-only Name; TranscodeProfileName names a profile'),
+  },
+  'AWS::Route53RecoveryReadiness::ReadinessCheck': {
+    ReadinessCheckArn: never('built from the create-only ReadinessCheckName; ResourceSetName names a set'),
+  },
+  'AWS::IoTWireless::WirelessDeviceImportTask': {
+    Arn: never('`ImportTask/<id>`; DestinationName names a destination'),
+  },
+  'AWS::Amplify::Branch': {
+    Arn: never('`apps/<app>/branches/<create-only BranchName>`; PullRequestEnvironmentName is a backend'),
+  },
+  'AWS::Chatbot::MicrosoftTeamsChannelConfiguration': {
+    Arn: never('built from the create-only ConfigurationName; TeamsChannelName labels the channel'),
+  },
+  'AWS::MediaConnect::FlowOutput': {
+    OutputArn: never('`output:<id>:<create-only Name>`; NdiProgramName is an NDI setting'),
+  },
+  'AWS::MediaConnect::FlowSource': {
+    SourceArn: never('`source:<id>:<create-only Name>`; VpcInterfaceName names an interface'),
+  },
+  'AWS::MediaPackage::OriginEndpoint': {
+    Arn: never('`origin_endpoints/<create-only Id>`; ManifestName names the manifest'),
+  },
+  'AWS::SageMaker::Space': {
+    SpaceArn: never('`space/<create-only domain>/<create-only SpaceName>`; SpaceDisplayName is a label'),
+    Url: never('built from the create-only domain and space name'),
+  },
+  // The update API names the resource by its minted id and takes the name as
+  // a field, so a rename keeps the id.
+  'AWS::StorageGateway::NFSFileShare': {
+    FileShareId: never('the share id; UpdateNFSFileShare takes FileShareARN and FileShareName'),
+  },
+  'AWS::StorageGateway::SMBFileShare': {
+    FileShareId: never('the share id; UpdateSMBFileShare takes FileShareARN and FileShareName'),
+  },
+  'AWS::FMS::ApplicationsList': {
+    ListId: never('PutAppsList updates the list its ListId names; the name is a field'),
+  },
+  'AWS::FMS::ProtocolsList': {
+    ListId: never('PutProtocolsList updates the list its ListId names; the name is a field'),
+  },
+  'AWS::MediaLive::CloudWatchAlarmTemplate': {
+    Arn: never('`cloudwatch-alarm-template:<id>`; UpdateCloudWatchAlarmTemplate keeps the id'),
+    Id: never('the minted id; UpdateCloudWatchAlarmTemplate names the template by it'),
+  },
+  // A host or address built from the resource's minted id or create-only
+  // inputs; no in-place property is part of it.
+  'AWS::Amplify::Webhook': { WebhookUrl: never('built from the webhook id and its creation token') },
+  'AWS::AppSync::Api': { Dns: never('the api id hosts, fixed for the api life') },
+  'AWS::AppSync::DomainName': {
+    AppSyncDomainName: never('the CloudFront host for the create-only DomainName'),
+  },
+  'AWS::APS::Workspace': {
+    PrometheusEndpoint: never('`aps-workspaces.<region>.../workspaces/<id>/`'),
+  },
+  'AWS::CloudFront::StreamingDistribution': {
+    DomainName: never('the `d....cloudfront.net` host assigned at create'),
+  },
+  'AWS::DataSync::LocationFSxWindows': { LocationUri: never('built from create-only inputs only') },
+  'AWS::Events::Endpoint': {
+    EndpointUrl: never('`<endpoint id>.endpoint.events.amazonaws.com`'),
+  },
+  'AWS::HealthLake::FHIRDatastore': { DatastoreEndpoint: never('built from the datastore id') },
+  'AWS::OpenSearchServerless::Collection': {
+    CollectionEndpoint: never('`<collection id>.<region>.aoss.amazonaws.com`'),
+    DashboardEndpoint: never('built from the collection id'),
+    FipsEndpoints: never('built from the collection id'),
+  },
+  'AWS::RDS::DBShardGroup': {
+    Endpoint: never('built from the create-only identifier; PubliclyAccessible is create-only'),
+  },
+  'AWS::MediaPackageV2::Channel': {
+    IngestEndpoints: never('assigned per channel at create; InputType is create-only'),
+  },
+  'AWS::PCS::Cluster': { Endpoints: never('the cluster networking is create-only') },
+  'AWS::IoTFleetHub::Application': {
+    ApplicationUrl: never('built from the application id; UpdateApplication takes name and description only'),
+  },
+  // DataSync builds a location URI from its host and subdirectory, and each
+  // UpdateLocation* call takes the subdirectory (and an HDFS name node, an
+  // object store's port and protocol): the URI moves with them.
+  'AWS::DataSync::LocationNFS': {
+    LocationUri: movedBy(['Subdirectory'], '`nfs://<host>/<subdirectory>/`'),
+  },
+  'AWS::DataSync::LocationSMB': {
+    LocationUri: movedBy(['Subdirectory'], '`smb://<host>/<subdirectory>/`'),
+  },
+  'AWS::DataSync::LocationHDFS': {
+    LocationUri: movedBy(['Subdirectory', 'NameNodes'], '`hdfs://<name node>:<port>/<subdirectory>/`'),
+  },
+  'AWS::DataSync::LocationObjectStorage': {
+    LocationUri: movedBy(
+      ['Subdirectory', 'ServerPort', 'ServerProtocol'],
+      'the object store host, bucket and subdirectory'
+    ),
+  },
+  'AWS::DataSync::LocationAzureBlob': {
+    LocationUri: movedBy(['Subdirectory'], 'the container URL and subdirectory'),
+  },
+  // UpdateMonitor takes the subdomain: `https://<subdomain>.<region>.deadlinecloud...`.
+  'AWS::Deadline::Monitor': { Url: movedBy(['Subdomain'], 'the monitor subdomain host') },
+};
+
 const HAND_CLASSIFICATION: Classification = {
   'AWS::ApiGateway::Account': { Id: OWN_REF },
   'AWS::ApiGateway::Authorizer': { AuthorizerId: ID },
@@ -756,6 +885,6 @@ const HAND_CLASSIFICATION: Classification = {
 };
 
 export const SDK_IN_PLACE_ATTR_CLASSIFICATION: Classification = mergeDisjoint(
-  HAND_CLASSIFICATION,
-  RENAME_MEASURED
+  mergeDisjoint(HAND_CLASSIFICATION, RENAME_MEASURED),
+  REASONED
 );
