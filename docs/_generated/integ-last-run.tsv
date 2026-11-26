@@ -407,12 +407,12 @@ raw-cfn-conditions-params	2026-11-04T05:57:23Z	PASS	79	verify.sh	rc ok, orph cle
 rds-aurora	2026-11-20T19:36:46Z	PASS	4718	verify.sh	PR6691 run at 3d802a13c, same PR delta; us-west-2; rc ok, orph clean
 rds-dbcluster-pitr-restore	2026-11-13T12:45:42Z	PASS	501	verify.sh	rc ok, orph clean (#6212 RDS wait delegators to base class)
 rds-dbinstance-additional-storage-volumes	2026-11-12T04:20:11Z	PASS	2256	verify.sh	rc ok, orph clean; sqlserver-se us-east-1, 4 phases sdk route
-rds-dbinstance-backfill	2026-11-09T06:52:36Z	PASS	4822	verify.sh	rc ok, orph clean; #5640 SourceRegion cross-region replica (us-west-2 source) sdk-routed
+rds-dbinstance-backfill	2026-11-26T10:17:07Z	PASS	4990	verify.sh	rc ok, orph clean (us-east-1 + us-west-2); #7044 phase 2c-az AvailabilityZone replacement refused
 rds-dbinstance-backup-replication	2026-11-10T17:39:18Z	PASS	1189	verify.sh	rc ok, destroy 0 errors, orph clean (us-west-2 replica swept; us-east-1 automated snapshots cleared)
 rds-dbinstance-charset-timezone	2026-11-11T02:19:27Z	PASS	1169	verify.sh	rc ok, orph clean; Oracle SE2 + SQL Server Express (#5640)
 rds-dbinstance-getatt-attributes	2026-11-13T19:22:40Z	PASS	476	verify.sh	rc ok, orph clean; pre-fix build reproduced identifier fallback (#6242)
 rds-dbinstance-processor-features	2026-11-09T14:21:43Z	PASS	1985	verify.sh	rc ok, destroy 0 errors, orph clean (db.m7i.4xlarge, 5 phases)
-rds-dbinstance-snapshot-restore	2026-11-13T06:47:48Z	PASS	3933	verify.sh	rc ok, orph clean (#5640 snapshot + PITR + cluster replica, PR #6176 merged head)
+rds-dbinstance-snapshot-restore	2026-11-26T10:17:07Z	PASS	4089	verify.sh	rc ok, orph clean; #7044 phase 5 stateful-guard wording (DBSnapshotIdentifier/RestoreTime)
 rds-express-cluster	2026-11-20T19:36:46Z	PASS	1715	verify.sh	PR6691 run at 3d802a13c, same PR delta; rc ok, orph clean
 rds-fix-forward-orphan	2026-11-20T19:36:46Z	PASS	1225	verify.sh	PR6691 84afba18c; rc ok, orph clean; own bucket (1st try failed on account id in bucket name)
 rds-full-stack	2026-11-21T02:43:57Z	PASS	1040	verify.sh	PR6738 e22f0ed07; rc ok, orph clean
