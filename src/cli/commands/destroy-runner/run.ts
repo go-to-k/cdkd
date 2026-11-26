@@ -407,6 +407,7 @@ async function destroyStackInRegion(
     stackName,
     // go-to-k/cdkd#7005: the question counts what it deletes, as the plan does.
     resourceCount: toDelete.length,
+    keptCount: toKeep.length,
     protectedCount,
     result,
   });

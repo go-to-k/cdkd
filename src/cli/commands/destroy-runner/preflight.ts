@@ -472,6 +472,8 @@ export interface ConfirmFrame {
   ctx: DestroyRunnerContext;
   stackName: string;
   resourceCount: number;
+  /** go-to-k/cdkd#7005: records their `DeletionPolicy` keeps, not in `resourceCount`. */
+  keptCount: number;
   protectedCount: number;
   result: DestroyRunnerResult;
 }
@@ -489,6 +491,7 @@ export async function announceOrphansAndConfirm({
   ctx,
   stackName,
   resourceCount,
+  keptCount,
   protectedCount,
   result,
 }: ConfirmFrame): Promise<DestroyRunnerResult | undefined> {
@@ -627,13 +630,14 @@ export async function announceOrphansAndConfirm({
       journaledOrphans.count > 0
         ? ` and ${journaledOrphans.count} recorded only in its rollback journal`
         : '';
+    const keptClause = keptCount > 0 ? ` (${keptCount} kept in AWS by their DeletionPolicy)` : '';
     const stackLabel =
       displayStackName(stackName) +
       (ctx.confirmationNote !== undefined ? ` (${ctx.confirmationNote})` : '');
     const prompt = ctx.removeProtection
-      ? `\nAbout to destroy ${resourceCount} resources${journaledClause} from stack ${stackLabel}, ` +
+      ? `\nAbout to destroy ${resourceCount} resources${journaledClause} from stack ${stackLabel}${keptClause}, ` +
         `REMOVING DELETION PROTECTION on ${protectedCount} of them. Continue? (y/N): `
-      : `\nAre you sure you want to destroy stack ${stackLabel} and delete all ${resourceCount} resources${journaledClause}? (Y/n): `;
+      : `\nAre you sure you want to destroy stack ${stackLabel} and delete all ${resourceCount} resources${journaledClause}${keptClause}? (Y/n): `;
     const answer = await rl.question(prompt);
     rl.close();
     const trimmed = answer.trim().toLowerCase();

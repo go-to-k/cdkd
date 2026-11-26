@@ -754,7 +754,8 @@ export async function doDeployWithPrefetch(
     });
 
     // Progress counter for tracking overall deployment progress
-    const totalOperations = planned.create + planned.update + planned.delete + planned.orphan;
+    // A kept removal (`planned.orphan`) prints no `[n/N]` row, so it is not counted.
+    const totalOperations = planned.create + planned.update + planned.delete;
     const progress = { current: 0, total: totalOperations };
 
     // go-to-k/cdkd#6705: arm the receiver for this deploy's signalling creates.

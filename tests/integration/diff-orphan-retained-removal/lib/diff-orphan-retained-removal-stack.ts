@@ -7,7 +7,7 @@ import type { Construct } from 'constructs';
  * read as an ORPHAN in `cdkd diff` and the deploy's `Changes:` line, not as a
  * delete.
  *
- * Baseline: four queues. `CDKD_TEST_REMOVAL=true` removes three of them:
+ * Baseline: five queues. `CDKD_TEST_REMOVAL=true` removes three of them:
  * - `QueueRet`: `RemovalPolicy.RETAIN` -> `DeletionPolicy: Retain`, orphaned.
  * - `QueueRou`: `RETAIN_ON_UPDATE_OR_DELETE` -> `RetainExceptOnCreate`, orphaned.
  * - `QueueDel`: `RemovalPolicy.DESTROY`, deleted (the control row).

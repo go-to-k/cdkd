@@ -139,7 +139,7 @@ describe('cdkd destroy plan: retained records are listed apart (#7005)', () => {
     try {
       await runDestroyForStack('TestStack', state, { ...ctx(), skipConfirmation: false });
       expect(String(readlineQuestion.mock.calls[0]![0])).toContain(
-        'destroy stack TestStack and delete all 2 resources?'
+        'destroy stack TestStack and delete all 2 resources (2 kept in AWS by their DeletionPolicy)?'
       );
     } finally {
       Object.defineProperty(process.stdin, 'isTTY', { value: originalIsTTY, configurable: true });

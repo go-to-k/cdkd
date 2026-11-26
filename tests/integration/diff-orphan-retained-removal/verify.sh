@@ -3,7 +3,7 @@
 # it (Retain / RetainExceptOnCreate) is shown as ORPHANED by `cdkd diff` and the
 # deploy's `Changes:` line, and the deploy really keeps it in AWS.
 #
-# Phase 1: deploy four queues.
+# Phase 1: deploy five queues.
 # Phase 2: `cdkd diff` with CDKD_TEST_REMOVAL=true (three queues removed):
 #          the two retained rows carry the orphan marker, the DESTROY row does
 #          not, and the totals read `1 to delete, 2 to orphan`.
