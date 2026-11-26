@@ -169,6 +169,17 @@ describe('RDS DBInstance attributes an in-place update moves late (go-to-k/cdkd#
       expect(result.attributes?.['ListenerEndpoint.Port']).toBe('3307');
     });
 
+    it('waits while the port reads new but RDS still lists it pending', async () => {
+      arm([
+        { Endpoint: { ...ENDPOINT, Port: 3307 }, PendingModifiedValues: { Port: 3307 } },
+        { Endpoint: { ...ENDPOINT, Port: 3307 }, PendingModifiedValues: { Port: 3307 } },
+        PORT_MOVED,
+      ]);
+      await update({ ...BASE, Port: '3307' });
+      // Three wait reads, then the attributes read.
+      expect(describes()).toBe(4);
+    });
+
     it('counts a read that has not registered the change yet as unapplied', async () => {
       // Neither the endpoint nor PendingModifiedValues names 3307 yet.
       arm([{ DBInstanceStatus: 'available' }, PORT_PENDING, PORT_MOVED]);
@@ -204,7 +215,7 @@ describe('RDS DBInstance attributes an in-place update moves late (go-to-k/cdkd#
     const changed = { ...BASE, CACertificateIdentifier: NEW_CERT.CAIdentifier };
     const previous = { ...BASE, CACertificateIdentifier: OLD_CERT.CAIdentifier };
 
-    it('waits for the new certificate, then records its details', async () => {
+    it('waits for the new certificate, and for it to leave the pending values when the rotation restarts', async () => {
       arm([
         { PendingModifiedValues: { CACertificateIdentifier: NEW_CERT.CAIdentifier } },
         {
@@ -215,10 +226,45 @@ describe('RDS DBInstance attributes an in-place update moves late (go-to-k/cdkd#
         },
         { CACertificateIdentifier: NEW_CERT.CAIdentifier, CertificateDetails: NEW_CERT },
       ]);
-      const result = await update(changed, previous);
+      const result = await update(
+        { ...changed, CertificateRotationRestart: true },
+        { ...previous, CertificateRotationRestart: true }
+      );
       expect(result.attributes?.['CertificateDetails.CAIdentifier']).toBe(NEW_CERT.CAIdentifier);
       expect(result.attributes?.['CertificateDetails.ValidTill']).toBe('2028-01-01T00:00:00Z');
       expect(describes()).toBe(4);
+    });
+
+    it.each([
+      ['undeclared', undefined],
+      ['false', false],
+    ])(
+      'with CertificateRotationRestart %s, a certificate still pending (until the next reboot) does not hold the update, as in CloudFormation',
+      async (_label, restart) => {
+        arm([
+          { PendingModifiedValues: { CACertificateIdentifier: NEW_CERT.CAIdentifier } },
+          {
+            CACertificateIdentifier: NEW_CERT.CAIdentifier,
+            CertificateDetails: NEW_CERT,
+            PendingModifiedValues: { CACertificateIdentifier: NEW_CERT.CAIdentifier },
+          },
+        ]);
+        const result = await update(
+          { ...changed, ...(restart !== undefined && { CertificateRotationRestart: restart }) },
+          previous
+        );
+        expect(result.attributes?.['CertificateDetails.CAIdentifier']).toBe(NEW_CERT.CAIdentifier);
+      }
+    );
+
+    it('compares the certificate as RDS stores it, lower-cased', async () => {
+      arm([{ CACertificateIdentifier: NEW_CERT.CAIdentifier, CertificateDetails: NEW_CERT }]);
+      const result = await update(
+        { ...BASE, CACertificateIdentifier: NEW_CERT.CAIdentifier.toUpperCase() },
+        previous
+      );
+      expect(result.attributes?.['CertificateDetails.CAIdentifier']).toBe(NEW_CERT.CAIdentifier);
+      expect(describes()).toBe(2);
     });
   });
 
@@ -234,6 +280,13 @@ describe('RDS DBInstance attributes an in-place update moves late (go-to-k/cdkd#
       ]);
       const result = await update({ ...BASE, MultiAZ: true }, { ...BASE, MultiAZ: false });
       expect(result.attributes?.['SecondaryAvailabilityZone']).toBe('us-east-1b');
+    });
+
+    it('takes an available instance with nothing pending as converted, for a configuration naming no standby zone', async () => {
+      arm([{ PendingModifiedValues: { MultiAZ: true } }, { DBInstanceStatus: 'modifying', MultiAZ: true }, { MultiAZ: true }]);
+      const result = await update({ ...BASE, MultiAZ: true }, { ...BASE, MultiAZ: false });
+      expect(result.attributes).not.toHaveProperty('SecondaryAvailabilityZone');
+      expect(describes()).toBe(4);
     });
 
     it('waits for a conversion back to Single-AZ to drop the standby zone', async () => {

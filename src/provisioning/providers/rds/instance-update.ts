@@ -835,7 +835,8 @@ export async function updateDBInstance(
     // the describe reports for a change still unapplied is the OLD value: it
     // is left absent, never recorded stale, and the same wait is handed to the
     // deploy. A reference to it then waits for the change and reads the
-    // instance again; nothing else waits.
+    // instance again, and a custom resource downstream waits before its
+    // handler runs (go-to-k/cdkd#6940); a plain dependent does not.
     const unapplied = noWait && moved !== undefined ? unappliedMovedChanges(moved, described) : [];
     if (unapplied.length > 0 && moved !== undefined) {
       deferReadiness(logicalId, resourceType, physicalId, (signal) =>

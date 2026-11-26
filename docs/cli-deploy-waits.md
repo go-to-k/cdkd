@@ -87,7 +87,8 @@ skipped:
   `CertificateDetails`, `SecondaryAvailabilityZone`, the cluster's `Port`)
   only once AWS reports the change applied. Until then a `Fn::GetAtt` of it
   waits for the change, then reads the resource again, so it never gets the
-  old value;
+  old value, and a custom resource downstream of the resource waits for the
+  change before its handler runs;
 - a load balancer's capacity reservation: the load balancer serves at once;
 - an Auto Scaling group's instance refresh: the group keeps serving while it
   replaces instances.

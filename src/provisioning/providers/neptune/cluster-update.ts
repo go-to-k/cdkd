@@ -194,7 +194,8 @@ export async function updateDBCluster(
     const described = await this.describeDBCluster(physicalId);
     // Under `--no-wait` a port not applied yet is left absent, never recorded
     // stale, and the same wait is handed to the deploy: a reference to it
-    // waits for the port and reads the cluster again; nothing else waits.
+    // waits for the port and reads the cluster again, and a custom resource
+    // downstream waits before its handler runs (go-to-k/cdkd#6940).
     const portPending =
       noWait && portChanged !== undefined && !clusterPortApplied(described, portChanged);
     if (portPending) {

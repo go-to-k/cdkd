@@ -19,9 +19,20 @@ export interface MovedAttributeChanges {
   readonly port?: number;
   /** The CA certificate sent, when the template changed it. */
   readonly caIdentifier?: string;
+  /**
+   * Whether a pending CA certificate holds the change: only when the template
+   * declares `CertificateRotationRestart: true`, as CloudFormation's
+   * `isCaCertificateChangesApplied` counts it (`instanceHasPendingChanges`).
+   * Without a restart, an engine that cannot rotate in place keeps the
+   * certificate pending until the next reboot.
+   */
+  readonly caRotationRestarts?: boolean;
   /** The Multi-AZ setting sent, when the template changed it. */
   readonly multiAZ?: boolean;
 }
+
+/** A change that moves a recorded attribute late. */
+export type MovedChange = 'port' | 'caIdentifier' | 'multiAZ';
 
 /**
  * The attribute keys each change moves, as `dbInstanceAttributes` records
@@ -32,7 +43,7 @@ const MOVED_KEYS = {
   port: ['Endpoint.Port', 'ListenerEndpoint.Port'],
   caIdentifier: ['CertificateDetails.CAIdentifier', 'CertificateDetails.ValidTill'],
   multiAZ: ['SecondaryAvailabilityZone'],
-} as const satisfies Record<keyof MovedAttributeChanges, readonly string[]>;
+} as const satisfies Record<MovedChange, readonly string[]>;
 
 /**
  * What this update changes among the members that move a recorded attribute
@@ -47,13 +58,19 @@ export function movedAttributeChanges(
   backfillMembers: Partial<ModifyDBInstanceCommandInput>,
   context: UpdateContext | undefined
 ): MovedAttributeChanges | undefined {
-  const changes: { port?: number; caIdentifier?: string; multiAZ?: boolean } = {};
+  const changes: {
+    port?: number;
+    caIdentifier?: string;
+    caRotationRestarts?: boolean;
+    multiAZ?: boolean;
+  } = {};
   if (instanceValueChanged(properties, previousProperties, 'Port', context)) {
     const port = Number(properties['Port']);
     if (Number.isInteger(port)) changes.port = port;
   }
   if (backfillMembers.CACertificateIdentifier !== undefined) {
     changes.caIdentifier = backfillMembers.CACertificateIdentifier;
+    changes.caRotationRestarts = String(properties['CertificateRotationRestart']) === 'true';
   }
   if (backfillMembers.MultiAZ !== undefined) {
     changes.multiAZ = String(backfillMembers.MultiAZ) === 'true';
@@ -70,9 +87,9 @@ export function movedAttributeChanges(
 export function unappliedMovedChanges(
   changes: MovedAttributeChanges,
   instance: DBInstance | undefined
-): (keyof MovedAttributeChanges)[] {
+): MovedChange[] {
   const pending = instance?.PendingModifiedValues;
-  const unapplied: (keyof MovedAttributeChanges)[] = [];
+  const unapplied: MovedChange[] = [];
   if (
     changes.port !== undefined &&
     (instance?.Endpoint?.Port !== changes.port || pending?.Port !== undefined)
@@ -83,7 +100,7 @@ export function unappliedMovedChanges(
     changes.caIdentifier !== undefined &&
     (!sameCertificate(instance?.CACertificateIdentifier, changes.caIdentifier) ||
       !sameCertificate(instance?.CertificateDetails?.CAIdentifier, changes.caIdentifier) ||
-      pending?.CACertificateIdentifier !== undefined)
+      (changes.caRotationRestarts === true && pending?.CACertificateIdentifier !== undefined))
   ) {
     unapplied.push('caIdentifier');
   }
@@ -91,8 +108,13 @@ export function unappliedMovedChanges(
     changes.multiAZ !== undefined &&
     (instance?.MultiAZ !== changes.multiAZ ||
       pending?.MultiAZ !== undefined ||
-      // A conversion to Multi-AZ is done once RDS names the standby's zone.
-      (changes.multiAZ && instance?.SecondaryAvailabilityZone === undefined))
+      // A conversion to Multi-AZ is done once RDS names the standby's zone
+      // (measured: about a minute after it leaves the pending values, while
+      // still `modifying`), or once the instance is `available` again, for a
+      // configuration that names none.
+      (changes.multiAZ &&
+        instance?.SecondaryAvailabilityZone === undefined &&
+        instance?.DBInstanceStatus !== 'available'))
   ) {
     unapplied.push('multiAZ');
   }
@@ -113,7 +135,7 @@ function sameCertificate(live: string | undefined, sent: string): boolean {
  */
 export function withoutUnappliedMovedAttributes(
   attributes: Record<string, unknown>,
-  unapplied: readonly (keyof MovedAttributeChanges)[]
+  unapplied: readonly MovedChange[]
 ): Record<string, unknown> {
   if (unapplied.length === 0) return attributes;
   const dropped = new Set<string>(unapplied.flatMap((change) => MOVED_KEYS[change]));
