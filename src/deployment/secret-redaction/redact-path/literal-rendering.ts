@@ -64,9 +64,23 @@ export function positionByLiteralRendering(
 ): string | undefined {
   if (rules.sourceIsTemplate !== true || typeof bag !== 'string') return undefined;
   if (suspended > 0) return undefined;
+  if (!isPlainObject(source)) return undefined;
   visits = 0;
   walking = secrets;
-  if (!isPlainObject(source)) return undefined;
+  try {
+    return renderLeaf(bag, source, secrets, scan);
+  } finally {
+    // No pass map outlives its rendering.
+    walking = undefined;
+  }
+}
+
+function renderLeaf(
+  bag: string,
+  source: Record<string, unknown>,
+  secrets: RecordedSecretValues,
+  scan: ValueScan
+): string | undefined {
   const plaintextOf = tokenPlaintexts(secrets);
   const recorded = [...secrets.keys()];
   const copies = [...(physicalNameCopiesOf.get(secrets) ?? [])];
