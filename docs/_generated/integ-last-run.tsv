@@ -147,6 +147,7 @@ drift-cc-read-only-props	2026-11-23T12:11:05Z	PASS	119	verify.sh	PR6876 828e1c82
 drift-ecs-capacity-association	2026-11-22T02:46:37Z	PASS	175	verify.sh	rc ok, orph clean, sha 3116c9288 (#6813 sub-read errors)
 drift-revert	2026-11-25T15:18:54Z	PASS	754	verify.sh	rc ok, orph clean
 drift-revert-arrays	2026-11-23T08:26:12Z	PASS	267	verify.sh	PR6859 11e38d61f us-east-1 rc ok, orph clean
+drift-revert-firehose	2026-11-26T03:04:56Z	PASS	330	verify.sh	rc ok, orph clean; #7019 revert of ExtendedS3 + legacy S3 streams, processor disable
 drift-revert-nested-write-only	2026-11-23T12:11:05Z	PASS	289	verify.sh	PR6876 828e1c821 us-east-1 rc ok, orph clean (duration not timed; see logs)
 drift-revert-vpc	2026-11-25T15:18:54Z	PASS	502	verify.sh	rc ok, orph clean
 drift-rotation-schedule-revert	2026-11-20T11:50:48Z	PASS	138	verify.sh	PR6652 be63cc056, us-west-2; rc 0, revert-identity kept identity x1, orph clean
