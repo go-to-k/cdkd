@@ -414,6 +414,7 @@
         "lost-child-after-failed-deploy",
         "macro-expansion",
         "migrate-from-cfn",
+        "neptune-cluster-port",
         "neptune-fix-forward-orphan",
         "neptune-restore",
         "nested-child-first-deploy-failure",
@@ -744,7 +745,8 @@
         "lambda-microvm-image",
         "no-wait-agentcore-runtime-endpoint",
         "no-wait-cr-nat-egress",
-        "no-wait-getatt-rds-endpoint"
+        "no-wait-getatt-rds-endpoint",
+        "rds-dbinstance-getatt-attributes"
       ]
     },
     {
@@ -1062,6 +1064,7 @@
         "macro-expansion",
         "migrate-from-cfn",
         "multi-asset",
+        "neptune-cluster-port",
         "neptune-fix-forward-orphan",
         "neptune-restore",
         "nested-cleanup-at-root",
@@ -1655,6 +1658,7 @@
         "macro-expansion",
         "migrate-from-cfn",
         "multi-asset",
+        "neptune-cluster-port",
         "neptune-fix-forward-orphan",
         "neptune-restore",
         "nested-child-first-deploy-failure",
@@ -1970,6 +1974,7 @@
         "docdb-restore",
         "getatt-rds-docdb-attributes",
         "lambda-esm-documentdb",
+        "neptune-cluster-port",
         "neptune-fix-forward-orphan",
         "neptune-restore",
         "no-wait-getatt-rds-endpoint",
@@ -2318,6 +2323,7 @@
         "lost-child-after-failed-deploy",
         "macro-expansion",
         "multi-asset",
+        "neptune-cluster-port",
         "neptune-fix-forward-orphan",
         "neptune-restore",
         "nested-child-first-deploy-failure",
@@ -2962,6 +2968,7 @@
         "lost-child-after-failed-deploy",
         "migrate-from-cfn",
         "multi-asset",
+        "neptune-cluster-port",
         "nested-child-first-deploy-failure",
         "nested-cleanup-at-root",
         "nested-required-preflight",

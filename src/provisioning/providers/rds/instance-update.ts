@@ -1,4 +1,5 @@
 import {
+  DescribeDBEngineVersionsCommand,
   ModifyDBInstanceCommand,
   PromoteReadReplicaCommand,
   type DBInstance,
@@ -64,6 +65,16 @@ import {
   unconfirmedCreateTimeKeys,
 } from './instance-restore.js';
 import { POINT_IN_TIME_KEYS, declaresPointInTimeRestore } from './instance-pitr.js';
+import {
+  blockingMovedChanges,
+  movedAttributeChanges,
+  movedChangesText,
+  unappliedMovedChanges,
+  waitsForMovedChanges,
+  withCertificateRotationInPlace,
+  withoutUnappliedMovedAttributes,
+} from './instance-moved-attributes.js';
+import { deferReadiness } from '../../deferred-readiness.js';
 
 export async function updateDBInstance(
   this: RDSProvider,
@@ -759,6 +770,42 @@ export async function updateDBInstance(
       );
     }
 
+    // go-to-k/cdkd#7006: a changed port, CA certificate or Multi-AZ setting
+    // applies after ModifyDBInstance returns (a port change reboots the
+    // instance), and until then the instance reports the old value, the new
+    // one under PendingModifiedValues. CloudFormation reports the update once
+    // nothing is pending, so a reader of `Endpoint.Port`,
+    // `CertificateDetails.*` or `SecondaryAvailabilityZone` gets the new value.
+    // An update changing none of them adds no call.
+    // A CA change rotated without a restart is waited for only on an engine
+    // version that rotates in place: one DescribeDBEngineVersions, made only
+    // for such a change.
+    const moved = await withCertificateRotationInPlace(
+      movedAttributeChanges(properties, previousProperties, backfillMembers, context),
+      modified?.Engine ?? (properties['Engine'] as string | undefined),
+      modified?.EngineVersion ??
+        (properties['EngineVersion'] == null ? undefined : String(properties['EngineVersion'])),
+      async (engine, engineVersion) =>
+        (
+          await this.getClient().send(
+            new DescribeDBEngineVersionsCommand({ Engine: engine, EngineVersion: engineVersion })
+          )
+        ).DBEngineVersions?.[0]?.SupportsCertificateRotationWithoutRestart,
+      (error) =>
+        this.logger.debug(
+          sourceMask(
+            safeMsg`DBInstance ${logicalId}: could not read whether its engine version rotates a CA certificate without a restart, so the update does not wait for the certificate: ${describeAwsFailure(error).summary}`
+          )
+        )
+    );
+    const movedApplied = (instance: DBInstance): boolean =>
+      moved === undefined ||
+      blockingMovedChanges(moved, unappliedMovedChanges(moved, instance)).length === 0;
+    const noWait = process.env['CDKD_NO_WAIT'] === 'true';
+    if (!noWait && moved !== undefined && waitsForMovedChanges(moved)) {
+      await this.waitForInstanceState(logicalId, physicalId, movedApplied, movedChangesText(moved));
+    }
+
     // Describe to get updated attributes
     let described = await this.describeDBInstance(physicalId);
     // go-to-k/cdkd#2762: CloudFormation reboots after an update that leaves
@@ -817,6 +864,31 @@ export async function updateDBInstance(
       );
     }
 
+    // go-to-k/cdkd#7006: under `--no-wait` the wait above is skipped, so what
+    // the describe reports for a change still unapplied is the OLD value: it
+    // is left absent, never recorded stale, and the same wait is handed to the
+    // deploy. A reference to it then waits for the change and reads the
+    // instance again, and a custom resource downstream waits before its
+    // handler runs (go-to-k/cdkd#6940); a plain dependent does not.
+    // A CA certificate rotated without a restart is never waited for, in
+    // either mode: the certificate the instance reports is the one in use, so
+    // it is recorded as read, as CloudFormation's GetAtt returns its live model.
+    const unapplied =
+      moved !== undefined
+        ? blockingMovedChanges(moved, unappliedMovedChanges(moved, described))
+        : [];
+    if (noWait && unapplied.length > 0 && moved !== undefined) {
+      deferReadiness(logicalId, resourceType, physicalId, (signal) =>
+        this.waitForInstanceState(
+          logicalId,
+          physicalId,
+          movedApplied,
+          movedChangesText(moved),
+          signal
+        )
+      );
+    }
+
     return {
       physicalId,
       wasReplaced: false,
@@ -826,9 +898,10 @@ export async function updateDBInstance(
       // ModifyDBInstance returns): then no `DBInstanceStatus` is recorded, a
       // reference to it in this deploy is refused (no re-read of a record
       // this deploy wrote), and the next deploy re-reads it.
-      attributes: dbInstanceAttributes(described, {
-        settled: process.env['CDKD_NO_WAIT'] !== 'true',
-      }),
+      attributes: withoutUnappliedMovedAttributes(
+        dbInstanceAttributes(described, { settled: !noWait }),
+        unapplied
+      ),
       ...(effectiveProperties !== undefined && { effectiveProperties }),
     };
   } catch (error) {
