@@ -199,7 +199,15 @@ A subagent's Bash bypasses the PreToolUse hooks.
   prompt; run it yourself, serially, and start ANY vitest of yours only while
   no lane's is running** — concurrent suites trip the 600s watchdog (#6871).
   Remote `rx --vitest` runs the FULL suite (capped) whatever files follow:
-  named files go `rx -- vp test run <files>` (#6928).
+  named files go `rx -- vp test run <files>` (#6928). **ONE rx per lane at a
+  time**: stop the previous sha's run before starting the next. rx FALLS BACK
+  to this Mac when a VM sends no report, so grep its log for `running this
+  shard locally`; on a hit, stop it, because it is the forbidden local suite.
+  The #7006 lane's 3-4 overlapping runs fell back and ran 32 min locally.
+  **Stop a hung test by its process GROUP**, then check
+  `ps -eo pid,ppid,command | grep vitest` for PPID-1 workers in the lane's
+  tree. #7006's hung `sdk-wire-coverage-19` left an orphan worker spinning
+  at 75% CPU.
   Each runs `vp test run <its own suite>`, its files spelled out or inside
   `bash -c`: zsh passes an unquoted `$files` as ONE argument. In any shell an
   EMPTY list (a `$(ls <glob>)` matching nothing) runs the FULL suite: guard it.
