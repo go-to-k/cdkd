@@ -487,8 +487,8 @@ export function elastiCachePreferredAvailabilityZonesMovedToDisjoint(
  *
  * The node count plays no part. No measured row named the singular
  * `PreferredAvailabilityZone` on either side or used another engine, so
- * either keeps the in-place update; so does an empty new list or a move to
- * `cross-az` in the same change (all unmeasured). An absent previous
+ * either keeps the in-place update; so does an empty new list (unmeasured).
+ * A move to `cross-az` is {@link elastiCacheMovedSingleToCrossAz}'s. An absent previous
  * `AZMode` beside a zone list is a template CloudFormation refuses at create
  * ("To specify PreferredAvailabilityZones, AZMode must be specified"), so
  * each predicate requires the literal previous `single-az`. Without the
@@ -508,20 +508,65 @@ function elastiCacheLeftSingleAzWithoutZones(siblings: ReplacementSiblings | und
 }
 
 /**
+ * Whether an `AWS::ElastiCache::CacheCluster` template change moves a
+ * memcached cluster from `AZMode: single-az` with no zone list to
+ * `AZMode: cross-az` with a list naming at least two zones, keeping
+ * `NumCacheNodes` (issue #7045). Real CloudFormation change set + execution
+ * (memcached, cache.t4g.micro, us-east-1, 2026-11-26; #7038's measurement):
+ * 2 nodes, `single-az` with no `PreferredAvailabilityZones` (both nodes in
+ * 1a) -> `cross-az` + `[1a, 1b]`. The change set said `Replacement:
+ * Conditional` (`PreferredAvailabilityZones` Conditionally, `AZMode` Never);
+ * the execution REPLACED the cluster with one whose nodes are in 1a and 1b.
+ * ModifyCacheCluster carries `AZMode` only beside nodes to add, so an
+ * in-place update leaves the cluster in one zone.
+ *
+ * Only that shape is measured, so only it replaces. These neighbours keep
+ * the in-place update they had before (unmeasured): a previous zone list
+ * (e.g. `[1a, 1a]`), a new list naming one zone or none, a changed
+ * `NumCacheNodes` (a scale-out sends `NewAvailabilityZones` with the new
+ * `AZMode`, as #5438 measured for an absent previous `AZMode`), the singular
+ * `PreferredAvailabilityZone` on either side, another engine, and a value
+ * still unresolved at diff time (a non-string zone, an intrinsic object).
+ * Without the sibling bags there is nothing to read, so the answer is
+ * `false`.
+ */
+function elastiCacheMovedSingleToCrossAz(siblings: ReplacementSiblings | undefined): boolean {
+  if (siblings === undefined) return false;
+  const { oldProperties: prev, newProperties: next } = siblings;
+  const zones = next['PreferredAvailabilityZones'];
+  return (
+    prev['Engine'] === 'memcached' &&
+    next['Engine'] === 'memcached' &&
+    prev['AZMode'] === 'single-az' &&
+    next['AZMode'] === 'cross-az' &&
+    prev['PreferredAvailabilityZone'] == null &&
+    next['PreferredAvailabilityZone'] == null &&
+    prev['PreferredAvailabilityZones'] == null &&
+    Array.isArray(zones) &&
+    zones.every((z) => typeof z === 'string') &&
+    new Set(zones).size >= 2 &&
+    prev['NumCacheNodes'] != null &&
+    isDeepStrictEqual(prev['NumCacheNodes'], next['NumCacheNodes'])
+  );
+}
+
+/**
  * Conditional-replacement predicate for
- * `AWS::ElastiCache::CacheCluster.AZMode` (issue #5558): `single-az` removed
- * from a template that names no zone replaces the cluster (see
- * {@link elastiCacheLeftSingleAzWithoutZones}). Any other change keeps the
+ * `AWS::ElastiCache::CacheCluster.AZMode`: `single-az` removed from a
+ * template that names no zone replaces the cluster (issue #5558, see
+ * {@link elastiCacheLeftSingleAzWithoutZones}), and so does a move to
+ * `cross-az` that keeps the node count (issue #7045, see
+ * {@link elastiCacheMovedSingleToCrossAz}). Any other change keeps the
  * in-place update it had before (unmeasured).
  */
-export function elastiCacheAzModeRemovedFromSingleAz(
+export function elastiCacheAzModeReplaced(
   oldValue: unknown,
   newValue: unknown,
   siblings?: ReplacementSiblings
 ): boolean {
-  return (
-    oldValue === 'single-az' && newValue == null && elastiCacheLeftSingleAzWithoutZones(siblings)
-  );
+  if (oldValue !== 'single-az') return false;
+  if (newValue == null) return elastiCacheLeftSingleAzWithoutZones(siblings);
+  return newValue === 'cross-az' && elastiCacheMovedSingleToCrossAz(siblings);
 }
 
 /**
@@ -545,7 +590,10 @@ export function elastiCachePreferredAvailabilityZonesRemovedFromSingleAz(
 
 /**
  * `AWS::ElastiCache::CacheCluster.PreferredAvailabilityZones`: a move to
- * disjoint zones (#5458) or a removal from a `single-az` cluster (#5558).
+ * disjoint zones (#5458), a removal from a `single-az` cluster (#5558), or
+ * a list added beside a `single-az` -> `cross-az` move that keeps the node
+ * count (#7045, {@link elastiCacheMovedSingleToCrossAz}; the list is the
+ * property CloudFormation's change set names for that replacement).
  */
 export function elastiCachePreferredAvailabilityZonesReplaced(
   oldValue: unknown,
@@ -554,7 +602,8 @@ export function elastiCachePreferredAvailabilityZonesReplaced(
 ): boolean {
   return (
     elastiCachePreferredAvailabilityZonesMovedToDisjoint(oldValue, newValue) ||
-    elastiCachePreferredAvailabilityZonesRemovedFromSingleAz(oldValue, newValue, siblings)
+    elastiCachePreferredAvailabilityZonesRemovedFromSingleAz(oldValue, newValue, siblings) ||
+    (oldValue == null && newValue != null && elastiCacheMovedSingleToCrossAz(siblings))
   );
 }
 

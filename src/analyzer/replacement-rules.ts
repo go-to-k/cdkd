@@ -30,7 +30,7 @@ export {
   natZoneAddressesAddedToAutomaticGateway,
   ecsServiceLaunchTypeSetOrChanged,
   elastiCachePreferredAvailabilityZonesMovedToDisjoint,
-  elastiCacheAzModeRemovedFromSingleAz,
+  elastiCacheAzModeReplaced,
   elastiCachePreferredAvailabilityZonesRemovedFromSingleAz,
   emrClusterInstancesReplaced,
   dbClusterEngineChangeReplaces,

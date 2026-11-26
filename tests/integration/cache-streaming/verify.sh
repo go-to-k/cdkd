@@ -561,17 +561,20 @@ echo "    OK: SG removal kept ${SG_BEFORE} on ${CACHE_ID} in place (#5491)"
 # exited 0 with the old cluster kept, so the id comparison is the assertion
 # that discriminates. One removal per deploy: the zone-list half reads the
 # previous AZMode from the sibling properties, the AZMode half its own value.
-# Stateful type: the replacement needs --force-stateful-recreation.
+# Stateful type: the replacement needs --force-stateful-recreation. MC_ISSUE
+# names the issue in the messages; MC_BEFORE holds the replaced id on success.
+MC_ISSUE='#5558'
 assert_memcached_replaced() { # usage: assert_memcached_replaced <phase label> <env assignments...>
   local label="$1"
   shift
   local before after on_group rc
+  MC_BEFORE=""
   if ! before=$(mc_field 'CacheClusterId'); then
-    echo "FAIL: cannot read the Memcached cluster id before the ${label} (#5558)" >&2
+    echo "FAIL: cannot read the Memcached cluster id before the ${label} (${MC_ISSUE})" >&2
     exit 1
   fi
   if [ -z "${before}" ] || [ "${before}" = "None" ]; then
-    echo "FAIL: cannot resolve the Memcached cluster before the ${label} (#5558)" >&2
+    echo "FAIL: cannot resolve the Memcached cluster before the ${label} (${MC_ISSUE})" >&2
     exit 1
   fi
   set +e
@@ -580,13 +583,13 @@ assert_memcached_replaced() { # usage: assert_memcached_replaced <phase label> <
   rc=$?
   set -e
   if [ "${rc}" -ne 0 ]; then
-    echo "FAIL: ${label} deploy exited ${rc} (#5558)" >&2
+    echo "FAIL: ${label} deploy exited ${rc} (${MC_ISSUE})" >&2
     tail -60 "${DEPLOY_LOG}" >&2
     exit 1
   fi
   if ! on_group=$(aws elasticache describe-cache-clusters --region "${REGION}" \
     --query "length(CacheClusters[?CacheSubnetGroupName=='${MC_SUBNET_GROUP}'])" --output text); then
-    echo "FAIL: cannot count the Memcached clusters after the ${label} (#5558)" >&2
+    echo "FAIL: cannot count the Memcached clusters after the ${label} (${MC_ISSUE})" >&2
     exit 1
   fi
   if [ "${on_group}" != "1" ]; then
@@ -594,16 +597,17 @@ assert_memcached_replaced() { # usage: assert_memcached_replaced <phase label> <
     exit 1
   fi
   if ! after=$(mc_field 'CacheClusterId'); then
-    echo "FAIL: cannot read the Memcached cluster id after the ${label} (#5558)" >&2
+    echo "FAIL: cannot read the Memcached cluster id after the ${label} (${MC_ISSUE})" >&2
     exit 1
   fi
   if [ "${after}" = "${before}" ]; then
-    echo "FAIL: Memcached cluster ${before} was NOT replaced by the ${label} (#5558: CloudFormation replaces a single-az cluster)" >&2
+    echo "FAIL: Memcached cluster ${before} was NOT replaced by the ${label} (${MC_ISSUE}: CloudFormation replaces it)" >&2
     exit 1
   fi
   assert_gone "replaced Memcached cluster ${before} still exists after the ${label}" \
     aws elasticache describe-cache-clusters --cache-cluster-id "${before}" --region "${REGION}"
-  echo "    OK: ${label} replaced ${before} with ${after} (#5558)"
+  MC_BEFORE="${before}"
+  echo "    OK: ${label} replaced ${before} with ${after} (${MC_ISSUE})"
 }
 PRIOR_ENV=(CDKD_TEST_REMOVAL=true CDKD_TEST_NODETYPE=true CDKD_TEST_NODEREMOVE=true CDKD_TEST_PAZMOVE=true CDKD_TEST_SGREMOVE=true)
 
@@ -612,6 +616,50 @@ assert_memcached_replaced "zone-list removal" "${PRIOR_ENV[@]}" CDKD_TEST_PAZREM
 
 echo "==> Step 4i: AZMODE REMOVAL deploy (issue #5558) -- single-az Memcached AZMode removed"
 assert_memcached_replaced "AZMode removal" "${PRIOR_ENV[@]}" CDKD_TEST_PAZREMOVE=true CDKD_TEST_AZMODEREMOVE=true
+
+echo "==> Step 4j: MEMCACHED SCALE-OUT deploy (issue #7045 setup) -- 2 nodes, single-az, no zone list"
+# Sets up the previous template of the measured #7045 change: AZMode added
+# back as single-az and NumCacheNodes 1 -> 2, no zone list. No replacement
+# rule fires (an added AZMode is #5438's measured in-place row), so the same
+# cluster must now hold 2 nodes. Not itself a pre-fix red.
+REMOVED_ENV=("${PRIOR_ENV[@]}" CDKD_TEST_PAZREMOVE=true CDKD_TEST_AZMODEREMOVE=true)
+MC_ID_SCALE=$(mc_field 'CacheClusterId')
+set +e
+env "${REMOVED_ENV[@]}" CDKD_TEST_MCSCALE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes > "${DEPLOY_LOG}" 2>&1
+MCSCALE_RC=$?
+set -e
+if [ "${MCSCALE_RC}" -ne 0 ]; then
+  echo "FAIL: Memcached scale-out deploy exited ${MCSCALE_RC} (#7045 setup)" >&2
+  tail -60 "${DEPLOY_LOG}" >&2
+  exit 1
+fi
+if [ "$(mc_field 'CacheClusterId')" != "${MC_ID_SCALE}" ]; then
+  echo "FAIL: the Memcached scale-out replaced ${MC_ID_SCALE}; it must be in place (#7045 setup)" >&2
+  exit 1
+fi
+MC_NODES=$(mc_field 'CacheNodes | length(@)')
+if [ "${MC_NODES}" != "2" ]; then
+  echo "FAIL: the Memcached cluster ${MC_ID_SCALE} has ${MC_NODES} nodes after the scale-out, expected 2" >&2
+  exit 1
+fi
+echo "    OK: ${MC_ID_SCALE} scaled to 2 nodes in place"
+
+echo "==> Step 4k: CROSS-AZ deploy (issue #7045) -- single-az -> cross-az + [az0, az1], same node count"
+# Real CloudFormation REPLACES the cluster, and the new one spans both zones.
+# Before #7045 cdkd updated it in place, sent no zone change (ModifyCacheCluster
+# carries AZMode only beside nodes to add) and warned: the deploy exited 0 with
+# the same single-zone cluster, so the id comparison discriminates.
+MC_ISSUE='#7045'
+assert_memcached_replaced "single-az -> cross-az move" "${REMOVED_ENV[@]}" CDKD_TEST_MCSCALE=true CDKD_TEST_CROSSAZ=true
+MC_ZONES=$(aws elasticache describe-cache-clusters --region "${REGION}" --show-cache-node-info \
+  --query "CacheClusters[?CacheSubnetGroupName=='${MC_SUBNET_GROUP}'] | [0].CacheNodes[].CustomerAvailabilityZone" \
+  --output text | tr '\t' '\n' | sort -u | grep -c . || true)
+if [ "${MC_ZONES}" != "2" ]; then
+  echo "FAIL: the cross-az replacement's nodes span ${MC_ZONES} zone(s), expected 2 (#7045)" >&2
+  exit 1
+fi
+echo "    OK: the replacement of ${MC_BEFORE} spans 2 zones (#7045)"
 
 echo "==> Step 5: destroy"
 set +e
