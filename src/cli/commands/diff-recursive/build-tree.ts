@@ -64,6 +64,7 @@ import {
   maskPassedSecretChanges,
   maskPassedSecretOutputs,
   mixedSecretRowKeys,
+  mixedSecretTagKeys,
   recordedValuesOf,
   securityDiffWithPassedSecretWithheld,
   taintedNamesOf,
@@ -271,6 +272,12 @@ export async function buildDiffTree(args: {
    * Absent at the root.
    */
   inheritedMixedSecretParameters?: ReadonlySet<string>;
+  /**
+   * go-to-k/cdkd#7068: the stack-tag keys an ancestor row fills from a passed
+   * mixed secret; their values are shown masked on every resource of this
+   * subtree. Absent at the root.
+   */
+  inheritedMixedSecretTagKeys?: ReadonlySet<string>;
 }): Promise<DiffTreeNode> {
   const {
     stackName,
@@ -308,6 +315,7 @@ export async function buildDiffTree(args: {
     inheritedSecretTokens,
     stackTags,
     inheritedMixedSecretParameters,
+    inheritedMixedSecretTagKeys,
   } = args;
   const unboundHealer = attributeHealerFor?.(stackName, region);
   // go-to-k/cdkd#6871: the stack tags merged as the deploy merges them,
@@ -471,7 +479,12 @@ export async function buildDiffTree(args: {
     stackName,
     displayName,
     region,
-    changes: maskPassedSecretChanges(changes, template, passedSecretNames),
+    changes: maskPassedSecretChanges(
+      changes,
+      template,
+      passedSecretNames,
+      inheritedMixedSecretTagKeys
+    ),
     securityDiff: securityDiffWithPassedSecretWithheld(securityDiff, changes, passedSecretNames),
     ccApiRoutes,
     outputChanges: maskPassedSecretOutputs(outputChanges, template, passedSecretNames),
@@ -665,6 +678,12 @@ export async function buildDiffTree(args: {
       childParameters,
       passedSecretNames
     );
+    const childMixedSecretTagKeys = mixedSecretTagKeys(
+      resource.Properties,
+      stackDiff.childStackTags?.get(logicalId),
+      passedSecretNames,
+      inheritedMixedSecretTagKeys
+    );
     // Each such value WHOLE is a mask-only needle of the child's walk too, so
     // a resolver line embedding it is masked (its length clears the floor).
     const passedSecretNeedles: RecordedSecretValues = new Map();
@@ -746,6 +765,9 @@ export async function buildDiffTree(args: {
         stackTags: stackDiff.childStackTags?.get(logicalId) ?? childStackTags(stackTags, {}),
         ...(childMixedSecretParameters.size > 0 && {
           inheritedMixedSecretParameters: childMixedSecretParameters,
+        }),
+        ...(childMixedSecretTagKeys.size > 0 && {
+          inheritedMixedSecretTagKeys: childMixedSecretTagKeys,
         }),
       });
     node.children.push(

@@ -20,7 +20,11 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
     sts: { send: vi.fn().mockResolvedValue({ Account: '123456789012' }) },
     ssm: {
-      send: vi.fn(async () => {
+      send: vi.fn(async (command: { input?: { Name?: string } }) => {
+        // A PUBLIC reference: the diff resolves it, so nothing of it is masked.
+        if (command.input?.Name === '/pub/host') {
+          return { Parameter: { Type: 'String', Value: 'pub.example.com' } };
+        }
         const e = new Error('ParameterNotFound');
         e.name = 'ParameterNotFound';
         throw e;
@@ -52,6 +56,7 @@ import type { DiffTreeNode } from '../../../src/cli/commands/diff-recursive/type
 import {
   SECURITY_TABLE_WITHHELD,
   maskPassedSecretChanges,
+  taintedNamesOf,
 } from '../../../src/cli/commands/diff-recursive/passed-secret-display.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 
@@ -109,10 +114,15 @@ function childTemplate(): Record<string, unknown> {
   resources['Grand'] = {
     Type: 'AWS::CloudFormation::Stack',
     Metadata: { 'aws:asset:path': 'grand.json' },
-    Properties: { TemplateURL: 'https://s3.amazonaws.com/b/grand.json', Parameters: { Y: PIECE } },
+    Properties: {
+      TemplateURL: 'https://s3.amazonaws.com/b/grand.json',
+      Parameters: { Y: PIECE },
+      // A stack tag from `X`: merged into every taggable grandchild resource.
+      Tags: [{ Key: 't', Value: PIECE }],
+    },
   };
   return {
-    Parameters: { X: { Type: 'String' }, W: { Type: 'String' } },
+    Parameters: { X: { Type: 'String' }, W: { Type: 'String' }, Url: { Type: 'String' } },
     Conditions: { Always: { 'Fn::Equals': ['a', 'a'] } },
     Resources: resources,
     Outputs: {
@@ -133,6 +143,8 @@ const GRAND_TEMPLATE = {
   },
 };
 
+const PUBLIC = 'https://{{resolve:ssm:/pub/host}}/x';
+
 const PARENT_TEMPLATE = {
   Parameters: { Sep: { Type: 'String' } },
   Resources: {
@@ -141,8 +153,15 @@ const PARENT_TEMPLATE = {
       Metadata: { 'aws:asset:path': 'child.json' },
       Properties: {
         TemplateURL: 'https://s3.amazonaws.com/b/child.json',
-        Parameters: { X: { 'Fn::Join': ['', [{ Ref: 'Sep' }, '/', A]] }, W: B },
+        Parameters: { X: { 'Fn::Join': ['', [{ Ref: 'Sep' }, '/', A]] }, W: B, Url: PUBLIC },
+        // A stack tag mixing the reference, handed to the whole subtree.
+        Tags: [{ Key: 'pt', Value: { 'Fn::Join': ['', [{ Ref: 'Sep' }, '/', A]] } }],
       },
+    },
+    // A reader of the row's output: the child holding the plaintext answers it.
+    Reader: {
+      Type: 'AWS::SSM::Parameter',
+      Properties: { Type: 'String', Value: { 'Fn::GetAtt': ['Child', 'Outputs.Piece'] } },
     },
   },
 };
@@ -189,13 +208,19 @@ function states(old: string): Record<string, StackState> {
   child['Grand'] = record('AWS::CloudFormation::Stack', {
     TemplateURL: 'https://s3.amazonaws.com/b/grand.json',
     Parameters: { Y: old },
+    Tags: [{ Key: 't', Value: old }],
   });
   return {
     Parent: stack('Parent', {
-      Child: record('AWS::CloudFormation::Stack', {
-        TemplateURL: 'https://s3.amazonaws.com/b/child.json',
-        Parameters: { X: old, W: B },
-      }),
+      Child: {
+        ...record('AWS::CloudFormation::Stack', {
+          TemplateURL: 'https://s3.amazonaws.com/b/child.json',
+          Parameters: { X: old, W: B, Url: 'https://old.example.com/x' },
+          Tags: [{ Key: 'pt', Value: old }],
+        }),
+        attributes: { 'Outputs.Piece': old },
+      },
+      Reader: record('AWS::SSM::Parameter', { Type: 'String', Value: 'reader-old' }),
     }),
     'Parent~Child': stack('Parent~Child', child, { Piece: old, Whole: old, 'exported-whole': old }),
     'Parent~Child~Grand': stack('Parent~Child~Grand', {
@@ -260,7 +285,8 @@ async function securityTables(node: DiffTreeNode): Promise<string[]> {
  * Everything the command prints: the text tree, `--json`, and every log line
  * but the resolver's own. Those print each resolution's value, a sub-floor
  * piece of the mixed value included, which only a resolver-side mask can
- * close; `resolverLines` holds them for the whole-value check below.
+ * close (go-to-k/cdkd#7077); `resolverLines` holds them for the whole-value
+ * check below.
  */
 function everythingPrinted(root: DiffTreeNode): string {
   const lines: string[] = [];
@@ -311,6 +337,7 @@ describe('cdkd diff: a nested row parameter mixing a secret reference (#7068)', 
           expect(child.changes.get(id)?.changeType, id).not.toBe('NO_CHANGE');
         }
         expect(root.changes.get('Child')?.changeType).toBe('UPDATE');
+        expect(root.changes.get('Reader')?.changeType).not.toBe('NO_CHANGE');
         expect(findNode(root, 'Parent~Child~Grand')?.changes.get('GrandDb')?.changeType).not.toBe(
           'NO_CHANGE'
         );
@@ -319,20 +346,36 @@ describe('cdkd diff: a nested row parameter mixing a secret reference (#7068)', 
           (change) => change.path === 'Parameters'
         );
         expect((parameters?.newValue as Record<string, unknown>)['X']).toBe('***');
+        // A public reference the diff resolved is no mixed secret: shown as is.
+        expect(parameters?.newValue).toMatchObject({ Url: 'https://pub.example.com/x' });
+        expect(parameters?.oldValue).toMatchObject({ Url: 'https://old.example.com/x' });
+        // The grandchild's merged stack tags from the secret are masked.
+        const grandTags = findNode(root, 'Parent~Child~Grand')
+          ?.changes.get('GrandDb')
+          ?.propertyChanges?.find((change) => change.path === 'Tags');
+        expect(grandTags?.newValue).toEqual(
+          expect.arrayContaining([
+            { Key: 'pt', Value: '***' },
+            { Key: 't', Value: '***' },
+          ])
+        );
         // The child's IAM change is still reported, its table withheld.
         expect(tables).toContain(SECURITY_TABLE_WITHHELD);
         // The replacement line is still logged, masked.
-        expect(captured.some((line) => /Property DBName of AWS::RDS::DBInstance requires replacement \(from \*\*\* to \*\*\*\)/.test(line))).toBe(true);
+        const maskedLine =
+          /Property DBName of AWS::RDS::DBInstance requires replacement \(from \*\*\* to \*\*\*\)/;
+        expect(captured.some((line) => maskedLine.test(line))).toBe(true);
       });
     }
 
     for (const old of ['***', `${sep}/${sep}`]) {
-    it(`never prints "${sep}" on the parent row, non-recursive (stored ${old === '***' ? 'masked' : 'legacy plaintext'})`, async () => {
-      const root = await diff(sep, old, false);
-      expect(root.changes.get('Child')?.changeType).toBe('UPDATE');
-      const printed = everythingPrinted(root);
-      expect(printed.includes(sep), printed).toBe(false);
-    });
+      const stored = old === '***' ? 'masked' : 'legacy plaintext';
+      it(`never prints "${sep}" on the parent row, non-recursive (stored ${stored})`, async () => {
+        const root = await diff(sep, old, false);
+        expect(root.changes.get('Child')?.changeType).toBe('UPDATE');
+        const printed = everythingPrinted(root);
+        expect(printed.includes(sep), printed).toBe(false);
+      });
     }
   }
 });
@@ -375,5 +418,37 @@ describe('maskPassedSecretChanges: a nested row Parameters side that is no plain
   it('leaves a row that holds and reads nothing of the kind as it is', () => {
     const changes = row({ X: 'a' }, { X: 'b', W: B });
     expect(maskPassedSecretChanges(changes, { Resources: {} } as never, new Set())).toBe(changes);
+  });
+});
+
+describe('taintedNamesOf (#7068)', () => {
+  it('taints a reader declared BEFORE the resource it reads, to a fixed point', () => {
+    const template = {
+      Resources: {
+        Early: { Type: 'T', Properties: { V: { 'Fn::GetAtt': ['Late', 'Value'] } } },
+        Late: { Type: 'T', Properties: { V: { Ref: 'X' } } },
+        Plain: { Type: 'T', Properties: { V: 'x' } },
+      },
+    };
+    expect([...taintedNamesOf(template as never, new Set(['X']))].sort()).toEqual([
+      'Early',
+      'Late',
+      'X',
+    ]);
+  });
+
+  it('seeds a nested row composing a dynamic reference, never one passing a whole token', () => {
+    const row = (parameters: unknown) => ({
+      Type: 'AWS::CloudFormation::Stack',
+      Properties: { Parameters: parameters },
+    });
+    const template = {
+      Resources: {
+        Mixed: row({ X: { 'Fn::Join': ['', [{ Ref: 'Sep' }, '/', A]] } }),
+        Whole: row({ W: B }),
+        Reader: { Type: 'T', Properties: { V: { 'Fn::GetAtt': ['Mixed', 'Outputs.O'] } } },
+      },
+    };
+    expect([...taintedNamesOf(template as never, undefined)].sort()).toEqual(['Mixed', 'Reader']);
   });
 });

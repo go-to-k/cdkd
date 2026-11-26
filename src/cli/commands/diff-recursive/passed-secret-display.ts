@@ -38,12 +38,20 @@ function isIntrinsic(value: Record<string, unknown>): boolean {
   return keys.length === 1 && (keys[0] === 'Ref' || keys[0]!.startsWith('Fn::'));
 }
 
+const SIDES = ['oldValue', 'newValue', 'newValueTemplate'] as const;
+
 /** `value` when it is a plain object, else an empty record. */
 function recordOf(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
 }
 
-/** A string holding a dynamic reference that is not one whole token. */
+/**
+ * A string holding a dynamic reference that is not one whole token. A bare
+ * `{{resolve:ssm:` counts: the diff resolves a public `String` / `StringList`
+ * parameter (`skipDynamicReferences` looks each one up), so one still spelled
+ * in a resolved value is a `SecureString`, or one the lookup could not answer,
+ * where the mask is the safe side.
+ */
 export function mixesDynamicReference(value: unknown): boolean {
   return (
     typeof value === 'string' &&
@@ -66,6 +74,42 @@ function holdsMixedDynamicReference(value: unknown): boolean {
   }
   return false;
 }
+
+/**
+ * Does a TEMPLATE value compose a dynamic reference with something else: a
+ * literal string mixing one, or an intrinsic one of whose strings holds one?
+ * A value that is one whole token passes the reference through as it is.
+ */
+function templateMixesDynamicReference(value: unknown): boolean {
+  if (typeof value === 'string') return mixesDynamicReference(value);
+  if (value === null || typeof value !== 'object') return false;
+  const pending: unknown[] = [value];
+  const seen = new Set<object>();
+  while (pending.length > 0) {
+    const next = pending.pop();
+    if (typeof next === 'string' && next.includes('{{resolve:')) return true;
+    if (next === null || typeof next !== 'object' || seen.has(next)) continue;
+    seen.add(next);
+    pending.push(...Object.values(next as Record<string, unknown>));
+  }
+  return false;
+}
+
+/** Each entry of a nested row's `Parameters` / `Tags` (a `{Key, Value}` list or a map). */
+function rowEntries(rowProperties: Record<string, unknown>): Array<[unknown, unknown]> {
+  const entries: Array<[unknown, unknown]> = Object.entries(recordOf(rowProperties['Parameters']));
+  const tags = rowProperties['Tags'];
+  if (Array.isArray(tags)) {
+    for (const tag of tags as unknown[])
+      entries.push([recordOf(tag)['Key'], recordOf(tag)['Value']]);
+  } else {
+    entries.push(...Object.entries(recordOf(tags)));
+  }
+  return entries;
+}
+
+/** Stands for every tag key: a tainted tag whose key the template does not spell. */
+export const ANY_TAG_KEY = '*';
 
 /** Does `node` read any of `tainted` (a parameter or a resource id), through any intrinsic? */
 function readsTainted(node: unknown, tainted: ReadonlySet<string>): boolean {
@@ -101,18 +145,29 @@ export function mixedSecretRowKeys(
 }
 
 /**
- * Every name in `template` whose value derives from `passed` (the node's
- * inherited mixed-secret parameters): those parameters plus each resource
- * whose properties read one, to a fixed point, so a `Ref` / `Fn::GetAtt` of
- * such a resource (a name built from the secret) taints its reader too.
+ * Every name in `template` whose value derives from a passed mixed secret:
+ * `passed` (the node's inherited mixed-secret parameters), each nested-stack
+ * row whose `Parameters` / `Tags` compose a dynamic reference with other text
+ * (its outputs and stack ARN are read back from a child holding the
+ * plaintext), and each resource whose properties read one of those, to a
+ * fixed point, so a `Ref` / `Fn::GetAtt` of such a resource taints its reader
+ * too.
  */
 export function taintedNamesOf(
   template: CloudFormationTemplate,
   passed: ReadonlySet<string> | undefined
 ): Set<string> {
   const tainted = new Set<string>(passed ?? []);
-  if (tainted.size === 0) return tainted;
   const resources = recordOf(template.Resources as unknown);
+  for (const [logicalId, raw] of Object.entries(resources)) {
+    const resource = recordOf(raw);
+    if (resource['Type'] !== NESTED_STACK_RESOURCE_TYPE) continue;
+    const properties = recordOf(resource['Properties']);
+    if (rowEntries(properties).some(([, value]) => templateMixesDynamicReference(value))) {
+      tainted.add(logicalId);
+    }
+  }
+  if (tainted.size === 0) return tainted;
   let grew = true;
   while (grew) {
     grew = false;
@@ -125,6 +180,78 @@ export function taintedNamesOf(
     }
   }
   return tainted;
+}
+
+/**
+ * The stack-tag KEYS a nested row hands its child whose value derives from a
+ * passed mixed secret: the child merges its stack tags into every taggable
+ * resource below it, so each such key is masked in the whole subtree. A tag
+ * the row's template composes with a reference, or that reads a tainted name,
+ * one whose resolved value mixes one, and every key `inherited` names. A
+ * tainted tag whose key is not a literal stands for every key.
+ */
+export function mixedSecretTagKeys(
+  rowProperties: Record<string, unknown> | undefined,
+  resolvedTags: Readonly<Record<string, string>> | undefined,
+  tainted: ReadonlySet<string>,
+  inherited: ReadonlySet<string> | undefined
+): Set<string> {
+  const keys = new Set<string>(inherited ?? []);
+  const tags = rowProperties?.['Tags'];
+  const pairs: Array<[unknown, unknown]> = Array.isArray(tags)
+    ? (tags as unknown[]).map((tag) => [recordOf(tag)['Key'], recordOf(tag)['Value']])
+    : Object.entries(recordOf(tags));
+  for (const [key, value] of pairs) {
+    if (!templateMixesDynamicReference(value) && !readsTainted(value, tainted)) continue;
+    keys.add(typeof key === 'string' ? key : ANY_TAG_KEY);
+  }
+  for (const [key, value] of Object.entries(resolvedTags ?? {})) {
+    if (mixesDynamicReference(value)) keys.add(key);
+  }
+  return keys;
+}
+
+/**
+ * A tag-bearing side with the value of every tag `keys` names masked: a
+ * `{Key, Value}` entry anywhere under it, or a key of a tag MAP (the side
+ * itself, or a `Tags` member under it).
+ */
+function maskTagValues(value: unknown, keys: ReadonlySet<string>, isMap: boolean): unknown {
+  const named = (key: unknown): boolean =>
+    keys.has(ANY_TAG_KEY) || (typeof key === 'string' && keys.has(key));
+  if (Array.isArray(value)) {
+    const shown = value.map((element: unknown) => maskTagValues(element, keys, false));
+    return shown.every((element, index) => element === value[index]) ? value : shown;
+  }
+  if (!isRecord(value)) return value;
+  let changed = false;
+  const shown: Record<string, unknown> = {};
+  const isEntry = Object.hasOwn(value, 'Key') && Object.hasOwn(value, 'Value');
+  for (const [key, leaf] of Object.entries(value)) {
+    let next: unknown;
+    if (isEntry && key === 'Value' && named(value['Key'])) next = SECRET_MASK;
+    else if (isMap && named(key) && !isRecord(leaf) && !Array.isArray(leaf)) next = SECRET_MASK;
+    else next = maskTagValues(leaf, keys, key === 'Tags');
+    if (next !== leaf) changed = true;
+    shown[key] = next;
+  }
+  return changed ? shown : value;
+}
+
+/** A property change with its tags `keys` names masked on every side. */
+function maskTagProperty(change: PropertyChange, keys: ReadonlySet<string>): PropertyChange {
+  if (keys.size === 0 || !/tag/i.test(change.path)) return change;
+  const next: PropertyChange = { ...change };
+  let changed = false;
+  for (const side of SIDES) {
+    if (!Object.prototype.hasOwnProperty.call(change, side) || change[side] === undefined) continue;
+    const shown = maskTagValues(change[side], keys, change.path === 'Tags');
+    if (shown !== change[side]) {
+      next[side] = shown;
+      changed = true;
+    }
+  }
+  return changed ? next : change;
 }
 
 /** `change` with every side it carries shown as the mask. */
@@ -153,8 +280,6 @@ function maskParameterKeys(
   }
   return changed ? shown : side;
 }
-
-const SIDES = ['oldValue', 'newValue', 'newValueTemplate'] as const;
 
 /**
  * A nested-stack row's `Parameters` change with its mixed-secret keys masked
@@ -208,13 +333,16 @@ function maskRowParameters(
  * One node's resource changes as `cdkd diff` prints them under go-to-k/cdkd#7068:
  * a property whose template reads a tainted name is shown as `***` on every
  * side, and a nested-stack row's `Parameters` key holding (or reading) a mixed
- * secret is shown as `***`, also at the root and without `--recursive`. Returns `changes` itself when nothing is masked;
- * never mutates it.
+ * secret is shown as `***`, also at the root and without `--recursive`, as is
+ * the value of every inherited tainted stack tag. Returns `changes` itself when
+ * nothing is masked; never mutates it.
  */
 export function maskPassedSecretChanges(
   changes: Map<string, ResourceChange>,
   template: CloudFormationTemplate,
-  tainted: ReadonlySet<string>
+  tainted: ReadonlySet<string>,
+  /** Stack-tag keys inherited from a row passing a mixed secret ({@link mixedSecretTagKeys}). */
+  tagKeys: ReadonlySet<string> = new Set()
 ): Map<string, ResourceChange> {
   const resources = recordOf(template.Resources as unknown);
   let anyChanged = false;
@@ -235,9 +363,13 @@ export function maskPassedSecretChanges(
       const next =
         isNestedRow && propertyChange.path === 'Parameters'
           ? maskRowParameters(propertyChange, templateValue, tainted)
-          : readsTainted(templateValue, tainted)
+          : readsTainted(templateValue, tainted) ||
+              // Any other property of a nested row (its `Tags`, the stack
+              // tags it hands down): any side holding a mixed value, whole.
+              (isNestedRow &&
+                SIDES.some((side) => holdsMixedDynamicReference(propertyChange[side])))
             ? maskedSides(propertyChange)
-            : propertyChange;
+            : maskTagProperty(propertyChange, tagKeys);
       if (next !== propertyChange) changed = true;
       return next;
     });
