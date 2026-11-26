@@ -121,10 +121,10 @@ describe('consumer-held superseded entries (go-to-k/cdkd#7017)', () => {
   });
 
   it('a short or numeric attribute is no needle', async () => {
-    const { engine } = engineOver({ Consumer: consumerState({ Delay: '12345678', Name: 'x' }) });
-    // Only `app-q1` (QueueName) and the URL / ARN are needles; `12345678` is not.
+    const { engine } = engineOver({ Consumer: consumerState({ Delay: '12345678', Name: 'fifo' }) });
+    // Neither a numeric attribute nor one under 8 characters is a needle.
     const held = entry(true, 'https://sqs.us-east-1.amazonaws.com/111122223333/other');
-    held.state.attributes = { DelaySeconds: '12345678' };
+    held.state.attributes = { DelaySeconds: '12345678', Kind: 'fifo' };
     expect(await carriedNotHeldByConsumers(engine, 'Producer', [held])).toEqual([held]);
   });
 
