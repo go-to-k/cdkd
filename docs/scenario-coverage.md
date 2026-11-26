@@ -147,6 +147,7 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 - [`alb-listener-rule-update`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/alb-listener-rule-update/)
 - [`apigatewayv2-update-removal`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/apigatewayv2-update-removal/)
 - [`apigw-restapi-spec`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/apigw-restapi-spec/)
+- [`apigw-stage-api-replacement`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/apigw-stage-api-replacement/)
 - [`apigw-stage-props`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/apigw-stage-props/)
 - [`apigw-stage-throttling`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/apigw-stage-throttling/)
 - [`apigw-usage-plan-key`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/apigw-usage-plan-key/)

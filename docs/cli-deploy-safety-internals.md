@@ -318,6 +318,7 @@ two records under one id name two resources:
 | `AWS::Glue::Table` | Both records' `DatabaseName` prefix the shared id and differ (table `db\|orders` in database `my`, table `orders` in database `my\|db`). |
 | `AWS::Lambda::Permission` | The two `FunctionName`s name different functions. |
 | `AWS::EC2::SecurityGroupIngress` | The two rules admit traffic from different sources (`CidrIp`, `CidrIpv6`, `SourcePrefixListId` or `SourceSecurityGroupId`); the id holds only the group, protocol and ports. |
+| `AWS::ApiGateway::Stage`, `AWS::ApiGatewayV2::Stage` | The two stages belong to different APIs (`RestApiId` / `ApiId`); the id is the bare stage name, such as `$default`. |
 
 Such a replacement keeps the new resource and deletes the old one through its
 own record, and a rollback reverses it. A value cdkd cannot read (masked or

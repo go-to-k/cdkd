@@ -240,3 +240,37 @@ describe('equalIdNamesDifferentResources: AWS::EC2::SecurityGroupIngress (go-to-
     ).toBe(false);
   });
 });
+
+/**
+ * go-to-k/cdkd#7072: a stage's id is its bare name, scoped by an API the id
+ * does not carry, so a stage moved to a replaced API is a new stage under the
+ * old id. Only two readable API ids that differ prove it.
+ */
+describe.each([
+  ['AWS::ApiGatewayV2::Stage', 'ApiId', '$default'],
+  ['AWS::ApiGateway::Stage', 'RestApiId', 'prod'],
+])('equalIdNamesDifferentResources: %s (go-to-k/cdkd#7072)', (resourceType, key, id) => {
+  const check = (oldApi: unknown, newApi: unknown): boolean =>
+    equalIdNamesDifferentResources({
+      resourceType,
+      physicalId: id,
+      oldProperties: { StageName: id, [key]: oldApi },
+      newProperties: { StageName: id, [key]: newApi },
+    });
+
+  it('is true for two different API ids', () => {
+    expect(check('abc123def0', 'xyz789ghi1')).toBe(true);
+  });
+
+  it.each([
+    ['the same API', 'abc123def0', 'abc123def0'],
+    ['a redaction mask', SECRET_MASK, 'xyz789ghi1'],
+    ['a secret reference', '{{resolve:ssm:/app/api}}', 'xyz789ghi1'],
+    ['an unresolved intrinsic', { Ref: 'Api' }, 'xyz789ghi1'],
+    ['an absent API id', undefined, 'xyz789ghi1'],
+    ['an empty API id', '', 'xyz789ghi1'],
+  ])('is false for %s', (_n, oldApi, newApi) => {
+    expect(check(oldApi, newApi)).toBe(false);
+    expect(check(newApi, oldApi)).toBe(false);
+  });
+});
