@@ -1,5 +1,7 @@
 import { settleStackTagChildRuns } from '../../nested-stack-tags.js';
 import { healLegacyLiteralSpellings } from '../legacy-literal-heal.js';
+import { healZonelessDbInstanceRecords } from '../../zoneless-db-instance-heal.js';
+import { readDbInstanceAvailabilityZone } from '../../../provisioning/providers/rds/live-zone.js';
 import { freshNoEchoParametersWithDeclared, noEchoDiffComparison } from '../noecho.js';
 import { diffLogMasker, redactParametersForDiff } from '../masking.js';
 import { makeCanonicalizePropertiesFn } from '../../../provisioning/canonicalize-properties.js';
@@ -90,6 +92,16 @@ export async function calculateDeployDiff(
   const crossStackReads = new Map<string, CrossStackRead>();
   diffResolverContext.crossStackReads = crossStackReads;
   const diffResolveFn = (value: unknown) => engine.resolver.resolve(value, diffResolverContext);
+  // go-to-k/cdkd#7057: a DBInstance record an older cdkd wrote without the
+  // zone the template declares is compared with the instance's zone, read
+  // once and only for a record in that shape; `cdkd diff` runs the same heal.
+  const zonelessRecordsHealed = await healZonelessDbInstanceRecords({
+    resources: currentState.resources,
+    template: effectiveTemplate,
+    resolve: diffResolveFn,
+    readLiveZone: (identifier) => readDbInstanceAvailabilityZone(identifier, engine.stackRegion),
+    log: (line) => engine.logger.debug(line),
+  });
   const maskedInputSourcesForDiff = maskedInputSources(
     engine.resolverContextDeps(),
     effectiveTemplate,
@@ -212,5 +224,11 @@ export async function calculateDeployDiff(
     resolve: diffResolveFn,
     secrets: diffResolverContext.recordedSecretValues,
   });
-  return { diffResolverContext, maskedInputs, changes, expectedChildTags };
+  return {
+    diffResolverContext,
+    maskedInputs,
+    changes,
+    expectedChildTags,
+    zonelessRecordsHealed: zonelessRecordsHealed.length > 0,
+  };
 }

@@ -69,6 +69,7 @@ import { makeCanonicalizePropertiesFn } from '../../provisioning/canonicalize-pr
 import { planOrphanAdoption, makeSiblingClaimReader } from '../../deployment/orphan-adoption.js';
 import { explicitNamePropertyFor } from '../../provisioning/resource-name.js';
 import { createReadOnlyAttributeHealerFactory } from '../../deployment/read-only-attribute-healer.js';
+import { readDbInstanceAvailabilityZone } from '../../provisioning/providers/rds/live-zone.js';
 import type { ResourceState, StackState } from '../../types/state.js';
 import type { SecurityDiff } from '../../analyzer/security-diff.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
@@ -527,6 +528,12 @@ async function diffCommand(
       inRegion: (healRegion, fn) =>
         runWithStackAwsClients(stackRegionScope(healRegion).clients, fn),
     });
+    // go-to-k/cdkd#7057: the deploy's zone read, in the stack's region and
+    // under its clients, like the heal above.
+    const liveDbInstanceZoneReaderFor = (zoneRegion: string) => (identifier: string) =>
+      runWithStackAwsClients(stackRegionScope(zoneRegion).clients, () =>
+        readDbInstanceAvailabilityZone(identifier, zoneRegion)
+      );
     // `--fail-on=destructive` / `broadening` walk nested stacks whether or not
     // `--recursive` was given: each is a gate, and `cdk diff` checks nested
     // stacks for both, so such a change inside a child must not pass.
@@ -637,6 +644,7 @@ async function diffCommand(
           ...(stackInfo.account && { consumerAccount: stackInfo.account }),
           previewOrphanAdoption,
           attributeHealerFor,
+          liveDbInstanceZoneReaderFor,
           // This IS the stack the user named, so it is the one node that
           // carries the repaired-container refusals (go-to-k/cdkd#3335).
           isNestedChild: false,
