@@ -469,7 +469,9 @@ describe('secret-redaction - cross-stack secret EMBEDDED in a leaf (issue #2298)
 
     it('a placeholder the 2-arg map BINDS, even though its name spells a keyed output', () => {
       // The writer never sees `Child.Outputs.CurrentPw` here: the map's literal
-      // wins, so the association under that key is about some OTHER leaf.
+      // wins, so the association under that key is about some OTHER leaf. The
+      // map value is TEMPLATE TEXT, which the walk keeps as written whatever
+      // secret it equals (go-to-k/cdkd#7037): the template already holds it.
       const secrets: RecordedSecretValues = new Map([[SHARED, EXPR_PREVIOUS]]);
       recordCrossStackExpression(secrets, KEY, EXPR_CURRENT, SHARED);
       const source = {
@@ -479,7 +481,8 @@ describe('secret-redaction - cross-stack secret EMBEDDED in a leaf (issue #2298)
         string,
         string
       >;
-      expect(redacted['P']).toBe(`x-${EXPR_PREVIOUS}`);
+      expect(redacted['P']).toBe(`x-${SHARED}`);
+      expect(redacted['P']).not.toBe(`x-${EXPR_CURRENT}`);
     });
 
     it('a leaf the template and the association do not reassemble', () => {

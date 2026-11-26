@@ -2,101 +2,291 @@ import { type RecordedSecretValues } from '../pairs.js';
 import { type PathSourceRules, isPlainObject } from '../rules.js';
 import { dynamicReferenceSpans } from './reference-tokens.js';
 import { secretRerenderPairs } from './template-literal.js';
-
-/** One piece of a rendered source: template text, or a whole reference token. */
-type Segment = { text: string } | { token: string };
+import { takenIfBranchOf } from '../resolver-outcomes.js';
 
 /**
- * The persisted spelling of an `Fn::Join` / `Fn::Sub` leaf built ONLY from
- * template text and whole secret `{{resolve:...}}` tokens (go-to-k/cdkd#7037):
- * the text as the template spells it, each token as itself. `undefined`
- * whenever that cannot be proven.
+ * One piece of a rendered source: template text, a whole reference token, or
+ * a GAP, a part whose value the template does not spell (a `Ref`, a pseudo
+ * parameter, `Fn::GetAtt`, `Fn::ImportValue`, an `Fn::If` inside a join...).
+ */
+type Segment = { text: string } | { token: string } | { gap: true };
+
+/** The value scan of one string, as the caller's walk would persist it. */
+export type ValueScan = (text: string) => unknown;
+
+/**
+ * The persisted spelling of an intrinsic leaf whose TEMPLATE TEXT is kept as
+ * written (go-to-k/cdkd#7037), or `undefined` whenever that cannot be proven.
  *
  * The value scan rewrote every occurrence of a recorded plaintext in such a
- * leaf, the template's own text included: `Fn::Join ['', ['postgres:',
- * {{username}}]]` with the username `postgres` was persisted as
- * `{{username}}:{{username}}`, which the next diff read as a change. Here the
- * parts the template wrote stay text, whatever secret they equal or contain,
- * and the parts a reference supplied stay that reference.
+ * leaf, the template's own text included: `Fn::Join ['', ['postgresql://',
+ * {Fn::GetAtt: [Db, Endpoint.Address]}, '/postgres']]` with the username
+ * `postgres` was persisted as `{{username}}ql://<host>/{{username}}`, which
+ * every next diff read as a change (a create-only one as a replacement).
+ *
+ * The source is read as a sequence of segments: TEXT the template spells
+ * (strings, numbers, an `Fn::Select` / `Fn::Split` over literals, an
+ * `Fn::Sub` escape), whole `{{resolve:...}}` TOKENS, and GAPS. Text and tokens
+ * are ANCHORS: each token rendered as the one plaintext this pass recorded for
+ * it. The anchors must sit in `bag` at exactly ONE set of positions, in order,
+ * with the gaps between them; the persisted leaf is each anchor as the
+ * template spells it (text as text, token as token) and each gap as the bag
+ * holds it.
  *
  * What makes it safe to persist:
  *
- * - The result is a function of the SOURCE alone: template text and the
- *   tokens the template spells at those spans. No byte of the resolved bag
- *   reaches it, so no secret-derived value can.
- * - It is returned only where the source, each token spelled as the plaintext
- *   this pass recorded for it, renders to `bag` EXACTLY, so the template
- *   spelling describes the value being persisted.
- * - Anything else refuses: a `Ref` / `Fn::GetAtt` / `Fn::ImportValue` / any
- *   other intrinsic part (a `NoEcho` parameter's value, a resource attribute,
- *   a cross-stack read are values, not template text), an `Fn::Sub` holding a
- *   `${...}` placeholder or a variable map, a token with no single recorded
- *   plaintext (a public `ssm` reference this pass resolved as public, a
- *   service cdkd does not resolve), and a STATE source.
+ * - Every anchor byte is template text or a token the template spells there.
+ * - A gap is kept only when the caller's value scan leaves it unchanged, so a
+ *   gap holding any recorded secret refuses the arm, and the specialized arms
+ *   (parameter placeholders, cross-stack reads, the skeleton and frame arms)
+ *   and the scan decide the leaf as before, a pseudo parameter's gap too (the
+ *   walk cannot prove which bag bytes a gap resolved to). A `NoEcho` parameter's gap is
+ *   masked afterwards by the positional `NoEcho` arm, whatever this returns.
+ * - Ambiguous anchors (more than one placement), a leaf with no non-empty
+ *   anchor, a token with no single recorded plaintext, text holding a PARTIAL
+ *   `{{resolve:` (a token assembled from parts), and a STATE source refuse.
+ * - An `Fn::If` at the leaf is spelled as the branch the resolver recorded
+ *   this pass taking (`resolver-outcomes.ts`). With no record, it takes the
+ *   one branch spelling that renders to `bag`, only when no branch holds a
+ *   gap and no two spellings render to it:
+ *   a value-bearing branch that resolved to the other branch's text would be
+ *   persisted as that text, confirming the value (go-to-k/cdkd#4954's shape).
  *
- * An `Fn::If` at the leaf takes the one branch spelling that renders to
- * `bag`, only when every branch is renderable (or `AWS::NoValue`) and no two
- * spellings render to it.
- *
- * A refusal leaves the leaf to the positional arms and the value scan, as
- * before.
+ * A refusal leaves the leaf to the positional arms and the value scan.
  */
 export function positionByLiteralRendering(
   bag: unknown,
   source: unknown,
   secrets: RecordedSecretValues,
-  rules: PathSourceRules
+  rules: PathSourceRules,
+  scan: ValueScan
 ): string | undefined {
   if (rules.sourceIsTemplate !== true || typeof bag !== 'string') return undefined;
+  if (suspended > 0) return undefined;
+  visits = 0;
   if (!isPlainObject(source)) return undefined;
   const plaintextOf = tokenPlaintexts(secrets);
+  const recorded = [...secrets.keys()];
   const ifArgs = source['Fn::If'];
   if (Object.keys(source).length === 1 && Array.isArray(ifArgs)) {
-    // An `Fn::If` at the leaf: this module never learns the condition, so a
-    // branch is taken only where it is the ONE spelling rendering to `bag`.
-    // Two branches rendering to it with different spellings (a literal, and a
-    // reference resolving to the same text) refuse: persisting the literal
-    // would say which value the secret holds (go-to-k/cdkd#4954's shape).
-    // Every branch must be renderable, or be `AWS::NoValue` (which yields no
-    // string): a value-bearing branch (a `NoEcho` parameter) that resolved to
-    // the other branch's text would otherwise be persisted as that text,
-    // confirming the value.
     if (ifArgs.length !== 3) return undefined;
+    // The branch this pass took, where the resolver recorded it: spelled as
+    // that branch, which is what the diff side selects from the same
+    // conditions, so no other branch's text is ever persisted for it.
+    const taken = takenIfBranchOf(secrets, source);
+    if (taken !== undefined) {
+      const branch = taken ? ifArgs[1] : ifArgs[2];
+      if (isNoValue(branch)) return undefined;
+      const segments = renderSegments(branch, 1);
+      return segments === undefined
+        ? undefined
+        : placeAnchors(segments, plaintextOf, bag, scan, recorded);
+    }
     const spellings = new Set<string>();
     for (const branch of [ifArgs[1], ifArgs[2]]) {
       if (isNoValue(branch)) continue;
       const segments = renderSegments(branch, 1);
-      if (segments === undefined) return undefined;
-      const spelled = spelledIfRendersTo(segments, plaintextOf, bag);
+      if (segments === undefined || segments.some((s) => 'gap' in s)) return undefined;
+      const spelled = placeAnchors(segments, plaintextOf, bag, scan, recorded);
       if (spelled !== undefined) spellings.add(spelled);
     }
     return spellings.size === 1 ? [...spellings][0] : undefined;
   }
   const segments = renderSegments(source, 0);
   if (segments === undefined) return undefined;
-  return spelledIfRendersTo(segments, plaintextOf, bag);
+  return placeAnchors(segments, plaintextOf, bag, scan, recorded);
 }
 
-/** The persisted spelling of `segments` when, with each token as its plaintext, they render to `bag`. */
-function spelledIfRendersTo(
+/**
+ * The text a template node spells when it is ALL template text (a string with
+ * no token, an `Fn::Join` / `Fn::Sub` / `Fn::Select` / `Fn::Split` of
+ * literals, numbers), else `undefined`: the value every walk keeps as written.
+ */
+export function staticTemplateText(node: unknown): string | undefined {
+  const segments = renderSegments(node, 0);
+  if (segments === undefined) return undefined;
+  let text = '';
+  for (const segment of segments) {
+    if (!('text' in segment)) return undefined;
+    text += segment.text;
+  }
+  return text;
+}
+
+/** Nesting depth of {@link withoutLiteralRendering} scopes. */
+let suspended = 0;
+
+/**
+ * `run` with this arm switched off, for a caller that DERIVES needles from the
+ * walk's answer rather than persisting it: the nested-stack parameter recorder
+ * (`record-parameter-expressions.ts`) certifies a child's spelling only from
+ * the arms it was written against, so its tables keep their answers. The walk
+ * is synchronous; the flag is restored on a throw.
+ */
+export function withoutLiteralRendering<T>(run: () => T): T {
+  suspended++;
+  try {
+    return run();
+  } finally {
+    suspended--;
+  }
+}
+
+/** An anchor's two spellings: as rendered (tokens as plaintext) and as persisted. */
+interface Anchor {
+  rendered: string;
+  persisted: string;
+}
+
+/**
+ * The persisted spelling of `segments` against `bag`: anchors at their one
+ * placement, gaps as the bag holds them (each left unchanged by `scan`).
+ */
+function placeAnchors(
   segments: readonly Segment[],
   plaintextOf: ReadonlyMap<string, string>,
-  bag: string
+  bag: string,
+  scan: ValueScan,
+  plaintexts: readonly string[]
 ): string | undefined {
-  let rendered = '';
-  let persisted = '';
+  // [anchor, gap, anchor, ...]: consecutive known parts merged, consecutive
+  // gaps merged, and a leading or trailing gap recorded as a flag.
+  const anchors: Anchor[] = [];
+  let leadingGap = false;
+  let trailingGap = false;
+  let current: Anchor | undefined;
   for (const segment of segments) {
-    if ('text' in segment) {
-      rendered += segment.text;
-      persisted += segment.text;
+    if ('gap' in segment) {
+      if (current !== undefined) {
+        anchors.push(current);
+        current = undefined;
+      } else if (anchors.length === 0) {
+        leadingGap = true;
+      }
+      trailingGap = true;
       continue;
     }
-    const plaintext = plaintextOf.get(segment.token);
-    if (plaintext === undefined) return undefined;
-    rendered += plaintext;
-    persisted += segment.token;
+    trailingGap = false;
+    current ??= { rendered: '', persisted: '' };
+    if ('text' in segment) {
+      current.rendered += segment.text;
+      current.persisted += segment.text;
+    } else {
+      const plaintext = plaintextOf.get(segment.token);
+      if (plaintext === undefined) return undefined;
+      current.rendered += plaintext;
+      current.persisted += segment.token;
+    }
   }
-  return rendered === bag ? persisted : undefined;
+  if (current !== undefined) anchors.push(current);
+  if (!leadingGap && !trailingGap && anchors.length <= 1) {
+    // No gap at all: the rendering must be the bag.
+    const only = anchors[0] ?? { rendered: '', persisted: '' };
+    return only.rendered === bag ? only.persisted : undefined;
+  }
+  if (!anchors.some((a) => a.rendered.length > 0)) return undefined;
+  const leftmost = placements(anchors, bag, leadingGap, trailingGap, 'left');
+  const rightmost = placements(anchors, bag, leadingGap, trailingGap, 'right');
+  if (leftmost === undefined || rightmost === undefined) return undefined;
+  if (leftmost.some((at, i) => at !== rightmost[i])) return undefined;
+  // Anchors are separated by exactly one (merged) gap, so the leaf reads
+  // [gap] A0 gap A1 ... An [gap].
+  const gaps: string[] = [];
+  const gapRanges: Array<readonly [number, number]> = [];
+  let persisted = '';
+  let cursor = 0;
+  for (let i = 0; i < anchors.length; i++) {
+    const at = leftmost[i]!;
+    if (i > 0 || leadingGap) {
+      const gap = bag.slice(cursor, at);
+      gaps.push(gap);
+      gapRanges.push([cursor, at]);
+      persisted += gap;
+    } else if (at !== 0) {
+      return undefined;
+    }
+    persisted += anchors[i]!.persisted;
+    cursor = at + anchors[i]!.rendered.length;
+  }
+  if (trailingGap) {
+    const gap = bag.slice(cursor);
+    gaps.push(gap);
+    gapRanges.push([cursor, bag.length]);
+    persisted += gap;
+  } else if (cursor !== bag.length) {
+    return undefined;
+  }
+  // A gap holding a recorded secret is not this arm's to answer, whatever it
+  // names: the walk cannot prove the bag's bytes there are what the gap
+  // resolved to (a pseudo parameter included), so a secret in them is the
+  // scan's.
+  if (gaps.some((gap) => scan(gap) !== gap)) return undefined;
+  // ...nor one that STRADDLES a gap's edge (a secret ending inside the gap and
+  // continuing into an anchor), at any length: the gap's own scan cannot see
+  // it, and keeping the gap would persist the part of it there (#4986).
+  for (const plaintext of plaintexts) {
+    if (plaintext === '') continue;
+    for (let at = bag.indexOf(plaintext); at !== -1; at = bag.indexOf(plaintext, at + 1)) {
+      const end = at + plaintext.length;
+      // Wholly inside one gap is the scan's verdict above (a reader's copy of
+      // a secret-named id is kept there by design, #4810).
+      const straddles = gapRanges.some(
+        ([from, to]) => at < to && end > from && !(at >= from && end <= to)
+      );
+      if (straddles) return undefined;
+    }
+  }
+  return persisted;
+}
+
+/**
+ * Where each anchor starts in `bag`, placed leftmost (or rightmost) first;
+ * `undefined` where they cannot all be placed. An anchor with no gap before it
+ * starts where the previous one ended (the first: at 0); the last, with no
+ * trailing gap, ends at the bag's end.
+ */
+function placements(
+  anchors: readonly Anchor[],
+  bag: string,
+  leadingGap: boolean,
+  trailingGap: boolean,
+  side: 'left' | 'right'
+): number[] | undefined {
+  const out = new Array<number>(anchors.length);
+  if (side === 'left') {
+    let cursor = 0;
+    for (let i = 0; i < anchors.length; i++) {
+      const text = anchors[i]!.rendered;
+      const pinnedStart = i === 0 && !leadingGap;
+      const pinnedEnd = i === anchors.length - 1 && !trailingGap;
+      let at: number;
+      if (pinnedStart) at = 0;
+      else if (pinnedEnd) at = bag.length - text.length;
+      else at = bag.indexOf(text, cursor);
+      if (at < cursor || bag.slice(at, at + text.length) !== text) return undefined;
+      if (pinnedEnd && at + text.length !== bag.length) return undefined;
+      out[i] = at;
+      cursor = at + text.length;
+    }
+    return out;
+  }
+  let limit = bag.length;
+  for (let i = anchors.length - 1; i >= 0; i--) {
+    const text = anchors[i]!.rendered;
+    const pinnedStart = i === 0 && !leadingGap;
+    const pinnedEnd = i === anchors.length - 1 && !trailingGap;
+    let at: number;
+    if (pinnedEnd) at = bag.length - text.length;
+    else if (pinnedStart) at = 0;
+    else at = limit - text.length < 0 ? -1 : bag.lastIndexOf(text, limit - text.length);
+    if (at < 0 || at + text.length > limit || bag.slice(at, at + text.length) !== text) {
+      return undefined;
+    }
+    if (pinnedStart && at !== 0) return undefined;
+    out[i] = at;
+    limit = at;
+  }
+  return out;
 }
 
 function isNoValue(node: unknown): boolean {
@@ -106,44 +296,129 @@ function isNoValue(node: unknown): boolean {
 /** Nesting beyond this is refused, never walked. */
 const MAX_DEPTH = 16;
 
+const GAP: Segment[] = [{ gap: true }];
+
+/** The most segments one leaf may expand to; beyond it the leaf is refused, never walked. */
+const MAX_SEGMENTS = 512;
+
+/** Nodes one top-level rendering may visit (a `k^d` variable bomb is refused, never walked). */
+const MAX_VISITS = 4096;
+let visits = 0;
+
 function renderSegments(node: unknown, depth: number): Segment[] | undefined {
+  if (depth === 0) visits = 0;
+  if (++visits > MAX_VISITS) return undefined;
   if (depth > MAX_DEPTH) return undefined;
   if (typeof node === 'string') return stringSegments(node);
-  if (!isPlainObject(node)) return undefined;
-  const keys = Object.keys(node);
-  if (keys.length !== 1) return undefined;
-  if (keys[0] === 'Fn::Join') {
-    const args = node['Fn::Join'];
-    if (!Array.isArray(args) || args.length !== 2) return undefined;
+  if (typeof node === 'number' || typeof node === 'boolean') return [{ text: String(node) }];
+  if (!isPlainObject(node) || Object.keys(node).length !== 1) return GAP;
+  const [key] = Object.keys(node) as [string];
+  const args = node[key];
+  if (key === 'Fn::Join') {
+    if (!Array.isArray(args) || args.length !== 2) return GAP;
     const [delimiter, list] = args as [unknown, unknown];
-    if (typeof delimiter !== 'string' || !Array.isArray(list)) return undefined;
+    if (typeof delimiter !== 'string' || !Array.isArray(list)) return GAP;
+    const glue = stringSegments(delimiter);
+    if (glue === undefined) return undefined;
     const out: Segment[] = [];
-    for (let i = 0; i < list.length; i++) {
-      if (i > 0) out.push(...stringSegments(delimiter));
-      const part = renderSegments(list[i], depth + 1);
+    // Every element, an `AWS::NoValue` one too: it is a gap (whatever the
+    // resolver renders for it), never text.
+    const parts = list;
+    for (let i = 0; i < parts.length; i++) {
+      if (i > 0) out.push(...glue);
+      const part = renderSegments(parts[i], depth + 1);
       if (part === undefined) return undefined;
       out.push(...part);
+      if (out.length > MAX_SEGMENTS) return undefined;
     }
     return out;
   }
-  if (keys[0] === 'Fn::Sub') {
-    const text = node['Fn::Sub'];
-    // A placeholder names a value (a parameter, an attribute), never text.
-    if (typeof text !== 'string' || text.includes('${')) return undefined;
-    return stringSegments(text);
+  if (key === 'Fn::Sub') {
+    if (typeof args === 'string') return subSegments(args, {}, depth);
+    if (Array.isArray(args) && args.length === 2 && typeof args[0] === 'string') {
+      const variables = args[1];
+      if (!isPlainObject(variables)) return GAP;
+      return subSegments(args[0], variables, depth);
+    }
+    return GAP;
   }
-  return undefined;
+  if (key === 'Fn::Select') {
+    if (!Array.isArray(args) || args.length !== 2) return GAP;
+    const index =
+      typeof args[0] === 'number'
+        ? args[0]
+        : typeof args[0] === 'string' && /^\d+$/.test(args[0])
+          ? Number(args[0])
+          : undefined;
+    const list = staticList(args[1]);
+    if (index === undefined || list === undefined || index >= list.length) return GAP;
+    return renderSegments(list[index], depth + 1);
+  }
+  return GAP;
 }
 
-function stringSegments(value: string): Segment[] {
+/** A list the template spells: an array, or an `Fn::Split` of a literal. */
+function staticList(node: unknown): unknown[] | undefined {
+  if (Array.isArray(node)) return node;
+  if (!isPlainObject(node) || Object.keys(node).length !== 1) return undefined;
+  const split = node['Fn::Split'];
+  if (!Array.isArray(split) || split.length !== 2) return undefined;
+  const [delimiter, text] = split as [unknown, unknown];
+  if (typeof delimiter !== 'string' || delimiter === '' || typeof text !== 'string')
+    return undefined;
+  if (text.includes('{{resolve:')) return undefined;
+  return text.split(delimiter);
+}
+
+/** `Fn::Sub` text: `${!x}` is the text `${x}`, `${name}` a variable or a gap. */
+function subSegments(
+  text: string,
+  variables: Record<string, unknown>,
+  depth: number
+): Segment[] | undefined {
+  const out: Segment[] = [];
+  let at = 0;
+  const pattern = /\$\{([^}]*)\}/g;
+  for (const match of text.matchAll(pattern)) {
+    const literal = stringSegments(text.slice(at, match.index));
+    if (literal === undefined) return undefined;
+    out.push(...literal);
+    const name = match[1]!;
+    if (name.startsWith('!')) {
+      out.push({ text: `\${${name.slice(1)}}` });
+    } else if (Object.hasOwn(variables, name)) {
+      const part = renderSegments(variables[name], depth + 1);
+      if (part === undefined) return undefined;
+      out.push(...part);
+      if (out.length > MAX_SEGMENTS) return undefined;
+    } else {
+      out.push({ gap: true });
+    }
+    at = match.index + match[0].length;
+  }
+  const rest = stringSegments(text.slice(at));
+  if (rest === undefined) return undefined;
+  out.push(...rest);
+  return out;
+}
+
+/**
+ * Text and whole tokens; `undefined` for text holding a PARTIAL `{{resolve:`
+ * (a token the template assembles from parts, which the skeleton arms answer).
+ */
+function stringSegments(value: string): Segment[] | undefined {
   const out: Segment[] = [];
   let at = 0;
   for (const span of dynamicReferenceSpans(value)) {
-    if (span.start > at) out.push({ text: value.slice(at, span.start) });
+    const text = value.slice(at, span.start);
+    if (text.includes('{{resolve:')) return undefined;
+    if (text !== '') out.push({ text });
     out.push({ token: value.slice(span.start, span.end) });
     at = span.end;
   }
-  if (at < value.length) out.push({ text: value.slice(at) });
+  const rest = value.slice(at);
+  if (rest.includes('{{resolve:')) return undefined;
+  if (rest !== '') out.push({ text: rest });
   return out;
 }
 

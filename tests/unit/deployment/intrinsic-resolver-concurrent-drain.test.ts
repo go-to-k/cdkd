@@ -45,12 +45,20 @@ const HANG_IDS = ['cdkd-drain-hang-a', 'cdkd-drain-hang-b', 'cdkd-drain-hang-c']
 const ref = (id: string): string => `{{resolve:secretsmanager:${id}:SecretString:password}}`;
 const valueOf = (id: string): string => `${id}-plaintext`;
 /**
- * `text` assembled through an `Fn::Select`: resolves no reference, and is no
- * plain literal. Not a join of literals alone, which is template text the
- * persist walk keeps as written (go-to-k/cdkd#7037).
+ * `text` assembled so part of it is a VALUE the walk cannot read as template
+ * text (an `Fn::Split` of a computed string): it resolves no reference, and
+ * is no plain literal. Template text alone (a literal, a join of literals) is
+ * kept as written by the persist walk (go-to-k/cdkd#7037), so it would carry
+ * no needle.
  */
 const literalJoin = (text: string): unknown => ({
-  'Fn::Join': ['', [text.slice(0, 4), { 'Fn::Select': [0, [text.slice(4)]] }]],
+  'Fn::Join': [
+    '',
+    [
+      text.slice(0, 4),
+      { 'Fn::Select': [0, { 'Fn::Split': ['|', { 'Fn::Join': ['', [text.slice(4)]] }] }] },
+    ],
+  ],
 });
 
 /**

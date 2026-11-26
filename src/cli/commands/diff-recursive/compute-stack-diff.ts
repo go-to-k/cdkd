@@ -58,6 +58,7 @@ import {
 import type { CrossStackRead } from '../../../deployment/intrinsic-resolver/context.js';
 import { crossStackOutputProvenanceSource } from '../../../deployment/read-provenance-sources.js';
 import { logger } from './logger.js';
+import { warnLegacySpelling } from '../../../deployment/deploy-engine/deploy-flow/plan-checks.js';
 import {
   healSlashedSsmParameterNames,
   slashedSsmNameHealNote,
@@ -512,8 +513,7 @@ export async function computeStackDiff(
     canonicalizeProperties,
     undefined,
     undefined,
-    // `--verbose`'s `requires replacement (from <old> to <new>)` line prints
-    // resolved values (go-to-k/cdkd#4049).
+    // `--verbose`'s replacement line prints resolved values (go-to-k/cdkd#4049).
     maskForLog,
     undefined,
     maskedInputs,
@@ -530,11 +530,10 @@ export async function computeStackDiff(
       new Set([region, stackName]),
       inheritedNoEchoParameters
     ),
-    // State schema v12 (go-to-k/cdkd#4852): the same read-provenance members
-    // the deploy's diff reads: a nested child's snapshot (derived from the
-    // parent's records, `inheritedProvenanceForChildDiff`) and each producer
-    // output a cross-stack read of this diff read (one state read per
-    // producer, and only for a reader holding read versions).
+    // State schema v12 (go-to-k/cdkd#4852): the deploy diff's read-provenance
+    // members: a nested child's snapshot (`inheritedProvenanceForChildDiff`) and
+    // each producer output a cross-stack read of this diff read (one state read
+    // per producer, only for a reader holding read versions).
     {
       ...(options.inheritedReferenceProvenance && {
         inherited: options.inheritedReferenceProvenance,
@@ -549,6 +548,7 @@ export async function computeStackDiff(
     // go-to-k/cdkd#6437: the deploy's diff takes the same flag.
     options.updatePolicy === true
   );
+  warnLegacySpelling(changes, effectiveTemplate, stackName, logger); // go-to-k/cdkd#7037
   // go-to-k/cdkd#6871: the rows the deploy updates for their child's tags.
   const childStackTags = await settleStackTagChildRuns({
     changes,

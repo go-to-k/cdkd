@@ -70,6 +70,7 @@ import {
   readsProducerReplacedThisRun,
 } from './helpers.js';
 import type { ResolvedUpdateInputs } from './resolve-inputs.js';
+import { tokensIn, tokenVersionMoved } from './legacy-spelling.js';
 
 /**
  * The second phase of `provisionUpdate`: the record compared with the desired
@@ -171,8 +172,11 @@ export async function compareWithRecord(
     (bag): bag is Record<string, unknown> => bag !== null && typeof bag === 'object'
   );
   // The top-level keys a repair below re-spelled, for `dropRepairedChanges`.
+  // ...and the tokens the record held there, for the rotation check.
   const repairedKeys = new Set<string>();
+  const repairedTokens = new Set<string>();
   const repairKey = (bag: Record<string, unknown>, key: string, value: unknown): void => {
+    for (const token of tokensIn(bag[key])) repairedTokens.add(token);
     bag[key] = value;
     repairedKeys.add(key);
   };
@@ -694,7 +698,14 @@ export async function compareWithRecord(
   // that never moved. Only a row the template diff raised: a propagated
   // ceiling, a promoted or masked path, an unsettled key, a policy replacement
   // and a value unknown at plan time each keep their own handling below.
-  if (!resolved.typeChanged && repairedKeys.size > 0 && change.propertyChanges !== undefined) {
+  // Not after a rotation (a token served at a version the record was not
+  // written at): the repair's equality then says nothing about what AWS holds.
+  if (
+    !resolved.typeChanged &&
+    repairedKeys.size > 0 &&
+    change.propertyChanges !== undefined &&
+    !tokenVersionMoved(currentResource, repairedTokens, updateSecrets)
+  ) {
     change.propertyChanges = change.propertyChanges.filter(
       (pc) =>
         !(

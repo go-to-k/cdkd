@@ -33,7 +33,9 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
-    sts: { send: vi.fn().mockResolvedValue({ Account: '123456789012' }) },
+    // An account id holding none of the sampled secrets: a gap whose resolved
+    // text contains a secret's falls to the value scan by design.
+    sts: { send: vi.fn().mockResolvedValue({ Account: '210987654321' }) },
     secretsManager: {
       send: vi.fn(async () => ({ SecretString: JSON.stringify(secret) })),
       config: { region: () => Promise.resolve('us-east-1') },
@@ -115,7 +117,60 @@ function literalPositions(
     'Fn::If taking its else branch beside NoValue': {
       Label: { 'Fn::If': ['IsOff', { Ref: 'AWS::NoValue' }, `${v}-x`] },
     },
+    'Fn::If whose literal branch equals the other branch secret': {
+      Label: { 'Fn::If': ['IsOn', v, user] },
+    },
+    'Fn::Select over literals at a create-only property': { Engine: { 'Fn::Select': [0, [v, 'b']] } },
+    'Fn::Sub with inline pseudo parameter and reference': {
+      Label: { 'Fn::Sub': `${v}-\${AWS::Region}-${user}` },
+    },
+    // m2 / M3 (#5056 / #5063): a variable mapped to the reference, under the floor too.
+    'Fn::Sub variable mapped to the reference': { Label: { 'Fn::Sub': ['${U}:x', { U: user }] } },
+    'Fn::Sub variable map of template text': { Label: { 'Fn::Sub': ['${U}-x', { U: v }] } },
+    'Fn::Join with an AWS::NoValue element': { Engine: { 'Fn::Join': ['', [v, { Ref: 'AWS::NoValue' }]] } },
+    ...generatedMixes(v, user, password),
   };
+}
+
+/**
+ * The generated half of the space: every TEMPLATE-TEXT part crossed with
+ * every GAP kind, in an `Fn::Join` and in an `Fn::Sub` variable map. The text
+ * parts must persist as spelled and the gaps as the diff side computes them
+ * (resolved, or the reference itself), which the NO_CHANGE assertion checks.
+ */
+function generatedMixes(
+  v: string,
+  user: string,
+  password: string
+): Record<string, Record<string, unknown>> {
+  const texts: Record<string, unknown> = {
+    'the value': v,
+    'a URL scheme around it': `${v}ql://`,
+    'a path holding it': `/${v}`,
+    'a number': 5432,
+    'an Fn::Select of an Fn::Split of literals': { 'Fn::Select': [0, { 'Fn::Split': [',', `${v},other`] }] },
+    'an Fn::Select of a literal list': { 'Fn::Select': ['1', ['x', v]] },
+  };
+  const gaps: Record<string, unknown> = {
+    'a pseudo parameter': { Ref: 'AWS::Region' },
+    'another pseudo parameter': { Ref: 'AWS::AccountId' },
+    "a reader's copy of a secret-named resource": { Ref: 'Queue' },
+    'the username reference': user,
+    'the password reference': password,
+    'an Fn::If inside the join': { 'Fn::If': ['IsOn', { Ref: 'AWS::Region' }, 'zz'] },
+  };
+  const out: Record<string, Record<string, unknown>> = {};
+  for (const [textName, text] of Object.entries(texts)) {
+    for (const [gapName, gap] of Object.entries(gaps)) {
+      out[`Join: ${textName} + ${gapName}`] = {
+        Label: { 'Fn::Join': ['', [text, gap, `/${v}`]] },
+      };
+      out[`Sub map: ${textName} + ${gapName}`] = {
+        Label: { 'Fn::Sub': ['${A}@${G}:${A}', { A: text, G: gap }] },
+      };
+    }
+  }
+  return out;
 }
 
 /**
@@ -144,7 +199,7 @@ interface Run {
 /** A queue NAMED from the username: its URL is a secret-derived physical name (#4810). */
 function physicalIdOf(id: string): string {
   return id === 'Queue'
-    ? `https://sqs.us-east-1.amazonaws.com/123456789012/q-${secret.username}`
+    ? `https://sqs.us-east-1.amazonaws.com/210987654321/q-${secret.username}`
     : 'db-instance';
 }
 
@@ -243,7 +298,7 @@ describe('a template literal is never persisted as a secret reference (#6303, #7
   it.each(cases)('secret %j at %s: no change on the next deploy, no plaintext', async (v, position) => {
     secret.username = v;
     // A secret per case: the resolver's lookups and verdicts are process-wide.
-    const arn = `arn:aws:secretsmanager:us-east-1:123456789012:secret:db-${position.replace(/\W+/g, '')}-${v}`;
+    const arn = `arn:aws:secretsmanager:us-east-1:210987654321:secret:db-${position.replace(/\W+/g, '')}-${v}`;
     const user = `{{resolve:secretsmanager:${arn}:SecretString:username::}}`;
     const password = `{{resolve:secretsmanager:${arn}:SecretString:password::}}`;
     const pin = `{{resolve:secretsmanager:${arn}:SecretString:pin::}}`;

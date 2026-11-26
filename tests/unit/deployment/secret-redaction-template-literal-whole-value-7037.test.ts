@@ -178,6 +178,50 @@ describe('an Fn::Join / Fn::Sub of template text and references (#7037)', () => 
   });
 });
 
+describe('template text beside a value-bearing part (generated, #7037)', () => {
+  // Every short value (one under MIN_NEEDLE_LENGTH) x every value-bearing gap
+  // the deploy harness cannot resolve (an attribute, an import, a parameter).
+  const values = ['postgres', 'admin', '1234', 'pg'];
+  const gaps: Record<string, unknown> = {
+    'Fn::GetAtt': { 'Fn::GetAtt': ['Db', 'Endpoint.Address'] },
+    'Fn::ImportValue': { 'Fn::ImportValue': 'shared-host' },
+    'a template parameter': { Ref: 'DbHost' },
+  };
+  const secretsFor = (v: string): RecordedSecretValues => {
+    const s: RecordedSecretValues = new Map([[v, USERNAME]]);
+    recordResolvedPair(s, USERNAME, v);
+    s.set(PW, PASSWORD);
+    recordResolvedPair(s, PASSWORD, PW);
+    return s;
+  };
+  const walk = (v: string, bag: string, src: unknown): unknown =>
+    (
+      redactForState(
+        { L: bag },
+        { provenance: 'template-derived', secrets: secretsFor(v), source: { L: src }, generation: 'same-generation' }
+      ) as Record<string, unknown>
+    )['L'];
+
+  for (const v of values) {
+    for (const [name, gap] of Object.entries(gaps)) {
+      it(`${JSON.stringify(v)} beside ${name}: the text is kept, the gap as resolved`, () => {
+        const src = { 'Fn::Join': ['', [`${v}ql://`, gap, `/${v}`]] };
+        expect(walk(v, `${v}ql://db.example.com/${v}`, src)).toBe(`${v}ql://db.example.com/${v}`);
+      });
+      it(`${JSON.stringify(v)} beside ${name} and the reference: the reference part is redacted`, () => {
+        const src = { 'Fn::Join': ['', [`${v}://`, USERNAME, '@', gap, `/${v}`]] };
+        expect(walk(v, `${v}://${v}@db.example.com/${v}`, src)).toBe(
+          `${v}://${USERNAME}@db.example.com/${v}`
+        );
+      });
+      it(`${JSON.stringify(v)}: a ${name} gap that resolved to the password is never kept`, () => {
+        const src = { 'Fn::Join': ['', [`${v}:`, gap]] };
+        expect(walk(v, `${v}:${PW}`, src)).not.toContain(PW);
+      });
+    }
+  }
+});
+
 describe('a record a pre-#7037 walk wrote, met by a re-positioning pass', () => {
   it('`cdkd scrub`: the whole-token record takes the template literal', () => {
     const out = redactForState(
