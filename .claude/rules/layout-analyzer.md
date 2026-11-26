@@ -6,15 +6,16 @@ paths:
 
 # Key Files and Directories - src/analyzer
 
-DAG builder, template parser, intrinsic resolution. The `drift-*`
-normalizers live with `cdkd drift` ([layout-drift.md](layout-drift.md)); index
-of every area: [code-layout.md](code-layout.md).
+DAG builder, template parser. `drift-*` normalizers:
+[layout-drift.md](layout-drift.md); every area: [code-layout.md](code-layout.md).
 
 - **diff-calculator.ts** — the state-vs-template change calculation. Its refusal
   over a resource record whose `properties` map cannot be read:
   [state-malformed-properties.md](state-malformed-properties.md).
 - **skipped-outputs.ts** — the `skippedOutputs` record; see its doc comment.
-- **cross-stack-preview.ts** — `cdkd diff`'s same-run producer exports (#6796).
+- **replacement-rules/evidence.ts** — each hand-made or disputed replace/update
+  verdict's CloudFormation evidence (#7038).
+- **cross-stack-preview.ts** — diff's same-run producer exports (#6796).
 - **read-provenance-promotion.ts** — v12 #4852: [state-schema.md](state-schema.md).
 
 ## `outputs-diff.ts`
@@ -119,4 +120,4 @@ other names are control-stripped.
 deploy-side block would edit `src/deployment/deploy-engine/` and pull a
 diff-only fix into the `integ-destroy` gate scope.
 `tests/unit/analyzer/outputs-diff.test.ts` pays with an anti-drift fence.
-- **parameter-dependence.ts** - which resources of a RAW template depend on which template parameters (#2854). Two consumers must agree: `cdkd import`'s ARM 4 and `cdkd deploy`'s fail-closed reading of a reason-less `observedBaselineRefused` marker (`resourcesNamingDeclaredParameter`, #3468). An `Fn::` key outside `KNOWN_INTRINSICS` is UNCLASSIFIABLE and refuses; a new resolver intrinsic must be added there.
+- **parameter-dependence.ts** - which RAW-template resources depend on which parameters (#2854). `cdkd import`'s ARM 4 and `cdkd deploy`'s fail-closed reading of a reason-less `observedBaselineRefused` marker (`resourcesNamingDeclaredParameter`, #3468) must agree. An `Fn::` key outside `KNOWN_INTRINSICS` refuses; add a new resolver intrinsic there.

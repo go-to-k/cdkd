@@ -35,7 +35,18 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
   IntrinsicFunctionResolver: vi.fn(() => ({
     getPhysicalIdFallbackCount: vi.fn().mockReturnValue(0),
     resetPhysicalIdFallbackCount: vi.fn(),
-    resolve: vi.fn().mockImplementation((props: unknown) => Promise.resolve(props)),
+    // ...except `${LateValue}`, a placeholder standing for a value the template
+    // does not spell (go-to-k/cdkd#7037: a template's own text is public, so
+    // the late-needle case below needs a carrier that is not template text).
+    resolve: vi.fn().mockImplementation((props: unknown) => {
+      const sub = (v: unknown): unknown =>
+        v !== null && typeof v === 'object' && !Array.isArray(v)
+          ? JSON.stringify(v) === JSON.stringify({ 'Fn::Sub': '${LateValue}' })
+            ? 'late-needle-plaintext'
+            : Object.fromEntries(Object.entries(v).map(([k, x]) => [k, sub(x)]))
+          : v;
+      return Promise.resolve(JSON.stringify(props ?? null).includes('${LateValue}') ? sub(props) : props);
+    }),
     resolveParameters: vi.fn().mockReturnValue({}),
     evaluateConditions: vi.fn().mockResolvedValue({}),
   })),
@@ -651,7 +662,7 @@ describe('DeployEngine - Outputs-only change on a no-resource-diff deploy (#875)
         Resources: resources,
         Outputs: {
           Old: { Value: undefined as unknown as string },
-          Plain2: { Value: LATE },
+          Plain2: { Value: { 'Fn::Sub': '${LateValue}' } as unknown as string },
         },
       };
 

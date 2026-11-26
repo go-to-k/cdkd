@@ -429,7 +429,25 @@ export async function driftCommand(
           stateBackend,
           stateConfig,
           awsClients,
-          options
+          options,
+          // go-to-k/cdkd#7025 step 6: the post-revert re-read, through the same
+          // detection and region scope as the run above. 'refuse' as there.
+          (stackName, stackRegion) => {
+            const scope = stackRegionScope(stackRegion);
+            return runWithStackAwsClients(scope.clients, () =>
+              runDriftForStack(
+                stackName,
+                stackRegion,
+                stateBackend,
+                scope.registry,
+                scope.ccApiFallback,
+                resolvePrincipalUniqueId,
+                'refuse',
+                nestedChildRecord,
+                refusalRecovery
+              )
+            );
+          }
         );
       } catch (err) {
         // `--revert`'s own partial failure ends the run before the deleted

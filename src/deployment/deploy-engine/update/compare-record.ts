@@ -11,6 +11,7 @@ import { getCreateOnlyPropertyPaths } from '../../../provisioning/create-only-pr
 import type { CloudFormationTemplate } from '../../../types/resource.js';
 import {
   acceptedCreateOnlyDropsOf,
+  type PropertyChange,
   type ResourceChange,
   type ResourceState,
 } from '../../../types/state.js';
@@ -69,6 +70,7 @@ import {
   readsProducerReplacedThisRun,
 } from './helpers.js';
 import type { ResolvedUpdateInputs } from './resolve-inputs.js';
+import { tokensIn, tokenVersionMoved } from './legacy-spelling.js';
 
 /**
  * The second phase of `provisionUpdate`: the record compared with the desired
@@ -169,6 +171,15 @@ export async function compareWithRecord(
   const repairable = [currentProps, currentResource.properties].filter(
     (bag): bag is Record<string, unknown> => bag !== null && typeof bag === 'object'
   );
+  // The top-level keys a repair below re-spelled, for `dropRepairedChanges`.
+  // ...and the tokens the record held there, for the rotation check.
+  const repairedKeys = new Set<string>();
+  const repairedTokens = new Set<string>();
+  const repairKey = (bag: Record<string, unknown>, key: string, value: unknown): void => {
+    for (const token of tokensIn(bag[key])) repairedTokens.add(token);
+    bag[key] = value;
+    repairedKeys.add(key);
+  };
   for (const bag of new Set(repairable)) {
     for (const key of Object.keys(bag)) {
       // A properties leaf takes an embedded spelling only where that makes it
@@ -178,7 +189,7 @@ export async function compareWithRecord(
         desiredForSkipCheck[key],
         embeddedRewrites
       );
-      if (repaired !== bag[key]) bag[key] = repaired;
+      if (repaired !== bag[key]) repairKey(bag, key, repaired);
     }
   }
   // go-to-k/cdkd#4986: a record a pre-fix cdkd wrote can hold an overlapping
@@ -213,7 +224,7 @@ export async function compareWithRecord(
           legacyOverlap[key],
           desiredForSkipCheck[key]
         );
-        if (repaired !== bag[key]) bag[key] = repaired;
+        if (repaired !== bag[key]) repairKey(bag, key, repaired);
       }
     }
     // The same spelling in the record's `attributes` / `observedProperties`
@@ -259,7 +270,7 @@ export async function compareWithRecord(
           legacyMixed[key],
           desiredForSkipCheck[key]
         );
-        if (repaired !== bag[key]) bag[key] = repaired;
+        if (repaired !== bag[key]) repairKey(bag, key, repaired);
       }
     }
     const pairs = differingStringLeaves(legacyMixed, desiredForSkipCheck);
@@ -276,7 +287,9 @@ export async function compareWithRecord(
   // and spliced a coinciding secret's expression into it (`aurora-postgresql`
   // with the generated username `postgres` became `aurora-{{resolve:...}}ql`).
   // Today's walk keeps the literal, so that record reads as MOVED, and on a
-  // create-only property as a REPLACEMENT with no template change. A leaf whose
+  // create-only property as a REPLACEMENT with no template change. The same
+  // for a literal EQUAL to a secret (go-to-k/cdkd#7037): `Engine: postgres`
+  // beside the username `postgres` was persisted as the whole token. A leaf whose
   // secret expressions, spelled back as their plaintext, give today's leaf
   // exactly is that leaf unchanged: it takes today's spelling with no send. An
   // edited literal renders to the OLD text and stays a change. The record's
@@ -291,7 +304,7 @@ export async function compareWithRecord(
           desiredForSkipCheck[key],
           literalRewrites
         );
-        if (repaired !== bag[key]) bag[key] = repaired;
+        if (repaired !== bag[key]) repairKey(bag, key, repaired);
       }
     }
   }
@@ -676,6 +689,33 @@ export async function compareWithRecord(
       );
     });
   };
+  // go-to-k/cdkd#7037: a key a repair above re-spelled was a CHANGE only to
+  // the diff, which compared the old spelling (it holds no secret plaintext,
+  // so it cannot render one). Where the repaired record now equals what this
+  // deploy persists, its row is dropped, or a deploy changing something else
+  // too (a `Port` beside `Engine`) acts on a stale replacement: a stateful
+  // resource is refused, a stateless one destroyed and re-created over a value
+  // that never moved. Only a row the template diff raised: a propagated
+  // ceiling, a promoted or masked path, an unsettled key, a policy replacement
+  // and a value unknown at plan time each keep their own handling below.
+  // Not after a rotation (a token served at a version the record was not
+  // written at): the repair's equality then says nothing about what AWS holds.
+  if (
+    !resolved.typeChanged &&
+    repairedKeys.size > 0 &&
+    change.propertyChanges !== undefined &&
+    !tokenVersionMoved(currentResource, repairedTokens, updateSecrets)
+  ) {
+    change.propertyChanges = change.propertyChanges.filter(
+      (pc) =>
+        !(
+          repairedKeys.has(pc.path) &&
+          !movedAsWritten(pc.path) &&
+          !unsettledNames.has(pc.path) &&
+          isPlainTemplateDiffRow(pc)
+        )
+    );
+  }
   return {
     desiredForSkipCheck,
     desiredForSkipCheckAsWritten,
@@ -698,6 +738,20 @@ export async function compareWithRecord(
     readOnce,
     provenChangedAt,
   };
+}
+
+/** A row the template comparison raised, with no promotion or provenance of its own. */
+function isPlainTemplateDiffRow(pc: PropertyChange): boolean {
+  return (
+    pc.replacementPropagated !== true &&
+    pc.inPlacePropagated !== true &&
+    pc.noEchoPromoted !== true &&
+    pc.maskedExpressionChanged !== true &&
+    pc.unsettled !== true &&
+    pc.readProvenancePromoted !== true &&
+    pc.updatePolicyReplacement !== true &&
+    pc.newValueKnownAfterDeploy !== true
+  );
 }
 
 /** What {@link compareWithRecord} hands the later phases. */

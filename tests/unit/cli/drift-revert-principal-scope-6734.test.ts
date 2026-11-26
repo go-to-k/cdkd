@@ -112,7 +112,7 @@ function revertOf(
   desired: Record<string, unknown>
 ) {
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
-  const tally = { totalFailed: 0, totalUnsupported: 0, totalSucceeded: 0, totalUnresolvable: 0 };
+  const tally = { totalFailed: 0, totalUnsupported: 0, totalSucceeded: 0, totalUnresolvable: 0, reverted: [] };
   const stateResource = resources[logicalId]!;
   const args = {
     logger,

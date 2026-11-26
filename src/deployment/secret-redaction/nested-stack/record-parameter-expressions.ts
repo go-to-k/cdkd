@@ -10,7 +10,7 @@ import {
   singleSpanFrame,
   rendersLiteralTo,
 } from '../positions.js';
-import { dynamicReferenceSpans } from '../redact-path.js';
+import { dynamicReferenceSpans, withoutLiteralRendering } from '../redact-path.js';
 import { SPELLED_SECRET_REFERENCE_PREFIXES } from '../anchors.js';
 import { wholeStringLeavesOf } from '../mask-only.js';
 import {
@@ -363,12 +363,10 @@ export function recordNestedStackParameterExpressions(
   // function, under either provenance. The claim is an argument
   // (go-to-k/cdkd#5047), so nothing is marked -- what the record holds is the
   // caller's business.
-  const positioned = redactAtProvenance(
-    { ...resolvedParameters },
-    secrets,
-    sourceParameters,
-    provenance,
-    true
+  // Without the template-text arm (go-to-k/cdkd#7037): every refusal and
+  // certificate below is stated against the arms it was written for.
+  const positioned = withoutLiteralRendering(() =>
+    redactAtProvenance({ ...resolvedParameters }, secrets, sourceParameters, provenance, true)
   ) as Record<string, unknown>;
 
   let table = nestedStackParameterExpressions.get(secrets);

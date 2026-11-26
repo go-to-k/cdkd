@@ -28,11 +28,11 @@ import {
 /**
  * Initialize replacement rules for common AWS resource types.
  *
- * A `replacementProperties` entry wins over the registry schema, so one that
- * CloudFormation updates in place deletes a resource CloudFormation keeps
- * (go-to-k/cdkd#7023). An entry that is not a create-only path in the
- * committed schema fixture needs a row, with the reason CloudFormation
- * replaces it, in `tests/unit/analyzer/replacement-rules-beyond-schema-7024.test.ts`.
+ * Every entry here wins over the registry schema, so a wrong one either
+ * deletes a resource CloudFormation keeps (go-to-k/cdkd#7023) or hides a
+ * replacement from `cdkd diff`. A `conditionalReplacements` predicate, and an
+ * entry the committed schema fixture or `@aws-cdk/aws-service-spec` disagrees
+ * with, needs its evidence in `./evidence.ts` (go-to-k/cdkd#7038).
  */
 export function initializeRules(this: ReplacementRulesRegistry): void {
   // S3 Bucket
@@ -784,10 +784,12 @@ export function initializeRules(this: ReplacementRulesRegistry): void {
   // in `STATEFUL_TYPES` — the deploy engine's property-driven replacement
   // path requires `--force-stateful-recreation` to confirm it.
   // ACM Certificate — ACM has no call that changes a certificate's
-  // validation method, and CloudFormation documents `ValidationMethod` as
-  // "Update requires: Replacement", but the registry schema leaves it out of
+  // validation method, so a new certificate is the only way to apply a
+  // `ValidationMethod` change. The registry schema leaves it out of
   // `createOnlyProperties` (its other immutable fields are there and reach
-  // the schema fallback). Without this rule the diff called the change an
+  // the schema fallback), and the CloudFormation reference now says "No
+  // interruption" (read 2026-11-26, go-to-k/cdkd#7038; not measurable here:
+  // it needs a validatable domain). Without this rule the diff called the change an
   // update and the provider replaced the certificate inside `update()`,
   // deleting the old one before its readers moved to the new ARN
   // (go-to-k/cdkd#6513). Only the gap is listed, so the schema still

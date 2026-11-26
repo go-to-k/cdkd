@@ -68,6 +68,8 @@ interface ProviderReplacementEntry {
  * endpoint subscribed to the same topic twice, and Route 53 a record
  * conflicting with the live one). The generator reads the keys as text too.
  */
+// Each planner property needs its CloudFormation evidence in
+// `../replacement-rules/evidence.ts` (go-to-k/cdkd#7038).
 export const PROVIDER_REPLACEMENT_PLANNERS: ReadonlyMap<string, ProviderReplacementEntry> = new Map(
   [
     [
