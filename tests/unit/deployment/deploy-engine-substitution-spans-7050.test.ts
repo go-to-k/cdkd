@@ -209,6 +209,9 @@ describe('a secret beside a value-bearing part never leaks or reads as a change 
     ['a 4+ character secret equal (Suffix postgres)', 'postgres', { 'Fn::Join': ['_', [LONG, { Ref: 'Suffix' }]] }],
     ['an Fn::Select-lent reference beside its text', 'pg', { 'Fn::Join': ['', ['tt:', { 'Fn::Select': [0, [USERNAME]] }, { Ref: 'Suffix' }]] }],
     ['an Fn::Select-lent reference alone', 'zz', { 'Fn::Join': ['', ['tt:', { 'Fn::Select': [0, [USERNAME]] }]] }],
+    ['a LIST leaf: Fn::Split over the secret beside the text (Suffix pg)', 'pg', { 'Fn::Split': [',', { 'Fn::Join': ['', [USERNAME, { Ref: 'Suffix' }]] }] }],
+    ['a LIST leaf: Fn::Split over the secret inside the text (Suffix apgb)', 'apgb', { 'Fn::Split': [',', { 'Fn::Join': ['', [USERNAME, { Ref: 'Suffix' }]] }] }],
+    ['a LIST leaf: Fn::Split by the delimiter, the public piece equal (Suffix pg)', 'pg', { 'Fn::Split': ['_', { 'Fn::Join': ['_', [USERNAME, { Ref: 'Suffix' }]] }] }],
   ] as const) {
     it(label, async () => {
       SUFFIX.v = suffix;

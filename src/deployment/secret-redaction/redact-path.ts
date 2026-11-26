@@ -1,4 +1,5 @@
-import { SECRET_MASK, type RecordedSecretValues } from './pairs.js';
+import { referencesConsumedBy } from './consumed-references.js';
+import { SECRET_MASK, resolvedPlaintextOf, type RecordedSecretValues } from './pairs.js';
 import {
   type PathSourceRules,
   isDynamicReferenceString,
@@ -323,6 +324,21 @@ export function redactByPath(
     if (attributionRefusedReadsOf(source, secrets) !== undefined) return SECRET_MASK;
     // Fall through to the value scan below on any refusal.
   }
+  // go-to-k/cdkd#7050 review: a LIST leaf (an `Fn::Split` / `Fn::GetAZs`
+  // result) holding the text of a secret its resolution consumed has no span
+  // to place it by either: a cross-stack list is placed by its provenance,
+  // anything else is masked whole, never left to the list arms' search.
+  if (
+    Array.isArray(bag) &&
+    isPlainObject(source) &&
+    listHoldsConsumedSecret(bag, source, secrets)
+  ) {
+    try {
+      return positionListByCrossStackSource(bag, source, secrets) ?? SECRET_MASK;
+    } catch {
+      return SECRET_MASK;
+    }
+  }
   if (Array.isArray(bag) && isPlainObject(source) && attributionRefusedReadsOf(source, secrets)) {
     // ...and its list-valued twin, once its own arm below refuses.
     const positionedList = positionListByCrossStackSource(bag, source, secrets);
@@ -582,4 +598,25 @@ function positionByCertifiedArms(
     bagIsSameGeneration
   );
   return framed;
+}
+
+/** Does a string leaf of `bag` hold the text of a secret `source`'s resolution consumed? */
+function listHoldsConsumedSecret(
+  bag: unknown[],
+  source: Record<string, unknown>,
+  secrets: RecordedSecretValues
+): boolean {
+  const plaintexts: string[] = [];
+  for (const token of referencesConsumedBy(secrets, source)) {
+    const plaintext = resolvedPlaintextOf(secrets, token);
+    if (plaintext !== undefined && plaintext !== '') plaintexts.push(plaintext);
+  }
+  if (plaintexts.length === 0) return false;
+  const holds = (value: unknown): boolean =>
+    typeof value === 'string'
+      ? plaintexts.some((plaintext) => value.includes(plaintext))
+      : Array.isArray(value)
+        ? value.some(holds)
+        : value !== null && typeof value === 'object' && Object.values(value).some(holds);
+  return holds(bag);
 }
