@@ -144,7 +144,7 @@ docdb-global-cluster	2026-11-22T02:46:37Z	PASS	245	verify.sh	rc ok, orph clean, 
 docdb-neptune	2026-11-07T20:39:51Z	PASS	5818	verify.sh	rc 0, destroy 0 errors, 0 orphans, own bucket (#6031)
 docdb-restore	2026-11-07T12:33:20Z	PASS	678	verify.sh	#6004 final-snapshot split head; rc ok, orph clean
 docker-image-asset	2026-11-23T10:52:49Z	PASS	128	verify.sh	rc ok, orph clean (#6857 6852 normalization audit)
-drift-cc-read-only-props	2026-11-23T12:11:05Z	PASS	119	verify.sh	PR6876 828e1c821 us-east-1 rc ok, orph clean (duration not timed; see logs)
+drift-cc-read-only-props	2026-11-26T14:23:13Z	PASS	295	verify.sh	PR7065 3b336f1c7 us-east-1 rc ok, orph clean
 drift-ecs-capacity-association	2026-11-22T02:46:37Z	PASS	175	verify.sh	rc ok, orph clean, sha 3116c9288 (#6813 sub-read errors)
 drift-revert	2026-11-26T07:18:30Z	PASS	856	verify.sh	rc ok, orph clean; #7025 step 6 post-revert verification
 drift-revert-arrays	2026-11-23T08:26:12Z	PASS	267	verify.sh	PR6859 11e38d61f us-east-1 rc ok, orph clean
