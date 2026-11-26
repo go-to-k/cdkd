@@ -1194,6 +1194,11 @@
       "scenarios": []
     },
     {
+      "name": "drift-revert-readback-placeholders",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "drift-revert-vpc",
       "annotated": true,
       "scenarios": [
@@ -4381,6 +4386,7 @@
     "drift-ecs-capacity-association",
     "drift-revert-firehose",
     "drift-revert-nested-write-only",
+    "drift-revert-readback-placeholders",
     "drift-rotation-schedule-revert",
     "drift-sg-sibling-rules",
     "drift-sns-sibling-subscription",

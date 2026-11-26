@@ -227,6 +227,7 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 - [`drift-ecs-capacity-association`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/drift-ecs-capacity-association/)
 - [`drift-revert-firehose`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/drift-revert-firehose/)
 - [`drift-revert-nested-write-only`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/drift-revert-nested-write-only/)
+- [`drift-revert-readback-placeholders`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/drift-revert-readback-placeholders/)
 - [`drift-rotation-schedule-revert`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/drift-rotation-schedule-revert/)
 - [`drift-sg-sibling-rules`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/drift-sg-sibling-rules/)
 - [`drift-sns-sibling-subscription`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/drift-sns-sibling-subscription/)

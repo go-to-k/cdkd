@@ -26,7 +26,13 @@ import {
 } from './predicates.js';
 
 /**
- * Initialize replacement rules for common AWS resource types
+ * Initialize replacement rules for common AWS resource types.
+ *
+ * A `replacementProperties` entry wins over the registry schema, so one that
+ * CloudFormation updates in place deletes a resource CloudFormation keeps
+ * (go-to-k/cdkd#7023). An entry that is not a create-only path in the
+ * committed schema fixture needs a row, with the reason CloudFormation
+ * replaces it, in `tests/unit/analyzer/replacement-rules-beyond-schema-7024.test.ts`.
  */
 export function initializeRules(this: ReplacementRulesRegistry): void {
   // S3 Bucket

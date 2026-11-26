@@ -418,14 +418,20 @@ export async function updateGraphQLApi(
     //       invoked while FieldLogLevel=NONE).
     //   (c) newLog === undefined AND oldLog also undefined → no diff, no
     //       branch taken (gated above).
-    if (newLog !== undefined) {
+    // go-to-k/cdkd#7027: the read-back spells "no logging" as an EMPTY
+    // `LogConfig`, which `drift --revert` hands back as the desired block. It
+    // means none, as an absent one does: sent as written, it puts an
+    // undefined `cloudWatchLogsRoleArn` on the wire, which AWS refuses.
+    const sentLog = isEmptyLogConfig(newLog) ? undefined : newLog;
+    const recordedLog = isEmptyLogConfig(oldLog) ? undefined : oldLog;
+    if (sentLog !== undefined) {
       input.logConfig = {
-        cloudWatchLogsRoleArn: newLog['CloudWatchLogsRoleArn'] as string,
-        fieldLogLevel: newLog['FieldLogLevel'] as 'NONE' | 'ERROR' | 'ALL',
-        excludeVerboseContent: newLog['ExcludeVerboseContent'] as boolean | undefined,
+        cloudWatchLogsRoleArn: sentLog['CloudWatchLogsRoleArn'] as string,
+        fieldLogLevel: sentLog['FieldLogLevel'] as 'NONE' | 'ERROR' | 'ALL',
+        excludeVerboseContent: sentLog['ExcludeVerboseContent'] as boolean | undefined,
       };
-    } else if (oldLog !== undefined) {
-      const existingRoleArn = oldLog['CloudWatchLogsRoleArn'] as string | undefined;
+    } else if (recordedLog !== undefined) {
+      const existingRoleArn = recordedLog['CloudWatchLogsRoleArn'] as string | undefined;
       if (existingRoleArn) {
         input.logConfig = {
           cloudWatchLogsRoleArn: existingRoleArn,
@@ -510,4 +516,11 @@ export async function updateGraphQLApi(
       effectiveProperties: this.withEnvironmentVariablesRecord(properties, envRecord),
     }),
   };
+}
+
+/** A `LogConfig` that holds nothing: absent, or the read-back's `{}` (#7027). */
+function isEmptyLogConfig(log: Record<string, unknown> | undefined): boolean {
+  return (
+    log === undefined || (typeof log === 'object' && log !== null && Object.keys(log).length === 0)
+  );
 }

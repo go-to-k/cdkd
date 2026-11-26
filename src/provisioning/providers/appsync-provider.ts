@@ -509,6 +509,30 @@ export class AppSyncProvider implements ResourceProvider {
   getDriftUnknownPaths(resourceType: string): string[] {
     return getDriftUnknownPaths.call(this, resourceType);
   }
+  /**
+   * go-to-k/cdkd#7027: a GraphQL API whose logging was switched off reads back
+   * `FieldLogLevel: NONE` beside the role it kept, which is no logging, as the
+   * never-set `LogConfig: {}` is: AWS cannot drop the block, so without this a
+   * revert to "no logging" drifts forever. Both comparison sides; any other
+   * member (another level, `ExcludeVerboseContent: true`) keeps the block.
+   */
+  canonicalizeDriftProperties(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Record<string, unknown> {
+    if (resourceType !== 'AWS::AppSync::GraphQLApi') return properties;
+    const log = properties['LogConfig'];
+    if (typeof log !== 'object' || log === null || Array.isArray(log)) return properties;
+    const members = log as Record<string, unknown>;
+    if (members['FieldLogLevel'] !== 'NONE') return properties;
+    const off = Object.entries(members).every(
+      ([key, value]) =>
+        key === 'FieldLogLevel' ||
+        key === 'CloudWatchLogsRoleArn' ||
+        (key === 'ExcludeVerboseContent' && value === false)
+    );
+    return off ? { ...properties, LogConfig: {} } : properties;
+  }
   asObject(
     value: unknown,
     path: string,
