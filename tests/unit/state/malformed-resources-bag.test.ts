@@ -149,6 +149,8 @@ const DIFF_RECURSIVE_ORDER = [
   'orphan-splice.ts',
   'outputs-failure.ts',
   'noecho-macs.ts',
+  // go-to-k/cdkd#7057: the SSM-name and zone heals moved out of compute-stack-diff.ts.
+  'preview-record-heals.ts',
   'compute-stack-diff.ts',
   'trust.ts',
   'child-parameters.ts',

@@ -11,6 +11,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 const rds = vi.hoisted(() => ({
   zone: 'us-east-1a' as string | Error,
   sent: [] as { input: unknown; region: unknown }[],
+  destroyed: 0,
 }));
 
 const infos = vi.hoisted(() => [] as string[]);
@@ -52,7 +53,9 @@ vi.mock('@aws-sdk/client-rds', async (importOriginal) => {
         ],
       };
     }
-    destroy(): void {}
+    destroy(): void {
+      rds.destroyed += 1;
+    }
   }
   return { ...actual, RDSClient: FakeRDSClient };
 });
@@ -180,6 +183,7 @@ const zoneless = (): StackState['resources'] =>
 beforeEach(() => {
   rds.zone = 'eu-west-1a';
   rds.sent.length = 0;
+  rds.destroyed = 0;
   infos.length = 0;
 });
 
@@ -191,6 +195,8 @@ describe('a zone-less pre-#5640 DBInstance record (go-to-k/cdkd#7057)', () => {
     expect(rds.sent).toEqual([
       { input: { DBInstanceIdentifier: 'db-legacy' }, region: 'eu-west-1' },
     ]);
+    // The one-shot client is destroyed after its call.
+    expect(rds.destroyed).toBe(1);
     // Saved by the no-change path, so the next deploy reads nothing.
     expect(run.saves).toBeGreaterThan(0);
     expect(run.persisted?.properties['AvailabilityZone']).toBe('eu-west-1a');
@@ -226,6 +232,8 @@ describe('a zone-less pre-#5640 DBInstance record (go-to-k/cdkd#7057)', () => {
   it('the zone cannot be read: fails closed toward the refusal', async () => {
     rds.zone = Object.assign(new Error('not authorized'), { name: 'AccessDenied' });
     const run = await deploy(zoneless(), template());
+    // Destroyed on a rejected call too.
+    expect(rds.destroyed).toBe(1);
     expect(chainText(run.thrown)).toContain('--force-stateful-recreation');
     expect(run.calls).toEqual([]);
   });
