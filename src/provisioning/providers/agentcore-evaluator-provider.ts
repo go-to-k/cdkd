@@ -340,7 +340,11 @@ export class AgentCoreEvaluatorProvider implements ResourceProvider {
       };
       // An absent field is KEPT by UpdateEvaluator, and CloudFormation keeps a
       // removed Description / KmsKeyArn too (issue #1160 A/B): no clear here.
-      if (properties['Description'] !== undefined) {
+      // go-to-k/cdkd#7051: so a revert's read-back `''` (no description) has
+      // nothing to send, and `description` has a minimum length of 1.
+      const revertNoDescription =
+        context?.desiredFromAwsReadback === true && properties['Description'] === '';
+      if (properties['Description'] !== undefined && !revertNoDescription) {
         input['description'] = properties['Description'];
       }
       if (properties['EvaluatorConfig'] !== undefined) {
