@@ -379,12 +379,13 @@ export class AttributeHealer {
     // report, was not re-read, and a stamp would freeze its stale value.
     const settled = [...staleKeys].every(
       (key) =>
-        !pending.has(key) &&
-        ((Object.hasOwn(healed.attributes, key) &&
+        // A pending key was left out of `healed.attributes` and stays
+        // recorded, so it never settles.
+        (Object.hasOwn(healed.attributes, key) &&
           healed.attributes[key] !== undefined &&
           healed.attributes[key] !== null &&
           healed.attributes[key] !== '') ||
-          !Object.hasOwn(attributes ?? {}, key))
+        !Object.hasOwn(attributes ?? {}, key)
     );
     return staleKeys.size === 0 || !settled
       ? next

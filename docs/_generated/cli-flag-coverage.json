@@ -2664,6 +2664,7 @@
         "partial-create-handback",
         "perf-cross-backend-check",
         "rds-aurora",
+        "rds-dbinstance-getatt-attributes",
         "rds-fix-forward-orphan",
         "recreate-via-cc-api",
         "redshift-cluster-getatt",
