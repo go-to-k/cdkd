@@ -4,6 +4,7 @@
  * `--recreate-via-cc-api`, `--pin-cc-api` and `--recreate-via-sdk-provider`.
  * Split out of `../options.ts`, which re-exports the public names.
  */
+import { safeMsg } from '../../utils/display-safe.js';
 import { Option } from 'commander';
 import { cliArgParser } from '../arg-parser.js';
 
@@ -207,7 +208,7 @@ export function parseRecreateViaCcApiToken(
   const token = value.trim();
   if (!LOGICAL_ID_FORMAT.test(token)) {
     throw new Error(
-      `Invalid --recreate-via-cc-api value "${value}": expected a CloudFormation ` +
+      safeMsg`Invalid --recreate-via-cc-api value "${value}": expected a CloudFormation ` +
         `logical id (alphanumeric, starts with a letter, max 255 chars). One ` +
         `--recreate-via-cc-api flag per resource — repeat the flag for additional ` +
         `targets.`
@@ -251,7 +252,7 @@ export function parseRecreateViaSdkProviderToken(
   const token = value.trim();
   if (!LOGICAL_ID_FORMAT.test(token)) {
     throw new Error(
-      `Invalid --recreate-via-sdk-provider value "${value}": expected a CloudFormation ` +
+      safeMsg`Invalid --recreate-via-sdk-provider value "${value}": expected a CloudFormation ` +
         `logical id (alphanumeric, starts with a letter, max 255 chars). One ` +
         `--recreate-via-sdk-provider flag per resource — repeat the flag for additional ` +
         `targets.`
@@ -284,7 +285,7 @@ export function parsePinCcApiToken(value: string, previous: string[] | undefined
   const token = value.trim();
   if (!LOGICAL_ID_FORMAT.test(token)) {
     throw new Error(
-      `Invalid --pin-cc-api value "${value}": expected a CloudFormation logical id ` +
+      safeMsg`Invalid --pin-cc-api value "${value}": expected a CloudFormation logical id ` +
         `(alphanumeric, starts with a letter, max 255 chars). One --pin-cc-api flag per ` +
         `resource — repeat the flag for additional targets.`
     );
@@ -312,3 +313,34 @@ export const recreateViaSdkProviderOption = new Option(
     'Per-resource opt-in. Stateful resource types refuse unless ' +
     '--force-stateful-recreation is ALSO passed.'
 ).argParser(cliArgParser(parseRecreateViaSdkProviderToken));
+
+/**
+ * go-to-k/cdkd#7079 — `--replace-resource <logicalId>` (repeatable): the
+ * named resource's change is planned as a REPLACEMENT, as a template
+ * create-only change is, for a property AWS refuses to update in place that no
+ * replacement rule names yet (Cloud Control's `NotUpdatable`). Decided at plan
+ * time, never a runtime switch. One logical id per flag.
+ */
+export function parseReplaceResourceToken(value: string, previous: string[] | undefined): string[] {
+  const token = value.trim();
+  if (!LOGICAL_ID_FORMAT.test(token)) {
+    throw new Error(
+      safeMsg`Invalid --replace-resource value "${value}": expected a CloudFormation ` +
+        `logical id (alphanumeric, starts with a letter, max 255 chars). One ` +
+        `--replace-resource flag per resource — repeat the flag for additional ` +
+        `targets.`
+    );
+  }
+  return [...(previous ?? []), token];
+}
+
+export const replaceResourceOption = new Option(
+  '--replace-resource <logicalId>',
+  "Plan the named resource's change (by CloudFormation logical id) as a " +
+    'replacement, as a template create-only property change is: shown in the plan, ' +
+    'its readers updated or replaced, created first where its name changes. For a ' +
+    'property AWS refuses to update in place that cdkd does not yet know replaces ' +
+    '(Cloud Control NotUpdatable). Repeatable — pass the flag once per resource. ' +
+    'Applies only to a resource this deploy updates. Stateful resource types refuse ' +
+    'unless --force-stateful-recreation is ALSO passed.'
+).argParser(cliArgParser(parseReplaceResourceToken));

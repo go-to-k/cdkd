@@ -252,21 +252,24 @@ export async function findReplacedReadersOfRecreateTargets(input: {
  */
 export function renderStatefulReplacedReadersRefusal(
   readers: ReadonlyArray<RecreateTargetReplacedReader>,
-  forceStatefulRecreation: boolean
+  forceStatefulRecreation: boolean,
+  /** go-to-k/cdkd#7079: the flag that named the targets. */
+  targetFlag: '--recreate-via-*' | '--replace-resource' = '--recreate-via-*'
 ): string | undefined {
   if (forceStatefulRecreation) return undefined;
   const blocked = readers.filter((r) => r.statefulReason !== null);
   if (blocked.length === 0) return undefined;
+  const recreate = targetFlag === '--recreate-via-*';
   return [
-    'A --recreate-via-* target is read through a create-only property of a stateful resource, ' +
-      'which is replaced when the recreate gives the target a new physical id:',
+    `A ${targetFlag} target is read through a create-only property of a stateful resource, ` +
+      `which is replaced when the ${recreate ? 'recreate' : 'replacement'} gives the target a new physical id:`,
     // Template-controlled ids, one line each: a newline in one cannot forge a
     // row of the refusal.
     ...blocked.map(
       (r) =>
         safeMsg`  - ${r.logicalId} (${shownType(r.resourceType)}) reads ${r.reads} via ${r.properties.join(', ')}`
     ),
-    'Re-run with --force-stateful-recreation to confirm the data loss, or drop the recreate flag. ' +
+    `Re-run with --force-stateful-recreation to confirm the data loss, or drop the ${recreate ? 'recreate flag' : 'flag'}. ` +
       'Nothing was changed.',
   ].join('\n');
 }
@@ -294,10 +297,11 @@ export async function refuseStatefulReplacedReaders(input: {
   targetIds: ReadonlyArray<string>;
   conditions: Readonly<Record<string, boolean>>;
   forceStatefulRecreation: boolean;
+  targetFlag?: '--recreate-via-*' | '--replace-resource';
 }): Promise<void> {
   if (input.forceStatefulRecreation || input.targetIds.length === 0) return;
   const readers = await findReplacedReadersOfRecreateTargets(input);
-  const refusal = renderStatefulReplacedReadersRefusal(readers, false);
+  const refusal = renderStatefulReplacedReadersRefusal(readers, false, input.targetFlag);
   // `markNonRetryable`, as the engine's sibling refusals: the verdict comes
   // from a flag and the template, which no retry changes, and the message
   // carries template-controlled ids the substring-matching classifiers read.

@@ -440,6 +440,7 @@ remove-protection-compensation	2026-11-17T03:39:15Z	PASS	315	verify.sh	rc ok, or
 remove-protection-journaled-orphan	2026-11-04T23:27:27Z	PASS	683	verify.sh	rc ok; destroy/rollback --remove-protection cleared protected journaled orphan and completed CREATE; own temp state bucket; orph clean
 rename-refactor	2026-11-07T00:09:50Z	PASS	131	verify.sh	#5938 ssm-parameter split head; rc ok, orph clean
 replace-predelete-snapshot-failed-rollback	2026-11-17T00:58:18Z	PASS	174	verify.sh	rc ok, orph clean (#6463, rebased tree)
+replace-resource-flag	2026-11-26T20:08:51Z	PASS	105	verify.sh	PR7091 4c437b692 us-east-1 rc ok, orph clean
 replace-snapshot-failed-rollback	2026-11-17T00:58:18Z	PASS	1599	verify.sh	rc ok, orph clean (#6463 regression)
 replace-squatter-refusal	2026-11-16T08:22:27Z	PASS	100	verify.sh	rc ok, orph clean (#6374 sweep)
 replaced-delete-failed-rollback	2026-11-25T08:13:59Z	PASS	236	verify.sh	rc ok, orph clean (#6977 set)

@@ -415,6 +415,16 @@ export interface DeployEngineOptions {
     stackName: string;
     logicalIds: ReadonlySet<string>;
   };
+  /**
+   * `--replace-resource` targets (go-to-k/cdkd#7079): logical ids whose change
+   * this deploy plans as a replacement (`replace-resource-targets.ts`).
+   * SELF-SCOPED by `stackName`, as `pinCcApi` is.
+   */
+  replaceResources?: {
+    /** The stack these ids were named for — the ONLY stack they apply to. */
+    stackName: string;
+    logicalIds: ReadonlySet<string>;
+  };
   recreateTargets?: {
     /** The stack the ids below were validated against — the ONLY stack they apply to. */
     stackName: string;

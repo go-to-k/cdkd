@@ -1,0 +1,20 @@
+{
+  "name": "cdkd-integ-replace-resource-flag",
+  "version": "1.0.0",
+  "private": true,
+  "description": "cdkd deploy --replace-resource plans a resource's update as a replacement (#7079)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.1112.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

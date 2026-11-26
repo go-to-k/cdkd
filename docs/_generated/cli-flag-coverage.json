@@ -36,6 +36,7 @@
     "--region",
     "--remove-protection",
     "--replace",
+    "--replace-resource",
     "--resource-timeout",
     "--resource-warn-after",
     "--role-arn",
@@ -1133,6 +1134,7 @@
         "remove-protection-journaled-orphan",
         "rename-refactor",
         "replace-predelete-snapshot-failed-rollback",
+        "replace-resource-flag",
         "replace-snapshot-failed-rollback",
         "replace-squatter-refusal",
         "replaced-delete-failed-rollback",
@@ -1733,6 +1735,7 @@
         "remove-protection-compensation",
         "remove-protection-journaled-orphan",
         "rename-refactor",
+        "replace-resource-flag",
         "replace-squatter-refusal",
         "replaced-queue-topic-failed-rollback",
         "replaced-user-of-removed-resource",
@@ -1896,6 +1899,12 @@
         "replace-squatter-refusal",
         "rollback-same-id-recreate",
         "schedule-group-rename-rollback"
+      ]
+    },
+    {
+      "flag": "--replace-resource",
+      "integs": [
+        "replace-resource-flag"
       ]
     },
     {
@@ -2403,6 +2412,7 @@
         "remove-protection-journaled-orphan",
         "rename-refactor",
         "replace-predelete-snapshot-failed-rollback",
+        "replace-resource-flag",
         "replace-snapshot-failed-rollback",
         "replace-squatter-refusal",
         "replaced-delete-failed-rollback",
@@ -3042,6 +3052,7 @@
         "remove-protection-compensation",
         "remove-protection-journaled-orphan",
         "rename-refactor",
+        "replace-resource-flag",
         "replace-squatter-refusal",
         "replaced-queue-topic-failed-rollback",
         "replaced-user-of-removed-resource",

@@ -45,6 +45,8 @@ export interface DeployCommandOptions {
   forceStatefulRecreation?: boolean;
   skipFinalSnapshot?: boolean;
   replace?: boolean;
+  /** `--replace-resource <logicalId>` (go-to-k/cdkd#7079). */
+  replaceResource?: string[];
   strict?: boolean;
   ignoreErrors?: boolean;
   strictGetatt?: boolean;
