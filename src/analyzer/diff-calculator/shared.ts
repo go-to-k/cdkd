@@ -99,7 +99,7 @@ export type CanonicalizePropertiesFn = (
  * go-to-k/cdkd#7007: the Cloud Control rows a moving rule of the in-place
  * attribute audit settles (an update timestamp) are generated and merged in.
  */
-const HAND_IN_PLACE_UPDATE_DERIVED_ATTRS: Readonly<Record<string, ReadonlySet<string>>> =
+export const HAND_IN_PLACE_UPDATE_DERIVED_ATTRS: Readonly<Record<string, ReadonlySet<string>>> =
   Object.freeze({
     'AWS::EC2::LaunchTemplate': new Set(['LatestVersionNumber', 'DefaultVersionNumber']),
     // Issue #5446: an InstanceType / UserData update stops and starts the

@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vite-plus/test';
+import { CC_IN_PLACE_UPDATE_DERIVED_ATTRS } from '../../../src/analyzer/diff-calculator/in-place-cc-derived-attrs.generated.js';
 import {
+  HAND_IN_PLACE_UPDATE_DERIVED_ATTRS,
   IN_PLACE_UPDATE_ATTRS_MOVED_BY,
   IN_PLACE_UPDATE_DERIVED_ATTRS,
   IN_PLACE_UPDATE_DERIVED_ATTR_PREFIXES,
@@ -126,6 +128,22 @@ describe('the hand verdicts equal the shared.ts tables (#7001)', () => {
     }
     for (const type of Object.keys(IN_PLACE_UPDATE_DERIVED_ATTR_PREFIXES)) {
       expect(report.sdk.some((r) => r.type === type && r.verdict === 'prefix'), type).toBe(true);
+    }
+  });
+
+  it('no generated row is also a hand row (the export guard defers a generated one) (#7007)', () => {
+    const overlap = Object.entries(CC_IN_PLACE_UPDATE_DERIVED_ATTRS).flatMap(([type, attrs]) =>
+      attrs.filter((a) => HAND_IN_PLACE_UPDATE_DERIVED_ATTRS[type]?.has(a) === true).map((a) => `${type}.${a}`)
+    );
+    expect(Object.keys(HAND_IN_PLACE_UPDATE_DERIVED_ATTRS).length).toBeGreaterThan(0);
+    expect(overlap).toEqual([]);
+  });
+
+  it('no Cloud Control hand verdict overrides a pair a rule settles (#7007)', () => {
+    expect(report.ccHand.length).toBeGreaterThan(0);
+    for (const r of report.ccHand) {
+      const t = inputs.types.find((x) => x.type === r.type)!;
+      expect(classifyByRule(t, r.attribute), `${r.type}.${r.attribute}`).toBeUndefined();
     }
   });
 
