@@ -532,7 +532,13 @@ export function buildReport(input: BuildInput): { report: Report; findings: Find
         ccHand.push(hand);
         continue;
       }
-      const rule = classifyByRule(t, attribute);
+      let rule = classifyByRule(t, attribute);
+      // A member's `parent-fixed` reads its parent's RULE; a parent the hand
+      // classification calls moving moves the member too, so nothing settles it.
+      if (rule === 'parent-fixed') {
+        const parent = handRow(t.type, byAttr, attribute.slice(0, attribute.indexOf('.')));
+        if (parent !== undefined && parent.verdict !== 'never') rule = undefined;
+      }
       if (rule !== undefined) {
         ccByRule[rule]++;
         if (MOVING_RULES.has(rule)) (ccMoving[t.type] ??= []).push(attribute);

@@ -822,11 +822,11 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235.
 - `AWS::CodeStarConnections::SyncConfiguration` `RepositoryName`: moved by `RepositoryLinkId` — the name of the repository the link points at
 - `AWS::ControlTower::LandingZone` `LatestAvailableVersion`: never — the newest landing zone version AWS offers, a service catalog
 - `AWS::DataSync::LocationAzureBlob` `LocationUri`: moved by `Subdirectory` — the container URL and subdirectory
-- `AWS::DataSync::LocationFSxWindows` `LocationUri`: never — built from create-only inputs only
+- `AWS::DataSync::LocationFSxWindows` `LocationUri`: moved by `Subdirectory` — `fsxw://<file system>/<subdirectory>/`
 - `AWS::DataSync::LocationHDFS` `LocationUri`: moved by `Subdirectory`, `NameNodes` — `hdfs://<name node>:<port>/<subdirectory>/`
-- `AWS::DataSync::LocationNFS` `LocationUri`: moved by `Subdirectory` — `nfs://<host>/<subdirectory>/`
-- `AWS::DataSync::LocationObjectStorage` `LocationUri`: moved by `Subdirectory`, `ServerPort`, `ServerProtocol` — the object store host, bucket and subdirectory
-- `AWS::DataSync::LocationSMB` `LocationUri`: moved by `Subdirectory` — `smb://<host>/<subdirectory>/`
+- `AWS::DataSync::LocationNFS` `LocationUri`: moved by `Subdirectory`, `ServerHostname` — `nfs://<host>/<subdirectory>/`
+- `AWS::DataSync::LocationObjectStorage` `LocationUri`: moved by `Subdirectory`, `ServerHostname` — `object-storage://<host>/<bucket>/<subdirectory>/`
+- `AWS::DataSync::LocationSMB` `LocationUri`: moved by `Subdirectory`, `ServerHostname` — `smb://<host>/<subdirectory>/`
 - `AWS::DataSync::Task` `TaskArn`: never — measured (cdkd-probe-7007-s4b): Name in place left it task/task-0be708b518a40c674
 - `AWS::Deadline::Budget` `Arn`: never — measured (cdkd-probe-7007-s3c): DisplayName in place left it .../budget/budget-4a2b9e7f...
 - `AWS::Deadline::Budget` `BudgetId`: never — measured (cdkd-probe-7007-s3c): DisplayName in place left it budget-4a2b9e7f...

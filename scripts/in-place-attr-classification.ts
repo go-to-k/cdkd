@@ -269,7 +269,6 @@ const REASONED: Classification = {
   'AWS::CloudFront::StreamingDistribution': {
     DomainName: never('the `d....cloudfront.net` host assigned at create'),
   },
-  'AWS::DataSync::LocationFSxWindows': { LocationUri: never('built from create-only inputs only') },
   'AWS::Events::Endpoint': {
     EndpointUrl: never('`<endpoint id>.endpoint.events.amazonaws.com`'),
   },
@@ -289,22 +288,27 @@ const REASONED: Classification = {
   'AWS::IoTFleetHub::Application': {
     ApplicationUrl: never('built from the application id; UpdateApplication takes name and description only'),
   },
-  // DataSync builds a location URI from its host and subdirectory, and each
-  // UpdateLocation* call takes the subdirectory (and an HDFS name node, an
-  // object store's port and protocol): the URI moves with them.
+  // DataSync builds a location URI as `<type>://<host or id>/<subdirectory>/`,
+  // and each UpdateLocation* call takes the subdirectory (and a server
+  // hostname or HDFS name node; the live schemas make them in place, though
+  // the spec calls ServerHostname create-only): the URI moves with them. An
+  // object store's port and protocol are not in it.
+  'AWS::DataSync::LocationFSxWindows': {
+    LocationUri: movedBy(['Subdirectory'], '`fsxw://<file system>/<subdirectory>/`'),
+  },
   'AWS::DataSync::LocationNFS': {
-    LocationUri: movedBy(['Subdirectory'], '`nfs://<host>/<subdirectory>/`'),
+    LocationUri: movedBy(['Subdirectory', 'ServerHostname'], '`nfs://<host>/<subdirectory>/`'),
   },
   'AWS::DataSync::LocationSMB': {
-    LocationUri: movedBy(['Subdirectory'], '`smb://<host>/<subdirectory>/`'),
+    LocationUri: movedBy(['Subdirectory', 'ServerHostname'], '`smb://<host>/<subdirectory>/`'),
   },
   'AWS::DataSync::LocationHDFS': {
     LocationUri: movedBy(['Subdirectory', 'NameNodes'], '`hdfs://<name node>:<port>/<subdirectory>/`'),
   },
   'AWS::DataSync::LocationObjectStorage': {
     LocationUri: movedBy(
-      ['Subdirectory', 'ServerPort', 'ServerProtocol'],
-      'the object store host, bucket and subdirectory'
+      ['Subdirectory', 'ServerHostname'],
+      '`object-storage://<host>/<bucket>/<subdirectory>/`'
     ),
   },
   'AWS::DataSync::LocationAzureBlob': {

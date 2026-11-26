@@ -216,16 +216,20 @@ export const IN_PLACE_UPDATE_ATTRS_MOVED_BY: Readonly<
     ProviderType: new Set(['RepositoryLinkId']),
   }),
   // go-to-k/cdkd#7007 (Cloud Control): a DataSync location URI carries its
-  // subdirectory (and an HDFS name node, an object store's port and
-  // protocol), which UpdateLocation* rewrites; a Deadline monitor URL carries
-  // the subdomain UpdateMonitor takes.
-  'AWS::DataSync::LocationNFS': Object.freeze({ LocationUri: new Set(['Subdirectory']) }),
-  'AWS::DataSync::LocationSMB': Object.freeze({ LocationUri: new Set(['Subdirectory']) }),
+  // host and subdirectory (an HDFS name node), which UpdateLocation*
+  // rewrites; a Deadline monitor URL carries the subdomain UpdateMonitor takes.
+  'AWS::DataSync::LocationFSxWindows': Object.freeze({ LocationUri: new Set(['Subdirectory']) }),
+  'AWS::DataSync::LocationNFS': Object.freeze({
+    LocationUri: new Set(['Subdirectory', 'ServerHostname']),
+  }),
+  'AWS::DataSync::LocationSMB': Object.freeze({
+    LocationUri: new Set(['Subdirectory', 'ServerHostname']),
+  }),
   'AWS::DataSync::LocationHDFS': Object.freeze({
     LocationUri: new Set(['Subdirectory', 'NameNodes']),
   }),
   'AWS::DataSync::LocationObjectStorage': Object.freeze({
-    LocationUri: new Set(['Subdirectory', 'ServerPort', 'ServerProtocol']),
+    LocationUri: new Set(['Subdirectory', 'ServerHostname']),
   }),
   'AWS::DataSync::LocationAzureBlob': Object.freeze({ LocationUri: new Set(['Subdirectory']) }),
   'AWS::Deadline::Monitor': Object.freeze({ Url: new Set(['Subdomain']) }),

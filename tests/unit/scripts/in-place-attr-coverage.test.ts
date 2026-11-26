@@ -607,7 +607,9 @@ describe('the #7007 rules, on real spec inputs', () => {
 
   it('the reasoned hand verdicts include the DataSync URI moves (#7007)', () => {
     for (const [type, props] of [
-      ['AWS::DataSync::LocationNFS', ['Subdirectory']],
+      ['AWS::DataSync::LocationNFS', ['Subdirectory', 'ServerHostname']],
+      ['AWS::DataSync::LocationFSxWindows', ['Subdirectory']],
+      ['AWS::DataSync::LocationObjectStorage', ['Subdirectory', 'ServerHostname']],
       ['AWS::DataSync::LocationHDFS', ['Subdirectory', 'NameNodes']],
     ] as const) {
       expect(report.ccHand, type).toContainEqual(
@@ -663,6 +665,25 @@ describe('buildReport findings (#7001)', () => {
     );
     expect(f.unclassifiedCc).toEqual(['AWS::C::Cc.Phase']);
     expect(f.staleBaseline).toEqual(['AWS::C::Cc.Arn', 'AWS::C::Removed.X']);
+  });
+
+  it('settles no member of a parent the hand classification calls moving (#7007)', () => {
+    const t: TypeInput = {
+      type: 'AWS::C::Stamped',
+      attributes: ['CreatedAt', 'CreatedAt.Seconds'],
+      properties: { Config: undefined },
+    };
+    const run = (verdict: InPlaceAttrVerdict) =>
+      buildReport({
+        types: [t],
+        registered: new Set(),
+        classification: { 'AWS::C::Stamped': { CreatedAt: verdict } },
+        baseline: {},
+        specVersion: 'test',
+      }).findings.unclassifiedCc;
+    expect(classifyByRule(t, 'CreatedAt.Seconds')).toBe('parent-fixed');
+    expect(run({ kind: 'any-update', reason: 'r' })).toEqual(['AWS::C::Stamped.CreatedAt.Seconds']);
+    expect(run(never('r'))).toEqual([]);
   });
 
   it('looks a dotted attribute up by its nearest Family.* key', () => {

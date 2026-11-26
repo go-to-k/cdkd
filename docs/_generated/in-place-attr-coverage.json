@@ -2753,8 +2753,11 @@
     {
       "type": "AWS::DataSync::LocationFSxWindows",
       "attribute": "LocationUri",
-      "verdict": "never",
-      "reason": "built from create-only inputs only"
+      "verdict": "moved-by",
+      "properties": [
+        "Subdirectory"
+      ],
+      "reason": "`fsxw://<file system>/<subdirectory>/`"
     },
     {
       "type": "AWS::DataSync::LocationHDFS",
@@ -2771,7 +2774,8 @@
       "attribute": "LocationUri",
       "verdict": "moved-by",
       "properties": [
-        "Subdirectory"
+        "Subdirectory",
+        "ServerHostname"
       ],
       "reason": "`nfs://<host>/<subdirectory>/`"
     },
@@ -2781,17 +2785,17 @@
       "verdict": "moved-by",
       "properties": [
         "Subdirectory",
-        "ServerPort",
-        "ServerProtocol"
+        "ServerHostname"
       ],
-      "reason": "the object store host, bucket and subdirectory"
+      "reason": "`object-storage://<host>/<bucket>/<subdirectory>/`"
     },
     {
       "type": "AWS::DataSync::LocationSMB",
       "attribute": "LocationUri",
       "verdict": "moved-by",
       "properties": [
-        "Subdirectory"
+        "Subdirectory",
+        "ServerHostname"
       ],
       "reason": "`smb://<host>/<subdirectory>/`"
     },
