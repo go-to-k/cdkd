@@ -176,7 +176,7 @@ ec2-eip-instance-association	2026-11-24T20:15:56Z	PASS	181	verify.sh	rc ok, orph
 ec2-instance	2026-11-26T05:45:44Z	PASS	812	verify.sh	rc ok, orph clean; #7026 EbsOptimized true->false in place with InstanceType change
 ec2-instance-fanout	2026-11-26T05:45:44Z	PASS	95	verify.sh	rc ok, orph clean
 ec2-instance-volume-attachment-drift	2026-11-26T05:45:44Z	PASS	251	verify.sh	rc ok, orph clean
-ec2-route-targets	2026-11-26T03:14:44Z	PASS	827	verify.sh	PR7013 2de5a0442 us-east-1 rc ok, orph clean
+ec2-route-targets	2026-11-26T16:07:25Z	PASS	837	verify.sh	PR7067 479dd6c1a us-east-1 rc 0 ok, orph clean
 ec2-sg-source-group-name	2026-11-10T16:20:27Z	PASS	65	verify.sh	rc ok, orph clean
 ec2-subnet-dns64	2026-11-07T07:23:23Z	PASS	316	verify.sh	rc ok, orph clean, PR #5967 subnet live GetAtt
 ec2-vpc	2026-11-21T12:10:26Z	PASS	170	verify.sh	rc ok, orph clean; #6760 EIP/delete-blocker inventory
