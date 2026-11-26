@@ -546,7 +546,6 @@ function elastiCacheMovedSingleToCrossAz(siblings: ReplacementSiblings | undefin
     Array.isArray(zones) &&
     zones.every((z) => typeof z === 'string') &&
     new Set(zones).size >= 2 &&
-    prev['NumCacheNodes'] != null &&
     isDeepStrictEqual(prev['NumCacheNodes'], next['NumCacheNodes']) &&
     zones.length === Number(next['NumCacheNodes'])
   );

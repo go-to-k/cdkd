@@ -157,5 +157,9 @@ describe('the #7045 zone-list predicate', () => {
       paz({ ...crossAz, PreferredAvailabilityZones: ['us-east-1a', 'us-east-1b', 'us-east-1c'] })
     ).toBe(false);
     expect(paz({ ...crossAz, AZMode: 'single-az' })).toBe(false);
+    // The helper reads the previous list from the bag, not only the old value.
+    expect(paz(crossAz, { ...singleAz, PreferredAvailabilityZones: ['us-east-1a', 'us-east-1a'] })).toBe(
+      false
+    );
   });
 });
