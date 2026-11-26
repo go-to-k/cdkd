@@ -10,11 +10,11 @@
       "no-in-place-update": 1151,
       "creation-timestamp": 376,
       "own-identity": 814,
-      "primary-identifier": 534,
+      "primary-identifier": 527,
       "arn-template": 59,
       "update-timestamp": 372
     },
-    "ccBaseline": 2239
+    "ccBaseline": 2246
   },
   "sdk": [
     {
@@ -4373,6 +4373,7 @@
       "VpcId"
     ],
     "AWS::CloudTrail::Dashboard": [
+      "DashboardArn",
       "Status",
       "Type"
     ],
@@ -5169,6 +5170,9 @@
     "AWS::EventsV2::Subscriber": [
       "BusName"
     ],
+    "AWS::Evidently::Segment": [
+      "Arn"
+    ],
     "AWS::FMS::ApplicationsList": [
       "ListId"
     ],
@@ -5228,7 +5232,8 @@
       "VersionNumber"
     ],
     "AWS::GameLift::GameServerGroup": [
-      "AutoScalingGroupArn"
+      "AutoScalingGroupArn",
+      "GameServerGroupArn"
     ],
     "AWS::GameLift::Script": [
       "Arn",
@@ -7054,10 +7059,12 @@
     "AWS::SageMaker::ImageVersion": [
       "ContainerImage",
       "ImageArn",
+      "ImageVersionArn",
       "Version"
     ],
     "AWS::SageMaker::InferenceComponent": [
       "FailureReason",
+      "InferenceComponentArn",
       "InferenceComponentStatus",
       "RuntimeConfig.CurrentCopyCount",
       "RuntimeConfig.DesiredCopyCount",
@@ -7092,6 +7099,7 @@
       "ModelCardVersion"
     ],
     "AWS::SageMaker::ModelPackage": [
+      "ModelPackageArn",
       "ModelPackageStatus"
     ],
     "AWS::SageMaker::ModelPackageGroup": [
@@ -7425,6 +7433,7 @@
       "MessageTemplateId"
     ],
     "AWS::Wisdom::MessageTemplateVersion": [
+      "MessageTemplateVersionArn",
       "MessageTemplateVersionNumber"
     ],
     "AWS::Wisdom::QuickResponse": [

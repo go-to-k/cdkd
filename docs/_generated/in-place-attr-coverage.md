@@ -13,7 +13,7 @@ Whether an in-place update moves each read-only `Fn::GetAtt` attribute (issue [#
 Source: `@aws-cdk/aws-service-spec` 0.1.235.
 
 - SDK-provider types: **131**, pairs classified by hand: **390** (moving: **66**)
-- Cloud Control types: **1584**, pairs: **5545** — by rule: `no-in-place-update` 1151, `creation-timestamp` 376, `own-identity` 814, `primary-identifier` 534, `arn-template` 59, `update-timestamp` 372; in the baseline: **2239**
+- Cloud Control types: **1584**, pairs: **5545** — by rule: `no-in-place-update` 1151, `creation-timestamp` 376, `own-identity` 814, `primary-identifier` 527, `arn-template` 59, `update-timestamp` 372; in the baseline: **2246**
 
 ## SDK-provider types (hand classification)
 
@@ -1329,7 +1329,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::CloudFront::TrustStore` | 3 |
 | `AWS::CloudFront::VpcOrigin` | 2 |
 | `AWS::CloudHSM::Cluster` | 5 |
-| `AWS::CloudTrail::Dashboard` | 2 |
+| `AWS::CloudTrail::Dashboard` | 3 |
 | `AWS::CloudTrail::EventDataStore` | 1 |
 | `AWS::CloudWatch::AccessProfile` | 2 |
 | `AWS::CloudWatch::AlarmMuteRule` | 2 |
@@ -1496,6 +1496,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::EventsV2::EventSource` | 2 |
 | `AWS::EventsV2::ResourcePolicy` | 1 |
 | `AWS::EventsV2::Subscriber` | 1 |
+| `AWS::Evidently::Segment` | 1 |
 | `AWS::FMS::ApplicationsList` | 1 |
 | `AWS::FMS::ProtocolsList` | 1 |
 | `AWS::FSx::DataRepositoryAssociation` | 1 |
@@ -1508,7 +1509,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::GameLift::Build` | 1 |
 | `AWS::GameLift::ContainerFleet` | 5 |
 | `AWS::GameLift::ContainerGroupDefinition` | 4 |
-| `AWS::GameLift::GameServerGroup` | 1 |
+| `AWS::GameLift::GameServerGroup` | 2 |
 | `AWS::GameLift::Script` | 2 |
 | `AWS::GlobalAccelerator::Accelerator` | 4 |
 | `AWS::Glue::Blueprint` | 2 |
@@ -1855,13 +1856,13 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::SageMaker::Extension` | 2 |
 | `AWS::SageMaker::FeatureGroup` | 1 |
 | `AWS::SageMaker::Hub` | 1 |
-| `AWS::SageMaker::ImageVersion` | 3 |
-| `AWS::SageMaker::InferenceComponent` | 7 |
+| `AWS::SageMaker::ImageVersion` | 4 |
+| `AWS::SageMaker::InferenceComponent` | 8 |
 | `AWS::SageMaker::InferenceExperiment` | 5 |
 | `AWS::SageMaker::MlflowApp` | 3 |
 | `AWS::SageMaker::MlflowTrackingServer` | 1 |
 | `AWS::SageMaker::ModelCard` | 9 |
-| `AWS::SageMaker::ModelPackage` | 1 |
+| `AWS::SageMaker::ModelPackage` | 2 |
 | `AWS::SageMaker::ModelPackageGroup` | 1 |
 | `AWS::SageMaker::PartnerApp` | 2 |
 | `AWS::SageMaker::Project` | 1 |
@@ -1932,7 +1933,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Wisdom::AIPrompt` | 1 |
 | `AWS::Wisdom::Content` | 6 |
 | `AWS::Wisdom::MessageTemplate` | 2 |
-| `AWS::Wisdom::MessageTemplateVersion` | 1 |
+| `AWS::Wisdom::MessageTemplateVersion` | 2 |
 | `AWS::Wisdom::QuickResponse` | 3 |
 | `AWS::WorkSpaces::Directory` | 11 |
 | `AWS::WorkSpacesThinClient::Environment` | 7 |

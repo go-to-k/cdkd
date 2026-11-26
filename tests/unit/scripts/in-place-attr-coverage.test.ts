@@ -277,7 +277,7 @@ describe('classifyByRule (#7001)', () => {
     }
   });
 
-  it('settles no identity of a versioned type (its ARN can carry the version an update mints)', () => {
+  it('settles no own identity of a versioned type outside its primary identifier (its ARN can carry the version an update mints)', () => {
     // AWS::GameLift::ContainerGroupDefinition: `.../<name>:<version>`.
     const versionedAttr = input('AWS::X::ContainerGroupDefinition', { Config: undefined }, [
       'ContainerGroupDefinitionArn',
@@ -327,6 +327,34 @@ describe('the #7007 rules, on real spec inputs', () => {
     const attachment = real('AWS::EC2::VPCGatewayAttachment');
     expect(attachment.primaryIdentifier).toContain('AttachmentType');
     expect(classifyByRule(attachment, 'AttachmentType')).toBeUndefined();
+    // A version an update can mint: `...:message-template/<id>:<version>`.
+    const version = real('AWS::Wisdom::MessageTemplateVersion');
+    expect(version.primaryIdentifier).toContain('MessageTemplateVersionArn');
+    expect(classifyByRule(version, 'MessageTemplateVersionArn')).toBeUndefined();
+    // A primary-identifier ARN whose template names the in-place Name.
+    const segment = real('AWS::Evidently::Segment');
+    expect(segment.primaryIdentifier).toContain('Arn');
+    expect(classifyByRule(segment, 'Arn')).toBeUndefined();
+  });
+
+  it('primary-identifier reads the name and the template (synthetic)', () => {
+    const t = (attr: string, arnTemplate?: string): TypeInput => ({
+      type: 'AWS::X::Widget',
+      attributes: [attr, 'VersionNumber'],
+      properties: { Name: undefined, Kind: 'yes' },
+      primaryIdentifier: [attr],
+      ...(arnTemplate !== undefined && { arnTemplate }),
+    });
+    // Versioned type, unversioned id: the contract settles it.
+    expect(classifyByRule(t('WidgetId'), 'WidgetId')).toBe('primary-identifier');
+    expect(classifyByRule(t('WidgetVersionArn'), 'WidgetVersionArn')).toBeUndefined();
+    expect(classifyByRule(t('WidgetRevisionId'), 'WidgetRevisionId')).toBeUndefined();
+    expect(classifyByRule(t('WidgetArn', 'arn:x:widget/${Kind}/${ResourceId}'), 'WidgetArn')).toBe(
+      'primary-identifier'
+    );
+    for (const ph of ['Name', 'WidgetName']) {
+      expect(classifyByRule(t('WidgetArn', `arn:x:widget/\${${ph}}`), 'WidgetArn'), ph).toBeUndefined();
+    }
   });
 
   it('holds out a pair whose live probe is pending', () => {

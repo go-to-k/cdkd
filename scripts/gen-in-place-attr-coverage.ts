@@ -203,7 +203,9 @@ const OWN_IDENTITY = /^(.*?)(Arn|ARN|Id|ID|Uuid|UUID)$/;
  *   progress event must match the primaryIdentifier passed into the request"
  *   of an update. A member of another shape can be derived from writable
  *   input despite the contract (`AWS::EC2::VPCGatewayAttachment`
- *   `AttachmentType`, which an internet / VPN gateway swap moves).
+ *   `AttachmentType`, which an internet / VPN gateway swap moves). Neither is
+ *   a `Version...` / `Revision...` member (an update can mint one), nor an
+ *   ARN whose `arnTemplate` names an in-place property.
  * - `arn-template`: the type's own `Arn`, on an unversioned type (as for
  *   `own-identity`), whose documented `arnTemplate` is built only from the
  *   environment and from values fixed for the resource's life: a
@@ -225,10 +227,26 @@ export function classifyByRule(input: TypeInput, attribute: string): RuleName | 
   if (UPDATE_TIME.test(attribute)) return 'update-timestamp';
   if (CREATION_TIMESTAMP.test(attribute)) return 'creation-timestamp';
   const primaryIdentifier = input.primaryIdentifier ?? [];
-  const isPrimaryIdentifier =
-    IDENTITY_SHAPED.test(attribute) && primaryIdentifier.includes(attribute);
-  const m = OWN_IDENTITY.exec(attribute);
   const typeName = input.type.split('::')[2]!;
+  const placeholders = [...(input.arnTemplate ?? '').matchAll(/\$\{([^}]*)\}/g)].map(
+    (x) => x[1]!
+  );
+  const writableNamed = (name: string): boolean =>
+    Object.hasOwn(input.properties, name) && input.properties[name] !== 'yes';
+  const templateNamesWritable = placeholders.some(
+    (ph) =>
+      writableNamed(ph) ||
+      ['Id', 'Name', 'Identifier'].some((s) => ph === `${typeName}${s}` && writableNamed(s))
+  );
+  // A versioned id (`MessageTemplateVersionArn`) can be minted by the update
+  // itself, and an ARN whose documented template names an in-place property
+  // (`segment/${SegmentName}`) contradicts the contract: neither is settled.
+  const isPrimaryIdentifier =
+    IDENTITY_SHAPED.test(attribute) &&
+    !VERSIONED.test(attribute) &&
+    primaryIdentifier.includes(attribute) &&
+    !(/(Arn|ARN)$/.test(attribute) && templateNamesWritable);
+  const m = OWN_IDENTITY.exec(attribute);
   const prefix = m?.[1]!.toLowerCase();
   const own = prefix !== undefined && (prefix === '' || typeName.toLowerCase().endsWith(prefix));
   if (!own) return isPrimaryIdentifier ? 'primary-identifier' : undefined;
@@ -248,7 +266,6 @@ export function classifyByRule(input: TypeInput, attribute: string): RuleName | 
     PSEUDO_PLACEHOLDERS.has(ph) ||
     fixed(ph) ||
     ['Id', 'Name', 'Identifier'].some((s) => ph === `${typeName}${s}` && fixed(s));
-  const placeholders = [...input.arnTemplate.matchAll(/\$\{([^}]*)\}/g)].map((x) => x[1]!);
   return placeholders.every(placeholderFixed) ? 'arn-template' : undefined;
 }
 
