@@ -18,6 +18,7 @@ import type { ProducerLookup } from '../../../deployment/intrinsic-resolver/cdk-
 import { templateHasSecretDynamicReference } from '../../../analyzer/outputs-diff.js';
 import {
   hasMaskableValues,
+  recordLogOnlyValue,
   type RecordedSecretValues,
 } from '../../../deployment/secret-redaction.js';
 import { noEchoParameterNamesOf } from '../../../deployment/deploy-engine/noecho.js';
@@ -58,6 +59,15 @@ import {
 } from './nested-template.js';
 import { loadStateOrEmpty } from './load-state.js';
 import { diffPrintingSecrets } from './printing.js';
+import {
+  calculatorMaskingPassedSecretLines,
+  maskPassedSecretChanges,
+  maskPassedSecretOutputs,
+  mixedSecretRowKeys,
+  recordedValuesOf,
+  securityDiffWithPassedSecretWithheld,
+  taintedNamesOf,
+} from './passed-secret-display.js';
 import { computeStackDiff } from './compute-stack-diff.js';
 import type { CrossStackPreview } from '../../../analyzer/cross-stack-preview.js';
 import {
@@ -254,6 +264,13 @@ export async function buildDiffTree(args: {
    * row's literal `Tags`.
    */
   stackTags?: Readonly<Record<string, string>>;
+  /**
+   * go-to-k/cdkd#7068: this child's parameters the parent row fills with a
+   * value mixing a secret dynamic reference with other text, or reading such
+   * a parameter of the parent. Every leaf reading one is shown masked.
+   * Absent at the root.
+   */
+  inheritedMixedSecretParameters?: ReadonlySet<string>;
 }): Promise<DiffTreeNode> {
   const {
     stackName,
@@ -290,6 +307,7 @@ export async function buildDiffTree(args: {
     inheritedReferenceProvenance,
     inheritedSecretTokens,
     stackTags,
+    inheritedMixedSecretParameters,
   } = args;
   const unboundHealer = attributeHealerFor?.(stackName, region);
   // go-to-k/cdkd#6871: the stack tags merged as the deploy merges them,
@@ -356,47 +374,59 @@ export async function buildDiffTree(args: {
         });
   for (const row of nestedSsmCheck?.forcedRows ?? []) logger.info(nestedSsmNameRowNote(row));
   for (const row of nestedSsmCheck?.deferredRows ?? []) logger.info(nestedSsmNameDeferredNote(row));
+  // go-to-k/cdkd#7068: every name of this node deriving from a passed mixed
+  // secret, read off the unpruned template (a superset of the diffed one).
+  const passedSecretNames = taintedNamesOf(template, inheritedMixedSecretParameters);
+  // What the records of those names store (a physical id built from the
+  // value), as mask-only needles of this node's own lines.
+  const passedSecretRecordNeedles = recordedValuesOf(state.resources ?? {}, passedSecretNames);
+  const runComputeStackDiff = (run: () => Promise<StackDiffResult>): Promise<StackDiffResult> =>
+    hasMaskableValues(passedSecretRecordNeedles)
+      ? withPrintingSecrets(passedSecretRecordNeedles, run)
+      : run();
   let stackDiff: StackDiffResult;
   try {
-    stackDiff = await computeStackDiff(
-      state,
-      template,
-      region,
-      stackName,
-      stateBackend,
-      diffCalculator,
-      {
-        ...(parameters && { parameters }),
-        ...(parentUnresolvedParameters && { parentUnresolvedParameters }),
-        ...(canonicalizeProperties && { canonicalizeProperties }),
-        ...(ccRouteUnavailableReason && { ccRouteUnavailableReason }),
-        ...(cfnFallback !== undefined && { cfnFallback }),
-        ...(updatePolicy === true && { updatePolicy }),
-        ...(createRouteOf && { createRouteOf }),
-        ...(producerLookup && { producerLookup }),
-        ...(consumerAccount && { consumerAccount }),
-        ...(crossStackPreview && { crossStackPreview, recordCrossStackPreview: !isNestedChild }),
-        ...(previewOrphanAdoption && { previewOrphanAdoption }),
-        ...(inheritedSecrets && { inheritedSecrets }),
-        ...(inheritedDerivedNames && { inheritedDerivedNames }),
-        ...(inheritedNoEchoParameters && { inheritedNoEchoParameters }),
-        ...(inheritedNoEchoParametersAnyVerdict && { inheritedNoEchoParametersAnyVerdict }),
-        ...(inheritedReferenceProvenance && { inheritedReferenceProvenance }),
-        ...(inheritedSecretTokens && { inheritedSecretTokens }),
-        ...(attributeHealer && { attributeHealer }),
-        ...(liveDbInstanceZoneReaderFor && {
-          readLiveDbInstanceZone: liveDbInstanceZoneReaderFor(region),
-        }),
-        ...(refusalRecovery && { refusalRecovery }),
-        // A live template of its own, so this node decides for itself; the
-        // inherited flag only matters for the DELETED children below.
-        inheritSecretBearingTemplate: false,
-        previewMaskedInputs: !isNestedChild,
-        ...(ssmNameHeal && { ssmNameHeal }),
-        ...(nestedSsmCheck && { forcedNestedChildRuns: nestedSsmCheck.forcedRows }),
-        ...(stackTags && { stackTags }),
-        nestedTemplates,
-      }
+    stackDiff = await runComputeStackDiff(() =>
+      computeStackDiff(
+        state,
+        template,
+        region,
+        stackName,
+        stateBackend,
+        calculatorMaskingPassedSecretLines(diffCalculator, template, passedSecretNames),
+        {
+          ...(parameters && { parameters }),
+          ...(parentUnresolvedParameters && { parentUnresolvedParameters }),
+          ...(canonicalizeProperties && { canonicalizeProperties }),
+          ...(ccRouteUnavailableReason && { ccRouteUnavailableReason }),
+          ...(cfnFallback !== undefined && { cfnFallback }),
+          ...(updatePolicy === true && { updatePolicy }),
+          ...(createRouteOf && { createRouteOf }),
+          ...(producerLookup && { producerLookup }),
+          ...(consumerAccount && { consumerAccount }),
+          ...(crossStackPreview && { crossStackPreview, recordCrossStackPreview: !isNestedChild }),
+          ...(previewOrphanAdoption && { previewOrphanAdoption }),
+          ...(inheritedSecrets && { inheritedSecrets }),
+          ...(inheritedDerivedNames && { inheritedDerivedNames }),
+          ...(inheritedNoEchoParameters && { inheritedNoEchoParameters }),
+          ...(inheritedNoEchoParametersAnyVerdict && { inheritedNoEchoParametersAnyVerdict }),
+          ...(inheritedReferenceProvenance && { inheritedReferenceProvenance }),
+          ...(inheritedSecretTokens && { inheritedSecretTokens }),
+          ...(attributeHealer && { attributeHealer }),
+          ...(liveDbInstanceZoneReaderFor && {
+            readLiveDbInstanceZone: liveDbInstanceZoneReaderFor(region),
+          }),
+          ...(refusalRecovery && { refusalRecovery }),
+          // A live template of its own, so this node decides for itself; the
+          // inherited flag only matters for the DELETED children below.
+          inheritSecretBearingTemplate: false,
+          previewMaskedInputs: !isNestedChild,
+          ...(ssmNameHeal && { ssmNameHeal }),
+          ...(nestedSsmCheck && { forcedNestedChildRuns: nestedSsmCheck.forcedRows }),
+          ...(stackTags && { stackTags }),
+          nestedTemplates,
+        }
+      )
     );
   } finally {
     createOnlyPrefetch.cancel();
@@ -435,14 +465,17 @@ export async function buildDiffTree(args: {
     changes,
     ccRouteUnavailableReason ?? (() => undefined)
   );
+  // go-to-k/cdkd#7068: what this node PRINTS, masked by provenance; every
+  // decision below reads the unmasked `changes`. A nested row's `Parameters`
+  // keys are masked again after the child walk, which knows each key's value.
   const node: DiffTreeNode = {
     stackName,
     displayName,
     region,
-    changes,
-    securityDiff,
+    changes: maskPassedSecretChanges(changes, template, passedSecretNames, new Map()),
+    securityDiff: securityDiffWithPassedSecretWithheld(securityDiff, changes, passedSecretNames),
     ccApiRoutes,
-    outputChanges,
+    outputChanges: maskPassedSecretOutputs(outputChanges, template, passedSecretNames),
     adoptedOrphans,
     blocking: isNestedChild ? blocking : [...deployRefusals, ...adoptedDeployRefusals, ...blocking],
     // The load's dropped entries and containers, and the orphan records the
@@ -477,6 +510,7 @@ export async function buildDiffTree(args: {
   // A condition-false row is absent here, so a child still in state falls
   // through to the state-only DELETE loop below.
   const templateChildIds = new Set<string>();
+  const rowMixedSecretKeys = new Map<string, ReadonlySet<string>>();
   for (const [logicalId, resource] of Object.entries(effectiveTemplate.Resources ?? {})) {
     if (resource?.Type !== NESTED_STACK_RESOURCE_TYPE) continue;
     templateChildIds.add(logicalId);
@@ -626,12 +660,32 @@ export async function buildDiffTree(args: {
       consumerAccount,
       { inherited: inheritedSecretTokens, child: childSecretTokens }
     );
+    // go-to-k/cdkd#7068: the row keys passing a mixed secret, masked on this
+    // node's row and on every child leaf reading them.
+    const childMixedSecretParameters = mixedSecretRowKeys(
+      resource.Properties,
+      childParameters,
+      passedSecretNames
+    );
+    if (childMixedSecretParameters.size > 0) {
+      rowMixedSecretKeys.set(logicalId, childMixedSecretParameters);
+    }
+    // Each such value WHOLE is a mask-only needle of the child's walk too, so
+    // a resolver line embedding it is masked (its length clears the floor).
+    const passedSecretNeedles: RecordedSecretValues = new Map();
+    for (const key of childMixedSecretParameters) {
+      const value = Object.hasOwn(childParameters, key) ? childParameters[key] : undefined;
+      if (typeof value === 'string' && value.length > 0) {
+        recordLogOnlyValue(passedSecretNeedles, value);
+      }
+    }
     // The parent's own secret-named records too (go-to-k/cdkd#3869): the
     // child's stored values can hold a name a row USED to pass down.
     const childDerivedNames = diffPrintingSecrets([
       inheritedDerivedNames,
       rowDerivedNames,
       nodeStateNames,
+      passedSecretNeedles,
     ]);
     // go-to-k/cdkd#4852: the provenance snapshot the deploy's row would hand
     // this child, from this node's records. Only for a row the deploy
@@ -695,11 +749,23 @@ export async function buildDiffTree(args: {
         // go-to-k/cdkd#6871: the row's child tags as the diff resolved them;
         // a row whose Tags it could not read gets the parent's alone.
         stackTags: stackDiff.childStackTags?.get(logicalId) ?? childStackTags(stackTags, {}),
+        ...(childMixedSecretParameters.size > 0 && {
+          inheritedMixedSecretParameters: childMixedSecretParameters,
+        }),
       });
     node.children.push(
       await (hasMaskableValues(childDerivedNames)
         ? withPrintingSecrets(childDerivedNames, buildChild)
         : buildChild())
+    );
+  }
+
+  if (rowMixedSecretKeys.size > 0) {
+    node.changes = maskPassedSecretChanges(
+      changes,
+      template,
+      passedSecretNames,
+      rowMixedSecretKeys
     );
   }
 

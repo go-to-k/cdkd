@@ -154,6 +154,8 @@ const DIFF_RECURSIVE_ORDER = [
   'compute-stack-diff.ts',
   'trust.ts',
   'child-parameters.ts',
+  // go-to-k/cdkd#7068: what a node prints of a passed mixed secret.
+  'passed-secret-display.ts',
   'build-tree.ts',
   'routes.ts',
   'tree.ts',
