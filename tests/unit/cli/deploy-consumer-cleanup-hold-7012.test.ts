@@ -169,6 +169,10 @@ const cancelledStacks = vi.hoisted(() => new Set<string>());
 
 /** What the run did, in order: each deploy, and each held pass's fate. */
 const events = vi.hoisted(() => [] as string[]);
+/** Runs inside a stack's deploy before it lands, by stack name. */
+const deployHooks = vi.hoisted(() => new Map<string, () => Promise<void>>());
+/** Stacks whose deploy throws after queueing its cleanup. */
+const failAfterQueueing = vi.hoisted(() => new Set<string>());
 /** Each engine's options, by stack name. */
 const engineOptions = vi.hoisted(() => new Map<string, Record<string, unknown>>());
 
@@ -186,6 +190,8 @@ vi.mock('../../../src/deployment/deploy-engine.js', () => ({
           events.push(`fail ${stackName}`);
           throw new Error(`synthetic provisioning failure in ${stackName}`);
         }
+        const hook = deployHooks.get(stackName);
+        if (hook !== undefined) await hook();
         events.push(`deploy ${stackName}`);
         // As the engine does when it replaced something: its cleanup phase
         // goes to the queue the CLI handed it.
@@ -200,6 +206,8 @@ vi.mock('../../../src/deployment/deploy-engine.js', () => ({
           abandon: (why) => events.push(`abandon ${stackName} ${why}`),
           fail: () => ({ updatePartial: 0 }),
         });
+        // A deploy that fails after its engine queued the pass (a final save).
+        if (failAfterQueueing.has(stackName)) throw new Error(`final save failed in ${stackName}`);
         return {
           stackName,
           created: 1,
@@ -289,6 +297,8 @@ describe('deploy holds a producer cleanup for its in-run consumers (#7012)', () 
   beforeEach(() => {
     events.length = 0;
     engineOptions.clear();
+    deployHooks.clear();
+    failAfterQueueing.clear();
     failingStacks.clear();
     cancelledStacks.clear();
     synthError.value = undefined;
@@ -361,6 +371,34 @@ describe('deploy holds a producer cleanup for its in-run consumers (#7012)', () 
     expect(events).not.toContain('deploy Consumer');
     expect(events).toContain('abandon Producer consumer-failed');
     expect(events).not.toContain('cleanup Producer');
+  });
+
+  it('abandons as soon as the consumer failed, not once the whole run ended', async () => {
+    synthStacks.value = [
+      producer(),
+      consumer('Consumer'),
+      makeStack('Late', { dependencyNames: ['Producer'] }),
+    ];
+    failingStacks.add('Consumer');
+    let sawAbandon = false;
+    // Still deploying while the consumer fails: the producer's decision must
+    // not wait for it.
+    deployHooks.set('Late', async () => {
+      for (let i = 0; i < 100 && !sawAbandon; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        sawAbandon = events.includes('abandon Producer consumer-failed');
+      }
+    });
+    await runDeploy(['--all', '--yes', '--stack-concurrency', '2']);
+    expect(sawAbandon).toBe(true);
+  });
+
+  it('a producer whose deploy fails after queueing its pass abandons it', async () => {
+    synthStacks.value = [producer(), consumer('Consumer')];
+    failAfterQueueing.add('Producer');
+    const { exitCode } = await runDeploy(['--all', '--yes']);
+    expect(exitCode).toBe(1);
+    expect(events).toEqual(['deploy Producer', 'abandon Producer failed']);
   });
 
   it('a single-stack deploy gets no queue: the engine cleans up at the end of its deploy', async () => {
