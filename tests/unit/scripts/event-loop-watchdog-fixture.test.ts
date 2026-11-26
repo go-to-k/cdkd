@@ -6,7 +6,8 @@
  *
  * Each case drives the real shared RDS wait (`waitForInstanceState`) with the
  * sleep double the unit suite uses, so the starved timer is the one a provider
- * test meets. The cases run in order and the last one kills the worker.
+ * test meets. The parent runs the controls and the hang in order (the hang
+ * kills the worker), then the leak case alone.
  */
 import type { DBInstance } from '@aws-sdk/client-rds';
 import { describe, expect, it } from 'vite-plus/test';
@@ -59,5 +60,14 @@ describe.runIf(process.env.CDKD_EVENT_LOOP_WATCHDOG_FIXTURE === '1')(
       },
       SHORT_TIMEOUT_MS
     );
+
+    // Run alone (`-t leak`): it kills the worker too. The test throws before
+    // awaiting the wait, so it fails and the runner moves on while the wait
+    // keeps spinning, past every hook of the test.
+    it('leak: a never-satisfied wait the test throws before awaiting', () => {
+      const { provider } = providerReading(async () => {});
+      void provider.waitForInstanceState('Db', 'db-1', () => false, 'port change');
+      throw new Error('the test failed before awaiting its wait');
+    });
   }
 );

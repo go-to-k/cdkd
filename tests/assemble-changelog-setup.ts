@@ -1,4 +1,4 @@
-import { renameSync, writeFileSync } from 'node:fs';
+import { renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { OUTPUT_PATH, assembleChangelog } from '../scripts/assemble-changelog.js';
 
@@ -36,6 +36,11 @@ export default function setup(): void {
   // test spawns, as `event-loop-watchdog.test.ts` does) re-runs this while the
   // first run's suites read the page, and a plain write truncates it first.
   const temporary = `${target}.${process.pid}.tmp`;
-  writeFileSync(temporary, assembleChangelog(root));
-  renameSync(temporary, target);
+  try {
+    writeFileSync(temporary, assembleChangelog(root));
+    renameSync(temporary, target);
+  } finally {
+    // Gone after a rename; a failed write or rename leaves nothing behind.
+    rmSync(temporary, { force: true });
+  }
 }

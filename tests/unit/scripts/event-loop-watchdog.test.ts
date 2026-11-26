@@ -26,6 +26,7 @@ const FIXTURE = 'tests/unit/scripts/event-loop-watchdog-fixture.test.ts';
 // Without the watchdog the fixture's hang runs for the wait's 30-minute
 // budget; this backstop stops it first, so a regression fails here instead.
 const BACKSTOP_MS = 120_000;
+const LEAK_BETWEEN_MS = 2_000;
 
 function vitestBin(): string {
   const manifest = createRequire(import.meta.url).resolve('vite-plus/package.json');
@@ -40,7 +41,7 @@ interface ChildRun {
   backstopped: boolean;
 }
 
-function runFixture(): Promise<ChildRun> {
+function runFixture(namePattern: string, extraEnv: NodeJS.ProcessEnv = {}): Promise<ChildRun> {
   const env: NodeJS.ProcessEnv = { ...process.env };
   // The parent's vitest worker variables would make the child believe it is a
   // worker of this run.
@@ -48,11 +49,22 @@ function runFixture(): Promise<ChildRun> {
   env.CDKD_EVENT_LOOP_WATCHDOG_FIXTURE = '1';
   env.NO_COLOR = '1';
   delete env.CDKD_TEST_WATCHDOG;
+  delete env.CDKD_TEST_WATCHDOG_BETWEEN_MS;
+  Object.assign(env, extraEnv);
 
   const started = Date.now();
   // `verbose` prints each case's verdict; `forks` is the pool the watchdog
   // needs (under `threads` its kill stops the whole run).
-  const args = [vitestBin(), 'test', 'run', '--reporter=verbose', '--pool=forks', FIXTURE];
+  const args = [
+    vitestBin(),
+    'test',
+    'run',
+    '--reporter=verbose',
+    '--pool=forks',
+    '-t',
+    namePattern,
+    FIXTURE,
+  ];
   const child = spawn(process.execPath, args, {
     cwd: REPO_ROOT,
     env,
@@ -90,7 +102,7 @@ describe('event-loop watchdog (go-to-k/cdkd#7042)', () => {
   it(
     'fails a never-satisfied wait on an instant sleep double within its timeout plus the grace',
     async () => {
-      const run = await runFixture();
+      const run = await runFixture('control|hang');
       const context = `exit ${run.code} / ${run.signal}, ${run.elapsedMs} ms:\n${run.output}`;
 
       expect(run.backstopped, context).toBe(false);
@@ -111,6 +123,28 @@ describe('event-loop watchdog (go-to-k/cdkd#7042)', () => {
       // its bound (never below the hook timeout) plus the grace.
       expect(run.elapsedMs, context).toBeLessThan(
         BACKSTOP_MS / 2 + HOOK_TIMEOUT_FLOOR_MS + WATCHDOG_GRACE_MS
+      );
+    },
+    CONTENDED_CASE_TIMEOUT_MS
+  );
+
+  it(
+    'kills a wait that a failed test left spinning, after the test',
+    async () => {
+      // The between-tests bound is the suite's hang ceiling; shortened here.
+      const run = await runFixture('leak', {
+        CDKD_TEST_WATCHDOG_BETWEEN_MS: String(LEAK_BETWEEN_MS),
+      });
+      const context = `exit ${run.code} / ${run.signal}, ${run.elapsedMs} ms:\n${run.output}`;
+
+      expect(run.backstopped, context).toBe(false);
+      expect(run.code, context).not.toBe(0);
+      expect(run.output, context).toContain(
+        `${WATCHDOG_MARKER} after ${FIXTURE} > event-loop watchdog fixture > leak: a never-satisfied wait the test throws before awaiting:`
+      );
+      expect(run.output, context).toMatch(/Worker exited unexpectedly with signal SIGKILL/);
+      expect(run.elapsedMs, context).toBeLessThan(
+        BACKSTOP_MS / 2 + LEAK_BETWEEN_MS + WATCHDOG_GRACE_MS
       );
     },
     CONTENDED_CASE_TIMEOUT_MS

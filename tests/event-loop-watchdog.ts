@@ -19,19 +19,21 @@
  * covered without touching any of them, and production code is unchanged.
  *
  * Scope and limits:
- * - It is armed only while a test runs (from its `beforeEach` to its
- *   `afterEach`), against that test's own timeout and never below the default
- *   `hookTimeout`, so a case that declares a longer bound (a spawning case,
+ * - From a test's `beforeEach` to its `afterEach` the bound
+ *   is that test's own timeout, never below the default `hookTimeout`, so a case that declares a longer bound (a spawning case,
  *   `tests/contended-case-timeout.ts`) keeps it. A hook declaring its own
  *   longer timeout is not read, and a `retry` attempt that blocks past the
  *   bound is killed rather than retried.
+ * - From an `afterEach` to the next `beforeEach` it stays armed, at
+ *   `BETWEEN_TESTS_MS`: a wait a failing test started and never awaited keeps
+ *   spinning after it. A new file's collection is unarmed.
  * - A synchronous block (a `spawnSync`, a CPU-bound walk) also stops the
  *   heartbeat; one running past its test's timeout plus the grace is killed
  *   the same way, which vitest could not interrupt either.
  * - It never arms under an attached inspector (a paused debugger stops the
  *   heartbeat), nor with `CDKD_TEST_WATCHDOG=0`.
- * - Overlapping `concurrent` tests share one slot: the first to finish disarms
- *   it until the next `beforeEach`, and the label names the latest to start.
+ * - Overlapping `concurrent` tests share one slot: the first to finish moves it
+ *   to the between-tests bound, and the label names the latest to start.
  * - It needs the `forks` pool (vitest's default, which `vite.config.ts`
  *   keeps): under `threads` the kill would stop the whole run.
  */
@@ -40,6 +42,8 @@ import { Worker } from 'node:worker_threads';
 
 import { afterEach, beforeEach } from 'vite-plus/test';
 
+import { CONTENDED_CASE_TIMEOUT_MS } from './contended-case-timeout.js';
+
 /** How far past the running test's timeout a stalled event loop is tolerated. */
 export const WATCHDOG_GRACE_MS = 5_000;
 /** The line the watchdog writes before it kills the worker. */
@@ -47,6 +51,18 @@ export const WATCHDOG_MARKER = '[event-loop-watchdog]';
 
 /** vitest's default `hookTimeout`; `vite.config.ts` does not override it. */
 export const HOOK_TIMEOUT_FLOOR_MS = 10_000;
+/**
+ * The bound between one test's `afterEach` and the next `beforeEach`. A
+ * describe block's `beforeAll` runs there, and some walk the real tree
+ * synchronously past the hook floor (`gen-update-path-coverage.test.ts` was
+ * killed at 15 s under a 10 s bound, and passes in 55 s alone), so this is
+ * the suite's hang ceiling. `CDKD_TEST_WATCHDOG_BETWEEN_MS` shortens it for
+ * `event-loop-watchdog.test.ts`'s child run only.
+ */
+export const BETWEEN_TESTS_MS =
+  Number(process.env.CDKD_TEST_WATCHDOG_BETWEEN_MS) > 0
+    ? Number(process.env.CDKD_TEST_WATCHDOG_BETWEEN_MS)
+    : CONTENDED_CASE_TIMEOUT_MS;
 const HEARTBEAT_MS = 200;
 const CHECK_MS = 250;
 const LABEL_BYTES = 4096;
@@ -82,8 +98,8 @@ setInterval(() => {
   const name = Buffer.from(label.subarray(0, Atomics.load(slots, ${LABEL_LENGTH}))).toString('utf8');
   fs.writeSync(
     2,
-    '\\n' + marker + ' ' + name + ': the event loop has not turned for ' + stale +
-      ' ms, past the test timeout of ' + timeout + ' ms, so vitest cannot fail the test. ' +
+    '\\n' + marker + ' ' + name + ': the event loop has not turned for ' + Math.round(stale) +
+      ' ms, past the bound of ' + timeout + ' ms plus ' + graceMs + ' ms, so vitest cannot fail the test. ' +
       'A loop awaiting only already-resolved promises (a sleep double that resolves at once, ' +
       'beside a wait the test never satisfies) or a synchronous block starves the timeout ' +
       'timer. Killing the test worker (go-to-k/cdkd#7042).\\n'
@@ -137,15 +153,14 @@ export function installEventLoopWatchdog(): void {
   const state = holder[STATE_KEY];
   if (state === null || state === undefined) return;
 
+  // A new file's collection is not a test: disarm whatever the previous file
+  // in this process left armed.
+  Atomics.store(state.slots, TIMEOUT, 0);
+  let current = '';
+
   beforeEach((context) => {
-    // At most 4 UTF-8 bytes per code point, so a cut by code points always
-    // fits and never splits a character.
-    const name = Array.from(context.task.fullName)
-      .slice(0, LABEL_BYTES / 4)
-      .join('');
-    const bytes = new TextEncoder().encode(name);
-    state.label.set(bytes);
-    Atomics.store(state.slots, LABEL_LENGTH, bytes.length);
+    current = context.task.fullName;
+    setLabel(state, current);
     beat(state);
     const timeout = context.task.timeout;
     // The armed window also holds the file's own `beforeEach` / `afterEach`
@@ -159,7 +174,25 @@ export function installEventLoopWatchdog(): void {
         : 0
     );
   });
+  // Stay armed after the test: a wait the test started and never awaited (it
+  // threw first) keeps spinning once the runner moves on. The bound covers
+  // what can legitimately run synchronously before the next `beforeEach` --
+  // a describe block's `beforeAll`, which some files give a long timeout.
   afterEach(() => {
-    Atomics.store(state.slots, TIMEOUT, 0);
+    setLabel(state, `after ${current}`);
+    beat(state);
+    Atomics.store(state.slots, TIMEOUT, BETWEEN_TESTS_MS);
   });
+}
+
+function setLabel(state: WatchdogState, label: string): void {
+  // At most 4 UTF-8 bytes per code point, so a cut by code points always fits
+  // and never splits a character.
+  const bytes = new TextEncoder().encode(
+    Array.from(label)
+      .slice(0, LABEL_BYTES / 4)
+      .join('')
+  );
+  state.label.set(bytes);
+  Atomics.store(state.slots, LABEL_LENGTH, bytes.length);
 }
