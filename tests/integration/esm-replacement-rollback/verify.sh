@@ -84,6 +84,20 @@ function_name() {
   jq -r '.resources | to_entries[] | select(.value.resourceType == "AWS::Lambda::Function") | .value.physicalId' <<<"${st}"
 }
 
+# Lambda deletes a mapping asynchronously (`Deleting`), so an accepted delete is
+# confirmed by polling, bounded.
+wait_mapping_gone() { # usage: wait_mapping_gone <uuid> <what deleted it>
+  local i=0
+  while ! gone_probe aws lambda get-event-source-mapping --uuid "$1" --region "${REGION}"; do
+    i=$((i + 1))
+    if [ "${i}" -ge 36 ]; then
+      echo "[verify] FAIL: mapping $1 still exists 3 minutes after $2"
+      exit 1
+    fi
+    sleep 5
+  done
+}
+
 cleanup() {
   rc=$?
   (
@@ -172,15 +186,7 @@ if [ "${LIVE_SRC}" != "${Q1_ARN}" ]; then
   exit 1
 fi
 for DELETING_UUID in $(awk '$3 == "Deleting" {print $1}' <<<"${ALL_MAPPINGS}"); do
-  i=0
-  while ! gone_probe aws lambda get-event-source-mapping --uuid "${DELETING_UUID}" --region "${REGION}"; do
-    i=$((i + 1))
-    if [ "${i}" -ge 36 ]; then
-      echo "[verify] FAIL: mapping ${DELETING_UUID} still exists 3 minutes after the rollback deleted it"
-      exit 1
-    fi
-    sleep 5
-  done
+  wait_mapping_gone "${DELETING_UUID}" "the rollback deleted it"
 done
 ST="$(read_state)"
 STATE_UUID="$(jq -r '.resources | to_entries[] | select(.value.resourceType == "AWS::Lambda::EventSourceMapping") | .value.physicalId' <<<"${ST}")"
@@ -199,7 +205,7 @@ echo "[verify] step 4: destroy"
 ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force
 assert_gone "state.json survived destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 assert_gone "function ${FN} survived destroy" aws lambda get-function --function-name "${FN}" --region "${REGION}"
-assert_gone "mapping ${LIVE_UUID} survived destroy" aws lambda get-event-source-mapping --uuid "${LIVE_UUID}" --region "${REGION}"
+wait_mapping_gone "${LIVE_UUID}" "destroy deleted it"
 assert_gone "queue ${Q1} survived destroy" aws sqs get-queue-url --queue-name "${Q1}" --region "${REGION}"
 echo "[verify] step 4 ok: destroy clean"
 
