@@ -76,6 +76,17 @@ export const IMPLICIT_DELETE_DEPENDENCIES: Record<string, readonly string[]> = {
 };
 
 /**
+ * The types {@link IMPLICIT_DELETE_DEPENDENCIES} says must be deleted before
+ * `type`, read by own key: `type` can come from a state file, and an
+ * inherited name (`constructor`) answers none (go-to-k/cdkd#7073).
+ */
+export function typesDeletedBefore(type: string): readonly string[] {
+  return Object.prototype.hasOwnProperty.call(IMPLICIT_DELETE_DEPENDENCIES, type)
+    ? IMPLICIT_DELETE_DEPENDENCIES[type]!
+    : [];
+}
+
+/**
  * A single implicit delete-ordering edge: the resource at `before` (logical id)
  * must finish deleting BEFORE the resource at `after` (logical id).
  *

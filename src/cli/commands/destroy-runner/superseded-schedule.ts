@@ -1,16 +1,10 @@
-import { IMPLICIT_DELETE_DEPENDENCIES } from '../../../analyzer/implicit-delete-deps.js';
+import { typesDeletedBefore as mustDeleteBefore } from '../../../analyzer/implicit-delete-deps.js';
 import {
   supersededDependentsFirst,
   supersededResourcesOf,
 } from '../../../deployment/superseded-resources.js';
 import { isCustomResourceType } from '../../../provisioning/custom-resource-secure-references.js';
 import type { StackState, SupersededResourceRecord } from '../../../types/state.js';
-import { hasOwnKey } from '../../../utils/own-keys.js';
-
-/** The types that must be deleted before `type`, by an own key (a state-borne name). */
-function mustDeleteBefore(type: string): readonly string[] {
-  return hasOwnKey(IMPLICIT_DELETE_DEPENDENCIES, type) ? IMPLICIT_DELETE_DEPENDENCIES[type]! : [];
-}
 
 /**
  * go-to-k/cdkd#7073: when `cdkd destroy` deletes each superseded old copy,
