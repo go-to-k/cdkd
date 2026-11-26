@@ -654,6 +654,59 @@ describe('a producer holds its cleanup phase for its in-run consumers (go-to-k/c
       supersededResources: [carried],
       lastModified: 0,
     } as unknown as StackState;
+    await noChangeDeploy(engine, currentState);
+
+    expect(queue.size).toBe(1);
+    expect(deletesOf('carried-old')).toBe(0);
+    expect(
+      supersededResourcesOf(store.get(PRODUCER)!.state).map((e) => e.heldForConsumers)
+    ).toEqual([true]);
+  });
+
+  /** A producer record carrying `entries`, deployed with no change. */
+  const noChangeState = (entries: SupersededResourceRecord[]): StackState =>
+    ({
+      version: 12,
+      stackName: PRODUCER,
+      region: 'us-east-1',
+      resources: {},
+      outputs: {},
+      supersededResources: entries,
+      lastModified: 0,
+    }) as unknown as StackState;
+
+  it('a no-change deploy of the producer alone keeps a marked entry the consumer still names', async () => {
+    live.add('kept-old');
+    store.set('Consumer', consumerNaming('kept-old'));
+    await noChangeDeploy(makeEngine('R'), noChangeState([marked('kept-old')]));
+
+    expect(deletesOf('kept-old')).toBe(0);
+    expect(
+      printed.info.some((l) =>
+        l.includes("Consumer (importing this stack's outputs) still uses it")
+      )
+    ).toBe(true);
+  });
+
+  it('a no-change deploy of the producer alone deletes it once the consumer moved off', async () => {
+    live.add('kept-old');
+    store.set('Consumer', consumerNaming('kept-new'));
+    await noChangeDeploy(makeEngine('R'), noChangeState([marked('kept-old')]));
+
+    expect(deletesOf('kept-old')).toBe(1);
+  });
+
+  it('a held no-change pass still keeps it for a consumer outside the run that names it', async () => {
+    live.add('kept-old');
+    store.set('Consumer', consumerNaming('kept-old'));
+    const queue = new NestedCleanupQueue();
+    await noChangeDeploy(makeEngine('R', undefined, queue), noChangeState([marked('kept-old')]));
+    await queue.runAll({ interrupted: () => false }, { info: vi.fn(), warn: vi.fn() });
+
+    expect(deletesOf('kept-old')).toBe(0);
+  });
+
+  async function noChangeDeploy(engine: DeployEngine, currentState: StackState): Promise<void> {
     store.set(PRODUCER, { state: structuredClone(currentState), etag: 'etag-0' });
     const template = { Resources: {} } as unknown as CloudFormationTemplate;
     await deployWithoutChanges(engine, {
@@ -677,11 +730,5 @@ describe('a producer holds its cleanup phase for its in-run consumers (go-to-k/c
       startTime: 0,
       clock: { lap: () => {} },
     } as unknown as Parameters<typeof deployWithoutChanges>[1]);
-
-    expect(queue.size).toBe(1);
-    expect(deletesOf('carried-old')).toBe(0);
-    expect(
-      supersededResourcesOf(store.get(PRODUCER)!.state).map((e) => e.heldForConsumers)
-    ).toEqual([true]);
-  });
+  }
 });

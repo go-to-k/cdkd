@@ -65,7 +65,7 @@ export async function runCleanupPhase(
   }
   // go-to-k/cdkd#5111: an earlier deploy's, after this deploy's own; one a
   // consumer still names stays (go-to-k/cdkd#7017).
-  const sendable = await carriedNotHeldByConsumers(engine, stackName, carried);
+  const sendable = await carriedNotHeldByConsumers(engine, stackName, carried, resources);
   await retryCarriedSupersededResources(engine, host, sendable, resources, {
     waitInUse: releasedSomething,
   });

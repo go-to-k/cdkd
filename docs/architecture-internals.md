@@ -661,7 +661,8 @@ deploy (issue [#7012](https://github.com/go-to-k/cdkd/issues/7012)). A stack
 with nothing to delete queues nothing. Each held entry is saved marked
 `heldForConsumers`; a later deploy's cleanup sends one only once no stack
 importing the producer's outputs names its physical id or a recorded string
-attribute in its records (`consumer-held-superseded.ts`, issue
+attribute (8+ characters, not numeric, carried by no live record of the
+producer) in its resources' properties (`consumer-held-superseded.ts`, issue
 [#7017](https://github.com/go-to-k/cdkd/issues/7017)). An unmarked entry reads
 nothing.
 

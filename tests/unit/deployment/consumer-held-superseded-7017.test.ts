@@ -26,8 +26,15 @@ const entry = (held: boolean, physicalId = Q1_URL): SupersededResourceRecord => 
   ...(held && { heldForConsumers: true as const }),
 });
 
-function consumerState(properties: Record<string, unknown>, reads: 'imports' | 'outputReads' | 'none' = 'imports'): StackState {
-  const ref = { sourceStack: 'Producer', sourceRegion: 'us-east-1', exportName: 'Producer:QueueUrl' };
+function consumerState(
+  properties: Record<string, unknown>,
+  reads: 'imports' | 'outputReads' | 'none' = 'imports',
+  ref: Record<string, unknown> = {
+    sourceStack: 'Producer',
+    sourceRegion: 'us-east-1',
+    exportName: 'Producer:QueueUrl',
+  }
+): StackState {
   return {
     version: 18,
     stackName: 'Consumer',
@@ -66,7 +73,7 @@ describe('consumer-held superseded entries (go-to-k/cdkd#7017)', () => {
   it('an unmarked carried entry is passed through without reading any state', async () => {
     const { engine, listStacks } = engineOver({});
     const carried = [entry(false)];
-    expect(await carriedNotHeldByConsumers(engine, 'Producer', carried)).toEqual(carried);
+    expect(await carriedNotHeldByConsumers(engine, 'Producer', carried, {})).toEqual(carried);
     expect(listStacks).not.toHaveBeenCalled();
   });
 
@@ -75,7 +82,7 @@ describe('consumer-held superseded entries (go-to-k/cdkd#7017)', () => {
       Consumer: consumerState({ Environment: { Variables: { QURL: Q1_URL } } }),
     });
     const held = entry(true);
-    expect(await carriedNotHeldByConsumers(engine, 'Producer', [held])).toEqual([]);
+    expect(await carriedNotHeldByConsumers(engine, 'Producer', [held], {})).toEqual([]);
     expect(getState).not.toHaveBeenCalledWith('Producer', expect.anything(), expect.anything());
     expect(info).toHaveBeenCalledTimes(1);
     expect(String(info.mock.calls[0]![0])).toContain(
@@ -87,14 +94,14 @@ describe('consumer-held superseded entries (go-to-k/cdkd#7017)', () => {
     const { engine } = engineOver({
       Consumer: consumerState({ PolicyDocument: { Statement: [{ Resource: `${Q1_ARN}/*` }] } }),
     });
-    expect(await carriedNotHeldByConsumers(engine, 'Producer', [entry(true)])).toEqual([]);
+    expect(await carriedNotHeldByConsumers(engine, 'Producer', [entry(true)], {})).toEqual([]);
   });
 
   it('a consumer reading the outputs with Fn::GetStackOutput holds it too', async () => {
     const { engine } = engineOver({
       Consumer: consumerState({ QURL: Q1_URL }, 'outputReads'),
     });
-    expect(await carriedNotHeldByConsumers(engine, 'Producer', [entry(true)])).toEqual([]);
+    expect(await carriedNotHeldByConsumers(engine, 'Producer', [entry(true)], {})).toEqual([]);
   });
 
   it('deletes a marked entry once the consumer moved off it', async () => {
@@ -102,7 +109,7 @@ describe('consumer-held superseded entries (go-to-k/cdkd#7017)', () => {
       Consumer: consumerState({ QURL: Q1_URL.replace('q1', 'q2') }),
     });
     const held = entry(true);
-    expect(await carriedNotHeldByConsumers(engine, 'Producer', [held])).toEqual([held]);
+    expect(await carriedNotHeldByConsumers(engine, 'Producer', [held], {})).toEqual([held]);
     expect(info).not.toHaveBeenCalled();
   });
 
@@ -111,13 +118,13 @@ describe('consumer-held superseded entries (go-to-k/cdkd#7017)', () => {
       Consumer: consumerState({ Arn: `${Q1_ARN}0`, Url: `${Q1_URL}0` }),
     });
     const held = entry(true);
-    expect(await carriedNotHeldByConsumers(engine, 'Producer', [held])).toEqual([held]);
+    expect(await carriedNotHeldByConsumers(engine, 'Producer', [held], {})).toEqual([held]);
   });
 
   it('a stack naming it without importing from the producer does not hold it', async () => {
     const { engine } = engineOver({ Other: consumerState({ QURL: Q1_URL }, 'none') });
     const held = entry(true);
-    expect(await carriedNotHeldByConsumers(engine, 'Producer', [held])).toEqual([held]);
+    expect(await carriedNotHeldByConsumers(engine, 'Producer', [held], {})).toEqual([held]);
   });
 
   it('a short or numeric attribute is no needle', async () => {
@@ -125,25 +132,79 @@ describe('consumer-held superseded entries (go-to-k/cdkd#7017)', () => {
     // Neither a numeric attribute nor one under 8 characters is a needle.
     const held = entry(true, 'https://sqs.us-east-1.amazonaws.com/111122223333/other');
     held.state.attributes = { DelaySeconds: '12345678', Kind: 'fifo' };
-    expect(await carriedNotHeldByConsumers(engine, 'Producer', [held])).toEqual([held]);
+    expect(await carriedNotHeldByConsumers(engine, 'Producer', [held], {})).toEqual([held]);
   });
 
   it('keeps every marked entry when a record cannot be read, or the bucket cannot be listed', async () => {
     const unreadable = engineOver({ Consumer: new Error('AccessDenied: s3:GetObject') });
-    expect(await carriedNotHeldByConsumers(unreadable.engine, 'Producer', [entry(true)])).toEqual(
+    expect(await carriedNotHeldByConsumers(unreadable.engine, 'Producer', [entry(true)], {})).toEqual(
       []
     );
     expect(String(unreadable.info.mock.calls[0]![0])).toContain('its state could not be read');
     const unlisted = engineOver({}, true);
-    expect(await carriedNotHeldByConsumers(unlisted.engine, 'Producer', [entry(true)])).toEqual([]);
+    expect(await carriedNotHeldByConsumers(unlisted.engine, 'Producer', [entry(true)], {})).toEqual([]);
   });
 
   it('passes the unmarked entries beside a kept marked one', async () => {
     const { engine } = engineOver({ Consumer: consumerState({ QURL: Q1_URL }) });
     const plain = entry(false, 'https://sqs.us-east-1.amazonaws.com/111122223333/old');
-    expect(await carriedNotHeldByConsumers(engine, 'Producer', [entry(true), plain])).toEqual([
+    expect(await carriedNotHeldByConsumers(engine, 'Producer', [entry(true), plain], {})).toEqual([
       plain,
     ]);
+  });
+
+  it('a value a live record of the producer still carries is no needle (a shared VPC id)', async () => {
+    const vpc = 'vpc-0123456789abcdef0';
+    const { engine } = engineOver({ Consumer: consumerState({ VpcId: vpc, Sg: 'sg-new0000001' }) });
+    const held: SupersededResourceRecord = {
+      logicalId: 'Sg',
+      supersededAt: 1,
+      state: {
+        physicalId: 'sg-old0000001',
+        resourceType: 'AWS::EC2::SecurityGroup',
+        properties: {},
+        attributes: { GroupId: 'sg-old0000001', VpcId: vpc },
+      } as never,
+      heldForConsumers: true,
+    };
+    const live = {
+      Sg: {
+        physicalId: 'sg-new0000001',
+        resourceType: 'AWS::EC2::SecurityGroup',
+        properties: {},
+        attributes: { GroupId: 'sg-new0000001', VpcId: vpc },
+      },
+    } as never;
+    expect(await carriedNotHeldByConsumers(engine, 'Producer', [held], live)).toEqual([held]);
+    // Without the live record, the VPC id alone would have held it.
+    expect(await carriedNotHeldByConsumers(engine, 'Producer', [held], {})).toEqual([]);
+  });
+
+  it('an output read whose source stack was redacted at persist may read the producer', async () => {
+    const { engine } = engineOver({
+      Consumer: consumerState({ QURL: Q1_URL }, 'outputReads', {
+        sourceStack: '***',
+        sourceRegion: 'us-east-1',
+      }),
+    });
+    expect(await carriedNotHeldByConsumers(engine, 'Producer', [entry(true)], {})).toEqual([]);
+  });
+
+  it('a stack importing another producer, or this one in another region, does not hold it', async () => {
+    const { engine } = engineOver({
+      OtherProducer: consumerState({ QURL: Q1_URL }, 'imports', {
+        sourceStack: 'Elsewhere',
+        sourceRegion: 'us-east-1',
+        exportName: 'x',
+      }),
+      OtherRegion: consumerState({ QURL: Q1_URL }, 'imports', {
+        sourceStack: 'Producer',
+        sourceRegion: 'eu-west-1',
+        exportName: 'x',
+      }),
+    });
+    const held = entry(true);
+    expect(await carriedNotHeldByConsumers(engine, 'Producer', [held], {})).toEqual([held]);
   });
 
   it('markHeldForConsumers marks in place and reports a change once', () => {

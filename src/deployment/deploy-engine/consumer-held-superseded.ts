@@ -47,11 +47,13 @@ export function markHeldForConsumers(host: Pick<StackState, 'supersededResources
 export async function carriedNotHeldByConsumers(
   engine: DeployEngine,
   stackName: string,
-  carried: readonly SupersededResourceRecord[]
+  carried: readonly SupersededResourceRecord[],
+  /** This stack's live records: a value one of them still carries is no needle. */
+  live: Record<string, ResourceState>
 ): Promise<SupersededResourceRecord[]> {
   const checked = carried.filter((entry) => entry.heldForConsumers === true);
   if (checked.length === 0) return [...carried];
-  const holders = await consumersNaming(engine, stackName, checked);
+  const holders = await consumersNaming(engine, stackName, checked, live);
   const kept = new Set<SupersededResourceRecord>();
   for (const entry of checked) {
     const names = holders.get(entry);
@@ -71,7 +73,8 @@ export async function carriedNotHeldByConsumers(
 async function consumersNaming(
   engine: DeployEngine,
   stackName: string,
-  entries: readonly SupersededResourceRecord[]
+  entries: readonly SupersededResourceRecord[],
+  live: Record<string, ResourceState>
 ): Promise<Map<SupersededResourceRecord, string[]>> {
   const region = canonicalizeRegion(engine.stackRegion);
   const holders = new Map<SupersededResourceRecord, string[]>();
@@ -85,42 +88,69 @@ async function consumersNaming(
   } catch {
     return holdAll('a stack cdkd could not list');
   }
-  const needles = new Map(entries.map((entry) => [entry, needlesOf(entry.state)] as const));
-  await Promise.all(
-    refs.map(async (ref) => {
-      const refRegion = ref.region ?? engine.stackRegion;
-      if (ref.stackName === stackName && canonicalizeRegion(refRegion) === region) return;
-      const display = displayStackName(ref.stackName);
-      let state: StackState | undefined;
-      try {
-        state = (await engine.stateBackend.getState(ref.stackName, refRegion, { readOnly: true }))
-          ?.state;
-      } catch {
-        holdAll(`${display} (its state could not be read)`);
-        return;
-      }
-      if (state === undefined || !readsFrom(state, stackName, region)) return;
-      const leaves = leafStrings(state.resources);
-      for (const [entry, own] of needles) {
-        if (own.some((needle) => leaves.some((leaf) => names(leaf, needle)))) {
-          holders.set(entry, [...(holders.get(entry) ?? []), display]);
-        }
-      }
-    })
+  // A value a live record still carries (the VPC id an old security group
+  // shared with the new one, a region-wide hosted zone id) names no OLD copy:
+  // a consumer that moved still spells it.
+  const shared = new Set(Object.values(live ?? {}).flatMap((record) => needlesOf(record)));
+  const needles = new Map(
+    entries.map(
+      (entry) => [entry, needlesOf(entry.state).filter((needle) => !shared.has(needle))] as const
+    )
   );
+  const readOne = async (ref: (typeof refs)[number]): Promise<void> => {
+    const refRegion = ref.region ?? engine.stackRegion;
+    if (ref.stackName === stackName && canonicalizeRegion(refRegion) === region) return;
+    const display = displayStackName(ref.stackName);
+    let state: StackState | undefined;
+    try {
+      state = (await engine.stateBackend.getState(ref.stackName, refRegion, { readOnly: true }))
+        ?.state;
+    } catch {
+      holdAll(`${display} (its state could not be read)`);
+      return;
+    }
+    if (state === undefined || !readsFrom(state, stackName, region)) return;
+    const leaves = leafStrings(state.resources);
+    for (const [entry, own] of needles) {
+      if (own.some((needle) => leaves.some((leaf) => names(leaf, needle)))) {
+        holders.set(entry, [...(holders.get(entry) ?? []), display]);
+      }
+    }
+  };
+  // At most READ_CONCURRENCY reads at once over a large bucket.
+  for (let at = 0; at < refs.length; at += READ_CONCURRENCY) {
+    await Promise.all(refs.slice(at, at + READ_CONCURRENCY).map(readOne));
+  }
   return holders;
 }
 
-/** Whether `state` imports (or reads with `Fn::GetStackOutput`) the producer's outputs. */
+const READ_CONCURRENCY = 16;
+
+/** A plain stack name, as CloudFormation allows; anything else was redacted at persist. */
+const PLAIN_STACK_NAME = /^[A-Za-z][A-Za-z0-9-]*$/;
+
+/**
+ * Whether `state` imports (or reads with `Fn::GetStackOutput`) the producer's
+ * outputs. An output read's `sourceStack` is template-derived and may be
+ * redacted at persist (`***`, a dynamic reference): one that is no plain stack
+ * name may read this producer, so it counts.
+ */
 function readsFrom(state: StackState, producer: string, region: string): boolean {
-  const refs = [...(state.imports ?? []), ...(state.outputReads ?? [])];
-  return refs.some(
-    (ref) =>
-      typeof ref === 'object' &&
-      ref !== null &&
-      ref.sourceStack === producer &&
-      typeof ref.sourceRegion === 'string' &&
-      canonicalizeRegion(ref.sourceRegion) === region
+  const named = (ref: { sourceStack?: unknown; sourceRegion?: unknown }): boolean =>
+    ref.sourceStack === producer &&
+    typeof ref.sourceRegion === 'string' &&
+    canonicalizeRegion(ref.sourceRegion) === region;
+  const isRef = (ref: unknown): ref is { sourceStack?: unknown; sourceRegion?: unknown } =>
+    typeof ref === 'object' && ref !== null;
+  return (
+    (state.imports ?? []).some((ref) => isRef(ref) && named(ref)) ||
+    (state.outputReads ?? []).some(
+      (ref) =>
+        isRef(ref) &&
+        (named(ref) ||
+          typeof ref.sourceStack !== 'string' ||
+          !PLAIN_STACK_NAME.test(ref.sourceStack))
+    )
   );
 }
 

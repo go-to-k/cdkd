@@ -106,7 +106,8 @@ export async function deployWithoutChanges(
             await carriedNotHeldByConsumers(
               engine,
               stackName,
-              supersededResourcesOf(currentState).filter(stillOwed)
+              supersededResourcesOf(currentState).filter(stillOwed),
+              currentState.resources
             ),
             currentState.resources
           );
@@ -115,7 +116,12 @@ export async function deployWithoutChanges(
       : await retryCarriedSupersededResources(
           engine,
           currentState,
-          await carriedNotHeldByConsumers(engine, stackName, supersededResourcesOf(currentState)),
+          await carriedNotHeldByConsumers(
+            engine,
+            stackName,
+            supersededResourcesOf(currentState),
+            currentState.resources
+          ),
           currentState.resources
         );
 
