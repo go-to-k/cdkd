@@ -4,8 +4,8 @@ import { writeRollbackJournalSegment } from './rollback.js';
 import { warnUnretriedReplacedDeletes } from './replacement.js';
 import {
   deleteUsersOfRemovalsFirst,
-  queueNestedCleanup,
   runCleanupPhase,
+  runOrQueueCleanups,
 } from './nested-cleanup.js';
 import {
   NestedCleanupQueue,
@@ -820,26 +820,19 @@ async function executeDeploymentBody(
         resources: newResources,
         releasedSomething,
       });
-    // go-to-k/cdkd#6398: the ROOT runs its descendants' queued passes first,
-    // in the order they finished, then its own: a child's old resource goes
-    // before the parent's old resource it used (an old instance before the
-    // old subnet a parameter handed it), dependents first as within a stack.
-    if (nestedCleanups !== undefined) {
-      const { updatePartial } = await nestedCleanups.runAll(
-        { interrupted: () => engine.interrupted },
-        engine.logger
-      );
-      actualCounts.updatePartial += updatePartial;
-      actualCounts.nestedUpdatePartial += updatePartial;
-    }
-    // A nested child's cleanup waits for the ROOT deploy's success instead.
-    const queued = queueNestedCleanup(engine, stackName, currentState, (stillOwed, counts) =>
-      cleanup(carriedSuperseded.filter(stillOwed), counts)
+    // go-to-k/cdkd#6398 / #7012: the descendants' queued passes, then this
+    // stack's own, run now or wait (for the root, or for the stacks of this
+    // run importing this one's outputs).
+    const queued = await runOrQueueCleanups(
+      engine,
+      stackName,
+      currentState,
+      nestedCleanups,
+      actualCounts,
+      (stillOwed, counts) => cleanup(carriedSuperseded.filter(stillOwed), counts)
     );
     if (queued) {
-      engine.logger.debug(
-        safeMsg`Cleanup of ${stackName} waits for the root stack's deploy to succeed`
-      );
+      engine.logger.debug(safeMsg`Cleanup of ${stackName} waits for the stacks it serves`);
     } else {
       try {
         await cleanup(carriedSuperseded, actualCounts);

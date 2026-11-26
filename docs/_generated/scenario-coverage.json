@@ -951,6 +951,11 @@
       ]
     },
     {
+      "name": "cross-stack-replace-consumer-rollback",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "cross-stack-secret-import",
       "annotated": true,
       "scenarios": [
@@ -4342,6 +4347,7 @@
     "cross-backend-same-stack-migration",
     "cross-region-concurrent-stacks",
     "cross-stack-export-in-use",
+    "cross-stack-replace-consumer-rollback",
     "custom-resource-noecho-nested",
     "custom-resource-payload-types",
     "custom-resource-physid-replace",

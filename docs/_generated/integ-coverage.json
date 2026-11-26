@@ -6943,6 +6943,7 @@
         "asset-migration",
         "cdk-cross-account-lookup-role",
         "codebuild-webhook",
+        "cross-stack-replace-consumer-rollback",
         "drift-verbatim-readback",
         "export",
         "generated-name-lifecycle",
@@ -6967,6 +6968,9 @@
         ],
         "codebuild-webhook": [
           "l2"
+        ],
+        "cross-stack-replace-consumer-rollback": [
+          "literal"
         ],
         "drift-verbatim-readback": [
           "l1",
@@ -7045,6 +7049,7 @@
         "cross-backend-same-stack",
         "cross-backend-same-stack-migration",
         "cross-stack-export-in-use",
+        "cross-stack-replace-consumer-rollback",
         "custom-resource-payload-types",
         "datasync-location-role",
         "deep-getatt-chains",
@@ -7247,6 +7252,10 @@
         ],
         "cross-stack-export-in-use": [
           "l1"
+        ],
+        "cross-stack-replace-consumer-rollback": [
+          "l2",
+          "literal"
         ],
         "custom-resource-payload-types": [
           "l2"
@@ -8018,6 +8027,7 @@
       "resourceType": "AWS::Lambda::EventSourceMapping",
       "integs": [
         "cc-to-sdk-reroute-common-types",
+        "cross-stack-replace-consumer-rollback",
         "dynamodb-stream-filter",
         "dynamodb-streams",
         "eventsourcemapping-race",
@@ -8030,6 +8040,9 @@
       "signals": {
         "cc-to-sdk-reroute-common-types": [
           "l1",
+          "literal"
+        ],
+        "cross-stack-replace-consumer-rollback": [
           "literal"
         ],
         "dynamodb-stream-filter": [
@@ -8085,6 +8098,7 @@
         "composite-stack",
         "connect-instance",
         "cross-stack-export-in-use",
+        "cross-stack-replace-consumer-rollback",
         "custom-resource-getatt-data",
         "custom-resource-masked-service-token",
         "custom-resource-noecho-nested",
@@ -8284,6 +8298,10 @@
         ],
         "cross-stack-export-in-use": [
           "l2"
+        ],
+        "cross-stack-replace-consumer-rollback": [
+          "l2",
+          "literal"
         ],
         "custom-resource-getatt-data": [
           "l2"
@@ -10539,6 +10557,7 @@
         "cross-backend-same-stack-migration",
         "cross-region-concurrent-stacks",
         "cross-stack-export-in-use",
+        "cross-stack-replace-consumer-rollback",
         "cross-stack-secret-import",
         "data-pipeline",
         "depends-on-flip",
@@ -10691,6 +10710,11 @@
         ],
         "cross-stack-export-in-use": [
           "l2"
+        ],
+        "cross-stack-replace-consumer-rollback": [
+          "l1",
+          "l2",
+          "literal"
         ],
         "cross-stack-secret-import": [
           "l1"
