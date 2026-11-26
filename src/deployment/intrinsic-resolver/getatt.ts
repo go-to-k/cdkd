@@ -36,6 +36,7 @@ import {
   constructWithStaleRecordHeal,
   healMaskedOwnIdAttribute,
   healStaleAttributes,
+  healStaleShapeAttribute,
   serveHealedAttribute,
   staleRecordRemedy,
   usableHealedAttribute,
@@ -238,13 +239,20 @@ export async function resolveGetAtt(
     // holds `''` (the template's absent property, copied), and nothing
     // rewrites it on a no-change deploy; served here it would shadow the
     // live arm forever. Read it as ABSENT for this ONE attribute only.
-    const flatValue = isImpossibleEmptyStoredAttribute(
-      resource.resourceType,
-      attributeName,
-      storedValue
-    )
-      ? undefined
-      : storedValue;
+    // go-to-k/cdkd#7015: a value the record's own properties contradict (a
+    // pre-#7006 port / CA / Multi-AZ record) is re-read first; a completed
+    // read that lacks it resolves as a miss below.
+    const staleShapeRead =
+      storedValue === undefined
+        ? undefined
+        : healStaleShapeAttribute(resolver, logicalId, resource, attributeName, context);
+    const staleShape = staleShapeRead === undefined ? undefined : await staleShapeRead;
+    if (staleShape?.kind === 'served') return staleShape.value;
+    const flatValue =
+      staleShape?.kind === 'absent' ||
+      isImpossibleEmptyStoredAttribute(resource.resourceType, attributeName, storedValue)
+        ? undefined
+        : storedValue;
     if (flatValue !== undefined) {
       if (isStalePlaceholderArnAttribute(resource.resourceType, attributeName, flatValue)) {
         // A pre-#1681 placeholder is a STALE record like a missing key is, and

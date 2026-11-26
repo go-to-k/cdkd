@@ -1,3 +1,4 @@
+import { withoutLapsedStaleShapeStamp } from '../../../deployment/intrinsic-resolver/getatt-stale-shape.js';
 import { isSupersededResourceRecord } from '../../../deployment/superseded-resources.js';
 import { nullPrototypeRecord } from '../../../utils/own-keys.js';
 import { cdkdRemedy } from '../../../utils/pasteable-command.js';
@@ -455,7 +456,13 @@ export async function scrubStackRewritePass({
             observed: 'unproven',
           });
     // go-to-k/cdkd#4847: provenance only for the tokens the record still holds.
-    const written = keepHeldTokenProvenance(applyScrubNoEcho(migrated, record, plan));
+    // go-to-k/cdkd#7015: a stamp over inputs this pass rewrote names values
+    // the record no longer holds; a record this pass leaves alone keeps it.
+    const rewritten = keepHeldTokenProvenance(applyScrubNoEcho(migrated, record, plan));
+    const written =
+      JSON.stringify(rewritten) === JSON.stringify(record)
+        ? rewritten
+        : withoutLapsedStaleShapeStamp(rewritten);
     if (JSON.stringify(written) !== JSON.stringify(record)) recordsChanged++;
     newResources[logicalId] = written;
   }
@@ -494,7 +501,7 @@ export async function scrubStackRewritePass({
     );
     if (JSON.stringify(scrubbed) === JSON.stringify(record.state)) return record;
     recordsChanged++;
-    return { ...record, state: scrubbed };
+    return { ...record, state: withoutLapsedStaleShapeStamp(scrubbed) };
   });
   // go-to-k/cdkd#5111: a superseded resource's record moved out of
   // `resources` verbatim, so it gets the same pass an orphan does, with this
@@ -514,7 +521,7 @@ export async function scrubStackRewritePass({
         );
         if (JSON.stringify(scrubbed) === JSON.stringify(entry.state)) return entry;
         recordsChanged++;
-        return { ...entry, state: scrubbed };
+        return { ...entry, state: withoutLapsedStaleShapeStamp(scrubbed) };
       })
     : undefined;
   // --- CROSS-STACK READ NAMES (go-to-k/cdkd#3337) -------------------------

@@ -15,6 +15,7 @@ import { replicatedBackupRetention } from './calls.js';
 import { liveLogExports, liveProcessorFeatures } from './instance-members.js';
 import { readAdditionalStorageVolumes } from './additional-storage-volumes.js';
 import { isDbIdentifier } from './shared.js';
+import { pendingMovedAttributeKeys } from './instance-moved-attributes.js';
 
 /**
  * go-to-k/cdkd#5487: the live values of a record's unsettled names. Only
@@ -632,11 +633,13 @@ export async function importDBInstance(
       // when a `Fn::GetAtt` misses. `definedAttributes` keeps an unassigned
       // endpoint ABSENT, so a still-`creating` instance heals nothing.
       const described = resp.DBInstances?.[0];
+      const pendingAttributeKeys = pendingMovedAttributeKeys(described, input.properties ?? {});
       return {
         physicalId: explicit,
         // A read, not an operation: the instance's own `available` status
         // gates the transient values.
         attributes: dbInstanceAttributes(described, { settled: true }),
+        ...(pendingAttributeKeys.length > 0 && { pendingAttributeKeys }),
       };
     } catch (err) {
       if ((err as { name?: string }).name === 'DBInstanceNotFoundFault') return null;

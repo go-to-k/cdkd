@@ -190,6 +190,35 @@ export function withoutUnappliedMovedAttributes(
   return Object.fromEntries(Object.entries(attributes).filter(([key]) => !dropped.has(key)));
 }
 
+/**
+ * go-to-k/cdkd#7015: the recorded attribute keys a modification RDS still
+ * lists under `PendingModifiedValues` will move. A re-read of the instance
+ * reports their CURRENT value, which the stale-attribute heal serves but must
+ * not record as settled (`ResourceImportResult.pendingAttributeKeys`).
+ *
+ * A CA certificate change counts only beside `CertificateRotationRestart:
+ * true` in `properties`, as `blockingMovedChanges` waits for it: without a
+ * restart the certificate in use (the live one) is what CloudFormation's
+ * GetAtt reports, and its pending value can sit until a maintenance reboot.
+ */
+export function pendingMovedAttributeKeys(
+  instance: DBInstance | undefined,
+  properties: Readonly<Record<string, unknown>> = {}
+): string[] {
+  const pending = instance?.PendingModifiedValues;
+  if (pending === undefined) return [];
+  const changes: MovedChange[] = [];
+  if (pending.Port !== undefined) changes.push('port');
+  if (
+    pending.CACertificateIdentifier !== undefined &&
+    String(properties['CertificateRotationRestart']) === 'true'
+  ) {
+    changes.push('caIdentifier');
+  }
+  if (pending.MultiAZ !== undefined) changes.push('multiAZ');
+  return changes.flatMap((change) => MOVED_KEYS[change]);
+}
+
 /** The words a wait line names the changes by. */
 export function movedChangesText(changes: MovedAttributeChanges): string {
   return [
