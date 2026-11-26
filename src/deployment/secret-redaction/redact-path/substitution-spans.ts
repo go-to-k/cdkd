@@ -176,6 +176,16 @@ function redactGap(
   copies: readonly string[],
   scan: ValueScan
 ): string | undefined {
+  // Two references resolved to a text the gap holds: which one it is (if
+  // either) is not known, and the map's survivor -- what the scan would
+  // write -- sends the wrong one's value on a replay. The leaf is masked.
+  for (const plaintext of plaintexts) {
+    if (exposedAt(gap, plaintext, copies).length === 0) continue;
+    const spellers = resolvedExpressionsOf(secrets).filter(
+      (token) => resolvedPlaintextOf(secrets, token) === plaintext
+    );
+    if (spellers.length > 1) return undefined;
+  }
   const scanned = scan(gap);
   if (typeof scanned !== 'string') return undefined;
   let text = scanned;
@@ -183,13 +193,6 @@ function redactGap(
   for (const plaintext of [...plaintexts].sort((a, b) => b.length - a.length)) {
     if (!text.includes(plaintext)) continue;
     const expression = secrets.get(plaintext);
-    // Two references resolved to this text: which one a gap holds is not
-    // known, and writing the map's survivor would send the wrong one's value
-    // on a replay. The leaf is masked instead.
-    const spellers = resolvedExpressionsOf(secrets).filter(
-      (token) => resolvedPlaintextOf(secrets, token) === plaintext
-    );
-    if (spellers.length > 1 && exposedAt(text, plaintext, copies).length > 0) return undefined;
     if (expression === undefined || expression === SECRET_MASK) {
       if (exposedAt(text, plaintext, copies).length > 0) return undefined;
       continue;
