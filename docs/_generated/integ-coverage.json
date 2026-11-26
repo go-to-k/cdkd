@@ -11026,6 +11026,7 @@
         "cc-api-lookup",
         "cc-to-sdk-reroute-common-types",
         "cdk-cross-account-lookup-role",
+        "codecommit",
         "composite-stack",
         "conditions-and-if",
         "conditions-update-2",
@@ -11175,6 +11176,9 @@
         "cdk-cross-account-lookup-role": [
           "l1",
           "literal"
+        ],
+        "codecommit": [
+          "l2"
         ],
         "composite-stack": [
           "l2",
