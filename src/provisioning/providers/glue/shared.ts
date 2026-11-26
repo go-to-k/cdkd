@@ -600,3 +600,28 @@ export function pickDefined(obj: Record<string, unknown>): Record<string, unknow
   }
   return out;
 }
+
+/**
+ * go-to-k/cdkd#7028 / #7029: the desired bag of a `drift --revert` without the
+ * read-back's placeholders. `UpdateJob` and `UpdateTrigger` replace the whole
+ * definition, and a member left out is unset, which is what a placeholder
+ * means (AWS reported none). Sent as written, `''`, `0` and `{}` are refused
+ * (`ExecutionClass: ''`, `NotifyDelayAfter: 0`, `EventBatchingCondition.BatchSize: 0`,
+ * measured). Applies only to a read-back desired bag: a template's value is
+ * sent as declared.
+ */
+export function withoutReadbackPlaceholders(
+  properties: Record<string, unknown>,
+  placeholders: Readonly<Record<string, unknown>>,
+  desiredFromAwsReadback: boolean | undefined
+): Record<string, unknown> {
+  if (desiredFromAwsReadback !== true) return properties;
+  let out: Record<string, unknown> | undefined;
+  for (const [key, placeholder] of Object.entries(placeholders)) {
+    if (!Object.hasOwn(properties, key)) continue;
+    if (JSON.stringify(properties[key]) !== JSON.stringify(placeholder)) continue;
+    out ??= { ...properties };
+    delete out[key];
+  }
+  return out ?? properties;
+}
