@@ -118,7 +118,8 @@ function childTemplate(): Record<string, unknown> {
       TemplateURL: 'https://s3.amazonaws.com/b/grand.json',
       Parameters: { Y: PIECE },
       // A stack tag from `X`: merged into every taggable grandchild resource.
-      Tags: [{ Key: 't', Value: PIECE }],
+      // Distinct from every value a needle holds, so only the tag KEY masks it.
+      Tags: [{ Key: 't', Value: { 'Fn::Join': ['', [PIECE, '-t']] } }],
     },
   };
   return {
@@ -155,7 +156,7 @@ const PARENT_TEMPLATE = {
         TemplateURL: 'https://s3.amazonaws.com/b/child.json',
         Parameters: { X: { 'Fn::Join': ['', [{ Ref: 'Sep' }, '/', A]] }, W: B, Url: PUBLIC },
         // A stack tag mixing the reference, handed to the whole subtree.
-        Tags: [{ Key: 'pt', Value: { 'Fn::Join': ['', [{ Ref: 'Sep' }, '/', A]] } }],
+        Tags: [{ Key: 'pt', Value: { 'Fn::Join': ['', [{ Ref: 'Sep' }, '#', A]] } }],
       },
     },
     // A reader of the row's output: the child holding the plaintext answers it.
