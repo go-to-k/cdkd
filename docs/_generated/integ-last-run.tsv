@@ -7,7 +7,7 @@
 # file byte-for-byte instead of appending a duplicate row (issue #1112).
 access-key-cloudmap-fix-forward-orphan	2026-11-17T05:50:34Z	PASS	191	verify.sh	rc ok, destroy 0 errors, orph clean; at 148f393bc (#6484)
 acm-certificate	2026-11-24T15:28:00Z	PASS	120	verify.sh	rc 0, N2 RootHierarchyType/CertificateUsage SDK route + readback + clean drift (#6799), 0 leftover certs, own bucket deleted
-agentcore-tools	2026-11-04T09:11:36Z	PASS	75	verify.sh	phase-1 deploy --verbose OK (no assertion tripped on debug output); rc 0, destroy 0 errors, orph clean; own state bucket
+agentcore-tools	2026-11-26T03:14:44Z	PASS	106	verify.sh	PR7013 2de5a0442 us-east-1 rc ok, orph clean
 alb	2026-11-22T03:31:56Z	PASS	569	verify.sh	d2646a6f6 #6759 part a, rc 0, 0 leftovers
 alb-advanced	2026-11-06T16:14:57Z	PASS	151	standard	#5881 split head; rc ok, orph clean
 alb-listener-rule-update	2026-11-20T07:05:13Z	PASS	286	verify.sh	rc ok, orph clean; #6663
@@ -36,7 +36,7 @@ aws-custom-resource	2026-11-25T07:06:26Z	PASS	100	verify.sh	rc ok, orph clean, P
 backup	2026-11-04T19:21:11Z	PASS	83	verify.sh	rc ok, orph clean; no Backup vault/recovery-point leak, no lambda log groups
 basic	2026-11-25T03:30:44Z	PASS	102	standard	rc ok, orph clean; #6970
 batch	2026-11-04T05:26:26Z	PASS	94	standard	batch 3 (rc=0, destroy 12 deleted 0 errors); no CE/queue/ENI/VPC leftovers; account clean
-bedrock-agentcore	2026-11-07T00:37:38Z	PASS	506	verify.sh	#5941 agentcore-runtime split head; rc ok, orph clean
+bedrock-agentcore	2026-11-26T03:14:44Z	PASS	756	verify.sh	PR7013 2de5a0442 us-east-1 rc ok, orph clean
 bench-ccapi	2026-11-05T11:21:32Z	PASS	82	standard	sweep n7 own bucket; destroy 0 errors, 0 orphans
 bench-cdk-sample	2026-11-25T15:18:54Z	PASS	448	standard	rc ok, orph clean
 bench-sdk	2026-11-05T11:20:09Z	PASS	28	standard	sweep n7 own bucket; destroy 0 errors, 0 orphans
@@ -137,7 +137,7 @@ destroy-nested-cross-region	2026-11-24T14:20:36Z	PASS	225	verify.sh	rc ok, orph 
 diff-fail-on-destructive	2026-11-21T06:02:26Z	PASS	95	verify.sh	rc ok, orph clean (#6713 plan)
 diff-intrinsic-target-change	2026-11-10T15:28:15Z	PASS	75	verify.sh	rc ok, orph clean
 diff-orphan-retained-removal	2026-11-26T01:02:22Z	PASS	70	verify.sh	rc ok, orph clean
-dlm-lifecycle-policy	2026-11-23T13:34:11Z	PASS	170	verify.sh	rc ok, orph clean
+dlm-lifecycle-policy	2026-11-26T03:14:44Z	PASS	186	verify.sh	PR7013 2de5a0442 us-east-1 rc ok, orph clean
 docdb-fix-forward-orphan	2026-11-02T01:39:49Z	PASS	1820	verify.sh	#5611 final @77ac0cf: rc ok, 0 orphans, watchdog 0
 docdb-global-cluster	2026-11-22T02:46:37Z	PASS	245	verify.sh	rc ok, orph clean, sha 3116c9288 (#6813 sub-read errors)
 docdb-neptune	2026-11-07T20:39:51Z	PASS	5818	verify.sh	rc 0, destroy 0 errors, 0 orphans, own bucket (#6031)
@@ -173,7 +173,7 @@ ec2-eip-instance-association	2026-11-24T20:15:56Z	PASS	181	verify.sh	rc ok, orph
 ec2-instance	2026-11-23T08:55:56Z	PASS	809	verify.sh	rc 0, orph clean (#6867 SsmAssociations ARN/name; merge-base b70da242f)
 ec2-instance-fanout	2026-11-23T08:55:56Z	PASS	178	verify.sh	rc 0, orph clean (#6867)
 ec2-instance-volume-attachment-drift	2026-11-22T03:31:56Z	PASS	220	verify.sh	d2646a6f6 #6759 part a, rc 0, 0 leftovers
-ec2-route-targets	2026-11-23T08:26:12Z	PASS	725	verify.sh	PR6859 11e38d61f us-east-1 rc ok, orph clean
+ec2-route-targets	2026-11-26T03:14:44Z	PASS	827	verify.sh	PR7013 2de5a0442 us-east-1 rc ok, orph clean
 ec2-sg-source-group-name	2026-11-10T16:20:27Z	PASS	65	verify.sh	rc ok, orph clean
 ec2-subnet-dns64	2026-11-07T07:23:23Z	PASS	316	verify.sh	rc ok, orph clean, PR #5967 subnet live GetAtt
 ec2-vpc	2026-11-21T12:10:26Z	PASS	170	verify.sh	rc ok, orph clean; #6760 EIP/delete-blocker inventory
@@ -201,11 +201,11 @@ emr-instance-fleets	2026-11-22T05:59:15Z	PASS	1516	verify.sh	#6810 run at b9718f
 event-driven	2026-11-04T05:26:26Z	PASS	52	standard	batch 3 (rc=0, destroy 19 deleted 0 errors); account clean
 eventbridge	2026-11-17T03:42:27Z	PASS	161	verify.sh	rc ok, destroy 0 errors, orph clean; at 607f11bb9 (#6479)
 eventbridge-api-destination	2026-11-04T09:00:37Z	PASS	80	verify.sh	batch 15; rc ok, orph clean
-eventbridge-archive	2026-11-18T22:10:31Z	PASS	60	verify.sh	rc ok, destroy 0 errors, orph clean; archive on the SDK provider; at f07e65185 (#6579)
+eventbridge-archive	2026-11-26T03:14:44Z	PASS	75	verify.sh	PR7013 2de5a0442 us-east-1 rc ok, orph clean
 eventbridge-input-transformer	2026-11-07T00:18:06Z	PASS	70	verify.sh	#5937 eventbridge-rule split head; rc ok, orph clean
 eventbridge-pipes	2026-11-06T22:52:11Z	PASS	235	verify.sh	#5925 pipes split head; rc ok, orph clean
 eventbridge-scheduler	2026-11-06T23:59:22Z	PASS	57	verify.sh	#5935 scheduler-schedule split head; rc ok, orph clean
-eventbus-policy	2026-11-21T11:33:31Z	PASS	173	verify.sh	rc 0, 0 orphans (PR #6763)
+eventbus-policy	2026-11-26T03:14:44Z	PASS	205	verify.sh	PR7013 2de5a0442 us-east-1 rc ok, orph clean
 eventsourcemapping-race	2026-11-06T20:37:27Z	PASS	109	verify.sh	#5913 lambda-eventsource split head; rc ok, orph clean
 export	2026-11-25T15:18:54Z	PASS	323	verify.sh	rc ok, orph clean
 export-nested-stack	2026-11-24T08:24:34Z	PASS	205	verify.sh	rc ok, orph clean; #6902 regression (flip-tag pre-flight)
@@ -308,7 +308,7 @@ launchtemplate-asg-inplace	2026-11-20T10:54:34Z	PASS	276	verify.sh	PR6652 be63cc
 legacy-bucket-name-fallback	2026-11-04T05:26:26Z	PASS	22	standard	standard flow only; legacy-name fallback scenario not exercised (manual scaffold per README); explicit --state-bucket, destroy 1 deleted 0 errors; account clean
 legacy-state-migration	2026-11-04T05:17:34Z	PASS	25	standard	own temp bucket (deleted); legacy v1 key migrated to region key, destroy clean; orph clean
 legacy-synthesizer-assets	2026-11-16T14:29:32Z	PASS	99	verify.sh	rc ok, orph clean; us-east-2 legacy-mode (CDKToolkit assets/) 105s PASS too
-lightsail-alarm-throttle	2026-11-22T11:43:26Z	PASS	241	verify.sh	16 alarms SDK route, 0 engine retries, UPDATE in place, orph clean
+lightsail-alarm-throttle	2026-11-26T03:14:44Z	PASS	251	verify.sh	PR7013 2de5a0442 us-east-1 rc ok, orph clean
 list-parameters	2026-11-04T07:56:00Z	PASS	90	verify.sh	rc ok, orph clean (List<...> params reach AWS as lists; Fn::Split refused)
 local-aws-emulator	2026-11-19T17:31:00Z	PASS	79	verify.sh	rc ok, all phases incl 1b/5b, docker clean, local-only (no marker)
 local-ecs-service-connect	2026-11-12T13:54:58Z	PASS	25	verify.sh	cdk-local 0.163.0 PR6157; rc ok, orph clean
@@ -537,7 +537,7 @@ stepfunctions	2026-11-07T00:17:39Z	PASS	60	verify.sh	#5936 stepfunctions split h
 stepfunctions-logging	2026-11-21T01:28:31Z	PASS	233	verify.sh	PR6710 run at bf25fb0b3, same PR delta except the log-group message; rc ok, orph clean
 stepfunctions-s3-definition	2026-11-07T00:18:55Z	PASS	70	verify.sh	#5936 stepfunctions split head; rc ok, orph clean
 stepfunctions-sync-managed-rule	2026-11-10T13:24:25Z	PASS	100	verify.sh	rc ok, orph clean, managed-rule window hit and retried (#6081), rebuilt tree rerun for marker
-stream-delete-redeploy	2026-11-19T06:52:45Z	PASS	972	verify.sh	#6600 final: rc ok, destroy 0 errors, orph clean
+stream-delete-redeploy	2026-11-26T03:14:44Z	PASS	977	verify.sh	PR7013 2de5a0442 us-east-1 rc ok, orph clean
 subnet-mappublicip-removal	2026-11-15T12:58:41Z	PASS	90	verify.sh	rc ok, orph clean; #6342 pre-fix RED at remove phase
 synthetics-canary	2026-11-18T13:56:57Z	PASS	175	verify.sh	rc ok, orph clean; marker re-set after comment-only commit e44c0ae38 (#6553 PR #6554)
 tags-propagation	2026-11-23T19:48:57Z	PASS	396	verify.sh	rc ok, orph clean; #6886 deploy --tags replaces stack tags
