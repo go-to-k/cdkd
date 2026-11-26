@@ -250,6 +250,12 @@ export const SDK_IN_PLACE_ATTR_CLASSIFICATION: Readonly<
     PublicDnsName: anyUpdate('follows the public address (#5446)'),
     PrivateDnsName: anyUpdate('a PrivateDnsNameOptions change renames it (#5630)'),
   },
+  // Cloud Control: the shared.ts row of issue #985 (a LaunchTemplateData edit
+  // mints version N+1), held here so the audit reads it as a hand verdict.
+  'AWS::EC2::LaunchTemplate': {
+    LatestVersionNumber: anyUpdate('a LaunchTemplateData edit mints the next version'),
+    DefaultVersionNumber: anyUpdate('the new version becomes the default when the update sets it'),
+  },
   // Cloud Control: an in-place RouteTableId change calls
   // ReplaceRouteTableAssociation, which answers a NEW association id
   // (`NewAssociationId`) (go-to-k/cdkd#7007).

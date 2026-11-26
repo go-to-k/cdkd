@@ -36,6 +36,9 @@
 #      attachment to a second VPN gateway in place (issue #5216): one
 #      DetachVpnGateway + one AttachVpnGateway, the record names the new
 #      gateway, and AWS reports it attached and the old one detached.
+#      go-to-k/cdkd#7007: the update also adds a prefix-list entry in place,
+#      which bumps the list's Version; the SSM parameter reading it must hold
+#      the live Version (before the fix it stayed NO_CHANGE on the old one).
 #   3. Destroy + assert the TGW attachment, TGW, prefix list, VPN gateway, and VPC are gone
 #      and the cdkd state file is removed.
 #
@@ -261,6 +264,21 @@ IGW_ID="$(aws ec2 describe-internet-gateways --region "${REGION}" \
   --filters "Name=tag:Name,Values=cdkd-route-targets-igw" \
   --query 'InternetGateways[0].InternetGatewayId' --output text)"
 echo "    rtb=${RTB_ID} pl=${PL_ID} tgw=${TGW_ID} igw=${IGW_ID}"
+# go-to-k/cdkd#7007: the SSM parameter reading the prefix list's Version.
+pl_version_reader() {
+  local id
+  id="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.resources.PrefixListVersionReader.physicalId // empty')"
+  [ -n "${id}" ] || { echo "FAIL: no PrefixListVersionReader record" >&2; return 1; }
+  aws ssm get-parameter --region "${REGION}" --name "${id}" --query Parameter.Value --output text
+}
+PL_VERSION_P1="$(aws ec2 describe-managed-prefix-lists --region "${REGION}" \
+  --prefix-list-ids "${PL_ID}" --query 'PrefixLists[0].Version' --output text)"
+PL_READER_P1="$(pl_version_reader)"
+# Premise: the reader starts equal to the live Version, so a move shows.
+if [ "${PL_READER_P1}" != "${PL_VERSION_P1}" ]; then
+  echo "FAIL: premise: the Version reader holds '${PL_READER_P1}', the live Version is '${PL_VERSION_P1}'" >&2
+  exit 1
+fi
 for v in "${RTB_ID}" "${PL_ID}" "${TGW_ID}" "${IGW_ID}"; do
   if [ -z "${v}" ] || [ "${v}" = "None" ]; then
     echo "FAIL: a Phase 1 resource lookup came back empty" >&2
@@ -547,6 +565,22 @@ if [ "${VGW_ATT_TYPE_P2}" != "VGW VGW" ]; then
   echo "FAIL: after the in-place swap, AttachmentType (output attribute) expected 'VGW VGW', got '${VGW_ATT_TYPE_P2}' (issue #7009)" >&2
   exit 1
 fi
+
+# go-to-k/cdkd#7007: the in-place entries edit moved the prefix list's
+# Version; its reader must follow.
+PL_VERSION_P2="$(aws ec2 describe-managed-prefix-lists --region "${REGION}" \
+  --prefix-list-ids "${PL_ID}" --query 'PrefixLists[0].Version' --output text)"
+PL_READER_P2="$(pl_version_reader)"
+echo "    prefix list Version: phase 1 ${PL_VERSION_P1}, phase 2 ${PL_VERSION_P2}, reader ${PL_READER_P2}"
+if [ "${PL_VERSION_P2}" = "${PL_VERSION_P1}" ]; then
+  echo "FAIL: premise: the entries edit did not move the prefix list Version (${PL_VERSION_P1})" >&2
+  exit 1
+fi
+if [ "${PL_READER_P2}" != "${PL_VERSION_P2}" ]; then
+  echo "FAIL: the Version reader holds '${PL_READER_P2}', the live Version is '${PL_VERSION_P2}' (issue #7007)" >&2
+  exit 1
+fi
+echo "    the prefix-list Version reader follows the in-place update"
 
 echo "==> Phase 2: drift read-back (expect no drift)"
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}"

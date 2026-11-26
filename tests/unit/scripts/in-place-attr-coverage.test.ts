@@ -72,6 +72,10 @@ describe('the committed audit (#7001)', () => {
     expect(report.summary.ccByRule['primary-identifier']).toBeGreaterThan(400);
     expect(report.summary.ccByRule['arn-template']).toBeGreaterThan(50);
     expect(report.summary.ccByRule['update-timestamp']).toBeGreaterThan(350);
+    expect(report.summary.ccByRule.creator).toBeGreaterThan(20);
+    expect(report.summary.ccByRule['owner-account']).toBeGreaterThan(30);
+    expect(report.summary.ccByRule['identifier-arn-member']).toBeGreaterThan(60);
+    expect(report.summary.ccByRule['update-marker']).toBeGreaterThan(100);
     // A type the spec lacks is read from its schema fixture.
     expect(report.sdk.some((r) => r.type === 'AWS::BedrockAgentCore::Browser')).toBe(true);
   });
@@ -139,11 +143,15 @@ describe('the hand verdicts equal the shared.ts tables (#7001)', () => {
     expect(overlap).toEqual([]);
   });
 
-  it('no Cloud Control hand verdict overrides a pair a rule settles (#7007)', () => {
+  it('no Cloud Control hand verdict overrides a pair a rule settles, bar a moving one over a moving rule (#7007)', () => {
     expect(report.ccHand.length).toBeGreaterThan(0);
     for (const r of report.ccHand) {
       const t = inputs.types.find((x) => x.type === r.type)!;
-      expect(classifyByRule(t, r.attribute), `${r.type}.${r.attribute}`).toBeUndefined();
+      const rule = classifyByRule(t, r.attribute);
+      const where = `${r.type}.${r.attribute}: ${rule} under a ${r.verdict} hand verdict`;
+      expect(rule === undefined || (MOVING_RULES.has(rule) && r.verdict !== 'never'), where).toBe(
+        true
+      );
     }
   });
 
@@ -266,9 +274,9 @@ describe('classifyByRule (#7001)', () => {
     for (const a of ['UpdatedAt', 'LastModifiedTime', 'LastUpdatedDateTime', 'UpdateTime', 'LastModificationDate']) {
       expect(classifyByRule(t, a), a).toBe('update-timestamp');
     }
-    for (const a of ['LastModifiedBy', 'UpdateStatus']) {
-      expect(classifyByRule(t, a), a).toBeUndefined();
-    }
+    // The last writer is moving too (#7007); an update status is not settled.
+    expect(classifyByRule(t, 'LastModifiedBy')).toBe('update-marker');
+    expect(classifyByRule(t, 'UpdateStatus')).toBeUndefined();
   });
 
   it('settles an undotted creation timestamp, never an update one or a nested member', () => {
@@ -278,9 +286,9 @@ describe('classifyByRule (#7001)', () => {
     }
     // A nested object an update re-creates (an MSK configuration's latest
     // revision) carries its own creation time.
-    for (const a of ['CreatedBy', 'LatestRevision.CreationTime']) {
-      expect(classifyByRule(t, a), a).toBeUndefined();
-    }
+    expect(classifyByRule(t, 'LatestRevision.CreationTime')).toBeUndefined();
+    // #7007: the creator is a creation fact too.
+    expect(classifyByRule(t, 'CreatedBy')).toBe('creator');
     for (const a of ['UpdatedAt', 'LastModifiedTime']) {
       expect(classifyByRule(t, a), a).toBe('update-timestamp');
     }
@@ -292,9 +300,11 @@ describe('classifyByRule (#7001)', () => {
       expect(classifyByRule(t, a), a).toBe('own-identity');
     }
     // Another resource's id, a list, a version, a dotted member: not settled.
-    for (const a of ['VpcId', 'SnsTopicArn', 'NetworkInterfaceIds', 'DefaultVersionId', 'Endpoint.Id']) {
+    for (const a of ['VpcId', 'SnsTopicArn', 'NetworkInterfaceIds', 'Endpoint.Id']) {
       expect(classifyByRule(t, a), a).toBeUndefined();
     }
+    // A version is moving (#7007), never own identity.
+    expect(classifyByRule(t, 'DefaultVersionId')).toBe('update-marker');
   });
 
   it('settles no own identity of a versioned type outside its primary identifier (its ARN can carry the version an update mints)', () => {
@@ -456,6 +466,66 @@ describe('the #7007 rules, on real spec inputs', () => {
     }
     const { arnTemplate: _, ...none } = t(env);
     expect(classifyByRule(none, 'Arn')).toBeUndefined();
+  });
+
+  it('creator and owner-account settle creation facts; the owner only with no in-place account', () => {
+    expect(classifyByRule(real('AWS::DataZone::Project'), 'CreatedBy')).toBe('creator');
+    expect(classifyByRule(real('AWS::Route53Resolver::FirewallRuleGroup'), 'CreatorRequestId')).toBe(
+      'creator'
+    );
+    expect(classifyByRule(real('AWS::NetworkManager::VpcAttachment'), 'OwnerAccountId')).toBe(
+      'owner-account'
+    );
+    // An in-place billing owner account: not settled.
+    const reservation = real('AWS::EC2::CapacityReservation');
+    expect(Object.keys(reservation.properties).some((p) => /Account|Owner/.test(p))).toBe(true);
+    expect(classifyByRule(reservation, 'OwnerId')).toBeUndefined();
+    // A bare `Owner` may be a principal, not an account.
+    expect(classifyByRule({ type: 'AWS::X::Thing', attributes: ['Owner'], properties: { Config: undefined } }, 'Owner')).toBeUndefined();
+  });
+
+  it('identifier-arn-member settles an id its fixed primary-identifier ARN embeds', () => {
+    // flow/${FlowId} over the primary identifier Arn.
+    const flow = real('AWS::Bedrock::Flow');
+    expect(flow.primaryIdentifier).toEqual(['Arn']);
+    expect(classifyByRule(flow, 'Id')).toBe('identifier-arn-member');
+    // assessmentFramework/${AssessmentFrameworkId} holds FrameworkId.
+    expect(classifyByRule(real('AWS::AuditManager::AssessmentFramework'), 'FrameworkId')).toBe(
+      'identifier-arn-member'
+    );
+    // workspace/${ResourceId} names no attribute.
+    expect(classifyByRule(real('AWS::AWSExternalAnthropic::Workspace'), 'Id')).toBeUndefined();
+    const t = (arnTemplate: string, primaryIdentifier = ['WidgetArn']): TypeInput => ({
+      type: 'AWS::X::Widget',
+      attributes: ['WidgetArn', 'WidgetId', 'Id', 'OtherId'],
+      properties: { Name: undefined },
+      primaryIdentifier,
+      arnTemplate,
+    });
+    const tpl = 'arn:${Partition}:x:${Region}:${Account}:widget/${WidgetId}';
+    expect(classifyByRule(t(tpl), 'WidgetId')).toBe('identifier-arn-member');
+    expect(classifyByRule(t(tpl), 'Id')).toBe('identifier-arn-member');
+    expect(classifyByRule(t(tpl), 'OtherId')).toBeUndefined();
+    // The ARN is not the primary identifier, or its template names the in-place Name.
+    expect(classifyByRule(t(tpl, ['WidgetId']), 'Id')).toBeUndefined();
+    expect(classifyByRule(t(`${tpl}/\${WidgetName}`), 'Id')).toBeUndefined();
+  });
+
+  it('update-marker settles a version or last writer as moving, never a fixed one', () => {
+    expect(classifyByRule(real('AWS::CodePipeline::Pipeline'), 'Version')).toBe('update-marker');
+    expect(classifyByRule(real('AWS::CloudFront::ConnectionGroup'), 'ETag')).toBe('update-marker');
+    expect(classifyByRule(real('AWS::SSM::OpsItem'), 'LastModifiedBy')).toBe('update-marker');
+    // A primary-identifier version is fixed by the contract; an initial one never moves.
+    const plan = real('AWS::AutoScalingPlans::ScalingPlan');
+    expect(plan.primaryIdentifier).toContain('ScalingPlanVersion');
+    expect(classifyByRule(plan, 'ScalingPlanVersion')).toBeUndefined();
+    expect(classifyByRule(real('AWS::Glue::Schema'), 'InitialSchemaVersionId')).toBeUndefined();
+    // A version resource's own number is its identity, not a counter.
+    expect(classifyByRule(real('AWS::Lambda::Version'), 'Version')).toBeUndefined();
+    expect(MOVING_RULES.has('update-marker')).toBe(true);
+    for (const r of ['creator', 'owner-account', 'identifier-arn-member'] as const) {
+      expect(MOVING_RULES.has(r), r).toBe(false);
+    }
   });
 
   it('update-timestamp settles a real last-update time as moving', () => {

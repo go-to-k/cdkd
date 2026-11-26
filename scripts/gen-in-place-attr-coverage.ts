@@ -143,10 +143,21 @@ export type RuleName =
   | 'own-identity'
   | 'primary-identifier'
   | 'arn-template'
-  | 'update-timestamp';
+  | 'update-timestamp'
+  | 'creator'
+  | 'owner-account'
+  | 'identifier-arn-member'
+  | 'update-marker';
 
 /** Rules whose verdict is `any-update`; every other rule's is `never`. */
-export const MOVING_RULES: ReadonlySet<RuleName> = new Set(['update-timestamp']);
+export const MOVING_RULES: ReadonlySet<RuleName> = new Set(['update-timestamp', 'update-marker']);
+
+/** Who or which request created the resource. */
+const CREATOR = /^(CreatedBy|Creator|CreatorRequestId)$/;
+/** The account that owns the resource. */
+const OWNER_ACCOUNT = /^((Owner|Owning)(AccountId|Account|Id)|AwsAccountId|ResourceOwner)$/;
+/** Who or where last wrote it, or a token every write replaces. */
+const LAST_WRITER = /^(LastModified(By|User|Region)|(Last)?UpdatedBy|ETag)$/;
 
 const CREATION_TIMESTAMP = /^(Create|Created|Creation)(At|Time|Date|Timestamp|DateTime|On)?$/;
 const UPDATE_TIMESTAMP = /Update|Modif/;
@@ -219,6 +230,18 @@ const OWN_IDENTITY = /^(.*?)(Arn|ARN|Id|ID|Uuid|UUID)$/;
  *   `<TypeName><Id|Name|Identifier>` for the bare member (`fleet/${FleetName}`
  *   over a create-only `Name`). A placeholder naming anything else
  *   (`${ResourceId}`, a writable name) settles nothing.
+ * - `creator`: who or which request created it (`CreatedBy`,
+ *   `CreatorRequestId`): a creation fact, like the creation time.
+ * - `owner-account`: the owning account (`OwnerId`, `OwnerAccountId`,
+ *   `AwsAccountId`, ...) on a type with no in-place `...Account...` /
+ *   `...Owner...` property: an update never moves a resource between
+ *   accounts. A bare `Owner` may be a principal and is not settled.
+ * - `identifier-arn-member`: an own id the type's fixed primary-identifier
+ *   ARN embeds per its `arnTemplate` (`flow/${FlowId}` holds a Flow's `Id`).
+ * - `update-marker` (MOVING): a version or revision (bar an `Initial...` one,
+ *   a primary-identifier member, and the number of a `...Version` resource,
+ *   which is its identity), the last writer (`LastModifiedBy`, `UpdatedBy`,
+ *   `LastModifiedRegion`) or an `ETag`: each update may restamp it.
  * - `update-timestamp` (MOVING): an undotted last-update time. Whether a
  *   Cloud Control update, a tag edit included, stamps it is the handler's
  *   choice, so any in-place update may move it.
@@ -234,8 +257,24 @@ export function classifyByRule(input: TypeInput, attribute: string): RuleName | 
   // moving too, since a tag edit may stamp it.
   if (UPDATE_TIME.test(attribute)) return 'update-timestamp';
   if (CREATION_TIMESTAMP.test(attribute)) return 'creation-timestamp';
+  if (CREATOR.test(attribute)) return 'creator';
   const primaryIdentifier = input.primaryIdentifier ?? [];
   const typeName = input.type.split('::')[2]!;
+  if (
+    LAST_WRITER.test(attribute) ||
+    (VERSIONED.test(attribute) &&
+      !attribute.startsWith('Initial') &&
+      !typeName.endsWith('Version') &&
+      !primaryIdentifier.includes(attribute))
+  ) {
+    return 'update-marker';
+  }
+  if (
+    OWNER_ACCOUNT.test(attribute) &&
+    !writable.some(([name]) => /Account|Owner/.test(name))
+  ) {
+    return 'owner-account';
+  }
   const placeholders = [...(input.arnTemplate ?? '').matchAll(/\$\{([^}]*)\}/g)].map(
     (x) => x[1]!
   );
@@ -273,6 +312,30 @@ export function classifyByRule(input: TypeInput, attribute: string): RuleName | 
     writable.some(([name]) => VERSIONED.test(name));
   if (!versioned && !mutableName) return 'own-identity';
   if (isPrimaryIdentifier) return 'primary-identifier';
+  // The type's own primary-identifier ARN is fixed (the contract above), and
+  // its documented template embeds this id: `flow/${FlowId}` holds `Id`.
+  const fixedOwnArn =
+    input.arnTemplate !== undefined &&
+    !templateNamesWritable &&
+    primaryIdentifier.some(
+      (p) =>
+        /^(.*?)(Arn|ARN)$/.test(p) &&
+        !VERSIONED.test(p) &&
+        typeName.toLowerCase().endsWith(/^(.*?)(Arn|ARN)$/.exec(p)![1]!.toLowerCase())
+    );
+  const embedded = placeholders.some(
+    (ph) =>
+      ph.toLowerCase() === attribute.toLowerCase() ||
+      ['Id', 'Identifier'].some(
+        (s) =>
+          ph === `${typeName}${s}` &&
+          attribute.endsWith(s) &&
+          typeName.toLowerCase().endsWith(attribute.slice(0, -s.length).toLowerCase())
+      )
+  );
+  if (!isArn && fixedOwnArn && embedded && !VERSIONED.test(attribute)) {
+    return 'identifier-arn-member';
+  }
   if (versioned || !isArn || input.arnTemplate === undefined || templateNamesWritable) {
     return undefined;
   }
@@ -377,6 +440,10 @@ export function buildReport(input: BuildInput): { report: Report; findings: Find
     'primary-identifier': 0,
     'arn-template': 0,
     'update-timestamp': 0,
+    creator: 0,
+    'owner-account': 0,
+    'identifier-arn-member': 0,
+    'update-marker': 0,
   };
   let ccTypes = 0;
   let ccPairs = 0;
