@@ -181,7 +181,7 @@ export function installEventLoopWatchdog(): void {
   afterEach(() => {
     setLabel(state, `after ${current}`);
     beat(state);
-    Atomics.store(state.slots, TIMEOUT, BETWEEN_TESTS_MS);
+    Atomics.store(state.slots, TIMEOUT, Math.min(BETWEEN_TESTS_MS, 2 ** 30));
   });
 }
 
