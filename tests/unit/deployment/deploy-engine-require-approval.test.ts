@@ -196,7 +196,8 @@ describe('DeployEngine --require-approval', () => {
     expect(approve.mock.calls[0]![0]).toEqual({
       stackName: STACK_NAME,
       level: 'destructive',
-      counts: { create: 0, update: 1, delete: 1 },
+      // go-to-k/cdkd#7005: the `Retain` removal is orphaned, not deleted.
+      counts: { create: 0, update: 1, delete: 0, orphan: 1 },
       destructiveChanges: [
         {
           stackName: STACK_NAME,

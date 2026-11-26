@@ -40,6 +40,24 @@ describe('countProtectedResources', () => {
     expect(countProtectedResources(state)).toBe(1);
   });
 
+  // go-to-k/cdkd#7005: a retained record's delete returns before any flip.
+  it.each(['Retain', 'RetainExceptOnCreate'] as const)(
+    'does not count a protected record its DeletionPolicy %s keeps',
+    (deletionPolicy) => {
+      const state = makeState({
+        LG: {
+          physicalId: '/aws/lambda/x',
+          resourceType: 'AWS::Logs::LogGroup',
+          properties: { DeletionProtectionEnabled: true },
+          attributes: {},
+          dependencies: [],
+          deletionPolicy,
+        },
+      });
+      expect(countProtectedResources(state)).toBe(0);
+    }
+  );
+
   it('counts an RDS DBInstance with DeletionProtection=true', () => {
     const state = makeState({
       DB: {

@@ -6,7 +6,7 @@
  * the prompter built here to ask.
  */
 import { Option } from 'commander';
-import { formatDestructiveChange } from '../../analyzer/destructive-changes.js';
+import { formatChangeCounts, formatDestructiveChange } from '../../analyzer/destructive-changes.js';
 import type {
   DeploymentApprovalRequest,
   DeploymentApprover,
@@ -97,11 +97,10 @@ export function renderApprovalRequest(request: DeploymentApprovalRequest): strin
     }
     lines.push('');
   }
-  const { create, update, delete: del } = request.counts;
   lines.push(
     request.outputsOnly
       ? `Stack ${displayIdent(request.stackName)}: no resource changes; its Outputs change.`
-      : `Stack ${displayIdent(request.stackName)}: ${create} to create, ${update} to update, ${del} to delete.`
+      : `Stack ${displayIdent(request.stackName)}: ${formatChangeCounts({ orphan: 0, ...request.counts })}.`
   );
   lines.push(
     request.level === 'destructive'

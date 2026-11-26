@@ -10547,6 +10547,7 @@
         "data-pipeline",
         "depends-on-flip",
         "deploy-force-quit-rollback",
+        "diff-orphan-retained-removal",
         "drift-revert-arrays",
         "drift-sns-sibling-subscription",
         "drift-verbatim-readback",
@@ -10708,6 +10709,10 @@
         ],
         "deploy-force-quit-rollback": [
           "l2"
+        ],
+        "diff-orphan-retained-removal": [
+          "l2",
+          "literal"
         ],
         "drift-revert-arrays": [
           "l2"

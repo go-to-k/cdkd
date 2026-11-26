@@ -1,4 +1,4 @@
-import { findDestructiveChanges } from '../analyzer/destructive-changes.js';
+import { findDestructiveChanges, orphanedLogicalIds } from '../analyzer/destructive-changes.js';
 import {
   findRefactorHints,
   hintSidesOf,
@@ -123,6 +123,9 @@ export async function requireDeploymentApproval(args: {
 
   const count = (type: ResourceChange['changeType']): number =>
     changes.filter((c) => c.changeType === type).length;
+  // go-to-k/cdkd#7005: a removal the recorded `DeletionPolicy` keeps is
+  // orphaned, not deleted.
+  const orphan = orphanedLogicalIds(destructiveChanges).size;
   // Already timed out: a "yes" could not take effect, so do not ask.
   if (enclosingDeadlineExpired()) throw approvalAfterTimeout(args.stackName);
   let approved: boolean;
@@ -131,7 +134,12 @@ export async function requireDeploymentApproval(args: {
       approve({
         stackName: args.stackName,
         level,
-        counts: { create: count('CREATE'), update: count('UPDATE'), delete: count('DELETE') },
+        counts: {
+          create: count('CREATE'),
+          update: count('UPDATE'),
+          delete: count('DELETE') - orphan,
+          ...(orphan > 0 && { orphan }),
+        },
         destructiveChanges: shownChanges,
         ...(security !== undefined && { securityChanges: security.rendered }),
       })
