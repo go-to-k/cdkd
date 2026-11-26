@@ -329,6 +329,31 @@ describe('cdkd drift --revert verifies each reverted resource (go-to-k/cdkd#7025
     expect(line).not.toContain(USER_ID);
   });
 
+  it('a provider canonicalizer that throws on the re-read counts the resource not verified', async () => {
+    let call = 0;
+    const provider = {
+      ...providerReading(DRIFTED),
+      canonicalizeDriftProperties: (_t: string, p: Record<string, unknown>) => {
+        // Detection's and the re-detection's two calls each (baseline, AWS)
+        // pass; the sent-bag comparison, the fifth, throws.
+        call++;
+        if (call > 4) throw new Error('unexpected shape secret-ish-text');
+        return p;
+      },
+    };
+    mockRegistryGetProvider.mockReturnValue(provider);
+
+    await runRevert();
+
+    expect(exitSpy).not.toHaveBeenCalled();
+    const warnings = text(warnSpy);
+    expect(warnings).toContain(
+      `TestStack/Mapping (${TYPE}): reverted, but cdkd could not verify it: comparing the re-read with the value sent failed.`
+    );
+    expect(warnings).not.toContain('secret-ish-text');
+    expect(text(infoSpy)).toContain('1 not verified');
+  });
+
   it('a re-read that throws warns per resource without waiting', async () => {
     const provider = providerReading(DRIFTED, RECORDED);
     mockRegistryGetProvider.mockReturnValue(provider);
@@ -472,6 +497,10 @@ describe('sentDiffPaths compares the sent bag with the re-read (go-to-k/cdkd#702
     expect(sentDiffPaths({ Mode: 'FAST' }, { Mode: 'slow' }, ['Mode'], provider, TYPE, {})).toEqual(
       ['Mode']
     );
+  });
+
+  it('a targeted key the revert did not send still compares against AWS', () => {
+    expect(sentDiffPaths({ A: 1 }, { A: 1, B: { X: 1 } }, ['B'], {}, TYPE, {})).toEqual(['B']);
   });
 
   it('compares only under the targeted top-level keys', () => {

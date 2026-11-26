@@ -21,6 +21,7 @@ import type { ResourceProvider } from '../../../types/resource.js';
 import { calculateResourceDrift } from '../../../analyzer/drift-calculator.js';
 import { canonicalizeIpProtocols } from '../../../analyzer/drift-protocol-normalize.js';
 import { verbatimEchoDriftKeys } from '../../../analyzer/drift-verbatim-paths.js';
+import { defineOwnKey } from '../../../utils/own-keys.js';
 
 /** One resource a revert pass counted `reverted`, with the paths it sent. */
 export interface RevertedResource {
@@ -63,8 +64,15 @@ export function sentDiffPaths(
 ): string[] {
   const keys = new Set(paths.map((p) => p.split('.', 1)[0] ?? ''));
   const sentTargets: Record<string, unknown> = {};
+  // Every targeted key, absent ones as `undefined`: the comparator walks the
+  // baseline's keys, so a key the revert did not send would otherwise compare
+  // nothing and pass whatever AWS holds there.
   for (const key of keys) {
-    if (Object.prototype.hasOwnProperty.call(sent, key)) sentTargets[key] = sent[key];
+    defineOwnKey(
+      sentTargets,
+      key,
+      Object.prototype.hasOwnProperty.call(sent, key) ? sent[key] : undefined
+    );
   }
   const protocols = canonicalizeIpProtocols(sentTargets, live, resourceType);
   const canonical = provider.canonicalizeDriftProperties
@@ -194,7 +202,18 @@ export async function verifyRevertedStack(
       // reports it against state, AND AWS does not hold what was sent there.
       // Only the first's paths print: they are redacted as the outcome is
       // built, where the raw bags the second compares are not.
-      const notAsSent = r.differsFromSent(outcome.awsProperties);
+      let notAsSent: readonly string[];
+      try {
+        notAsSent = r.differsFromSent(outcome.awsProperties);
+      } catch {
+        // A provider canonicalizer that throws on the re-read's shape. Its
+        // text is not printed: the bags it read hold resolved secrets.
+        unverified++;
+        logger.warn(
+          safeMsg`  ? ${stackName}/${r.logicalId} (${r.resourceType}): reverted, but cdkd could not verify it: comparing the re-read with the value sent failed.`
+        );
+        continue;
+      }
       const differing = outcome.changes
         .map((c) => c.path)
         .filter((p) => r.paths.some((target) => overlaps(p, target)))
