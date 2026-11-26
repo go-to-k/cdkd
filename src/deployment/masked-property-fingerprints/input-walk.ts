@@ -245,6 +245,12 @@ export function isProven(part: InputForm): boolean {
 export type Taint = 'clean' | 'tainted' | 'unknown';
 
 export interface Walk {
+  /**
+   * go-to-k/cdkd#7050: count a `{{resolve:...}}` reference's TEXT as concrete,
+   * so `concrete` answers only whether every OTHER input was resolved. Read
+   * only by {@link everyOtherInputConcrete}; never set for a fingerprint.
+   */
+  tokensConcrete?: true;
   sources: MaskedInputSources;
   resources: Record<string, unknown>;
   parameters: Record<string, unknown>;
@@ -598,7 +604,7 @@ async function inputForms(values: readonly unknown[], walk: Walk): Promise<Input
  */
 export async function inputForm(value: unknown, walk: Walk): Promise<InputForm> {
   if (typeof value === 'string') {
-    return value.includes(DYNAMIC_REFERENCE_OPEN)
+    return value.includes(DYNAMIC_REFERENCE_OPEN) && walk.tokensConcrete !== true
       ? { form: value, concrete: false, ...proof(walk, () => true) }
       : { form: value, concrete: true };
   }
@@ -674,7 +680,8 @@ export async function inputForm(value: unknown, walk: Walk): Promise<InputForm> 
       const explicit = Array.isArray(operand) && isPlainObject(operand[1]) ? operand[1] : {};
       const vars = await inputForm(explicit, walk);
       const placeholders: Array<[string, unknown]> = [];
-      let concrete = vars.concrete && !text.includes(DYNAMIC_REFERENCE_OPEN);
+      let concrete =
+        vars.concrete && (walk.tokensConcrete === true || !text.includes(DYNAMIC_REFERENCE_OPEN));
       // Computed only for a walk with a cover (`proof`).
       let proven = walk.covered !== undefined && isProven(vars) && !carriesReference(operand);
       for (const name of subPlaceholders(text)) {

@@ -513,6 +513,23 @@ export async function maskedInputWalk(
   };
 }
 
+/**
+ * go-to-k/cdkd#7050: is every input of `templateValue` other than a
+ * `{{resolve:...}}` reference's text resolved and hashed (no parameter, attribute
+ * or import kept as written)? Only then do two equal input fingerprints prove
+ * the value behind a redaction mask unmoved. `false` on any unknown input.
+ */
+export async function everyOtherInputConcrete(
+  templateValue: unknown,
+  sources: MaskedInputSources
+): Promise<boolean> {
+  try {
+    return (await inputForm(templateValue, { ...newWalk(sources), tokensConcrete: true })).concrete;
+  } catch {
+    return false;
+  }
+}
+
 function inputFingerprintOf(form: unknown, templateValue: unknown): string {
   const digest = createHash('sha256')
     .update(canonicalJson({ layout: INPUT_FINGERPRINT_LAYOUT, value: form }))

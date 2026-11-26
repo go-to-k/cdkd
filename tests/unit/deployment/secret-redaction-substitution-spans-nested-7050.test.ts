@@ -393,7 +393,10 @@ describe('a masked child read redeploys without a phantom change (#7050, #7059)'
     ['a public row holding an unrelated secret\'s text, whole read', 'C', { Ref: 'X' }],
     ['a public row holding an unrelated secret\'s text, embedding read', 'C', { 'Fn::Join': ['', ['a-', { Ref: 'X' }]] }],
   ] as const) {
-    it(label, async () => {
+    // A parameter the parent passed as SECRET is kept as written by the input
+    // walk, so only the moved arm is asserted for it: a value that really
+    // moved is never hidden (#7050 final review).
+    for (const passed of ['secret', 'clean'] as const) it(`${label} (passed as ${passed})`, async () => {
       const { bag, resolved } = row === 'M'
         ? await deployRow({ X: { 'Fn::Join': ['', [{ Ref: 'Sep' }, '/', '{{resolve:ssm-secure:/app/a}}']] }, Y: '{{resolve:ssm-secure:/app/b}}' }, { Sep: PIN })
         : row === 'C'
@@ -405,9 +408,22 @@ describe('a masked child read redeploys without a phantom change (#7050, #7059)'
       const tpl = (n: number) => ({
         Db: { Type: 'AWS::RDS::DBInstance', Properties: { Engine: 'mysql', DBName: node, BackupRetentionPeriod: n } },
       });
-      const opts = { dryRun: false, parameters: { X: value }, inheritedSecrets: bag };
+      // The options a real child deploy carries (#7050 review).
+      const opts = {
+        dryRun: false,
+        parameters: { X: value },
+        inheritedSecrets: bag,
+        parentStackInfo: { parentStack: 'Parent', parentLogicalId: 'Child', parentRegion: 'us-east-1' },
+        passedParameterClasses: new Map([['X', passed]]),
+      };
       const created = await deploy({}, tpl(1), opts);
       expect(created.thrown).toBeUndefined();
+      const moved = await deploy({ Db: structuredClone(created.persisted!) }, tpl(1), {
+        ...opts,
+        parameters: { X: `moved-${value}` },
+      });
+      expect((moved.diff?.get('Db')?.propertyChanges ?? []).map((pc) => pc.path)).toContain('DBName');
+      if (passed === 'secret') return;
       const same = await deploy({ Db: structuredClone(created.persisted!) }, tpl(1), opts);
       expect(same.thrown).toBeUndefined();
       expect(same.diff?.get('Db')?.changeType).toBe('NO_CHANGE');
@@ -417,12 +433,6 @@ describe('a masked child read redeploys without a phantom change (#7050, #7059)'
       expect((next.diff?.get('Db')?.propertyChanges ?? []).map((pc) => pc.path)).toEqual(['BackupRetentionPeriod']);
       expect(next.calls).toEqual(['update:Db']);
       expect(JSON.stringify(next.sent)).not.toContain('***');
-      // A parameter value that really moved still plans the read as changed.
-      const moved = await deploy({ Db: structuredClone(created.persisted!) }, tpl(1), {
-        ...opts,
-        parameters: { X: `moved-${value}` },
-      });
-      expect((moved.diff?.get('Db')?.propertyChanges ?? []).map((pc) => pc.path)).toContain('DBName');
     });
   }
 });

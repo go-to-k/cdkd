@@ -44,7 +44,7 @@ export async function maskUnmovedRedactionMasks(
   rawDesired: Record<string, unknown>,
   current: Record<string, unknown>,
   desired: Record<string, unknown>,
-  fingerprinter: InputFingerprinter | undefined
+  fingerprinter: (InputFingerprinter & { concrete?: (key: string) => Promise<boolean> }) | undefined
 ): Promise<Record<string, unknown>> {
   if (fingerprinter === undefined) return desired;
   const fingerprints = maskedPropertyFingerprintsOf(record);
@@ -83,6 +83,16 @@ export async function maskUnmovedRedactionMasks(
     ) {
       continue;
     }
+    // An input kept AS WRITTEN (a secret-class or `NoEcho` parameter, a
+    // tainted attribute) hashes the same whatever its value: equal
+    // fingerprints prove nothing then, so the key is compared as is.
+    let concrete = false;
+    try {
+      concrete = (await fingerprinter.concrete?.(key)) === true;
+    } catch {
+      concrete = false;
+    }
+    if (!concrete) continue;
     (out ??= { ...desired })[key] = maskedWhere(current[key], desired[key]);
   }
   return out ?? desired;

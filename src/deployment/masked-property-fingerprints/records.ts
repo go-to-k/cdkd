@@ -21,7 +21,7 @@ import {
   templateCarriesNeedle,
 } from './core.js';
 import { isPlainObject, type MaskedInputSources } from './input-walk.js';
-import { maskedInputWalk } from './nested-outputs.js';
+import { everyOtherInputConcrete, maskedInputWalk } from './nested-outputs.js';
 
 /**
  * One property's input fingerprint by key, computed at most once per key. A
@@ -38,6 +38,8 @@ export type InputFingerprinter = (key: string) => Promise<string | undefined>;
 /** An {@link InputFingerprinter} that also answers the go-to-k/cdkd#6209 binding. */
 export type BindingFingerprinter = InputFingerprinter & {
   binding(key: string): Promise<string | undefined>;
+  /** go-to-k/cdkd#7050: {@link everyOtherInputConcrete} for `key`'s template value. */
+  concrete(key: string): Promise<boolean>;
 };
 
 export function inputFingerprinter(
@@ -62,6 +64,9 @@ export function inputFingerprinter(
       const walked = await walk(key);
       return walked?.proven === true ? walked.fingerprint : undefined;
     },
+    concrete: async (key: string) =>
+      Object.hasOwn(templateProps, key) &&
+      (await everyOtherInputConcrete(templateProps[key], sources)),
   });
 }
 
