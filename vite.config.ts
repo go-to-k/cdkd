@@ -559,6 +559,17 @@ export default defineConfig({
         command: 'node --experimental-strip-types scripts/gen-drift-readback-coverage.ts --check',
         cache: false,
       },
+      // Issue #7001: every read-only GetAtt attribute is classified for whether
+      // an in-place update moves it (SDK types by hand, Cloud Control types by
+      // rule or the committed baseline).
+      'gen:in-place-attr-coverage': {
+        command: 'node --experimental-strip-types scripts/gen-in-place-attr-coverage.ts',
+        cache: false,
+      },
+      'audit:in-place-attr-coverage:check': {
+        command: 'node --experimental-strip-types scripts/gen-in-place-attr-coverage.ts --check',
+        cache: false,
+      },
       // Issue #6676: the measured table of Cloud Control update paths; every type
       // measured as refusing has a registered fix or a recorded exemption.
       'gen:cc-update-measurements': {
@@ -758,6 +769,7 @@ export default defineConfig({
           'vp run gen:provider-replace-branches',
           'vp run gen:nested-key-coverage',
           'vp run gen:getatt-attributes',
+          'vp run gen:in-place-attr-coverage',
           // Not a matrix, but the same class of CI guard: a rebase can
           // denormalize the committed integ ledger, and the failure looks
           // identical (regenerate-and-commit).

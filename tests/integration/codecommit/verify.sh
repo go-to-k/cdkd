@@ -16,6 +16,9 @@
 #      must survive), the description changed, env changed to prod, team
 #      REMOVED (the ECR #981 untag regression class), and a second trigger
 #      ADDED (PutRepositoryTriggers must carry the whole set, issue #3989).
+#      An SSM parameter reading the clone URL must hold the RENAMED repo's
+#      URL after this deploy (issue #7001: a reader of an attribute the
+#      in-place rename moves is promoted and re-resolved).
 #   2b. (issue #4157) Replace the repository out of band with a FOREIGN one
 #      under the same name. A description-only update must be refused with
 #      nothing written; destroy must refuse to delete it and keep the record;
@@ -72,6 +75,7 @@ REPO="cdkdcodecommitexample-repo"
 REPO_RENAMED="cdkdcodecommitexample-repo-renamed"
 REPO_FRESH="cdkdcodecommitexample-repo-fresh"
 TOPIC="cdkdcodecommitexample-triggers"
+CLONE_URL_PARAM="/cdkdcodecommitexample/clone-url-http"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 cleanup() {
@@ -83,6 +87,7 @@ cleanup() {
   aws codecommit delete-repository --repository-name "${REPO}" --region "${REGION}" >/dev/null 2>&1 || true
   aws codecommit delete-repository --repository-name "${REPO_RENAMED}" --region "${REGION}" >/dev/null 2>&1 || true
   aws codecommit delete-repository --repository-name "${REPO_FRESH}" --region "${REGION}" >/dev/null 2>&1 || true
+  aws ssm delete-parameter --name "${CLONE_URL_PARAM}" --region "${REGION}" >/dev/null 2>&1 || true
   local acct
   acct="$(aws sts get-caller-identity --query Account --output text 2>/dev/null)"
   if [ -n "${acct}" ]; then
@@ -151,6 +156,11 @@ case "${OUT_ID}" in
   "${REPO}") echo "FAIL: Ref output is the repository NAME, expected the GUID id" >&2; exit 1 ;;
 esac
 echo "    Ref resolves to the repository ID (CFn parity)"
+
+PARAM_URL1="$(aws ssm get-parameter --name "${CLONE_URL_PARAM}" --region "${REGION}" --query Parameter.Value --output text)"
+CLONE_URL1="$(repo_field "${REPO}" cloneUrlHttp)"
+echo "    clone-URL reader (Phase 1): ${PARAM_URL1}"
+[ "${PARAM_URL1}" = "${CLONE_URL1}" ] || { echo "FAIL: premise: the SSM reader holds '${PARAM_URL1}', expected the clone URL '${CLONE_URL1}'" >&2; exit 1; }
 
 # Code seed: the seed/ directory's README.md must be in the initial commit.
 echo "==> Phase 1: assert the Code seed committed README.md (GetFile)"
@@ -251,6 +261,16 @@ echo "    triggers (Phase 2): ${TRIGGERS2}"
 [ "${TRIGGERS2}" = '["branch-notify","commit-notify"]' ] || { echo "FAIL: expected triggers [branch-notify, commit-notify] after update, got ${TRIGGERS2}" >&2; exit 1; }
 echo "    added trigger applied, kept trigger preserved (full-set PutRepositoryTriggers)"
 
+# Issue #7001: the rename moved CloneUrlHttp, which is no template property.
+# The SSM parameter reading it must carry the renamed repository's URL now,
+# not the Phase 1 URL the diff resolved it against.
+PARAM_URL2="$(aws ssm get-parameter --name "${CLONE_URL_PARAM}" --region "${REGION}" --query Parameter.Value --output text)"
+CLONE_URL2="$(repo_field "${REPO_RENAMED}" cloneUrlHttp)"
+echo "    clone-URL reader (Phase 2): ${PARAM_URL2}"
+[ "${CLONE_URL2}" != "${CLONE_URL1}" ] || { echo "FAIL: premise: the rename did not change the clone URL ('${CLONE_URL2}')" >&2; exit 1; }
+[ "${PARAM_URL2}" = "${CLONE_URL2}" ] || { echo "FAIL: the SSM reader of CloneUrlHttp kept '${PARAM_URL2}' after the in-place rename, expected '${CLONE_URL2}' (#7001)" >&2; exit 1; }
+echo "    the clone-URL reader followed the in-place rename (#7001)"
+
 # --- Phase 2b: a foreign repository under the recorded name (issue #4157) ---
 # The recorded repository is deleted out of band and ANOTHER is created under
 # the same name. A non-rename update must refuse it with nothing written, and
@@ -313,7 +333,9 @@ if [ -n "${ACCT}" ] && aws sns get-topic-attributes \
   echo "FAIL: SNS topic ${TOPIC} still exists after destroy" >&2; exit 1
 fi
 echo "    SNS trigger topic deleted"
+assert_gone "SSM parameter ${CLONE_URL_PARAM} still exists after destroy" aws ssm get-parameter --name "${CLONE_URL_PARAM}" --region "${REGION}"
+echo "    clone-URL reader parameter deleted"
 assert_gone "state file still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
 
-echo "[verify] PASS — CodeCommit repository create (desc+tags+Ref id parity+Code seed+SNS trigger), in-place rename + tag untag + trigger add on update, foreign holder refused on update + destroy with a working orphan remedy (#4157), clean destroy, 4 phases passed"
+echo "[verify] PASS — CodeCommit repository create (desc+tags+Ref id parity+Code seed+SNS trigger), in-place rename + tag untag + trigger add on update, clone-URL reader followed the rename (#7001), foreign holder refused on update + destroy with a working orphan remedy (#4157), clean destroy, 4 phases passed"
