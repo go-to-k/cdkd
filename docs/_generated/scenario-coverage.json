@@ -1117,6 +1117,11 @@
       "scenarios": []
     },
     {
+      "name": "diff-orphan-retained-removal",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "dlm-lifecycle-policy",
       "annotated": true,
       "scenarios": []
@@ -4347,6 +4352,7 @@
     "destroy-failed-delete-keeps-dependencies",
     "destroy-nested-cross-region",
     "diff-fail-on-destructive",
+    "diff-orphan-retained-removal",
     "docdb-fix-forward-orphan",
     "docdb-global-cluster",
     "docdb-restore",

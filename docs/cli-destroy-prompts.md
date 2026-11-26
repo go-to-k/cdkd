@@ -54,6 +54,12 @@ About to destroy 12 resources from stack MyStack, REMOVING DELETION PROTECTION o
   adds `and J recorded only in its rollback journal` after the resource count,
   and the count of protected resources includes them. See
   [Resources only the rollback journal records](cli-destroy-skipped.md#resources-only-the-rollback-journal-records).
+- **A stack with resources its `DeletionPolicy` keeps** (`Retain` or
+  `RetainExceptOnCreate`). The list above the prompt shows them under
+  `Resources kept in AWS by their DeletionPolicy`, the resource count leaves
+  them out, and the prompt adds `(N kept in AWS by their DeletionPolicy)`.
+  Under `--remove-protection` they are not counted as losing their protection,
+  since cdkd does not touch them.
 - **An unusual stack name.** A stack name that is not a plain identifier is
   shown JSON-quoted, with its control characters removed.
 

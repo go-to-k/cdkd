@@ -202,6 +202,14 @@ every attribute of which is its handler's response `Data` (issue #3662) and
 whose `Ref` its handler may move by answering an Update with a new
 `PhysicalResourceId` (issue #3722).
 
+Which read-only attributes an in-place update moves is classified, not
+guessed. Every attribute of a type with an SDK provider has a hand verdict, and
+the attributes of a Cloud-Control-only type are settled by rule or held in a
+committed baseline. The
+[in-place attribute coverage](_generated/in-place-attr-coverage.md) table lists
+each verdict, and CI's `audit:in-place-attr-coverage:check` fails on an
+attribute with none (issue #7001).
+
 A nested stack's outputs are decided by the child's own deploy, which runs after
 the parent's diff, so every reader of an updated `AWS::CloudFormation::Stack`'s
 outputs is promoted, and the deploy engine skips the provider call for each one

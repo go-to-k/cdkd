@@ -111,8 +111,43 @@ export const IN_PLACE_UPDATE_DERIVED_ATTRS: Readonly<Record<string, ReadonlySet<
     // (CDK `addEndpoint()`) moves to it, as CloudFormation moves the endpoint;
     // if a tag-only update minted none, the re-resolve-and-skip drops the
     // promotion. The update records the version UpdateAgentRuntime answers.
-    'AWS::BedrockAgentCore::Runtime': new Set(['AgentRuntimeVersion']),
+    'AWS::BedrockAgentCore::Runtime': new Set(['AgentRuntimeVersion', 'LastUpdatedAt']),
   });
+
+/** What rebuilds a MicroVM image: the provider's `BUILD_AFFECTING_CFN_KEYS`. */
+const MICROVM_IMAGE_BUILD_KEYS = new Set([
+  'BaseImageArn',
+  'BaseImageVersion',
+  'BuildRoleArn',
+  'Description',
+  'CodeArtifact',
+  'Logging',
+  'EgressNetworkConnectors',
+  'CpuConfigurations',
+  'Resources',
+  'AdditionalOsCapabilities',
+  'Hooks',
+  'EnvironmentVariables',
+  'KmsKeyIdentifier',
+]);
+
+/**
+ * What mints a new Step Functions revision. Measured: a definition, role,
+ * tracing, logging or encryption change does; a tag edit or an identical
+ * update does not. `DefinitionSubstitutions` and `DefinitionS3Location` are
+ * kept: cdkd renders them into the definition it sends, so a change of a key
+ * the definition uses mints one, and a move test sees only the one property.
+ */
+const STATE_MACHINE_REVISION_KEYS = new Set([
+  'Definition',
+  'DefinitionString',
+  'DefinitionS3Location',
+  'DefinitionSubstitutions',
+  'RoleArn',
+  'LoggingConfiguration',
+  'TracingConfiguration',
+  'EncryptionConfiguration',
+]);
 
 /**
  * go-to-k/cdkd#6913: derived attributes an in-place UPDATE moves only when one
@@ -131,9 +166,21 @@ export const IN_PLACE_UPDATE_ATTRS_MOVED_BY: Readonly<
   'AWS::RDS::DBCluster': Object.freeze({
     'MasterUserSecret.SecretArn': new Set(['ManageMasterUserPassword']),
     StorageThroughput: new Set(['StorageType', 'Iops', 'AllocatedStorage']),
+    // go-to-k/cdkd#7001: a Port change is modified in place.
+    Endpoint: new Set(['Port']),
+    'Endpoint.Port': new Set(['Port']),
   }),
   'AWS::RDS::DBInstance': Object.freeze({
     'MasterUserSecret.SecretArn': new Set(['ManageMasterUserPassword']),
+    // go-to-k/cdkd#7001: the port, CA and Multi-AZ standby are modified in place.
+    Endpoint: new Set(['Port']),
+    'Endpoint.Port': new Set(['Port']),
+    ListenerEndpoint: new Set(['Port']),
+    'ListenerEndpoint.Port': new Set(['Port']),
+    CertificateDetails: new Set(['CACertificateIdentifier']),
+    'CertificateDetails.CAIdentifier': new Set(['CACertificateIdentifier']),
+    'CertificateDetails.ValidTill': new Set(['CACertificateIdentifier']),
+    SecondaryAvailabilityZone: new Set(['MultiAZ']),
   }),
   // go-to-k/cdkd#6939: a subnet added or removed gains or loses an interface
   // and its zonal DNS name; private DNS, DNS options and the IP address type
@@ -153,6 +200,123 @@ export const IN_PLACE_UPDATE_ATTRS_MOVED_BY: Readonly<
   }),
   'AWS::DynamoDB::GlobalTable': Object.freeze({
     StreamArn: new Set(['StreamSpecification']),
+  }),
+  // go-to-k/cdkd#7001: the rest of the audit (`scripts/in-place-attr-classification.ts`
+  // carries each row's reason; `vp run audit:in-place-attr-coverage:check`).
+  // An update timestamp is moved by the properties its update call sends, so
+  // a Tags-only edit moves none of them.
+  'AWS::BedrockAgentCore::Evaluator': Object.freeze({
+    EvaluatorType: new Set(['EvaluatorConfig']),
+    Provider: new Set(['EvaluatorConfig']),
+    UpdatedAt: new Set(['Description', 'EvaluatorConfig', 'Level', 'KmsKeyArn']),
+  }),
+  'AWS::CloudFormation::WaitCondition': Object.freeze({
+    Data: new Set(['Handle', 'Count', 'Timeout']),
+  }),
+  'AWS::CloudTrail::Trail': Object.freeze({
+    SnsTopicArn: new Set(['SnsTopicName']),
+  }),
+  // UpdateRepositoryName renames in place; the ARN and clone URLs end in it.
+  'AWS::CodeCommit::Repository': Object.freeze({
+    Arn: new Set(['RepositoryName']),
+    Name: new Set(['RepositoryName']),
+    CloneUrlHttp: new Set(['RepositoryName']),
+    CloneUrlSsh: new Set(['RepositoryName']),
+  }),
+  'AWS::DocDB::DBCluster': Object.freeze({
+    ServerlessV2PlatformVersion: new Set(['EngineVersion']),
+  }),
+  'AWS::EC2::Subnet': Object.freeze({
+    Ipv6CidrBlocks: new Set(['Ipv6CidrBlock']),
+  }),
+  'AWS::EC2::VPCGatewayAttachment': Object.freeze({
+    AttachmentType: new Set(['InternetGatewayId', 'VpnGatewayId']),
+  }),
+  // UpdateUser / UpdateGroup move the principal to the new path, and the ARN
+  // carries it: a policy granting the old ARN would keep naming nothing.
+  'AWS::IAM::Group': Object.freeze({ Arn: new Set(['Path']) }),
+  'AWS::IAM::User': Object.freeze({ Arn: new Set(['Path']) }),
+  'AWS::IAM::ManagedPolicy': Object.freeze({
+    DefaultVersionId: new Set(['PolicyDocument']),
+    UpdateDate: new Set(['PolicyDocument']),
+    AttachmentCount: new Set(['Roles', 'Users', 'Groups']),
+  }),
+  'AWS::Kinesis::Stream': Object.freeze({
+    WarmThroughputObject: new Set(['WarmThroughputMiBps', 'StreamModeDetails']),
+  }),
+  'AWS::Lambda::Function': Object.freeze({
+    SnapStartResponse: new Set(['SnapStart']),
+    'SnapStartResponse.ApplyOn': new Set(['SnapStart']),
+    'SnapStartResponse.OptimizationStatus': new Set(['SnapStart']),
+  }),
+  'AWS::Lambda::MicrovmImage': Object.freeze({
+    LatestActiveImageVersion: MICROVM_IMAGE_BUILD_KEYS,
+    LatestFailedImageVersion: MICROVM_IMAGE_BUILD_KEYS,
+    UpdatedAt: MICROVM_IMAGE_BUILD_KEYS,
+  }),
+  'AWS::Lambda::WebFunctionEndpoint': Object.freeze({
+    UpdatedAt: new Set([
+      'Description',
+      'AuthType',
+      'RevisionWeights',
+      'ScalingConfig',
+      'ThrottleConfig',
+    ]),
+  }),
+  'AWS::Lambda::NetworkConnector': Object.freeze({
+    LatestVersion: new Set(['Configuration', 'OperatorRole']),
+    LatestVersionArn: new Set(['Configuration', 'OperatorRole']),
+  }),
+  'AWS::Logs::DeliverySource': Object.freeze({
+    ResourceArns: new Set(['ResourceArn']),
+    Service: new Set(['ResourceArn']),
+  }),
+  'AWS::Neptune::DBCluster': Object.freeze({
+    Port: new Set(['DBPort']),
+  }),
+  'AWS::Pipes::Pipe': Object.freeze({
+    CurrentState: new Set(['DesiredState']),
+    LastModifiedTime: new Set([
+      'Description',
+      'DesiredState',
+      'Enrichment',
+      'EnrichmentParameters',
+      'KmsKeyIdentifier',
+      'LogConfiguration',
+      'RoleArn',
+      'SourceParameters',
+      'Target',
+      'TargetParameters',
+    ]),
+  }),
+  'AWS::S3::Bucket': Object.freeze({
+    'MetadataTableConfiguration.S3TablesDestination.TableArn': new Set([
+      'MetadataTableConfiguration',
+    ]),
+    'MetadataTableConfiguration.S3TablesDestination.TableNamespace': new Set([
+      'MetadataTableConfiguration',
+    ]),
+    'MetadataConfiguration.Destination': new Set(['MetadataConfiguration']),
+    'MetadataConfiguration.JournalTableConfiguration.TableName': new Set(['MetadataConfiguration']),
+    'MetadataConfiguration.JournalTableConfiguration.TableArn': new Set(['MetadataConfiguration']),
+    'MetadataConfiguration.InventoryTableConfiguration.TableName': new Set([
+      'MetadataConfiguration',
+    ]),
+    'MetadataConfiguration.InventoryTableConfiguration.TableArn': new Set([
+      'MetadataConfiguration',
+    ]),
+    'MetadataConfiguration.AnnotationTableConfiguration.TableName': new Set([
+      'MetadataConfiguration',
+    ]),
+    'MetadataConfiguration.AnnotationTableConfiguration.TableArn': new Set([
+      'MetadataConfiguration',
+    ]),
+  }),
+  'AWS::StepFunctions::StateMachine': Object.freeze({
+    StateMachineRevisionId: STATE_MACHINE_REVISION_KEYS,
+  }),
+  'AWS::WAFv2::WebACL': Object.freeze({
+    Capacity: new Set(['Rules']),
   }),
 });
 
@@ -181,6 +345,71 @@ function streamSpecificationMovesStreamArn(oldValue: unknown, newValue: unknown)
 }
 
 /**
+ * go-to-k/cdkd#7001: a managed policy's `AttachmentCount` moves only when a
+ * principal list changes LENGTH; a same-length swap keeps the count. A side
+ * that is not a list (an intrinsic) answers `true`. Bound: a swapped-in
+ * principal already holding the policy another way (a role's
+ * `ManagedPolicyArns`) lowers the count without promoting the reader.
+ */
+function principalListLengthMoves(oldValue: unknown, newValue: unknown): boolean {
+  const length = (v: unknown): number | undefined =>
+    v === undefined || v === null ? 0 : Array.isArray(v) ? v.length : undefined;
+  const before = length(oldValue);
+  const after = length(newValue);
+  return before === undefined || after === undefined || before !== after;
+}
+
+/**
+ * A bag (object) side, `null` for absent, `undefined` when unreadable (a
+ * scalar, a list, or an intrinsic the resolver left unresolved).
+ */
+function bagOf(value: unknown): Record<string, unknown> | null | undefined {
+  if (value === undefined || value === null) return null;
+  return typeof value === 'object' && !Array.isArray(value) && !isIntrinsicShaped(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+/**
+ * go-to-k/cdkd#7001: an S3 `MetadataConfiguration` edit re-creates its
+ * destination and journal table only when the whole configuration is added
+ * or removed; while one exists on both sides the provider updates the journal
+ * expiration in place and refuses an encryption change
+ * (`applyMetadataConfigurationDiff`). An unreadable side answers `true`.
+ */
+function metadataConfigurationAddedOrRemoved(oldValue: unknown, newValue: unknown): boolean {
+  const before = bagOf(oldValue);
+  const after = bagOf(newValue);
+  if (before === undefined || after === undefined) return true;
+  return (before === null) !== (after === null);
+}
+
+/**
+ * The inventory / annotation table of an S3 `MetadataConfiguration` is
+ * created or deleted when the configuration is added or removed, or when that
+ * table's `ConfigurationState` flips (absent reads `DISABLED`).
+ */
+function metadataTableStateFlips(
+  member: string
+): (oldValue: unknown, newValue: unknown) => boolean {
+  const stateOf = (bag: Record<string, unknown>): unknown => {
+    const table = bagOf(bag[member]);
+    if (table === undefined) return undefined;
+    return table === null ? 'DISABLED' : (table['ConfigurationState'] ?? 'DISABLED');
+  };
+  return (oldValue, newValue) => {
+    if (metadataConfigurationAddedOrRemoved(oldValue, newValue)) return true;
+    const before = stateOf(bagOf(oldValue)!);
+    const after = stateOf(bagOf(newValue)!);
+    if (typeof before !== 'string' || typeof after !== 'string') return true;
+    return before !== after;
+  };
+}
+
+const INVENTORY_TABLE_STATE_FLIPS = metadataTableStateFlips('InventoryTableConfiguration');
+const ANNOTATION_TABLE_STATE_FLIPS = metadataTableStateFlips('AnnotationTableConfiguration');
+
+/**
  * Narrower tests for rows of {@link IN_PLACE_UPDATE_ATTRS_MOVED_BY}: per type
  * -> attribute -> property, whether that property's change from the recorded
  * to the desired value moves the attribute. A row with no test moves on any
@@ -200,6 +429,36 @@ export const IN_PLACE_UPDATE_ATTR_MOVE_TESTS: Readonly<
   }),
   'AWS::DynamoDB::GlobalTable': Object.freeze({
     StreamArn: Object.freeze({ StreamSpecification: streamSpecificationMovesStreamArn }),
+  }),
+  'AWS::IAM::ManagedPolicy': Object.freeze({
+    AttachmentCount: Object.freeze({
+      Roles: principalListLengthMoves,
+      Users: principalListLengthMoves,
+      Groups: principalListLengthMoves,
+    }),
+  }),
+  'AWS::S3::Bucket': Object.freeze({
+    'MetadataConfiguration.Destination': Object.freeze({
+      MetadataConfiguration: metadataConfigurationAddedOrRemoved,
+    }),
+    'MetadataConfiguration.JournalTableConfiguration.TableName': Object.freeze({
+      MetadataConfiguration: metadataConfigurationAddedOrRemoved,
+    }),
+    'MetadataConfiguration.JournalTableConfiguration.TableArn': Object.freeze({
+      MetadataConfiguration: metadataConfigurationAddedOrRemoved,
+    }),
+    'MetadataConfiguration.InventoryTableConfiguration.TableName': Object.freeze({
+      MetadataConfiguration: INVENTORY_TABLE_STATE_FLIPS,
+    }),
+    'MetadataConfiguration.InventoryTableConfiguration.TableArn': Object.freeze({
+      MetadataConfiguration: INVENTORY_TABLE_STATE_FLIPS,
+    }),
+    'MetadataConfiguration.AnnotationTableConfiguration.TableName': Object.freeze({
+      MetadataConfiguration: ANNOTATION_TABLE_STATE_FLIPS,
+    }),
+    'MetadataConfiguration.AnnotationTableConfiguration.TableArn': Object.freeze({
+      MetadataConfiguration: ANNOTATION_TABLE_STATE_FLIPS,
+    }),
   }),
 });
 

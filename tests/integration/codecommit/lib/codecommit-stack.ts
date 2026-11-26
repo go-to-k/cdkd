@@ -5,6 +5,7 @@ import { Construct } from 'constructs';
 import * as codecommit from 'aws-cdk-lib/aws-codecommit';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 
 // The fixture runs as an ES module (`node` loads the .ts app via ESM), so
 // `__dirname` is undefined — derive it from import.meta.url.
@@ -31,7 +32,10 @@ const thisDir = path.dirname(fileURLToPath(import.meta.url));
  *   ECR #981 untag regression class), and ADD a second trigger
  *   (`branch-notify`), so the update's `PutRepositoryTriggers` must carry the
  *   whole set, the kept `commit-notify` included (issue #3989). The `Code`
- *   seed is create-only and must survive the rename.
+ *   seed is create-only and must survive the rename. An SSM parameter
+ *   READS the clone URL (`Fn::GetAtt [Repo, CloneUrlHttp]`), which the rename
+ *   moves although it is no template property: it must follow the rename in
+ *   the same deploy (issue #7001), not keep the old URL.
  */
 export class CodeCommitStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -110,6 +114,14 @@ export class CodeCommitStack extends cdk.Stack {
     if (!isUpdate) {
       cdk.Tags.of(repo).add('team', 'platform');
     }
+
+    // Issue #7001: a RESOURCE reading an attribute the in-place rename moves.
+    // A stack Output re-resolves on every deploy; a resource is re-resolved
+    // only when the diff promotes it, which is what this asserts.
+    new ssm.StringParameter(this, 'CloneUrlReader', {
+      parameterName: `/${this.stackName.toLowerCase()}/clone-url-http`,
+      stringValue: repo.repositoryCloneUrlHttp,
+    });
 
     new cdk.CfnOutput(this, 'RepositoryId', {
       // Ref returns the repository ID (a GUID) — CFn parity via the
