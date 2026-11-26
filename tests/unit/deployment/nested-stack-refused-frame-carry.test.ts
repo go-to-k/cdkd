@@ -695,7 +695,9 @@ describe('issue #3306 review M2: a frame whose own value occurs in its token tex
       // #7050: the token is placed by its recorded span, and the parameter's
       // coinciding `in` is redacted too: no plaintext of the secret remains
       // in the parent's record or the child's.
-      expect(String(record.Parameters['Pin'])).toBe('{{resolve:ssm:/app/kin}}:{{resolve:ssm:/app/kin}}'.replace(':{{', bound === undefined ? ':{{' : ':{{'));
+      // The parameter's `in` is the leaf's own secret's text, so it is written
+      // as that token too (a gap never keeps an own secret's text).
+      expect(String(record.Parameters['Pin'])).toBe('{{resolve:ssm:/app/kin}}:{{resolve:ssm:/app/kin}}');
       expect(await childPersist(bag, 'Pin', 'in:in')).toBe(record.Parameters['Pin']);
     });
   }

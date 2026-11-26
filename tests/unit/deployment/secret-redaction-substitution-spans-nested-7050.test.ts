@@ -1,24 +1,10 @@
 /**
- * Issue [#3156](https://github.com/go-to-k/cdkd/issues/3156): the sub-floor
- * nested-stack carry (`recordNestedStackParameterExpressions`) refused two
- * intrinsic spellings of a framed secret -- a token spelling `ssm:` (or leaving
- * its service to an intrinsic part), and a frame whose non-literal part sits
- * OUTSIDE the token -- so a 1-3 character secret in either persisted in
- * plaintext in the child, the parent's row (for the second), and a grandchild's
- * log lines. Issue [#3306](https://github.com/go-to-k/cdkd/issues/3306) carries
- * the three shapes that fix still refused: a token inside a nested part, in a
- * used `Fn::Sub` variable, or inside an `Fn::If` around the frame.
- *
- * Every case here but the hand-built records drives the REAL
- * resolver: the fix certifies on what the
- * resolver recorded while resolving the parameter's own `Fn::Join` / `Fn::Sub`
- * object (its substitution, and the verdict that substitution took), so a
- * hand-built bag would be building the thing under test. The deploy engine's
- * sequence is mirrored: resolve the row into the resource's bag, run the carry
- * over the SAME source object, then persist the row through
- * `redactSecretsForState` on a marked copy. A child mirrors the child engine:
- * its resource bag inherits the parent row's associations, and a `{ Ref }` to
- * the parameter resolves with the parent row's bag as `inheritedSecrets`.
+ * go-to-k/cdkd#7050, the nested-stack half: a row's `Parameters` leaf holding
+ * a sub-floor secret beside a parameter whose value holds the same text. The
+ * engine's sequence (resolve, the parameter recorder, persist) for the
+ * parent's record, then the child resource reading the parameter through a
+ * `{Ref}`, persisted by the child engine's walk. Harness shared with
+ * `nested-stack-refused-frame-carry.test.ts`.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';

@@ -135,7 +135,13 @@ export function positionBySubstitutionSpans(
     const plaintext = resolvedPlaintextOf(secrets, token);
     if (plaintext !== undefined) plaintextOf.set(token, plaintext);
   }
-  const plaintexts = [...secrets.keys()].filter((p) => p !== '');
+  // The plaintext of each SECRET token this leaf references, and its token.
+  const own = new Map<string, string>();
+  for (const span of spans) {
+    if (!span.secret) continue;
+    const plaintext = bag.slice(span.start, span.end);
+    if (plaintext !== '') own.set(plaintext, span.token);
+  }
   const copies = [...(physicalNameCopiesOf.get(secrets) ?? [])].filter((c) => c !== '');
   let persisted = '';
   let cursor = 0;
@@ -148,9 +154,10 @@ export function positionBySubstitutionSpans(
         persisted += piece.text;
         continue;
       }
-      const redacted = redactGap(piece.text, secrets, plaintexts, copies, scan);
-      if (redacted === undefined) return SECRET_MASK;
-      persisted += redacted;
+      const answer = redactGap(piece.text, own, secrets, copies, scan);
+      if (answer === 'refuse') return undefined;
+      if (answer === 'mask') return SECRET_MASK;
+      persisted += answer.text;
     }
     if (i < spans.length) {
       const span = spans[i]!;
@@ -161,54 +168,56 @@ export function positionBySubstitutionSpans(
   return persisted;
 }
 
+/** What {@link redactGap} decided for one gap. */
+type GapAnswer = { text: string } | 'mask' | 'refuse';
+
 /**
- * A gap's bytes as persisted: the value scan first, then every recorded
- * plaintext it still holds at ANY length (one under `MIN_NEEDLE_LENGTH` the
- * scan does not see) rewritten to its expression, outside a token and
- * outside a reader's copy of a secret-named physical id (kept in plaintext by
- * design, #4810). `undefined` (mask the leaf) where a mask-only value sits in
- * it or a plaintext survives (overlapping needles): never a plaintext.
+ * A gap's bytes as persisted (go-to-k/cdkd#7050). By provenance a gap is a
+ * parameter's, an attribute's or an import's value, not a secret; what it
+ * must never keep is the text of a secret THIS leaf references:
+ *
+ * - each occurrence of an own token's plaintext, at any length (one under
+ *   `MIN_NEEDLE_LENGTH` the scan does not see), is written as that token,
+ *   outside a token and outside a reader's copy of a secret-named physical id
+ *   (kept in plaintext by design, #4810);
+ * - the leaf is MASKED when two tokens resolved to that text: which one the
+ *   gap holds is not known, and a survivor would send the wrong value on a
+ *   replay;
+ * - the arm REFUSES where the value scan would change the gap for any other
+ *   reason (another secret of the bag at 4+ characters, a mask-only value):
+ *   the older arms (parameter placeholders, cross-stack reads) answer such a
+ *   gap from their own associations. Another secret's sub-floor text in a gap
+ *   is kept, as the value scan keeps it: rewriting it would spell a public
+ *   value as an unrelated reference (a perpetual plan diff).
  */
 function redactGap(
   gap: string,
+  own: ReadonlyMap<string, string>,
   secrets: RecordedSecretValues,
-  plaintexts: readonly string[],
   copies: readonly string[],
   scan: ValueScan
-): string | undefined {
-  // Two references resolved to a text the gap holds: which one it is (if
-  // either) is not known, and the map's survivor -- what the scan would
-  // write -- sends the wrong one's value on a replay. The leaf is masked.
-  for (const plaintext of plaintexts) {
-    if (exposedAt(gap, plaintext, copies).length === 0) continue;
-    const spellers = resolvedExpressionsOf(secrets).filter(
-      (token) => resolvedPlaintextOf(secrets, token) === plaintext
-    );
-    if (spellers.length > 1) return undefined;
-  }
-  const scanned = scan(gap);
-  if (typeof scanned !== 'string') return undefined;
-  let text = scanned;
+): GapAnswer {
+  let text = gap;
   // Longest first, so a needle inside a longer one does not split it.
-  for (const plaintext of [...plaintexts].sort((a, b) => b.length - a.length)) {
-    if (!text.includes(plaintext)) continue;
-    const expression = secrets.get(plaintext);
-    if (expression === undefined || expression === SECRET_MASK) {
-      if (exposedAt(text, plaintext, copies).length > 0) return undefined;
-      continue;
-    }
+  for (const [plaintext, token] of [...own].sort((a, b) => b[0].length - a[0].length)) {
+    const at = exposedAt(text, plaintext, copies);
+    if (at.length === 0) continue;
+    const spellers = resolvedExpressionsOf(secrets).filter(
+      (expression) => resolvedPlaintextOf(secrets, expression) === plaintext
+    );
+    if (spellers.length > 1) return 'mask';
     let out = '';
     let cursor = 0;
-    for (const at of exposedAt(text, plaintext, copies)) {
-      out += text.slice(cursor, at) + expression;
-      cursor = at + plaintext.length;
+    for (const start of at) {
+      out += text.slice(cursor, start) + token;
+      cursor = start + plaintext.length;
     }
     text = out + text.slice(cursor);
   }
-  for (const plaintext of plaintexts) {
-    if (exposedAt(text, plaintext, copies).length > 0) return undefined;
+  for (const plaintext of own.keys()) {
+    if (exposedAt(text, plaintext, copies).length > 0) return 'mask';
   }
-  return text;
+  return scan(text) === text ? { text } : 'refuse';
 }
 
 /**
