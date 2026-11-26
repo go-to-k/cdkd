@@ -671,7 +671,12 @@ const FLOORS = {
 // walk follows its create and update sites into the poll loop and drops six
 // past the cap (measured: the pre-#7009 provider file gives 46). The same
 // wait's-last-read class as #6912.
-const DEPTH_DROPPED_CAP = 52;
+// Raised to 54 by go-to-k/cdkd#7006: `rds/instance-update.ts` records its map
+// through `withoutUnappliedMovedAttributes(dbInstanceAttributes(described,
+// ...))`, one hop deeper, so `javaInstantText`'s `value.toISOString()` and
+// its `value` receiver drop past the cap too (measured: 52 on main, 54 with the wrap).
+// The same formatting chain as #6242, not a fallback.
+const DEPTH_DROPPED_CAP = 54;
 
 /**
  * The fence's verdict over a scan: hits that match no allow-list entry, and
