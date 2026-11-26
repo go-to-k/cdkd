@@ -341,6 +341,16 @@ describe('scheduleSupersededDeletes (#7073)', () => {
     ]);
   });
 
+  it('skips a null record instead of throwing', () => {
+    const resources = { Vpc: record('vpc-1', 'AWS::EC2::VPC'), Bad: null } as unknown as Record<
+      string,
+      ResourceState
+    >;
+    const rows = [superseded('Sg', record('sg-old', 'AWS::EC2::SecurityGroup', ['Vpc']))];
+
+    expect(slotsOf(resources, rows, [['Vpc', 'Bad']])).toEqual([['sg-old'], []]);
+  });
+
   it('reads the type table by own key only', () => {
     const resources = { Odd: record('odd-1', 'constructor') };
     const rows = [superseded('X', record('x-old', 'toString'))];

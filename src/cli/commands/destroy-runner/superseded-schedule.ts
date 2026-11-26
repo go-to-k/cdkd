@@ -74,7 +74,7 @@ export function scheduleSupersededDeletes(
     const mustFollow = mustDeleteBefore(rowType);
     for (const [logicalId, step] of stepOf) {
       const record = resources[logicalId];
-      if (record === undefined) continue;
+      if (typeof record !== 'object' || record === null) continue;
       if (mustDeleteBefore(record.resourceType).includes(rowType)) {
         upper = Math.min(upper, step);
       }
