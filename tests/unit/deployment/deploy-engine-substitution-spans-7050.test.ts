@@ -161,7 +161,7 @@ async function deploy(
     'us-east-1'
   );
   let thrown: unknown;
-  await engine.deploy('s', { Parameters: { Suffix: { Type: 'String', Default: SUFFIX.v } }, Resources: templateResources } as never).catch((e: unknown) => {
+  await engine.deploy('s', { Parameters: { Suffix: { Type: 'String', Default: SUFFIX.v, ...(SUFFIX.noEcho === true && { NoEcho: true }) } }, Resources: templateResources } as never).catch((e: unknown) => {
     thrown = e;
   });
   const saved = saveState.mock.calls
@@ -175,7 +175,7 @@ async function deploy(
 
 const OTHER = '{{resolve:secretsmanager:db-secret:SecretString:other::}}';
 const LONG = '{{resolve:secretsmanager:db-secret:SecretString:long::}}';
-const SUFFIX = { v: 'x9' };
+const SUFFIX: { v: string; noEcho?: boolean } = { v: 'x9' };
 const tpl = (dbName: unknown, backup: number): Record<string, unknown> => ({
   Db: {
     Type: 'AWS::RDS::DBInstance',
@@ -319,4 +319,29 @@ describe('an unprovable redaction mask beside a tainted Ref reads unchanged (#70
       SUFFIX.v = 'x9';
     });
   }
+});
+
+describe('a NoEcho leaf whose NoEcho is removed is never compared masked (#7050 review)', () => {
+  it('an older record (no input fingerprint): a changed value is planned, not hidden', async () => {
+    SUFFIX.v = 'noecho-old-value';
+    SUFFIX.noEcho = true;
+    const dbName = { 'Fn::Join': ['_', [USERNAME, { Ref: 'Suffix' }]] };
+    try {
+      const created = await deploy({}, tpl(dbName, 1));
+      expect(created.thrown).toBeUndefined();
+      const record = structuredClone(created.persisted!) as Record<string, unknown>;
+      expect((record['properties'] as Record<string, unknown>)['DBName']).toBe('***');
+      delete record['maskedPropertyInputFingerprints'];
+      SUFFIX.noEcho = false;
+      SUFFIX.v = 'noecho-new-value';
+      const moved = await deploy({ Db: record as never }, tpl(dbName, 1));
+      // Seen: planned (a create-only DBName on a stateful type is then
+      // refused loudly), never NO_CHANGE.
+      expect(moved.diff?.get('Db')?.changeType).not.toBe('NO_CHANGE');
+      expect((moved.diff?.get('Db')?.propertyChanges ?? []).map((pc) => pc.path)).toContain('DBName');
+    } finally {
+      SUFFIX.v = 'x9';
+      SUFFIX.noEcho = false;
+    }
+  });
 });

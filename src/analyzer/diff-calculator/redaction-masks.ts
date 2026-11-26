@@ -57,9 +57,10 @@ import type { ResourceState } from '../../types/state.js';
  * unknown here, no input fingerprint recorded) is UNPROVABLE (#7050 review):
  * where the plan's own value holds a mask too (it cannot see the value
  * either), it compares masked, and is reported to `onUnprovable` (the plan
- * warns, naming the resource and the key); a plan value with no mask, of a
- * key whose template spells no `{{resolve:...}}` (a `NoEcho` source's, which
- * the engine settles by readback), is compared as is.
+ * warns, naming the resource and the key), and so does a plan value in the
+ * clear whose template spells a `{{resolve:...}}`; a plan value with no mask
+ * whose template spells none, or whose record mask is a `NoEcho` leaf's, is
+ * compared as is (the engine settles it by readback).
  * A hashed input or a passed-secret MAC that moved is never masked, and a key
  * the `NoEcho` comparison already masked wherever the record is needs nothing.
  * Only the positions holding the mask are masked on the desired side; every
@@ -152,12 +153,16 @@ export async function maskUnmovedRedactionMasks(
     // record's mask is then not the plan's blind spot. A `NoEcho` source's
     // (a parameter, one whose `NoEcho` was removed, a recovered masked
     // output) the engine settles by its readback, so it is compared as is.
-    // Only where the template spells no `{{resolve:...}}`: a plan value
-    // holding a reference's text unresolved is the redaction's blind spot.
+    // Only where the template spells no `{{resolve:...}}`, or the record's
+    // mask is a `NoEcho` leaf's (`noEchoLeaves`): otherwise a plan value
+    // holding a reference's text unresolved is the redaction's blind spot. A
+    // `NoEcho` leaf is never masked here, so a value whose `NoEcho` was
+    // removed and changed is seen (#7050 review).
     if (
       unprovable &&
       !(JSON.stringify(desired[key]) ?? '').includes(SECRET_MASK) &&
-      dynamicReferenceTokens(JSON.stringify(rawDesired[key]) ?? '').length === 0
+      (dynamicReferenceTokens(JSON.stringify(rawDesired[key]) ?? '').length === 0 ||
+        holdsNoEchoLeafAt(record, key))
     ) {
       continue;
     }
@@ -269,4 +274,13 @@ export async function reportUnverifiedPassedSecrets(args: {
     }
   }
   if (stamped.length > 0) backfills!.set(logicalId, Object.fromEntries(stamped));
+}
+
+/** Does the record name a `NoEcho` leaf under top-level `key` (`noEchoLeaves`)? */
+function holdsNoEchoLeafAt(record: ResourceState, key: string): boolean {
+  const leaves = (record as { noEchoLeaves?: unknown }).noEchoLeaves;
+  return (
+    Array.isArray(leaves) &&
+    leaves.some((coordinate) => Array.isArray(coordinate) && coordinate[0] === key)
+  );
 }

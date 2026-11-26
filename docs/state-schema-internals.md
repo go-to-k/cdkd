@@ -1959,10 +1959,13 @@ stack with no instance id.
   every deploy, and re-baselined when it holds no input fingerprint. A
   masked key with no passed-secret parameter whose inputs prove nothing
   either way is likewise compared masked by the plan, with the same
-  warning, where the plan's own value holds a mask too. A plan value in the
-  clear (a `NoEcho` source's) of a key whose template spells no
-  `{{resolve:...}}` is compared as is, and the engine's readback settles it. A key the `NoEcho` comparison already masked (its value MAC
-  proved it) is not warned of. An unsent key carries its previous member. A
+  warning, where the plan's own value holds a mask too, or where it is in
+  the clear but the template spells a `{{resolve:...}}`. A plan value in
+  the clear is compared as is when the template spells no reference, or
+  when the record's mask is a `NoEcho` leaf's (`noEchoLeaves`), so a value
+  whose `NoEcho` was removed and then changed is planned; the engine's
+  readback settles it. A key the `NoEcho` comparison already masked (its
+  value MAC proved it) is not warned of. An unsent key carries its previous member. A
   sent key with no new member (no KMS this run) carries it only while it is
   bound to the input fingerprint the same save stamps. Otherwise the key
   holds none, and the next run with the MACs backfills it once. A failed
