@@ -118,7 +118,9 @@ describe('DeployEngine — an equal SecurityGroupIngress id from another source 
   async function invokeProvision(
     oldProps: Record<string, unknown>,
     newProps: Record<string, unknown>,
-    changedPath: string
+    changedPath: string,
+    withRecordsView = true,
+    extraRecords: Record<string, StateRecord> = {}
   ): Promise<Record<string, StateRecord>> {
     const change: ResourceChange = {
       logicalId: 'Rule',
@@ -148,7 +150,15 @@ describe('DeployEngine — an equal SecurityGroupIngress id from another source 
     const template: CloudFormationTemplate = {
       Resources: { Rule: { Type: TYPE, Properties: newProps } },
     };
-    await provisionResource(makeEngine(), 'Rule', change, stateResources, 'MyStack', template);
+    const engine = makeEngine();
+    if (withRecordsView) {
+      const records = { ...stateResources, ...extraRecords };
+      engine.stackRecordsView = {
+        live: () => Object.entries(records),
+        survivors: () => Object.entries(records),
+      } as unknown as typeof engine.stackRecordsView;
+    }
+    await provisionResource(engine, 'Rule', change, stateResources, 'MyStack', template);
     return stateResources;
   }
 
@@ -194,6 +204,66 @@ describe('DeployEngine — an equal SecurityGroupIngress id from another source 
       expect.objectContaining({ recordedAttributes: { Id: 'sgr-0bb2' } })
     );
     expect(String(e?.cause?.message ?? e?.message)).toContain('was deleted again');
+  });
+
+  it('keeps a rule another record of the stack holds, and says so', async () => {
+    const masked = { ...base, CidrIp: '***' };
+    const other: StateRecord = {
+      physicalId: ID,
+      resourceType: TYPE,
+      properties: NEW,
+      attributes: { Id: 'sgr-0bb2' },
+      dependencies: [],
+      provisionedBy: 'sdk',
+    };
+    const err = await invokeProvision(masked, NEW, 'CidrIp', true, { Other: other }).then(
+      () => null,
+      (e: unknown) => e
+    );
+    const e = err as { code?: string; message?: string; cause?: { code?: string; message?: string } } | null;
+
+    expect(e?.cause?.code ?? e?.code).toBe('NAMED_REPLACEMENT_IDEMPOTENT_CREATE');
+    expect(provider.delete).not.toHaveBeenCalled();
+    expect(String(e?.cause?.message ?? e?.message)).toContain("is Other's, so it was kept");
+  });
+
+  it('names the rule instead of deleting it when the stack records cannot be read', async () => {
+    const masked = { ...base, CidrIp: '***' };
+    const err = await invokeProvision(masked, NEW, 'CidrIp', false).then(
+      () => null,
+      (e: unknown) => e
+    );
+    const e = err as { code?: string; message?: string; cause?: { code?: string; message?: string } } | null;
+
+    expect(e?.cause?.code ?? e?.code).toBe('NAMED_REPLACEMENT_IDEMPOTENT_CREATE');
+    expect(provider.delete).not.toHaveBeenCalled();
+    expect(String(e?.cause?.message ?? e?.message)).toContain('(sgr-0bb2) was left in place');
+  });
+
+  it('keeps the refusal, and names the rule, when its delete fails', async () => {
+    vi.mocked(provider.delete).mockRejectedValue(new Error('UnauthorizedOperation: not allowed'));
+    const masked = { ...base, CidrIp: '***' };
+    const err = await invokeProvision(masked, NEW, 'CidrIp').then(
+      () => null,
+      (e: unknown) => e
+    );
+    const e = err as { code?: string; message?: string; cause?: { code?: string; message?: string } } | null;
+
+    expect(e?.cause?.code ?? e?.code).toBe('NAMED_REPLACEMENT_IDEMPOTENT_CREATE');
+    expect(String(e?.cause?.message ?? e?.message)).toContain('its delete failed');
+  });
+
+  it('does not claim a skipped delete deleted the rule', async () => {
+    vi.mocked(provider.delete).mockResolvedValue({ outcome: 'skipped', reason: 'not confirmed' } as never);
+    const masked = { ...base, CidrIp: '***' };
+    const err = await invokeProvision(masked, NEW, 'CidrIp').then(
+      () => null,
+      (e: unknown) => e
+    );
+    const e = err as { code?: string; message?: string; cause?: { code?: string; message?: string } } | null;
+
+    expect(String(e?.cause?.message ?? e?.message)).toContain('its delete was not confirmed');
+    expect(String(e?.cause?.message ?? e?.message)).not.toContain('deleted again');
   });
 
   it('CONTROL: a masked-source create that returned the recorded rule deletes nothing', async () => {

@@ -27,6 +27,8 @@ import {
   replacementRequestsDifferentName,
 } from '../../replacement-name-holder.js';
 import { withCurrentResourceSecrets, withPrintingSecrets } from '../../resource-secrets-scope.js';
+import { getStackRecords } from '../../stack-records-scope.js';
+import { deleteSkipReason } from '../../delete-outcome.js';
 import { recordedIdsNameDifferentResources } from '../../type-change-guard.js';
 import { isNameCollisionErrorFrom, markNonRetryable } from '../../retryable-errors.js';
 import {
@@ -447,31 +449,18 @@ export async function replaceCreateFirst(
     );
     // go-to-k/cdkd#7084: the create minted another AWS id than the record's,
     // so it made a NEW resource the property compare could not tell apart (an
-    // ingress rule whose source is masked). Unless `--replace` goes on to
-    // adopt it, it is deleted by its own id before the refusal, so a refused
-    // deploy leaves no untracked resource behind.
-    const createdAnother =
-      engine.options.replace !== true &&
-      recordedIdsNameDifferentResources(
-        resourceType,
-        currentResource.attributes,
-        createResult.attributes
-      );
-    if (createdAnother) {
-      await withPrintingSecrets(updateSecrets, () =>
-        replaceProvider.delete(logicalId, createResult.physicalId, resourceType, replaceProps, {
-          expectedRegion: engine.stackRegion,
-          recordedAttributes: createResult.attributes,
-          maskSecrets: createUnionSecretMasker([
-            updateSecrets,
-            secretNameBagFor(engine.secretsRun, logicalId),
-          ]),
-        })
-      );
-    }
-    const createdAnotherNote = createdAnother
-      ? ' The resource this create made under the same id was deleted again.'
-      : '';
+    // ingress rule whose source is masked). It is deleted by its own id before
+    // the refusal (and before `--replace` deletes the old one first, so the
+    // re-create is a fresh one), so a refused deploy leaves nothing untracked.
+    const createdAnotherNote = await retireCreatedAnother(engine, {
+      logicalId,
+      resourceType,
+      currentResource,
+      createResult,
+      replaceProvider,
+      replaceProps,
+      updateSecrets,
+    });
     if (updateReplacePolicy === 'Retain') {
       throw new CdkdError(
         safeMsg`${logicalId} (${resourceType}) requires replacement, but its Create API is ` +
@@ -607,4 +596,70 @@ export async function replaceCreateFirst(
     }
   }
   return createResult;
+}
+
+/**
+ * go-to-k/cdkd#7084: delete the resource a create-first attempt made under the
+ * record's physical id when its AWS-minted id proves it is not the recorded
+ * one, and say what happened, for the refusal that follows. Never when another
+ * live record of the stack holds that id (the create adopted ITS resource), or
+ * when that cannot be told (no records view): there it is named, not deleted.
+ */
+async function retireCreatedAnother(
+  engine: DeployEngine,
+  input: {
+    logicalId: string;
+    resourceType: string;
+    currentResource: { attributes?: Record<string, unknown> | undefined };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- shape varies by ResourceProvider impl
+    createResult: any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the arm's provider
+    replaceProvider: any;
+    replaceProps: Record<string, unknown>;
+    updateSecrets: Parameters<typeof withPrintingSecrets>[0];
+  }
+): Promise<string> {
+  const { logicalId, resourceType, currentResource, createResult } = input;
+  const createdAttributes = createResult?.attributes as Record<string, unknown> | undefined;
+  if (
+    !recordedIdsNameDifferentResources(resourceType, currentResource.attributes, createdAttributes)
+  ) {
+    return '';
+  }
+  const createdId = String(createdAttributes!['Id']);
+  const leftNote = (why: string): string =>
+    safeMsg` The resource this create made (${createdId}) was left in place: ${why}; ` +
+    `delete it in AWS if no other resource of this stack uses it.`;
+  const view = getStackRecords();
+  if (view === undefined) return leftNote("cdkd could not read the stack's other records");
+  for (const [otherId, record] of view.live()) {
+    if (otherId !== logicalId && record?.attributes?.['Id'] === createdId) {
+      return safeMsg` The resource this create returned (${createdId}) is ${otherId}'s, so it was kept.`;
+    }
+  }
+  try {
+    const result = await withPrintingSecrets(input.updateSecrets, () =>
+      input.replaceProvider.delete(
+        logicalId,
+        createResult.physicalId,
+        resourceType,
+        input.replaceProps,
+        {
+          expectedRegion: engine.stackRegion,
+          recordedAttributes: createdAttributes,
+          maskSecrets: createUnionSecretMasker([
+            input.updateSecrets,
+            secretNameBagFor(engine.secretsRun, logicalId),
+          ]),
+        }
+      )
+    );
+    const skipped = deleteSkipReason(result);
+    if (skipped !== undefined)
+      return leftNote(`its delete was not confirmed (${asIsMessage(skipped)})`);
+    return ' The resource this create made under the same id was deleted again.';
+  } catch (error) {
+    const detail = maskSecretsInText(describeAwsFailure(error).summary, input.updateSecrets);
+    return leftNote(`its delete failed (${asIsMessage(detail)})`);
+  }
 }
