@@ -408,7 +408,7 @@ raw-cfn-conditions-params	2026-11-04T05:57:23Z	PASS	79	verify.sh	rc ok, orph cle
 rds-aurora	2026-11-20T19:36:46Z	PASS	4718	verify.sh	PR6691 run at 3d802a13c, same PR delta; us-west-2; rc ok, orph clean
 rds-dbcluster-pitr-restore	2026-11-13T12:45:42Z	PASS	501	verify.sh	rc ok, orph clean (#6212 RDS wait delegators to base class)
 rds-dbinstance-additional-storage-volumes	2026-11-12T04:20:11Z	PASS	2256	verify.sh	rc ok, orph clean; sqlserver-se us-east-1, 4 phases sdk route
-rds-dbinstance-backfill	2026-11-26T10:17:07Z	PASS	4990	verify.sh	rc ok, orph clean (us-east-1 + us-west-2); #7044 phase 2c-az AvailabilityZone replacement refused
+rds-dbinstance-backfill	2026-11-26T12:53:46Z	PASS	4811	verify.sh	rc ok, orph clean; #7052 phase 2c-pi
 rds-dbinstance-backup-replication	2026-11-10T17:39:18Z	PASS	1189	verify.sh	rc ok, destroy 0 errors, orph clean (us-west-2 replica swept; us-east-1 automated snapshots cleared)
 rds-dbinstance-charset-timezone	2026-11-11T02:19:27Z	PASS	1169	verify.sh	rc ok, orph clean; Oracle SE2 + SQL Server Express (#5640)
 rds-dbinstance-getatt-attributes	2026-11-26T10:52:11Z	PASS	753	verify.sh	PR7036 10585d155 us-east-1 rc 0 ok, orph clean
