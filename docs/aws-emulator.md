@@ -383,11 +383,13 @@ to `0.0.0.0` on the host itself: that opens it to your network.
 | Docker image assets | Refused before anything is built. The emulator's ECR does not accept image pushes yet, and before 1.0.338 it returned repository URIs on the real `amazonaws.com` registry, so a push would have left your machine. File assets publish normally. |
 | Other emulators | `--aws-emulator` is specific to AWS Emulator. For LocalStack and the like, `cdkd local` forwards your `AWS_ENDPOINT_URL*` variables and `--ca-bundle`; see [Local AWS endpoints](local-emulation.md#local-aws-endpoints). |
 
-The emulator answers with real-shaped queue URLs, and the AWS SDK for
-JavaScript v3 sends SQS requests to the queue URL's host. A sidecar rewrites
-those URLs in the emulator's answers: with an `https` emulator URL whose run
-wrote `ca.pem`, and always in mixed mode. On the host network no sidecar
-runs. A container environment variable that is exactly a real queue URL
+AWS Emulator before 1.0.580 answers with real-shaped queue URLs, and the AWS
+SDK for JavaScript v3 sends SQS requests to the queue URL's host; 1.0.580 and
+later answer with a URL on the emulator itself. A sidecar rewrites real-shaped
+URLs in the emulator's answers: always in mixed mode, and otherwise with an
+`https` emulator URL whose run wrote `ca.pem`, unless one read-only
+`ListQueues` at startup returns a local queue URL. With no queue in the
+region yet, the sidecar starts. On the host network no sidecar runs. A container environment variable that is exactly a real queue URL
 (from `--from-state`, `--from-cfn-stack` or `--env-vars`) is rewritten to the
 same queue on the container's SQS endpoint, so a `SendMessage` to it lands in
 the emulator. Any other real queue URL, such as one the handler reads at run
