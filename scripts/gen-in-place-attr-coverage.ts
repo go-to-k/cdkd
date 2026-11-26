@@ -115,6 +115,16 @@ export type RuleName = 'no-in-place-update' | 'creation-timestamp' | 'own-identi
 const CREATION_TIMESTAMP = /^(Create|Created|Creation)(At|Time|Date|Timestamp|DateTime|On)?$/;
 const UPDATE_TIMESTAMP = /Update|Modif/;
 const VERSIONED = /Version|Revision/;
+
+/**
+ * Cloud Control types whose in-place update registers a new revision that
+ * the ARN carries, although no attribute or property name says so. Their
+ * own identity is never rule-settled.
+ */
+export const REVISIONED_ARN_TYPES: ReadonlySet<string> = new Set([
+  // `job-definition/<name>:<revision>`; an update registers the next revision.
+  'AWS::Batch::JobDefinition',
+]);
 const OWN_IDENTITY = /^(.*?)(Arn|ARN|Id|ID|Uuid|UUID)$/;
 
 /**
@@ -136,6 +146,8 @@ const OWN_IDENTITY = /^(.*?)(Arn|ARN|Id|ID|Uuid|UUID)$/;
  *   and neither is one of a VERSIONED type (a `Version...` attribute or an
  *   in-place `Version...` property): its ARN can carry the version an update
  *   mints (`AWS::GameLift::ContainerGroupDefinition` `.../<name>:<version>`).
+ *   A type whose ARN carries a revision no attribute or property names is
+ *   listed by hand in {@link REVISIONED_ARN_TYPES}.
  */
 export function classifyByRule(input: TypeInput, attribute: string): RuleName | undefined {
   const writable = Object.entries(input.properties).filter(
@@ -151,6 +163,7 @@ export function classifyByRule(input: TypeInput, attribute: string): RuleName | 
   if (prefix !== '' && !typeName.endsWith(prefix)) return undefined;
   const mutableName = writable.some(([name]) => name.endsWith('Name') || name === 'Path');
   const versioned =
+    REVISIONED_ARN_TYPES.has(input.type) ||
     input.attributes.some((a) => VERSIONED.test(a)) ||
     writable.some(([name]) => VERSIONED.test(name));
   return mutableName || versioned ? undefined : 'own-identity';

@@ -359,10 +359,13 @@ function principalListLengthMoves(oldValue: unknown, newValue: unknown): boolean
   return before === undefined || after === undefined || before !== after;
 }
 
-/** A bag (object) side, `null` for absent, `undefined` when unreadable. */
+/**
+ * A bag (object) side, `null` for absent, `undefined` when unreadable (a
+ * scalar, a list, or an intrinsic the resolver left unresolved).
+ */
 function bagOf(value: unknown): Record<string, unknown> | null | undefined {
   if (value === undefined || value === null) return null;
-  return typeof value === 'object' && !Array.isArray(value)
+  return typeof value === 'object' && !Array.isArray(value) && !isIntrinsicShaped(value)
     ? (value as Record<string, unknown>)
     : undefined;
 }

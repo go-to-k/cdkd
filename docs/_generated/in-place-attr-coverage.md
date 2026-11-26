@@ -13,7 +13,7 @@ Whether an in-place update moves each read-only `Fn::GetAtt` attribute (issue [#
 Source: `@aws-cdk/aws-service-spec` 0.1.235.
 
 - SDK-provider types: **131**, pairs classified by hand: **390** (moving: **66**)
-- Cloud Control types: **1584**, pairs: **5545** — by rule: `no-in-place-update` 1151, `creation-timestamp` 376, `own-identity` 815; in the baseline: **3203**
+- Cloud Control types: **1584**, pairs: **5545** — by rule: `no-in-place-update` 1151, `creation-timestamp` 376, `own-identity` 814; in the baseline: **3204**
 
 ## SDK-provider types (hand classification)
 
@@ -893,6 +893,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::BackupGateway::Hypervisor` | 1 |
 | `AWS::Batch::ComputeEnvironment` | 1 |
 | `AWS::Batch::ConsumableResource` | 2 |
+| `AWS::Batch::JobDefinition` | 1 |
 | `AWS::BcmPricingCalculator::BillEstimate` | 7 |
 | `AWS::BcmPricingCalculator::BillScenario` | 5 |
 | `AWS::BcmPricingCalculator::WorkloadEstimate` | 7 |

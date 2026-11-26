@@ -117,14 +117,18 @@ describe('the hand verdicts equal the shared.ts tables (#7001)', () => {
   });
 });
 
-describe('the rules agree with cdkd replacement decisions (#7001)', () => {
-  it('no-in-place-update settles no type whose replacement rule makes a create-only property in place', () => {
-    // The rule reads the spec's `causesReplacement`; cdkd's registry can
-    // override it (`updateableProperties`, or a conditional that answers in
-    // place), and then an in-place update exists.
-    const registry = new ReplacementRulesRegistry();
-    const overridden: string[] = [];
-    let checked = 0;
+/**
+ * Cloud Control pairs the no-in-place-update rule settles although `registry`
+ * makes one of the type's create-only (spec `causesReplacement: yes`)
+ * properties in place, through `updateableProperties` or a conditional.
+ */
+function overSettledByRegistry(registry: ReplacementRulesRegistry): {
+  overridden: string[];
+  checked: number;
+} {
+  const overridden: string[] = [];
+  let checked = 0;
+  {
     for (const [type, rule] of registry.rules) {
       if (inputs.registered.has(type)) continue; // hand-classified
       const t = inputs.types.find((x) => x.type === type);
@@ -139,8 +143,30 @@ describe('the rules agree with cdkd replacement decisions (#7001)', () => {
         if (classifyByRule(t, a) === 'no-in-place-update') overridden.push(`${type}.${a} (${inPlace.join(', ')})`);
       }
     }
+  }
+  return { overridden, checked };
+}
+
+describe('the rules agree with cdkd replacement decisions (#7001)', () => {
+  it('no-in-place-update settles no type whose replacement rule makes a create-only property in place', () => {
+    const { overridden, checked } = overSettledByRegistry(new ReplacementRulesRegistry());
     expect(checked, 'Cloud Control types with a replacement rule').toBeGreaterThan(0);
     expect(overridden).toEqual([]);
+  });
+
+  it('the check sees an injected override (it is not vacuous)', () => {
+    const target = inputs.types.find(
+      (t) =>
+        !inputs.registered.has(t.type) &&
+        t.attributes.some((a) => classifyByRule(t, a) === 'no-in-place-update')
+    )!;
+    const createOnly = Object.keys(target.properties).find((p) => target.properties[p] === 'yes')!;
+    const registry = new ReplacementRulesRegistry();
+    registry.rules.set(target.type, {
+      replacementProperties: new Set(),
+      updateableProperties: new Set([createOnly]),
+    });
+    expect(overSettledByRegistry(registry).overridden.length).toBeGreaterThan(0);
   });
 });
 
@@ -195,6 +221,9 @@ describe('classifyByRule (#7001)', () => {
     expect(classifyByRule(input('AWS::X::Thing', { Config: undefined }, ['Arn']), 'Arn')).toBe(
       'own-identity'
     );
+    // A revision no name shows: `job-definition/<name>:<revision>`.
+    const batch = inputs.types.find((t) => t.type === 'AWS::Batch::JobDefinition')!;
+    expect(classifyByRule(batch, 'JobDefinitionArn')).toBeUndefined();
   });
 
   it('settles no identity of a type with an in-place name or path (a rename moves the ARN)', () => {

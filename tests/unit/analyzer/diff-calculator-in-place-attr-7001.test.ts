@@ -287,6 +287,52 @@ describe('an S3 metadata table reader moves only when its table is created (#700
     ]);
   });
 
+  it('removing the configuration promotes the journal reader', async () => {
+    expectReaderPromoted(await diffReader(journal, { MetadataConfiguration: config(7) }, {}));
+    expect(await guard(journal, config(7), undefined)).toEqual([
+      { exportName: 'X', reason: 'changed' },
+    ]);
+  });
+
+  it('an unreadable side (a scalar or an unresolved intrinsic) promotes, failing closed', async () => {
+    const intrinsic = { 'Fn::If': ['Cond', config(7), { Ref: 'AWS::NoValue' }] };
+    expect(await guard(journal, config(7), intrinsic)).toEqual([
+      { exportName: 'X', reason: 'changed' },
+    ]);
+    expect(await guard(inventory, config(7, 'DISABLED'), intrinsic)).toEqual([
+      { exportName: 'X', reason: 'changed' },
+    ]);
+    expect(await guard(journal, config(7), 'not-a-bag')).toEqual([
+      { exportName: 'X', reason: 'changed' },
+    ]);
+  });
+
+  it('an absent inventory table reads DISABLED: an explicit DISABLED moves nothing', async () => {
+    const changes = await diffReader(
+      inventory,
+      { MetadataConfiguration: config(7) },
+      { MetadataConfiguration: config(7, 'DISABLED') }
+    );
+    expect(changes.get('Up')?.changeType).toBe('UPDATE');
+    expect(changes.get('Reader')?.changeType).toBe('NO_CHANGE');
+    expect(await guard(inventory, config(7), config(7, 'DISABLED'))).toEqual([]);
+  });
+
+  it('an annotation reader follows the annotation table, not the inventory one', async () => {
+    const annotation: SdkRow = {
+      ...journal,
+      attribute: 'MetadataConfiguration.AnnotationTableConfiguration.TableArn',
+    };
+    const withAnnotation = (state: string) => ({
+      ...config(7),
+      AnnotationTableConfiguration: { ConfigurationState: state },
+    });
+    expect(await guard(annotation, withAnnotation('ENABLED'), withAnnotation('DISABLED'))).toEqual([
+      { exportName: 'X', reason: 'changed' },
+    ]);
+    expect(await guard(annotation, config(7, 'DISABLED'), config(7, 'ENABLED'))).toEqual([]);
+  });
+
   it("an inventory reader follows its table's ConfigurationState, not a journal edit", async () => {
     const flip = [config(7, 'DISABLED'), config(7, 'ENABLED')] as const;
     expectReaderPromoted(

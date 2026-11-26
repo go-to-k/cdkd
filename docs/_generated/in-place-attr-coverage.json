@@ -9,9 +9,9 @@
     "ccByRule": {
       "no-in-place-update": 1151,
       "creation-timestamp": 376,
-      "own-identity": 815
+      "own-identity": 814
     },
-    "ccBaseline": 3203
+    "ccBaseline": 3204
   },
   "sdk": [
     {
@@ -2998,6 +2998,9 @@
     "AWS::Batch::ConsumableResource": [
       "AvailableQuantity",
       "InUseQuantity"
+    ],
+    "AWS::Batch::JobDefinition": [
+      "JobDefinitionArn"
     ],
     "AWS::BcmPricingCalculator::BillEstimate": [
       "Arn",
