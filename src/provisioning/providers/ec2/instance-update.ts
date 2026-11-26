@@ -70,8 +70,8 @@ export async function updateInstance(
   // against previousProperties and modified here. The diff guard keeps the
   // `cdkd drift --revert` no-op round-trip (`update(state, state)`) free of
   // any mutating SDK call. The fifth, EbsOptimized, can only be changed on a
-  // STOPPED instance, so an EbsOptimized change is routed to replacement via
-  // the ReplacementRulesRegistry rather than modified here.
+  // STOPPED instance, so it goes out in the member plan's stop -> modify ->
+  // start window (go-to-k/cdkd#7023; see planInstanceEbsOptimized).
   this.logger.debug(`Updating EC2 Instance ${logicalId}: ${physicalId}`);
   // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
   refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
@@ -231,7 +231,7 @@ export function guardTerminationProtectionRemoval(
  *   - MetadataOptions       -> ModifyInstanceMetadataOptions
  *   - CreditSpecification   -> ModifyInstanceCreditSpecification
  * EbsOptimized is NOT here: it can only be changed on a STOPPED instance, so
- * an EbsOptimized change is routed to replacement (see ReplacementRules).
+ * it goes out with a stop and a start (`planInstanceEbsOptimized`).
  *
  * Removal (issue #1160, real CloudFormation A/B in us-east-1): CloudFormation
  * resets a removed `Monitoring` to off, which arrives here as the `false`
@@ -262,12 +262,10 @@ export async function updateInstanceSecurityProps(
     );
   }
 
-  // EbsOptimized is intentionally NOT modified here: AWS only accepts
+  // EbsOptimized is not modified here: AWS only accepts
   // `ModifyInstanceAttribute { EbsOptimized }` against a STOPPED instance
-  // (a running instance returns IncorrectInstanceState), and cdkd does not
-  // stop/start instances. An EbsOptimized change is therefore routed to
-  // replacement via the ReplacementRulesRegistry (AWS::EC2::Instance), where
-  // the create path sets it correctly on the new instance.
+  // (a running instance returns IncorrectInstanceState), so it rides the
+  // member plan's stop and start (go-to-k/cdkd#7023).
 
   // Monitoring — MonitorInstances (enable) / UnmonitorInstances (disable).
   const newMonitoring = this.coerceBool(properties['Monitoring']);
@@ -359,6 +357,9 @@ export async function updateInstanceSecurityProps(
  *  - `Affinity`, `HostId`, `KernelId`, `RamdiskId` (go-to-k/cdkd#5630,
  *    unmeasured): a stop and a start, as CloudFormation documents; see
  *    `planInstanceStoppedMembers`.
+ *  - `EbsOptimized` (go-to-k/cdkd#7023, measured 2026-11-26): in place with a
+ *    stop and a start; a removal FAILS the update, so it is refused here. See
+ *    `planInstanceEbsOptimized`.
  *
  * A member is CHANGED per the engine's `changedProperties` when it is set
  * (a redacted state value cannot be compared to a resolved one), else per
@@ -551,6 +552,16 @@ export function planInstanceMemberUpdates(
     plan,
     changed,
     standInSkips
+  );
+
+  this.planInstanceEbsOptimized(
+    logicalId,
+    physicalId,
+    resourceType,
+    properties,
+    context,
+    plan,
+    changed
   );
 
   // InstanceInitiatedShutdownBehavior (go-to-k/cdkd#5630): CloudFormation

@@ -219,6 +219,11 @@ export async function prepareInstanceMemberUpdates(
   }
   if (plan.kernelId !== undefined && instance?.KernelId === plan.kernelId) delete plan.kernelId;
   if (plan.ramdiskId !== undefined && instance?.RamdiskId === plan.ramdiskId) delete plan.ramdiskId;
+  // go-to-k/cdkd#7023: a type that is EBS-optimized by default (t3, m5, ...)
+  // already reports `true`, so declaring it costs no stop.
+  if (plan.ebsOptimized !== undefined && instance?.EbsOptimized === plan.ebsOptimized) {
+    delete plan.ebsOptimized;
+  }
   const stopMembers = instanceStopMembers(plan);
   const needsStop = stopMembers.length > 0;
   if (tenancy !== undefined) {
@@ -475,6 +480,15 @@ export async function applyInstanceMemberUpdates(
         })
       );
       applied.push('the new RamdiskId');
+    }
+    if (plan.ebsOptimized !== undefined) {
+      await this.ec2Client.send(
+        new ModifyInstanceAttributeCommand({
+          InstanceId: physicalId,
+          EbsOptimized: { Value: plan.ebsOptimized },
+        })
+      );
+      applied.push('the new EbsOptimized');
     }
     if (!startAfter) return;
     phase = 'start';
