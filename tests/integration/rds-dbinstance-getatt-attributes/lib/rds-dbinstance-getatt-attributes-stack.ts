@@ -22,6 +22,11 @@ import type { Construct } from 'constructs';
  * applied; the SSM parameters are the READERS whose values verify.sh reads
  * live after each update.
  *
+ * Issue #7015: `CDKD_TEST_NEW_PORT_READERS` (a count) adds port readers AFTER
+ * verify.sh hand-seeds a pre-#7006 record (the old `Endpoint.Port`), so each
+ * new reader resolves the recorded attribute on a deploy that does not update
+ * the instance.
+ *
  * covers: AWS::RDS::DBInstance, AWS::SSM::Parameter
  */
 export class RdsDbinstanceGetattAttributesStack extends cdk.Stack {
@@ -81,5 +86,13 @@ export class RdsDbinstanceGetattAttributesStack extends cdk.Stack {
       parameterName: `/${id}/db-ca`,
       stringValue: cfnDb.attrCertificateDetailsCaIdentifier,
     });
+
+    const newReaders = Number(process.env['CDKD_TEST_NEW_PORT_READERS'] ?? '0');
+    for (let n = 1; n <= newReaders; n++) {
+      new ssm.StringParameter(this, `NewPortReader${n}`, {
+        parameterName: `/${id}/db-port-new-${n}`,
+        stringValue: db.dbInstanceEndpointPort,
+      });
+    }
   }
 }

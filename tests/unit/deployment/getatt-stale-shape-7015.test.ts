@@ -1,5 +1,5 @@
 /**
- * go-to-k/cdkd#7015: a pre-#7006 RDS / Neptune record kept the port, CA or
+ * go-to-k/cdkd#7015: a pre-#7006 RDS DB instance record kept the port, CA or
  * Multi-AZ zone read right after an in-place modify (the OLD value). A
  * `Fn::GetAtt` of such a member re-reads the record once, detected from the
  * record alone (its properties contradict it), and the persist merge either
@@ -41,7 +41,6 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 }));
 
 const RDS = 'AWS::RDS::DBInstance';
-const NEPTUNE = 'AWS::Neptune::DBCluster';
 
 /** A settled instance's recorded attributes (CloudFormation's shapes: strings). */
 const ATTRS = {
@@ -91,9 +90,16 @@ const healerReading = (attributes: Record<string, unknown>) =>
 function deployHealer(
   baseline: ResourceState,
   live: Record<string, unknown>,
-  secrets?: RecordedSecretValues
+  secrets?: RecordedSecretValues,
+  pendingAttributeKeys?: string[]
 ) {
-  const provider = { import: vi.fn(async () => ({ physicalId: 'mydb', attributes: live })) };
+  const provider = {
+    import: vi.fn(async () => ({
+      physicalId: 'mydb',
+      attributes: live,
+      ...(pendingAttributeKeys && { pendingAttributeKeys }),
+    })),
+  };
   const healer = new AttributeHealer({
     providerRegistry: { getProviderFor: () => ({ provider, provisionedBy: 'sdk' }) } as never,
     baseline: { Db: baseline },
@@ -150,13 +156,14 @@ describe('stale-shape predicates (#7015)', () => {
     expect(staleShapeAttributeNames(record({ MultiAZ: true })).size).toBe(0);
   });
 
-  it('Neptune DBPort vs Port / Endpoint.Port', () => {
-    const cluster = (attributes: Record<string, unknown>) =>
-      record({ DBPort: 8183 }, attributes, {}, NEPTUNE);
-    expect(staleShapeAttributeNames(cluster({ Port: '8182', 'Endpoint.Port': '8182' }))).toEqual(
-      new Set(['Port', 'Endpoint.Port'])
+  it('a Neptune cluster has no check: its DBPort is reported by the first read (#7006)', () => {
+    const cluster = record(
+      { DBPort: 8183 },
+      { Port: '8182', 'Endpoint.Port': '8182' },
+      {},
+      'AWS::Neptune::DBCluster'
     );
-    expect(staleShapeAttributeNames(cluster({ Port: '8183', 'Endpoint.Port': '8183' })).size).toBe(0);
+    expect(staleShapeAttributeNames(cluster).size).toBe(0);
   });
 
   it('an ordinary record, a masked input, or another type never fires', () => {
@@ -354,6 +361,72 @@ describe('the bound: one re-read per record shape (#7015)', () => {
   });
 });
 
+describe('a modification AWS still lists as pending (#7015)', () => {
+  beforeEach(() => resetAccountInfoCache());
+
+  it('serves the live port, neither replaces nor stamps it, and re-reads next deploy', async () => {
+    const stale = record({ Port: '5433' });
+    const pending = ['Endpoint.Port', 'ListenerEndpoint.Port'];
+    // The port change has not been applied: AWS still reports 5432.
+    const first = deployHealer(stale, { ...ATTRS, 'Endpoint.Port': '5432' }, undefined, pending);
+    await expect(resolveAttr(stale, 'Endpoint.Port', first.asResolverHealer)).resolves.toBe('5432');
+    const saved = first.healer.withHealedAttributes('Db', stale);
+    expect(saved.attributes?.['Endpoint.Port']).toBe('5432');
+    expect(saved).not.toHaveProperty('attributesReadAfterApply');
+
+    // Applied by the next deploy: the record is still unstamped, so it reads.
+    const second = deployHealer(saved, { ...ATTRS, 'Endpoint.Port': '5433' });
+    await expect(resolveAttr(saved, 'Endpoint.Port', second.asResolverHealer)).resolves.toBe(
+      '5433'
+    );
+    expect(second.provider.import).toHaveBeenCalledTimes(1);
+  });
+
+  it('a pending value is never replaced over, nor added to, the record', async () => {
+    const stale = record({ Port: '5433' });
+    const { healer, asResolverHealer } = deployHealer(
+      stale,
+      { ...ATTRS, 'Endpoint.Port': '5434', 'ListenerEndpoint.Port': '5434' },
+      undefined,
+      ['Endpoint.Port', 'ListenerEndpoint.Port']
+    );
+    await expect(resolveAttr(stale, 'Endpoint.Port', asResolverHealer)).resolves.toBe('5434');
+    const saved = healer.withHealedAttributes('Db', stale);
+    expect(saved.attributes?.['Endpoint.Port']).toBe('5432');
+    expect(saved.attributes).not.toHaveProperty('ListenerEndpoint.Port');
+    expect(saved).not.toHaveProperty('attributesReadAfterApply');
+  });
+
+  it('a pending Multi-AZ-off keeps serving the live secondary zone, and keeps it recorded', async () => {
+    const stale = record({ MultiAZ: false }, { ...ATTRS, SecondaryAvailabilityZone: 'us-east-1b' });
+    const { healer, asResolverHealer } = deployHealer(
+      stale,
+      { ...ATTRS, SecondaryAvailabilityZone: 'us-east-1b' },
+      undefined,
+      ['SecondaryAvailabilityZone']
+    );
+    await expect(resolveAttr(stale, 'SecondaryAvailabilityZone', asResolverHealer)).resolves.toBe(
+      'us-east-1b'
+    );
+    const saved = healer.withHealedAttributes('Db', stale);
+    expect(saved.attributes?.['SecondaryAvailabilityZone']).toBe('us-east-1b');
+    expect(saved).not.toHaveProperty('attributesReadAfterApply');
+  });
+
+  it('a pending key the read no longer reports is no proof of absence either', async () => {
+    const stale = record({ MultiAZ: false }, { ...ATTRS, SecondaryAvailabilityZone: 'us-east-1b' });
+    const { healer, asResolverHealer } = deployHealer(stale, { ...ATTRS }, undefined, [
+      'SecondaryAvailabilityZone',
+    ]);
+    await expect(resolveAttr(stale, 'SecondaryAvailabilityZone', asResolverHealer)).resolves.toBe(
+      'us-east-1b'
+    );
+    expect(healer.withHealedAttributes('Db', stale).attributes?.['SecondaryAvailabilityZone']).toBe(
+      'us-east-1b'
+    );
+  });
+});
+
 describe('cdkd diff heals without persisting (#7015)', () => {
   beforeEach(() => resetAccountInfoCache());
 
@@ -376,5 +449,24 @@ describe('cdkd diff heals without persisting (#7015)', () => {
     expect(provider.import).toHaveBeenCalledTimes(1);
     expect(stale).toEqual(snapshot);
     expect(stale).not.toHaveProperty('attributesReadAfterApply');
+  });
+
+  it('serves a pending live value and leaves the record exactly as loaded', async () => {
+    const stale = record({ Port: '5433' });
+    const snapshot = structuredClone(stale);
+    const provider = {
+      import: vi.fn(async () => ({
+        physicalId: 'mydb',
+        attributes: { ...ATTRS, 'Endpoint.Port': '5434' },
+        pendingAttributeKeys: ['Endpoint.Port', 7],
+      })),
+    };
+    const healer = createReadOnlyAttributeHealerFactory({
+      getProvider: () => provider as never,
+      inRegion: (_region, fn) => fn(),
+    })('App', 'us-east-1');
+    await expect(healer('Db', stale)).resolves.toMatchObject({ pendingKeys: ['Endpoint.Port'] });
+    await expect(resolveAttr(stale, 'Endpoint.Port', healer)).resolves.toBe('5434');
+    expect(stale).toEqual(snapshot);
   });
 });

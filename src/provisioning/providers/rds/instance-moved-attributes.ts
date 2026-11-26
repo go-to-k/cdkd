@@ -190,6 +190,22 @@ export function withoutUnappliedMovedAttributes(
   return Object.fromEntries(Object.entries(attributes).filter(([key]) => !dropped.has(key)));
 }
 
+/**
+ * go-to-k/cdkd#7015: the recorded attribute keys a modification RDS still
+ * lists under `PendingModifiedValues` will move. A re-read of the instance
+ * reports their CURRENT value, which the stale-attribute heal serves but must
+ * not record as settled (`ResourceImportResult.pendingAttributeKeys`).
+ */
+export function pendingMovedAttributeKeys(instance: DBInstance | undefined): string[] {
+  const pending = instance?.PendingModifiedValues;
+  if (pending === undefined) return [];
+  const changes: MovedChange[] = [];
+  if (pending.Port !== undefined) changes.push('port');
+  if (pending.CACertificateIdentifier !== undefined) changes.push('caIdentifier');
+  if (pending.MultiAZ !== undefined) changes.push('multiAZ');
+  return changes.flatMap((change) => MOVED_KEYS[change]);
+}
+
 /** The words a wait line names the changes by. */
 export function movedChangesText(changes: MovedAttributeChanges): string {
   return [

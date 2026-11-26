@@ -16,8 +16,15 @@
 # update the SSM parameters reading `Endpoint.Port` and
 # `CertificateDetails.CAIdentifier` must hold what DescribeDBInstances
 # reports, as must the instance record; under --no-wait the reader waits for
-# the port change (the deferred readiness line) instead. Then destroys clean.
-# Runtime: ~25 min (an RDS instance create, two reboots, a delete).
+# the port change (the deferred readiness line) instead.
+#
+# Issue #7015: phase 4 seeds the record a pre-#7006 cdkd wrote after that
+# port change (the OLD `Endpoint.Port`, 5433, beside the declared 5434) and
+# deploys a NEW port reader without touching the instance: the record
+# contradicts itself, so the reader re-reads the instance and must get the
+# live 5434, and the save heals the record. Phase 5 adds another reader and
+# asserts no re-read (the bound). Then destroys clean.
+# Runtime: ~27 min (an RDS instance create, two reboots, a delete).
 
 set -euo pipefail
 
@@ -61,6 +68,8 @@ DB_ID="cdkdrdsdbinstancegetattattributesexample-db"
 ROLE_NAME="${STACK}-app"
 PORT_PARAM="/${STACK}/db-port"
 CA_PARAM="/${STACK}/db-ca"
+NEW_PORT_PARAM_1="/${STACK}/db-port-new-1"
+NEW_PORT_PARAM_2="/${STACK}/db-port-new-2"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 cleanup() {
@@ -76,7 +85,8 @@ cleanup() {
     aws iam delete-role-policy --role-name "${ROLE_NAME}" --policy-name "${p}" >/dev/null 2>&1 || true
   done
   aws iam delete-role --role-name "${ROLE_NAME}" >/dev/null 2>&1 || true
-  aws ssm delete-parameters --region "${REGION}" --names "${PORT_PARAM}" "${CA_PARAM}" >/dev/null 2>&1 || true
+  aws ssm delete-parameters --region "${REGION}" --names "${PORT_PARAM}" "${CA_PARAM}" \
+    "${NEW_PORT_PARAM_1}" "${NEW_PORT_PARAM_2}" >/dev/null 2>&1 || true
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -202,6 +212,51 @@ fi
 rm -f "${UPDATE_LOG}"
 assert_moved "phase 3" 5434 rds-ca-rsa4096-g1
 
+# The heal's read, printed at --verbose by the deploy's attribute healer.
+REREAD_LINE='Re-read the attributes of Db[0-9A-F]{8} \(AWS::RDS::DBInstance\) from AWS'
+
+echo "==> Phase 4: a pre-#7006 record (stale Endpoint.Port) meets a NEW port reader (issue #7015)"
+# Assignments, not argument substitutions, so a failed read or jq aborts here
+# under `set -e` instead of uploading an empty state file.
+SEED_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
+SEEDED=$(printf '%s' "${SEED_STATE}" | jq '.resources |= with_entries(
+  if .value.resourceType == "AWS::RDS::DBInstance"
+  then .value.attributes["Endpoint.Port"] = "5433" | del(.value.attributesReadAfterApply)
+  else . end)')
+[ -n "${SEEDED}" ] || { echo "FAIL: #7015: the seeded state is empty -- not uploading it" >&2; exit 1; }
+printf '%s\n' "${SEEDED}" | aws s3 cp - "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null
+expect_eq "phase 4: seeded recorded Endpoint.Port" "$(record_of Endpoint.Port)" 5433
+HEAL_LOG="$(mktemp)"
+CDKD_TEST_DB_PORT=5434 CDKD_TEST_DB_CA=rds-ca-rsa4096-g1 CDKD_TEST_NEW_PORT_READERS=1 \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --verbose >"${HEAL_LOG}" 2>&1 ||
+  { tail -50 "${HEAL_LOG}"; echo "FAIL: #7015: phase 4 deploy failed" >&2; exit 1; }
+expect_eq "phase 4: instance untouched (DbiResourceId)" \
+  "$(aws rds describe-db-instances --region "${REGION}" --db-instance-identifier "${DB_ID}" --query 'DBInstances[0].DbiResourceId' --output text)" "${LIVE_DBI}"
+if ! grep -qE "${REREAD_LINE}" "${HEAL_LOG}"; then
+  echo "FAIL: #7015: phase 4 never re-read the self-contradicting DB instance record" >&2
+  exit 1
+fi
+rm -f "${HEAL_LOG}"
+expect_eq "phase 4: new port reader (SSM ${NEW_PORT_PARAM_1})" "$(param_of "${NEW_PORT_PARAM_1}")" 5434
+expect_eq "phase 4: healed recorded Endpoint.Port" "$(record_of Endpoint.Port)" 5434
+# The read reconciled the record (live port == declared port), so nothing is
+# left to stamp: a stamp marks only a contradiction AWS itself still reports.
+STAMP="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - |
+  jq -r '[.resources[] | select(.resourceType == "AWS::RDS::DBInstance") | .attributesReadAfterApply // empty] | first // empty')"
+expect_eq "phase 4: attributesReadAfterApply on a reconciled record" "${STAMP}" ""
+
+echo "==> Phase 5: another new port reader re-reads nothing (the bound, issue #7015)"
+BOUND_LOG="$(mktemp)"
+CDKD_TEST_DB_PORT=5434 CDKD_TEST_DB_CA=rds-ca-rsa4096-g1 CDKD_TEST_NEW_PORT_READERS=2 \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --verbose >"${BOUND_LOG}" 2>&1 ||
+  { tail -50 "${BOUND_LOG}"; echo "FAIL: #7015: phase 5 deploy failed" >&2; exit 1; }
+if grep -E "${REREAD_LINE}" "${BOUND_LOG}"; then
+  echo "FAIL: #7015: phase 5 re-read the healed DB instance record again" >&2
+  exit 1
+fi
+rm -f "${BOUND_LOG}"
+expect_eq "phase 5: second new port reader (SSM ${NEW_PORT_PARAM_2})" "$(param_of "${NEW_PORT_PARAM_2}")" 5434
+
 echo "==> Destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
@@ -209,8 +264,10 @@ assert_gone "DB instance ${DB_ID} still exists after destroy" aws rds describe-d
 assert_gone "role ${ROLE_NAME} still exists after destroy" aws iam get-role --role-name "${ROLE_NAME}"
 assert_gone "SSM parameter ${PORT_PARAM} still exists after destroy" aws ssm get-parameter --region "${REGION}" --name "${PORT_PARAM}"
 assert_gone "SSM parameter ${CA_PARAM} still exists after destroy" aws ssm get-parameter --region "${REGION}" --name "${CA_PARAM}"
+assert_gone "SSM parameter ${NEW_PORT_PARAM_1} still exists after destroy" aws ssm get-parameter --region "${REGION}" --name "${NEW_PORT_PARAM_1}"
+assert_gone "SSM parameter ${NEW_PORT_PARAM_2} still exists after destroy" aws ssm get-parameter --region "${REGION}" --name "${NEW_PORT_PARAM_2}"
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: DB instance, role, SSM parameters and state gone"
 
 echo ""
-echo "[verify] PASS — rds-dbinstance-getatt-attributes: DbiResourceId, Endpoint.HostedZoneId and CertificateDetails match DescribeDBInstances, and grantConnect names the resource id; after an in-place port / CA change (default and --no-wait) the readers and the record hold the applied values"
+echo "[verify] PASS — rds-dbinstance-getatt-attributes: DbiResourceId, Endpoint.HostedZoneId and CertificateDetails match DescribeDBInstances, and grantConnect names the resource id; after an in-place port / CA change (default and --no-wait) the readers and the record hold the applied values; a hand-seeded pre-#7006 record is re-read once for a new reader and healed"

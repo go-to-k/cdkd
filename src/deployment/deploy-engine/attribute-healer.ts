@@ -87,8 +87,10 @@ export class AttributeHealer {
     {
       physicalId: string;
       resourceType: string;
+      /** Without the read's pending keys (go-to-k/cdkd#7015): those are never merged. */
       attributes: Record<string, unknown>;
       withheldKeys?: readonly string[];
+      pendingKeys?: readonly string[];
     }
   >();
 
@@ -228,7 +230,7 @@ export class AttributeHealer {
             physicalId: resource.physicalId,
             resourceType: resource.resourceType,
             source: resource.attributes,
-            attributes: outcome.attributes,
+            attributes: withoutPendingKeys(outcome.attributes, outcome.pendingKeys),
           });
         }
         return outcome;
@@ -246,13 +248,16 @@ export class AttributeHealer {
   ): Promise<StaleAttributeHealOutcome> {
     const outcome = await this.readOutcome(logicalId, resource, stackName);
     if (outcome.kind !== 'read') return outcome;
-    const { attributes, withheldKeys } = outcome;
+    const { attributes, withheldKeys, pendingKeys } = outcome;
     if (Object.keys(attributes).length > 0) {
       this.healed.set(logicalId, {
         physicalId: resource.physicalId,
         resourceType: resource.resourceType,
-        attributes,
+        // go-to-k/cdkd#7015: a value about to move is served by the resolver
+        // from the outcome, never recorded.
+        attributes: withoutPendingKeys(attributes, pendingKeys),
         ...(withheldKeys !== undefined && { withheldKeys }),
+        ...(pendingKeys !== undefined && { pendingKeys }),
       });
     }
     return outcome;
@@ -341,6 +346,8 @@ export class AttributeHealer {
     // (unstamped stale shape) are the read's to REPLACE; the secondary zone of a
     // Multi-AZ-off record is dropped when the completed read does not report it.
     const staleKeys = staleShapeReplaceableKeys(record);
+    // A key AWS still lists as pending is kept as recorded and settles nothing.
+    const pending = new Set(healed.pendingKeys ?? []);
     const merged = mergeHealedAttributes(
       record.attributes,
       healed.attributes,
@@ -358,7 +365,9 @@ export class AttributeHealer {
     );
     const attributes = withoutUnreportedStaleKeys(
       merged,
-      new Set([...staleKeys].filter((key) => staleShapeAbsenceIsStale(record, key))),
+      new Set(
+        [...staleKeys].filter((key) => !pending.has(key) && staleShapeAbsenceIsStale(record, key))
+      ),
       healed
     );
     const next =
@@ -370,11 +379,12 @@ export class AttributeHealer {
     // report, was not re-read, and a stamp would freeze its stale value.
     const settled = [...staleKeys].every(
       (key) =>
-        (Object.hasOwn(healed.attributes, key) &&
+        !pending.has(key) &&
+        ((Object.hasOwn(healed.attributes, key) &&
           healed.attributes[key] !== undefined &&
           healed.attributes[key] !== null &&
           healed.attributes[key] !== '') ||
-        !Object.hasOwn(attributes ?? {}, key)
+          !Object.hasOwn(attributes ?? {}, key))
     );
     return staleKeys.size === 0 || !settled
       ? next
@@ -391,6 +401,18 @@ export class AttributeHealer {
     }
     return false;
   }
+}
+
+/** `attributes` without `pendingKeys` (go-to-k/cdkd#7015), or `attributes` itself when none. */
+function withoutPendingKeys(
+  attributes: Readonly<Record<string, unknown>>,
+  pendingKeys: readonly string[] | undefined
+): Record<string, unknown> {
+  if (pendingKeys === undefined || pendingKeys.length === 0) {
+    return attributes as Record<string, unknown>;
+  }
+  const pending = new Set(pendingKeys);
+  return Object.fromEntries(Object.entries(attributes).filter(([key]) => !pending.has(key)));
 }
 
 /**

@@ -43,6 +43,12 @@ export type StaleAttributeHealOutcome =
        * value cdkd itself withheld.
        */
       readonly withheldKeys?: readonly string[];
+      /**
+       * go-to-k/cdkd#7015: keys whose read value is live but about to move
+       * (`ResourceImportResult.pendingAttributeKeys`): served, never merged
+       * over the record, never stamped as settled.
+       */
+      readonly pendingKeys?: readonly string[];
     }
   /** The provider reports no resource behind the recorded physical id. */
   | { readonly kind: 'not-found' }

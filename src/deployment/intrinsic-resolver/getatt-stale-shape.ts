@@ -2,10 +2,10 @@
  * go-to-k/cdkd#7015: a recorded attribute the record ITSELF contradicts.
  *
  * Before go-to-k/cdkd#7006, an in-place `AWS::RDS::DBInstance` update changing
- * `Port`, `CACertificateIdentifier` or `MultiAZ` (and an
- * `AWS::Neptune::DBCluster` update changing `DBPort`) recorded the attributes
- * from the read taken right after the modify call, which still reports the OLD
- * value. A deploy that does not update the resource re-reads nothing, and the
+ * `Port`, `CACertificateIdentifier` or `MultiAZ` recorded the attributes from
+ * the read taken right after the modify call, which still reports the OLD
+ * value. (`AWS::Neptune::DBCluster` has no such window: #7006 measured a
+ * `DBPort` change reported by the very first read, so no record can hold it.) A deploy that does not update the resource re-reads nothing, and the
  * resolver serves a PRESENT recorded attribute without asking the
  * stale-attribute heal (which runs on a miss), so a reader added later
  * resolved the old port.
@@ -122,17 +122,6 @@ const STALE_SHAPE_TYPES: Readonly<Record<string, StaleShapeType>> = {
           scalarText(a['SecondaryAvailabilityZone']) !== undefined,
         attributes: ['SecondaryAvailabilityZone'],
         absenceIsStale: true,
-      },
-    ],
-  },
-  'AWS::Neptune::DBCluster': {
-    propertyInputs: ['DBPort'],
-    attributeInputs: ['Port', 'Endpoint.Port'],
-    checks: [
-      {
-        holds: (p, a) =>
-          differs(p['DBPort'], a['Port']) || differs(p['DBPort'], a['Endpoint.Port']),
-        attributes: ['Port', 'Endpoint.Port'],
       },
     ],
   },

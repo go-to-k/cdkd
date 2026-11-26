@@ -525,7 +525,7 @@ export function isMaskedOwnIdCopy(
 
 /**
  * go-to-k/cdkd#7015: a `Fn::GetAtt` of an attribute the record's own
- * properties contradict (a pre-#7006 RDS / Neptune record still holding the
+ * properties contradict (a pre-#7006 RDS DB instance record still holding the
  * port, CA or Multi-AZ zone from before an in-place modify,
  * {@link needsStaleShapeRead}) re-reads the record through the #1852 heal and
  * serves what AWS reports, as CloudFormation's read after its update would. The
@@ -567,6 +567,8 @@ export function healStaleShapeAttribute(
     // Only Multi-AZ's secondary zone is proven stale by its absence; any
     // other member keeps being served as recorded.
     if (!staleShapeAbsenceIsStale(resource, attributeName)) return undefined;
+    // A pending change is no proof either (go-to-k/cdkd#7015).
+    if (outcome.pendingKeys?.includes(attributeName) === true) return undefined;
     // Reported but unusable (a masked value, or a key a Cloud Control read-back
     // withheld, the attribute's own members included) is no proof of absence.
     const reported =

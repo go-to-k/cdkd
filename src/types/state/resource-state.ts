@@ -77,8 +77,8 @@ export interface ResourceState {
 
   /**
    * go-to-k/cdkd#7015: a deploy re-read this record because its recorded
-   * attributes contradicted its own properties (a pre-#7006 RDS / Neptune
-   * port, CA or Multi-AZ record), and AWS still reported the disagreement.
+   * attributes contradicted its own properties (a pre-#7006 RDS DB
+   * instance's port, CA or Multi-AZ record), and AWS still reported the disagreement.
    * Holds the sha256 of that check's inputs
    * (`intrinsic-resolver/getatt-stale-shape.ts`): while it matches, the check
    * stays off, so a record is re-read for it at most once per shape. Stamped

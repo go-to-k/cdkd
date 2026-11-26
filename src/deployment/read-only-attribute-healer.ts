@@ -107,7 +107,16 @@ export async function readRecordAttributes(input: {
   const reported = Object.entries(normalizeHealedAttributes(found.attributes));
   const attributes = Object.fromEntries(reported.filter(([, value]) => !carriesSecretMask(value)));
   const withheldKeys = reported.filter(([, value]) => carriesSecretMask(value)).map(([key]) => key);
-  return { kind: 'read', attributes, ...(withheldKeys.length > 0 && { withheldKeys }) };
+  // go-to-k/cdkd#7015: an unchecked provider answer, so only string keys.
+  const pendingKeys = Array.isArray(found.pendingAttributeKeys)
+    ? found.pendingAttributeKeys.filter((key): key is string => typeof key === 'string')
+    : [];
+  return {
+    kind: 'read',
+    attributes,
+    ...(withheldKeys.length > 0 && { withheldKeys }),
+    ...(pendingKeys.length > 0 && { pendingKeys }),
+  };
 }
 
 /**
