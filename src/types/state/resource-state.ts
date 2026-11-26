@@ -75,6 +75,18 @@ export interface ResourceState {
   /** Resource attributes for Fn::GetAtt resolution */
   attributes?: Record<string, unknown>;
 
+  /**
+   * go-to-k/cdkd#7015: a deploy re-read this record because its recorded
+   * attributes contradicted its own properties (a pre-#7006 RDS / Neptune
+   * port, CA or Multi-AZ record), and AWS still reported the disagreement.
+   * Holds the sha256 of that check's inputs
+   * (`intrinsic-resolver/getatt-stale-shape.ts`): while it matches, the check
+   * stays off, so a record is re-read for it at most once per shape. Stamped
+   * only by the deploy's persist merge (`cdkd diff` never writes it). No schema
+   * bump: an older binary drops or ignores it, which costs one more re-read.
+   */
+  attributesReadAfterApply?: string;
+
   /** Resource dependencies (logical IDs) for proper deletion order */
   dependencies?: string[];
 

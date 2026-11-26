@@ -32,6 +32,7 @@ import {
 import { describeFailureObserved } from './getatt-refusals.js';
 import { constructAttribute, noteAttributeSecrecy } from './getatt.js';
 import { assembleFlatObjectAttribute } from './getatt/flat-object-attributes.js';
+import { needsStaleShapeRead } from './getatt-stale-shape.js';
 
 /**
  * The remedy half of a STALE-RECORD refusal (issue
@@ -520,6 +521,57 @@ export function isMaskedOwnIdCopy(
       redactForState(healed, { provenance: 'value-scan', secrets: producerSecrets })
     ) === healed
   );
+}
+
+/**
+ * go-to-k/cdkd#7015: a `Fn::GetAtt` of an attribute the record's own
+ * properties contradict (a pre-#7006 RDS / Neptune record still holding the
+ * port, CA or Multi-AZ zone from before an in-place modify,
+ * {@link needsStaleShapeRead}) re-reads the record through the #1852 heal and
+ * serves what AWS reports, as CloudFormation's read after its update would. The
+ * deploy then persists the read (`withHealedAttributes`) and, while the
+ * disagreement stays, stamps the record so it is not re-read for it again.
+ *
+ * `undefined` (synchronously for every other record, or when the heal read
+ * nothing usable: a denied read, a resource gone, a value withheld as masked)
+ * serves the recorded value exactly as before. A COMPLETED read that does not
+ * report the attribute (Multi-AZ turned off: no secondary zone) answers
+ * `absent`: the recorded value is the stale one, so the caller resolves it as
+ * a miss, and the persist merge drops it.
+ */
+export function healStaleShapeAttribute(
+  resolver: IntrinsicFunctionResolver,
+  logicalId: string,
+  resource: ResourceState,
+  attributeName: string,
+  context: ResolverContext
+):
+  | Promise<
+      { readonly kind: 'served'; readonly value: unknown } | { readonly kind: 'absent' } | undefined
+    >
+  | undefined {
+  if (context.attributeHealer === undefined || !needsStaleShapeRead(resource, attributeName)) {
+    return undefined;
+  }
+  return (async () => {
+    const outcome = await healStaleAttributes(resolver, logicalId, resource, context);
+    if (outcome?.kind !== 'read') return undefined;
+    const healed = usableHealedAttribute(resolver, outcome, attributeName, resource.resourceType);
+    if (healed !== undefined) {
+      return {
+        kind: 'served' as const,
+        value: serveHealedAttribute(resolver, logicalId, attributeName, healed, context),
+      };
+    }
+    // Reported but unusable (a masked value, or a key a Cloud Control read-back
+    // withheld, the attribute's own members included) is no proof of absence.
+    const reported =
+      readHealedAttribute(outcome.attributes, attributeName) !== undefined ||
+      Object.keys(outcome.attributes).some((key) => key.startsWith(`${attributeName}.`)) ||
+      healWithheld(resolver, outcome, attributeName) ||
+      (outcome.withheldKeys ?? []).some((key) => key.startsWith(`${attributeName}.`));
+    return reported ? undefined : { kind: 'absent' as const };
+  })();
 }
 
 /**

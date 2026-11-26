@@ -5,6 +5,11 @@ import type { ResourceState } from '../../types/state.js';
 import { displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { isStalePlaceholderArnAttribute } from '../intrinsic-function-resolver.js';
 import { isMaskedOwnIdCopy } from '../intrinsic-resolver/getatt-heal.js';
+import {
+  staleShapeAttributeNames,
+  staleShapeFingerprint,
+  staleShapeReplaceableKeys,
+} from '../intrinsic-resolver/getatt-stale-shape.js';
 import { readRecordAttributes } from '../read-only-attribute-healer.js';
 import { type StateNamingSecrets, secretNamePrintingBags } from '../secret-name-needles.js';
 import type { RecordedSecretValues } from '../secret-redaction.js';
@@ -72,7 +77,12 @@ export class AttributeHealer {
    */
   private readonly healed = new Map<
     string,
-    { physicalId: string; resourceType: string; attributes: Record<string, unknown> }
+    {
+      physicalId: string;
+      resourceType: string;
+      attributes: Record<string, unknown>;
+      withheldKeys?: readonly string[];
+    }
   >();
 
   /**
@@ -229,12 +239,13 @@ export class AttributeHealer {
   ): Promise<StaleAttributeHealOutcome> {
     const outcome = await this.readOutcome(logicalId, resource, stackName);
     if (outcome.kind !== 'read') return outcome;
-    const { attributes } = outcome;
+    const { attributes, withheldKeys } = outcome;
     if (Object.keys(attributes).length > 0) {
       this.healed.set(logicalId, {
         physicalId: resource.physicalId,
         resourceType: resource.resourceType,
         attributes,
+        ...(withheldKeys !== undefined && { withheldKeys }),
       });
     }
     return outcome;
@@ -277,7 +288,7 @@ export class AttributeHealer {
     );
     if (outcome.kind !== 'read') return outcome;
     this.deps.logger.debug(
-      safeMsg`Re-read the attributes of ${displaySafe(logicalId)} (${displaySafe(resource.resourceType)}) from AWS — its state record lacked one a Fn::GetAtt asked for: ${Object.keys(outcome.attributes).length} attribute(s) read`
+      safeMsg`Re-read the attributes of ${displaySafe(logicalId)} (${displaySafe(resource.resourceType)}) from AWS — its state record lacked (or held a stale copy of) one a Fn::GetAtt asked for: ${Object.keys(outcome.attributes).length} attribute(s) read`
     );
     return outcome;
   }
@@ -287,7 +298,9 @@ export class AttributeHealer {
    * `attributes` gained what this deploy's heal read. MERGED, never replaced —
    * only `attributes` is touched, and within it only keys the record does not
    * hold (or holds as a pre-#1681 placeholder ARN, or as `***` over a value carrying its
-   * own physical id and no other recorded secret, go-to-k/cdkd#4849). Skipped when the record no
+   * own physical id and no other recorded secret, go-to-k/cdkd#4849, or as a member its own
+   * properties contradict, go-to-k/cdkd#7015, which a read not reporting it drops and a
+   * read that leaves the contradiction stamps `attributesReadAfterApply`). Skipped when the record no
    * longer describes the resource that was read: a replacement or a Type change
    * this deploy made.
    */
@@ -317,17 +330,31 @@ export class AttributeHealer {
     ) {
       return record;
     }
+    // go-to-k/cdkd#7015: the members the record's own properties contradict
+    // (unstamped stale shape) are the read's to REPLACE, or to drop when the
+    // completed read does not report them.
+    const staleKeys = staleShapeReplaceableKeys(record);
     const merged = mergeHealedAttributes(
       record.attributes,
       healed.attributes,
       (key, value, healedValue) =>
         isStalePlaceholderArnAttribute(record.resourceType, key, value) ||
         // go-to-k/cdkd#4849: a masked copy of the record's own physical id.
-        isMaskedOwnIdCopy(record, key, value, healedValue, this.deps.resolvedSecretsOf(logicalId))
+        isMaskedOwnIdCopy(
+          record,
+          key,
+          value,
+          healedValue,
+          this.deps.resolvedSecretsOf(logicalId)
+        ) ||
+        staleKeys.has(key)
     );
-    return merged === record.attributes || merged === undefined
-      ? record
-      : { ...record, attributes: merged };
+    const attributes = withoutUnreportedStaleKeys(merged, staleKeys, healed);
+    const next =
+      attributes === record.attributes || attributes === undefined
+        ? record
+        : { ...record, attributes };
+    return staleKeys.size === 0 ? next : stampStaleShape(next);
   }
 
   /** Would a save of `resources` persist something a heal read? The no-change path's trigger. */
@@ -340,6 +367,43 @@ export class AttributeHealer {
     }
     return false;
   }
+}
+
+/**
+ * go-to-k/cdkd#7015: drop a stale member the completed read did not report
+ * (Multi-AZ turned off: AWS names no secondary zone), unless the read withheld
+ * it as masked, which is no proof of absence.
+ */
+function withoutUnreportedStaleKeys(
+  attributes: Record<string, unknown> | undefined,
+  staleKeys: ReadonlySet<string>,
+  healed: { attributes: Readonly<Record<string, unknown>>; withheldKeys?: readonly string[] }
+): Record<string, unknown> | undefined {
+  if (attributes === undefined) return attributes;
+  const withheld = healed.withheldKeys ?? [];
+  const drop = [...staleKeys].filter(
+    (key) =>
+      !Object.hasOwn(healed.attributes, key) &&
+      !withheld.some((w) => w === key || key.startsWith(`${w}.`)) &&
+      Object.hasOwn(attributes, key)
+  );
+  if (drop.length === 0) return attributes;
+  const next = { ...attributes };
+  for (const key of drop) delete next[key];
+  return next;
+}
+
+/**
+ * go-to-k/cdkd#7015: the record a stale-shape heal persists. When the record
+ * still contradicts itself after the read (AWS genuinely reports another
+ * value), it is stamped with the check's input hash so later deploys do not
+ * re-read it for this again; a record the read reconciled needs no stamp.
+ */
+function stampStaleShape(record: ResourceState): ResourceState {
+  if (staleShapeAttributeNames(record).size === 0) return record;
+  const stamp = staleShapeFingerprint(record);
+  if (stamp === undefined || record.attributesReadAfterApply === stamp) return record;
+  return { ...record, attributesReadAfterApply: stamp };
 }
 
 /**
