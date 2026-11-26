@@ -466,6 +466,7 @@ rollback-same-id-recreate	2026-11-21T01:28:31Z	PASS	177	verify.sh	PR6710 260d566
 rollback-sqs-cooldown	2026-11-21T03:36:15Z	PASS	180	verify.sh	rc ok, orph clean (#6713, fixture from #6736)
 route53	2026-11-22T05:45:00Z	PASS	472	verify.sh	PR6814 2ae78b7f6, us-east-1, rc ok, orph clean
 route53-drift-import	2026-11-20T11:22:10Z	PASS	130	verify.sh	PR6652 be63cc056, us-east-1, revert-identity kept, orph clean
+route53resolver-rule	2026-11-26T19:11:39Z	PASS	100	verify.sh	PR7074 ea1ef3dc4 us-east-1 rc0 ok, orph clean
 s3-analytics-inventory	2026-11-04T08:31:11Z	PASS	135	verify.sh	verify.sh rc 0, destroy clean, orph clean (own state bucket)
 s3-asset-deploy	2026-10-30T00:18:42Z	PASS	65	verify.sh	rc ok, orph clean
 s3-autodelete-objects-disable	2026-11-16T12:12:46Z	PASS	95	verify.sh	rc ok, orph clean (#6422)
