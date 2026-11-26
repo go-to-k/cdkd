@@ -126,7 +126,7 @@ describe('CacheCluster single-az -> cross-az through the diff (issue #7045)', ()
 
 describe('the #7045 zone-list predicate', () => {
   const ZONES = ['us-east-1a', 'us-east-1b'];
-  const paz = (newProperties: Record<string, unknown>, oldProperties = singleAz) =>
+  const paz = (newProperties: Record<string, unknown>, oldProperties: Record<string, unknown> = singleAz) =>
     elastiCachePreferredAvailabilityZonesReplaced(undefined, newProperties['PreferredAvailabilityZones'], {
       oldProperties,
       newProperties,
