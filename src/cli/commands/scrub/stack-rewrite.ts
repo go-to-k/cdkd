@@ -1,3 +1,4 @@
+import { withoutLapsedStaleShapeStamp } from '../../../deployment/intrinsic-resolver/getatt-stale-shape.js';
 import { isSupersededResourceRecord } from '../../../deployment/superseded-resources.js';
 import { nullPrototypeRecord } from '../../../utils/own-keys.js';
 import { cdkdRemedy } from '../../../utils/pasteable-command.js';
@@ -455,7 +456,11 @@ export async function scrubStackRewritePass({
             observed: 'unproven',
           });
     // go-to-k/cdkd#4847: provenance only for the tokens the record still holds.
-    const written = keepHeldTokenProvenance(applyScrubNoEcho(migrated, record, plan));
+    // go-to-k/cdkd#7015: a stamp over inputs this pass rewrote names values
+    // the record no longer holds.
+    const written = withoutLapsedStaleShapeStamp(
+      keepHeldTokenProvenance(applyScrubNoEcho(migrated, record, plan))
+    );
     if (JSON.stringify(written) !== JSON.stringify(record)) recordsChanged++;
     newResources[logicalId] = written;
   }
@@ -486,11 +491,13 @@ export async function scrubStackRewritePass({
     const needles = new Map(allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets));
     for (const [plaintext, expression] of own ?? []) needles.set(plaintext, expression);
     if (needles.size === 0) return record;
-    const scrubbed = keepHeldTokenProvenance(
-      scrubResourceRecord(record.state, needles, undefined, 'state-cross-generation', {
-        properties: 'unproven',
-        observed: 'unproven',
-      })
+    const scrubbed = withoutLapsedStaleShapeStamp(
+      keepHeldTokenProvenance(
+        scrubResourceRecord(record.state, needles, undefined, 'state-cross-generation', {
+          properties: 'unproven',
+          observed: 'unproven',
+        })
+      )
     );
     if (JSON.stringify(scrubbed) === JSON.stringify(record.state)) return record;
     recordsChanged++;
@@ -506,11 +513,13 @@ export async function scrubStackRewritePass({
           allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets)
         );
         if (needles.size === 0) return entry;
-        const scrubbed = keepHeldTokenProvenance(
-          scrubResourceRecord(entry.state, needles, undefined, 'state-cross-generation', {
-            properties: 'unproven',
-            observed: 'unproven',
-          })
+        const scrubbed = withoutLapsedStaleShapeStamp(
+          keepHeldTokenProvenance(
+            scrubResourceRecord(entry.state, needles, undefined, 'state-cross-generation', {
+              properties: 'unproven',
+              observed: 'unproven',
+            })
+          )
         );
         if (JSON.stringify(scrubbed) === JSON.stringify(entry.state)) return entry;
         recordsChanged++;

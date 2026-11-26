@@ -374,19 +374,11 @@ export class AttributeHealer {
       attributes === record.attributes || attributes === undefined
         ? record
         : { ...record, attributes };
-    // Stamped only when the read SETTLED every contradicted member (reported
-    // it, or proved it absent): a member it withheld as masked, or did not
-    // report, was not re-read, and a stamp would freeze its stale value.
-    const settled = [...staleKeys].every(
-      (key) =>
-        // A pending key was left out of `healed.attributes` and stays
-        // recorded, so it never settles.
-        (Object.hasOwn(healed.attributes, key) &&
-          healed.attributes[key] !== undefined &&
-          healed.attributes[key] !== null &&
-          healed.attributes[key] !== '') ||
-        !Object.hasOwn(attributes ?? {}, key)
-    );
+    // The bound: a completed read stamps whatever it could not settle (a
+    // member absent from it, or withheld as masked), so a record is re-read at
+    // most once per shape. The one exception is a member AWS still lists as
+    // PENDING: its value is about to move, so it re-reads until applied.
+    const settled = ![...staleKeys].some((key) => pending.has(key));
     return staleKeys.size === 0 || !settled
       ? next
       : stampStaleShape(next, this.deps.resolvedSecretsOf(logicalId));

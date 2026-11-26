@@ -290,16 +290,24 @@ describe('the bound: one re-read per record shape (#7015)', () => {
     expect(staleShapeAttributeNames(saved).size).toBe(0);
   });
 
-  it('a member the read withheld as masked is kept and served, and nothing is stamped', async () => {
+  /** The next deploy over `saved`: a reader of `attribute` must not re-read it. */
+  const expectNoReadNextDeploy = async (saved: ResourceState, attribute: string) => {
+    const next = deployHealer(saved, { ...ATTRS });
+    await resolveAttr(saved, attribute, next.asResolverHealer).catch(() => undefined);
+    expect(next.provider.import).not.toHaveBeenCalled();
+  };
+
+  it('a member the read withheld as masked is kept and served, stamped, and not read again', async () => {
     const stale = record({ Port: '5433' });
     const { healer, asResolverHealer } = deployHealer(stale, { ...ATTRS, 'Endpoint.Port': '***' });
     await expect(resolveAttr(stale, 'Endpoint.Port', asResolverHealer)).resolves.toBe('5432');
     const saved = healer.withHealedAttributes('Db', stale);
     expect(saved.attributes?.['Endpoint.Port']).toBe('5432');
-    expect(saved).not.toHaveProperty('attributesReadAfterApply');
+    expect(saved.attributesReadAfterApply).toBe(staleShapeFingerprint(saved));
+    await expectNoReadNextDeploy(saved, 'Endpoint.Port');
   });
 
-  it('a secondary zone the read withheld as masked is no proof of absence', async () => {
+  it('a secondary zone the read withheld as masked is no proof of absence, and is bounded', async () => {
     const stale = record({ MultiAZ: false }, { ...ATTRS, SecondaryAvailabilityZone: 'us-east-1b' });
     const { healer, asResolverHealer } = deployHealer(stale, {
       ...ATTRS,
@@ -310,17 +318,33 @@ describe('the bound: one re-read per record shape (#7015)', () => {
     );
     const saved = healer.withHealedAttributes('Db', stale);
     expect(saved.attributes?.['SecondaryAvailabilityZone']).toBe('us-east-1b');
-    expect(saved).not.toHaveProperty('attributesReadAfterApply');
+    expect(saved).toHaveProperty('attributesReadAfterApply');
+    await expectNoReadNextDeploy(saved, 'SecondaryAvailabilityZone');
   });
 
-  it('a read reporting no endpoint (mid-rename) keeps serving the recorded port, unstamped', async () => {
+  it('a read reporting no endpoint (mid-rename) keeps the recorded port, stamped, read once', async () => {
     const stale = record({ Port: '5433' });
     const { 'Endpoint.Port': _port, ...withoutPort } = ATTRS;
     const { healer, asResolverHealer } = deployHealer(stale, withoutPort);
     await expect(resolveAttr(stale, 'Endpoint.Port', asResolverHealer)).resolves.toBe('5432');
     const saved = healer.withHealedAttributes('Db', stale);
     expect(saved.attributes?.['Endpoint.Port']).toBe('5432');
-    expect(saved).not.toHaveProperty('attributesReadAfterApply');
+    expect(saved).toHaveProperty('attributesReadAfterApply');
+    await expectNoReadNextDeploy(saved, 'Endpoint.Port');
+  });
+
+  it('a recorded listener port the live instance no longer reports is read once, then never', async () => {
+    // AWS genuinely reports 5432 against the declared 5433, and the instance
+    // has no listener endpoint any more.
+    const stale = record({ Port: '5433' }, { ...ATTRS, 'ListenerEndpoint.Port': '5432' });
+    const { healer, provider, asResolverHealer } = deployHealer(stale, { ...ATTRS });
+    await resolveAttr(stale, 'ListenerEndpoint.Port', asResolverHealer);
+    expect(provider.import).toHaveBeenCalledTimes(1);
+    const saved = healer.withHealedAttributes('Db', stale);
+    expect(saved.attributes?.['ListenerEndpoint.Port']).toBe('5432');
+    expect(saved).toHaveProperty('attributesReadAfterApply');
+    await expectNoReadNextDeploy(saved, 'ListenerEndpoint.Port');
+    await expectNoReadNextDeploy(saved, 'Endpoint.Port');
   });
 
   it('a recorded {{resolve:...}} expression on either side never reads, serves or stamps', async () => {

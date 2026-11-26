@@ -228,6 +228,18 @@ export function staleShapeFingerprint(record: ResourceState): string | undefined
     .digest('hex');
 }
 
+/**
+ * `record` without an `attributesReadAfterApply` stamp that no longer matches
+ * its inputs, or `record` itself. For a writer that rewrites the inputs in
+ * place (`cdkd scrub` masking one): the stamp then names values the record no
+ * longer holds.
+ */
+export function withoutLapsedStaleShapeStamp<T extends ResourceState>(record: T): T {
+  if (record.attributesReadAfterApply === undefined || isStaleShapeStamped(record)) return record;
+  const { attributesReadAfterApply: _lapsed, ...rest } = record;
+  return rest as T;
+}
+
 /** Has a deploy already re-read this record in exactly its current shape? */
 export function isStaleShapeStamped(record: ResourceState): boolean {
   const stamp = record.attributesReadAfterApply as unknown;
