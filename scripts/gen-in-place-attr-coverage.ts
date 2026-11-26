@@ -469,6 +469,13 @@ function main(): void {
     }
   }
   if (problems.length > 0) {
+    // Write mode WARNS and exits 0, as the generators beside it in
+    // `gen:all-matrices` do: the schema-refresh workflow runs that chain under
+    // `set -e`, and its PR must still open for the `:check` step to red.
+    if (!process.argv.includes('--check')) {
+      process.stderr.write(`in-place-attr-coverage: WARN\n${problems.join('\n')}\n`);
+      return;
+    }
     process.stderr.write(`in-place-attr-coverage: FAIL\n${problems.join('\n')}\n`);
     process.exit(1);
   }
