@@ -18,8 +18,8 @@
       "identifier-arn-member": 68,
       "update-marker": 106
     },
-    "ccByHand": 11,
-    "ccBaseline": 2084
+    "ccByHand": 37,
+    "ccBaseline": 2058
   },
   "sdk": [
     {
@@ -2618,6 +2618,54 @@
   ],
   "ccHand": [
     {
+      "type": "AWS::Chime::AppInstance",
+      "attribute": "AppInstanceArn",
+      "verdict": "never",
+      "reason": "measured (cdkd-probe-7007-s2c): Name in place left it app-instance/2cf58ce3-..."
+    },
+    {
+      "type": "AWS::Chime::AppInstanceUser",
+      "attribute": "AppInstanceUserArn",
+      "verdict": "never",
+      "reason": "measured (cdkd-probe-7007-s2c): Name in place left it .../user/cdkd-probe-7007-user"
+    },
+    {
+      "type": "AWS::Chime::Channel",
+      "attribute": "Arn",
+      "verdict": "never",
+      "reason": "measured (cdkd-probe-7007-s3c): Name in place left it .../channel/fdc1ec1c-..."
+    },
+    {
+      "type": "AWS::Chime::ChannelFlow",
+      "attribute": "Arn",
+      "verdict": "never",
+      "reason": "measured (cdkd-probe-7007-s4b): Name in place left it .../channel-flow/1109d9cb..."
+    },
+    {
+      "type": "AWS::Chime::ChannelFlow",
+      "attribute": "ChannelFlowId",
+      "verdict": "never",
+      "reason": "measured (cdkd-probe-7007-s4b): Name in place left it 1109d9cb..."
+    },
+    {
+      "type": "AWS::Chime::VoiceConnector",
+      "attribute": "VoiceConnectorArn",
+      "verdict": "never",
+      "reason": "measured (cdkd-probe-7007-s4b): Name in place left it vc/dv56tpxjyzqla7zpqp6swq"
+    },
+    {
+      "type": "AWS::Chime::VoiceConnector",
+      "attribute": "VoiceConnectorId",
+      "verdict": "never",
+      "reason": "measured (cdkd-probe-7007-s4b): Name in place left it dv56tpxjyzqla7zpqp6swq"
+    },
+    {
+      "type": "AWS::CleanRooms::Collaboration",
+      "attribute": "Arn",
+      "verdict": "never",
+      "reason": "measured (cdkd-probe-7007-s2c): Name in place left it collaboration/84408462-..."
+    },
+    {
       "type": "AWS::CodeStarConnections::SyncConfiguration",
       "attribute": "OwnerId",
       "verdict": "moved-by",
@@ -2651,6 +2699,36 @@
       "reason": "the newest landing zone version AWS offers, a service catalog"
     },
     {
+      "type": "AWS::DataSync::Task",
+      "attribute": "TaskArn",
+      "verdict": "never",
+      "reason": "measured (cdkd-probe-7007-s4b): Name in place left it task/task-0be708b518a40c674"
+    },
+    {
+      "type": "AWS::Deadline::Budget",
+      "attribute": "Arn",
+      "verdict": "never",
+      "reason": "measured (cdkd-probe-7007-s3c): DisplayName in place left it .../budget/budget-4a2b9e7f..."
+    },
+    {
+      "type": "AWS::Deadline::Budget",
+      "attribute": "BudgetId",
+      "verdict": "never",
+      "reason": "measured (cdkd-probe-7007-s3c): DisplayName in place left it budget-4a2b9e7f..."
+    },
+    {
+      "type": "AWS::Deadline::Queue",
+      "attribute": "Arn",
+      "verdict": "never",
+      "reason": "measured (cdkd-probe-7007-s2c): DisplayName in place left it .../queue/queue-f632d873..."
+    },
+    {
+      "type": "AWS::Deadline::Queue",
+      "attribute": "QueueId",
+      "verdict": "never",
+      "reason": "measured (cdkd-probe-7007-s2c): DisplayName in place left it queue-f632d873..."
+    },
+    {
       "type": "AWS::EC2::GatewayRouteTableAssociation",
       "attribute": "AssociationId",
       "verdict": "moved-by",
@@ -2670,6 +2748,54 @@
       "attribute": "LatestVersionNumber",
       "verdict": "any-update",
       "reason": "a LaunchTemplateData edit mints the next version"
+    },
+    {
+      "type": "AWS::EC2::PrefixList",
+      "attribute": "Arn",
+      "verdict": "never",
+      "reason": "measured (cdkd-probe-7007-s1): PrefixListName in place left it prefix-list/pl-0d520b78fc4478f52"
+    },
+    {
+      "type": "AWS::Glue::UserDefinedFunction",
+      "attribute": "Arn",
+      "verdict": "never",
+      "reason": "measured (cdkd-probe-7007-s2c): ClassName / OwnerName in place left it .../<db>/<create-only name>"
+    },
+    {
+      "type": "AWS::IAM::ServerCertificate",
+      "attribute": "Arn",
+      "verdict": "never",
+      "reason": "measured (cdkd-probe-7007-s1): Path in place left it .../server-certificate/<old path>/<name>"
+    },
+    {
+      "type": "AWS::IVSChat::LoggingConfiguration",
+      "attribute": "Id",
+      "verdict": "never",
+      "reason": "measured (cdkd-probe-7007-s3c): Name in place left it r2zbNTcYVRdc"
+    },
+    {
+      "type": "AWS::IVSChat::Room",
+      "attribute": "Id",
+      "verdict": "never",
+      "reason": "measured (cdkd-probe-7007-s1): Name in place left it 8NJl1byAY7iO"
+    },
+    {
+      "type": "AWS::KinesisVideo::Stream",
+      "attribute": "Arn",
+      "verdict": "never",
+      "reason": "measured (cdkd-probe-7007-s1): DeviceName in place left it stream/<create-only name>/1795710281819"
+    },
+    {
+      "type": "AWS::Lex::Bot",
+      "attribute": "Arn",
+      "verdict": "never",
+      "reason": "measured (cdkd-probe-7007-s3c): Name in place left it bot/8ACWASRH4S"
+    },
+    {
+      "type": "AWS::Lex::BotAlias",
+      "attribute": "Arn",
+      "verdict": "never",
+      "reason": "measured (cdkd-probe-7007-s3c): BotAliasName in place left it bot-alias/8ACWASRH4S/7ETHCRHKIG"
     },
     {
       "type": "AWS::ODB::CloudExadataInfrastructure",
@@ -2694,6 +2820,36 @@
       "attribute": "EngineFullVersion",
       "verdict": "never",
       "reason": "the source engine version, captured when the snapshot was taken"
+    },
+    {
+      "type": "AWS::Route53Resolver::FirewallRuleGroupAssociation",
+      "attribute": "Arn",
+      "verdict": "never",
+      "reason": "measured (cdkd-probe-7007-s3c): Name in place left it .../rslvr-frgassoc-ad8eaddd39cc403a"
+    },
+    {
+      "type": "AWS::Route53Resolver::ResolverRule",
+      "attribute": "Arn",
+      "verdict": "never",
+      "reason": "measured (cdkd-probe-7007-s1): Name in place left it resolver-rule/rslvr-rr-b961c68a7e1e43908"
+    },
+    {
+      "type": "AWS::WellArchitected::Workload",
+      "attribute": "WorkloadId",
+      "verdict": "never",
+      "reason": "measured (cdkd-probe-7007-s3c): WorkloadName in place left it d407459bb0b58e882b630018989ed8fb"
+    },
+    {
+      "type": "AWS::XRay::Group",
+      "attribute": "GroupARN",
+      "verdict": "never",
+      "reason": "measured (cdkd-probe-7007-s1): GroupName in place left it group/<old name>/NIY2T2OJ..."
+    },
+    {
+      "type": "AWS::XRay::SamplingRule",
+      "attribute": "RuleARN",
+      "verdict": "never",
+      "reason": "measured (cdkd-probe-7007-s1): SamplingRule.RuleName in place left it sampling-rule/<old name>"
     }
   ],
   "ccMoving": {
@@ -4474,24 +4630,15 @@
     "AWS::Chatbot::MicrosoftTeamsChannelConfiguration": [
       "Arn"
     ],
-    "AWS::Chime::AppInstance": [
-      "AppInstanceArn"
-    ],
     "AWS::Chime::AppInstanceBot": [
       "AppInstanceBotArn"
     ],
-    "AWS::Chime::AppInstanceUser": [
-      "AppInstanceUserArn"
-    ],
     "AWS::Chime::Channel": [
-      "Arn",
       "ChannelFlowArn",
       "LastMessageTimestamp"
     ],
     "AWS::Chime::ChannelFlow": [
-      "AppInstanceId",
-      "Arn",
-      "ChannelFlowId"
+      "AppInstanceId"
     ],
     "AWS::Chime::MediaPipelineKinesisVideoStreamPool": [
       "PoolStatus"
@@ -4501,18 +4648,13 @@
       "SipMediaApplicationId"
     ],
     "AWS::Chime::VoiceConnector": [
-      "OutboundHostName",
-      "VoiceConnectorArn",
-      "VoiceConnectorId"
+      "OutboundHostName"
     ],
     "AWS::CleanRooms::AnalysisTemplate": [
       "CollaborationArn",
       "CollaborationIdentifier",
       "MembershipArn",
       "Schema.ReferencedTables"
-    ],
-    "AWS::CleanRooms::Collaboration": [
-      "Arn"
     ],
     "AWS::CleanRooms::ConfiguredTable": [
       "Arn"
@@ -4896,8 +5038,7 @@
     "AWS::DataSync::Task": [
       "DestinationNetworkInterfaceArns",
       "SourceNetworkInterfaceArns",
-      "Status",
-      "TaskArn"
+      "Status"
     ],
     "AWS::DataZone::Connection": [
       "DomainUnitId",
@@ -4964,8 +5105,6 @@
       "Type"
     ],
     "AWS::Deadline::Budget": [
-      "Arn",
-      "BudgetId",
       "Status"
     ],
     "AWS::Deadline::Fleet": [
@@ -4982,10 +5121,6 @@
     "AWS::Deadline::Monitor": [
       "IdentityCenterApplicationArn",
       "Url"
-    ],
-    "AWS::Deadline::Queue": [
-      "Arn",
-      "QueueId"
     ],
     "AWS::Deadline::QueueEnvironment": [
       "Name"
@@ -5120,7 +5255,6 @@
       "VpcId"
     ],
     "AWS::EC2::PrefixList": [
-      "Arn",
       "OwnerId"
     ],
     "AWS::EC2::SqlHaStandbyDetectedInstance": [
@@ -5473,9 +5607,6 @@
     "AWS::Glue::Schema": [
       "InitialSchemaVersionId"
     ],
-    "AWS::Glue::UserDefinedFunction": [
-      "Arn"
-    ],
     "AWS::Grafana::Workspace": [
       "Endpoint",
       "SamlConfigurationStatus",
@@ -5540,9 +5671,6 @@
       "DatastoreEndpoint",
       "DatastoreStatus"
     ],
-    "AWS::IAM::ServerCertificate": [
-      "Arn"
-    ],
     "AWS::IAM::ServiceLinkedRole": [
       "RoleName"
     ],
@@ -5562,11 +5690,7 @@
       "ActiveSessionId"
     ],
     "AWS::IVSChat::LoggingConfiguration": [
-      "Id",
       "State"
-    ],
-    "AWS::IVSChat::Room": [
-      "Id"
     ],
     "AWS::IdentityStore::User": [
       "UserStatus"
@@ -5755,9 +5879,6 @@
       "ChannelCreationTimestamp",
       "ChannelStatus"
     ],
-    "AWS::KinesisVideo::Stream": [
-      "Arn"
-    ],
     "AWS::Lambda::CapacityProvider": [
       "State"
     ],
@@ -5782,11 +5903,7 @@
       "ResourceGroup",
       "Status"
     ],
-    "AWS::Lex::Bot": [
-      "Arn"
-    ],
     "AWS::Lex::BotAlias": [
-      "Arn",
       "BotAliasStatus"
     ],
     "AWS::Lex::BotVersion": [
@@ -6983,7 +7100,6 @@
       "StatusMessage"
     ],
     "AWS::Route53Resolver::FirewallRuleGroupAssociation": [
-      "Arn",
       "ManagedOwnerName",
       "Status",
       "StatusMessage"
@@ -6997,9 +7113,6 @@
       "Arn",
       "HostVPCId",
       "IpAddressCount"
-    ],
-    "AWS::Route53Resolver::ResolverRule": [
-      "Arn"
     ],
     "AWS::S3::AccessGrant": [
       "GrantScope"
@@ -7476,8 +7589,7 @@
       "UpdateStatus"
     ],
     "AWS::WellArchitected::Workload": [
-      "ImprovementStatus",
-      "WorkloadId"
+      "ImprovementStatus"
     ],
     "AWS::Wickr::Network": [
       "MigrationState",
@@ -7572,12 +7684,6 @@
       "BrandingConfiguration.FaviconMetadata",
       "BrandingConfiguration.LogoMetadata",
       "BrandingConfiguration.WallpaperMetadata"
-    ],
-    "AWS::XRay::Group": [
-      "GroupARN"
-    ],
-    "AWS::XRay::SamplingRule": [
-      "RuleARN"
     ]
   }
 }

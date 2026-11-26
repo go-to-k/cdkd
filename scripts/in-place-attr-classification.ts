@@ -81,6 +81,89 @@ const STEADY_STATUS = never(
   'an operational status that settles back to its steady value after an update; no property sets it'
 );
 
+/**
+ * go-to-k/cdkd#7007: own ARNs / ids of Cloud Control types with an in-place
+ * name, MEASURED with throwaway CloudFormation stacks (us-east-1, 2026-11-27):
+ * create, change every in-place name property, update, and compare the
+ * physical id, `Ref` and the GetAtt before and after. Each update completed
+ * in place (no replacement) and left the value as recorded here.
+ */
+const renamed = (stack: string, change: string, value: string): InPlaceAttrVerdict =>
+  never(`measured (${stack}): ${change} in place left it ${value}`);
+
+const RENAME_MEASURED: Readonly<Record<string, Readonly<Record<string, InPlaceAttrVerdict>>>> = {
+  'AWS::Chime::AppInstance': {
+    AppInstanceArn: renamed('cdkd-probe-7007-s2c', 'Name', 'app-instance/2cf58ce3-...'),
+  },
+  'AWS::Chime::AppInstanceUser': {
+    AppInstanceUserArn: renamed('cdkd-probe-7007-s2c', 'Name', '.../user/cdkd-probe-7007-user'),
+  },
+  'AWS::Chime::Channel': {
+    Arn: renamed('cdkd-probe-7007-s3c', 'Name', '.../channel/fdc1ec1c-...'),
+  },
+  'AWS::Chime::ChannelFlow': {
+    Arn: renamed('cdkd-probe-7007-s4b', 'Name', '.../channel-flow/1109d9cb...'),
+    ChannelFlowId: renamed('cdkd-probe-7007-s4b', 'Name', '1109d9cb...'),
+  },
+  'AWS::Chime::VoiceConnector': {
+    VoiceConnectorArn: renamed('cdkd-probe-7007-s4b', 'Name', 'vc/dv56tpxjyzqla7zpqp6swq'),
+    VoiceConnectorId: renamed('cdkd-probe-7007-s4b', 'Name', 'dv56tpxjyzqla7zpqp6swq'),
+  },
+  'AWS::CleanRooms::Collaboration': {
+    Arn: renamed('cdkd-probe-7007-s2c', 'Name', 'collaboration/84408462-...'),
+  },
+  'AWS::DataSync::Task': {
+    TaskArn: renamed('cdkd-probe-7007-s4b', 'Name', 'task/task-0be708b518a40c674'),
+  },
+  'AWS::Deadline::Budget': {
+    Arn: renamed('cdkd-probe-7007-s3c', 'DisplayName', '.../budget/budget-4a2b9e7f...'),
+    BudgetId: renamed('cdkd-probe-7007-s3c', 'DisplayName', 'budget-4a2b9e7f...'),
+  },
+  'AWS::Deadline::Queue': {
+    Arn: renamed('cdkd-probe-7007-s2c', 'DisplayName', '.../queue/queue-f632d873...'),
+    QueueId: renamed('cdkd-probe-7007-s2c', 'DisplayName', 'queue-f632d873...'),
+  },
+  'AWS::EC2::PrefixList': {
+    Arn: renamed('cdkd-probe-7007-s1', 'PrefixListName', 'prefix-list/pl-0d520b78fc4478f52'),
+  },
+  'AWS::Glue::UserDefinedFunction': {
+    Arn: renamed('cdkd-probe-7007-s2c', 'ClassName / OwnerName', '.../<db>/<create-only name>'),
+  },
+  'AWS::IAM::ServerCertificate': {
+    // The handler completes the update without applying the new Path.
+    Arn: renamed('cdkd-probe-7007-s1', 'Path', '.../server-certificate/<old path>/<name>'),
+  },
+  'AWS::IVSChat::LoggingConfiguration': {
+    Id: renamed('cdkd-probe-7007-s3c', 'Name', 'r2zbNTcYVRdc'),
+  },
+  'AWS::IVSChat::Room': { Id: renamed('cdkd-probe-7007-s1', 'Name', '8NJl1byAY7iO') },
+  'AWS::KinesisVideo::Stream': {
+    Arn: renamed('cdkd-probe-7007-s1', 'DeviceName', 'stream/<create-only name>/1795710281819'),
+  },
+  'AWS::Lex::Bot': { Arn: renamed('cdkd-probe-7007-s3c', 'Name', 'bot/8ACWASRH4S') },
+  'AWS::Lex::BotAlias': {
+    Arn: renamed('cdkd-probe-7007-s3c', 'BotAliasName', 'bot-alias/8ACWASRH4S/7ETHCRHKIG'),
+  },
+  'AWS::Route53Resolver::FirewallRuleGroupAssociation': {
+    Arn: renamed('cdkd-probe-7007-s3c', 'Name', '.../rslvr-frgassoc-ad8eaddd39cc403a'),
+  },
+  // A DomainName change REPLACES the rule (measured: a new rslvr-rr- id);
+  // the in-place Name change keeps it.
+  'AWS::Route53Resolver::ResolverRule': {
+    Arn: renamed('cdkd-probe-7007-s1', 'Name', 'resolver-rule/rslvr-rr-b961c68a7e1e43908'),
+  },
+  'AWS::WellArchitected::Workload': {
+    WorkloadId: renamed('cdkd-probe-7007-s3c', 'WorkloadName', 'd407459bb0b58e882b630018989ed8fb'),
+  },
+  // The handlers complete a rename without applying it: the name and ARN stay.
+  'AWS::XRay::Group': {
+    GroupARN: renamed('cdkd-probe-7007-s1', 'GroupName', 'group/<old name>/NIY2T2OJ...'),
+  },
+  'AWS::XRay::SamplingRule': {
+    RuleARN: renamed('cdkd-probe-7007-s1', 'SamplingRule.RuleName', 'sampling-rule/<old name>'),
+  },
+};
+
 export const SDK_IN_PLACE_ATTR_CLASSIFICATION: Readonly<
   Record<string, Readonly<Record<string, InPlaceAttrVerdict>>>
 > = {
@@ -651,4 +734,5 @@ export const SDK_IN_PLACE_ATTR_CLASSIFICATION: Readonly<
     LabelNamespace: never('built from the create-only Name'),
     Capacity: movedBy(['Rules'], 'the capacity units the rules use'),
   },
+  ...RENAME_MEASURED,
 };

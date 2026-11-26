@@ -77,6 +77,11 @@ describe('the committed audit (#7001)', () => {
     expect(report.summary.ccByRule['owner-account']).toBeGreaterThan(25);
     expect(report.summary.ccByRule['identifier-arn-member']).toBeGreaterThan(60);
     expect(report.summary.ccByRule['update-marker']).toBeGreaterThan(100);
+    // #7007: the measured rename probes are hand verdicts.
+    expect(report.summary.ccByHand).toBeGreaterThan(30);
+    expect(report.ccHand).toContainEqual(
+      expect.objectContaining({ type: 'AWS::EC2::PrefixList', attribute: 'Arn', verdict: 'never' })
+    );
     // A type the spec lacks is read from its schema fixture.
     expect(report.sdk.some((r) => r.type === 'AWS::BedrockAgentCore::Browser')).toBe(true);
   });
@@ -120,7 +125,9 @@ describe('the hand verdicts equal the shared.ts tables (#7001)', () => {
       // A row of a type the spec does not list as SDK-routed (LaunchTemplate)
       // is a Cloud Control row; it must still name a real pair.
       for (const attr of attrs) {
-        if (sdkTypes.has(type)) {
+        // An SDK type's row, or a Cloud Control pair classified by hand, is a
+        // hand any-update; any other Cloud Control row is a rule's (#7007).
+        if (inputs.registered.has(type) || verdictOf(type, attr) !== undefined) {
           expect(verdictOf(type, attr), `${type} ${attr}`).toBe('any-update');
         } else {
           // A Cloud Control row must name a real pair that no rule calls `never`.
