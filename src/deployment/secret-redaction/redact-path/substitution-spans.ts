@@ -209,7 +209,8 @@ function redactGap(
   return typeof scanned === 'string' && scanned === gap ? gap : 'mask';
 }
 
-function exposedAt(text: string, plaintext: string, copies: readonly string[]): number[] {
+/** Where `plaintext` sits in `text` outside every reference and physical-name copy. */
+export function exposedAt(text: string, plaintext: string, copies: readonly string[]): number[] {
   const tokens = dynamicReferenceSpans(text).map((s) => [s.start, s.end] as const);
   const copyRanges: Array<readonly [number, number]> = [];
   for (const copy of copies) {

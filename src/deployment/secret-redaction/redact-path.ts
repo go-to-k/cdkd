@@ -32,6 +32,7 @@ import {
   positionBySubstitutionSpans,
 } from './redact-path/substitution-spans.js';
 import { attributionRefusedReadsOf } from './nested-stack/refused-parameter-reads.js';
+import { placeUnpairedListElements } from './redact-path/unplaced-list-elements.js';
 
 export { sourceElementsKeptFor, arrayPairsWhateverDrops } from './redact-path/array-drop.js';
 export {
@@ -457,6 +458,7 @@ export function redactByPath(
       // answer reads as protection while fencing nothing.
       const positionalIsExact =
         rules.descendArrays && bag.length === source.length && orderPreserved;
+      const unpaired = placeUnpairedListElements(source, secrets, rules, listValueScan(secrets));
       return bag.map((item, i) => {
         const j = partnerIndex[i]!;
         if (j >= 0)
@@ -478,7 +480,9 @@ export function redactByPath(
             bagIsSameGeneration
           );
         }
-        return redactForState(item, { provenance: 'value-scan', secrets });
+        return unpaired !== undefined
+          ? unpaired(item)
+          : redactForState(item, { provenance: 'value-scan', secrets });
       });
     }
     if (rules.descendArrays && bag.length === source.length) {
@@ -510,6 +514,12 @@ export function redactByPath(
         );
       }
     }
+    // No position pairs the elements (an AWS readback, never descended by
+    // index): an element holding the text of a secret the source consumed is
+    // placed by its recorded spans or masked, never left to the value scan,
+    // which cannot see a 1-3 character secret (go-to-k/cdkd#7050).
+    const unpaired = placeUnpairedListElements(source, secrets, rules, listValueScan(secrets));
+    if (unpaired !== undefined) return bag.map(unpaired);
   }
   // `hasPlainPrototype` for issue
   // [#2869](https://github.com/go-to-k/cdkd/issues/2869): this is the FIRST of
@@ -619,4 +629,8 @@ function listHoldsConsumedSecret(
         ? value.some(holds)
         : value !== null && typeof value === 'object' && Object.values(value).some(holds);
   return holds(bag);
+}
+
+function listValueScan(secrets: RecordedSecretValues): (value: unknown) => unknown {
+  return (value) => redactForState(value, { provenance: 'value-scan', secrets });
 }

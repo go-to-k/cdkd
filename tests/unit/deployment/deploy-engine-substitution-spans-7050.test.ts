@@ -522,7 +522,10 @@ describe('a stale NoEcho leaf drops only its input-fingerprint non-proof (#7050 
       'noecho-old-value',
       'pg_apgb',
     ]);
-    expect(exposes(moved.persisted?.properties)).toBeUndefined();
+    // The WHOLE saved record, `observedProperties` included: the readback of
+    // leaf 1 is masked as `properties` holds it.
+    expect(exposes(moved.all)).toBeUndefined();
+    expect(moved.persisted?.observedProperties?.['VPCSecurityGroups']).toEqual(['noecho-old-value', '***']);
   });
 
   it('the plan reads "stale" through the shared predicate: a NoEcho leaf not wholly the mask is re-baselined', async () => {
@@ -544,5 +547,71 @@ describe('a stale NoEcho leaf drops only its input-fingerprint non-proof (#7050 
     expect(run.thrown).toBeUndefined();
     expect(run.calls).toEqual([]);
     expect(run.persisted?.maskedPropertyInputFingerprints?.['VPCSecurityGroups']).toBe(baseline);
+  });
+});
+
+describe('a readback list element holding a 1-3 character secret is positioned or masked as properties are (#7050 review)', () => {
+  afterEach(() => {
+    READBACK.props = undefined;
+    PLAIN.v = 'db-secret';
+  });
+  const joined = (part: unknown): unknown => ({ 'Fn::Join': ['_', [USERNAME, part]] });
+  /** Deploy, update `BackupRetentionPeriod` with AWS reading `live` back, then deploy unchanged. */
+  async function updated(groups: unknown[], live: unknown[]): Promise<Run> {
+    const created = await deploy({}, tpl(undefined, 1, { VPCSecurityGroups: groups }));
+    expect(created.thrown).toBeUndefined();
+    READBACK.props = { VPCSecurityGroups: live, BackupRetentionPeriod: 2 };
+    const up = await deploy({ Db: structuredClone(created.persisted!) }, tpl(undefined, 2, { VPCSecurityGroups: groups }));
+    expect(up.thrown).toBeUndefined();
+    expect(up.calls).toEqual(['update:Db']);
+    const again = await deploy({ Db: structuredClone(up.persisted!) }, tpl(undefined, 2, { VPCSecurityGroups: groups }));
+    expect(again.thrown).toBeUndefined();
+    expect(again.diff?.get('Db')?.changeType).toBe('NO_CHANGE');
+    expect(again.calls).toEqual([]);
+    return up;
+  }
+
+  it('a masked leaf: the readback element is masked, never kept as `pg_pg`', async () => {
+    PLAIN.v = 'pg';
+    const up = await updated(['sg-1', joined({ Ref: 'Plain' })], ['sg-1', 'pg_pg']);
+    expect(up.persisted?.properties['VPCSecurityGroups']).toEqual(['sg-1', '***']);
+    expect(up.persisted?.observedProperties?.['VPCSecurityGroups']).toEqual(['sg-1', '***']);
+    expect(exposes(up.all)).toBeUndefined();
+  });
+
+  it('a positioned leaf: the readback element takes its recorded spans, also when AWS reorders the list', async () => {
+    for (const live of [['sg-1', 'pg_text'], ['pg_text', 'sg-1']]) {
+      const up = await updated(['sg-1', joined('text')], live);
+      const positioned = live.map((v) => (v === 'sg-1' ? v : `${USERNAME}_text`));
+      expect(up.persisted?.properties['VPCSecurityGroups']).toEqual(['sg-1', `${USERNAME}_text`]);
+      expect(up.persisted?.observedProperties?.['VPCSecurityGroups']).toEqual(positioned);
+      expect(exposes(up.all)).toBeUndefined();
+    }
+  });
+
+  it('a keyed list: an element whose key the template lacks has its secret-bearing leaf masked', async () => {
+    const tags = [{ Key: 'k', Value: joined('text') }];
+    const created = await deploy({}, tpl(undefined, 1, { Tags: tags }));
+    expect(created.thrown).toBeUndefined();
+    READBACK.props = {
+      Tags: [
+        { Key: 'k', Value: 'pg_text' },
+        { Key: 'added', Value: 'pg_text' },
+      ],
+      BackupRetentionPeriod: 2,
+    };
+    const up = await deploy({ Db: structuredClone(created.persisted!) }, tpl(undefined, 2, { Tags: tags }));
+    expect(up.thrown).toBeUndefined();
+    expect(up.persisted?.observedProperties?.['Tags']).toEqual([
+      { Key: 'k', Value: `${USERNAME}_text` },
+      { Key: 'added', Value: '***' },
+    ]);
+    expect(exposes(up.all)).toBeUndefined();
+  });
+
+  it('a readback element no source element resolved to is masked', async () => {
+    const up = await updated(['sg-1', joined('text')], ['sg-1', 'pg_other']);
+    expect(up.persisted?.observedProperties?.['VPCSecurityGroups']).toEqual(['sg-1', '***']);
+    expect(exposes(up.all)).toBeUndefined();
   });
 });
