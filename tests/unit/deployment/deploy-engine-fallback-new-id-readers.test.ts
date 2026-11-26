@@ -492,8 +492,8 @@ describe('DeployEngine - NO_CHANGE readers of a fallback replacement under a new
     expect((refUpdates[0]![3] as Record<string, unknown>)['Value']).toBe(NEW_ID);
     // The rollback's revert sends the recorded value back...
     expect((refUpdates[1]![3] as Record<string, unknown>)['Value']).toBe(OLD_ID);
-    // ...and the function is back under that id, the new one deleted: the
-    // reverted reader and the function agree.
+    // ...and the rollback re-created the function and deleted the new one.
+    // (That the re-create lands on OLD_ID is this mock's answer, not cdkd's.)
     expect(fnCreates).toBe(2);
     expect(callsFor(sdk.delete, 'Fn').map((c) => c[1])).toEqual([OLD_ID, NEW_ID]);
     expect(saved('Fn')?.physicalId).toBe(OLD_ID);
@@ -531,6 +531,30 @@ describe('DeployEngine - NO_CHANGE readers of a fallback replacement under a new
     expect(lines.filter((l) => l.includes('Planned reads Fn'))).toEqual([
       expect.stringContaining('replacing it instead of updating it in place'),
     ]);
+  });
+
+  it('names no cause for a reader the plan already replaces', async () => {
+    // `Renamed`'s create-only `Name` changes in the template itself.
+    const t = template('nodejs24.x');
+    t.Resources['Renamed'] = {
+      Type: PARAM_TYPE,
+      Properties: {
+        Name: { 'Fn::Join': ['-', [{ Ref: 'Fn' }, 'renamed']] },
+        Type: 'String',
+        Value: 'v',
+      },
+    };
+    stateWith({
+      Renamed: paramRecord('earlier-name', { Name: 'earlier-name', Type: 'String', Value: 'v' }, [
+        'Fn',
+      ]),
+    });
+
+    await makeEngine({ forceStatefulRecreation: true }).deploy(STACK, t);
+
+    expect(callsFor(sdk.create, 'Renamed')).toHaveLength(1);
+    const lines = (getLogger().info as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+    expect(lines.filter((l) => l.includes('Renamed reads Fn'))).toEqual([]);
   });
 
   it('adds a reader two fallback replacements share once', async () => {
