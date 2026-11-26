@@ -213,7 +213,7 @@ eventbus-policy	2026-11-26T03:14:44Z	PASS	205	verify.sh	PR7013 2de5a0442 us-east
 eventsourcemapping-race	2026-11-06T20:37:27Z	PASS	109	verify.sh	#5913 lambda-eventsource split head; rc ok, orph clean
 export	2026-11-25T15:18:54Z	PASS	323	verify.sh	rc ok, orph clean
 export-nested-stack	2026-11-24T08:24:34Z	PASS	205	verify.sh	rc ok, orph clean; #6902 regression (flip-tag pre-flight)
-fallback-recreate-children	2026-11-04T20:04:01Z	PASS	100	verify.sh	rc ok, orph clean
+fallback-recreate-children	2026-11-26T19:33:34Z	PASS	166	verify.sh	PR7085 437b0d0af us-east-1 rc 0 ok, orph clean
 fifo-sqs-event-source	2026-11-20T11:22:10Z	PASS	196	verify.sh	PR6652 be63cc056, us-east-1, revert-identity kept, orph clean
 firehose-iceberg-destination	2026-11-22T02:46:37Z	PASS	186	verify.sh	rc ok, orph clean, sha 3116c9288 (#6813 sub-read errors)
 firehose-msk-source	2026-11-02T19:24:26Z	PASS	588	verify.sh	rc ok, destroy 9 deleted 0 errors, orph clean
