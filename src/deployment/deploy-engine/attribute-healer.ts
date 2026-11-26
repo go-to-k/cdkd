@@ -7,6 +7,7 @@ import { displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { isStalePlaceholderArnAttribute } from '../intrinsic-function-resolver.js';
 import { isMaskedOwnIdCopy } from '../intrinsic-resolver/getatt-heal.js';
 import {
+  staleShapeAbsenceIsStale,
   staleShapeAttributeNames,
   staleShapeFingerprint,
   staleShapeInputs,
@@ -337,8 +338,8 @@ export class AttributeHealer {
       return record;
     }
     // go-to-k/cdkd#7015: the members the record's own properties contradict
-    // (unstamped stale shape) are the read's to REPLACE, or to drop when the
-    // completed read does not report them.
+    // (unstamped stale shape) are the read's to REPLACE; the secondary zone of a
+    // Multi-AZ-off record is dropped when the completed read does not report it.
     const staleKeys = staleShapeReplaceableKeys(record);
     const merged = mergeHealedAttributes(
       record.attributes,
@@ -355,12 +356,22 @@ export class AttributeHealer {
         ) ||
         staleKeys.has(key)
     );
-    const attributes = withoutUnreportedStaleKeys(merged, staleKeys, healed);
+    const attributes = withoutUnreportedStaleKeys(
+      merged,
+      new Set([...staleKeys].filter((key) => staleShapeAbsenceIsStale(record, key))),
+      healed
+    );
     const next =
       attributes === record.attributes || attributes === undefined
         ? record
         : { ...record, attributes };
-    return staleKeys.size === 0
+    // Stamped only when the read SETTLED every contradicted member (reported
+    // it, or proved it absent): a member it withheld as masked, or did not
+    // report, was not re-read, and a stamp would freeze its stale value.
+    const settled = [...staleKeys].every(
+      (key) => Object.hasOwn(healed.attributes, key) || !Object.hasOwn(attributes ?? {}, key)
+    );
+    return staleKeys.size === 0 || !settled
       ? next
       : stampStaleShape(next, this.deps.resolvedSecretsOf(logicalId));
   }
@@ -378,18 +389,18 @@ export class AttributeHealer {
 }
 
 /**
- * go-to-k/cdkd#7015: drop a stale member the completed read did not report
- * (Multi-AZ turned off: AWS names no secondary zone), unless the read withheld
- * it as masked, which is no proof of absence.
+ * go-to-k/cdkd#7015: drop a stale member whose absence from a completed read
+ * proves it stale (`dropKeys`: Multi-AZ turned off, AWS names no secondary
+ * zone), unless the read withheld it as masked, which is no proof of absence.
  */
 function withoutUnreportedStaleKeys(
   attributes: Record<string, unknown> | undefined,
-  staleKeys: ReadonlySet<string>,
+  dropKeys: ReadonlySet<string>,
   healed: { attributes: Readonly<Record<string, unknown>>; withheldKeys?: readonly string[] }
 ): Record<string, unknown> | undefined {
   if (attributes === undefined) return attributes;
   const withheld = healed.withheldKeys ?? [];
-  const drop = [...staleKeys].filter(
+  const drop = [...dropKeys].filter(
     (key) =>
       !Object.hasOwn(healed.attributes, key) &&
       !withheld.some((w) => w === key || key.startsWith(`${w}.`)) &&

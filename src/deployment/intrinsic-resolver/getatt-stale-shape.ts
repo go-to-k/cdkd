@@ -44,6 +44,13 @@ interface StaleShapeCheck {
    * and the whole objects assembled from them (`flat-object-attributes.ts`).
    */
   readonly attributes: readonly string[];
+  /**
+   * A completed read NOT reporting the attribute proves the recorded one
+   * stale (Multi-AZ off: AWS names no secondary zone). Elsewhere absence
+   * proves nothing (an instance mid-rename reports no endpoint), and the
+   * recorded value is kept and served.
+   */
+  readonly absenceIsStale?: true;
 }
 
 interface StaleShapeType {
@@ -114,6 +121,7 @@ const STALE_SHAPE_TYPES: Readonly<Record<string, StaleShapeType>> = {
           isOffOrAbsent(p['MultiAZ']) &&
           scalarText(a['SecondaryAvailabilityZone']) !== undefined,
         attributes: ['SecondaryAvailabilityZone'],
+        absenceIsStale: true,
       },
     ],
   },
@@ -171,6 +179,11 @@ function inputsOf(
  * stamp; empty when the record holds none (or is of a type with no checks).
  */
 export function staleShapeAttributeNames(record: ResourceState): ReadonlySet<string> {
+  return namesOf(record, () => true);
+}
+
+/** The attribute names of the record's disagreements whose check passes `keep`. */
+function namesOf(record: ResourceState, keep: (check: StaleShapeCheck) => boolean): Set<string> {
   const resourceType = record.resourceType as unknown;
   if (typeof resourceType !== 'string' || !Object.hasOwn(STALE_SHAPE_TYPES, resourceType)) {
     return new Set();
@@ -181,7 +194,9 @@ export function staleShapeAttributeNames(record: ResourceState): ReadonlySet<str
   if (inputsOf(shape, properties, attributes) === undefined) return new Set();
   const names = new Set<string>();
   for (const check of shape.checks) {
-    if (check.holds(properties, attributes)) for (const name of check.attributes) names.add(name);
+    if (keep(check) && check.holds(properties, attributes)) {
+      for (const name of check.attributes) names.add(name);
+    }
   }
   return names;
 }
@@ -240,5 +255,17 @@ export function staleShapeReplaceableKeys(record: ResourceState): ReadonlySet<st
   const attributes = bagOf(record.attributes);
   return new Set(
     [...staleShapeAttributeNames(record)].filter((key) => Object.hasOwn(attributes, key))
+  );
+}
+
+/**
+ * May a completed read that does not report `attributeName` be taken as proof
+ * the recorded value is stale (resolve as a miss, drop it on save)? Only for a
+ * check whose absence means so ({@link StaleShapeCheck.absenceIsStale}).
+ */
+export function staleShapeAbsenceIsStale(record: ResourceState, attributeName: string): boolean {
+  return (
+    !isStaleShapeStamped(record) &&
+    namesOf(record, (check) => check.absenceIsStale === true).has(attributeName)
   );
 }

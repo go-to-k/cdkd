@@ -32,7 +32,7 @@ import {
 import { describeFailureObserved } from './getatt-refusals.js';
 import { constructAttribute, noteAttributeSecrecy } from './getatt.js';
 import { assembleFlatObjectAttribute } from './getatt/flat-object-attributes.js';
-import { needsStaleShapeRead } from './getatt-stale-shape.js';
+import { needsStaleShapeRead, staleShapeAbsenceIsStale } from './getatt-stale-shape.js';
 
 /**
  * The remedy half of a STALE-RECORD refusal (issue
@@ -535,9 +535,10 @@ export function isMaskedOwnIdCopy(
  * `undefined` (synchronously for every other record, or when the heal read
  * nothing usable: a denied read, a resource gone, a value withheld as masked)
  * serves the recorded value exactly as before. A COMPLETED read that does not
- * report the attribute (Multi-AZ turned off: no secondary zone) answers
- * `absent`: the recorded value is the stale one, so the caller resolves it as
- * a miss, and the persist merge drops it.
+ * report the secondary zone of a record with Multi-AZ off answers `absent`:
+ * the recorded value is the stale one, so the caller resolves it as a miss,
+ * and the persist merge drops it. Any other member missing from the read is
+ * served as recorded.
  */
 export function healStaleShapeAttribute(
   resolver: IntrinsicFunctionResolver,
@@ -563,6 +564,9 @@ export function healStaleShapeAttribute(
         value: serveHealedAttribute(resolver, logicalId, attributeName, healed, context),
       };
     }
+    // Only Multi-AZ's secondary zone is proven stale by its absence; any
+    // other member keeps being served as recorded.
+    if (!staleShapeAbsenceIsStale(resource, attributeName)) return undefined;
     // Reported but unusable (a masked value, or a key a Cloud Control read-back
     // withheld, the attribute's own members included) is no proof of absence.
     const reported =
