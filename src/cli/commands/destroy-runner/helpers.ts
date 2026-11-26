@@ -11,7 +11,7 @@ import {
   perType,
   readProtection,
 } from '../../../provisioning/protection-flags.js';
-import type { StackState } from '../../../types/state.js';
+import { shouldRetainResource, type StackState } from '../../../types/state.js';
 import type { DeploymentEventRecorder } from '../../../types/deployment-events.js';
 import type { JournaledOrphans } from '../../../deployment/rollback-executor/journaled-orphans.js';
 import { orphanNeedsIdentity } from '../../../deployment/rollback-executor/orphan-identity.js';
@@ -99,8 +99,10 @@ export const SKIPPED_REMEDY =
 export function countProtectedResources(state: StackState): number {
   let count = 0;
   // go-to-k/cdkd#5111: the superseded copies too, whose delete gets the flag.
+  // go-to-k/cdkd#7005: not a record its `DeletionPolicy` keeps, whose delete
+  // returns before any flip.
   const records = [
-    ...Object.values(state.resources ?? {}),
+    ...Object.values(state.resources ?? {}).filter((r) => !shouldRetainResource(r.deletionPolicy)),
     ...supersededResourcesOf(state).map((entry) => entry.state),
   ];
   for (const resource of records) {

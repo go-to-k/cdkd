@@ -317,7 +317,7 @@ The output:
 Destructive changes:
   MyStack: AWS::DynamoDB::Table MyTable MyTable794EDED1 will be orphaned
 
-Stack MyStack: 0 to create, 1 to update, 1 to delete.
+Stack MyStack: 0 to create, 1 to update, 0 to delete, 1 to orphan.
 Stack includes destructive updates and "--require-approval" is set to 'destructive'.
 Do you wish to deploy these changes? (y/n)
 ```

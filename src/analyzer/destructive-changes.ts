@@ -201,6 +201,31 @@ export function constructPathOf(
   return typeof path === 'string' && path !== '' ? path : undefined;
 }
 
+/**
+ * go-to-k/cdkd#7005: the removals a deploy keeps in AWS (`WILL_ORPHAN`), so a
+ * change summary can show them as orphaned rather than deleted.
+ */
+export function orphanedLogicalIds(changes: readonly DestructiveChange[]): Set<string> {
+  return new Set(changes.filter((c) => c.impact === 'WILL_ORPHAN').map((c) => c.logicalId));
+}
+
+/**
+ * The `N to create, N to update, N to delete` summary. `delete` counts only
+ * the removals the deploy destroys; the ones it keeps in AWS are a separate
+ * `to orphan` term, printed only when there are any (go-to-k/cdkd#7005).
+ */
+export function formatChangeCounts(counts: {
+  create: number;
+  update: number;
+  delete: number;
+  orphan: number;
+}): string {
+  return (
+    `${counts.create} to create, ${counts.update} to update, ${counts.delete} to delete` +
+    (counts.orphan > 0 ? `, ${counts.orphan} to orphan` : '')
+  );
+}
+
 /** The impact in a few words, as the AWS CDK CLI words it. */
 export function describeDestructiveImpact(impact: DestructiveImpact): string {
   switch (impact) {

@@ -86,6 +86,11 @@ Stack MyStack:
 - `[~]` marks a resource the deploy would update. Each changed property is
   listed under it with its old and new value.
 - `[-]` marks a resource the deploy would delete.
+- `[-] ... [orphan: its DeletionPolicy keeps it in AWS]` marks a removed
+  resource whose `DeletionPolicy` is `Retain` or `RetainExceptOnCreate`
+  (`RemovalPolicy.RETAIN` / `RETAIN_ON_UPDATE_OR_DELETE` in CDK). The deploy
+  stops managing it and leaves it in AWS. The totals count it under a separate
+  `to orphan` term, for example `0 to create, 1 to update, 1 to delete, 2 to orphan`.
 
 Resources that would not change are not listed. A stack with nothing to do
 prints one line and no block:

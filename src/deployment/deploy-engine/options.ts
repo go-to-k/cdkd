@@ -609,7 +609,8 @@ export type DeploymentApprover = ((request: DeploymentApprovalRequest) => Promis
 export interface DeploymentApprovalRequest {
   stackName: string;
   level: Exclude<RequireApprovalLevel, 'never'>;
-  counts: { create: number; update: number; delete: number };
+  /** `delete` excludes the removals kept in AWS, counted as `orphan` (go-to-k/cdkd#7005). */
+  counts: { create: number; update: number; delete: number; orphan?: number };
   /** The changes that replace, delete or orphan a resource; non-empty under `destructive`. */
   destructiveChanges: DestructiveChange[];
   /** The stack's Outputs (or its export set) change with no resource change. */
