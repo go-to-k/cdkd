@@ -490,7 +490,11 @@ export async function calculateDiff(
         currentCompared,
         noEchoCompared?.desired ?? desiredPropsForCompare,
         maskedFingerprinter,
-        maskedInputs?.publicReferences
+        maskedInputs?.publicReferences,
+        (key) =>
+          this.logger.warn(
+            safeMsg`${logicalId}: ${key} is recorded masked and reads an input cdkd keeps as written or cannot resolve here, so it cannot be proven unchanged and is treated as unchanged on this deploy. No replacement is planned over it.`
+          )
       );
       const propertyChanges = await this.compareProperties(
         desiredResource.Type,
@@ -511,7 +515,7 @@ export async function calculateDiff(
       const rebaselined: Array<[string, string]> = [];
       // go-to-k/cdkd#7050 review: a key with no usable passed-secret MAC and
       // unmoved inputs: warned of, and backfilled when it never held one.
-      const unverified: Array<[string, UnverifiedPassedSecret]> = [];
+      const unverified: Array<[string, UnverifiedPassedSecret | 'none']> = [];
       const moved = await movedMaskedProperties(
         currentResource,
         rawDesiredProps,

@@ -569,11 +569,13 @@ describe('a masked child read with no passed-secret MAC proof is a visible chang
       Db: { Type: 'AWS::RDS::DBInstance', Properties: { Engine: 'mysql', DBName: { 'Fn::Join': ['-', [{ Ref: 'X' }, { Ref: 'Y' }]] }, BackupRetentionPeriod: 1 } },
     };
     const declared = { X: { Type: 'String' }, Y: { Type: 'String' } };
-    const created = await deploy({}, joined, { ...opts, parameters: { ...opts.parameters, Y: 'one' } }, declared);
+    // `Y` passed clean, so it is hashed: its move is a proven one.
+    const classes = new Map([['X', 'secret' as const], ['Y', 'clean' as const]]);
+    const created = await deploy({}, joined, { ...opts, parameters: { ...opts.parameters, Y: 'one' }, passedParameterClasses: classes }, declared);
     expect(created.thrown).toBeUndefined();
     expect(created.persisted?.maskedPropertyInputFingerprints?.['DBName']).toBeDefined();
     logSpies.warn.mockClear();
-    const moved = await deploy({ Db: oldRecord(created.persisted!) }, joined, { ...opts, parameters: { ...opts.parameters, Y: 'two' } }, declared);
+    const moved = await deploy({ Db: oldRecord(created.persisted!) }, joined, { ...opts, parameters: { ...opts.parameters, Y: 'two' }, passedParameterClasses: classes }, declared);
     expect((moved.diff?.get('Db')?.propertyChanges ?? []).map((pc) => pc.path)).toContain('DBName');
     expect(moved.calls.length > 0 || moved.thrown !== undefined).toBe(true);
     expect(warnings()).toEqual([]);
@@ -699,9 +701,26 @@ describe('movedMaskedProperties: a passed-secret key with no usable MAC (#7050 r
       expect(reported).toHaveLength(1);
     });
   }
-  for (const verdict of ['changed', 'none'] as const) {
-    it(`${verdict}: moved even with equal inputs`, async () => {
-      expect(await movedMaskedProperties(record(input('aa')), props, fingerprinter(input('aa'), verdict))).toEqual(['Value']);
-    });
-  }
+  it('changed: moved even with equal inputs', async () => {
+    expect(await movedMaskedProperties(record(input('aa')), props, fingerprinter(input('aa'), 'changed'))).toEqual(['Value']);
+  });
+  // #7050 review: `'none'` (another input unproven) proves nothing either way:
+  // a move only where the hashed inputs differ, never one on every deploy.
+  it('none: unmoved and reported unless the hashed inputs differ; rebaselined when unrecorded', async () => {
+    const reported: Array<[string, string]> = [];
+    const rebaselined: Array<[string, string]> = [];
+    const onUnverified = (key: string, v: string) => void reported.push([key, v]);
+    const onRebaseline = (key: string, f: string) => void rebaselined.push([key, f]);
+    const run = (recorded: string | undefined, now: string | undefined) =>
+      movedMaskedProperties(record(recorded), props, fingerprinter(now, 'none'), onRebaseline, onUnverified);
+    expect(await run(input('aa'), input('bb'))).toEqual(['Value']);
+    expect(reported).toEqual([]);
+    expect(await run(input('aa'), input('aa'))).toEqual([]);
+    expect(await run(input('aa'), undefined)).toEqual([]);
+    expect(await run(undefined, undefined)).toEqual([]);
+    expect(rebaselined).toEqual([]);
+    expect(await run(undefined, input('cc'))).toEqual([]);
+    expect(rebaselined).toEqual([['Value', input('cc')]]);
+    expect(reported).toEqual(Array.from({ length: 4 }, () => ['Value', 'none']));
+  });
 });

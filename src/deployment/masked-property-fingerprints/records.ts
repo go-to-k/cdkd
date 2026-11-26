@@ -77,7 +77,8 @@ export type BindingFingerprinter = InputFingerprinter & {
  * `'n/a'` when it reads no parameter a parent passed as `secret` (the
  * fingerprints alone decide), else whether the record's MACs, bound to
  * today's proven input fingerprint, equal today's. `'none'` (an unproven
- * walk, no MAC source) proves nothing either way. {@link UnverifiedPassedSecret}
+ * walk, no MAC source) proves nothing either way: a move only where the
+ * hashed inputs differ (go-to-k/cdkd#7050 review). {@link UnverifiedPassedSecret}
  * (no member, no MAC this run, an unusable member) proves nothing either, but
  * is never a move by itself (go-to-k/cdkd#7050 review): a move of a stateful
  * create-only key would be refused on every deploy, since only a send stamps.
@@ -383,7 +384,9 @@ export function boundReferenceFingerprints(
  * `onRebaseline` with today's input fingerprint, which the deploy stamps
  * without sending. A key reading a parent-passed secret with no usable MAC
  * ({@link UnverifiedPassedSecret}) and a bound input fingerprint equal to
- * today's is unmoved and reported to `onUnverified`.
+ * today's is unmoved and reported to `onUnverified`; one whose other inputs
+ * are unproven (`'none'`) is unmoved and reported unless its hashed inputs
+ * differ from the recorded ones, and rebaselined when it has none.
  */
 export async function movedMaskedProperties(
   record: Pick<ResourceState, 'properties'> & {
@@ -394,7 +397,7 @@ export async function movedMaskedProperties(
   templateProps: Record<string, unknown>,
   fingerprinter?: InputFingerprinter,
   onRebaseline?: (key: string, fingerprint: string) => void,
-  onUnverified?: (key: string, verdict: UnverifiedPassedSecret) => void
+  onUnverified?: (key: string, verdict: UnverifiedPassedSecret | 'none') => void
 ): Promise<string[]> {
   const recorded = maskedPropertyFingerprintsOf(record);
   if (recorded.size === 0) return [];
@@ -412,14 +415,32 @@ export async function movedMaskedProperties(
     if (fingerprinter === undefined) continue;
     // go-to-k/cdkd#7050: a parameter the parent passed as `secret` is kept as
     // written, so the fingerprints below hash the same whatever its value.
-    // Only its value MACs, bound to today's proven inputs, show it did not
-    // move: anything short of that proof is a move, never a hidden one.
+    // Its value MACs, bound to today's proven inputs, show whether it moved.
     const passed = await passedSecretVerdictOf(fingerprinter, key, record);
-    if (passed === 'changed' || passed === 'none') {
+    if (passed === 'changed') {
       moved.push(key);
       continue;
     }
     const bound = inputs.get(key);
+    // go-to-k/cdkd#7050 review: another input is unproven (kept as written,
+    // or unknown here), so no MAC can be bound and nothing proves the value
+    // either way. A move only where the hashed inputs differ; else unmoved
+    // and reported, never a move on every deploy (a stateful create-only key
+    // would be refused forever, and only a send stamps).
+    if (passed === 'none') {
+      const now = await fingerprinter(key);
+      if (
+        bound !== undefined &&
+        now !== undefined &&
+        splitInputFingerprint(now).input !== splitInputFingerprint(bound).input
+      ) {
+        moved.push(key);
+      } else {
+        onUnverified?.(key, 'none');
+        if (bound === undefined && now !== undefined) onRebaseline?.(key, now);
+      }
+      continue;
+    }
     // go-to-k/cdkd#7050 review: no usable MAC, and the recorded input
     // fingerprint equal to today's: unmoved, reported to `onUnverified` (the
     // plan warns, and backfills an `'absent'` member). Anything else moved.

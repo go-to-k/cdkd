@@ -53,6 +53,11 @@ import type { ResourceState } from '../../types/state.js';
  *   resolved to the public value the record hashed (`publicReferences`;
  *   absent, unknown or unrecorded reads as moved). A secret's value is not
  *   compared, as in CloudFormation.
+ * A key whose inputs cannot prove it either way (an input kept as written or
+ * unknown here, no input fingerprint recorded) is UNPROVABLE (#7050 review):
+ * it compares masked too, and is reported to `onUnprovable` (the plan warns,
+ * naming the resource and the key); a hashed input or a passed-secret MAC
+ * that moved is never masked.
  * Only the positions holding the mask are masked on the desired side; every
  * other leaf of the key is compared as before.
  */
@@ -64,7 +69,8 @@ export async function maskUnmovedRedactionMasks(
   fingerprinter:
     | (InputFingerprinter & { concrete?: (key: string) => Promise<boolean> })
     | undefined,
-  publicReferences?: PublicReferenceOf
+  publicReferences?: PublicReferenceOf,
+  onUnprovable?: (key: string) => void
 ): Promise<Record<string, unknown>> {
   if (fingerprinter === undefined) return desired;
   const fingerprints = maskedPropertyFingerprintsOf(record);
@@ -90,41 +96,53 @@ export async function maskUnmovedRedactionMasks(
     if (fingerprint === undefined || fingerprint === REFUSED_FINGERPRINT) continue;
     if (maskedPropertyFingerprint(rawDesired[key]) !== fingerprint) continue;
     const bound = inputs.get(key);
-    if (bound === undefined) continue;
     let now: string | undefined;
     try {
       now = await fingerprinter(key);
     } catch {
-      continue;
+      now = undefined;
     }
-    if (
-      now === undefined ||
-      splitInputFingerprint(now).input !== splitInputFingerprint(bound).input
-    ) {
+    const comparable = bound !== undefined && now !== undefined;
+    // A hashed input that moved is a proven change: compared as is.
+    if (comparable && splitInputFingerprint(now!).input !== splitInputFingerprint(bound!).input) {
       continue;
     }
     // An input kept AS WRITTEN (a secret-class or `NoEcho` parameter, a
-    // tainted attribute) hashes the same whatever its value: equal
-    // fingerprints prove nothing then, so the key is compared as is. A
+    // tainted attribute) hashes the same whatever its value, and an unknown
+    // one leaves no fingerprint: equal fingerprints prove nothing then. A
     // parameter the parent passed as `secret` is proven by its value MACs
     // instead (bound to today's inputs, every other one resolved and hashed);
-    // `movedMaskedProperties` reports the key moved on anything less, except
-    // no usable MAC at all, which it reads unmoved and warns of (#7050 review).
+    // `movedMaskedProperties` reports the key moved when they differ, and
+    // reads no usable MAC unmoved and warns of it (#7050 review). Short of
+    // any proof the key is UNPROVABLE (#7050 review): comparing the mask
+    // with the plan's value would be a change on every deploy, a replacement
+    // the stateful preflight refuses forever, so it reads unmoved, warned of.
     let concrete = false;
     try {
       concrete = (await fingerprinter.concrete?.(key)) === true;
     } catch {
       concrete = false;
     }
-    if (!concrete) {
+    let unprovable = false;
+    if (concrete) {
+      unprovable = !comparable;
+    } else {
       const verdict = await passedSecretVerdictOf(fingerprinter, key, record);
-      if (verdict !== 'confirmed' && !isUnverifiedPassedSecret(verdict)) continue;
+      if (verdict === 'changed') continue;
+      if (verdict === 'confirmed' || isUnverifiedPassedSecret(verdict)) {
+        // As before: `movedMaskedProperties` decides these from the record.
+        if (!comparable) continue;
+      } else if (verdict === 'n/a') {
+        unprovable = true;
+      }
+      // `'none'`: reported by `movedMaskedProperties` (`onUnverified`).
     }
     if (
       await publicReferencesMoved(record, key, rawDesired[key], publicReferences, fingerprinter)
     ) {
       continue;
     }
+    if (unprovable) onUnprovable?.(key);
     (out ??= { ...desired })[key] = maskedWhere(current[key], desired[key]);
   }
   return out ?? desired;
@@ -174,7 +192,7 @@ export type PassedSecretBackfill = { fingerprint: string; macs: Record<string, s
 export async function reportUnverifiedPassedSecrets(args: {
   logicalId: string;
   record: ResourceState;
-  unverified: ReadonlyArray<readonly [string, UnverifiedPassedSecret]>;
+  unverified: ReadonlyArray<readonly [string, UnverifiedPassedSecret | 'none']>;
   fingerprinter: Partial<BindingFingerprinter> | undefined;
   backfills: Map<string, Record<string, PassedSecretBackfill>> | undefined;
   warn: (message: string) => void;
@@ -192,6 +210,10 @@ export async function reportUnverifiedPassedSecrets(args: {
       stamped.push([key, member]);
       warn(
         safeMsg`${logicalId}: ${key} reads a parameter the parent stack passed as a secret, and its record holds no value fingerprint for it (written before cdkd recorded one), so its value was not compared on this deploy and it is treated as unchanged. It is fingerprinted from now on.`
+      );
+    } else if (verdict === 'none') {
+      warn(
+        safeMsg`${logicalId}: ${key} reads a parameter the parent stack passed as a secret beside an input cdkd keeps as written or cannot resolve here, so its value cannot be proven unchanged and it is treated as unchanged on every deploy. No replacement is planned over it.`
       );
     } else if (verdict === 'unusable') {
       warn(

@@ -1950,7 +1950,13 @@ stack with no instance id.
   this run nothing is stamped, and the warning repeats on every deploy. A
   member that exists but proves nothing (malformed, under another key,
   bound to another input fingerprint, or no KMS this run) is never
-  backfilled. It warns on every deploy until the key is sent again. A save
+  backfilled. It warns on every deploy until the key is sent again. A key
+  whose other inputs are not all proven (kept as written, or unknown here)
+  can bind no MAC: it is a move only when its recorded input fingerprint
+  differs from today's. Otherwise it is unchanged, warned of on every deploy,
+  and re-baselined when it holds no input fingerprint. A masked key with no
+  passed-secret parameter whose inputs prove nothing either way is likewise
+  compared masked by the plan, with the same warning. A save
   with no new member carries the previous one. A failed update, or a written
   record with no template, leaves `{ "fingerprint": "cdkd:dropped" }`. So a
   key that once held a member never reads as one that never had one, and the
