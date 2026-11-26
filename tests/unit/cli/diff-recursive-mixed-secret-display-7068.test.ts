@@ -626,6 +626,20 @@ describe('securityDiffWithPassedSecretWithheld (#7068 review)', () => {
     expect((await shown()).rendered).toBe('TABLE');
   });
 
+  it('keeps it when a tainted policy changed only a property reading nothing tainted', async () => {
+    const withRoles = template('arn:aws:s3:::unrelated') as {
+      Resources: Record<string, { Properties: Record<string, unknown> }>;
+    };
+    withRoles.Resources['Pol']!.Properties['Roles'] = [{ 'Fn::GetAtt': ['Child', 'Outputs.R'] }];
+    const shown = securityDiffWithPassedSecretWithheld(
+      securityDiff,
+      changes,
+      withRoles as never,
+      new Set([...tainted, 'Pol'])
+    );
+    expect((await shown()).rendered).toBe('TABLE');
+  });
+
   it('withholds it when one does, keeping the verdict', async () => {
     const shown = securityDiffWithPassedSecretWithheld(
       securityDiff,
