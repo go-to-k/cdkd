@@ -385,12 +385,14 @@ export function warnNotAppliedInPlace(
     // which the replacement rules plan before update() runs, and the shapes
     // left here were measured only for an AZMode added with no node (#5438).
     notApplied.push('AZMode');
-    reasons.push('ModifyCacheCluster changes AZMode only beside nodes to add');
+    reasons.push(
+      'ModifyCacheCluster carries AZMode only beside NewAvailabilityZones, and this change adds no node in a zone the live nodes do not cover'
+    );
   }
   if (notApplied.length === 0) return;
   this.logger.warn(
     safeMsg`CacheCluster ${logicalId}: the ${notApplied.join(', ')} change is not applied to the ` +
-      `existing cluster (${reasons.join('; ')}). To apply it, replace the cluster, for ` +
+      safeMsg`existing cluster (${reasons.join('; ')}). To apply it, replace the cluster, for ` +
       `example by changing its logical ID.`
   );
 }

@@ -525,7 +525,8 @@ function elastiCacheLeftSingleAzWithoutZones(siblings: ReplacementSiblings | und
  * (e.g. `[1a, 1a]`), a new list naming one zone or none, a changed
  * `NumCacheNodes` (a scale-out sends `NewAvailabilityZones` with the new
  * `AZMode`, as #5438 measured for an absent previous `AZMode`), the singular
- * `PreferredAvailabilityZone` on either side, another engine, and a value
+ * `PreferredAvailabilityZone` on either side, another engine, a list whose
+ * length differs from `NumCacheNodes` (CreateCacheCluster refuses it), and a value
  * still unresolved at diff time (a non-string zone, an intrinsic object).
  * Without the sibling bags there is nothing to read, so the answer is
  * `false`.
@@ -546,27 +547,28 @@ function elastiCacheMovedSingleToCrossAz(siblings: ReplacementSiblings | undefin
     zones.every((z) => typeof z === 'string') &&
     new Set(zones).size >= 2 &&
     prev['NumCacheNodes'] != null &&
-    isDeepStrictEqual(prev['NumCacheNodes'], next['NumCacheNodes'])
+    isDeepStrictEqual(prev['NumCacheNodes'], next['NumCacheNodes']) &&
+    zones.length === Number(next['NumCacheNodes'])
   );
 }
 
 /**
  * Conditional-replacement predicate for
- * `AWS::ElastiCache::CacheCluster.AZMode`: `single-az` removed from a
- * template that names no zone replaces the cluster (issue #5558, see
- * {@link elastiCacheLeftSingleAzWithoutZones}), and so does a move to
- * `cross-az` that keeps the node count (issue #7045, see
- * {@link elastiCacheMovedSingleToCrossAz}). Any other change keeps the
- * in-place update it had before (unmeasured).
+ * `AWS::ElastiCache::CacheCluster.AZMode` (issue #5558): `single-az` removed
+ * from a template that names no zone replaces the cluster (see
+ * {@link elastiCacheLeftSingleAzWithoutZones}). Any other change keeps the
+ * in-place update it had before. The #7045 `single-az` -> `cross-az`
+ * replacement is marked on `PreferredAvailabilityZones` only, as
+ * CloudFormation's change set marks it (`AZMode` `Never`).
  */
-export function elastiCacheAzModeReplaced(
+export function elastiCacheAzModeRemovedFromSingleAz(
   oldValue: unknown,
   newValue: unknown,
   siblings?: ReplacementSiblings
 ): boolean {
-  if (oldValue !== 'single-az') return false;
-  if (newValue == null) return elastiCacheLeftSingleAzWithoutZones(siblings);
-  return newValue === 'cross-az' && elastiCacheMovedSingleToCrossAz(siblings);
+  return (
+    oldValue === 'single-az' && newValue == null && elastiCacheLeftSingleAzWithoutZones(siblings)
+  );
 }
 
 /**

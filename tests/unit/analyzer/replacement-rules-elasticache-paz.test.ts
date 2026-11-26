@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vite-plus/test';
 import {
   ReplacementRulesRegistry,
   elastiCachePreferredAvailabilityZonesMovedToDisjoint,
-  elastiCacheAzModeReplaced,
+  elastiCacheAzModeRemovedFromSingleAz,
   elastiCachePreferredAvailabilityZonesRemovedFromSingleAz,
 } from '../../../src/analyzer/replacement-rules.js';
 
@@ -198,19 +198,19 @@ describe('ReplacementRulesRegistry — AWS::ElastiCache::CacheCluster AZ removal
       })
     ).toBe(false);
     // Callers outside a diff ask with no values at all.
-    expect(elastiCacheAzModeReplaced(undefined, undefined)).toBe(false);
+    expect(elastiCacheAzModeRemovedFromSingleAz(undefined, undefined)).toBe(false);
     expect(registry.requiresReplacement(TYPE, 'AZMode', undefined, undefined)).toBe(false);
     // The AZMode half reads the new zone list from the sibling bags too.
     const bags = (newProperties: Record<string, unknown>) => ({
       oldProperties: { Engine: 'memcached', AZMode: 'single-az' },
       newProperties: { Engine: 'memcached', ...newProperties },
     });
-    expect(elastiCacheAzModeReplaced('single-az', undefined, bags({}))).toBe(true);
+    expect(elastiCacheAzModeRemovedFromSingleAz('single-az', undefined, bags({}))).toBe(true);
     expect(
-      elastiCacheAzModeReplaced('single-az', undefined, bags({ PreferredAvailabilityZones: [] }))
+      elastiCacheAzModeRemovedFromSingleAz('single-az', undefined, bags({ PreferredAvailabilityZones: [] }))
     ).toBe(false);
-    expect(elastiCacheAzModeReplaced('single-az', undefined)).toBe(false);
-    expect(elastiCacheAzModeReplaced('cross-az', undefined, bags({}))).toBe(false);
+    expect(elastiCacheAzModeRemovedFromSingleAz('single-az', undefined)).toBe(false);
+    expect(elastiCacheAzModeRemovedFromSingleAz('cross-az', undefined, bags({}))).toBe(false);
   });
 
   it('keeps the unmeasured shapes in place: another engine, a singular PreferredAvailabilityZone', () => {

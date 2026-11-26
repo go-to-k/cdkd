@@ -92,7 +92,7 @@ cleanup() {
   echo "==> Cleanup (errors tolerated)"
   set +e
   rm -f "${DRIFT_OUT:-}"
-  # A failed replacement step (4f/4h/4i) can leave a Memcached cluster on the
+  # A failed replacement step (4f/4h/4i/4k) can leave a Memcached cluster on the
   # subnet group that cdkd state does not own; it would block the subnet-group
   # delete and orphan it. Delete every cluster on that group first and wait.
   for mc_leftover in $(aws elasticache describe-cache-clusters --region "${REGION}" \
@@ -624,6 +624,10 @@ echo "==> Step 4j: MEMCACHED SCALE-OUT deploy (issue #7045 setup) -- 2 nodes, si
 # cluster must now hold 2 nodes. Not itself a pre-fix red.
 REMOVED_ENV=("${PRIOR_ENV[@]}" CDKD_TEST_PAZREMOVE=true CDKD_TEST_AZMODEREMOVE=true)
 MC_ID_SCALE=$(mc_field 'CacheClusterId')
+if [ -z "${MC_ID_SCALE}" ] || [ "${MC_ID_SCALE}" = "None" ]; then
+  echo "FAIL: cannot resolve the Memcached cluster before the scale-out (#7045 setup)" >&2
+  exit 1
+fi
 set +e
 env "${REMOVED_ENV[@]}" CDKD_TEST_MCSCALE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes > "${DEPLOY_LOG}" 2>&1
@@ -652,9 +656,11 @@ echo "==> Step 4k: CROSS-AZ deploy (issue #7045) -- single-az -> cross-az + [az0
 # the same single-zone cluster, so the id comparison discriminates.
 MC_ISSUE='#7045'
 assert_memcached_replaced "single-az -> cross-az move" "${REMOVED_ENV[@]}" CDKD_TEST_MCSCALE=true CDKD_TEST_CROSSAZ=true
-MC_ZONES=$(aws elasticache describe-cache-clusters --region "${REGION}" --show-cache-node-info \
-  --query "CacheClusters[?CacheSubnetGroupName=='${MC_SUBNET_GROUP}'] | [0].CacheNodes[].CustomerAvailabilityZone" \
-  --output text | tr '\t' '\n' | sort -u | grep -c . || true)
+if ! MC_ZONE_LIST=$(mc_field 'CacheNodes[].CustomerAvailabilityZone'); then
+  echo "FAIL: cannot read the cross-az replacement's node zones (#7045)" >&2
+  exit 1
+fi
+MC_ZONES=$(printf '%s\n' ${MC_ZONE_LIST} | sort -u | wc -l | tr -d ' ')
 if [ "${MC_ZONES}" != "2" ]; then
   echo "FAIL: the cross-az replacement's nodes span ${MC_ZONES} zone(s), expected 2 (#7045)" >&2
   exit 1

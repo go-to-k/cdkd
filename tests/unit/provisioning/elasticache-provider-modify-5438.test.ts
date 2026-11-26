@@ -290,7 +290,7 @@ describe('ElastiCacheProvider CacheCluster in-place modify (issue #5438)', () =>
       // leaves it unchanged" is not what was measured for every shape here.
       expect(warn).toHaveBeenCalledTimes(1);
       expect(warn.mock.calls[0][0]).toContain('AZMode');
-      expect(warn.mock.calls[0][0]).toContain('changes AZMode only beside nodes to add');
+      expect(warn.mock.calls[0][0]).toContain('carries AZMode only beside NewAvailabilityZones');
       expect(warn.mock.calls[0][0]).not.toContain('CloudFormation');
     });
 

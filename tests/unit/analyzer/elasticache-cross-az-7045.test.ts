@@ -37,7 +37,7 @@ vi.mock('../../../src/provisioning/write-only-properties.js', async (importOrigi
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import {
   ReplacementRulesRegistry,
-  elastiCacheAzModeReplaced,
+  elastiCacheAzModeRemovedFromSingleAz,
 } from '../../../src/analyzer/replacement-rules.js';
 import { elastiCachePreferredAvailabilityZonesReplaced } from '../../../src/analyzer/replacement-rules/predicates.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -87,7 +87,9 @@ const crossAz = {
 
 describe('CacheCluster single-az -> cross-az through the diff (issue #7045)', () => {
   it('replaces the measured change: same node count, a two-zone list added', async () => {
-    expect(await diff(singleAz, crossAz)).toEqual(['AZMode', 'PreferredAvailabilityZones']);
+    // Marked on the zone list only, as CloudFormation's change set marks it
+    // (PreferredAvailabilityZones Conditionally, AZMode Never).
+    expect(await diff(singleAz, crossAz)).toEqual(['PreferredAvailabilityZones']);
   });
 
   it('keeps the unmeasured neighbours in place', async () => {
@@ -122,40 +124,38 @@ describe('CacheCluster single-az -> cross-az through the diff (issue #7045)', ()
   });
 });
 
-describe('the #7045 predicate halves', () => {
-  const bags = { oldProperties: singleAz, newProperties: crossAz };
+describe('the #7045 zone-list predicate', () => {
+  const ZONES = ['us-east-1a', 'us-east-1b'];
+  const paz = (newProperties: Record<string, unknown>, oldProperties = singleAz) =>
+    elastiCachePreferredAvailabilityZonesReplaced(undefined, newProperties['PreferredAvailabilityZones'], {
+      oldProperties,
+      newProperties,
+    });
 
-  it('answers true for each half of the measured change', () => {
-    expect(elastiCacheAzModeReplaced('single-az', 'cross-az', bags)).toBe(true);
-    expect(
-      elastiCachePreferredAvailabilityZonesReplaced(
-        undefined,
-        ['us-east-1a', 'us-east-1b'],
-        bags
-      )
-    ).toBe(true);
+  it('answers true for the measured change, and the AZMode key stays an update', () => {
+    expect(paz(crossAz)).toBe(true);
     const registry = new ReplacementRulesRegistry();
-    expect(registry.requiresReplacement(TYPE, 'AZMode', 'single-az', 'cross-az', bags)).toBe(true);
+    const bags = { oldProperties: singleAz, newProperties: crossAz };
+    expect(registry.requiresReplacement(TYPE, 'PreferredAvailabilityZones', undefined, ZONES, bags)).toBe(true);
+    expect(registry.requiresReplacement(TYPE, 'AZMode', 'single-az', 'cross-az', bags)).toBe(false);
+    expect(elastiCacheAzModeRemovedFromSingleAz('single-az', 'cross-az', bags)).toBe(false);
   });
 
-  it('answers false without the sibling bags or with an unresolved zone list', () => {
-    expect(elastiCacheAzModeReplaced('single-az', 'cross-az')).toBe(false);
-    expect(elastiCachePreferredAvailabilityZonesReplaced(undefined, ['us-east-1a', 'us-east-1b'])).toBe(
-      false
-    );
-    const unresolved = {
-      oldProperties: singleAz,
-      newProperties: {
-        ...crossAz,
-        PreferredAvailabilityZones: [{ 'Fn::Select': [0, { 'Fn::GetAZs': '' }] }, 'us-east-1b'],
-      },
-    };
-    expect(elastiCacheAzModeReplaced('single-az', 'cross-az', unresolved)).toBe(false);
+  it('answers false without the sibling bags, or for an unmeasured shape', () => {
+    expect(elastiCachePreferredAvailabilityZonesReplaced(undefined, ZONES)).toBe(false);
+    // An unresolved entry.
+    expect(
+      paz({ ...crossAz, PreferredAvailabilityZones: [{ 'Fn::Select': [0, { 'Fn::GetAZs': '' }] }, 'us-east-1b'] })
+    ).toBe(false);
     // A changed NumCacheNodes, and an absent one on the previous side.
-    const scaled = { oldProperties: singleAz, newProperties: { ...crossAz, NumCacheNodes: 3 } };
-    expect(elastiCacheAzModeReplaced('single-az', 'cross-az', scaled)).toBe(false);
+    expect(paz({ ...crossAz, NumCacheNodes: 3 }, { ...singleAz, NumCacheNodes: 3 })).toBe(false);
+    expect(paz({ ...crossAz, NumCacheNodes: 3 })).toBe(false);
     const { NumCacheNodes: _n, ...noCount } = singleAz;
-    const noCountBags = { oldProperties: noCount, newProperties: { ...crossAz, NumCacheNodes: undefined } };
-    expect(elastiCacheAzModeReplaced('single-az', 'cross-az', noCountBags)).toBe(false);
+    expect(paz({ ...crossAz, NumCacheNodes: undefined }, noCount)).toBe(false);
+    // A list whose length differs from the node count.
+    expect(
+      paz({ ...crossAz, PreferredAvailabilityZones: ['us-east-1a', 'us-east-1b', 'us-east-1c'] })
+    ).toBe(false);
+    expect(paz({ ...crossAz, AZMode: 'single-az' })).toBe(false);
   });
 });
