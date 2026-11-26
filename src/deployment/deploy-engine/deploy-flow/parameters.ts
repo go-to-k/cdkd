@@ -8,6 +8,8 @@ import { getCurrentNestedStackContext } from '../../../provisioning/nested-stack
 import { hasMaskableValues } from '../../secret-redaction.js';
 import type { DeployEngine } from '../../deploy-engine.js';
 import type { CloudFormationTemplate } from '../../../types/resource.js';
+import type { StackState } from '../../../types/state.js';
+import { createNoEchoValueMacs, passedSecretParametersOf } from '../../noecho-value-macs.js';
 
 /**
  * Step 2.5 of a deploy: the parameter values, and the per-run secret state
@@ -88,4 +90,47 @@ export async function resolveDeployParameters(
     getCurrentNestedStackContext()?.nestedTemplates
   );
   return { parameterValues, backfillNoEchoValues };
+}
+
+/**
+ * The run's value-MAC state, set on `engine.noEchoRun` right after the
+ * parameters resolve (moved from `deploy-flow.ts`).
+ */
+export function setUpRunValueMacs(
+  engine: DeployEngine,
+  {
+    template,
+    parameterValues,
+    stackName,
+    currentState,
+  }: {
+    template: CloudFormationTemplate;
+    parameterValues: Record<string, unknown>;
+    stackName: string;
+    currentState: StackState;
+  }
+): void {
+  // go-to-k/cdkd#6146: the run's KMS MACs of its `NoEcho` parameter values,
+  // made only when a resource reading one is provisioned (nothing otherwise),
+  // bound to the stack instance id the creates run under (read then, so a
+  // first deploy's write-ahead id is in place).
+  // go-to-k/cdkd#7050: and of a nested child's parameters the parent passed
+  // as `secret`, which a masked key's fingerprints cannot see move.
+  engine.noEchoRun.passedSecretParameters = passedSecretParametersOf({
+    template,
+    parameterValues,
+    passedClasses: engine.options.passedParameterClasses,
+    inheritedNoEcho: engine.noEchoRun.inheritedNoEchoParameters,
+    nestedChild: engine.options.parentStackInfo !== undefined,
+  });
+  engine.noEchoRun.noEchoMacs = createNoEchoValueMacs({
+    template,
+    parameterValues,
+    inherited: engine.noEchoRun.inheritedNoEchoParameters,
+    passedSecret: engine.noEchoRun.passedSecretParameters,
+    stackName,
+    region: engine.stackRegion,
+    stackInstanceId: () => currentState.stackInstanceId,
+    logger: engine.logger,
+  });
 }

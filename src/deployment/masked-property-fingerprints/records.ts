@@ -16,6 +16,7 @@ import {
   FINGERPRINT_PREFIX,
   INPUT_FINGERPRINT_PREFIX,
   maskedPropertyFingerprint,
+  REFERENCE_FINGERPRINT_PREFIX,
   REFUSED_FINGERPRINT,
   splitInputFingerprint,
   templateCarriesNeedle,
@@ -42,6 +43,12 @@ export type InputFingerprinter = (key: string) => Promise<string | undefined>;
 /** An {@link InputFingerprinter} that also answers the go-to-k/cdkd#6209 binding. */
 export type BindingFingerprinter = InputFingerprinter & {
   binding(key: string): Promise<string | undefined>;
+  /**
+   * go-to-k/cdkd#7050: the form `key`'s input fingerprint hashes (each
+   * non-secret input resolved, a reference's text kept), from the same
+   * memoized walk; `undefined` when an input is unknown on this side.
+   */
+  form(key: string): Promise<unknown>;
   /** go-to-k/cdkd#7050: {@link everyOtherInputConcrete} for `key`'s template value. */
   concrete(key: string): Promise<boolean>;
   /**
@@ -71,7 +78,7 @@ export function inputFingerprinter(
   sources: MaskedInputSources,
   coveredFor?: (key: string) => ReadonlySet<string> | undefined
 ): BindingFingerprinter {
-  type Walked = Promise<{ fingerprint: string; proven: boolean } | undefined>;
+  type Walked = Promise<{ fingerprint: string; form: unknown; proven: boolean } | undefined>;
   const memo = new Map<string, Walked>();
   const walk = (key: string) => {
     let pending = memo.get(key);
@@ -115,6 +122,7 @@ export function inputFingerprinter(
   };
   const fingerprinter = async (key: string) => (await walk(key))?.fingerprint;
   return Object.assign(fingerprinter, {
+    form: async (key: string) => (await walk(key))?.form,
     binding: async (key: string) => {
       const walked = await walk(key);
       return walked?.proven === true ? walked.fingerprint : undefined;
@@ -290,6 +298,48 @@ function boundInputFingerprints(
   return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
+/** A reference fingerprint's digest and the binding after it (`undefined` when malformed). */
+export function splitReferenceFingerprint(
+  entry: string
+): { digest: string; binding: string } | undefined {
+  if (!entry.startsWith(REFERENCE_FINGERPRINT_PREFIX)) return undefined;
+  const at = entry.indexOf('+');
+  return at < 0 ? undefined : { digest: entry.slice(0, at), binding: entry.slice(at + 1) };
+}
+
+/**
+ * The reference fingerprints of `references` that are bound to the input
+ * fingerprint `inputs` holds for the same key, or to the text fingerprint
+ * `text` holds when `inputs` holds none. `undefined` when none is.
+ */
+export function boundReferenceFingerprints(
+  text: Readonly<Record<string, string>> | ReadonlyMap<string, string> | undefined,
+  inputs: Readonly<Record<string, string>> | ReadonlyMap<string, string> | undefined,
+  references: Readonly<Record<string, string>> | undefined
+): Record<string, string> | undefined {
+  if (text === undefined || references === undefined) return undefined;
+  const get = (
+    from: Readonly<Record<string, string>> | ReadonlyMap<string, string> | undefined,
+    key: string
+  ): string | undefined =>
+    from === undefined
+      ? undefined
+      : from instanceof Map
+        ? from.get(key)
+        : Object.hasOwn(from, key)
+          ? (from as Record<string, string>)[key]
+          : undefined;
+  const entries: Array<[string, string]> = [];
+  for (const [key, value] of Object.entries(references)) {
+    if (typeof value !== 'string') continue;
+    const split = splitReferenceFingerprint(value);
+    if (split === undefined) continue;
+    const expected = get(inputs, key) ?? get(text, key);
+    if (expected !== undefined && split.binding === expected) entries.push([key, value]);
+  }
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
 /**
  * The top-level properties the record holds as the mask whose template value
  * or resolved inputs moved since it was written: the changes a `***` == `***`
@@ -441,7 +491,7 @@ export function withMaskedPropertyFingerprints(
   if (written) {
     fingerprints = maskedPropertyFingerprintsFor(scrubbed.properties, templateProps);
     inputs = boundInputFingerprints(fingerprints, inputFingerprints);
-    references = boundInputFingerprints(fingerprints, referenceFingerprints);
+    references = boundReferenceFingerprints(fingerprints, inputs, referenceFingerprints);
   } else {
     // Carried as it was, except that this save may hold the needles a
     // backfill or an earlier save could not see.

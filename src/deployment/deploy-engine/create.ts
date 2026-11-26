@@ -202,10 +202,11 @@ export async function provisionCreate(
     // go-to-k/cdkd#7050: and each key's public `ssm` values, hashed.
     engine.secretsRun.perResourceReferenceFingerprints.set(
       logicalId,
-      maskedReferenceFingerprintsFor(
+      await maskedReferenceFingerprintsFor(
         keys,
         desiredProps,
-        publicReferencesOf(context.recordedSecretValues, corpora)
+        publicReferencesOf(context.recordedSecretValues, corpora),
+        fingerprinter
       )
     );
   }

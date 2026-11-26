@@ -116,7 +116,7 @@ const template = {
         AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [] },
         Path: '/',
         Tags: [{ Key: 'owner', Value: OTHER }],
-        Description: { 'Fn::Join': ['', [PUB, USERNAME, '@', { Ref: 'Host' }]] },
+        Description: { 'Fn::Join': ['', [PUB, USERNAME, '@', { Ref: 'Host' }]] } as unknown,
       },
     },
   },
@@ -218,8 +218,11 @@ async function created(): Promise<StackState['resources'][string]> {
   return run.persisted!;
 }
 
+const SPELLED = template.Resources.Db.Properties.Description;
+
 describe('a masked leaf spelling a public ssm reference (#7050 security review)', () => {
   beforeEach(() => {
+    template.Resources.Db.Properties.Description = SPELLED;
     LIVE.pub = 'pub-v1';
     LIVE.pubVersion = 1;
     LIVE.username = 'pg';
@@ -285,5 +288,51 @@ describe('a masked leaf spelling a public ssm reference (#7050 security review)'
     };
     const stale = await deploy({ Db: structuredClone(record) });
     expect(paths(stale)).toEqual(['Description']);
+  });
+});
+
+/**
+ * The token NAME an intrinsic assembles (`valueForStringParameter` with a
+ * token name is the `Fn::Join` shape, stock CDK output). The raw template
+ * spells no complete token, so the key's tokens come from its input walk's
+ * resolved form: an unchanged value must settle, a changed one must move.
+ */
+describe.each([
+  ['Fn::Sub', { 'Fn::Sub': `{{resolve:ssm:/pub/\${Host}}}${USERNAME}@\${Host}` }],
+  [
+    'Fn::Join',
+    { 'Fn::Join': ['', ['{{resolve:ssm:/pub/', { Ref: 'Host' }, '}}', USERNAME, '@', { Ref: 'Host' }]] },
+  ],
+])('a masked leaf whose public ssm token name %s assembles (#7050)', (_shape, description) => {
+  beforeEach(() => {
+    LIVE.pub = 'pub-v1';
+    LIVE.pubVersion = 1;
+    LIVE.username = 'pg';
+    template.Resources.Db.Properties.Description = description;
+  });
+
+  it('the 2nd and 3rd unchanged deploys plan nothing and make no calls', async () => {
+    const record = await created();
+    const second = await deploy({ Db: structuredClone(record) });
+    expect(second.thrown).toBeUndefined();
+    expect(second.diff?.get('Db')?.changeType).toBe('NO_CHANGE');
+    expect(second.calls).toEqual([]);
+    const third = await deploy({ Db: structuredClone(second.persisted ?? record) });
+    expect(third.thrown).toBeUndefined();
+    expect(third.diff?.get('Db')?.changeType).toBe('NO_CHANGE');
+    expect(third.calls).toEqual([]);
+  });
+
+  it('a changed public value plans the key', async () => {
+    const record = await created();
+    LIVE.pub = 'pub-v2';
+    LIVE.pubVersion = 2;
+    const moved = await deploy({ Db: structuredClone(record) });
+    expect(moved.thrown).toBeUndefined();
+    expect(paths(moved)).toEqual(['Description']);
+    expect(moved.calls).toEqual(['update:Db']);
+    const settled = await deploy({ Db: structuredClone(moved.persisted!) });
+    expect(settled.diff?.get('Db')?.changeType).toBe('NO_CHANGE');
+    expect(settled.calls).toEqual([]);
   });
 });

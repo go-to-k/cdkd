@@ -414,7 +414,15 @@ export async function resolveUpdateInputs(
       const recorded = currentResource.properties as Record<string, unknown> | undefined;
       if (recorded === undefined || recorded === null || !Object.hasOwn(recorded, key)) continue;
       if (!carriesSecretMask(recorded[key])) continue;
-      if (publicReferencesMoved(currentResource, key, desiredProps[key], publicReferences)) {
+      if (
+        await publicReferencesMoved(
+          currentResource,
+          key,
+          desiredProps[key],
+          publicReferences,
+          fingerprints
+        )
+      ) {
         movedMasked.add(key);
       }
     }
@@ -429,7 +437,7 @@ export async function resolveUpdateInputs(
     );
     engine.secretsRun.perResourceReferenceFingerprints.set(
       logicalId,
-      maskedReferenceFingerprintsFor(keys, desiredProps, publicReferences)
+      await maskedReferenceFingerprintsFor(keys, desiredProps, publicReferences, fingerprints)
     );
   }
   // go-to-k/cdkd#6209: today's fully resolved input fingerprints of the keys

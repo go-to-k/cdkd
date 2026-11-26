@@ -44,6 +44,8 @@ export const REFUSED_FINGERPRINT = 'refused:secret-in-template';
 export const FINGERPRINT_PREFIX = 'sha256:';
 /** An input fingerprint's prefix (its own field, go-to-k/cdkd#4543). */
 export const INPUT_FINGERPRINT_PREFIX = 'inputs-sha256:';
+/** A public `ssm` reference fingerprint's prefix (go-to-k/cdkd#7050, `public-references.ts`). */
+export const REFERENCE_FINGERPRINT_PREFIX = 'refs-sha256:';
 /** Joins an input fingerprint's input half to the text half it is bound to. */
 export const TEXT_HALF_SEPARATOR = '+';
 

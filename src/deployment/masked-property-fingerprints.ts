@@ -100,4 +100,7 @@ export {
   publicReferencesMoved,
   publicReferencesOf,
 } from './masked-property-fingerprints/public-references.js';
-export type { PublicReferenceOf } from './masked-property-fingerprints/public-references.js';
+export type {
+  PublicReferenceOf,
+  ReferenceInputs,
+} from './masked-property-fingerprints/public-references.js';

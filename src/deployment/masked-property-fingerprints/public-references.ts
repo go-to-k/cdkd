@@ -11,17 +11,30 @@
  * whole leaf) must still move when that public value moves.
  *
  * `maskedPropertyReferenceFingerprints` holds, per such key,
- * `refs-sha256:<hex>+sha256:<text>`: a hash of each plain `ssm` token the
- * template value spells with its PROVEN public value (`provenPublicValue`, the
- * lookup's own `String` / `StringList` answer), bound to the text fingerprint.
+ * `refs-sha256:<hex>+<binding>`: a hash of each plain `ssm` token the key
+ * spells with its PROVEN public value (`provenPublicValue`, the lookup's own
+ * `String` / `StringList` answer), bound to the key's input fingerprint (or,
+ * when the record holds none, its text fingerprint). An older cdkd rewrites
+ * both and carries this field untouched, so a change in either drops it.
  * A plain `ssm` token that resolved as a secret (`SecureString`) enters as a
  * marker, never its value; `secretsmanager` / `ssm-secure` tokens are left out
  * (CloudFormation parity). A public value equal to a secret of the same pass,
  * or holding one at or above the needle floor, is refused a hash.
  *
- * Fail closed: a token whose value cannot be told (no proof, a token assembled
- * from parts, a refused hash), or a record with no bound entry (an older
- * record), reads as moved.
+ * WHICH TOKENS. The template's complete tokens, and, where an intrinsic
+ * assembles a token's NAME (`{"Fn::Sub":"{{resolve:ssm:/p/${Host}}}"}`, or the
+ * `Fn::Join` CDK's `valueForStringParameter` emits for a token name), the
+ * tokens its input walk's form (each non-secret input resolved, the reference
+ * text kept) spells once its `Fn::Join` / `Fn::Sub` / `Fn::Select` are
+ * evaluated: the very token the resolver looked up.
+ *
+ * WHAT CANNOT BE TOLD. A token whose value this pass did not prove (a
+ * producer-region guest's read files no proof, a refused hash), or a name that
+ * stays assembled (an input kept as written), enters as an `unknown` marker.
+ * The first deploy that meets it reads it as moved (fail closed) and stamps
+ * it, so the key then settles on the comparison it had before #7050: its text
+ * and input fingerprints, which cover a `Ref` / `Fn::Sub` input. A record with
+ * no bound entry (an older record) reads as moved once, the same way.
  */
 import { createHash } from 'node:crypto';
 import {
@@ -30,14 +43,18 @@ import {
   type RecordedSecretValues,
 } from '../secret-redaction.js';
 import { isRecordedSecretExpression, provenPublicValue } from '../secret-redaction/mask-only.js';
-import { canonicalJson, maskedPropertyFingerprint, splitInputFingerprint } from './core.js';
-import { DYNAMIC_REFERENCE_OPEN, isPlainObject } from './input-walk.js';
-import { maskedPropertyFingerprintsOf } from './records.js';
+import { dynamicReferenceSpans } from '../secret-redaction/redact-path.js';
+import { canonicalJson, maskedPropertyFingerprint, REFERENCE_FINGERPRINT_PREFIX } from './core.js';
+import { DYNAMIC_REFERENCE_OPEN, intrinsicKey, isPlainObject } from './input-walk.js';
+import {
+  boundReferenceFingerprints,
+  maskedPropertyFingerprintsOf,
+  maskedPropertyInputFingerprintsOf,
+  splitReferenceFingerprint,
+} from './records.js';
 
-export const REFERENCE_FINGERPRINT_PREFIX = 'refs-sha256:';
-const REFERENCE_FINGERPRINT_LAYOUT = 1;
+const REFERENCE_FINGERPRINT_LAYOUT = 2;
 const SECRET_SERVICES = ['secretsmanager:', 'ssm-secure:'];
-const COMPLETE_TOKEN = /^\{\{resolve:([^}]+)\}\}/;
 
 /** What a pass knows of one plain `ssm` token: its proven public value, a secret, or nothing. */
 export type PublicReferenceOf = (token: string) => { value: string } | 'secret' | undefined;
@@ -72,113 +89,228 @@ export function publicReferencesOf(
   };
 }
 
-/**
- * The plain `ssm` tokens `value`'s string leaves spell, sorted and unique, or
- * `undefined` when a reference's service cannot be read from the text (an
- * opener whose token an intrinsic assembles, a `${...}` inside it).
- */
-function publicReferenceTokens(value: unknown): string[] | undefined {
-  const tokens = new Set<string>();
-  let unknown = false;
-  const visit = (node: unknown): void => {
-    if (unknown) return;
-    if (typeof node === 'string') {
-      let at = node.indexOf(DYNAMIC_REFERENCE_OPEN);
-      while (at >= 0) {
-        const rest = node.slice(at + DYNAMIC_REFERENCE_OPEN.length);
-        if (!SECRET_SERVICES.some((service) => rest.startsWith(service))) {
-          const match = COMPLETE_TOKEN.exec(node.slice(at));
-          if (match === null || match[0].includes('${')) {
-            unknown = true;
-            return;
-          }
-          if (match[1]!.split(':')[0] === 'ssm') tokens.add(match[0]);
-        }
-        at = node.indexOf(DYNAMIC_REFERENCE_OPEN, at + DYNAMIC_REFERENCE_OPEN.length);
-      }
-      return;
+/** The plain `ssm` tokens a value spells, and whether an opener's token stays assembled. */
+interface SpelledTokens {
+  tokens: Set<string>;
+  assembled: boolean;
+}
+
+/** Adds `text`'s complete plain `ssm` tokens; an opener with no complete token is assembled. */
+function scanText(text: string, into: SpelledTokens): void {
+  const ends = new Map(dynamicReferenceSpans(text).map(({ start, end }) => [start, end]));
+  let at = text.indexOf(DYNAMIC_REFERENCE_OPEN);
+  while (at >= 0) {
+    const rest = text.slice(at + DYNAMIC_REFERENCE_OPEN.length);
+    if (!SECRET_SERVICES.some((service) => rest.startsWith(service))) {
+      const end = ends.get(at);
+      const token = end === undefined ? undefined : text.slice(at, end);
+      if (token === undefined || token.includes('${')) into.assembled = true;
+      else if (rest.startsWith('ssm:')) into.tokens.add(token);
     }
-    if (Array.isArray(node)) node.forEach(visit);
-    else if (isPlainObject(node)) Object.values(node).forEach(visit);
+    at = text.indexOf(DYNAMIC_REFERENCE_OPEN, at + DYNAMIC_REFERENCE_OPEN.length);
+  }
+}
+
+/**
+ * The string an input walk's form (`inputForm`) of a pure string function
+ * evaluates to, or `undefined` when an operand is no string (an input kept as
+ * written, an intrinsic this does not evaluate). The form's `Fn::Sub` is
+ * `[text, variables, placeholders]`, each placeholder's input in place.
+ */
+function evaluatedString(node: unknown): string | undefined {
+  if (typeof node === 'string') return node;
+  if (typeof node === 'number' || typeof node === 'boolean') return String(node);
+  if (!isPlainObject(node)) return undefined;
+  const key = intrinsicKey(node);
+  const operand = node[key ?? ''];
+  if (!Array.isArray(operand)) return undefined;
+  if (key === 'Fn::Join') {
+    const [delimiter, list] = operand;
+    if (typeof delimiter !== 'string' || !Array.isArray(list)) return undefined;
+    const parts = list.map(evaluatedString);
+    return parts.every((part) => part !== undefined) ? parts.join(delimiter) : undefined;
+  }
+  if (key === 'Fn::Select') {
+    const [index, list] = operand;
+    const at = typeof index === 'number' ? index : Number(evaluatedString(index));
+    if (!Array.isArray(list) || !Number.isInteger(at) || at < 0 || at >= list.length) {
+      return undefined;
+    }
+    return evaluatedString(list[at]);
+  }
+  if (key === 'Fn::Sub' && operand.length === 3) {
+    const [text, variables, placeholders] = operand;
+    if (typeof text !== 'string' || !isPlainObject(variables) || !isPlainObject(placeholders)) {
+      return undefined;
+    }
+    let failed = false;
+    const out = text.replace(/\$\{([^}]*)\}/g, (whole, body: string) => {
+      if (body.length === 0) return whole;
+      if (body.startsWith('!')) return `\${${body.slice(1)}}`;
+      const input = Object.hasOwn(variables, body)
+        ? variables[body]
+        : Object.hasOwn(placeholders, body)
+          ? placeholders[body]
+          : undefined;
+      const value = evaluatedString(input);
+      if (value === undefined) failed = true;
+      return value ?? whole;
+    });
+    return failed ? undefined : out;
+  }
+  return undefined;
+}
+
+/** {@link SpelledTokens} of `value`, evaluating each pure string function `inputForm` kept. */
+function spelledTokens(value: unknown, evaluate: boolean): SpelledTokens {
+  const into: SpelledTokens = { tokens: new Set(), assembled: false };
+  const visit = (node: unknown): void => {
+    if (typeof node === 'string') return scanText(node, into);
+    if (Array.isArray(node)) return node.forEach(visit);
+    if (!isPlainObject(node)) return;
+    if (evaluate && intrinsicKey(node) !== undefined) {
+      const text = evaluatedString(node);
+      if (text !== undefined) return scanText(text, into);
+    }
+    Object.values(node).forEach(visit);
   };
   visit(value);
-  return unknown ? undefined : [...tokens].sort();
+  return into;
 }
 
 /**
- * `refs-sha256:<hex>+sha256:<text>` over the plain `ssm` tokens
- * `templateValue` spells and what `referenceOf` knows of each; `null` when it
- * spells none (nothing to record or compare); `undefined` when any one cannot
- * be told.
+ * The `refs-sha256:<hex>` half over the plain `ssm` tokens the key spells and
+ * what `referenceOf` knows of each; `null` when it spells none. `form` is the
+ * key's input-walk form, read only when the template assembles a token.
  */
-export function publicReferenceFingerprint(
+async function publicReferenceDigest(
   templateValue: unknown,
-  referenceOf: PublicReferenceOf
-): string | null | undefined {
-  const tokens = publicReferenceTokens(templateValue);
-  if (tokens === undefined) return undefined;
-  if (tokens.length === 0) return null;
-  const entries: Array<[string, string | null]> = [];
-  for (const token of tokens) {
+  referenceOf: PublicReferenceOf,
+  form: (() => Promise<unknown>) | undefined
+): Promise<string | null> {
+  let spelled = spelledTokens(templateValue, false);
+  if (spelled.assembled && form !== undefined) {
+    let walked: unknown;
+    try {
+      walked = await form();
+    } catch {
+      walked = undefined;
+    }
+    if (walked !== undefined) spelled = spelledTokens(walked, true);
+  }
+  if (spelled.tokens.size === 0 && !spelled.assembled) return null;
+  const entries: Array<[string, string | { secret: true } | { unknown: true }]> = [];
+  for (const token of [...spelled.tokens].sort()) {
     const known = referenceOf(token);
-    if (known === undefined) return undefined;
-    entries.push([token, known === 'secret' ? null : known.value]);
+    entries.push([
+      token,
+      known === undefined ? { unknown: true } : known === 'secret' ? { secret: true } : known.value,
+    ]);
   }
   const digest = createHash('sha256')
-    .update(canonicalJson({ layout: REFERENCE_FINGERPRINT_LAYOUT, references: entries }))
+    .update(
+      canonicalJson({
+        layout: REFERENCE_FINGERPRINT_LAYOUT,
+        references: entries,
+        assembled: spelled.assembled,
+      })
+    )
     .digest('hex');
-  return `${REFERENCE_FINGERPRINT_PREFIX}${digest}+${maskedPropertyFingerprint(templateValue)}`;
+  return `${REFERENCE_FINGERPRINT_PREFIX}${digest}`;
 }
 
-/** The reference fingerprints of `keys` a save stamps (a key with none, or none told, is left out). */
-export function maskedReferenceFingerprintsFor(
+/** What a key's reference fingerprint reads besides its template value: its input walk. */
+export interface ReferenceInputs {
+  (key: string): Promise<string | undefined>;
+  form?(key: string): Promise<unknown>;
+}
+
+/**
+ * The reference fingerprint of `key`: {@link publicReferenceDigest} bound to
+ * the key's input fingerprint (its text fingerprint when there is none);
+ * `null` when it spells no plain `ssm` token.
+ */
+export async function publicReferenceFingerprint(
+  key: string,
+  templateValue: unknown,
+  referenceOf: PublicReferenceOf,
+  inputs?: ReferenceInputs
+): Promise<string | null> {
+  const digest = await publicReferenceDigest(
+    templateValue,
+    referenceOf,
+    inputs?.form && (() => inputs.form!(key))
+  );
+  if (digest === null) return null;
+  let input: string | undefined;
+  try {
+    input = await inputs?.(key);
+  } catch {
+    input = undefined;
+  }
+  return `${digest}+${input ?? maskedPropertyFingerprint(templateValue)}`;
+}
+
+/** The reference fingerprints of `keys` a save stamps (a key spelling no `ssm` token is left out). */
+export async function maskedReferenceFingerprintsFor(
   keys: readonly string[],
   templateProps: Record<string, unknown>,
-  referenceOf: PublicReferenceOf
-): Record<string, string> {
+  referenceOf: PublicReferenceOf,
+  inputs?: ReferenceInputs
+): Promise<Record<string, string>> {
   const entries: Array<[string, string]> = [];
   for (const key of keys) {
     if (!Object.hasOwn(templateProps, key)) continue;
-    const fingerprint = publicReferenceFingerprint(templateProps[key], referenceOf);
-    if (typeof fingerprint === 'string') entries.push([key, fingerprint]);
+    const fingerprint = await publicReferenceFingerprint(
+      key,
+      templateProps[key],
+      referenceOf,
+      inputs
+    );
+    if (fingerprint !== null) entries.push([key, fingerprint]);
   }
   return Object.fromEntries(entries) as Record<string, string>;
 }
 
 /**
  * The record's `maskedPropertyReferenceFingerprints`, each kept only while
- * bound to the text fingerprint the record holds for the same key.
+ * bound to the input fingerprint the record holds for the same key (its text
+ * fingerprint when it holds none).
  */
 export function maskedPropertyReferenceFingerprintsOf(
   record: unknown
 ): ReadonlyMap<string, string> {
-  const read = new Map<string, string>();
-  if (record === null || typeof record !== 'object') return read;
+  if (record === null || typeof record !== 'object') return new Map();
   const field = (record as { maskedPropertyReferenceFingerprints?: unknown })
     .maskedPropertyReferenceFingerprints;
-  if (!isPlainObject(field)) return read;
-  const text = maskedPropertyFingerprintsOf(record);
-  for (const [key, value] of Object.entries(field)) {
-    if (typeof value !== 'string' || !value.startsWith(REFERENCE_FINGERPRINT_PREFIX)) continue;
-    const half = splitInputFingerprint(value).text;
-    if (half !== undefined && text.get(key) === half) read.set(key, value);
-  }
-  return read;
+  if (!isPlainObject(field)) return new Map();
+  const bound = boundReferenceFingerprints(
+    maskedPropertyFingerprintsOf(record),
+    maskedPropertyInputFingerprintsOf(record),
+    field as Record<string, string>
+  );
+  return new Map(Object.entries(bound ?? {}));
 }
 
 /**
- * Whether a public `ssm` value `templateValue` spells moved since `record`
- * was written for `key`: `false` when it spells none, `true` when today's
- * value cannot be told or the record holds no equal bound entry.
+ * Whether a public `ssm` value the key spells moved since `record` was
+ * written for `key`: `false` when it spells none, `true` when the record holds
+ * no bound entry or its digest differs from today's (an `unknown` marker
+ * included: see the module doc). Its text and inputs are compared elsewhere.
  */
-export function publicReferencesMoved(
+export async function publicReferencesMoved(
   record: unknown,
   key: string,
   templateValue: unknown,
-  referenceOf: PublicReferenceOf | undefined
-): boolean {
-  const now = publicReferenceFingerprint(templateValue, referenceOf ?? (() => undefined));
+  referenceOf: PublicReferenceOf | undefined,
+  inputs?: ReferenceInputs
+): Promise<boolean> {
+  const now = await publicReferenceDigest(
+    templateValue,
+    referenceOf ?? (() => undefined),
+    inputs?.form && (() => inputs.form!(key))
+  );
   if (now === null) return false;
-  if (now === undefined) return true;
-  return maskedPropertyReferenceFingerprintsOf(record).get(key) !== now;
+  const recorded = maskedPropertyReferenceFingerprintsOf(record).get(key);
+  return recorded === undefined || splitReferenceFingerprint(recorded)?.digest !== now;
 }

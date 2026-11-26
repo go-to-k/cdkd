@@ -470,12 +470,15 @@ export async function calculateDiff(
       const currentCompared = noEchoCompared?.current ?? currentPropsForCompare;
       // go-to-k/cdkd#7050: a leaf the persist walk MASKED as a redaction,
       // whose template and inputs provably did not move, compares masked.
+      // One memoized input walk per key, shared by every check below.
+      const maskedFingerprinter =
+        maskedInputs && inputFingerprinter(rawDesiredProps, maskedInputs.sources);
       const desiredCompared = await maskUnmovedRedactionMasks(
         currentResource,
         rawDesiredProps,
         currentCompared,
         noEchoCompared?.desired ?? desiredPropsForCompare,
-        maskedInputs && inputFingerprinter(rawDesiredProps, maskedInputs.sources),
+        maskedFingerprinter,
         maskedInputs?.publicReferences
       );
       const propertyChanges = await this.compareProperties(
@@ -498,7 +501,7 @@ export async function calculateDiff(
       const moved = await movedMaskedProperties(
         currentResource,
         rawDesiredProps,
-        maskedInputs && inputFingerprinter(rawDesiredProps, maskedInputs.sources),
+        maskedFingerprinter,
         maskedInputs?.rebaselined && ((key, fingerprint) => rebaselined.push([key, fingerprint]))
       );
       if (rebaselined.length > 0) {
@@ -513,11 +516,12 @@ export async function calculateDiff(
           if (!Object.hasOwn(recordedProps, key) || !carriesSecretMask(recordedProps[key]))
             continue;
           if (
-            publicReferencesMoved(
+            await publicReferencesMoved(
               currentResource,
               key,
               rawDesiredProps[key],
-              maskedInputs.publicReferences
+              maskedInputs.publicReferences,
+              maskedFingerprinter
             )
           ) {
             moved.push(key);

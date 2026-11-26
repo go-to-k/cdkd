@@ -114,7 +114,11 @@ export async function maskUnmovedRedactionMasks(
     if (!concrete && (await passedSecretVerdictOf(fingerprinter, key, record)) !== 'confirmed') {
       continue;
     }
-    if (publicReferencesMoved(record, key, rawDesired[key], publicReferences)) continue;
+    if (
+      await publicReferencesMoved(record, key, rawDesired[key], publicReferences, fingerprinter)
+    ) {
+      continue;
+    }
     (out ??= { ...desired })[key] = maskedWhere(current[key], desired[key]);
   }
   return out ?? desired;

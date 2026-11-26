@@ -1927,7 +1927,7 @@ stack with no instance id.
   record it does not write keeps the binding beside the MACs it describes.
   `cdkd diff` also marks such a key whose MAC differs as changed when its
   other inputs resolve to values holding no `NoEcho` value.
-- **Passed-secret MACs** (`cdkd:passed`, no version bump, issue #7050): in a
+- **Passed-secret MACs** (`cdkd:passed`, issue #7050): in a
   nested child, a key the record holds masked that reads a parameter the
   parent passed as `secret` (`passedParameterClasses`) gets
   `{ "fingerprint": "inputs-sha256:...", "macs": { "<Parameter>": "kms-hmac-sha256:..." } }`.
@@ -1943,7 +1943,13 @@ stack with no instance id.
   run, an older binary's rebuild that dropped it) is a move too: the key is
   sent, never compared equal. The entry may hold no `NoEcho` MAC at all. An
   older binary never reads the object member. `cdkd diff` holds no MACs for
-  it and compares such a key as before.
+  it and compares such a key as before. An entry holding only this member
+  still sets `noEchoValueMacs`, so a save of such a nested child writes
+  [`version: 17`](#version-17-adds-noechovaluemacs-written-only-with-a-mac)
+  where it would otherwise write 16, and a binary older than #6146 refuses
+  that child's state. That bump is kept on purpose: the older binary's failure
+  save would carry these MACs verbatim past a value it had sent, the hazard
+  the version 17 section describes.
 - **Not an oracle**: testing a guess needs `kms:GenerateMac` on the key, which
   reading `state.json` (a cross-account `Fn::GetStackOutput` consumer, a
   noncurrent S3 version) does not grant. This is why it is not the salted
@@ -1981,16 +1987,23 @@ CloudFormation does.
   cross-stack read, and the branch an evaluated condition selects. So a new
   parameter value, a replaced resource's new name and a flipped condition
   are sent too.
-- `maskedPropertyReferenceFingerprints` (`refs-sha256:`, then the text hash
-  after a `+`, issue #7050) is written for a property whose template spells a
-  plain `{{resolve:ssm:...}}` reference. It hashes each such reference with
-  the PUBLIC (`String` / `StringList`) value it resolved to, so a changed
-  public parameter is sent: CloudFormation documents the skip of a value
-  change only for Secrets Manager and `ssm-secure`. A `SecureString` read
-  through `ssm` enters as a marker, and `secretsmanager` / `ssm-secure`
-  references are left out. A value that cannot be told (no proof of its
-  type, a reference an intrinsic assembles) or a record without the entry
-  plans the property as changed.
+- `maskedPropertyReferenceFingerprints` (`refs-sha256:`, then after a `+`
+  the property's input fingerprint, or its text hash when the record holds
+  none, issue #7050) is written for a property whose template spells a
+  plain `{{resolve:ssm:...}}` reference, or one whose name an intrinsic
+  assembles (`Fn::Sub` / `Fn::Join` over a parameter, the CDK
+  `valueForStringParameter` shape: its tokens are read from the input walk's
+  resolved form). It hashes each such reference with the PUBLIC
+  (`String` / `StringList`) value it resolved to, so a changed public
+  parameter is sent: CloudFormation documents the skip of a value change
+  only for Secrets Manager and `ssm-secure`. A `SecureString` read through
+  `ssm` enters as a marker, and `secretsmanager` / `ssm-secure` references
+  are left out. A value that cannot be told (no proof, as for a read in a
+  producer's other region, or a name that stays assembled) enters as an
+  `unknown` marker: the first deploy that meets it, like one reading a
+  record without the entry or with one bound to another input or text
+  fingerprint, plans the property as changed; once stamped it settles on the
+  text and input comparison.
 
 Secrets stay in their template form and never reach the hash, decided by
 where an input comes from, never by comparing its value with a secret it did
@@ -2575,8 +2588,8 @@ interface ResourceState {
   acceptedCreateOnlyDrops?: string[] // optional, no bump: create-only properties the SDK route was told to drop, so never sent
   maskedPropertyFingerprints?: Record<string, string> // optional, no bump: per property `properties` holds as `***`, a hash of its template text (issue #4451)
   maskedPropertyInputFingerprints?: Record<string, string> // optional, no bump: per such property, a hash of its template value with its non-secret inputs resolved, bound to the text hash (issue #4543)
-  maskedPropertyReferenceFingerprints?: Record<string, string> // optional, no bump: per such property spelling a plain `ssm` reference, a hash of each with its public value, bound to the text hash (issue #7050)
-  noEchoValueMacs?: Record<string, Record<string, string | { fingerprint: string; macs?: Record<string, string> }>> // v17+, written only with a MAC: per property reading a NoEcho parameter, per parameter, a KMS HMAC of the value last sent (issue #6146); `cdkd:inputs` binds it to the input fingerprint it was sent with (no bump, issue #6209); `cdkd:passed` holds the MACs of passed-secret nested-child parameters a masked key reads (no bump, issue #7050)
+  maskedPropertyReferenceFingerprints?: Record<string, string> // optional, no bump: per such property spelling (or assembling) a plain `ssm` reference, a hash of each with its public value, bound to the input fingerprint or else the text hash (issue #7050)
+  noEchoValueMacs?: Record<string, Record<string, string | { fingerprint: string; macs?: Record<string, string> }>> // v17+, written only with a MAC: per property reading a NoEcho parameter, per parameter, a KMS HMAC of the value last sent (issue #6146); `cdkd:inputs` binds it to the input fingerprint it was sent with (no bump, issue #6209); `cdkd:passed` holds the MACs of passed-secret nested-child parameters a masked key reads (issue #7050; an entry holding only it still writes v17)
   secretNamedAttributes?: string[] // optional, no bump: on a nested-stack row, the `Outputs.<Key>` attributes holding a child resource's name taken from a secret; keys only, read only to mask log lines (issue #3869)
   nameGeneration?: number                      // v13+, id stacks only: the generation its generated name was derived at; absent = 0
   nameGenerationHigh?: number                  // v13+, id stacks only: the highest generation a replacement created, when above nameGeneration (a rollback restored this record); absent = none

@@ -52,12 +52,6 @@ import {
 } from '../../../deployment/masked-property-fingerprints.js';
 import { diffSecurity } from '../../../analyzer/security-diff.js';
 import { childTemplateLoader } from '../../../deployment/nested-output-templates.js';
-import { findNestedStackTypeChanges } from '../../../deployment/type-change-guard.js';
-import {
-  deferredServiceTokenWarning,
-  findServiceTokenRefusals,
-  serviceTokenBlockingReason,
-} from '../../../deployment/custom-resource-service-token.js';
 import type { CrossStackRead } from '../../../deployment/intrinsic-resolver/context.js';
 import { crossStackOutputProvenanceSource } from '../../../deployment/read-provenance-sources.js';
 import { logger } from './logger.js';
@@ -70,7 +64,7 @@ import {
 } from '../../../deployment/ssm-slashed-name-heal.js';
 import type { StackDiffResult, ComputeStackDiffOptions } from './types.js';
 import {
-  nestedStackTypeChangeReason,
+  previewTypeAndServiceTokenRefusals,
   findUnroutableDropRefusals,
   findUnwrittenCreateOnlyRefusals,
 } from './refusals.js';
@@ -617,40 +611,11 @@ export async function computeStackDiff(
     );
   }
 
-  // The deploy's nested-stack Type-change refusal (go-to-k/cdkd#3453), read
-  // through the SAME finder over the same two inputs the engine hands it —
-  // this diff's `changes` and the state after the orphan splice — so the
-  // preview cannot disagree with it about which rows it refuses. Joins
-  // `blocking` at every node, beside the adoption refusals: in a CDK
-  // assembly a change to a child's template moves the parent row's
-  // `TemplateURL` hash, so the deploy reaches the child engine where this
-  // refusal runs.
-  const nestedStackTypeChanges = findNestedStackTypeChanges({
-    changes,
-    stateResources: stateForDiff.resources,
-  });
-  if (nestedStackTypeChanges.length > 0) {
-    blocking = [...blocking, ...nestedStackTypeChanges.map(nestedStackTypeChangeReason)];
-  }
-
-  // The deploy's ServiceToken refusal (go-to-k/cdkd#4749), through the SAME
-  // finder over the same inputs. The diff takes no `--recreate-via-*`, so it
-  // previews the flag-less deploy. A row the preview cannot judge (the token
-  // reads a resource this deploy replaces, or a value it could not resolve)
-  // is decided by the deploy once resolved, so it is a warning, not blocking.
-  const serviceTokens = findServiceTokenRefusals({
-    changes,
-    stateResources: stateForDiff.resources,
-  });
-  if (serviceTokens.refused.length > 0) {
-    blocking = [
-      ...blocking,
-      ...serviceTokens.refused.map((refusal) => serviceTokenBlockingReason(refusal, maskForLog)),
-    ];
-  }
-  for (const row of serviceTokens.deferred) {
-    logger.warn(printing.mask(deferredServiceTokenWarning(row)));
-  }
+  // The deploy's nested-stack Type-change and ServiceToken refusals, through
+  // the SAME finders over the same inputs (`refusals.ts`).
+  const previewed = previewTypeAndServiceTokenRefusals(changes, stateForDiff.resources, maskForLog);
+  blocking = [...blocking, ...previewed.blocking];
+  for (const warning of previewed.warnings) logger.warn(printing.mask(warning));
 
   // The deploy's create-only drop refusal (issue #2790), through the SAME
   // predicate the engine refuses on, over this diff's rows and records. The

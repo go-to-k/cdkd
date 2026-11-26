@@ -1,6 +1,6 @@
 import type { IntrinsicFunctionResolver } from '../../intrinsic-function-resolver.js';
 import { displayMasked } from '../masking-display.js';
-import { resolveDynamicReferences } from '../dynamic-refs.js';
+import { resolveDynamicReferencesWithLogTwin } from '../dynamic-refs.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import type { StackState } from '../../../types/state.js';
 import { outputReferenceProvenanceOf } from '../../reference-provenance-record.js';
@@ -26,6 +26,7 @@ import {
   wholeStringLeavesOf,
 } from '../../secret-redaction.js';
 import { physicalIdsOf, producerStateOnce } from './producer-state.js';
+import { noteCrossStackReadResolution } from './read-resolutions.js';
 
 /**
  * Re-resolve the dynamic references in a value read out of a PRODUCER
@@ -364,10 +365,28 @@ export async function reresolveCrossStackValue(
   };
   const walk = async (v: unknown): Promise<unknown> => {
     if (typeof v === 'string') {
-      return v.includes('{{resolve:')
-        ? // The PRODUCER-region resolver above, never the consumer's own.
-          await resolveDynamicReferences(producerResolver, v, pinnedContext)
-        : v;
+      if (!v.includes('{{resolve:')) return v;
+      // The PRODUCER-region resolver above, never the consumer's own; the
+      // persisted-text route (`resolveDynamicReferences`).
+      const pass = await resolveDynamicReferencesWithLogTwin(
+        producerResolver,
+        v,
+        v,
+        pinnedContext,
+        undefined,
+        true
+      );
+      // go-to-k/cdkd#7050: a whole STRING read keeps where each token was
+      // substituted, so the persist walk places it by that span.
+      if (v === value && sourceKey !== undefined && context.recordedSecretValues !== undefined) {
+        noteCrossStackReadResolution(context.recordedSecretValues, sourceKey, {
+          input: v,
+          output: pass.result,
+          substitutions: pass.substitutions,
+          complete: pass.complete,
+        });
+      }
+      return pass.result;
     }
     if (Array.isArray(v)) {
       const out: unknown[] = new Array(v.length) as unknown[];
