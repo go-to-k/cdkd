@@ -324,10 +324,14 @@ export class LightsailAlarmProvider implements ResourceProvider {
           )
       );
     }
+    // An empty read (failed, or no alarm listed) is no `attributes`: the map
+    // REPLACES the record, so `{}` would erase the recorded AlarmArn / State
+    // (go-to-k/cdkd#7009).
+    const attributes = await this.readAttributesAfterWrite(physicalId, logicalId, mask);
     return {
       physicalId,
       wasReplaced: false,
-      attributes: await this.readAttributesAfterWrite(physicalId, logicalId, mask),
+      ...(Object.keys(attributes).length > 0 && { attributes }),
     };
   }
 

@@ -15,6 +15,7 @@ import {
 import { isMarkedNotGone } from '../../../../src/provisioning/not-gone.js';
 import { RESOURCE_NOT_FOUND } from '../../../../src/types/resource.js';
 import { isMarkedNonRetryable } from '../../../../src/deployment/retryable-errors.js';
+import { attributesAfterUpdate } from '../../../../src/deployment/recorded-identity-attributes.js';
 
 /** go-to-k/cdkd#6830: the Lightsail alarm SDK provider. */
 
@@ -143,6 +144,18 @@ describe('LightsailAlarmProvider', () => {
       physicalId: 'my-alarm',
       attributes: {},
     });
+  });
+
+  it('keeps the attributes create recorded when the update read-back fails (#7009)', async () => {
+    const { provider, send } = setup();
+    provider.throttleDelaysMs = [];
+    send.mockResolvedValueOnce({}).mockResolvedValueOnce({ alarms: [ALARM] });
+    const type = 'AWS::Lightsail::Alarm';
+    const created = await provider.create('Alarm', type, PROPS);
+    expect(Object.keys(created.attributes ?? {}).sort()).toEqual(['AlarmArn', 'State']);
+    send.mockResolvedValueOnce({}).mockRejectedValueOnce(throttle());
+    const updated = await provider.update('Alarm', created.physicalId, type, { ...PROPS, Threshold: 95 }, PROPS);
+    expect(attributesAfterUpdate(type, created.attributes, updated)).toEqual(created.attributes);
   });
 
   it('refuses an unreadable NotificationEnabled before any call', async () => {

@@ -467,10 +467,27 @@ describe('AgentCoreRuntimeProvider records LastUpdatedAt from the READY read (go
     expect(recorded?.['CreatedAt']).toBe(CREATED.toISOString());
   });
 
-  it('under --no-wait an update records its own answer', async () => {
+  it('under --no-wait an update records no LastUpdatedAt: its own answer moves by READY', async () => {
     vi.stubEnv('CDKD_NO_WAIT', 'true');
     const provider = new AgentCoreRuntimeProvider();
     const updated = await provider.update('Rt', ID, TYPE, UPDATE_PROPS, PROPS);
-    expect(updated.attributes?.['LastUpdatedAt']).toBe(UPDATE_ANSWER.toISOString());
+    expect(updated.attributes).toBeDefined();
+    expect(updated.attributes).not.toHaveProperty('LastUpdatedAt');
+  });
+
+  it('import records LastUpdatedAt, the same key set as a READY create', async () => {
+    const provider = new AgentCoreRuntimeProvider();
+    const created = await provider.create('Rt', TYPE, PROPS);
+    const imported = await provider.import({
+      logicalId: 'Rt',
+      resourceType: TYPE,
+      stackName: 'S',
+      region: 'us-east-1',
+      properties: PROPS,
+      knownPhysicalId: ID,
+    });
+    expect(imported?.attributes?.['LastUpdatedAt']).toBe(READY_AFTER_CREATE.toISOString());
+    const createdKeys = Object.keys(created.attributes ?? {}).filter((k) => k !== 'AgentRuntimeName');
+    expect(Object.keys(imported?.attributes ?? {})).toEqual(expect.arrayContaining(createdKeys));
   });
 });

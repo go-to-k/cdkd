@@ -59,7 +59,11 @@ describe('EventBridgeBusProvider import', () => {
 
     const result = await provider.import(makeInput({ knownPhysicalId: 'target' }));
 
-    expect(result).toEqual({ physicalId: 'target', attributes: {} });
+    // #7009: the set create records, so the stale-attribute heal restores it.
+    expect(result).toEqual({
+      physicalId: 'target',
+      attributes: { Arn: 'arn:aws:events:us-east-1:123456789012:event-bus/target', Name: 'target' },
+    });
   });
 
   it('explicit override: returns null when DescribeEventBus throws ResourceNotFoundException', async () => {
@@ -138,5 +142,23 @@ describe('EventBridgeBusProvider update keeps the recorded attributes (issue #70
       { Name: 'my-bus' }
     );
     expect(attributesAfterUpdate(type, created.attributes, updated)).toEqual(created.attributes);
+  });
+
+  it('import (the stale-attribute heal read) records the same set create does', async () => {
+    vi.clearAllMocks();
+    const provider = new EventBridgeBusProvider();
+    const arn = 'arn:aws:events:us-east-1:123456789012:event-bus/my-bus';
+    mockSend.mockResolvedValue({ EventBusArn: arn, Arn: arn, Name: 'my-bus' });
+    const type = 'AWS::Events::EventBus';
+    const created = await provider.create('MyBus', type, { Name: 'my-bus' });
+    const imported = await provider.import({
+      logicalId: 'MyBus',
+      resourceType: type,
+      stackName: 'S',
+      region: 'us-east-1',
+      properties: { Name: 'my-bus' },
+      knownPhysicalId: 'my-bus',
+    });
+    expect(imported?.attributes).toEqual(created.attributes);
   });
 });

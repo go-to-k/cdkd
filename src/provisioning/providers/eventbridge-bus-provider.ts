@@ -850,8 +850,15 @@ export class EventBridgeBusProvider implements ResourceProvider {
     const explicit = resolveExplicitPhysicalId(input, 'Name');
     if (explicit) {
       try {
-        await this.eventBridgeClient.send(new DescribeEventBusCommand({ Name: explicit }));
-        return { physicalId: explicit, attributes: {} };
+        const bus = await this.eventBridgeClient.send(
+          new DescribeEventBusCommand({ Name: explicit })
+        );
+        // The set create records, so the stale-attribute heal (which reads
+        // through here) restores it (go-to-k/cdkd#7009).
+        return {
+          physicalId: explicit,
+          attributes: definedAttributes({ Arn: bus.Arn, Name: bus.Name ?? explicit }),
+        };
       } catch (err) {
         if (err instanceof ResourceNotFoundException) return null;
         throw err;

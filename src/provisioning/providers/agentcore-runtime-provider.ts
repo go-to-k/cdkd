@@ -221,11 +221,12 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
 
   /**
    * The status and `lastUpdatedAt` a create or update records: the READY
-   * read's once the wait saw it, or the call's own answer under `--no-wait`
-   * (`CDKD_NO_WAIT=true`), which returns while the runtime is still
-   * CREATING / UPDATING (go-to-k/cdkd#6490). Cloud Control's handler waits
-   * for READY too. `lastUpdatedAt` moves again when the runtime settles, and
-   * `CreateAgentRuntime` answers none (measured, go-to-k/cdkd#7009).
+   * read's once the wait saw it. Under `--no-wait` (`CDKD_NO_WAIT=true`),
+   * which returns while the runtime is still CREATING / UPDATING
+   * (go-to-k/cdkd#6490), the call's own status and no `lastUpdatedAt`:
+   * that one moves again when the runtime settles, and `CreateAgentRuntime`
+   * answers none (measured, go-to-k/cdkd#7009). Cloud Control's handler
+   * waits for READY too.
    */
   private async settledStatus(
     agentRuntimeId: string,
@@ -251,7 +252,9 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
           mask
         )
       );
-      return { status: response.status, lastUpdatedAt: response.lastUpdatedAt };
+      // No `lastUpdatedAt`: the call's answer moves again by READY, and the
+      // deferred wait's re-read fills a key the record lacks.
+      return { status: response.status, lastUpdatedAt: undefined };
     }
     const ready = await waitForRuntimeReady(
       this.waitDeps(),
