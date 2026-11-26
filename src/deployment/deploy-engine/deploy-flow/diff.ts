@@ -102,7 +102,13 @@ export async function calculateDeployDiff(
     sources: maskedInputSourcesForDiff,
     rebaselined: new Map<string, Record<string, string>>(),
     // go-to-k/cdkd#7050: the public `ssm` values this diff pass resolved.
-    publicReferences: publicReferencesOf(diffResolverContext.recordedSecretValues),
+    // The same refusal corpora the provisioning arms read, so a public value
+    // equal to a `NoEcho` / parent-passed secret is refused alike (#7050 review).
+    publicReferences: publicReferencesOf(diffResolverContext.recordedSecretValues, [
+      diffResolverContext.recordedSecretValues,
+      engine.secretsRun.fingerprintNoEchoValues,
+      engine.options.inheritedSecrets,
+    ]),
   };
   clock.lap('journal, parameters, conditions, DAG build');
   const changes = await engine.diffCalculator.calculateDiff(

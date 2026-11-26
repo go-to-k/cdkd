@@ -107,7 +107,7 @@ class CapturingDiffCalculator extends DiffCalculator {
 }
 
 const template = {
-  Parameters: { Host: { Type: 'String', Default: 'pg-host' } },
+  Parameters: { Host: { Type: 'String', Default: 'pg-host' } } as Record<string, unknown>,
   Resources: {
     // An in-place property (a create-only one would plan a replacement).
     Db: {
@@ -222,6 +222,7 @@ const SPELLED = template.Resources.Db.Properties.Description;
 
 describe('a masked leaf spelling a public ssm reference (#7050 security review)', () => {
   beforeEach(() => {
+    template.Parameters = { Host: { Type: 'String', Default: 'pg-host' } };
     template.Resources.Db.Properties.Description = SPELLED;
     LIVE.pub = 'pub-v1';
     LIVE.pubVersion = 1;
@@ -234,6 +235,24 @@ describe('a masked leaf spelling a public ssm reference (#7050 security review)'
     expect(same.thrown).toBeUndefined();
     expect(same.diff?.get('Db')?.changeType).toBe('NO_CHANGE');
     expect(same.calls).toEqual([]);
+  });
+
+  it('a public value equal to a NoEcho parameter value is refused alike by plan and engine', async () => {
+    // The engine refuses to hash a value a NoEcho parameter also holds; the
+    // plan must refuse it the same way, or it reads a move on every deploy.
+    template.Parameters = {
+      Host: { Type: 'String', Default: 'pg-host' },
+      Pw: { Type: 'String', NoEcho: true, Default: 'pub-v1' },
+    };
+    const first = await deploy({});
+    expect(first.thrown).toBeUndefined();
+    const second = await deploy({ Db: structuredClone(first.persisted!) });
+    expect(second.thrown).toBeUndefined();
+    expect(second.diff?.get('Db')?.changeType).toBe('NO_CHANGE');
+    expect(second.calls).toEqual([]);
+    const third = await deploy({ Db: structuredClone(second.persisted ?? first.persisted!) });
+    expect(third.diff?.get('Db')?.changeType).toBe('NO_CHANGE');
+    expect(JSON.stringify(first.persisted)).not.toContain('pub-v1');
   });
 
   it('a changed public value plans the key, sends it unmasked, and settles', async () => {

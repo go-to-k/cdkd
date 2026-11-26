@@ -502,7 +502,17 @@ export async function computeStackDiff(
         },
       },
       // go-to-k/cdkd#7050: the public `ssm` values this preview resolved.
-      publicReferences: publicReferencesOf(diffSecrets),
+      // The deploy's refusal corpora: its `NoEcho` seed and the parent's.
+      publicReferences: publicReferencesOf(diffSecrets, [
+        diffSecrets,
+        noEchoParameterValueSeed(
+          effectiveTemplate.Parameters,
+          mergedParameters,
+          inheritedForResolver,
+          parameters
+        ),
+        inheritedSecrets,
+      ]),
     };
   }
   const changes = await diffCalculator.calculateDiff(
