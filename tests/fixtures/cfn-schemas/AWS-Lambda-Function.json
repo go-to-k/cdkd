@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Lambda::Function",
-  "generatedAt": "2026-11-15",
+  "generatedAt": "2026-11-26",
   "properties": [
     "AcceleratorConfig",
     "Architectures",
@@ -60,6 +60,14 @@
   ],
   "primaryIdentifier": [
     "FunctionName"
+  ],
+  "conditionalCreateOnlyPropertyPaths": [
+    [
+      "AcceleratorConfig"
+    ],
+    [
+      "DurableConfig"
+    ]
   ],
   "nestedProperties": {
     "FunctionScalingConfig": [

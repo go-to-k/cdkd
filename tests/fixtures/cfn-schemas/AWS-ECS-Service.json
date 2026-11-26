@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ECS::Service",
-  "generatedAt": "2026-11-17",
+  "generatedAt": "2026-11-26",
   "properties": [
     "AvailabilityZoneRebalancing",
     "CapacityProviderStrategy",
@@ -60,6 +60,11 @@
   "primaryIdentifier": [
     "Cluster",
     "ServiceArn"
+  ],
+  "conditionalCreateOnlyPropertyPaths": [
+    [
+      "LaunchType"
+    ]
   ],
   "nestedProperties": {
     "PlacementStrategies": [
