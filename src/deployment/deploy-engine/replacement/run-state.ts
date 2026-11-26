@@ -102,6 +102,16 @@ export class ReplacementRunState {
   recreatedUnderSameId = new Set<string>();
 
   /**
+   * go-to-k/cdkd#7081: logical ids the update-failure fallback replaced with a
+   * resource that is NOT the old one under its id (any fallback replacement
+   * outside `recreatedUnderSameId`). The diff promoted none of their readers
+   * (the row was an in-place UPDATE), so the executor promotes them when the
+   * replacement completes (`execute/fallback-replaced-readers.ts`). Cleared
+   * per `deploy()`.
+   */
+  fallbackReplacedElsewhere = new Set<string>();
+
+  /**
    * go-to-k/cdkd#4443: the children of a `recreatedUnderSameId` parent whose
    * re-create / re-put completed in this deploy. A failed deploy forgets the
    * state record of every OTHER such child (it is gone from AWS), so the next
