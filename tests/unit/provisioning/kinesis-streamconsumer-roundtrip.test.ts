@@ -480,4 +480,33 @@ describe('KinesisStreamConsumerProvider update keeps the recorded attributes (is
     );
     expect(attributesAfterUpdate(type, created.attributes, updated)).toEqual(created.attributes);
   });
+
+  it('leaves every attribute create recorded when the post-update read carries no ConsumerDescription', async () => {
+    vi.clearAllMocks();
+    const provider = new KinesisStreamConsumerProvider();
+    const description = {
+      ConsumerName: CONSUMER_NAME,
+      ConsumerARN: CONSUMER_ARN,
+      ConsumerStatus: 'ACTIVE',
+      ConsumerCreationTimestamp: new Date('2026-01-01T00:00:00Z'),
+      StreamARN: STREAM_ARN,
+    };
+    mockSend
+      .mockResolvedValueOnce({ Consumer: { ...description, ConsumerStatus: 'CREATING' } })
+      .mockResolvedValueOnce({ ConsumerDescription: description });
+    const type = 'AWS::Kinesis::StreamConsumer';
+    const props = { ConsumerName: CONSUMER_NAME, StreamARN: STREAM_ARN };
+    const created = await provider.create('LogicalId', type, props);
+    mockSend
+      .mockResolvedValueOnce({}) // TagResource
+      .mockResolvedValueOnce({}); // DescribeStreamConsumer, no ConsumerDescription
+    const updated = await provider.update(
+      'LogicalId',
+      created.physicalId,
+      type,
+      { ...props, Tags: [{ Key: 'Env', Value: 'prod' }] },
+      { ...props, Tags: [] }
+    );
+    expect(attributesAfterUpdate(type, created.attributes, updated)).toEqual(created.attributes);
+  });
 });
