@@ -692,18 +692,31 @@ export function withNoEchoValueMacs(
     // while bound to the input fingerprint this same save stamps for it (so
     // only for a key it records masked, its inputs hashed from no secret).
     const passed = passedSecrets?.get(key);
-    if (passed !== undefined) stamped ??= maskedPropertyInputFingerprintsOf(persisted);
-    // With no new member, the previous one (still what AWS was last sent
-    // with, or unusable: never read as absent, go-to-k/cdkd#7050 review).
     const previousPassed = rawPassedSecretMember(persisted, key);
+    if (passed !== undefined || previousPassed !== undefined) {
+      stamped ??= maskedPropertyInputFingerprintsOf(persisted);
+    }
+    // Unsent, the previous member (still what AWS was last sent with, or
+    // unusable: never read as absent, go-to-k/cdkd#7050 review).
     const carriedPassed: Entry =
       previousPassed === undefined
         ? {}
         : { [PASSED_SECRET_MACS]: previousPassed as PassedSecretMacsMember };
+    // Sent with no new member (no MAC this run): the previous member only
+    // while bound to the input fingerprint this save stamps, so still what
+    // was sent. One bound to an older fingerprint would read unusable on
+    // every deploy; the key is left with none, which the next run holding
+    // the MACs backfills once (go-to-k/cdkd#7050 review).
+    const sentCarried: Entry =
+      isPlainRecord(previousPassed) &&
+      typeof previousPassed['fingerprint'] === 'string' &&
+      previousPassed['fingerprint'] === stamped?.get(key)
+        ? carriedPassed
+        : {};
     const passedMember: Entry =
       passed !== undefined && passed.fingerprint === stamped?.get(key)
         ? { [PASSED_SECRET_MACS]: { fingerprint: passed.fingerprint, macs: { ...passed.macs } } }
-        : carriedPassed;
+        : sentCarried;
     const parameters = noEchoMacParametersOf(templateProps[key], sources);
     if (parameters.length === 0) {
       if (Object.keys(passedMember).length > 0) entries.push([key, passedMember]);

@@ -89,7 +89,11 @@ const { IntrinsicFunctionResolver, resetAccountInfoCache } = await import(
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
-import { maskUnmovedRedactionMasks } from '../../../src/analyzer/diff-calculator/redaction-masks.js';
+import {
+  maskUnmovedRedactionMasks,
+  reportUnverifiedPassedSecrets,
+} from '../../../src/analyzer/diff-calculator/redaction-masks.js';
+import { withPassedSecretBackfill } from '../../../src/deployment/noecho-value-macs.js';
 import { maskedPropertyFingerprint } from '../../../src/deployment/masked-property-fingerprints.js';
 
 beforeEach(() => {
@@ -149,7 +153,8 @@ interface Run {
 async function deploy(
   resources: StackState['resources'],
   templateResources: Record<string, unknown>,
-  opts: Record<string, unknown>
+  opts: Record<string, unknown>,
+  declared: Record<string, unknown> = { X: { Type: 'String' }, Y: { Type: 'String' }, Z: { Type: 'String' } }
 ): Promise<Run> {
   const state = {
     version: 11,
@@ -212,7 +217,7 @@ async function deploy(
   let thrown: unknown;
   await engine
     .deploy('s', {
-      Parameters: { X: { Type: 'String' }, Y: { Type: 'String' }, Z: { Type: 'String' } },
+      Parameters: declared,
       Resources: templateResources,
     } as never)
     .catch((e: unknown) => {
@@ -230,6 +235,13 @@ async function deploy(
     diff: diffCalculator.last,
     sent,
   };
+}
+
+/** The stateful preflight's refusal of a replacement over `key`: nothing sent. */
+function expectRefusedOver(run: { calls: string[]; thrown: unknown }, key: string): void {
+  expect(run.calls).toEqual([]);
+  const cause = (run.thrown as { cause?: Error } | undefined)?.cause?.message ?? '';
+  expect(cause).toContain(`requires replacement (immutable property changed: ${key}) but it is a stateful resource`);
 }
 
 const logged = () => JSON.stringify(Object.values(logSpies).map((spy) => spy.mock.calls));
@@ -327,7 +339,8 @@ describe(`a masked key beside an unproven input, X passed as ${passed} (#7050 re
     expect((renamed.diff?.get('Db')?.propertyChanges ?? []).map((pc) => pc.path)).toContain(
       'MasterUsername'
     );
-    expect(renamed.calls.length > 0 || renamed.thrown !== undefined).toBe(true);
+    // A proven create-only change on a stateful type: refused out loud.
+    expectRefusedOver(renamed, 'MasterUsername');
     for (const run of [moved, renamed]) {
       expect(JSON.stringify(run.diff?.get('Db'))).not.toContain(value);
       expect(JSON.stringify(run.persisted)).not.toContain(value);
@@ -342,8 +355,46 @@ describe(`a masked key beside an unproven input, X passed as ${passed} (#7050 re
     edited.Db.Properties.DBName = { 'Fn::Join': ['_', [{ Ref: 'X' }, { Ref: 'Y' }]] };
     const run = await deploy({ Db: structuredClone(created.persisted!) }, edited, opts);
     expect((run.diff?.get('Db')?.propertyChanges ?? []).map((pc) => pc.path)).toContain('DBName');
-    expect(run.calls.length > 0 || run.thrown !== undefined).toBe(true);
+    expectRefusedOver(run, 'DBName');
   });
+});
+
+// #7050 review (B1): a plain `NoEcho` parameter read is proven by its `NoEcho`
+// value MAC, which masks the plan's side already: an unchanged redeploy warns
+// of nothing, and a changed value is still planned and sent.
+describe('a NoEcho parameter read is proven by its value MAC, never warned unprovable (#7050 review)', () => {
+  const declared = { P: { Type: 'String', NoEcho: true } };
+  for (const [label, read] of [
+    ['a whole read', { Ref: 'P' }],
+    ['an embedding read', { 'Fn::Join': ['', ['pw-', { Ref: 'P' }]] }],
+  ] as const) {
+    it(label, async () => {
+      const tpl = {
+        Db: { Type: 'AWS::RDS::DBInstance', Properties: { Engine: 'mysql', MasterUserPassword: read, BackupRetentionPeriod: 1 } },
+      };
+      const opts = (p: string) => ({ dryRun: false, parameters: { P: p } });
+      const created = await deploy({}, tpl, opts('hunter22-pw'), declared);
+      expect(created.thrown).toBeUndefined();
+      expect(created.persisted?.properties['MasterUserPassword']).toBe('***');
+      for (const round of [1, 2]) {
+        logSpies.warn.mockClear();
+        const same = await deploy({ Db: structuredClone(created.persisted!) }, tpl, opts('hunter22-pw'), declared);
+        expect(same.thrown, `round ${round}`).toBeUndefined();
+        // Only the `NoEcho` promotion (#4043), which the engine settles with
+        // the MAC in hand: nothing sent.
+        expect((same.diff?.get('Db')?.propertyChanges ?? []).map((pc) => [pc.path, pc.noEchoPromoted === true])).toEqual([
+          ['MasterUserPassword', true],
+        ]);
+        expect(same.calls).toEqual([]);
+        expect(logSpies.warn.mock.calls.map((call) => String(call[0])).filter((line) => line.includes('MasterUserPassword'))).toEqual([]);
+      }
+      const changed = await deploy({ Db: structuredClone(created.persisted!) }, tpl, opts('hunter33-pw'), declared);
+      expect(changed.thrown).toBeUndefined();
+      expect(changed.calls).toEqual(['update:Db']);
+      expect(JSON.stringify(changed.sent)).toContain('hunter33-pw');
+      expect(JSON.stringify(changed.persisted)).not.toContain('hunter33-pw');
+    });
+  }
 });
 
 // The plan's side alone: an unprovable key compares masked and is reported;
@@ -363,18 +414,21 @@ describe('maskUnmovedRedactionMasks: unprovable keys (#7050 review)', () => {
       concrete: async () => concrete,
       ...(verdict !== undefined && { passedSecretVerdict: async () => verdict }),
     });
+  // The plan's value of an unprovable key holds a mask of its own (a masked
+  // parameter it read); `plan-value` is one the plan holds in the clear.
   const run = async (
     recorded: string | undefined,
     now: string | undefined,
     concrete: boolean,
-    verdict?: string
+    verdict?: string,
+    planned = '***-plan'
   ) => {
     const reported: string[] = [];
     const out = await maskUnmovedRedactionMasks(
       record(recorded),
       raw,
       { DBName: '***' },
-      { DBName: 'plan-value' },
+      { DBName: planned },
       fingerprinter(now, concrete, verdict),
       undefined,
       (key) => void reported.push(key)
@@ -400,8 +454,93 @@ describe('maskUnmovedRedactionMasks: unprovable keys (#7050 review)', () => {
     expect(await run(undefined, input('aa'), true)).toEqual({ masked: true, reported: ['DBName'] });
     expect(await run(undefined, undefined, false, 'none')).toEqual({ masked: true, reported: [] });
   });
-  it('no usable passed-secret MAC keeps its earlier reading', async () => {
-    expect(await run(input('aa'), input('aa'), false, 'absent')).toEqual({ masked: true, reported: [] });
-    expect(await run(undefined, input('aa'), false, 'absent')).toEqual({ masked: false, reported: [] });
+  // A plan value with no mask of its own (a `NoEcho` source's: a parameter,
+  // one whose `NoEcho` was removed, a recovered masked output) is compared as
+  // is: the engine settles it by readback (deploy-engine-noecho-v11,
+  // deploy-engine-replacement-ceiling).
+  it('unprovable with a plan value in the clear: compared as is, not reported', async () => {
+    expect(await run(input('aa'), input('aa'), false, undefined, 'plan-value')).toEqual({ masked: false, reported: [] });
+    expect(await run(undefined, input('aa'), true, undefined, 'plan-value')).toEqual({ masked: false, reported: [] });
+  });
+  // As `movedMaskedProperties` reads it: unmoved with equal inputs or none
+  // recorded (re-baselined there); an input unknown today is compared.
+  it('no usable passed-secret MAC: masked while the engine side reads it unmoved', async () => {
+    for (const verdict of ['absent', 'unavailable', 'unusable']) {
+      expect(await run(input('aa'), input('aa'), false, verdict)).toEqual({ masked: true, reported: [] });
+      expect(await run(undefined, input('aa'), false, verdict)).toEqual({ masked: true, reported: [] });
+      expect(await run(input('aa'), undefined, false, verdict)).toEqual({ masked: false, reported: [] });
+    }
+  });
+});
+
+// #7050 review: each backfill guard, on its own. A member is stamped only
+// while bound to the record's input fingerprint (or the one this plan
+// re-baselines), only by a run that writes, and only onto a key holding none.
+describe('the passed-secret backfill guards (#7050 review)', () => {
+  const TEXT = maskedPropertyFingerprint({ Ref: 'X' });
+  const input = (half: string) => `inputs-sha256:${half}+${TEXT}`;
+  const record = (recorded: string | undefined, member?: unknown) =>
+    ({
+      physicalId: 'p',
+      resourceType: 'AWS::RDS::DBInstance',
+      attributes: {},
+      dependencies: [],
+      properties: { DBName: '***' },
+      maskedPropertyFingerprints: { DBName: TEXT },
+      ...(recorded !== undefined && { maskedPropertyInputFingerprints: { DBName: recorded } }),
+      ...(member !== undefined && { noEchoValueMacs: { DBName: { 'cdkd:passed': member } } }),
+    }) as never;
+  const member = (fingerprint: string) => ({ fingerprint, macs: { X: 'kms-hmac-sha256:arn:aws:kms:us-east-1:123456789012:key/k:AAAA' } });
+  const report = async (
+    recorded: string | undefined,
+    today: string,
+    backfills: Map<string, Record<string, unknown>> | undefined,
+    rebaselined?: Map<string, string>
+  ) => {
+    const warned: string[] = [];
+    await reportUnverifiedPassedSecrets({
+      logicalId: 'Db',
+      record: record(recorded),
+      unverified: [['DBName', 'absent']],
+      fingerprinter: { passedSecretMember: async () => member(today) },
+      backfills: backfills as never,
+      ...(rebaselined !== undefined && { rebaselined }),
+      warn: (message) => void warned.push(message),
+    });
+    return warned;
+  };
+
+  it('a member bound to another input fingerprint is never stamped, and said so', async () => {
+    const backfills = new Map<string, Record<string, unknown>>();
+    const warned = await report(input('aa'), input('bb'), backfills);
+    expect(backfills.size).toBe(0);
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toMatch(/nor an input fingerprint one could be bound to/);
+    expect(warned[0]).not.toMatch(/NoEcho value MAC key/);
+  });
+  it('a member bound to the recorded, or the re-baselined, fingerprint is stamped', async () => {
+    const backfills = new Map<string, Record<string, unknown>>();
+    expect(await report(input('aa'), input('aa'), backfills)).toEqual([expect.stringMatching(/This deploy records one/)]);
+    expect(backfills.get('Db')).toEqual({ DBName: member(input('aa')) });
+    const rebaselined = new Map<string, Record<string, unknown>>();
+    await report(undefined, input('cc'), rebaselined, new Map([['DBName', input('cc')]]));
+    expect(rebaselined.get('Db')).toEqual({ DBName: member(input('cc')) });
+  });
+  it('a run that writes nothing (a dry run) stamps nothing and says no deploy recorded one', async () => {
+    const warned = await report(input('aa'), input('aa'), undefined);
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toMatch(/A deploy that can make one/);
+    expect(warned[0]).not.toMatch(/This deploy records one/);
+  });
+  it('withPassedSecretBackfill stamps only a key holding no member', () => {
+    const stamped = withPassedSecretBackfill(record(input('aa')), { DBName: member(input('aa')) });
+    expect((stamped as { noEchoValueMacs?: unknown }).noEchoValueMacs).toEqual({ DBName: { 'cdkd:passed': member(input('aa')) } });
+    for (const held of [{ fingerprint: 'cdkd:dropped' }, member(input('zz'))]) {
+      const before = record(input('aa'), held);
+      expect(withPassedSecretBackfill(before, { DBName: member(input('aa')) })).toBe(before);
+    }
+    // Nor one whose bound fingerprint is not the record's.
+    const other = record(input('aa'));
+    expect(withPassedSecretBackfill(other, { DBName: member(input('bb')) })).toBe(other);
   });
 });

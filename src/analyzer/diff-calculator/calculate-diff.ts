@@ -493,7 +493,7 @@ export async function calculateDiff(
         maskedInputs?.publicReferences,
         (key) =>
           this.logger.warn(
-            safeMsg`${logicalId}: ${key} is recorded masked and reads an input cdkd keeps as written or cannot resolve here, so it cannot be proven unchanged and is treated as unchanged on this deploy. No replacement is planned over it.`
+            safeMsg`${logicalId}: ${key} is recorded masked and reads an input cdkd keeps as written or cannot resolve here, so it cannot be proven unchanged and is treated as unchanged. No replacement is planned over it.`
           )
       );
       const propertyChanges = await this.compareProperties(
@@ -532,6 +532,7 @@ export async function calculateDiff(
         unverified,
         fingerprinter: maskedFingerprinter || undefined,
         backfills: maskedInputs?.passedSecretBackfills,
+        rebaselined: new Map(rebaselined),
         warn: (message) => this.logger.warn(message),
       });
       // go-to-k/cdkd#7050: a masked key whose public `ssm` value moved, or

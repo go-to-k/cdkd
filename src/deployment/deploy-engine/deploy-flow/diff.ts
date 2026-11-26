@@ -102,8 +102,11 @@ export async function calculateDeployDiff(
   const maskedInputs = maskedInputSourcesForDiff && {
     sources: maskedInputSourcesForDiff,
     rebaselined: new Map<string, Record<string, string>>(),
-    // go-to-k/cdkd#7050 review: the passed-secret members the deploy backfills.
-    passedSecretBackfills: new Map<string, Record<string, PassedSecretMacsMember>>(),
+    // go-to-k/cdkd#7050 review: the passed-secret members the deploy backfills
+    // (none in a dry run, which writes nothing: its warning says so).
+    ...(engine.options.dryRun !== true && {
+      passedSecretBackfills: new Map<string, Record<string, PassedSecretMacsMember>>(),
+    }),
     // go-to-k/cdkd#7050: the public `ssm` values this diff pass resolved.
     // The same refusal corpora the provisioning arms read, so a public value
     // equal to a `NoEcho` / parent-passed secret is refused alike (#7050 review).

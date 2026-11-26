@@ -407,6 +407,13 @@ async function deploy(
   return { calls, persisted: saved[saved.length - 1]?.resources['Db'], thrown, diff: diffCalculator.last, sent };
 }
 
+/** The stateful preflight's refusal of a replacement over `key`: nothing sent. */
+function expectRefusedOver(run: { calls: string[]; thrown: unknown }, key: string): void {
+  expect(run.calls).toEqual([]);
+  const cause = (run.thrown as { cause?: Error } | undefined)?.cause?.message ?? '';
+  expect(cause).toContain(`requires replacement (immutable property changed: ${key}) but it is a stateful resource`);
+}
+
 // go-to-k/cdkd#7050 review: a child whose read of a row parameter is MASKED
 // must not plan that mask as a change on an unchanged redeploy, nor refuse or
 // replace the (stateful) resource over it, nor hand the provider `***`.
@@ -452,8 +459,8 @@ describe('a masked child read redeploys without a phantom change (#7050, #7059)'
         parameters: { X: `moved-${value}` },
       });
       expect((moved.diff?.get('Db')?.propertyChanges ?? []).map((pc) => pc.path)).toContain('DBName');
-      // The deploy acts on the planned change (sends, or refuses it out loud).
-      expect(moved.calls.length > 0 || moved.thrown !== undefined).toBe(true);
+      // A create-only change on a stateful type: refused out loud, nothing sent.
+      expectRefusedOver(moved, 'DBName');
       // A secret-bearing value (the masked rows) is in neither the plan nor
       // the record (its MAC member included), nor any log line.
       if (row === 'M' || row === 'S') {
@@ -545,7 +552,7 @@ describe('a masked child read with no passed-secret MAC proof is a visible chang
     const warned = warnings();
     expect(warned).toHaveLength(1);
     expect(warned[0]).toMatch(/not compared on this deploy/);
-    expect(warned[0]).toMatch(/fingerprinted from now on/);
+    expect(warned[0]).toMatch(/This deploy records one, and the key is compared from the next deploy on/);
     expect(logged()).not.toContain(opts.parameters.X);
     // The next deploy compares the stamped MAC: no change, no warning.
     const next = await deploy({ Db: structuredClone(same.persisted!) }, tpl, opts);
@@ -558,8 +565,25 @@ describe('a masked child read with no passed-secret MAC proof is a visible chang
       parameters: { X: `moved-${opts.parameters.X}` },
     });
     expect((moved.diff?.get('Db')?.propertyChanges ?? []).map((pc) => pc.path)).toContain('DBName');
-    expect(moved.calls.length > 0 || moved.thrown !== undefined).toBe(true);
+    expectRefusedOver(moved, 'DBName');
     expect(warnings()).toEqual([]);
+  });
+
+  // A dry run writes nothing: it backfills nothing and never says it does.
+  it('an older record with no MAC under --dry-run: unmoved, warned, nothing recorded', async () => {
+    kms.fail = false;
+    const opts = await masked();
+    const created = await deploy({}, tpl, opts);
+    logSpies.warn.mockClear();
+    const dry = await deploy({ Db: oldRecord(created.persisted!) }, tpl, { ...opts, dryRun: true });
+    expect(dry.thrown).toBeUndefined();
+    expect(dry.diff?.get('Db')?.changeType).toBe('NO_CHANGE');
+    expect(dry.calls).toEqual([]);
+    if (dry.persisted !== undefined) expect(passedOf(dry.persisted)).toBeUndefined();
+    const warned = warnings();
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toMatch(/A deploy that can make one/);
+    expect(warned[0]).not.toMatch(/This deploy records one/);
   });
 
   it('an older record with no MAC whose other input moved plans the change', async () => {
@@ -577,7 +601,7 @@ describe('a masked child read with no passed-secret MAC proof is a visible chang
     logSpies.warn.mockClear();
     const moved = await deploy({ Db: oldRecord(created.persisted!) }, joined, { ...opts, parameters: { ...opts.parameters, Y: 'two' }, passedParameterClasses: classes }, declared);
     expect((moved.diff?.get('Db')?.propertyChanges ?? []).map((pc) => pc.path)).toContain('DBName');
-    expect(moved.calls.length > 0 || moved.thrown !== undefined).toBe(true);
+    expectRefusedOver(moved, 'DBName');
     expect(warnings()).toEqual([]);
   });
 
@@ -603,6 +627,67 @@ describe('a masked child read with no passed-secret MAC proof is a visible chang
     } finally {
       kms.fail = false;
     }
+    expect(logged()).not.toContain(opts.parameters.X);
+  });
+
+  // #7050 review: a key SENT in a run with no KMS, its input fingerprint moved
+  // too, has no member that describes what was sent. Carrying the old one
+  // (bound to the old fingerprint) would read unusable on every deploy; the
+  // save leaves none, and the next run with the MACs backfills it once.
+  it('a key sent with no KMS after its input moved drops the stale member; the next KMS run backfills it once', async () => {
+    kms.fail = false;
+    const opts = await masked();
+    const joined = (y: string) => ({
+      Db: { Type: 'AWS::SSM::Parameter', Properties: { Type: 'String', Value: { 'Fn::Join': ['-', [{ Ref: 'X' }, { Ref: 'Y' }]] } } },
+      _y: y,
+    });
+    const declared = { X: { Type: 'String' }, Y: { Type: 'String' } };
+    const classes = new Map([['X', 'secret' as const], ['Y', 'clean' as const]]);
+    const run = (resources: StackState['resources'], y: string) => {
+      const { _y, ...tpl } = joined(y);
+      return deploy(resources, tpl, { ...opts, parameters: { ...opts.parameters, Y: _y }, passedParameterClasses: classes }, declared);
+    };
+    const valueMember = (record: unknown) =>
+      ((record as { noEchoValueMacs?: Record<string, Record<string, unknown>> } | undefined)?.noEchoValueMacs?.['Value'] ?? {})['cdkd:passed'] as
+        | Member
+        | undefined;
+    const created = await run({}, 'one');
+    expect(created.thrown).toBeUndefined();
+    expect(valueMember(created.persisted)?.fingerprint).toBe(created.persisted?.maskedPropertyInputFingerprints?.['Value']);
+    let sent: Run;
+    try {
+      kms.fail = true;
+      sent = await run({ Db: structuredClone(created.persisted!) }, 'two');
+    } finally {
+      kms.fail = false;
+    }
+    expect(sent.thrown).toBeUndefined();
+    expect(sent.calls).toEqual(['update:Db']);
+    const moved = sent.persisted?.maskedPropertyInputFingerprints?.['Value'];
+    expect(moved).toBeDefined();
+    expect(moved).not.toBe(created.persisted?.maskedPropertyInputFingerprints?.['Value']);
+    // No member bound to the old fingerprint is carried.
+    expect(valueMember(sent.persisted)).toBeUndefined();
+    logSpies.warn.mockClear();
+    const backfilled = await run({ Db: structuredClone(sent.persisted!) }, 'two');
+    expect(backfilled.thrown).toBeUndefined();
+    expect(backfilled.diff?.get('Db')?.changeType).toBe('NO_CHANGE');
+    expect(backfilled.calls).toEqual([]);
+    expect(valueMember(backfilled.persisted)?.fingerprint).toBe(moved);
+    const backfillWarnings = logSpies.warn.mock.calls
+      .map((call) => String(call[0]))
+      .filter((line) => line.includes('Db') && line.includes('Value'));
+    expect(backfillWarnings).toHaveLength(1);
+    expect(backfillWarnings[0]).toMatch(/This deploy records one/);
+    // From then on compared: a passed-secret value that moved is planned.
+    const next = await deploy(
+      { Db: structuredClone(backfilled.persisted!) },
+      (({ _y, ...tpl }) => tpl)(joined('two')),
+      { ...opts, parameters: { X: `moved-${opts.parameters.X}`, Y: 'two' }, passedParameterClasses: classes },
+      declared
+    );
+    expect((next.diff?.get('Db')?.propertyChanges ?? []).map((pc) => pc.path)).toContain('Value');
+    expect(next.calls).toEqual(['update:Db']);
     expect(logged()).not.toContain(opts.parameters.X);
   });
 
@@ -696,9 +781,19 @@ describe('movedMaskedProperties: a passed-secret key with no usable MAC (#7050 r
       expect(await movedMaskedProperties(record(input('aa')), props, fingerprinter(input('aa'), verdict), undefined, onUnverified)).toEqual([]);
       expect(reported).toEqual([['Value', verdict]]);
       expect(await movedMaskedProperties(record(input('aa')), props, fingerprinter(input('bb'), verdict), undefined, onUnverified)).toEqual(['Value']);
-      expect(await movedMaskedProperties(record(), props, fingerprinter(input('aa'), verdict), undefined, onUnverified)).toEqual(['Value']);
       expect(await movedMaskedProperties(record(input('aa')), props, fingerprinter(undefined, verdict), undefined, onUnverified)).toEqual(['Value']);
       expect(reported).toHaveLength(1);
+      // No input fingerprint recorded: unmoved, reported, and re-baselined to
+      // today's (a move would be refused on every deploy of a stateful
+      // create-only key, and only a send stamps); compared from then on.
+      const rebaselined: Array<[string, string]> = [];
+      const onRebaseline = (key: string, f: string) => void rebaselined.push([key, f]);
+      expect(await movedMaskedProperties(record(), props, fingerprinter(input('aa'), verdict), onRebaseline, onUnverified)).toEqual([]);
+      expect(rebaselined).toEqual([['Value', input('aa')]]);
+      expect(reported).toEqual([['Value', verdict], ['Value', verdict]]);
+      // With an input unknown today there is nothing to re-baseline to.
+      expect(await movedMaskedProperties(record(), props, fingerprinter(undefined, verdict), onRebaseline, onUnverified)).toEqual(['Value']);
+      expect(rebaselined).toHaveLength(1);
     });
   }
   it('changed: moved even with equal inputs', async () => {

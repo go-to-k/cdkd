@@ -55,9 +55,12 @@ import type { ResourceState } from '../../types/state.js';
  *   compared, as in CloudFormation.
  * A key whose inputs cannot prove it either way (an input kept as written or
  * unknown here, no input fingerprint recorded) is UNPROVABLE (#7050 review):
- * it compares masked too, and is reported to `onUnprovable` (the plan warns,
- * naming the resource and the key); a hashed input or a passed-secret MAC
- * that moved is never masked.
+ * where the plan's own value holds a mask too (it cannot see the value
+ * either), it compares masked, and is reported to `onUnprovable` (the plan
+ * warns, naming the resource and the key); a plan value with no mask (a
+ * `NoEcho` source's, which the engine settles by readback) is compared as is.
+ * A hashed input or a passed-secret MAC that moved is never masked, and a key
+ * the `NoEcho` comparison already masked wherever the record is needs nothing.
  * Only the positions holding the mask are masked on the desired side; every
  * other leaf of the key is compared as before.
  */
@@ -84,6 +87,10 @@ export async function maskUnmovedRedactionMasks(
     // unless the record masked the key WHOLE: a nested child's read of a
     // masked parameter plans as `a-***` against a stored `***` (#7050 review).
     if (carriesSecretMask(desired[key]) && current[key] !== SECRET_MASK) continue;
+    // A desired side already masked wherever the record is (a `NoEcho`
+    // comparison's `***` its value MAC proved) leaves nothing to mask, nor to
+    // warn of (#7050 review).
+    if (equalJson(maskedWhere(current[key], desired[key]), desired[key])) continue;
     // The template's value spells a reference, or reads one through a
     // parameter or attribute: either way the fingerprints below are the proof.
     if (
@@ -129,14 +136,22 @@ export async function maskUnmovedRedactionMasks(
     } else {
       const verdict = await passedSecretVerdictOf(fingerprinter, key, record);
       if (verdict === 'changed') continue;
-      if (verdict === 'confirmed' || isUnverifiedPassedSecret(verdict)) {
-        // As before: `movedMaskedProperties` decides these from the record.
+      if (verdict === 'confirmed') {
         if (!comparable) continue;
+      } else if (isUnverifiedPassedSecret(verdict)) {
+        // As `movedMaskedProperties` reads it: unmoved with equal inputs, or
+        // with none recorded (re-baselined there), and warned of there.
+        if (now === undefined) continue;
       } else if (verdict === 'n/a') {
         unprovable = true;
       }
       // `'none'`: reported by `movedMaskedProperties` (`onUnverified`).
     }
+    // Unprovable, with a value the plan holds (no mask text of its own): the
+    // record's mask is then not the plan's blind spot. A `NoEcho` source's
+    // (a parameter, one whose `NoEcho` was removed, a recovered masked
+    // output) the engine settles by its readback, so it is compared as is.
+    if (unprovable && !(JSON.stringify(desired[key]) ?? '').includes(SECRET_MASK)) continue;
     if (
       await publicReferencesMoved(record, key, rawDesired[key], publicReferences, fingerprinter)
     ) {
@@ -156,6 +171,11 @@ function readsAnyInput(value: unknown): boolean {
     if (k === 'Ref' || k.startsWith('Fn::') || readsAnyInput(v)) return true;
   }
   return false;
+}
+
+/** Equal as JSON (`maskedWhere` keeps the key order of the value it copies). */
+function equalJson(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 /** `desired` with `SECRET_MASK` at every position `recorded` holds it; shape mismatches mask whole. */
@@ -185,19 +205,23 @@ export type PassedSecretBackfill = { fingerprint: string; macs: Record<string, s
  * warned of, naming the resource and the key, never a value. A key whose
  * record never held a member (`'absent'`) gets today's member in `backfills`
  * (logical id -> key -> member), which the deploy stamps on the record (the
- * #4451 `rebaselined` precedent), when the run has its MACs and it binds to
- * the input fingerprint the record holds; it is then compared from the next
- * deploy on. Short of that, the key is unmoved on every deploy, and said so.
+ * #4451 `rebaselined` precedent), when the run writes (`backfills`), has its
+ * MACs, and the member binds to the input fingerprint the record holds or
+ * this plan re-baselines; it is then compared from the next deploy on. Short
+ * of that, the key is unmoved on every deploy, and said so.
  */
 export async function reportUnverifiedPassedSecrets(args: {
   logicalId: string;
   record: ResourceState;
   unverified: ReadonlyArray<readonly [string, UnverifiedPassedSecret | 'none']>;
   fingerprinter: Partial<BindingFingerprinter> | undefined;
+  /** `undefined`: nothing this run writes (a dry run), so nothing is backfilled. */
   backfills: Map<string, Record<string, PassedSecretBackfill>> | undefined;
+  /** The input fingerprints this same plan re-baselines (key -> fingerprint). */
+  rebaselined?: ReadonlyMap<string, string>;
   warn: (message: string) => void;
 }): Promise<void> {
-  const { logicalId, record, unverified, fingerprinter, backfills, warn } = args;
+  const { logicalId, record, unverified, fingerprinter, backfills, rebaselined, warn } = args;
   if (unverified.length === 0) return;
   const inputs = maskedPropertyInputFingerprintsOf(record);
   const stamped: Array<[string, PassedSecretBackfill]> = [];
@@ -206,10 +230,20 @@ export async function reportUnverifiedPassedSecrets(args: {
     if (verdict === 'absent' && backfills !== undefined) {
       member = await fingerprinter?.passedSecretMember?.(key).catch(() => undefined);
     }
-    if (member !== undefined && member.fingerprint === inputs.get(key)) {
+    // Bound to the input fingerprint the record holds after this plan's save.
+    const expected = inputs.get(key) ?? rebaselined?.get(key);
+    if (verdict === 'absent' && backfills === undefined) {
+      warn(
+        safeMsg`${logicalId}: ${key} reads a parameter the parent stack passed as a secret, and its record holds no value fingerprint for it (written before cdkd recorded one), so its value is not compared and it is treated as unchanged. A deploy that can make one (kms:GenerateMac on alias/cdkd-noecho-mac) records it.`
+      );
+    } else if (member !== undefined && member.fingerprint === expected) {
       stamped.push([key, member]);
       warn(
-        safeMsg`${logicalId}: ${key} reads a parameter the parent stack passed as a secret, and its record holds no value fingerprint for it (written before cdkd recorded one), so its value was not compared on this deploy and it is treated as unchanged. It is fingerprinted from now on.`
+        safeMsg`${logicalId}: ${key} reads a parameter the parent stack passed as a secret, and its record holds no value fingerprint for it (written before cdkd recorded one), so its value was not compared on this deploy and it is treated as unchanged. This deploy records one, and the key is compared from the next deploy on.`
+      );
+    } else if (member !== undefined) {
+      warn(
+        safeMsg`${logicalId}: ${key} reads a parameter the parent stack passed as a secret, and its record holds no value fingerprint for it nor an input fingerprint one could be bound to, so its value cannot be compared and it is treated as unchanged until the property is sent again. No replacement is planned over it.`
       );
     } else if (verdict === 'none') {
       warn(

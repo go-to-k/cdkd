@@ -342,14 +342,27 @@ describe('withNoEchoValueMacs (the save)', () => {
     const bag = markWrittenFromDeployedTemplate({ Value: 'v' });
     const member = { fingerprint: 'inputs-sha256:a', macs: { X: 'kms-hmac-sha256:k:m' } };
     const prior = base({ noEchoValueMacs: { Value: { P: 'old', 'cdkd:passed': member }, Other: { 'cdkd:passed': member } } });
-    // No new member: the previous one is carried, kept or not.
+    // No new member, sent: the previous one is carried only while bound to
+    // the input fingerprint this save stamps (#7050 review); this record
+    // stamps none, so a stale member is left out (backfilled once next run).
     expect(withNoEchoValueMacs(prior, bag, templateProps, sources, current).noEchoValueMacs).toEqual({
-      Value: { P: formatNoEchoMac(mac(5)), 'cdkd:passed': member },
-      Other: { 'cdkd:passed': member },
+      Value: { P: formatNoEchoMac(mac(5)) },
     });
+    const text = 'sha256:' + 'a'.repeat(64);
+    const bound = { ...member, fingerprint: `inputs-sha256:${'b'.repeat(64)}+${text}` };
+    const boundPrior = base({
+      maskedPropertyFingerprints: { Value: text, Other: text },
+      maskedPropertyInputFingerprints: { Value: bound.fingerprint, Other: bound.fingerprint },
+      noEchoValueMacs: { Value: { P: 'old', 'cdkd:passed': bound }, Other: { 'cdkd:passed': bound } },
+    });
+    expect(withNoEchoValueMacs(boundPrior, bag, templateProps, sources, current).noEchoValueMacs).toEqual({
+      Value: { P: formatNoEchoMac(mac(5)), 'cdkd:passed': bound },
+      Other: { 'cdkd:passed': bound },
+    });
+    // Unsent (kept): the previous one, whatever it is bound to; `Other`, sent, drops its stale one.
     expect(
       withNoEchoValueMacs(prior, bag, templateProps, sources, current, new Set(['Value'])).noEchoValueMacs
-    ).toEqual({ Value: { P: 'old', 'cdkd:passed': member }, Other: { 'cdkd:passed': member } });
+    ).toEqual({ Value: { P: 'old', 'cdkd:passed': member } });
     // No template to read: a dropped member is left.
     expect(withNoEchoValueMacs(prior, bag, undefined, sources, current).noEchoValueMacs).toEqual({
       Value: { 'cdkd:passed': { fingerprint: 'cdkd:dropped' } },

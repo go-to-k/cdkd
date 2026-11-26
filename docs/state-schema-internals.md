@@ -1941,28 +1941,40 @@ stack with no instance id.
   when the binding equals today's and every MAC equals today's. A differing
   MAC is a move. With no usable MAC, the key's recorded input fingerprint
   decides: if it differs from today's, the key is a move. If it is equal,
-  the key is unchanged and the plan warns, naming the resource and the key,
-  never a value. A move would never settle there: a stateful create-only key
+  or none is recorded (it is then re-baselined to today's), the key is
+  unchanged and the plan warns, naming the resource and the key, never a
+  value. A move would never settle there: a stateful create-only key
   (RDS `DBName`) is refused, and only a sent value gets a MAC. A record
   holding no member for the key (written before #7050, with no KMS, or by
   an older binary's rebuild that dropped it) is backfilled: the same deploy
-  stamps today's member, and the key is compared from then on. With no KMS
-  this run nothing is stamped, and the warning repeats on every deploy. A
-  member that exists but proves nothing (malformed, under another key,
-  bound to another input fingerprint, or no KMS this run) is never
-  backfilled. It warns on every deploy until the key is sent again. A key
-  whose other inputs are not all proven (kept as written, or unknown here)
-  can bind no MAC: it is a move only when its recorded input fingerprint
-  differs from today's. Otherwise it is unchanged, warned of on every deploy,
-  and re-baselined when it holds no input fingerprint. A masked key with no
-  passed-secret parameter whose inputs prove nothing either way is likewise
-  compared masked by the plan, with the same warning. A save
-  with no new member carries the previous one. A failed update, or a written
-  record with no template, leaves `{ "fingerprint": "cdkd:dropped" }`. So a
-  key that once held a member never reads as one that never had one, and the
-  backfill fires at most once per record. The entry may hold no `NoEcho` MAC at all. An
-  older binary never reads the object member. `cdkd diff` holds no MACs for
-  it and compares such a key as before. An entry holding only this member
+  stamps today's member, bound to the input fingerprint the record holds or
+  the plan re-baselines, and the key is compared from then on. With no KMS
+  this run, or in a dry run, nothing is stamped, and the warning repeats on
+  every deploy. A member that exists but proves nothing (malformed, under
+  another key, bound to another input fingerprint, or no KMS this run) is
+  never backfilled. It warns on every deploy until the key is sent again. A
+  key whose other inputs are not all proven (kept as written, or unknown
+  here) can bind no MAC: it is a move only when its recorded input
+  fingerprint differs from today's. Otherwise it is unchanged, warned of on
+  every deploy, and re-baselined when it holds no input fingerprint. A
+  masked key with no passed-secret parameter whose inputs prove nothing
+  either way is likewise compared masked by the plan, with the same
+  warning, where the plan's own value holds a mask too. A plan value in the
+  clear (a `NoEcho` source's) is compared as is, and the engine's readback
+  settles it. A key the `NoEcho` comparison already masked (its value MAC
+  proved it) is not warned of. An unsent key carries its previous member. A
+  sent key with no new member (no KMS this run) carries it only while it is
+  bound to the input fingerprint the same save stamps. Otherwise the key
+  holds none, and the next run with the MACs backfills it once. A failed
+  update, or a written record with no template, leaves
+  `{ "fingerprint": "cdkd:dropped" }`. So outside such a send, a key that
+  once held a member never reads as one that never had one, and the
+  backfill fires at most once per record. The entry may hold no `NoEcho`
+  MAC at all. An older binary never reads the object member. `cdkd diff`
+  holds no passed-secret MACs, and a nested child's preview holds no input
+  fingerprints either, so it shows such a key as a change whether or not
+  its value moved. It never hides a move; the deploy decides with its MACs.
+  An entry holding only this member
   still sets `noEchoValueMacs`, so a save of such a nested child writes
   [`version: 17`](#version-17-adds-noechovaluemacs-written-only-with-a-mac)
   where it would otherwise write 16, and a binary older than #6146 refuses

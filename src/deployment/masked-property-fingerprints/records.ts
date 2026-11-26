@@ -384,7 +384,8 @@ export function boundReferenceFingerprints(
  * `onRebaseline` with today's input fingerprint, which the deploy stamps
  * without sending. A key reading a parent-passed secret with no usable MAC
  * ({@link UnverifiedPassedSecret}) and a bound input fingerprint equal to
- * today's is unmoved and reported to `onUnverified`; one whose other inputs
+ * today's, or none bound (re-baselined), is unmoved and reported to
+ * `onUnverified`; one whose other inputs
  * are unproven (`'none'`) is unmoved and reported unless its hashed inputs
  * differ from the recorded ones, and rebaselined when it has none.
  */
@@ -443,10 +444,16 @@ export async function movedMaskedProperties(
     }
     // go-to-k/cdkd#7050 review: no usable MAC, and the recorded input
     // fingerprint equal to today's: unmoved, reported to `onUnverified` (the
-    // plan warns, and backfills an `'absent'` member). Anything else moved.
+    // plan warns, and backfills an `'absent'` member). With none recorded
+    // (nothing to compare, and a move would never settle: only a send
+    // stamps), unmoved too, reported and re-baselined to today's, so the next
+    // deploy compares it. An input unknown today, or one that moved, moved.
     if (isUnverifiedPassedSecret(passed)) {
-      const now = bound === undefined ? undefined : await fingerprinter(key);
-      if (
+      const now = await fingerprinter(key);
+      if (now !== undefined && bound === undefined) {
+        onRebaseline?.(key, now);
+        onUnverified?.(key, passed);
+      } else if (
         now === undefined ||
         splitInputFingerprint(now).input !== splitInputFingerprint(bound!).input
       ) {
