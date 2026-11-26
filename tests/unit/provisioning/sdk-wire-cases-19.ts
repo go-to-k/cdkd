@@ -1096,7 +1096,7 @@ const INSTANCE_CASE: TypeCase = {
         ['update-add', 'update-remove'].map((d) => [
           `${d}:AvailabilityZone`,
           {
-            why: `ModifyDBInstance cannot move an instance, and CloudFormation refuses a changed zone ("Resource is immutable"), so update() refuses it before any call (instanceAvailabilityZoneKept in ${SRC}, go-to-k/cdkd#5640)`,
+            why: `ModifyDBInstance cannot move an instance (CloudFormation replaces it, go-to-k/cdkd#7044, which the diff classifies), so update() refuses it before any call (instanceAvailabilityZoneKept in ${SRC}, go-to-k/cdkd#5640)`,
             says: /AvailabilityZone cannot change on an existing DB instance/,
           },
         ])

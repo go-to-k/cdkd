@@ -37,6 +37,14 @@ export {
   dbInstanceEngineChangeIsInPlace,
   dbInstanceEngineChangeReplaces,
 } from './replacement-rules/predicates.js';
+export {
+  dbClusterGlobalClusterChangeReplaces,
+  dbInstanceAvailabilityZoneChangeReplaces,
+  dbInstancePerformanceInsightsKmsKeyChangeReplaces,
+  dbInstanceReplicaSourceChangeReplaces,
+  dbInstanceRestoreInputChangeReplaces,
+  dbInstanceUseLatestRestorableTimeChangeReplaces,
+} from './replacement-rules/rds-immutability.js';
 
 /**
  * Replacement rules registry
