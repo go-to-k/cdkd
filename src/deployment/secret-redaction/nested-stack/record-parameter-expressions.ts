@@ -413,13 +413,16 @@ export function recordNestedStackParameterExpressions(
         : provenance === 'template-derived'
           ? substitutionSpelling(resolvedValue, sourceLeaf, secrets, name)
           : undefined;
-    // go-to-k/cdkd#7059: a value holding the text of a sub-floor secret its
-    // OWN resolution consumed is one the child may read only as the certified
-    // spelling. Consumption, never containment: a public value that merely
-    // spells an unrelated secret's text is not marked (#7050 review).
+    // go-to-k/cdkd#7059: a value holding a sub-floor secret's text is one
+    // the child may read only as the certified spelling, else masked. By
+    // CONTAINMENT, fail closed: a public value equal to a secret's text cannot
+    // be told from one carrying it. A child that masks such a read plans it
+    // unchanged by its fingerprints (`redaction-masks.ts`), so the mark costs
+    // no phantom change (#7050 review).
     // A row reading a parameter this stack itself holds marked passes the
     // mark on (a nested grandchild).
     if (
+      holdsSubFloorSecret(resolvedValue, secrets) ||
       holdsConsumedSubFloorSecret(resolvedValue, sourceLeaf, secrets) ||
       (isPlainObject(sourceLeaf) && attributionRefusedReadsOf(sourceLeaf, secrets) !== undefined)
     ) {
@@ -951,6 +954,15 @@ function holdsConsumedSubFloorSecret(
     if (plaintext === undefined || plaintext === '' || plaintext.length >= MIN_NEEDLE_LENGTH)
       continue;
     if (value.includes(plaintext)) return true;
+  }
+  return false;
+}
+
+/** Does `value` hold a recorded secret's text under the value scan's floor? */
+function holdsSubFloorSecret(value: string, secrets: RecordedSecretValues): boolean {
+  for (const [plaintext, expression] of secrets) {
+    if (plaintext === '' || plaintext.length >= MIN_NEEDLE_LENGTH) continue;
+    if (expression !== SECRET_MASK && value.includes(plaintext)) return true;
   }
   return false;
 }
