@@ -460,6 +460,7 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 - [`stepfunctions-sync-managed-rule`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/stepfunctions-sync-managed-rule/)
 - [`stream-delete-redeploy`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/stream-delete-redeploy/)
 - [`subnet-mappublicip-removal`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/subnet-mappublicip-removal/)
+- [`superseded-sg-destroy-order`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/superseded-sg-destroy-order/)
 - [`synthetics-canary`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/synthetics-canary/)
 - [`termination-protection`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/termination-protection/)
 - [`unrecognized-key-autoroute`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/unrecognized-key-autoroute/)

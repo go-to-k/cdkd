@@ -2003,6 +2003,7 @@
         "sg-ingress-source-replacement",
         "sg-rule-description-update",
         "stack-copy-create-tokens",
+        "superseded-sg-destroy-order",
         "tags-propagation",
         "vpc-lambda",
         "vpc-lambda-cr-race",
@@ -2305,6 +2306,9 @@
         "stack-copy-create-tokens": [
           "l2"
         ],
+        "superseded-sg-destroy-order": [
+          "l2"
+        ],
         "tags-propagation": [
           "l1"
         ],
@@ -2417,6 +2421,7 @@
         "sg-ingress-source-replacement",
         "sg-rule-description-update",
         "stack-copy-create-tokens",
+        "superseded-sg-destroy-order",
         "vpc-lambda",
         "vpc-lambda-cr-race",
         "vpc-nat-gateway",
@@ -2700,6 +2705,9 @@
         "stack-copy-create-tokens": [
           "l2"
         ],
+        "superseded-sg-destroy-order": [
+          "l2"
+        ],
         "vpc-lambda": [
           "l2"
         ],
@@ -2854,6 +2862,7 @@
         "sg-ingress-source-replacement",
         "sg-rule-description-update",
         "stack-copy-create-tokens",
+        "superseded-sg-destroy-order",
         "vpc-lambda",
         "vpc-lambda-cr-race",
         "vpc-nat-gateway",
@@ -3149,6 +3158,9 @@
         "stack-copy-create-tokens": [
           "l2"
         ],
+        "superseded-sg-destroy-order": [
+          "l2"
+        ],
         "vpc-lambda": [
           "l2"
         ],
@@ -3262,6 +3274,7 @@
         "sg-ingress-source-replacement",
         "sg-rule-description-update",
         "stack-copy-create-tokens",
+        "superseded-sg-destroy-order",
         "tags-propagation",
         "vpc-lambda",
         "vpc-lambda-cr-race",
@@ -3561,6 +3574,9 @@
         "stack-copy-create-tokens": [
           "l2"
         ],
+        "superseded-sg-destroy-order": [
+          "l2"
+        ],
         "tags-propagation": [
           "l1"
         ],
@@ -3641,6 +3657,7 @@
         "sg-ingress-source-replacement",
         "sg-rule-description-update",
         "stack-copy-create-tokens",
+        "superseded-sg-destroy-order",
         "tags-propagation",
         "update-replace",
         "vpc-lambda",
@@ -3846,6 +3863,10 @@
           "l2",
           "literal"
         ],
+        "superseded-sg-destroy-order": [
+          "l2",
+          "literal"
+        ],
         "tags-propagation": [
           "l1"
         ],
@@ -4018,6 +4039,7 @@
         "sg-rule-description-update",
         "stack-copy-create-tokens",
         "subnet-mappublicip-removal",
+        "superseded-sg-destroy-order",
         "tags-propagation",
         "vpc-lambda",
         "vpc-lambda-cr-race",
@@ -4362,6 +4384,10 @@
           "l1",
           "literal"
         ],
+        "superseded-sg-destroy-order": [
+          "l2",
+          "literal"
+        ],
         "tags-propagation": [
           "l1"
         ],
@@ -4485,6 +4511,7 @@
         "sg-ingress-source-replacement",
         "sg-rule-description-update",
         "stack-copy-create-tokens",
+        "superseded-sg-destroy-order",
         "vpc-lambda",
         "vpc-lambda-cr-race",
         "vpc-nat-gateway",
@@ -4770,6 +4797,9 @@
         "stack-copy-create-tokens": [
           "l2"
         ],
+        "superseded-sg-destroy-order": [
+          "l2"
+        ],
         "vpc-lambda": [
           "l2"
         ],
@@ -4903,6 +4933,7 @@
         "sg-rule-description-update",
         "stack-copy-create-tokens",
         "subnet-mappublicip-removal",
+        "superseded-sg-destroy-order",
         "tags-propagation",
         "vpc-lambda",
         "vpc-lambda-cr-race",
@@ -5286,6 +5317,10 @@
         "subnet-mappublicip-removal": [
           "l1"
         ],
+        "superseded-sg-destroy-order": [
+          "l2",
+          "literal"
+        ],
         "tags-propagation": [
           "l1"
         ],
@@ -5419,6 +5454,7 @@
         "sg-ingress-source-replacement",
         "sg-rule-description-update",
         "stack-copy-create-tokens",
+        "superseded-sg-destroy-order",
         "vpc-lambda",
         "vpc-lambda-cr-race",
         "vpc-nat-gateway",
@@ -5717,6 +5753,9 @@
           "l2"
         ],
         "stack-copy-create-tokens": [
+          "l2"
+        ],
+        "superseded-sg-destroy-order": [
           "l2"
         ],
         "vpc-lambda": [
