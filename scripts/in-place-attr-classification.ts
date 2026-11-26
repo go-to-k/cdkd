@@ -554,7 +554,8 @@ export const SDK_IN_PLACE_ATTR_CLASSIFICATION: Readonly<
     ),
     'MetadataConfiguration.*': movedBy(
       ['MetadataConfiguration'],
-      'the metadata tables the configuration creates'
+      'destination and journal: only when the configuration is added or removed; ' +
+        'inventory / annotation: also when its ConfigurationState flips (move tests)'
     ),
   },
   'AWS::S3Express::DirectoryBucket': {
@@ -606,7 +607,8 @@ export const SDK_IN_PLACE_ATTR_CLASSIFICATION: Readonly<
         'TracingConfiguration',
         'EncryptionConfiguration',
       ],
-      'a changed definition, tracing or logging mints a revision; an identical update or a tag edit does not (measured)'
+      'a changed definition, role, tracing, logging or encryption mints a revision; an identical ' +
+        'update or a tag edit does not (measured); substitutions and the S3 location render into the definition'
     ),
   },
   'AWS::WAFv2::WebACL': {

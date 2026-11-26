@@ -114,6 +114,7 @@ export type RuleName = 'no-in-place-update' | 'creation-timestamp' | 'own-identi
 
 const CREATION_TIMESTAMP = /^(Create|Created|Creation)(At|Time|Date|Timestamp|DateTime|On)?$/;
 const UPDATE_TIMESTAMP = /Update|Modif/;
+const VERSIONED = /Version|Revision/;
 const OWN_IDENTITY = /^(.*?)(Arn|ARN|Id|ID|Uuid|UUID)$/;
 
 /**
@@ -131,7 +132,10 @@ const OWN_IDENTITY = /^(.*?)(Arn|ARN|Id|ID|Uuid|UUID)$/;
  *   `GraphQLApi`'s `ApiId`), on a type with NO in-place-updatable property
  *   named `...Name` or `Path`: an ARN or id embeds the resource's name or path
  *   when it embeds anything mutable (a CodeCommit rename, an IAM user's path).
- *   Another resource's id or ARN (`VpcId`, `SnsTopicArn`) is not own identity.
+ *   Another resource's id or ARN (`VpcId`, `SnsTopicArn`) is not own identity,
+ *   and neither is one of a VERSIONED type (a `Version...` attribute or an
+ *   in-place `Version...` property): its ARN can carry the version an update
+ *   mints (`AWS::GameLift::ContainerGroupDefinition` `.../<name>:<version>`).
  */
 export function classifyByRule(input: TypeInput, attribute: string): RuleName | undefined {
   const writable = Object.entries(input.properties).filter(
@@ -146,7 +150,10 @@ export function classifyByRule(input: TypeInput, attribute: string): RuleName | 
   const prefix = m[1]!.toLowerCase();
   if (prefix !== '' && !typeName.endsWith(prefix)) return undefined;
   const mutableName = writable.some(([name]) => name.endsWith('Name') || name === 'Path');
-  return mutableName ? undefined : 'own-identity';
+  const versioned =
+    input.attributes.some((a) => VERSIONED.test(a)) ||
+    writable.some(([name]) => VERSIONED.test(name));
+  return mutableName || versioned ? undefined : 'own-identity';
 }
 
 // ---------------------------------------------------------------------------

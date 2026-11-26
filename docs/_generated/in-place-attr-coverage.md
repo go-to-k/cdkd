@@ -13,7 +13,7 @@ Whether an in-place update moves each read-only `Fn::GetAtt` attribute (issue [#
 Source: `@aws-cdk/aws-service-spec` 0.1.235.
 
 - SDK-provider types: **131**, pairs classified by hand: **390** (moving: **66**)
-- Cloud Control types: **1584**, pairs: **5545** — by rule: `no-in-place-update` 1151, `creation-timestamp` 376, `own-identity` 926; in the baseline: **3092**
+- Cloud Control types: **1584**, pairs: **5545** — by rule: `no-in-place-update` 1151, `creation-timestamp` 376, `own-identity` 815; in the baseline: **3203**
 
 ## SDK-provider types (hand classification)
 
@@ -700,13 +700,13 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235.
 - `Arn`: never — the ARN is built from create-only inputs
 - `DomainName`: never — derived from the create-only identifier
 - `DualStackDomainName`: never — derived from the create-only identifier
-- `MetadataConfiguration.AnnotationTableConfiguration.TableArn`: moved by `MetadataConfiguration` — the metadata tables the configuration creates
-- `MetadataConfiguration.AnnotationTableConfiguration.TableName`: moved by `MetadataConfiguration` — the metadata tables the configuration creates
-- `MetadataConfiguration.Destination`: moved by `MetadataConfiguration` — the metadata tables the configuration creates
-- `MetadataConfiguration.InventoryTableConfiguration.TableArn`: moved by `MetadataConfiguration` — the metadata tables the configuration creates
-- `MetadataConfiguration.InventoryTableConfiguration.TableName`: moved by `MetadataConfiguration` — the metadata tables the configuration creates
-- `MetadataConfiguration.JournalTableConfiguration.TableArn`: moved by `MetadataConfiguration` — the metadata tables the configuration creates
-- `MetadataConfiguration.JournalTableConfiguration.TableName`: moved by `MetadataConfiguration` — the metadata tables the configuration creates
+- `MetadataConfiguration.AnnotationTableConfiguration.TableArn`: moved by `MetadataConfiguration` — destination and journal: only when the configuration is added or removed; inventory / annotation: also when its ConfigurationState flips (move tests)
+- `MetadataConfiguration.AnnotationTableConfiguration.TableName`: moved by `MetadataConfiguration` — destination and journal: only when the configuration is added or removed; inventory / annotation: also when its ConfigurationState flips (move tests)
+- `MetadataConfiguration.Destination`: moved by `MetadataConfiguration` — destination and journal: only when the configuration is added or removed; inventory / annotation: also when its ConfigurationState flips (move tests)
+- `MetadataConfiguration.InventoryTableConfiguration.TableArn`: moved by `MetadataConfiguration` — destination and journal: only when the configuration is added or removed; inventory / annotation: also when its ConfigurationState flips (move tests)
+- `MetadataConfiguration.InventoryTableConfiguration.TableName`: moved by `MetadataConfiguration` — destination and journal: only when the configuration is added or removed; inventory / annotation: also when its ConfigurationState flips (move tests)
+- `MetadataConfiguration.JournalTableConfiguration.TableArn`: moved by `MetadataConfiguration` — destination and journal: only when the configuration is added or removed; inventory / annotation: also when its ConfigurationState flips (move tests)
+- `MetadataConfiguration.JournalTableConfiguration.TableName`: moved by `MetadataConfiguration` — destination and journal: only when the configuration is added or removed; inventory / annotation: also when its ConfigurationState flips (move tests)
 - `MetadataTableConfiguration.S3TablesDestination.TableArn`: moved by `MetadataTableConfiguration` — the metadata table the configuration creates
 - `MetadataTableConfiguration.S3TablesDestination.TableNamespace`: moved by `MetadataTableConfiguration` — the metadata table the configuration creates
 - `RegionalDomainName`: never — derived from the create-only identifier
@@ -791,7 +791,7 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235.
 
 - `Arn`: never — the ARN is built from create-only inputs
 - `Name`: never — the create-only StateMachineName
-- `StateMachineRevisionId`: moved by `Definition`, `DefinitionString`, `DefinitionS3Location`, `DefinitionSubstitutions`, `RoleArn`, `LoggingConfiguration`, `TracingConfiguration`, `EncryptionConfiguration` — a changed definition, tracing or logging mints a revision; an identical update or a tag edit does not (measured)
+- `StateMachineRevisionId`: moved by `Definition`, `DefinitionString`, `DefinitionS3Location`, `DefinitionSubstitutions`, `RoleArn`, `LoggingConfiguration`, `TracingConfiguration`, `EncryptionConfiguration` — a changed definition, role, tracing, logging or encryption mints a revision; an identical update or a tag edit does not (measured); substitutions and the S3 location render into the definition
 
 ### `AWS::WAFv2::WebACL`
 
@@ -811,14 +811,14 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::AIOps::InvestigationGroup` | 3 |
 | `AWS::APS::Scraper` | 1 |
 | `AWS::APS::Workspace` | 1 |
-| `AWS::ARCRegionSwitch::Plan` | 5 |
+| `AWS::ARCRegionSwitch::Plan` | 6 |
 | `AWS::AWSExternalAnthropic::Workspace` | 2 |
 | `AWS::AccessAnalyzer::ArchiveRule` | 1 |
 | `AWS::AccountAccess::Application` | 1 |
 | `AWS::AgentRegistry::Registry` | 5 |
 | `AWS::AgentRegistry::RegistryRecord` | 6 |
-| `AWS::AmazonMQ::Broker` | 10 |
-| `AWS::AmazonMQ::Configuration` | 1 |
+| `AWS::AmazonMQ::Broker` | 12 |
+| `AWS::AmazonMQ::Configuration` | 3 |
 | `AWS::Amplify::App` | 4 |
 | `AWS::Amplify::Branch` | 1 |
 | `AWS::Amplify::Domain` | 5 |
@@ -840,7 +840,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::AppConfig::ConfigurationProfile` | 2 |
 | `AWS::AppConfig::ExperimentDefinition` | 4 |
 | `AWS::AppConfig::ExperimentRun` | 6 |
-| `AWS::AppConfig::Extension` | 1 |
+| `AWS::AppConfig::Extension` | 3 |
 | `AWS::AppConfig::ExtensionAssociation` | 2 |
 | `AWS::AppFabric::AppAuthorization` | 5 |
 | `AWS::AppFabric::Ingestion` | 1 |
@@ -868,7 +868,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::AppSync::FunctionConfiguration` | 2 |
 | `AWS::AppSync::SourceApiAssociation` | 7 |
 | `AWS::AppSync::Type` | 1 |
-| `AWS::AppTest::TestCase` | 4 |
+| `AWS::AppTest::TestCase` | 6 |
 | `AWS::ApplicationSignals::GroupingConfiguration` | 2 |
 | `AWS::ApplicationSignals::ServiceLevelObjective` | 2 |
 | `AWS::Athena::CapacityReservation` | 3 |
@@ -878,7 +878,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::AuditManager::AssessmentFramework` | 6 |
 | `AWS::AutoScaling::ScalingPolicy` | 1 |
 | `AWS::AutoScaling::ScheduledAction` | 1 |
-| `AWS::AutoScalingPlans::ScalingPlan` | 2 |
+| `AWS::AutoScalingPlans::ScalingPlan` | 3 |
 | `AWS::B2BI::Capability` | 3 |
 | `AWS::B2BI::Partnership` | 4 |
 | `AWS::B2BI::Profile` | 4 |
@@ -886,7 +886,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::BCM::Dashboard` | 3 |
 | `AWS::BCM::ScheduledReport` | 3 |
 | `AWS::BCMDataExports::Export` | 1 |
-| `AWS::Backup::BackupPlan` | 1 |
+| `AWS::Backup::BackupPlan` | 3 |
 | `AWS::Backup::Framework` | 2 |
 | `AWS::Backup::LogicallyAirGappedBackupVault` | 2 |
 | `AWS::Backup::TieringConfiguration` | 2 |
@@ -928,8 +928,8 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::BedrockAgentCore::GatewayRateLimit` | 2 |
 | `AWS::BedrockAgentCore::GatewayRule` | 4 |
 | `AWS::BedrockAgentCore::GatewayTarget` | 9 |
-| `AWS::BedrockAgentCore::Harness` | 7 |
-| `AWS::BedrockAgentCore::HarnessEndpoint` | 4 |
+| `AWS::BedrockAgentCore::Harness` | 9 |
+| `AWS::BedrockAgentCore::HarnessEndpoint` | 5 |
 | `AWS::BedrockAgentCore::Memory` | 3 |
 | `AWS::BedrockAgentCore::OAuth2CredentialProvider` | 7 |
 | `AWS::BedrockAgentCore::OnlineEvaluationConfig` | 2 |
@@ -938,7 +938,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::BedrockAgentCore::PaymentManager` | 3 |
 | `AWS::BedrockAgentCore::Policy` | 3 |
 | `AWS::BedrockAgentCore::PolicyEngine` | 3 |
-| `AWS::BedrockAgentCore::RuntimeEndpoint` | 7 |
+| `AWS::BedrockAgentCore::RuntimeEndpoint` | 8 |
 | `AWS::BedrockAgentCore::WorkloadIdentity` | 1 |
 | `AWS::BedrockMantle::Project` | 2 |
 | `AWS::Billing::BillingView` | 3 |
@@ -949,7 +949,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Braket::SpendingLimit` | 3 |
 | `AWS::CE::AnomalyMonitor` | 4 |
 | `AWS::CE::AnomalySubscription` | 2 |
-| `AWS::CE::CostCategory` | 1 |
+| `AWS::CE::CostCategory` | 2 |
 | `AWS::Cases::CaseRule` | 3 |
 | `AWS::Cases::Field` | 4 |
 | `AWS::Cases::Layout` | 3 |
@@ -1022,8 +1022,8 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::CodeArtifact::Domain` | 2 |
 | `AWS::CodeArtifact::Repository` | 1 |
 | `AWS::CodeConnections::Host` | 1 |
-| `AWS::CodePipeline::Pipeline` | 1 |
-| `AWS::CodePipeline::Webhook` | 1 |
+| `AWS::CodePipeline::Pipeline` | 2 |
+| `AWS::CodePipeline::Webhook` | 2 |
 | `AWS::CodeStar::GitHubRepository` | 1 |
 | `AWS::CodeStarConnections::RepositoryLink` | 1 |
 | `AWS::CodeStarConnections::SyncConfiguration` | 3 |
@@ -1045,6 +1045,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Connect::DataTable` | 4 |
 | `AWS::Connect::DataTableAttribute` | 4 |
 | `AWS::Connect::EmailAddress` | 1 |
+| `AWS::Connect::EvaluationForm` | 1 |
 | `AWS::Connect::HoursOfOperation` | 1 |
 | `AWS::Connect::InstanceStorageConfig` | 1 |
 | `AWS::Connect::Metric` | 17 |
@@ -1066,7 +1067,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::ConnectCampaigns::Campaign` | 1 |
 | `AWS::ConnectCampaignsV2::Campaign` | 1 |
 | `AWS::ControlTower::EnabledBaseline` | 1 |
-| `AWS::ControlTower::LandingZone` | 4 |
+| `AWS::ControlTower::LandingZone` | 5 |
 | `AWS::CustomerProfiles::CalculatedAttributeDefinition` | 3 |
 | `AWS::CustomerProfiles::Domain` | 4 |
 | `AWS::CustomerProfiles::DomainObjectType` | 1 |
@@ -1081,7 +1082,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::DMS::Endpoint` | 2 |
 | `AWS::DMS::InstanceProfile` | 2 |
 | `AWS::DMS::MigrationProject` | 4 |
-| `AWS::DMS::ReplicationInstance` | 2 |
+| `AWS::DMS::ReplicationInstance` | 3 |
 | `AWS::DRS::RecoveryPlan` | 4 |
 | `AWS::DSQL::Cluster` | 8 |
 | `AWS::DataExchange::DataSet` | 4 |
@@ -1118,7 +1119,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Deadline::QueueEnvironment` | 1 |
 | `AWS::Deadline::StorageProfile` | 1 |
 | `AWS::DevOpsAgent::AgentSpace` | 11 |
-| `AWS::DevOpsAgent::Asset` | 2 |
+| `AWS::DevOpsAgent::Asset` | 4 |
 | `AWS::DevOpsAgent::Association` | 1 |
 | `AWS::DevOpsAgent::PrivateConnection` | 2 |
 | `AWS::DevOpsAgent::Service` | 4 |
@@ -1143,15 +1144,16 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::DocDBElastic::Cluster` | 1 |
 | `AWS::EC2::ApplicationStatusCheck` | 2 |
 | `AWS::EC2::CapacityReservation` | 10 |
-| `AWS::EC2::FcaPolicy` | 4 |
+| `AWS::EC2::FcaPolicy` | 6 |
 | `AWS::EC2::FpgaImage` | 8 |
 | `AWS::EC2::IPAM` | 6 |
 | `AWS::EC2::IPAMPool` | 6 |
 | `AWS::EC2::IPAMPrefixListResolver` | 1 |
+| `AWS::EC2::IPAMPrefixListResolverTarget` | 2 |
 | `AWS::EC2::IPAMResourceDiscovery` | 4 |
 | `AWS::EC2::IPAMScope` | 4 |
 | `AWS::EC2::InstanceEventWindow` | 3 |
-| `AWS::EC2::LaunchTemplate` | 2 |
+| `AWS::EC2::LaunchTemplate` | 3 |
 | `AWS::EC2::LocalGatewayRoute` | 2 |
 | `AWS::EC2::NetworkInsightsAccessScope` | 1 |
 | `AWS::EC2::NetworkInsightsAnalysis` | 9 |
@@ -1181,8 +1183,10 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::ECS::Daemon` | 3 |
 | `AWS::ECS::ExpressGatewayService` | 18 |
 | `AWS::ECS::Gateway` | 4 |
-| `AWS::EKS::Capability` | 5 |
-| `AWS::EKS::Cluster` | 9 |
+| `AWS::EKS::Addon` | 1 |
+| `AWS::EKS::Capability` | 6 |
+| `AWS::EKS::Cluster` | 11 |
+| `AWS::EKS::Nodegroup` | 2 |
 | `AWS::EKS::PodIdentityAssociation` | 1 |
 | `AWS::EMR::Studio` | 3 |
 | `AWS::EVS::Environment` | 5 |
@@ -1197,8 +1201,8 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::ElasticBeanstalk::Environment` | 1 |
 | `AWS::ElasticLoadBalancing::LoadBalancer` | 6 |
 | `AWS::ElasticLoadBalancingV2::ListenerRule` | 1 |
-| `AWS::ElasticLoadBalancingV2::TrustStore` | 2 |
-| `AWS::Elasticsearch::Domain` | 1 |
+| `AWS::ElasticLoadBalancingV2::TrustStore` | 3 |
+| `AWS::Elasticsearch::Domain` | 3 |
 | `AWS::ElementalInference::Dictionary` | 2 |
 | `AWS::ElementalInference::Feed` | 3 |
 | `AWS::EntityResolution::IdMappingWorkflow` | 1 |
@@ -1207,7 +1211,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::EntityResolution::SchemaMapping` | 1 |
 | `AWS::EventSchemas::Discoverer` | 1 |
 | `AWS::EventSchemas::RegistryPolicy` | 1 |
-| `AWS::EventSchemas::Schema` | 3 |
+| `AWS::EventSchemas::Schema` | 4 |
 | `AWS::Events::ApiDestination` | 1 |
 | `AWS::Events::Connection` | 4 |
 | `AWS::Events::Endpoint` | 3 |
@@ -1226,7 +1230,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::FSx::StorageVirtualMachine` | 1 |
 | `AWS::FSx::Volume` | 3 |
 | `AWS::FinSpace::Environment` | 7 |
-| `AWS::FraudDetector::Detector` | 5 |
+| `AWS::FraudDetector::Detector` | 6 |
 | `AWS::FraudDetector::EntityType` | 1 |
 | `AWS::FraudDetector::EventType` | 1 |
 | `AWS::FraudDetector::Label` | 1 |
@@ -1236,7 +1240,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::GameLift::Alias` | 2 |
 | `AWS::GameLift::Build` | 2 |
 | `AWS::GameLift::ContainerFleet` | 7 |
-| `AWS::GameLift::ContainerGroupDefinition` | 3 |
+| `AWS::GameLift::ContainerGroupDefinition` | 4 |
 | `AWS::GameLift::Fleet` | 2 |
 | `AWS::GameLift::GameServerGroup` | 2 |
 | `AWS::GameLift::MatchmakingConfiguration` | 1 |
@@ -1246,11 +1250,12 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Glue::Blueprint` | 3 |
 | `AWS::Glue::Catalog` | 18 |
 | `AWS::Glue::Classifier` | 1 |
+| `AWS::Glue::DevEndpoint` | 1 |
 | `AWS::Glue::IdentityCenterConfiguration` | 2 |
 | `AWS::Glue::Integration` | 1 |
 | `AWS::Glue::MLTransform` | 1 |
 | `AWS::Glue::Partition` | 1 |
-| `AWS::Glue::Schema` | 1 |
+| `AWS::Glue::Schema` | 2 |
 | `AWS::Glue::UserDefinedFunction` | 1 |
 | `AWS::Grafana::Workspace` | 6 |
 | `AWS::Greengrass::ConnectorDefinition` | 3 |
@@ -1284,7 +1289,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::IVSChat::Room` | 2 |
 | `AWS::IdentityStore::Group` | 1 |
 | `AWS::IdentityStore::User` | 6 |
-| `AWS::ImageBuilder::Image` | 7 |
+| `AWS::ImageBuilder::Image` | 9 |
 | `AWS::ImageBuilder::ImagePipeline` | 1 |
 | `AWS::ImageBuilder::InfrastructureConfiguration` | 1 |
 | `AWS::InspectorV2::CisScanConfiguration` | 1 |
@@ -1294,7 +1299,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Interconnect::Connection` | 6 |
 | `AWS::InternetMonitor::Monitor` | 3 |
 | `AWS::Invoicing::InvoiceUnit` | 1 |
-| `AWS::Invoicing::ProcurementPortalPreference` | 6 |
+| `AWS::Invoicing::ProcurementPortalPreference` | 7 |
 | `AWS::IoT::Authorizer` | 1 |
 | `AWS::IoT::Command` | 1 |
 | `AWS::IoT::CustomMetric` | 1 |
@@ -1303,10 +1308,11 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::IoT::FleetMetric` | 3 |
 | `AWS::IoT::OTAUpdate` | 2 |
 | `AWS::IoT::ResourceSpecificLogging` | 1 |
-| `AWS::IoT::SoftwarePackageVersion` | 3 |
-| `AWS::IoT::Stream` | 2 |
+| `AWS::IoT::SoftwarePackageVersion` | 4 |
+| `AWS::IoT::Stream` | 3 |
 | `AWS::IoT::TopicRuleDestination` | 1 |
-| `AWS::IoTCoreDeviceAdvisor::SuiteDefinition` | 1 |
+| `AWS::IoTAnalytics::Dataset` | 1 |
+| `AWS::IoTCoreDeviceAdvisor::SuiteDefinition` | 3 |
 | `AWS::IoTFleetHub::Application` | 8 |
 | `AWS::IoTFleetWise::Campaign` | 2 |
 | `AWS::IoTFleetWise::DecoderManifest` | 1 |
@@ -1327,6 +1333,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::IoTSiteWise::Project` | 2 |
 | `AWS::IoTSiteWise::Task` | 1 |
 | `AWS::IoTSiteWise::Workspace` | 2 |
+| `AWS::IoTThingsGraph::FlowTemplate` | 1 |
 | `AWS::IoTTwinMaker::ComponentType` | 8 |
 | `AWS::IoTTwinMaker::Entity` | 8 |
 | `AWS::IoTTwinMaker::Scene` | 2 |
@@ -1347,9 +1354,10 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::KendraRanking::ExecutionPlan` | 2 |
 | `AWS::Kinesis::Channel` | 2 |
 | `AWS::KinesisVideo::Stream` | 1 |
+| `AWS::Lambda::Alias` | 1 |
 | `AWS::Lambda::CapacityProvider` | 1 |
 | `AWS::Lambda::Runtime` | 2 |
-| `AWS::Lambda::RuntimeAlias` | 4 |
+| `AWS::Lambda::RuntimeAlias` | 5 |
 | `AWS::Lambda::RuntimeVersion` | 5 |
 | `AWS::Lambda::Version` | 2 |
 | `AWS::Lambda::WebFunction` | 1 |
@@ -1357,14 +1365,14 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Lex::Bot` | 2 |
 | `AWS::Lex::BotAlias` | 3 |
 | `AWS::Lex::BotVersion` | 1 |
-| `AWS::Lex::ResourcePolicy` | 1 |
+| `AWS::Lex::ResourcePolicy` | 2 |
 | `AWS::LicenseManager::Grant` | 2 |
 | `AWS::LicenseManager::License` | 2 |
 | `AWS::LicenseManager::LicenseAssetGroup` | 1 |
 | `AWS::LicenseManager::LicenseAssetRuleSet` | 1 |
 | `AWS::LicenseManager::LicenseConfiguration` | 4 |
 | `AWS::LicenseManager::ReportGenerator` | 3 |
-| `AWS::Lightsail::Bucket` | 2 |
+| `AWS::Lightsail::Bucket` | 3 |
 | `AWS::Lightsail::Container` | 3 |
 | `AWS::Lightsail::Disk` | 10 |
 | `AWS::Lightsail::Distribution` | 3 |
@@ -1384,19 +1392,21 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Logs::QueryDefinition` | 1 |
 | `AWS::Logs::ScheduledQuery` | 3 |
 | `AWS::Logs::StorageTierPolicy` | 2 |
-| `AWS::M2::Deployment` | 1 |
+| `AWS::M2::Deployment` | 2 |
+| `AWS::M2::Environment` | 2 |
 | `AWS::MGN::Application` | 4 |
 | `AWS::MGN::Connector` | 2 |
 | `AWS::MGN::LaunchConfigurationTemplate` | 1 |
 | `AWS::MGN::NetworkMigrationDefinition` | 3 |
 | `AWS::MGN::Wave` | 5 |
-| `AWS::MPA::ApprovalTeam` | 7 |
+| `AWS::MPA::ApprovalTeam` | 8 |
 | `AWS::MSK::Channel` | 2 |
+| `AWS::MSK::Cluster` | 1 |
 | `AWS::MSK::ClusterPolicy` | 1 |
-| `AWS::MSK::Configuration` | 3 |
-| `AWS::MSK::Replicator` | 1 |
-| `AWS::MWAA::Environment` | 9 |
-| `AWS::MWAAServerless::Workflow` | 5 |
+| `AWS::MSK::Configuration` | 4 |
+| `AWS::MSK::Replicator` | 2 |
+| `AWS::MWAA::Environment` | 10 |
+| `AWS::MWAAServerless::Workflow` | 6 |
 | `AWS::Macie::AllowList` | 3 |
 | `AWS::Macie::FindingsFilter` | 3 |
 | `AWS::Macie::Member` | 1 |
@@ -1460,11 +1470,11 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::NetworkManager::VpcAttachment` | 13 |
 | `AWS::NetworkMonitor::Monitor` | 2 |
 | `AWS::NetworkMonitor::Probe` | 4 |
-| `AWS::NetworkSecurityManager::Deployment` | 3 |
-| `AWS::NetworkSecurityManager::Policy` | 3 |
-| `AWS::NetworkSecurityManager::Rule` | 3 |
-| `AWS::NetworkSecurityManager::Scope` | 3 |
-| `AWS::NetworkSecurityManager::Template` | 3 |
+| `AWS::NetworkSecurityManager::Deployment` | 5 |
+| `AWS::NetworkSecurityManager::Policy` | 5 |
+| `AWS::NetworkSecurityManager::Rule` | 5 |
+| `AWS::NetworkSecurityManager::Scope` | 5 |
+| `AWS::NetworkSecurityManager::Template` | 5 |
 | `AWS::NimbleStudio::LaunchProfile` | 1 |
 | `AWS::NimbleStudio::StreamingImage` | 7 |
 | `AWS::NimbleStudio::Studio` | 4 |
@@ -1473,7 +1483,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Notifications::NotificationConfiguration` | 2 |
 | `AWS::NotificationsContacts::EmailContact` | 1 |
 | `AWS::ODB::CloudAutonomousVmCluster` | 26 |
-| `AWS::ODB::CloudExadataInfrastructure` | 19 |
+| `AWS::ODB::CloudExadataInfrastructure` | 21 |
 | `AWS::ODB::CloudVmCluster` | 13 |
 | `AWS::ODB::OdbNetwork` | 7 |
 | `AWS::ODB::OdbPeeringConnection` | 5 |
@@ -1494,7 +1504,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::OpenSearch::DataSource` | 1 |
 | `AWS::OpenSearchServerless::Collection` | 4 |
 | `AWS::OpenSearchServerless::SecurityConfig` | 3 |
-| `AWS::OpenSearchService::Domain` | 15 |
+| `AWS::OpenSearchService::Domain` | 17 |
 | `AWS::OpsWorks::Instance` | 4 |
 | `AWS::OpsWorksCM::Server` | 2 |
 | `AWS::Organizations::Account` | 7 |
@@ -1510,7 +1520,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Panorama::Package` | 5 |
 | `AWS::Panorama::PackageVersion` | 6 |
 | `AWS::PaymentCryptography::Key` | 4 |
-| `AWS::Personalize::Campaign` | 2 |
+| `AWS::Personalize::Campaign` | 3 |
 | `AWS::Personalize::Filter` | 1 |
 | `AWS::Personalize::MetricAttribution` | 1 |
 | `AWS::Personalize::Recommender` | 2 |
@@ -1533,7 +1543,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::QuickSight::Agent` | 6 |
 | `AWS::QuickSight::Analysis` | 3 |
 | `AWS::QuickSight::ApprovalPolicy` | 2 |
-| `AWS::QuickSight::Brand` | 5 |
+| `AWS::QuickSight::Brand` | 6 |
 | `AWS::QuickSight::Customization` | 1 |
 | `AWS::QuickSight::DLPSetting` | 3 |
 | `AWS::QuickSight::Dashboard` | 14 |
@@ -1556,6 +1566,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::RAM::ResourceAssociation` | 1 |
 | `AWS::RAM::ResourceShare` | 5 |
 | `AWS::RAM::SourceAssociation` | 1 |
+| `AWS::RDS::CustomDBEngineVersion` | 1 |
 | `AWS::RDS::DBClusterEndpoint` | 4 |
 | `AWS::RDS::DBSecurityGroupIngress` | 1 |
 | `AWS::RDS::DBShardGroup` | 2 |
@@ -1577,7 +1588,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Redshift::QEV2IdcApplication` | 3 |
 | `AWS::Redshift::RedshiftIdcApplication` | 3 |
 | `AWS::Redshift::ScheduledAction` | 2 |
-| `AWS::Redshift::Snapshot` | 19 |
+| `AWS::Redshift::Snapshot` | 20 |
 | `AWS::Redshift::SnapshotSchedule` | 1 |
 | `AWS::RedshiftServerless::Namespace` | 12 |
 | `AWS::RedshiftServerless::Snapshot` | 12 |
@@ -1592,11 +1603,13 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::ResilienceHubV2::UserJourney` | 1 |
 | `AWS::ResourceExplorer2::DefaultViewAssociation` | 1 |
 | `AWS::ResourceExplorer2::Index` | 1 |
+| `AWS::RoboMaker::RobotApplication` | 1 |
+| `AWS::RoboMaker::SimulationApplication` | 1 |
 | `AWS::RolesAnywhere::CRL` | 1 |
 | `AWS::RolesAnywhere::Profile` | 2 |
 | `AWS::RolesAnywhere::TrustAnchor` | 2 |
-| `AWS::Route53::TrafficPolicy` | 2 |
-| `AWS::Route53::TrafficPolicyInstance` | 2 |
+| `AWS::Route53::TrafficPolicy` | 4 |
+| `AWS::Route53::TrafficPolicyInstance` | 4 |
 | `AWS::Route53GlobalResolver::AccessSource` | 4 |
 | `AWS::Route53GlobalResolver::AccessToken` | 6 |
 | `AWS::Route53GlobalResolver::DnsView` | 4 |
@@ -1623,7 +1636,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::S3::MultiRegionAccessPointPolicy` | 2 |
 | `AWS::S3::StorageLens` | 1 |
 | `AWS::S3Express::AccessPoint` | 1 |
-| `AWS::S3Files::FileSystem` | 4 |
+| `AWS::S3Files::FileSystem` | 6 |
 | `AWS::S3Files::MountTarget` | 6 |
 | `AWS::S3ObjectLambda::AccessPoint` | 10 |
 | `AWS::S3Outposts::Endpoint` | 3 |
@@ -1650,7 +1663,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::SSM::MaintenanceWindow` | 1 |
 | `AWS::SSM::MaintenanceWindowTarget` | 1 |
 | `AWS::SSM::MaintenanceWindowTask` | 1 |
-| `AWS::SSM::OpsItem` | 6 |
+| `AWS::SSM::OpsItem` | 8 |
 | `AWS::SSM::PatchBaseline` | 1 |
 | `AWS::SSM::ResourcePolicy` | 1 |
 | `AWS::SSM::ServiceSetting` | 3 |
@@ -1668,27 +1681,28 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::SageMaker::App` | 1 |
 | `AWS::SageMaker::Artifact` | 2 |
 | `AWS::SageMaker::Cluster` | 2 |
-| `AWS::SageMaker::ClusterSchedulerConfig` | 2 |
-| `AWS::SageMaker::ComputeQuota` | 3 |
+| `AWS::SageMaker::ClusterSchedulerConfig` | 4 |
+| `AWS::SageMaker::ComputeQuota` | 5 |
 | `AWS::SageMaker::Context` | 1 |
 | `AWS::SageMaker::Domain` | 5 |
 | `AWS::SageMaker::Endpoint` | 1 |
 | `AWS::SageMaker::Experiment` | 2 |
 | `AWS::SageMaker::ExperimentTrialComponent` | 4 |
-| `AWS::SageMaker::Extension` | 3 |
+| `AWS::SageMaker::Extension` | 4 |
 | `AWS::SageMaker::FeatureGroup` | 1 |
 | `AWS::SageMaker::Hub` | 3 |
 | `AWS::SageMaker::Image` | 1 |
-| `AWS::SageMaker::ImageVersion` | 3 |
+| `AWS::SageMaker::ImageVersion` | 4 |
 | `AWS::SageMaker::InferenceComponent` | 9 |
 | `AWS::SageMaker::InferenceExperiment` | 6 |
-| `AWS::SageMaker::MlflowApp` | 3 |
-| `AWS::SageMaker::ModelCard` | 9 |
+| `AWS::SageMaker::MlflowApp` | 5 |
+| `AWS::SageMaker::MlflowTrackingServer` | 1 |
+| `AWS::SageMaker::ModelCard` | 10 |
 | `AWS::SageMaker::ModelPackage` | 2 |
 | `AWS::SageMaker::ModelPackageGroup` | 1 |
 | `AWS::SageMaker::MonitoringSchedule` | 2 |
 | `AWS::SageMaker::NotebookInstance` | 1 |
-| `AWS::SageMaker::PartnerApp` | 2 |
+| `AWS::SageMaker::PartnerApp` | 3 |
 | `AWS::SageMaker::ProcessingJob` | 1 |
 | `AWS::SageMaker::Project` | 1 |
 | `AWS::SageMaker::Space` | 2 |
@@ -1732,7 +1746,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::StorageGateway::NFSFileShare` | 4 |
 | `AWS::StorageGateway::SMBFileShare` | 4 |
 | `AWS::SupportApp::AccountAlias` | 1 |
-| `AWS::Synthetics::Canary` | 2 |
+| `AWS::Synthetics::Canary` | 3 |
 | `AWS::Textract::Adapter` | 2 |
 | `AWS::Timestream::InfluxDBCluster` | 9 |
 | `AWS::Timestream::InfluxDBInstance` | 7 |
@@ -1761,22 +1775,23 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::VpcLattice::ServiceNetworkServiceAssociation` | 9 |
 | `AWS::VpcLattice::ServiceNetworkVpcAssociation` | 5 |
 | `AWS::VpcLattice::TargetGroup` | 2 |
+| `AWS::WAFv2::IPSet` | 2 |
 | `AWS::WAFv2::LoggingConfiguration` | 1 |
 | `AWS::WAFv2::RuleGroup` | 1 |
 | `AWS::WellArchitected::AgentContext` | 5 |
 | `AWS::WellArchitected::AgentGoal` | 3 |
 | `AWS::WellArchitected::AgentOrganizationalProfile` | 4 |
 | `AWS::WellArchitected::AgentProfile` | 4 |
-| `AWS::WellArchitected::Profile` | 3 |
+| `AWS::WellArchitected::Profile` | 4 |
 | `AWS::WellArchitected::ReviewTemplate` | 4 |
 | `AWS::WellArchitected::Workload` | 3 |
 | `AWS::Wickr::Network` | 5 |
 | `AWS::Wisdom::AIAgent` | 2 |
 | `AWS::Wisdom::AIGuardrail` | 2 |
 | `AWS::Wisdom::AIPrompt` | 2 |
-| `AWS::Wisdom::Content` | 5 |
+| `AWS::Wisdom::Content` | 7 |
 | `AWS::Wisdom::MessageTemplate` | 3 |
-| `AWS::Wisdom::MessageTemplateVersion` | 1 |
+| `AWS::Wisdom::MessageTemplateVersion` | 2 |
 | `AWS::Wisdom::QuickResponse` | 4 |
 | `AWS::WorkSpaces::Directory` | 11 |
 | `AWS::WorkSpacesThinClient::Environment` | 9 |

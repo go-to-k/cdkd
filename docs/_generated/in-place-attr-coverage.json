@@ -9,9 +9,9 @@
     "ccByRule": {
       "no-in-place-update": 1151,
       "creation-timestamp": 376,
-      "own-identity": 926
+      "own-identity": 815
     },
-    "ccBaseline": 3092
+    "ccBaseline": 3203
   },
   "sdk": [
     {
@@ -2304,7 +2304,7 @@
       "properties": [
         "MetadataConfiguration"
       ],
-      "reason": "the metadata tables the configuration creates"
+      "reason": "destination and journal: only when the configuration is added or removed; inventory / annotation: also when its ConfigurationState flips (move tests)"
     },
     {
       "type": "AWS::S3::Bucket",
@@ -2313,7 +2313,7 @@
       "properties": [
         "MetadataConfiguration"
       ],
-      "reason": "the metadata tables the configuration creates"
+      "reason": "destination and journal: only when the configuration is added or removed; inventory / annotation: also when its ConfigurationState flips (move tests)"
     },
     {
       "type": "AWS::S3::Bucket",
@@ -2322,7 +2322,7 @@
       "properties": [
         "MetadataConfiguration"
       ],
-      "reason": "the metadata tables the configuration creates"
+      "reason": "destination and journal: only when the configuration is added or removed; inventory / annotation: also when its ConfigurationState flips (move tests)"
     },
     {
       "type": "AWS::S3::Bucket",
@@ -2331,7 +2331,7 @@
       "properties": [
         "MetadataConfiguration"
       ],
-      "reason": "the metadata tables the configuration creates"
+      "reason": "destination and journal: only when the configuration is added or removed; inventory / annotation: also when its ConfigurationState flips (move tests)"
     },
     {
       "type": "AWS::S3::Bucket",
@@ -2340,7 +2340,7 @@
       "properties": [
         "MetadataConfiguration"
       ],
-      "reason": "the metadata tables the configuration creates"
+      "reason": "destination and journal: only when the configuration is added or removed; inventory / annotation: also when its ConfigurationState flips (move tests)"
     },
     {
       "type": "AWS::S3::Bucket",
@@ -2349,7 +2349,7 @@
       "properties": [
         "MetadataConfiguration"
       ],
-      "reason": "the metadata tables the configuration creates"
+      "reason": "destination and journal: only when the configuration is added or removed; inventory / annotation: also when its ConfigurationState flips (move tests)"
     },
     {
       "type": "AWS::S3::Bucket",
@@ -2358,7 +2358,7 @@
       "properties": [
         "MetadataConfiguration"
       ],
-      "reason": "the metadata tables the configuration creates"
+      "reason": "destination and journal: only when the configuration is added or removed; inventory / annotation: also when its ConfigurationState flips (move tests)"
     },
     {
       "type": "AWS::S3::Bucket",
@@ -2578,7 +2578,7 @@
         "TracingConfiguration",
         "EncryptionConfiguration"
       ],
-      "reason": "a changed definition, tracing or logging mints a revision; an identical update or a tag edit does not (measured)"
+      "reason": "a changed definition, role, tracing, logging or encryption mints a revision; an identical update or a tag edit does not (measured); substitutions and the S3 location render into the definition"
     },
     {
       "type": "AWS::WAFv2::WebACL",
@@ -2627,6 +2627,7 @@
       "PrometheusEndpoint"
     ],
     "AWS::ARCRegionSwitch::Plan": [
+      "Arn",
       "HealthChecksForPlan",
       "Owner",
       "PlanHealthChecks",
@@ -2660,10 +2661,12 @@
     ],
     "AWS::AmazonMQ::Broker": [
       "AmqpEndpoints",
+      "Arn",
       "ConfigurationId",
       "ConfigurationRevision",
       "ConsoleURLs",
       "EngineVersionCurrent",
+      "Id",
       "IpAddresses",
       "MqttEndpoints",
       "OpenWireEndpoints",
@@ -2671,6 +2674,8 @@
       "WssEndpoints"
     ],
     "AWS::AmazonMQ::Configuration": [
+      "Arn",
+      "Id",
       "Revision"
     ],
     "AWS::Amplify::App": [
@@ -2764,6 +2769,8 @@
       "UpdatedAt"
     ],
     "AWS::AppConfig::Extension": [
+      "Arn",
+      "Id",
       "VersionNumber"
     ],
     "AWS::AppConfig::ExtensionAssociation": [
@@ -2883,6 +2890,8 @@
       "LastUpdateTime",
       "LatestVersion",
       "Status",
+      "TestCaseArn",
+      "TestCaseId",
       "TestCaseVersion"
     ],
     "AWS::ApplicationSignals::GroupingConfiguration": [
@@ -2924,6 +2933,7 @@
       "ScheduledActionName"
     ],
     "AWS::AutoScalingPlans::ScalingPlan": [
+      "ScalingPlanArn",
       "ScalingPlanName",
       "ScalingPlanVersion"
     ],
@@ -2963,6 +2973,8 @@
       "Export.ExportArn"
     ],
     "AWS::Backup::BackupPlan": [
+      "BackupPlanArn",
+      "BackupPlanId",
       "VersionId"
     ],
     "AWS::Backup::Framework": [
@@ -3193,15 +3205,18 @@
       "UpdatedAt"
     ],
     "AWS::BedrockAgentCore::Harness": [
+      "Arn",
       "Environment.AgentCoreRuntimeEnvironment.AgentRuntimeArn",
       "Environment.AgentCoreRuntimeEnvironment.AgentRuntimeId",
       "Environment.AgentCoreRuntimeEnvironment.AgentRuntimeName",
+      "HarnessId",
       "Memory.ManagedMemoryConfiguration.Arn",
       "Status",
       "UpdatedAt",
       "Version"
     ],
     "AWS::BedrockAgentCore::HarnessEndpoint": [
+      "Arn",
       "HarnessName",
       "LiveVersion",
       "Status",
@@ -3254,6 +3269,7 @@
       "AgentRuntimeArn",
       "AgentRuntimeEndpointArn",
       "FailureReason",
+      "Id",
       "LastUpdatedAt",
       "LiveVersion",
       "Status",
@@ -3311,6 +3327,7 @@
       "SubscriptionArn"
     ],
     "AWS::CE::CostCategory": [
+      "Arn",
       "EffectiveStart"
     ],
     "AWS::Cases::CaseRule": [
@@ -3650,9 +3667,11 @@
       "Status"
     ],
     "AWS::CodePipeline::Pipeline": [
+      "Arn",
       "Version"
     ],
     "AWS::CodePipeline::Webhook": [
+      "Id",
       "Url"
     ],
     "AWS::CodeStar::GitHubRepository": [
@@ -3739,6 +3758,9 @@
     ],
     "AWS::Connect::EmailAddress": [
       "EmailAddressArn"
+    ],
+    "AWS::Connect::EvaluationForm": [
+      "EvaluationFormArn"
     ],
     "AWS::Connect::HoursOfOperation": [
       "HoursOfOperationArn"
@@ -3832,6 +3854,7 @@
       "EnabledBaselineIdentifier"
     ],
     "AWS::ControlTower::LandingZone": [
+      "Arn",
       "DriftStatus",
       "LandingZoneIdentifier",
       "LatestAvailableVersion",
@@ -3899,6 +3922,7 @@
       "MigrationProjectCreationTime"
     ],
     "AWS::DMS::ReplicationInstance": [
+      "ReplicationInstanceArn",
       "ReplicationInstancePrivateIpAddresses",
       "ReplicationInstancePublicIpAddresses"
     ],
@@ -4135,6 +4159,8 @@
       "UpdatedAt"
     ],
     "AWS::DevOpsAgent::Asset": [
+      "Arn",
+      "AssetId",
       "UpdatedAt",
       "Version"
     ],
@@ -4238,6 +4264,8 @@
       "TotalInstanceCount"
     ],
     "AWS::EC2::FcaPolicy": [
+      "Arn",
+      "FcaPolicyId",
       "LatestVersion",
       "OwnerAccount",
       "PolicyCreatedAt",
@@ -4272,6 +4300,10 @@
     "AWS::EC2::IPAMPrefixListResolver": [
       "IpamArn"
     ],
+    "AWS::EC2::IPAMPrefixListResolverTarget": [
+      "IpamPrefixListResolverTargetArn",
+      "IpamPrefixListResolverTargetId"
+    ],
     "AWS::EC2::IPAMResourceDiscovery": [
       "IpamResourceDiscoveryRegion",
       "IsDefault",
@@ -4291,7 +4323,8 @@
     ],
     "AWS::EC2::LaunchTemplate": [
       "DefaultVersionNumber",
-      "LatestVersionNumber"
+      "LatestVersionNumber",
+      "LaunchTemplateId"
     ],
     "AWS::EC2::LocalGatewayRoute": [
       "State",
@@ -4468,7 +4501,11 @@
       "Status",
       "UpdatedAt"
     ],
+    "AWS::EKS::Addon": [
+      "Arn"
+    ],
     "AWS::EKS::Capability": [
+      "Arn",
       "Configuration.ArgoCd.AwsIdc.IdcManagedApplicationArn",
       "Configuration.ArgoCd.ServerUrl",
       "ModifiedAt",
@@ -4476,6 +4513,7 @@
       "Version"
     ],
     "AWS::EKS::Cluster": [
+      "Arn",
       "CertificateAuthority.Active.ActivatedBy",
       "CertificateAuthority.Active.Id",
       "CertificateAuthority.Data",
@@ -4483,8 +4521,13 @@
       "ClusterSecurityGroupId",
       "EncryptionConfigKeyArn",
       "Endpoint",
+      "Id",
       "KubernetesNetworkConfig.ServiceIpv6Cidr",
       "OpenIdConnectIssuerUrl"
+    ],
+    "AWS::EKS::Nodegroup": [
+      "Arn",
+      "Id"
     ],
     "AWS::EKS::PodIdentityAssociation": [
       "ExternalId"
@@ -4563,10 +4606,13 @@
     ],
     "AWS::ElasticLoadBalancingV2::TrustStore": [
       "NumberOfCaCertificates",
-      "Status"
+      "Status",
+      "TrustStoreArn"
     ],
     "AWS::Elasticsearch::Domain": [
-      "DomainEndpoint"
+      "Arn",
+      "DomainEndpoint",
+      "Id"
     ],
     "AWS::ElementalInference::Dictionary": [
       "Arn",
@@ -4597,6 +4643,7 @@
     ],
     "AWS::EventSchemas::Schema": [
       "LastModified",
+      "SchemaArn",
       "SchemaVersion",
       "VersionCreatedDate"
     ],
@@ -4686,6 +4733,7 @@
       "Status"
     ],
     "AWS::FraudDetector::Detector": [
+      "Arn",
       "DetectorVersionId",
       "EventType.Arn",
       "EventType.CreatedTime",
@@ -4728,6 +4776,7 @@
       "Status"
     ],
     "AWS::GameLift::ContainerGroupDefinition": [
+      "ContainerGroupDefinitionArn",
       "Status",
       "StatusReason",
       "VersionNumber"
@@ -4786,6 +4835,9 @@
     "AWS::Glue::Classifier": [
       "Name"
     ],
+    "AWS::Glue::DevEndpoint": [
+      "Id"
+    ],
     "AWS::Glue::IdentityCenterConfiguration": [
       "AccountId",
       "ApplicationArn"
@@ -4800,6 +4852,7 @@
       "IdentifierPartitionInputValues"
     ],
     "AWS::Glue::Schema": [
+      "Arn",
       "InitialSchemaVersionId"
     ],
     "AWS::Glue::UserDefinedFunction": [
@@ -4953,6 +5006,8 @@
       "UserStatus"
     ],
     "AWS::ImageBuilder::Image": [
+      "Arn",
+      "ImageId",
       "ImageUri",
       "LatestVersion",
       "LatestVersion.Arn",
@@ -5012,6 +5067,7 @@
       "AwsAccountId",
       "EinvoiceDeliveryPreferenceStatus",
       "LastUpdateDate",
+      "ProcurementPortalPreferenceArn",
       "PurchaseOrderRetrievalEndpoint",
       "PurchaseOrderRetrievalPreferenceStatus",
       "Version"
@@ -5048,17 +5104,24 @@
     ],
     "AWS::IoT::SoftwarePackageVersion": [
       "ErrorReason",
+      "PackageVersionArn",
       "SbomValidationStatus",
       "Status"
     ],
     "AWS::IoT::Stream": [
+      "Arn",
       "LastUpdatedAt",
       "StreamVersion"
     ],
     "AWS::IoT::TopicRuleDestination": [
       "StatusReason"
     ],
+    "AWS::IoTAnalytics::Dataset": [
+      "Id"
+    ],
     "AWS::IoTCoreDeviceAdvisor::SuiteDefinition": [
+      "SuiteDefinitionArn",
+      "SuiteDefinitionId",
       "SuiteDefinitionVersion"
     ],
     "AWS::IoTFleetHub::Application": [
@@ -5143,6 +5206,9 @@
     "AWS::IoTSiteWise::Workspace": [
       "Status",
       "UpdatedAt"
+    ],
+    "AWS::IoTThingsGraph::FlowTemplate": [
+      "Id"
     ],
     "AWS::IoTTwinMaker::ComponentType": [
       "IsAbstract",
@@ -5245,6 +5311,9 @@
     "AWS::KinesisVideo::Stream": [
       "Arn"
     ],
+    "AWS::Lambda::Alias": [
+      "AliasArn"
+    ],
     "AWS::Lambda::CapacityProvider": [
       "State"
     ],
@@ -5253,6 +5322,7 @@
       "State"
     ],
     "AWS::Lambda::RuntimeAlias": [
+      "Arn",
       "Compatibility",
       "LastModified",
       "RuntimeVersionArn",
@@ -5290,6 +5360,7 @@
       "BotVersion"
     ],
     "AWS::Lex::ResourcePolicy": [
+      "Id",
       "RevisionId"
     ],
     "AWS::LicenseManager::Grant": [
@@ -5319,6 +5390,7 @@
     ],
     "AWS::Lightsail::Bucket": [
       "AbleToUpdateBundle",
+      "BucketArn",
       "Url"
     ],
     "AWS::Lightsail::Container": [
@@ -5416,7 +5488,12 @@
       "LastUpdatedTime"
     ],
     "AWS::M2::Deployment": [
+      "DeploymentId",
       "Status"
+    ],
+    "AWS::M2::Environment": [
+      "EnvironmentArn",
+      "EnvironmentId"
     ],
     "AWS::MGN::Application": [
       "ApplicationID",
@@ -5444,6 +5521,7 @@
       "WaveID"
     ],
     "AWS::MPA::ApprovalTeam": [
+      "Arn",
       "LastUpdateTime",
       "NumberOfApprovers",
       "Status",
@@ -5456,18 +5534,24 @@
       "StateInfo",
       "Status"
     ],
+    "AWS::MSK::Cluster": [
+      "Arn"
+    ],
     "AWS::MSK::ClusterPolicy": [
       "CurrentVersion"
     ],
     "AWS::MSK::Configuration": [
+      "Arn",
       "LatestRevision.CreationTime",
       "LatestRevision.Description",
       "LatestRevision.Revision"
     ],
     "AWS::MSK::Replicator": [
-      "CurrentVersion"
+      "CurrentVersion",
+      "ReplicatorArn"
     ],
     "AWS::MWAA::Environment": [
+      "Arn",
       "CeleryExecutorQueue",
       "DatabaseVpcEndpointService",
       "LoggingConfiguration.DagProcessingLogs.CloudWatchLogGroupArn",
@@ -5482,6 +5566,7 @@
       "CodeSnapshottedAt",
       "ModifiedAt",
       "ScheduleConfiguration",
+      "WorkflowArn",
       "WorkflowStatus",
       "WorkflowVersion"
     ],
@@ -5888,27 +5973,37 @@
       "VpcId"
     ],
     "AWS::NetworkSecurityManager::Deployment": [
+      "DeploymentArn",
+      "DeploymentId",
       "Status",
       "UpdatedAt",
       "Version"
     ],
     "AWS::NetworkSecurityManager::Policy": [
+      "PolicyArn",
+      "PolicyId",
       "Status",
       "UpdatedAt",
       "Version"
     ],
     "AWS::NetworkSecurityManager::Rule": [
+      "RuleArn",
+      "RuleId",
       "Status",
       "UpdatedAt",
       "Version"
     ],
     "AWS::NetworkSecurityManager::Scope": [
+      "ScopeArn",
+      "ScopeId",
       "Status",
       "UpdatedAt",
       "Version"
     ],
     "AWS::NetworkSecurityManager::Template": [
       "Status",
+      "TemplateArn",
+      "TemplateId",
       "UpdatedAt",
       "Version"
     ],
@@ -5976,6 +6071,8 @@
       "ActivatedStorageCount",
       "AdditionalStorageCount",
       "AvailableStorageSizeInGBs",
+      "CloudExadataInfrastructureArn",
+      "CloudExadataInfrastructureId",
       "ComputeModel",
       "CpuCount",
       "DataStorageSizeInTBs",
@@ -6105,9 +6202,11 @@
     ],
     "AWS::OpenSearchService::Domain": [
       "AdvancedSecurityOptions.AnonymousAuthDisableDate",
+      "Arn",
       "DomainEndpoint",
       "DomainEndpointV2",
       "DomainEndpoints",
+      "Id",
       "IdentityCenterOptions.IdentityCenterApplicationARN",
       "IdentityCenterOptions.IdentityStoreId",
       "ServiceSoftwareOptions",
@@ -6206,6 +6305,7 @@
       "ReplicationStatus"
     ],
     "AWS::Personalize::Campaign": [
+      "CampaignArn",
       "LastUpdatedDateTime",
       "Status"
     ],
@@ -6327,6 +6427,7 @@
       "UpdatedAt"
     ],
     "AWS::QuickSight::Brand": [
+      "Arn",
       "AwsAccountId",
       "BrandStatus",
       "LastUpdatedTime",
@@ -6474,6 +6575,9 @@
     "AWS::RAM::SourceAssociation": [
       "LastUpdatedTime"
     ],
+    "AWS::RDS::CustomDBEngineVersion": [
+      "DBEngineVersionArn"
+    ],
     "AWS::RDS::DBClusterEndpoint": [
       "DBClusterEndpointResourceIdentifier",
       "Endpoint",
@@ -6603,6 +6707,7 @@
       "NumberOfNodes",
       "OwnerAccount",
       "Port",
+      "SnapshotArn",
       "SnapshotCreateTime",
       "SnapshotType",
       "Status",
@@ -6695,6 +6800,12 @@
     "AWS::ResourceExplorer2::Index": [
       "IndexState"
     ],
+    "AWS::RoboMaker::RobotApplication": [
+      "Arn"
+    ],
+    "AWS::RoboMaker::SimulationApplication": [
+      "Arn"
+    ],
     "AWS::RolesAnywhere::CRL": [
       "CrlId"
     ],
@@ -6707,10 +6818,14 @@
       "TrustAnchorId"
     ],
     "AWS::Route53::TrafficPolicy": [
+      "Arn",
+      "Id",
       "Type",
       "Version"
     ],
     "AWS::Route53::TrafficPolicyInstance": [
+      "Arn",
+      "Id",
       "State",
       "TrafficPolicyType"
     ],
@@ -6853,6 +6968,8 @@
       "NetworkOrigin"
     ],
     "AWS::S3Files::FileSystem": [
+      "FileSystemArn",
+      "FileSystemId",
       "OwnerId",
       "Status",
       "StatusMessage",
@@ -6992,6 +7109,8 @@
       "CreatedBy",
       "LastModifiedBy",
       "LastModifiedTime",
+      "OpsItemArn",
+      "OpsItemId",
       "OpsItemType",
       "Status",
       "Version"
@@ -7058,10 +7177,14 @@
       "FailureMessage"
     ],
     "AWS::SageMaker::ClusterSchedulerConfig": [
+      "ClusterSchedulerConfigArn",
+      "ClusterSchedulerConfigId",
       "ClusterSchedulerConfigVersion",
       "Status"
     ],
     "AWS::SageMaker::ComputeQuota": [
+      "ComputeQuotaArn",
+      "ComputeQuotaId",
       "ComputeQuotaVersion",
       "LastModifiedTime",
       "Status"
@@ -7090,6 +7213,7 @@
       "LineageGroupArn"
     ],
     "AWS::SageMaker::Extension": [
+      "ExtensionArn",
       "LastModifiedTime",
       "NodeSummary",
       "Status"
@@ -7108,6 +7232,7 @@
     "AWS::SageMaker::ImageVersion": [
       "ContainerImage",
       "ImageArn",
+      "ImageVersionArn",
       "Version"
     ],
     "AWS::SageMaker::InferenceComponent": [
@@ -7130,9 +7255,14 @@
       "Status"
     ],
     "AWS::SageMaker::MlflowApp": [
+      "Arn",
       "LastModifiedTime",
+      "MlflowAppId",
       "MlflowVersion",
       "Status"
+    ],
+    "AWS::SageMaker::MlflowTrackingServer": [
+      "TrackingServerArn"
     ],
     "AWS::SageMaker::ModelCard": [
       "CreatedBy.DomainId",
@@ -7142,6 +7272,7 @@
       "LastModifiedBy.UserProfileArn",
       "LastModifiedBy.UserProfileName",
       "LastModifiedTime",
+      "ModelCardArn",
       "ModelCardProcessingStatus",
       "ModelCardVersion"
     ],
@@ -7160,6 +7291,7 @@
       "NotebookInstanceArn"
     ],
     "AWS::SageMaker::PartnerApp": [
+      "Arn",
       "BaseUrl",
       "CurrentVersionEolDate"
     ],
@@ -7360,6 +7492,7 @@
     ],
     "AWS::Synthetics::Canary": [
       "Code.SourceLocationArn",
+      "Id",
       "State"
     ],
     "AWS::Textract::Adapter": [
@@ -7514,6 +7647,10 @@
       "LastUpdatedAt",
       "Status"
     ],
+    "AWS::WAFv2::IPSet": [
+      "Arn",
+      "Id"
+    ],
     "AWS::WAFv2::LoggingConfiguration": [
       "ManagedByFirewallManager"
     ],
@@ -7546,6 +7683,7 @@
     ],
     "AWS::WellArchitected::Profile": [
       "Owner",
+      "ProfileArn",
       "ProfileVersion",
       "UpdatedAt"
     ],
@@ -7580,6 +7718,8 @@
       "ModifiedTimeSeconds"
     ],
     "AWS::Wisdom::Content": [
+      "ContentArn",
+      "ContentId",
       "ContentType",
       "KnowledgeBaseArn",
       "LinkOutUri",
@@ -7592,6 +7732,7 @@
       "MessageTemplateId"
     ],
     "AWS::Wisdom::MessageTemplateVersion": [
+      "MessageTemplateVersionArn",
       "MessageTemplateVersionNumber"
     ],
     "AWS::Wisdom::QuickResponse": [

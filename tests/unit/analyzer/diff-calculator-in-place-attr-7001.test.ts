@@ -215,6 +215,95 @@ describe('a managed policy AttachmentCount reader (#7001)', () => {
   });
 });
 
+describe('an S3 metadata table reader moves only when its table is created (#7001)', () => {
+  const journal: SdkRow = {
+    type: 'AWS::S3::Bucket',
+    attribute: 'MetadataConfiguration.JournalTableConfiguration.TableArn',
+    verdict: 'moved-by',
+    properties: ['MetadataConfiguration'],
+  };
+  const inventory: SdkRow = {
+    ...journal,
+    attribute: 'MetadataConfiguration.InventoryTableConfiguration.TableArn',
+  };
+  const config = (days: number, inventoryState?: string) => ({
+    Destination: { TableBucketType: 'aws' },
+    JournalTableConfiguration: { RecordExpiration: { Expiration: 'ENABLED', Days: days } },
+    ...(inventoryState !== undefined && {
+      InventoryTableConfiguration: { ConfigurationState: inventoryState },
+    }),
+  });
+  const guard = (row: SdkRow, oldValue: unknown, newValue: unknown) =>
+    findAffectedExports({
+      template: {
+        Resources: { Up: { Type: row.type, Properties: {} } },
+        Outputs: {
+          Out: { Value: { 'Fn::GetAtt': ['Up', row.attribute] }, Export: { Name: 'X' } },
+        },
+      },
+      conditions: {},
+      changes: new Map([
+        [
+          'Up',
+          {
+            logicalId: 'Up',
+            resourceType: row.type,
+            changeType: 'UPDATE',
+            propertyChanges: [
+              { path: 'MetadataConfiguration', oldValue, newValue, requiresReplacement: false },
+            ],
+          },
+        ],
+      ]),
+      currentState: {
+        version: STATE_SCHEMA_VERSION_CURRENT,
+        outputs: { Out: 'recorded-value', X: 'recorded-value' },
+        exportNames: ['X'],
+      } as unknown as StackState,
+      resolve: () => Promise.resolve('recorded-value'),
+      replaces: () => false,
+    });
+
+  it('a journal expiration edit or an inventory table turned on leaves the journal reader alone', async () => {
+    for (const [before, after] of [
+      [config(7), config(30)],
+      [config(7), config(7, 'ENABLED')],
+    ] as const) {
+      const changes = await diffReader(
+        journal,
+        { MetadataConfiguration: before },
+        { MetadataConfiguration: after }
+      );
+      expect(changes.get('Up')?.changeType).toBe('UPDATE');
+      expect(changes.get('Reader')?.changeType).toBe('NO_CHANGE');
+      expect(await guard(journal, before, after)).toEqual([]);
+    }
+  });
+
+  it('adding the configuration promotes the journal reader and counts its export as changed', async () => {
+    expectReaderPromoted(await diffReader(journal, {}, { MetadataConfiguration: config(7) }));
+    expect(await guard(journal, undefined, config(7))).toEqual([
+      { exportName: 'X', reason: 'changed' },
+    ]);
+  });
+
+  it("an inventory reader follows its table's ConfigurationState, not a journal edit", async () => {
+    const flip = [config(7, 'DISABLED'), config(7, 'ENABLED')] as const;
+    expectReaderPromoted(
+      await diffReader(inventory, { MetadataConfiguration: flip[0] }, { MetadataConfiguration: flip[1] })
+    );
+    expect(await guard(inventory, ...flip)).toEqual([{ exportName: 'X', reason: 'changed' }]);
+    const journalOnly = [config(7, 'ENABLED'), config(30, 'ENABLED')] as const;
+    const changes = await diffReader(
+      inventory,
+      { MetadataConfiguration: journalOnly[0] },
+      { MetadataConfiguration: journalOnly[1] }
+    );
+    expect(changes.get('Reader')?.changeType).toBe('NO_CHANGE');
+    expect(await guard(inventory, ...journalOnly)).toEqual([]);
+  });
+});
+
 describe('the export-change guard counts an export of a moving attribute as changed (#7001)', () => {
   const EXPORT = 'Producer:ExportsOutputUp';
 

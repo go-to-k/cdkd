@@ -131,7 +131,13 @@ const MICROVM_IMAGE_BUILD_KEYS = new Set([
   'KmsKeyIdentifier',
 ]);
 
-/** What mints a new Step Functions revision (measured: a tag edit or an identical update does not). */
+/**
+ * What mints a new Step Functions revision. Measured: a definition, role,
+ * tracing, logging or encryption change does; a tag edit or an identical
+ * update does not. `DefinitionSubstitutions` and `DefinitionS3Location` are
+ * kept: cdkd renders them into the definition it sends, so a change of a key
+ * the definition uses mints one, and a move test sees only the one property.
+ */
 const STATE_MACHINE_REVISION_KEYS = new Set([
   'Definition',
   'DefinitionString',
@@ -353,6 +359,53 @@ function principalListLengthMoves(oldValue: unknown, newValue: unknown): boolean
   return before === undefined || after === undefined || before !== after;
 }
 
+/** A bag (object) side, `null` for absent, `undefined` when unreadable. */
+function bagOf(value: unknown): Record<string, unknown> | null | undefined {
+  if (value === undefined || value === null) return null;
+  return typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+/**
+ * go-to-k/cdkd#7001: an S3 `MetadataConfiguration` edit re-creates its
+ * destination and journal table only when the whole configuration is added
+ * or removed; while one exists on both sides the provider updates the journal
+ * expiration in place and refuses an encryption change
+ * (`applyMetadataConfigurationDiff`). An unreadable side answers `true`.
+ */
+function metadataConfigurationAddedOrRemoved(oldValue: unknown, newValue: unknown): boolean {
+  const before = bagOf(oldValue);
+  const after = bagOf(newValue);
+  if (before === undefined || after === undefined) return true;
+  return (before === null) !== (after === null);
+}
+
+/**
+ * The inventory / annotation table of an S3 `MetadataConfiguration` is
+ * created or deleted when the configuration is added or removed, or when that
+ * table's `ConfigurationState` flips (absent reads `DISABLED`).
+ */
+function metadataTableStateFlips(
+  member: string
+): (oldValue: unknown, newValue: unknown) => boolean {
+  const stateOf = (bag: Record<string, unknown>): unknown => {
+    const table = bagOf(bag[member]);
+    if (table === undefined) return undefined;
+    return table === null ? 'DISABLED' : (table['ConfigurationState'] ?? 'DISABLED');
+  };
+  return (oldValue, newValue) => {
+    if (metadataConfigurationAddedOrRemoved(oldValue, newValue)) return true;
+    const before = stateOf(bagOf(oldValue)!);
+    const after = stateOf(bagOf(newValue)!);
+    if (typeof before !== 'string' || typeof after !== 'string') return true;
+    return before !== after;
+  };
+}
+
+const INVENTORY_TABLE_STATE_FLIPS = metadataTableStateFlips('InventoryTableConfiguration');
+const ANNOTATION_TABLE_STATE_FLIPS = metadataTableStateFlips('AnnotationTableConfiguration');
+
 /**
  * Narrower tests for rows of {@link IN_PLACE_UPDATE_ATTRS_MOVED_BY}: per type
  * -> attribute -> property, whether that property's change from the recorded
@@ -379,6 +432,29 @@ export const IN_PLACE_UPDATE_ATTR_MOVE_TESTS: Readonly<
       Roles: principalListLengthMoves,
       Users: principalListLengthMoves,
       Groups: principalListLengthMoves,
+    }),
+  }),
+  'AWS::S3::Bucket': Object.freeze({
+    'MetadataConfiguration.Destination': Object.freeze({
+      MetadataConfiguration: metadataConfigurationAddedOrRemoved,
+    }),
+    'MetadataConfiguration.JournalTableConfiguration.TableName': Object.freeze({
+      MetadataConfiguration: metadataConfigurationAddedOrRemoved,
+    }),
+    'MetadataConfiguration.JournalTableConfiguration.TableArn': Object.freeze({
+      MetadataConfiguration: metadataConfigurationAddedOrRemoved,
+    }),
+    'MetadataConfiguration.InventoryTableConfiguration.TableName': Object.freeze({
+      MetadataConfiguration: INVENTORY_TABLE_STATE_FLIPS,
+    }),
+    'MetadataConfiguration.InventoryTableConfiguration.TableArn': Object.freeze({
+      MetadataConfiguration: INVENTORY_TABLE_STATE_FLIPS,
+    }),
+    'MetadataConfiguration.AnnotationTableConfiguration.TableName': Object.freeze({
+      MetadataConfiguration: ANNOTATION_TABLE_STATE_FLIPS,
+    }),
+    'MetadataConfiguration.AnnotationTableConfiguration.TableArn': Object.freeze({
+      MetadataConfiguration: ANNOTATION_TABLE_STATE_FLIPS,
     }),
   }),
 });

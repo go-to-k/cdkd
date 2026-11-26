@@ -5,6 +5,7 @@ import {
   IN_PLACE_UPDATE_DERIVED_ATTRS,
   IN_PLACE_UPDATE_DERIVED_ATTR_PREFIXES,
 } from '../../../src/analyzer/diff-calculator/shared.js';
+import { ReplacementRulesRegistry } from '../../../src/analyzer/replacement-rules.js';
 import {
   OUT_JSON,
   OUT_MD,
@@ -116,6 +117,33 @@ describe('the hand verdicts equal the shared.ts tables (#7001)', () => {
   });
 });
 
+describe('the rules agree with cdkd replacement decisions (#7001)', () => {
+  it('no-in-place-update settles no type whose replacement rule makes a create-only property in place', () => {
+    // The rule reads the spec's `causesReplacement`; cdkd's registry can
+    // override it (`updateableProperties`, or a conditional that answers in
+    // place), and then an in-place update exists.
+    const registry = new ReplacementRulesRegistry();
+    const overridden: string[] = [];
+    let checked = 0;
+    for (const [type, rule] of registry.rules) {
+      if (inputs.registered.has(type)) continue; // hand-classified
+      const t = inputs.types.find((x) => x.type === type);
+      if (t === undefined) continue;
+      checked++;
+      const inPlace = [
+        ...(rule.updateableProperties ?? []),
+        ...(rule.conditionalReplacements?.keys() ?? []),
+      ].filter((p) => t.properties[p] === 'yes');
+      if (inPlace.length === 0) continue;
+      for (const a of t.attributes) {
+        if (classifyByRule(t, a) === 'no-in-place-update') overridden.push(`${type}.${a} (${inPlace.join(', ')})`);
+      }
+    }
+    expect(checked, 'Cloud Control types with a replacement rule').toBeGreaterThan(0);
+    expect(overridden).toEqual([]);
+  });
+});
+
 describe('classifyByRule (#7001)', () => {
   const input = (
     type: string,
@@ -153,6 +181,20 @@ describe('classifyByRule (#7001)', () => {
     for (const a of ['VpcId', 'SnsTopicArn', 'NetworkInterfaceIds', 'DefaultVersionId', 'Endpoint.Id']) {
       expect(classifyByRule(t, a), a).toBeUndefined();
     }
+  });
+
+  it('settles no identity of a versioned type (its ARN can carry the version an update mints)', () => {
+    // AWS::GameLift::ContainerGroupDefinition: `.../<name>:<version>`.
+    const versionedAttr = input('AWS::X::ContainerGroupDefinition', { Config: undefined }, [
+      'ContainerGroupDefinitionArn',
+      'VersionNumber',
+    ]);
+    expect(classifyByRule(versionedAttr, 'ContainerGroupDefinitionArn')).toBeUndefined();
+    const versionedProp = input('AWS::X::Thing', { Config: undefined, VersionDescription: undefined }, ['Arn']);
+    expect(classifyByRule(versionedProp, 'Arn')).toBeUndefined();
+    expect(classifyByRule(input('AWS::X::Thing', { Config: undefined }, ['Arn']), 'Arn')).toBe(
+      'own-identity'
+    );
   });
 
   it('settles no identity of a type with an in-place name or path (a rename moves the ARN)', () => {
