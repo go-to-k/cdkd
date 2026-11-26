@@ -319,11 +319,10 @@ async function destroyStackInRegion(
     logger.info(`  - ${displaySafe(logicalId)} (${displaySafe(resource.resourceType)})`);
   }
   if (toKeep.length > 0) {
-    logger.info(`\nResources kept in AWS by their DeletionPolicy (${toKeep.length}):`);
+    logger.info(safeMsg`\nResources kept in AWS by their DeletionPolicy (${toKeep.length}):`);
     for (const [logicalId, resource] of toKeep) {
       logger.info(
-        `  - ${displaySafe(logicalId)} (${displaySafe(resource.resourceType)}), ` +
-          `DeletionPolicy: ${displaySafe(resource.deletionPolicy)}`
+        safeMsg`  - ${logicalId} (${resource.resourceType}), DeletionPolicy: ${resource.deletionPolicy}`
       );
     }
   }
