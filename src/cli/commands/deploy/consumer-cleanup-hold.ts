@@ -135,8 +135,7 @@ export async function runHeldProducerCleanup<K extends { stackName: string }>(
   hold: ConsumerCleanupHold<K>,
   queue: NestedCleanupQueue,
   producer: K,
-  logger: HoldLogger,
-  interrupted: () => boolean
+  logger: HoldLogger
 ): Promise<{ updatePartial: number; nestedUpdatePartial: number }> {
   const notDeployed = await hold.waitForConsumers(producer);
   if (notDeployed.length > 0) {
@@ -146,5 +145,16 @@ export async function runHeldProducerCleanup<K extends { stackName: string }>(
     queue.abandon('consumer-failed');
     return { updatePartial: 0, nestedUpdatePartial: 0 };
   }
-  return queue.runAll({ interrupted }, logger);
+  // The producer's deploy took its SIGINT handler with it: a Ctrl-C now stops
+  // the queue between passes (each pass installs its own while it runs).
+  let interrupted = false;
+  const onSigint = (): void => {
+    interrupted = true;
+  };
+  process.on('SIGINT', onSigint);
+  try {
+    return await queue.runAll({ interrupted: () => interrupted }, logger);
+  } finally {
+    process.removeListener('SIGINT', onSigint);
+  }
 }

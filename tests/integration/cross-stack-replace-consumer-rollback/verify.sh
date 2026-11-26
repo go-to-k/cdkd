@@ -73,7 +73,8 @@ QBOOM="cdkd-integ-xs-replace-rb-boom"
 FN="cdkd-integ-xs-replace-rb-fn"
 ROLE="cdkd-integ-xs-replace-rb-role"
 
-sweep() {
+sweep() { # best-effort; called from cleanup and, in a subshell, before the run
+  set +eu
   for s in "${CONS}" "${PROD}"; do
     ${CDKD} destroy "${s}" --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force >/dev/null 2>&1
   done
@@ -133,7 +134,7 @@ expect_eq() { # usage: expect_eq <what> <actual> <expected>
 }
 
 echo "==> Pre-run sweep"
-( set +e; sweep )
+( sweep )
 
 echo "==> Step 1: deploy both (phase 1)"
 env -u CDKD_TEST_UPDATE -u CDKD_TEST_FAIL ${CDKD} deploy --all --region "${AWS_REGION}" \

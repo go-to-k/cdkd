@@ -165,8 +165,7 @@ keeps the old copy until every stack of the run that imports its outputs has
 deployed, and deletes it then. If one of them fails, is cancelled or never
 runs, its rollback (or its unchanged state) still names the old copy, so cdkd
 keeps it, says so in one line, and records it in the producer's state; the
-next deploy of both stacks deletes it (issue
-[#7012](https://github.com/go-to-k/cdkd/issues/7012)).
+next deploy of both stacks deletes it.
 
 `cdkd diff ProducerStack ConsumerStack` previews the same run: the consumer
 reads the export as the producer's deploy will publish it, shown as

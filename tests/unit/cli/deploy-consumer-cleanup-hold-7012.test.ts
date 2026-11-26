@@ -504,7 +504,7 @@ describe('ConsumerCleanupHold (#7012)', () => {
     const run = vi.fn(async () => ({ updatePartial: 1 }));
     queue.enqueue({ stackName: 'P', producer: true, run, abandon: vi.fn(), fail: vi.fn() });
     const logger = { info: vi.fn(), warn: vi.fn() };
-    const outcome = await runHeldProducerCleanup(hold, queue, p, logger, () => false);
+    const outcome = await runHeldProducerCleanup(hold, queue, p, logger);
     expect(run).toHaveBeenCalledTimes(1);
     // A producer's own pass is not a nested stack's.
     expect(outcome).toEqual({ updatePartial: 1, nestedUpdatePartial: 0 });
@@ -519,7 +519,7 @@ describe('ConsumerCleanupHold (#7012)', () => {
     const abandon = vi.fn();
     queue.enqueue({ stackName: 'P', producer: true, run, abandon, fail: vi.fn() });
     const logger = { info: vi.fn(), warn: vi.fn() };
-    await runHeldProducerCleanup(hold, queue, p, logger, () => false);
+    await runHeldProducerCleanup(hold, queue, p, logger);
     expect(run).not.toHaveBeenCalled();
     expect(abandon).toHaveBeenCalledWith('consumer-failed');
     expect(logger.info).toHaveBeenCalledTimes(1);

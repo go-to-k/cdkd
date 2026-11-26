@@ -504,8 +504,7 @@ export async function deployStackInScope(
         ctx.consumerHold,
         consumerCleanupQueue!,
         stackInfo,
-        logger,
-        () => stackDeployEngine.interrupted
+        logger
       );
       deployResult = {
         ...deployed,
