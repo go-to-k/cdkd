@@ -677,16 +677,14 @@ export function initializeRules(this: ReplacementRulesRegistry): void {
     updateableProperties: new Set(['MapPublicIpOnLaunch', 'EnableDns64', 'Ipv6CidrBlock', 'Tags']),
   });
 
-  // EC2 Instance — EbsOptimized can only be changed on a STOPPED instance
-  // (a running instance returns IncorrectInstanceState). `updateInstance`
-  // stops an instance only for an InstanceType / UserData change (issue
-  // #5446, measured) or a PrivateDnsNameOptions.HostnameType change
-  // (go-to-k/cdkd#5630, measured), and an EbsOptimized change was not measured against
-  // CloudFormation, so it stays routed to replacement
-  // (the create path sets it on the new instance). The other four #609
-  // security-backfill props (DisableApiTermination / Monitoring /
-  // MetadataOptions / CreditSpecification) ARE mutable in-place on a running
-  // instance and are handled by EC2Provider.updateInstanceSecurityProps.
+  // EC2 Instance — EbsOptimized is NOT here (go-to-k/cdkd#7023): EC2 changes
+  // it only on a STOPPED instance, and CloudFormation applies it in place with
+  // a stop and a start (measured), so `updateInstance` takes it in the same
+  // stop -> modify -> start window as InstanceType. Listing it here replaced
+  // the instance, deleting its root volume. The four #609 security-backfill
+  // props (DisableApiTermination / Monitoring / MetadataOptions /
+  // CreditSpecification) are mutable in-place on a running instance and are
+  // handled by EC2Provider.updateInstanceSecurityProps.
   //
   // AvailabilityZone / ImageId / SubnetId / KeyName are immutable: the CFn
   // registry schema lists all four under `createOnlyProperties`, so the
@@ -699,7 +697,6 @@ export function initializeRules(this: ReplacementRulesRegistry): void {
   // ignores it: state records the new value while AWS keeps the old one.
   this.rules.set('AWS::EC2::Instance', {
     replacementProperties: new Set([
-      'EbsOptimized',
       'AvailabilityZone',
       'ImageId',
       'SubnetId',
@@ -723,6 +720,10 @@ export function initializeRules(this: ReplacementRulesRegistry): void {
       // classify it as a replacement.
       'SecurityGroups',
     ]),
+    // go-to-k/cdkd#7023: a stop-modify-start in `updateInstance`, as
+    // CloudFormation does; pinned so no schema answer turns it into a
+    // replacement again.
+    updateableProperties: new Set(['EbsOptimized']),
     // Issue #5446: InstanceType / UserData (a stop-modify-start),
     // IamInstanceProfile and, with a SubnetId, SecurityGroupIds update in
     // place in `updateInstance`; see the two predicates for what replaces.

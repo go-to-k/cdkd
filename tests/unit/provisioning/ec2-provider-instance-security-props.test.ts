@@ -214,27 +214,6 @@ describe('EC2Provider updateInstance security props (#609)', () => {
     });
   });
 
-  it('does NOT issue ModifyInstanceAttribute for an EbsOptimized flip (routed to replacement)', async () => {
-    // EbsOptimized can only be changed on a STOPPED instance; cdkd routes the
-    // change to replacement via the ReplacementRulesRegistry instead of an
-    // in-place ModifyInstanceAttribute (which would 'IncorrectInstanceState'
-    // on a running instance). So update() must NOT touch EbsOptimized.
-    await provider.update(
-      'Web',
-      'i-1',
-      'AWS::EC2::Instance',
-      { ImageId: 'ami-1', EbsOptimized: true },
-      { ImageId: 'ami-1', EbsOptimized: false }
-    );
-    const cmds = mutatingCommands();
-    const ebsModify = cmds.filter(
-      (c) =>
-        c instanceof ModifyInstanceAttributeCommand &&
-        (c.input as { EbsOptimized?: unknown }).EbsOptimized !== undefined
-    );
-    expect(ebsModify).toHaveLength(0);
-  });
-
   it('issues MonitorInstances when Monitoring flips on, UnmonitorInstances when off', async () => {
     await provider.update(
       'Web',
@@ -304,15 +283,15 @@ describe('EC2Provider updateInstance security props (#609)', () => {
 });
 
 describe('AWS::EC2::Instance replacement rules (#609)', () => {
-  it('routes EbsOptimized to replacement but keeps the other 4 security props in-place', async () => {
+  // EbsOptimized is in place too (a stop and a start, go-to-k/cdkd#7023;
+  // ec2-provider-instance-ebs-optimized-7023.test.ts).
+  it('keeps all five security props in-place', async () => {
     const { ReplacementRulesRegistry } = await import(
       '../../../src/analyzer/replacement-rules.js'
     );
     const registry = new ReplacementRulesRegistry();
-    expect(registry.requiresReplacement('AWS::EC2::Instance', 'EbsOptimized', false, true)).toBe(
-      true
-    );
     for (const prop of [
+      'EbsOptimized',
       'DisableApiTermination',
       'Monitoring',
       'MetadataOptions',

@@ -134,6 +134,12 @@ export interface InstanceMemberPlan {
    */
   kernelId?: string;
   ramdiskId?: string;
+  /**
+   * go-to-k/cdkd#7023: the ModifyInstanceAttribute `EbsOptimized` value, on a
+   * stopped instance (CloudFormation stops and starts it, measured); dropped
+   * by `prepareInstanceMemberUpdates` when the live instance already has it.
+   */
+  ebsOptimized?: boolean;
 }
 
 /**
@@ -151,6 +157,7 @@ export function instanceStopMembers(plan: InstanceMemberPlan): string[] {
     plan.placement?.HostId !== undefined ? 'HostId' : '',
     plan.kernelId !== undefined ? 'KernelId' : '',
     plan.ramdiskId !== undefined ? 'RamdiskId' : '',
+    plan.ebsOptimized !== undefined ? 'EbsOptimized' : '',
   ].filter(Boolean);
 }
 
