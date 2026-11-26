@@ -378,7 +378,7 @@ to `0.0.0.0` on the host itself: that opens it to your network.
 | `--auth off` | When the emulator runs without authentication, there is no `emulator_credentials` file. cdkd notices, and containers get fixed placeholder keys. |
 | Several emulators | Run each on its own port and pass its URL: `--aws-emulator https://127.0.0.1:9300`. The port selects `~/.aws/emulator/<port>/`. |
 | Region | `--region`, `AWS_REGION` or `AWS_DEFAULT_REGION` when set; else, on every `cdkd local` command, the stack's `env.region` or deployed region; else the run's `config` region. |
-| SQS queue URLs | The emulator's queue URLs are rewritten so SQS calls stay local; see the note below. |
+| SQS queue URLs | SQS calls stay local: 1.0.580 and later return local queue URLs, and an older emulator's real-shaped ones are rewritten; see the note below. |
 | `enforceSSL` policies | Sent without their `aws:SecureTransport` `Deny` statement, with a warning; see the note below. State keeps the templated policy. |
 | Docker image assets | Refused before anything is built. The emulator's ECR does not accept image pushes yet, and before 1.0.338 it returned repository URIs on the real `amazonaws.com` registry, so a push would have left your machine. File assets publish normally. |
 | Other emulators | `--aws-emulator` is specific to AWS Emulator. For LocalStack and the like, `cdkd local` forwards your `AWS_ENDPOINT_URL*` variables and `--ca-bundle`; see [Local AWS endpoints](local-emulation.md#local-aws-endpoints). |
@@ -389,8 +389,8 @@ later answer with a URL on the emulator itself. A sidecar rewrites real-shaped
 URLs in the emulator's answers: always in mixed mode, and otherwise with an
 `https` emulator URL whose run wrote `ca.pem`, unless one read-only
 `ListQueues` at startup returns a local queue URL. With no queue in the
-region yet, the sidecar starts. On the host network no sidecar runs. A container environment variable that is exactly a real queue URL
-(from `--from-state`, `--from-cfn-stack` or `--env-vars`) is rewritten to the
+region yet, the sidecar starts. On the host network no sidecar runs. A
+container environment variable that is exactly a real queue URL (from `--from-state`, `--from-cfn-stack` or `--env-vars`) is rewritten to the
 same queue on the container's SQS endpoint, so a `SendMessage` to it lands in
 the emulator. Any other real queue URL, such as one the handler reads at run
 time from SSM Parameter Store, Secrets Manager or its event, fails closed: the
