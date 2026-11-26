@@ -1,4 +1,5 @@
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
+import { noteReferenceConsumed } from '../../secret-redaction/consumed-references.js';
 import type { IntrinsicFunctionResolver } from '../../intrinsic-function-resolver.js';
 import { displayMasked } from '../masking-display.js';
 import { injectiveKey } from '../../../state/record-keys.js';
@@ -396,6 +397,8 @@ export async function resolveDynamicReferencesWithLogTwin(
         // replacement took. A sibling that left its token, or replaced other
         // than exactly this one, makes the pass incomplete.
         const [delegated] = foreign.substitutions;
+        if (context?.recordedSecretValues)
+          noteReferenceConsumed(context.recordedSecretValues, fullMatch);
         substitutions.push({
           token: fullMatch,
           value: foreign.result,
@@ -504,6 +507,8 @@ export async function resolveDynamicReferencesWithLogTwin(
         twin = twin.replace(fullMatch, () =>
           cached.secret && cached.value ? SECRET_MASK : cached.value
         );
+        if (context?.recordedSecretValues)
+          noteReferenceConsumed(context.recordedSecretValues, fullMatch);
         substitutions.push({ token: fullMatch, value: cached.value, secret: cached.secret });
         continue;
       }
@@ -811,6 +816,8 @@ export async function resolveDynamicReferencesWithLogTwin(
       // STRING is unsafe here.
       result = result.replace(fullMatch, () => resolved);
       twin = twin.replace(fullMatch, () => (isSecret && resolved ? SECRET_MASK : resolved));
+      if (context?.recordedSecretValues)
+        noteReferenceConsumed(context.recordedSecretValues, fullMatch);
       substitutions.push({ token: fullMatch, value: resolved, secret: isSecret });
     } catch (err) {
       // No bag means the caller did not opt in: keep the pre-#3181 abort.

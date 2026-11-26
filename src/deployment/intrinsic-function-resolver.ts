@@ -1,3 +1,4 @@
+import { withConsumptionScope } from './secret-redaction/consumed-references.js';
 import { GetParameterCommand } from '@aws-sdk/client-ssm';
 import { getLogger } from '../utils/logger.js';
 import { canonicalizeRegion, sameRegion } from '../utils/aws-partition.js';
@@ -429,6 +430,20 @@ export class IntrinsicFunctionResolver {
   /** Recursively resolve a value. */
   /** @internal */
   async resolveValue(value: unknown, context: ResolverContext): Promise<unknown> {
+    // go-to-k/cdkd#7050: every intrinsic OBJECT is stamped with the references
+    // its resolution consumed (`consumed-references.ts`), whatever it is.
+    if (
+      context.recordedSecretValues === undefined ||
+      value === null ||
+      typeof value !== 'object' ||
+      Array.isArray(value)
+    ) {
+      return this.resolveValueUnstamped(value, context);
+    }
+    return withConsumptionScope(value, () => this.resolveValueUnstamped(value, context));
+  }
+
+  private async resolveValueUnstamped(value: unknown, context: ResolverContext): Promise<unknown> {
     // Primitives: return as-is (but check strings for dynamic references)
     if (typeof value !== 'object' || value === null) {
       if (typeof value === 'string' && value.includes('{{resolve:')) {

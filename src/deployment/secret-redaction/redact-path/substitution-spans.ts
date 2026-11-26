@@ -7,6 +7,7 @@ import {
   type RecordedSecretValues,
 } from '../pairs.js';
 import { type PathSourceRules, isPlainObject } from '../rules.js';
+import { referencesConsumedBy } from '../consumed-references.js';
 import { physicalNameCopiesOf } from '../physical-name-copies.js';
 import { dynamicReferenceSpans } from './reference-tokens.js';
 import {
@@ -104,21 +105,32 @@ export function positionBySubstitutionSpans(
 ): string | undefined {
   if (rules.sourceIsTemplate !== true || typeof bag !== 'string') return undefined;
   if (!isPlainObject(source)) return undefined;
-  const resolution = intrinsicLeafResolutionOf(secrets, source);
-  if (resolution === undefined) return undefined;
-  const spans = substitutionSpans(resolution, bag);
-  if (spans === undefined || !spans.some((span) => span.secret)) return undefined;
   if (literalRenderingSuspended()) return undefined;
+  const plaintextOf = new Map<string, string>();
+  for (const token of resolvedExpressionsOf(secrets)) {
+    const plaintext = resolvedPlaintextOf(secrets, token);
+    if (plaintext !== undefined && plaintext !== '') plaintextOf.set(token, plaintext);
+  }
+  // TAINT, generic: every secret reference this leaf's resolution CONSUMED,
+  // whatever construct consumed it (the resolver stamps each intrinsic object
+  // it dispatched, `consumed-references.ts`). A consumed secret's text in the leaf is placed only by a recorded
+  // span; at any other position the leaf is masked, never searched.
+  const consumed = new Set<string>();
+  for (const token of referencesConsumedBy(secrets, source)) {
+    if (plaintextOf.has(token)) consumed.add(token);
+  }
+  const tainted = [...consumed].some((t) => bag.includes(plaintextOf.get(t)!));
+  const resolution = intrinsicLeafResolutionOf(secrets, source);
+  const spans = resolution === undefined ? undefined : substitutionSpans(resolution, bag);
+  if (spans === undefined || !spans.some((span) => span.secret)) {
+    return tainted ? SECRET_MASK : undefined;
+  }
   // A node the template-text reader cannot read (a token assembled from
-  // parts) has no segments: every stretch is then a gap, so the tokens are
-  // still placed and nothing between them is kept unredacted.
+  // parts) has no segments: every stretch is then a gap.
   const segments = templateSegmentsOf(source, secrets) ?? [{ gap: true } as Segment];
-  // Each recorded span PINS the next template token spelling it; a template
+  // Each recorded span PINS the next template token spelling it. A secret
   // token the record does not place (a part that lent no record: an
-  // `Fn::Select` over a literal token list) stays a segment of its stretch,
-  // placed there by its own recorded plaintext. A span no template token
-  // spells means the segments describe another text: every stretch is then
-  // read as a gap.
+  // `Fn::Select` over a literal token list) masks the leaf.
   const regions: Segment[][] = [[]];
   let pinned = 0;
   for (const segment of segments) {
@@ -126,22 +138,13 @@ export function positionBySubstitutionSpans(
       regions.push([]);
       pinned++;
     } else {
+      // A consumed secret token the record does not place: its value sits at
+      // a position no span proves.
+      if ('token' in segment && consumed.has(segment.token)) return SECRET_MASK;
       regions[regions.length - 1]!.push(segment);
     }
   }
   const aligned = pinned === spans.length;
-  const plaintextOf = new Map<string, string>();
-  for (const token of resolvedExpressionsOf(secrets)) {
-    const plaintext = resolvedPlaintextOf(secrets, token);
-    if (plaintext !== undefined) plaintextOf.set(token, plaintext);
-  }
-  // The plaintext of each SECRET token this leaf references, and its token.
-  const own = new Map<string, string>();
-  for (const span of spans) {
-    if (!span.secret) continue;
-    const plaintext = bag.slice(span.start, span.end);
-    if (plaintext !== '') own.set(plaintext, span.token);
-  }
   const copies = [...(physicalNameCopiesOf.get(secrets) ?? [])].filter((c) => c !== '');
   let persisted = '';
   let cursor = 0;
@@ -154,20 +157,19 @@ export function positionBySubstitutionSpans(
         persisted += piece.text;
         continue;
       }
-      const answer = redactGap(piece.text, own, secrets, copies, scan);
+      const answer = redactGap(piece.text, secrets, copies, scan);
       if (answer === 'mask') return SECRET_MASK;
-      persisted += answer.text;
+      persisted += answer;
     }
     if (i < spans.length) {
       const span = spans[i]!;
       if (span.secret) {
         persisted += span.token;
       } else {
-        // A PUBLIC token's value (an ssm `String`) is a value like a gap's,
-        // and is redacted as one: it can hold a secret's text too.
-        const answer = redactGap(bag.slice(span.start, span.end), own, secrets, copies, scan);
+        // A PUBLIC token's value (an ssm `String`) is a value like a gap's.
+        const answer = redactGap(bag.slice(span.start, span.end), secrets, copies, scan);
         if (answer === 'mask') return SECRET_MASK;
-        persisted += answer.text;
+        persisted += answer;
       }
       cursor = span.end;
     }
@@ -175,73 +177,31 @@ export function positionBySubstitutionSpans(
   return persisted;
 }
 
-/** What {@link redactGap} decided for one gap. */
-type GapAnswer = { text: string } | 'mask';
-
 /**
- * A gap's bytes as persisted (go-to-k/cdkd#7050). By provenance a gap is a
- * parameter's, an attribute's or an import's value, not a secret; what it
- * must never keep is the text of a secret THIS leaf references:
- *
- * - each occurrence of an own token's plaintext, at any length (one under
- *   `MIN_NEEDLE_LENGTH` the scan does not see), is written as that token,
- *   outside a token and outside a reader's copy of a secret-named physical id
- *   (kept in plaintext by design, #4810);
- * - the leaf is MASKED when two tokens resolved to that text: which one the
- *   gap holds is not known, and a survivor would send the wrong value on a
- *   replay;
- * - every other recorded secret goes through the value scan, as any value's
- *   does (one the gap equals whole at any length, a substring from 4
- *   characters); a mask-only value MASKS the leaf whole. Another secret's
- *   sub-floor text inside a larger gap is kept, as the scan keeps it:
- *   rewriting it would spell a public value as an unrelated reference.
+ * A gap's bytes as persisted (go-to-k/cdkd#7050), or `'mask'`. By provenance
+ * a gap is a parameter's, an attribute's or an import's value, so no token is
+ * ever written into it on the strength of its bytes, and nothing in it is
+ * attributed by search: a gap holding ANY recorded secret's text (at any
+ * length, any position) or a mask-only value masks the whole leaf. The one
+ * exception is a reader's copy of a secret-named physical id, kept in
+ * plaintext by design (#4810). The value scan must leave what remains alone
+ * too, or the leaf is masked. Every reader treats the mask as unknown, and the
+ * masked-property fingerprints keep an unchanged template from reading as a
+ * change in the plan (`analyzer/diff-calculator/redaction-masks.ts`).
  */
 function redactGap(
   gap: string,
-  own: ReadonlyMap<string, string>,
   secrets: RecordedSecretValues,
   copies: readonly string[],
   scan: ValueScan
-): GapAnswer {
-  let text = gap;
-  // Longest first, so a needle inside a longer one does not split it.
-  for (const [plaintext, token] of [...own].sort((a, b) => b[0].length - a[0].length)) {
-    const at = exposedAt(text, plaintext, copies);
-    if (at.length === 0) continue;
-    const spellers = resolvedExpressionsOf(secrets).filter(
-      (expression) => resolvedPlaintextOf(secrets, expression) === plaintext
-    );
-    if (spellers.length > 1) return 'mask';
-    let out = '';
-    let cursor = 0;
-    for (const start of at) {
-      out += text.slice(cursor, start) + token;
-      cursor = start + plaintext.length;
-    }
-    text = out + text.slice(cursor);
+): string | 'mask' {
+  for (const plaintext of secrets.keys()) {
+    if (plaintext !== '' && exposedAt(gap, plaintext, copies).length > 0) return 'mask';
   }
-  for (const plaintext of own.keys()) {
-    if (exposedAt(text, plaintext, copies).length > 0) return 'mask';
-  }
-  // Then the value scan, for every other recorded secret (4+ characters, or
-  // one the gap equals whole): its answer is taken, as the scan's is for any
-  // value. A mask-only value in the gap masks the leaf whole, never inline.
-  // A gap EQUAL to another secret's text takes it at any length, as a whole
-  // leaf reading the same value does (`{Ref: P}`): never its plaintext. The
-  // cost, where the value only coincides with the secret, is a redaction
-  // artifact the plan diff shows, never an exposure.
-  const scanned = scan(text);
-  if (typeof scanned !== 'string') return 'mask';
-  // A mask the scan wrote (a mask-only value) masks the leaf whole; a `***`
-  // the value already held, unchanged, is its own text.
-  if (scanned !== text && scanned.includes(SECRET_MASK)) return 'mask';
-  return { text: scanned };
+  const scanned = scan(gap);
+  return typeof scanned === 'string' && scanned === gap ? gap : 'mask';
 }
 
-/**
- * Where `plaintext` occurs in `text` outside every `{{resolve:...}}` token
- * and every physical-id copy: non-overlapping, leftmost first.
- */
 function exposedAt(text: string, plaintext: string, copies: readonly string[]): number[] {
   const tokens = dynamicReferenceSpans(text).map((s) => [s.start, s.end] as const);
   const copyRanges: Array<readonly [number, number]> = [];

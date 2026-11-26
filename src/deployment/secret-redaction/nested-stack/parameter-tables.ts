@@ -84,3 +84,34 @@ export const renderedParameterSpellings = new WeakMap<
  * whose token this pass never resolved to the middle (a PUBLIC sibling).
  */
 export const UNFRAMED_SPELLING: unique symbol = Symbol('cdkd.nested-parameter.unframed-spelling');
+
+/**
+ * A nested row's parameters whose value the CHILD may not attribute by search
+ * (go-to-k/cdkd#7050, #7059), per the row's pass bag, copied to the child's
+ * bag by `inheritNestedStackParameterAssociations`:
+ *
+ * - `masked`: the parent persisted the row value as `***` (two references
+ *   share its secret text): every child read of the parameter is masked;
+ * - `sub-floor`: the value holds a recorded secret's text under the value
+ *   scan's floor: a bare `{Ref}` read takes the parent's certified spelling or
+ *   is masked, and any other read (an `Fn::Select` / `Fn::Split`, a join) is
+ *   masked, since no search can find that text again.
+ */
+export const attributionRefusedParameters = new WeakMap<
+  RecordedSecretValues,
+  Map<string, 'masked' | 'sub-floor'>
+>();
+
+/** Mark `name` on `secrets`; `masked` outranks `sub-floor`. */
+export function markAttributionRefusedParameter(
+  secrets: RecordedSecretValues,
+  name: string,
+  kind: 'masked' | 'sub-floor'
+): void {
+  let table = attributionRefusedParameters.get(secrets);
+  if (table === undefined) {
+    table = new Map();
+    attributionRefusedParameters.set(secrets, table);
+  }
+  if (table.get(name) !== 'masked') table.set(name, kind);
+}

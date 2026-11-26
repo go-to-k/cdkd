@@ -27,6 +27,7 @@ import { recordDerivedMaskOnlyValue, wholeStringLeavesOf } from '../mask-only.js
 import {
   NESTED_STACK_RESOURCE_TYPE,
   UNFRAMED_SPELLING,
+  markAttributionRefusedParameter,
   nestedStackParameterExpressions,
   renderedParameterSpellings,
 } from './parameter-tables.js';
@@ -404,8 +405,13 @@ export function recordNestedStackParameterExpressions(
           ? sourceLeaf
           : undefined
         : provenance === 'template-derived'
-          ? substitutionSpelling(resolvedValue, sourceLeaf, secrets)
+          ? substitutionSpelling(resolvedValue, sourceLeaf, secrets, name)
           : undefined;
+    // go-to-k/cdkd#7059: a value holding a secret's text under the scan's
+    // floor is one the child may read only as the certified spelling.
+    if (holdsSubFloorSecret(resolvedValue, secrets)) {
+      markAttributionRefusedParameter(secrets, name, 'sub-floor');
+    }
     if (spelling === undefined || !rendersLiteralTo(spelling, secrets, resolvedValue)) continue;
     let rendered = renderedParameterSpellings.get(secrets);
     if (rendered === undefined) {
@@ -885,7 +891,8 @@ export function recordNestedStackParameterExpressions(
 function substitutionSpelling(
   resolvedValue: string,
   sourceLeaf: unknown,
-  secrets: RecordedSecretValues
+  secrets: RecordedSecretValues,
+  name: string
 ): string | undefined {
   const spelled = positionBySubstitutionSpans(
     resolvedValue,
@@ -897,9 +904,22 @@ function substitutionSpelling(
   // A row value the arm MASKS (two references share its secret text) is a
   // mask-only needle of the row's bag, so a child reading the parameter whole
   // masks it too rather than keep the plaintext the parent would not.
-  // CONTAINMENT too, so a child leaf embedding the value is masked whole.
-  if (spelled === SECRET_MASK) recordDerivedMaskOnlyValue(secrets, resolvedValue);
+  // CONTAINMENT too, so a child leaf embedding the value is masked whole,
+  // and the PARAMETER is marked masked for every other child read (#7059).
+  if (spelled === SECRET_MASK) {
+    recordDerivedMaskOnlyValue(secrets, resolvedValue);
+    markAttributionRefusedParameter(secrets, name, 'masked');
+  }
   return spelled === undefined || spelled === SECRET_MASK || spelled === resolvedValue
     ? undefined
     : spelled;
+}
+
+/** Does `value` hold a recorded secret's text under the value scan's floor? */
+function holdsSubFloorSecret(value: string, secrets: RecordedSecretValues): boolean {
+  for (const [plaintext, expression] of secrets) {
+    if (plaintext === '' || plaintext.length >= MIN_NEEDLE_LENGTH) continue;
+    if (expression !== SECRET_MASK && value.includes(plaintext)) return true;
+  }
+  return false;
 }

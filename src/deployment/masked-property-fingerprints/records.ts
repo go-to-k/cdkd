@@ -85,8 +85,12 @@ export function possiblyMaskedKeys(
   }
   const short = [...needles].filter((needle) => needle.length < MIN_NEEDLE_LENGTH);
   const long = [...needles].filter((needle) => needle.length >= MIN_NEEDLE_LENGTH);
+  // A short needle counts by CONTAINMENT too (go-to-k/cdkd#7050): the persist
+  // walk masks a leaf holding one beside a value-bearing part, and the plan
+  // reads that mask as unchanged only through the key's input fingerprint.
+  // Computing a fingerprint for a key that is not masked costs a hash.
   const wholeShortLeaf = (value: unknown): boolean => {
-    if (typeof value === 'string') return short.includes(value);
+    if (typeof value === 'string') return short.some((needle) => value.includes(needle));
     if (Array.isArray(value)) return value.some(wholeShortLeaf);
     if (isPlainObject(value)) return Object.values(value).some(wholeShortLeaf);
     return false;

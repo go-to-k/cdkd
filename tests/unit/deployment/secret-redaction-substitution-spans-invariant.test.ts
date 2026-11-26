@@ -69,6 +69,7 @@ const PARAMETER_GAPS: Record<string, (v: string) => string> = {
   'a parameter containing it': (v) => `a${v}${v}b`,
   'an unrelated parameter': () => 'qqq',
   "a parameter containing the OTHER secret's text": () => `x${OTHER}x`,
+  "a parameter EQUAL to the OTHER secret's text": () => OTHER,
 };
 const REGION = 'us-east-1';
 
@@ -76,15 +77,15 @@ type Part = { text: string } | { token: true } | { gap: string };
 
 /**
  * The persisted spelling the rule gives (go-to-k/cdkd#7050): template text as
- * written, the token as itself, and a gap's value with the leaf's OWN secret
- * text written as the token (another secret's sub-floor text is a public
- * value's own bytes, and stays).
+ * written and the token as itself, while a gap holding ANY recorded secret's
+ * text (the leaf's own, or the other secret's, at any length) masks the whole
+ * leaf: no token is written into a gap on the strength of its bytes.
  */
 function expected(parts: readonly Part[], delimiter: string, v: string, token: string, gapValue: (name: string) => string): string {
+  const gaps = parts.flatMap((part) => ('gap' in part ? [gapValue(part.gap)] : []));
+  if (gaps.some((g) => g.includes(v) || g.includes(OTHER))) return '***';
   return parts
-    .map((part) =>
-      'text' in part ? part.text : 'token' in part ? token : gapValue(part.gap).split(v).join(token)
-    )
+    .map((part) => ('text' in part ? part.text : 'token' in part ? token : gapValue(part.gap)))
     .join(delimiter);
 }
 
@@ -101,8 +102,18 @@ function cases(v: string, token: string): Record<string, Case> {
   };
   const gapValue = (name: string): string =>
     name === 'a pseudo parameter' ? REGION : PARAMETER_GAPS[name]!(v);
+  // How the token reaches the leaf: spelled (its span recorded), or LENT by a
+  // part that records no span (`Fn::Select` over a literal list, over an
+  // `Fn::Split`): the generic taint must mask those.
+  const lenders: Record<string, (t: string) => unknown> = {
+    spelled: (t) => t,
+    'lent by Fn::Select': (t) => ({ 'Fn::Select': [0, [t, 'unused']] }),
+    'lent by Fn::Select over Fn::Split': (t) => ({ 'Fn::Select': [0, { 'Fn::Split': ['|', t] }] }),
+  };
+  for (const [lender, lend] of Object.entries(lenders)) {
   const node = (part: Part): unknown =>
-    'text' in part ? part.text : 'token' in part ? token : gapNodes[part.gap];
+    'text' in part ? part.text : 'token' in part ? lend(token) : gapNodes[part.gap];
+  const lent = lender !== 'spelled';
   for (const gap of Object.keys(gapNodes)) {
     for (const text of ['tt:', `${v}-`]) {
       const shapes: Record<string, Part[]> = {
@@ -111,30 +122,37 @@ function cases(v: string, token: string): Record<string, Case> {
         'the token between two gaps': [{ text }, { gap }, { token: true }, { gap }],
       };
       for (const [shape, parts] of Object.entries(shapes)) {
-        out[`Join, ${shape}: ${gap}, text ${JSON.stringify(text)}`] = {
+        out[`${lender}, Join, ${shape}: ${gap}, text ${JSON.stringify(text)}`] = {
           source: { 'Fn::Join': ['', parts.map(node)] },
-          expected: expected(parts, '', v, token, gapValue),
+          expected: lent ? '***' : expected(parts, '', v, token, gapValue),
         };
-        out[`Join with a delimiter, ${shape}: ${gap}, text ${JSON.stringify(text)}`] = {
+        out[`${lender}, Join with a delimiter, ${shape}: ${gap}, text ${JSON.stringify(text)}`] = {
           source: { 'Fn::Join': ['/', parts.map(node)] },
-          expected: expected(parts, '/', v, token, gapValue),
+          expected: lent ? '***' : expected(parts, '/', v, token, gapValue),
         };
       }
       const subParts: Part[] = [{ text }, { gap }, { token: true }, { gap }];
-      out[`Sub variable map: ${gap}, text ${JSON.stringify(text)}`] = {
-        source: { 'Fn::Sub': [`${text}\${G}\${T}\${G}`, { G: gapNodes[gap], T: token }] },
-        expected: expected(subParts, '', v, token, gapValue),
+      out[`${lender}, Sub variable map: ${gap}, text ${JSON.stringify(text)}`] = {
+        source: { 'Fn::Sub': [`${text}\${G}\${T}\${G}`, { G: gapNodes[gap], T: lend(token) }] },
+        expected: lent ? '***' : expected(subParts, '', v, token, gapValue),
       };
-      out[`Sub inline token: ${gap}, text ${JSON.stringify(text)}`] = {
-        source: { 'Fn::Sub': [`${text}\${G}${token}`, { G: gapNodes[gap] }] },
-        expected: expected([{ text }, { gap }, { token: true }], '', v, token, gapValue),
-      };
+      if (!lent) {
+        out[`Sub inline token: ${gap}, text ${JSON.stringify(text)}`] = {
+          source: { 'Fn::Sub': [`${text}\${G}${token}`, { G: gapNodes[gap] }] },
+          expected: expected([{ text }, { gap }, { token: true }], '', v, token, gapValue),
+        };
+      }
     }
+  }
   }
   return out;
 }
 
-async function persist(v: string, source: unknown, other: string): Promise<string> {
+async function persist(
+  v: string,
+  source: unknown,
+  other: string
+): Promise<{ leaf: string; whole: string }> {
   secret.username = v;
   const resolver = new IntrinsicFunctionResolver('us-east-1');
   const bag: RecordedSecretValues = new Map();
@@ -159,7 +177,7 @@ async function persist(v: string, source: unknown, other: string): Promise<strin
     generation: 'same-generation',
   }) as Record<string, unknown>;
   expect(out['M']).toBe(other);
-  return String(out['L']);
+  return { leaf: String(out['L']), whole: JSON.stringify(out) };
 }
 
 describe('a secret never reaches state beside a value-bearing part (#7050)', () => {
@@ -174,11 +192,17 @@ describe('a secret never reaches state beside a value-bearing part (#7050)', () 
     return Object.entries(cases(v, token)).map(([name, c]) => [v, name, c, other] as const);
   });
 
-  it.each(all)('secret %j, %s', async (v, _name, c, other) => {
-    const persisted = await persist(v, c.source, other);
-    // The exact spelling: the template's text kept, every own secret byte a
-    // token, and nothing else rewritten.
-    expect(persisted).toBe(c.expected);
-    expect(dynamicReferenceTokens(persisted).length).toBeGreaterThan(0);
+  it.each(all)('secret %j, %s', async (v, name, c, other) => {
+    const { leaf, whole } = await persist(v, c.source, other);
+    // The exact spelling: the template's text kept, every secret byte a token
+    // or the leaf masked, and nothing attributed by search.
+    expect(leaf).toBe(c.expected);
+    if (leaf !== '***') expect(dynamicReferenceTokens(leaf).length).toBeGreaterThan(0);
+    // NEGATIVE: no secret's plaintext, at any length, anywhere in the whole
+    // persisted bag outside a reference, except where the template's own
+    // text spells it (`v-`, public).
+    const outside = whole.split(/\{\{resolve:[^}]+\}\}/).join('\u0000');
+    expect(outside).not.toContain(OTHER);
+    if (!name.includes(`text "${v}-"`)) expect(outside).not.toContain(v);
   });
 });

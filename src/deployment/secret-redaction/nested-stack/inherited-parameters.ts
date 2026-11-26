@@ -5,7 +5,12 @@ import { redactForState } from '../context.js';
 import { certifiedListForLeaf, certifiedExpressionForLeaf } from '../certified-positions.js';
 import { rendersLiteralTo, renderedTokenOf } from '../positions.js';
 import { deepEqualJsonValue } from '../redact-path.js';
-import { nestedStackParameterExpressions, renderedParameterSpellings } from './parameter-tables.js';
+import {
+  attributionRefusedParameters,
+  markAttributionRefusedParameter,
+  nestedStackParameterExpressions,
+  renderedParameterSpellings,
+} from './parameter-tables.js';
 import { carriesChildOnlyPlaintext } from './child-only-plaintext.js';
 
 /**
@@ -29,6 +34,10 @@ export function inheritNestedStackParameterAssociations(
   childSecrets: RecordedSecretValues,
   parentSecrets: RecordedSecretValues
 ): void {
+  // go-to-k/cdkd#7050: the parameters the child may not attribute by search.
+  for (const [name, kind] of attributionRefusedParameters.get(parentSecrets) ?? []) {
+    markAttributionRefusedParameter(childSecrets, name, kind);
+  }
   const table = nestedStackParameterExpressions.get(parentSecrets);
   if (table === undefined || table.size === 0) return;
   let associations = crossStackAssociations.get(childSecrets);

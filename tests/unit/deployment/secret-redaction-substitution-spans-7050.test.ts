@@ -32,7 +32,7 @@ const position = (value: string, source: object, secrets: RecordedSecretValues):
   );
 
 describe('positionBySubstitutionSpans (#7050)', () => {
-  it('places the token by its span, and rewrites the parameter text equal to it', () => {
+  it('places the token by its span, and masks the leaf where a parameter holds its text', () => {
     const secrets = bag([[U, 'pg']]);
     const source = { 'Fn::Join': ['', ['tt:', U, { Ref: 'Alias' }]] };
     recordIntrinsicLeafResolution(secrets, source, {
@@ -41,10 +41,11 @@ describe('positionBySubstitutionSpans (#7050)', () => {
       substitutions: [{ token: U, value: 'pg', secret: true }],
       complete: true,
     });
-    expect(position('tt:pgpg', source, secrets)).toBe(`tt:${U}${U}`);
+    // No token is written into a gap on the strength of its bytes (#7050).
+    expect(position('tt:pgpg', source, secrets)).toBe(SECRET_MASK);
   });
 
-  it('rewrites a sub-floor secret INSIDE a parameter gap, and keeps template text that spells it', () => {
+  it('masks a sub-floor secret INSIDE a parameter gap, and keeps template text that spells it', () => {
     const secrets = bag([[U, 'pg']]);
     const source = { 'Fn::Join': ['', ['pg-', U, { Ref: 'Alias' }]] };
     recordIntrinsicLeafResolution(secrets, source, {
@@ -53,8 +54,17 @@ describe('positionBySubstitutionSpans (#7050)', () => {
       substitutions: [{ token: U, value: 'pg', secret: true }],
       complete: true,
     });
-    // `pg-` is the template's own text (#7037); `apgb` is the parameter's.
-    expect(position('pg-pgapgb', source, secrets)).toBe(`pg-${U}a${U}b`);
+    // `apgb` is the parameter's and holds the secret's text: masked.
+    expect(position('pg-pgapgb', source, secrets)).toBe(SECRET_MASK);
+    // Template text that spells it is the template's own (#7037).
+    const kept = { 'Fn::Join': ['', ['pg-', U, { Ref: 'Other' }]] };
+    recordIntrinsicLeafResolution(secrets, kept, {
+      input: `pg-${U}qqq`,
+      output: 'pg-pgqqq',
+      substitutions: [{ token: U, value: 'pg', secret: true }],
+      complete: true,
+    });
+    expect(position('pg-pgqqq', kept, secrets)).toBe(`pg-${U}qqq`);
   });
 
   it("redacts a PUBLIC token's value like a gap: a secret's text in it never stays (security review)", () => {
@@ -71,7 +81,7 @@ describe('positionBySubstitutionSpans (#7050)', () => {
       ],
       complete: true,
     });
-    expect(position('rootpw@rootpw-host', source, secrets)).toBe(`${LONG}@${LONG}-host`);
+    expect(position('rootpw@rootpw-host', source, secrets)).toBe(SECRET_MASK);
     // ...and the leaf's own sub-floor secret inside a public value.
     const PIN = '{{resolve:ssm:/app/pin}}';
     const pins = bag([[PIN, 'q7']]);
@@ -85,10 +95,10 @@ describe('positionBySubstitutionSpans (#7050)', () => {
       ],
       complete: true,
     });
-    expect(position('xq7y/q7', pinned, pins)).toBe(`x${PIN}y/${PIN}`);
+    expect(position('xq7y/q7', pinned, pins)).toBe(SECRET_MASK);
   });
 
-  it('keeps placing its own token where a gap also holds ANOTHER secret (security review)', () => {
+  it('masks the leaf where a gap holds or equals ANOTHER secret (security review)', () => {
     const PIN = '{{resolve:ssm:/app/pin}}';
     const X9 = '{{resolve:ssm:/app/x9}}';
     const LONG = '{{resolve:ssm:/app/long}}';
@@ -105,9 +115,7 @@ describe('positionBySubstitutionSpans (#7050)', () => {
       substitutions: [{ token: PIN, value: 'q7', secret: true }],
       complete: true,
     });
-    // A gap EQUAL to another secret's text takes that reference at any length,
-    // as a whole leaf reading the same value would: never its plaintext.
-    expect(position('q7@x9', whole, secrets)).toBe(`${PIN}@${X9}`);
+    expect(position('q7@x9', whole, secrets)).toBe(SECRET_MASK);
     // The gap holds the own secret's text AND another 4+ character secret.
     const mixed = { 'Fn::Join': ['', [PIN, '@', { Ref: 'Other' }]] };
     recordIntrinsicLeafResolution(secrets, mixed, {
@@ -116,7 +124,7 @@ describe('positionBySubstitutionSpans (#7050)', () => {
       substitutions: [{ token: PIN, value: 'q7', secret: true }],
       complete: true,
     });
-    expect(position('q7@q7-rootpw', mixed, secrets)).toBe(`${PIN}@${PIN}-${LONG}`);
+    expect(position('q7@q7-rootpw', mixed, secrets)).toBe(SECRET_MASK);
   });
 
   it("keeps a public value's own `***`, and masks only where the scan wrote one", () => {

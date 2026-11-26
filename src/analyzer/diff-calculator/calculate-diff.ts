@@ -27,6 +27,7 @@ import { unsettledPropertiesOf } from '../../state/unsettled-properties.js';
 import type { ReadProvenanceSources } from '../read-provenance-promotion.js';
 import { DiffCalculator } from '../diff-calculator.js';
 import { markLegacyHandleHeals } from './legacy-handle-heal.js';
+import { maskUnmovedRedactionMasks } from './redaction-masks.js';
 import {
   type IntrinsicResolveFn,
   type CanonicalizePropertiesFn,
@@ -456,8 +457,16 @@ export async function calculateDiff(
         desired: desiredPropsForCompare,
         current: currentPropsForCompare,
       });
-      const desiredCompared = noEchoCompared?.desired ?? desiredPropsForCompare;
       const currentCompared = noEchoCompared?.current ?? currentPropsForCompare;
+      // go-to-k/cdkd#7050: a leaf the persist walk MASKED as a redaction,
+      // whose template and inputs provably did not move, compares masked.
+      const desiredCompared = await maskUnmovedRedactionMasks(
+        currentResource,
+        rawDesiredProps,
+        currentCompared,
+        noEchoCompared?.desired ?? desiredPropsForCompare,
+        maskedInputs && inputFingerprinter(rawDesiredProps, maskedInputs.sources)
+      );
       const propertyChanges = await this.compareProperties(
         desiredResource.Type,
         currentCompared,

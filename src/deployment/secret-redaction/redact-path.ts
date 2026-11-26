@@ -1,4 +1,4 @@
-import { type RecordedSecretValues } from './pairs.js';
+import { SECRET_MASK, type RecordedSecretValues } from './pairs.js';
 import {
   type PathSourceRules,
   isDynamicReferenceString,
@@ -27,6 +27,7 @@ import { hasPlainPrototype } from './redact-path/json-equality.js';
 import { isSourcePlainLiteral, rerenderedSourceLiteral } from './redact-path/template-literal.js';
 import { positionByLiteralRendering } from './redact-path/literal-rendering.js';
 import { positionBySubstitutionSpans } from './redact-path/substitution-spans.js';
+import { attributionRefusedReadsOf } from './nested-stack/refused-parameter-reads.js';
 
 export { sourceElementsKeptFor, arrayPairsWhateverDrops } from './redact-path/array-drop.js';
 export {
@@ -231,6 +232,11 @@ export function redactByPath(
     // same PARENT bag, ahead of the arms below. Their fall-through scans the
     // CHILD bag, whose slot holds whichever parameter's expression resolved
     // last, while the diff side scans the parent's.
+    // go-to-k/cdkd#7050 / #7059: a parameter the parent could not let the
+    // child attribute by search. A masked one masks every read; a sub-floor
+    // one is read only as the parent's certified spelling, or masked.
+    const refused = attributionRefusedReadsOf(source, secrets);
+    if (refused === 'masked') return SECRET_MASK;
     const inherited = positionByInheritedParameter(bag, source, secrets);
     if (inherited !== undefined) return inherited;
     // Its `Fn::Select` / `Fn::Split` / `Fn::If` twin (issues #4731, #4919):
@@ -278,7 +284,13 @@ export function redactByPath(
     // Every SECRET token at the span the resolver substituted it
     // (go-to-k/cdkd#7050): its plaintext never stays, whatever its length or
     // whatever else in the leaf spells the same text.
-    const substituted = positionBySubstitutionSpans(bag, source, secrets, rules, valueScan);
+    // Fail closed: an arm that cannot finish masks the leaf, never leaves it.
+    let substituted: string | undefined;
+    try {
+      substituted = positionBySubstitutionSpans(bag, source, secrets, rules, valueScan);
+    } catch {
+      return SECRET_MASK;
+    }
     if (substituted !== undefined) return substituted;
     const rendered = positionByLiteralRendering(bag, source, secrets, rules, valueScan);
     if (rendered !== undefined) return rendered;
@@ -306,7 +318,16 @@ export function redactByPath(
       bagIsSameGeneration
     );
     if (framed !== undefined) return framed;
+    // go-to-k/cdkd#7059: a read of a parameter holding a sub-floor secret's
+    // text that no certified arm above placed is masked: the value scan
+    // below cannot see that text.
+    if (attributionRefusedReadsOf(source, secrets) !== undefined) return SECRET_MASK;
     // Fall through to the value scan below on any refusal.
+  }
+  if (Array.isArray(bag) && isPlainObject(source) && attributionRefusedReadsOf(source, secrets)) {
+    // ...and its list-valued twin, once its own arm below refuses.
+    const positionedList = positionListByCrossStackSource(bag, source, secrets);
+    return positionedList !== undefined ? positionedList : SECRET_MASK;
   }
   if (Array.isArray(bag) && isPlainObject(source)) {
     // The LIST-VALUED twin of the arm above (issue #2327). A child parameter
