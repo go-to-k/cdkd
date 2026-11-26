@@ -67,5 +67,10 @@ AWS_REGION=us-east-1 STATE_BUCKET=cdkd-state-<accountId> bash verify.sh
   one (both with `--force-stateful-recreation`), remove the single-az Memcached
   cluster's `PreferredAvailabilityZones` and then its `AZMode`; each replaces
   the cluster, as CloudFormation does (issue #5558),
+- the `CDKD_TEST_MCSCALE=true` redeploy brings the Memcached cluster back to 2
+  single-az nodes with no zone list in place, and the `CDKD_TEST_CROSSAZ=true`
+  one (with `--force-stateful-recreation`) moves it to `cross-az` across both
+  zones with the same node count, which replaces the cluster with one whose
+  nodes span two zones, as CloudFormation does (issue #7045),
 - after destroy: state file, Kinesis stream, Lambda, and ElastiCache cluster
   are all gone (0 orphans).

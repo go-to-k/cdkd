@@ -284,9 +284,14 @@ describe('ElastiCacheProvider CacheCluster in-place modify (issue #5438)', () =>
       const input = modifyInput();
       expect(input).not.toHaveProperty('NewAvailabilityZones');
       expect(input).not.toHaveProperty('AZMode');
-      // The AZMode change went nowhere, so it is reported.
+      // The AZMode change went nowhere, so it is reported -- without a
+      // CloudFormation claim: a single-az -> cross-az move keeping the node
+      // count is one CloudFormation REPLACES (#7045), so "CloudFormation
+      // leaves it unchanged" is not what was measured for every shape here.
       expect(warn).toHaveBeenCalledTimes(1);
       expect(warn.mock.calls[0][0]).toContain('AZMode');
+      expect(warn.mock.calls[0][0]).toContain('carries AZMode only beside NewAvailabilityZones');
+      expect(warn.mock.calls[0][0]).not.toContain('CloudFormation');
     });
 
     it('makes no describe before the Modify when neither the zones nor the node count changed', async () => {

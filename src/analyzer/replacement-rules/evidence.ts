@@ -116,10 +116,10 @@ export const REPLACEMENT_EVIDENCE: ReadonlyMap<string, ReplacementEvidence> = ne
   ['AWS::EC2::Instance#PrivateDnsNameOptions', conditional('cfn-measured', 5630)],
   ['AWS::EC2::NatGateway#AvailabilityZoneAddresses', conditional('cfn-measured', 2762)],
   ['AWS::ECS::Service#LaunchType', conditional('cfn-measured', 5392)],
-  ['AWS::ElastiCache::CacheCluster#AZMode', conditional('open-divergence', 5558, 7045)],
+  ['AWS::ElastiCache::CacheCluster#AZMode', conditional('cfn-measured', 5558, 7038, 7045)],
   [
     'AWS::ElastiCache::CacheCluster#PreferredAvailabilityZones',
-    conditional('cfn-measured', 5458, 5558),
+    conditional('cfn-measured', 5458, 5558, 7038, 7045),
   ],
   ['AWS::EMR::Cluster#Instances', conditional('cfn-measured', 5418)],
   // --- provider-replacement planners
