@@ -1960,8 +1960,8 @@ stack with no instance id.
   masked key with no passed-secret parameter whose inputs prove nothing
   either way is likewise compared masked by the plan, with the same
   warning, where the plan's own value holds a mask too. A plan value in the
-  clear (a `NoEcho` source's) is compared as is, and the engine's readback
-  settles it. A key the `NoEcho` comparison already masked (its value MAC
+  clear (a `NoEcho` source's) of a key whose template spells no
+  `{{resolve:...}}` is compared as is, and the engine's readback settles it. A key the `NoEcho` comparison already masked (its value MAC
   proved it) is not warned of. An unsent key carries its previous member. A
   sent key with no new member (no KMS this run) carries it only while it is
   bound to the input fingerprint the same save stamps. Otherwise the key

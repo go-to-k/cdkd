@@ -57,8 +57,9 @@ import type { ResourceState } from '../../types/state.js';
  * unknown here, no input fingerprint recorded) is UNPROVABLE (#7050 review):
  * where the plan's own value holds a mask too (it cannot see the value
  * either), it compares masked, and is reported to `onUnprovable` (the plan
- * warns, naming the resource and the key); a plan value with no mask (a
- * `NoEcho` source's, which the engine settles by readback) is compared as is.
+ * warns, naming the resource and the key); a plan value with no mask, of a
+ * key whose template spells no `{{resolve:...}}` (a `NoEcho` source's, which
+ * the engine settles by readback), is compared as is.
  * A hashed input or a passed-secret MAC that moved is never masked, and a key
  * the `NoEcho` comparison already masked wherever the record is needs nothing.
  * Only the positions holding the mask are masked on the desired side; every
@@ -151,7 +152,15 @@ export async function maskUnmovedRedactionMasks(
     // record's mask is then not the plan's blind spot. A `NoEcho` source's
     // (a parameter, one whose `NoEcho` was removed, a recovered masked
     // output) the engine settles by its readback, so it is compared as is.
-    if (unprovable && !(JSON.stringify(desired[key]) ?? '').includes(SECRET_MASK)) continue;
+    // Only where the template spells no `{{resolve:...}}`: a plan value
+    // holding a reference's text unresolved is the redaction's blind spot.
+    if (
+      unprovable &&
+      !(JSON.stringify(desired[key]) ?? '').includes(SECRET_MASK) &&
+      dynamicReferenceTokens(JSON.stringify(rawDesired[key]) ?? '').length === 0
+    ) {
+      continue;
+    }
     if (
       await publicReferencesMoved(record, key, rawDesired[key], publicReferences, fingerprinter)
     ) {

@@ -569,6 +569,41 @@ describe('a masked child read with no passed-secret MAC proof is a visible chang
     expect(warnings()).toEqual([]);
   });
 
+  // #7050 review: a record older still, with neither the MAC member nor the
+  // input fingerprint. Unmoved once with a warning, both stamped by the same
+  // save, then compared: no warning, and a moved value is planned.
+  it('an older record with no MAC and no input fingerprint: unmoved once, both stamped, then compared', async () => {
+    kms.fail = false;
+    const opts = await masked();
+    const created = await deploy({}, tpl, opts);
+    const stamped = passedOf(created.persisted) as Member;
+    const input = created.persisted?.maskedPropertyInputFingerprints?.['DBName'];
+    expect(input).toBeDefined();
+    const older = oldRecord(created.persisted!) as Record<string, unknown>;
+    delete older['maskedPropertyInputFingerprints'];
+    logSpies.warn.mockClear();
+    const same = await deploy({ Db: older as never }, tpl, opts);
+    expect(same.thrown).toBeUndefined();
+    expect(same.diff?.get('Db')?.changeType).toBe('NO_CHANGE');
+    expect(same.calls).toEqual([]);
+    expect(warnings()).toHaveLength(1);
+    expect(logged()).not.toContain(opts.parameters.X);
+    expect(passedOf(same.persisted)).toEqual(stamped);
+    expect(same.persisted?.maskedPropertyInputFingerprints?.['DBName']).toBe(input);
+    const next = await deploy({ Db: structuredClone(same.persisted!) }, tpl, opts);
+    expect(next.thrown).toBeUndefined();
+    expect(next.diff?.get('Db')?.changeType).toBe('NO_CHANGE');
+    expect(next.calls).toEqual([]);
+    expect(warnings()).toEqual([]);
+    const moved = await deploy({ Db: structuredClone(same.persisted!) }, tpl, {
+      ...opts,
+      parameters: { X: `moved-${opts.parameters.X}` },
+    });
+    expect((moved.diff?.get('Db')?.propertyChanges ?? []).map((pc) => pc.path)).toContain('DBName');
+    expectRefusedOver(moved, 'DBName');
+    expect(warnings()).toEqual([]);
+  });
+
   // A dry run writes nothing: it backfills nothing and never says it does.
   it('an older record with no MAC under --dry-run: unmoved, warned, nothing recorded', async () => {
     kms.fail = false;

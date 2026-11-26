@@ -83,6 +83,7 @@ interface Run {
   thrown: unknown;
   diff: Map<string, ResourceChange> | undefined;
   sent?: Array<{ props: unknown; previous: unknown }>;
+  all?: StackState['resources'];
 }
 
 class CapturingDiffCalculator extends DiffCalculator {
@@ -99,7 +100,8 @@ class CapturingDiffCalculator extends DiffCalculator {
 
 async function deploy(
   resources: StackState['resources'],
-  templateResources: Record<string, unknown>
+  templateResources: Record<string, unknown>,
+  levels: string[][] = [['Db']]
 ): Promise<Run> {
   const state = {
     version: 11,
@@ -114,11 +116,11 @@ async function deploy(
   const provider = {
     create: vi.fn(async (id: string) => {
       calls.push('create:' + id);
-      return { physicalId: 'new', attributes: {} };
+      return { physicalId: id === 'Db' ? 'new' : 'arn:' + id.toLowerCase(), attributes: {} };
     }),
     update: vi.fn(async (id: string, _pid: string, _type: string, props: unknown, previous: unknown) => {
       calls.push('update:' + id);
-      sent.push({ props, previous });
+      if (id === 'Db') sent.push({ props, previous });
       return { physicalId: resources[id]!.physicalId, attributes: {} };
     }),
     delete: vi.fn(async (id: string) => {
@@ -144,7 +146,7 @@ async function deploy(
     { acquireLockWithRetry: vi.fn().mockResolvedValue(true), releaseLock: vi.fn() } as never,
     {
       buildGraph: vi.fn().mockReturnValue({}),
-      getExecutionLevels: vi.fn().mockReturnValue([['Db']]),
+      getExecutionLevels: vi.fn().mockReturnValue(levels),
       getDirectDependencies: vi.fn().mockReturnValue([]),
     } as never,
     diffCalculator,
@@ -167,7 +169,8 @@ async function deploy(
     .filter(
       (a): a is StackState => typeof a === 'object' && a !== null && 'resources' in (a as object)
     );
-  return { calls, persisted: saved[saved.length - 1]?.resources['Db'], thrown, diff: diffCalculator.last, sent };
+  const all = saved[saved.length - 1]?.resources;
+  return { calls, persisted: all?.['Db'], thrown, diff: diffCalculator.last, sent, all };
 }
 
 const OTHER = '{{resolve:secretsmanager:db-secret:SecretString:other::}}';
@@ -262,6 +265,58 @@ describe('a secret beside a value-bearing part never leaks or reads as a change 
       for (const plan of [same.diff, next.diff]) renderChangeLines(plan!, (line) => display.push(line));
       expect(display.length).toBeGreaterThan(0);
       expect(display.filter(spelled)).toEqual([]);
+    });
+  }
+});
+
+// #7050 review: a top-level key whose template spells a `{{resolve:...}}`
+// beside a TAINTED input (a `Ref` to a resource whose properties hold a
+// secret reference) is unprovable, and the plan's value holds the reference
+// text unresolved, no `***`: it is still the redaction's blind spot, so it
+// compares masked and warned of, never as an UPDATE (a replacement here).
+describe('an unprovable redaction mask beside a tainted Ref reads unchanged (#7050 review)', () => {
+  const OTHER_TOPIC = {
+    Other: {
+      Type: 'AWS::SNS::Topic',
+      Properties: { DisplayName: { 'Fn::Join': ['', ['t-', OTHER]] } },
+    },
+  };
+  for (const [label, dbName] of [
+    ['Fn::Select-lent reference + Ref: Other', { 'Fn::Join': ['', ['tt:', { 'Fn::Select': [0, [USERNAME]] }, { Ref: 'Other' }]] }],
+    ['Fn::Select-lent reference + Ref: Suffix + Ref: Other', { 'Fn::Join': ['', ['tt:', { 'Fn::Select': [0, [USERNAME]] }, { Ref: 'Suffix' }, { Ref: 'Other' }]] }],
+  ] as const) {
+    it(label, async () => {
+      SUFFIX.v = 'pg';
+      const log = getLogger() as unknown as Record<string, ReturnType<typeof vi.fn>>;
+      const template = (backup: number): Record<string, unknown> => ({ ...OTHER_TOPIC, ...tpl(dbName, backup) });
+      const levels = [['Other'], ['Db']];
+      // The topic first (a Ref to a resource this same deploy creates does
+      // not resolve under this harness's flat dependency mock).
+      const topic = await deploy({}, OTHER_TOPIC, [['Other']]);
+      expect(topic.thrown).toBeUndefined();
+      expect(topic.all?.['Other']?.physicalId).toBe('arn:other');
+      const created = await deploy(structuredClone(topic.all!), template(1), levels);
+      expect(created.thrown).toBeUndefined();
+      expect(created.persisted?.properties['DBName']).toBe('***');
+      expect(exposes(created.all)).toBeUndefined();
+      for (const level of ['debug', 'info', 'warn', 'error']) log[level]!.mockClear();
+      const same = await deploy(structuredClone(created.all!), template(1), levels);
+      show(label, same);
+      expect(same.thrown).toBeUndefined();
+      expect(same.diff?.get('Db')?.changeType).toBe('NO_CHANGE');
+      expect(same.diff?.get('Db')?.propertyChanges ?? []).toEqual([]);
+      expect(same.calls).toEqual([]);
+      const warned = log['warn']!.mock.calls.map((c) => String(c[0]));
+      expect(warned.filter((w) => w.includes('Db') && w.includes('DBName'))).toHaveLength(1);
+      // A real change elsewhere is still planned, in place.
+      const next = await deploy(structuredClone(created.all!), template(7), levels);
+      expect(next.thrown).toBeUndefined();
+      expect((next.diff?.get('Db')?.propertyChanges ?? []).map((pc) => pc.path)).toEqual([
+        'BackupRetentionPeriod',
+      ]);
+      expect(next.calls).toEqual(['update:Db']);
+      expect(JSON.stringify(next.sent)).not.toContain('***');
+      SUFFIX.v = 'x9';
     });
   }
 });
