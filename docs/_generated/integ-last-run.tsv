@@ -172,9 +172,9 @@ dynamodb-tableclass-switch	2026-11-25T18:42:11Z	PASS	201	verify.sh	PR6997 63e602
 dynamodb-ttl-attr-change	2026-11-25T18:29:59Z	PASS	1915	verify.sh	PR6997 152e7344b pre-review, own state bucket; rc ok, orph clean
 ec2-association-replace	2026-11-25T15:12:38Z	PASS	296	verify.sh	rc ok, orph clean, phase 4b EIP assoc replaced delete-first after AMI change (PR 6993)
 ec2-eip-instance-association	2026-11-24T20:15:56Z	PASS	181	verify.sh	rc ok, orph clean; Phase 3 --no-wait EIP waits for instance
-ec2-instance	2026-11-23T08:55:56Z	PASS	809	verify.sh	rc 0, orph clean (#6867 SsmAssociations ARN/name; merge-base b70da242f)
-ec2-instance-fanout	2026-11-23T08:55:56Z	PASS	178	verify.sh	rc 0, orph clean (#6867)
-ec2-instance-volume-attachment-drift	2026-11-22T03:31:56Z	PASS	220	verify.sh	d2646a6f6 #6759 part a, rc 0, 0 leftovers
+ec2-instance	2026-11-26T05:45:44Z	PASS	812	verify.sh	rc ok, orph clean; #7026 EbsOptimized true->false in place with InstanceType change
+ec2-instance-fanout	2026-11-26T05:45:44Z	PASS	95	verify.sh	rc ok, orph clean
+ec2-instance-volume-attachment-drift	2026-11-26T05:45:44Z	PASS	251	verify.sh	rc ok, orph clean
 ec2-route-targets	2026-11-26T03:14:44Z	PASS	827	verify.sh	PR7013 2de5a0442 us-east-1 rc ok, orph clean
 ec2-sg-source-group-name	2026-11-10T16:20:27Z	PASS	65	verify.sh	rc ok, orph clean
 ec2-subnet-dns64	2026-11-07T07:23:23Z	PASS	316	verify.sh	rc ok, orph clean, PR #5967 subnet live GetAtt
@@ -556,7 +556,7 @@ vpc-lambda-cr-race	2026-11-10T16:21:52Z	PASS	375	standard	deploy+destroy rc 0, o
 vpc-lookup	2026-11-05T10:15:28Z	PASS	25	standard	deploy+destroy rc 0, AlwaysMissingLookup=latest, orph clean (#5811 round 3)
 vpc-nat-gateway	2026-11-21T21:07:36Z	PASS	2043	verify.sh	rc ok, orph clean (PR 6795 0162f3918)
 wafv2	2026-11-25T11:07:25Z	PASS	250	verify.sh	rc ok, orph clean; #6986 phase 3b drift --revert
-wait-condition-ec2-signal	2026-11-20T18:30:13Z	PASS	336	verify.sh	rc ok, orph clean; #6704 concurrency 1 + placeholder re-issue (us-east-1)
+wait-condition-ec2-signal	2026-11-26T05:45:44Z	PASS	276	verify.sh	rc ok, orph clean
 wait-condition-handle	2026-11-20T18:28:25Z	PASS	90	verify.sh	rc ok, orph clean; #6704 placeholder untouched (us-east-1)
 wide-independent	2026-11-21T01:28:31Z	PASS	1390	verify.sh	PR6710 run at bf25fb0b3, same PR delta except the log-group message; rc ok, orph clean
 wide-web-functions	2026-11-05T11:29:08Z	PASS	362	verify.sh	sweep n7 rc ok, orph clean
