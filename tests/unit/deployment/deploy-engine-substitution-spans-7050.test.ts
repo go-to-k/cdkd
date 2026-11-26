@@ -7,6 +7,7 @@
  * state is scanned whole for any secret's plaintext outside a reference.
  */
 import { describe, it, expect, vi } from 'vite-plus/test';
+import { getLogger } from '../../../src/utils/logger.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
@@ -210,6 +211,8 @@ describe('a secret beside a value-bearing part never leaks or reads as a change 
   ] as const) {
     it(label, async () => {
       SUFFIX.v = suffix;
+      const log = getLogger() as unknown as Record<string, ReturnType<typeof vi.fn>>;
+      for (const level of ['debug', 'info', 'warn', 'error']) log[level]!.mockClear();
       const created = await deploy({}, tpl(dbName, 1));
       expect(created.thrown).toBeUndefined();
       expect(created.persisted).toBeDefined();
@@ -227,6 +230,18 @@ describe('a secret beside a value-bearing part never leaks or reads as a change 
       // The update arm never hands the provider the mask, on either side.
       expect(JSON.stringify(next.sent)).not.toContain('***');
       expect(exposes(next.persisted)).toBeUndefined();
+      // Nor does any line logged across the three deploys.
+      const lines = ['debug', 'info', 'warn', 'error'].flatMap((level) => log[level]!.mock.calls);
+      // A secret the public Suffix parameter itself spells is logged as that
+      // parameter's value, which is public; every other secret must not be.
+      const hidden = SECRETS.filter((secret) => !suffix.includes(secret));
+      const spelled = (line: unknown): boolean =>
+        hidden.some((secret) =>
+          new RegExp(`(^|[^a-z0-9])${secret}([^a-z0-9]|$)`).test(
+            JSON.stringify(line).split(/\{\{resolve:[^}]+\}\}/).join(' ')
+          )
+        );
+      expect(lines.filter(spelled)).toEqual([]);
     });
   }
 });
