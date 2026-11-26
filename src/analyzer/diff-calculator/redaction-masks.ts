@@ -53,8 +53,19 @@ export async function maskUnmovedRedactionMasks(
   let out: Record<string, unknown> | undefined;
   for (const key of Object.keys(current)) {
     if (!Object.hasOwn(desired, key) || !Object.hasOwn(rawDesired, key)) continue;
-    if (!carriesSecretMask(current[key]) || carriesSecretMask(desired[key])) continue;
-    if (dynamicReferenceTokens(JSON.stringify(rawDesired[key]) ?? '').length === 0) continue;
+    if (!carriesSecretMask(current[key])) continue;
+    // A desired value already carrying a mask is the `NoEcho` comparison's,
+    // unless the record masked the key WHOLE: a nested child's read of a
+    // masked parameter plans as `a-***` against a stored `***` (#7050 review).
+    if (carriesSecretMask(desired[key]) && current[key] !== SECRET_MASK) continue;
+    // The template's value spells a reference, or reads one through a
+    // parameter or attribute: either way the fingerprints below are the proof.
+    if (
+      dynamicReferenceTokens(JSON.stringify(rawDesired[key]) ?? '').length === 0 &&
+      !readsAnyInput(rawDesired[key])
+    ) {
+      continue;
+    }
     const fingerprint = fingerprints.get(key);
     if (fingerprint === undefined || fingerprint === REFUSED_FINGERPRINT) continue;
     if (maskedPropertyFingerprint(rawDesired[key]) !== fingerprint) continue;
@@ -75,6 +86,16 @@ export async function maskUnmovedRedactionMasks(
     (out ??= { ...desired })[key] = maskedWhere(current[key], desired[key]);
   }
   return out ?? desired;
+}
+
+/** Does the template value read a parameter, an attribute or an import (an intrinsic call)? */
+function readsAnyInput(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(readsAnyInput);
+  if (value === null || typeof value !== 'object') return false;
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (k === 'Ref' || k.startsWith('Fn::') || readsAnyInput(v)) return true;
+  }
+  return false;
 }
 
 /** `desired` with `SECRET_MASK` at every position `recorded` holds it; shape mismatches mask whole. */

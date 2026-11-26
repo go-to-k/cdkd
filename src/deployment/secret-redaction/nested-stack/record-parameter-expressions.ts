@@ -5,6 +5,9 @@ import {
   type RecordedSecretValues,
 } from '../pairs.js';
 import { storeAssociation } from '../cross-stack.js';
+import { dynamicReferenceTokens } from '../redact-path/reference-tokens.js';
+import { referencesConsumedBy } from '../consumed-references.js';
+import { attributionRefusedReadsOf } from './refused-parameter-reads.js';
 import {
   isPlainObject,
   isSingleDynamicReferenceToken,
@@ -410,9 +413,16 @@ export function recordNestedStackParameterExpressions(
         : provenance === 'template-derived'
           ? substitutionSpelling(resolvedValue, sourceLeaf, secrets, name)
           : undefined;
-    // go-to-k/cdkd#7059: a value holding a secret's text under the scan's
-    // floor is one the child may read only as the certified spelling.
-    if (holdsSubFloorSecret(resolvedValue, secrets)) {
+    // go-to-k/cdkd#7059: a value holding the text of a sub-floor secret its
+    // OWN resolution consumed is one the child may read only as the certified
+    // spelling. Consumption, never containment: a public value that merely
+    // spells an unrelated secret's text is not marked (#7050 review).
+    // A row reading a parameter this stack itself holds marked passes the
+    // mark on (a nested grandchild).
+    if (
+      holdsConsumedSubFloorSecret(resolvedValue, sourceLeaf, secrets) ||
+      (isPlainObject(sourceLeaf) && attributionRefusedReadsOf(sourceLeaf, secrets) !== undefined)
+    ) {
       markAttributionRefusedParameter(secrets, name, 'sub-floor');
     }
     if (spelling === undefined || !rendersLiteralTo(spelling, secrets, resolvedValue)) continue;
@@ -920,11 +930,27 @@ function substitutionSpelling(
     : spelled;
 }
 
-/** Does `value` hold a recorded secret's text under the value scan's floor? */
-function holdsSubFloorSecret(value: string, secrets: RecordedSecretValues): boolean {
-  for (const [plaintext, expression] of secrets) {
-    if (plaintext === '' || plaintext.length >= MIN_NEEDLE_LENGTH) continue;
-    if (expression !== SECRET_MASK && value.includes(plaintext)) return true;
+/**
+ * Does `value` hold the text of a secret under the value scan's floor that
+ * `sourceLeaf`'s own resolution consumed (a token it spells, or one the
+ * resolver stamped on it, `consumed-references.ts`)?
+ */
+function holdsConsumedSubFloorSecret(
+  value: string,
+  sourceLeaf: unknown,
+  secrets: RecordedSecretValues
+): boolean {
+  const tokens =
+    typeof sourceLeaf === 'string'
+      ? dynamicReferenceTokens(sourceLeaf)
+      : isPlainObject(sourceLeaf)
+        ? [...referencesConsumedBy(secrets, sourceLeaf)]
+        : [];
+  for (const token of tokens) {
+    const plaintext = resolvedPlaintextOf(secrets, token);
+    if (plaintext === undefined || plaintext === '' || plaintext.length >= MIN_NEEDLE_LENGTH)
+      continue;
+    if (value.includes(plaintext)) return true;
   }
   return false;
 }

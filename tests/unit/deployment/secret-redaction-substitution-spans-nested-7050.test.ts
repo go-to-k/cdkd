@@ -283,3 +283,146 @@ describe('a nested stack row: a sub-floor secret beside a parameter holding its 
     }
   });
 });
+
+vi.mock('@aws-sdk/client-cloudformation', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@aws-sdk/client-cloudformation')>();
+  return { ...actual, CloudFormationClient: vi.fn(() => ({ send: () => Promise.reject(new Error('DescribeType unavailable')) })) };
+});
+vi.mock('p-limit', () => ({ default: vi.fn(() => <T>(fn: () => T) => fn()) }));
+import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
+import type { ResourceChange, StackState } from '../../../src/types/state.js';
+interface Run { calls: string[]; persisted: StackState['resources'][string] | undefined; thrown: unknown; diff: Map<string, ResourceChange> | undefined; sent?: Array<{ props: unknown; previous: unknown }>; }
+class CapturingDiffCalculator extends DiffCalculator {
+  last: Map<string, ResourceChange> | undefined;
+  override async calculateDiff(
+    ...args: Parameters<DiffCalculator['calculateDiff']>
+  ): ReturnType<DiffCalculator['calculateDiff']> {
+    // A copy of what the PLAN saw: provisioning later edits the rows in place.
+    const result = await super.calculateDiff(...args);
+    this.last = new Map([...result].map(([id, c]) => [id, structuredClone(c)]));
+    return result;
+  }
+}
+
+async function deploy(
+  resources: StackState['resources'],
+  templateResources: Record<string, unknown>,
+  opts: Record<string, unknown> = { dryRun: false }
+): Promise<Run> {
+  const state = {
+    version: 11,
+    stackName: 's',
+    region: 'us-east-1',
+    resources,
+    outputs: {},
+    lastModified: 0,
+  } as StackState;
+  const calls: string[] = [];
+  const sent: Array<{ props: unknown; previous: unknown }> = [];
+  const provider = {
+    create: vi.fn(async (id: string) => {
+      calls.push('create:' + id);
+      return { physicalId: 'new', attributes: {} };
+    }),
+    update: vi.fn(async (id: string, _pid: string, _type: string, props: unknown, previous: unknown) => {
+      calls.push('update:' + id);
+      sent.push({ props, previous });
+      return { physicalId: resources[id]!.physicalId, attributes: {} };
+    }),
+    delete: vi.fn(async (id: string) => {
+      calls.push('delete:' + id);
+    }),
+    getAttribute: vi.fn(),
+    readCurrentState: vi.fn().mockResolvedValue(undefined),
+  };
+  const saveState = vi.fn().mockResolvedValue('etag');
+  const diffCalculator = new CapturingDiffCalculator();
+  const engine = new DeployEngine(
+    {
+      getState: vi.fn().mockResolvedValue({ state, etag: 'e0' }),
+      saveState,
+      loadRollbackJournal: vi.fn().mockResolvedValue(null),
+      purgeRollbackJournalVersions: vi.fn().mockResolvedValue(undefined),
+      rollbackJournalReadAbsent: vi.fn().mockReturnValue(false),
+      warmConnections: vi.fn().mockResolvedValue(undefined),
+      appendRollbackJournalSegment: vi.fn(),
+      popRollbackJournalSegment: vi.fn(),
+      deleteRollbackJournal: vi.fn(),
+    } as never,
+    { acquireLockWithRetry: vi.fn().mockResolvedValue(true), releaseLock: vi.fn() } as never,
+    {
+      buildGraph: vi.fn().mockReturnValue({}),
+      getExecutionLevels: vi.fn().mockReturnValue([['Db']]),
+      getDirectDependencies: vi.fn().mockReturnValue([]),
+    } as never,
+    diffCalculator,
+    {
+      getProvider: vi.fn().mockReturnValue(provider),
+      getProviderFor: vi.fn().mockReturnValue({ provider, provisionedBy: 'sdk' }),
+      getRegisteredTypes: vi.fn().mockReturnValue([]),
+      validateResourceTypes: vi.fn(),
+      validateResourceProperties: vi.fn(),
+    } as never,
+    opts as never,
+    'us-east-1'
+  );
+  let thrown: unknown;
+  await engine.deploy('s', { Parameters: { X: { Type: 'String' } }, Resources: templateResources } as never).catch((e: unknown) => {
+    thrown = e;
+  });
+  const saved = saveState.mock.calls
+    .flat()
+    .filter(
+      (a): a is StackState => typeof a === 'object' && a !== null && 'resources' in (a as object)
+    );
+  return { calls, persisted: saved[saved.length - 1]?.resources['Db'], thrown, diff: diffCalculator.last, sent };
+}
+
+// go-to-k/cdkd#7050 review: a child whose read of a row parameter is MASKED
+// must not plan that mask as a change on an unchanged redeploy, nor refuse or
+// replace the (stateful) resource over it, nor hand the provider `***`.
+describe('a masked child read redeploys without a phantom change (#7050, #7059)', () => {
+  for (const [label, row, node] of [
+    ['sub-floor Ref', { 'Fn::Join': ['', ['{{resolve:ssm:/app/kin}}', 'x']] }, { Ref: 'X' }],
+    ['sub-floor Join', { 'Fn::Join': ['', ['{{resolve:ssm-secure:/app/a}}', '/tail']] }, { 'Fn::Join': ['', ['a-', { Ref: 'X' }]] }],
+    ['sub-floor Select', { 'Fn::Join': ['', ['{{resolve:ssm-secure:/app/a}}', '/tail']] }, { 'Fn::Select': [0, { 'Fn::Split': ['/', { Ref: 'X' }] }] }],
+    ['masked row, whole read', 'M', { Ref: 'X' }],
+    ['masked row, embedding read', 'M', { 'Fn::Join': ['', ['a-', { Ref: 'X' }]] }],
+    ['public separator beside a secret', 'S', { Ref: 'X' }],
+    ['a public row holding an unrelated secret\'s text, whole read', 'C', { Ref: 'X' }],
+    ['a public row holding an unrelated secret\'s text, embedding read', 'C', { 'Fn::Join': ['', ['a-', { Ref: 'X' }]] }],
+  ] as const) {
+    it(label, async () => {
+      const { bag, resolved } = row === 'M'
+        ? await deployRow({ X: { 'Fn::Join': ['', [{ Ref: 'Sep' }, '/', '{{resolve:ssm-secure:/app/a}}']] }, Y: '{{resolve:ssm-secure:/app/b}}' }, { Sep: PIN })
+        : row === 'C'
+          ? await deployRow({ X: { 'Fn::Join': ['', [{ Ref: 'Sep' }, '-tail']] }, Y: '{{resolve:ssm-secure:/app/pin}}' }, { Sep: 'aq7x' })
+          : row === 'S'
+            ? await deployRow({ X: { 'Fn::Join': ['', [{ Ref: 'Sep' }, '/', '{{resolve:ssm:/app/pin}}']] } }, { Sep: PIN })
+            : await deployRow({ X: row as never });
+      const value = String(resolved.Parameters['X']);
+      const tpl = (n: number) => ({
+        Db: { Type: 'AWS::RDS::DBInstance', Properties: { Engine: 'mysql', DBName: node, BackupRetentionPeriod: n } },
+      });
+      const opts = { dryRun: false, parameters: { X: value }, inheritedSecrets: bag };
+      const created = await deploy({}, tpl(1), opts);
+      expect(created.thrown).toBeUndefined();
+      const same = await deploy({ Db: structuredClone(created.persisted!) }, tpl(1), opts);
+      expect(same.thrown).toBeUndefined();
+      expect(same.diff?.get('Db')?.changeType).toBe('NO_CHANGE');
+      expect(same.calls).toEqual([]);
+      const next = await deploy({ Db: structuredClone(created.persisted!) }, tpl(7), opts);
+      expect(next.thrown).toBeUndefined();
+      expect((next.diff?.get('Db')?.propertyChanges ?? []).map((pc) => pc.path)).toEqual(['BackupRetentionPeriod']);
+      expect(next.calls).toEqual(['update:Db']);
+      expect(JSON.stringify(next.sent)).not.toContain('***');
+      // A parameter value that really moved still plans the read as changed.
+      const moved = await deploy({ Db: structuredClone(created.persisted!) }, tpl(1), {
+        ...opts,
+        parameters: { X: `moved-${value}` },
+      });
+      expect((moved.diff?.get('Db')?.propertyChanges ?? []).map((pc) => pc.path)).toContain('DBName');
+    });
+  }
+});

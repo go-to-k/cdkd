@@ -235,6 +235,8 @@ describe('a secret beside a value-bearing part never leaks or reads as a change 
       const lines = ['debug', 'info', 'warn', 'error'].flatMap((level) => log[level]!.mock.calls);
       // A secret the public Suffix parameter itself spells is logged as that
       // parameter's value, which is public; every other secret must not be.
+      // Matched as a whole word, so fixed log text ("upgrade") is not a hit;
+      // the state scans above are by plain substring.
       const hidden = SECRETS.filter((secret) => !suffix.includes(secret));
       const spelled = (line: unknown): boolean =>
         hidden.some((secret) =>
@@ -243,6 +245,15 @@ describe('a secret beside a value-bearing part never leaks or reads as a change 
           )
         );
       expect(lines.filter(spelled)).toEqual([]);
+      // A REAL change behind the masked leaf still plans: the fingerprints
+      // only hide a mask whose inputs did not move.
+      if (JSON.stringify(dbName).includes('Suffix')) {
+        SUFFIX.v = 'qq';
+        const moved = await deploy({ Db: structuredClone(created.persisted!) }, tpl(dbName, 1));
+        expect((moved.diff?.get('Db')?.propertyChanges ?? []).map((pc) => pc.path)).toContain('DBName');
+        expect(JSON.stringify(moved.sent ?? [])).not.toContain('***');
+        SUFFIX.v = suffix;
+      }
       // Nor the diff display of either redeploy.
       const display: string[] = [];
       for (const plan of [same.diff, next.diff]) renderChangeLines(plan!, (line) => display.push(line));
