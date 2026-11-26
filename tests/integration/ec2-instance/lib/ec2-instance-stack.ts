@@ -80,9 +80,8 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  * off and keeps the other two. CDKD_TEST_DAT selects DisableApiTermination:
  * unset keeps `true`; `remove` drops it (CloudFormation fails that update, so
  * cdkd refuses it) and adds a marker tag that must NOT land; `false` declares
- * it explicitly off, which both apply. EbsOptimized stays declared: an
- * EbsOptimized change is routed to replacement, and these phases must update
- * in place.
+ * it explicitly off, which both apply. EbsOptimized stays declared (a removal
+ * fails in CloudFormation); Phase 1h turns it off in place (go-to-k/cdkd#7023).
  */
 export class Ec2InstanceStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -213,8 +212,11 @@ export class Ec2InstanceStack extends cdk.Stack {
             // for t3 (whose default is `unlimited`), for the same reason.
             creditSpecification: { cpuCredits: 'standard' },
           }),
-      // Dedicated EBS throughput.
-      ebsOptimized: true,
+      // Dedicated EBS throughput. go-to-k/cdkd#7023: Phase 1h turns it off in
+      // place, sharing the InstanceType stop (CloudFormation stops and starts
+      // the instance, measured); it stays declared, as CloudFormation fails a
+      // removal.
+      ebsOptimized: !isUpdate5446,
     });
 
     // Outputs

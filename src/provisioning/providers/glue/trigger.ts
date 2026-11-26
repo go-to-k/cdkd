@@ -49,6 +49,7 @@ import {
   pickDefined,
   fetchGlueTags,
   buildGlueResourceArn,
+  withoutReadbackPlaceholders,
 } from './shared.js';
 
 /**
@@ -230,21 +231,27 @@ export async function triggerUpdate(
     // property removed from the template is reset, as CloudFormation does for
     // Description and EventBatchingCondition (issue #1160). Never fill an
     // absent field from `previousProperties`.
+    // go-to-k/cdkd#7029: a revert's read-back placeholders mean "unset" too.
+    const sent = withoutReadbackPlaceholders(
+      properties,
+      TRIGGER_READBACK_PLACEHOLDERS,
+      context?.desiredFromAwsReadback
+    );
     const update: TriggerUpdate = {
-      ...(properties['Description'] !== undefined && {
-        Description: properties['Description'] as string,
+      ...(sent['Description'] !== undefined && {
+        Description: sent['Description'] as string,
       }),
-      ...(properties['Schedule'] !== undefined && {
-        Schedule: properties['Schedule'] as string,
+      ...(sent['Schedule'] !== undefined && {
+        Schedule: sent['Schedule'] as string,
       }),
-      ...(properties['Actions'] !== undefined && {
-        Actions: properties['Actions'] as TriggerAction[],
+      ...(sent['Actions'] !== undefined && {
+        Actions: sent['Actions'] as TriggerAction[],
       }),
-      ...(properties['Predicate'] !== undefined && {
-        Predicate: properties['Predicate'] as Predicate,
+      ...(sent['Predicate'] !== undefined && {
+        Predicate: sent['Predicate'] as Predicate,
       }),
-      ...(properties['EventBatchingCondition'] !== undefined && {
-        EventBatchingCondition: properties['EventBatchingCondition'] as EventBatchingCondition,
+      ...(sent['EventBatchingCondition'] !== undefined && {
+        EventBatchingCondition: sent['EventBatchingCondition'] as EventBatchingCondition,
       }),
     };
     // Restore the ACTIVATED state even if UpdateTrigger throws — otherwise a
@@ -346,6 +353,17 @@ export async function triggerUnsettledInTransition(
     return names;
   }
 }
+
+/**
+ * What {@link triggerReadCurrentState} emits for a member `GetTrigger` does
+ * not return (go-to-k/cdkd#7029). A test pins this table to the read-back.
+ */
+export const TRIGGER_READBACK_PLACEHOLDERS: Readonly<Record<string, unknown>> = {
+  Schedule: '',
+  Description: '',
+  Predicate: {},
+  EventBatchingCondition: {},
+};
 
 /**
  * Poll GetTrigger until the trigger leaves the ACTIVATED / ACTIVATING state

@@ -2,8 +2,8 @@
   "summary": {
     "types": 149,
     "properties": 1585,
-    "update": 1153,
-    "replacement": 411,
+    "update": 1154,
+    "replacement": 410,
     "allowListed": 21,
     "gap": 0,
     "outsideSchema": 13
@@ -2474,8 +2474,7 @@
         },
         {
           "property": "EbsOptimized",
-          "status": "replacement",
-          "via": "rule"
+          "status": "update"
         },
         {
           "property": "EnclaveOptions",

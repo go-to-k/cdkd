@@ -151,6 +151,12 @@ _revert_identity_probe() {
       cls=unique; val="$(_revert_identity_aws location describe-tracker --region "${region}" --tracker-name "${pid}" --query 'CreateTime')" || rc=$? ;;
     AWS::Location::GeofenceCollection)
       cls=unique; val="$(_revert_identity_aws location describe-geofence-collection --region "${region}" --collection-name "${pid}" --query 'CreateTime')" || rc=$? ;;
+    AWS::Glue::Job)
+      cls=unique; val="$(_revert_identity_aws glue get-job --region "${region}" --job-name "${pid}" --query 'Job.CreatedOn')" || rc=$? ;;
+    AWS::AppSync::GraphQLApi)
+      # The physicalId is the API id AWS mints, and GetGraphqlApi returns no
+      # creation time: only the id's presence (a re-created API has another id).
+      cls=no-id; val="$(_revert_identity_aws appsync get-graphql-api --region "${region}" --api-id "${pid}" --query 'graphqlApi.apiId')" || rc=$? ;;
     AWS::Glue::Database)
       cls=unique; val="$(_revert_identity_aws glue get-database --region "${region}" --name "${pid}" --query 'Database.CreateTime')" || rc=$? ;;
     AWS::CodeBuild::Project)
@@ -359,6 +365,9 @@ _revert_identity_probe() {
         done
         printf 'members-of:%s' "${ctx}"
       )" || rc=$? ;;
+    AWS::Glue::Trigger)
+      # GetTrigger returns no id or creation time: only the name's presence.
+      cls=no-id; val="$(_revert_identity_aws glue get-trigger --region "${region}" --name "${pid}" --query 'Trigger.Name')" || rc=$? ;;
     AWS::SecretsManager::RotationSchedule)
       # The schedule is a property of its secret (the physicalId is the secret
       # ARN) and has no identity of its own.

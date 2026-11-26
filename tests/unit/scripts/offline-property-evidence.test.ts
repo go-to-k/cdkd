@@ -26,9 +26,10 @@
  * 3. **Counting a READ-BACK as evidence that cdkd sends the value.** A `.X`
  *    property access used to count as wiring, and a drift comparator walking
  *    the SDK's response accesses exactly the same names — measured, it was the
- *    ONLY evidence for fifteen `AWS::Glue::Job` properties. Only a template
- *    read (`properties['X']`) counts now, and the inverted case below pins the
- *    refusal against those fifteen real names.
+ *    ONLY evidence for fifteen `AWS::Glue::Job` properties (twelve since
+ *    go-to-k/cdkd#7028 gave three a template read). Only a template read
+ *    (`properties['X']`) counts now, and the inverted case below pins the
+ *    refusal against those twelve real names.
  * 4. **Guessing when the input is absent.** Missing typings, a missing provider
  *    file, and a name that is not a member name at all each have to answer
  *    `undefined` rather than a confident anything — each paired with a control
@@ -277,8 +278,9 @@ describe('providerWiresProperty', () => {
     // cannot tell delivery from read-back. `GlueJobProvider.readCurrentState`
     // is the real instance — it reads `job.MaxRetries`, `job.GlueVersion` and
     // the rest off a `GetJob` response — and it was the SOLE evidence for these
-    // fifteen `AWS::Glue::Job` properties (measured 2026-09-08, the whole
-    // declared set minus the nine that also have a template read).
+    // twelve `AWS::Glue::Job` properties (the whole declared set minus those
+    // that also have a template read; `MaxCapacity`, `WorkerType` and
+    // `NumberOfWorkers` gained one with go-to-k/cdkd#7028's revert rule).
     const DOT_ONLY_GLUE_JOB_PROPERTIES = [
       'AllocatedCapacity',
       'DefaultArguments',
@@ -288,13 +290,10 @@ describe('providerWiresProperty', () => {
       'JobRunQueuingEnabled',
       'LogUri',
       'MaintenanceWindow',
-      'MaxCapacity',
       'MaxRetries',
       'NonOverridableArguments',
-      'NumberOfWorkers',
       'SecurityConfiguration',
       'Timeout',
-      'WorkerType',
     ];
     // The provider file with its companion files (scripts/provider-companion-files.ts),
     // which hold the read-back since the split; `providerWiresProperty` reads the same set.
@@ -314,7 +313,7 @@ describe('providerWiresProperty', () => {
       ).toBe(undefined);
     }
     // Control from the same file: a Glue property the provider READS off the
-    // template still answers, so the fifteen `undefined`s above are the shape
+    // template still answers, so the twelve `undefined`s above are the shape
     // refusal and not the file failing to parse.
     expect(providerWiresProperty('Role', GLUE, REPO_ROOT)).toBeDefined();
 

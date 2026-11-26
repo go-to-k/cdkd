@@ -823,6 +823,7 @@
       "integs": [
         "appsync",
         "cc-to-sdk-reroute-common-types-8",
+        "drift-revert-readback-placeholders",
         "getatt-appsync-s3express-s3tables",
         "getatt-cloudtrail-appsync",
         "import-migrate-appsync",
@@ -836,6 +837,9 @@
         "cc-to-sdk-reroute-common-types-8": [
           "l1",
           "literal"
+        ],
+        "drift-revert-readback-placeholders": [
+          "l1"
         ],
         "getatt-appsync-s3express-s3tables": [
           "l1",
@@ -862,10 +866,14 @@
       "resourceType": "AWS::AppSync::GraphQLSchema",
       "integs": [
         "appsync",
+        "drift-revert-readback-placeholders",
         "import-migrate-appsync"
       ],
       "signals": {
         "appsync": [
+          "l1"
+        ],
+        "drift-revert-readback-placeholders": [
           "l1"
         ],
         "import-migrate-appsync": [
@@ -6636,12 +6644,16 @@
       "resourceType": "AWS::Glue::Job",
       "integs": [
         "cc-to-sdk-reroute-common-types-3",
+        "drift-revert-readback-placeholders",
         "glue-update-hardening"
       ],
       "signals": {
         "cc-to-sdk-reroute-common-types-3": [
           "l1",
           "literal"
+        ],
+        "drift-revert-readback-placeholders": [
+          "l1"
         ],
         "glue-update-hardening": [
           "l1"
@@ -6689,9 +6701,13 @@
     {
       "resourceType": "AWS::Glue::Trigger",
       "integs": [
+        "drift-revert-readback-placeholders",
         "glue-update-hardening"
       ],
       "signals": {
+        "drift-revert-readback-placeholders": [
+          "l1"
+        ],
         "glue-update-hardening": [
           "l1"
         ]
@@ -7059,6 +7075,7 @@
         "docdb-neptune",
         "drift-revert",
         "drift-revert-firehose",
+        "drift-revert-readback-placeholders",
         "drift-verbatim-readback",
         "ec2-instance",
         "ec2-instance-fanout",
@@ -7284,6 +7301,9 @@
           "l2"
         ],
         "drift-revert-firehose": [
+          "l2"
+        ],
+        "drift-revert-readback-placeholders": [
           "l2"
         ],
         "drift-verbatim-readback": [
@@ -9670,6 +9690,7 @@
         "drift-revert",
         "drift-revert-arrays",
         "drift-revert-firehose",
+        "drift-revert-readback-placeholders",
         "drift-verbatim-readback",
         "event-driven",
         "export",
@@ -9810,6 +9831,9 @@
           "l2"
         ],
         "drift-revert-firehose": [
+          "l2"
+        ],
+        "drift-revert-readback-placeholders": [
           "l2"
         ],
         "drift-verbatim-readback": [
