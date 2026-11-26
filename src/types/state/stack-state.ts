@@ -636,6 +636,15 @@ export interface SupersededResourceRecord {
    */
   identity?: string;
 
+  /**
+   * go-to-k/cdkd#7017: the entry was held for the stacks of a `cdkd deploy`
+   * run that import this stack's outputs (go-to-k/cdkd#7012). A later deploy
+   * deletes it only once no stack importing this stack's outputs names it in
+   * its records (a consumer that failed and rolled back still does). No
+   * schema bump: an older cdkd ignores it and deletes the entry as before.
+   */
+  heldForConsumers?: true;
+
   /** The replacement ran under `--force-stateful-recreation`. */
   forceDataDelete?: true;
 

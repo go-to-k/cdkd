@@ -13,6 +13,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { executeDeployment } from '../../../src/deployment/deploy-engine/execute.js';
+import { deployWithoutChanges } from '../../../src/deployment/deploy-engine/deploy-flow/no-change.js';
 import {
   NestedCleanupQueue,
   withNestedCleanupQueue,
@@ -249,6 +250,10 @@ describe('a producer holds its cleanup phase for its in-run consumers (go-to-k/c
       purgeRollbackJournalVersions: vi.fn().mockResolvedValue(undefined),
       rollbackJournalReadAbsent: vi.fn().mockReturnValue(false),
       warmConnections: vi.fn().mockResolvedValue(undefined),
+      // go-to-k/cdkd#7017: the consumer scan of a held entry.
+      listStacks: vi.fn(async () =>
+        [...store.keys()].map((stackName) => ({ stackName, region: 'us-east-1' }))
+      ),
     };
     const lockManager = {
       acquireLockWithRetry: vi.fn(async (stack: string) => {
@@ -575,4 +580,192 @@ describe('a producer holds its cleanup phase for its in-run consumers (go-to-k/c
     expect(held.size).toBe(0);
     expect(rootQueue.size).toBe(1);
   });
+
+  // go-to-k/cdkd#7017: the kept copy waits for the consumer on a later deploy
+  // of the producer alone, too.
+  const consumerNaming = (physicalId: string): Stored => ({
+    state: {
+      version: 12,
+      stackName: 'Consumer',
+      region: 'us-east-1',
+      resources: {
+        Fn: record('fn', ENDPOINT, { Environment: { Variables: { QURL: physicalId } } }),
+      },
+      outputs: {},
+      imports: [{ sourceStack: PRODUCER, sourceRegion: 'us-east-1', exportName: 'X' }],
+      lastModified: 0,
+    } as unknown as StackState,
+    etag: 'c-0',
+  });
+  const marked = (physicalId: string): SupersededResourceRecord => ({
+    logicalId: 'Old',
+    supersededAt: 1,
+    state: record(physicalId, REVISION, { FunctionName: physicalId }),
+    heldForConsumers: true,
+  });
+
+  it('a held producer saves its entries marked as held for consumers', async () => {
+    await deployStack(makeEngine('R', undefined, new NestedCleanupQueue()), PRODUCER, 'R');
+    expect(
+      supersededResourcesOf(store.get(PRODUCER)!.state).map((e) => e.heldForConsumers)
+    ).toEqual([true]);
+  });
+
+  it('a later deploy of the producer alone keeps a marked entry the consumer still names', async () => {
+    live.add('kept-old');
+    store.set('Consumer', consumerNaming('kept-old'));
+    await deployStack(makeEngine('R'), PRODUCER, 'R', { superseded: [marked('kept-old')] });
+
+    expect(deletesOf('kept-old')).toBe(0);
+    expect(listed(PRODUCER)).toContain('kept-old');
+    expect(
+      printed.info.some((l) =>
+        l.includes("Consumer (importing this stack's outputs) still uses it")
+      )
+    ).toBe(true);
+    // This deploy's own replaced copy is unaffected.
+    expect(deletesOf('RRev-old')).toBe(1);
+  });
+
+  it('once the consumer moved off it, the next deploy deletes the marked entry', async () => {
+    live.add('kept-old');
+    store.set('Consumer', consumerNaming('kept-new'));
+    await deployStack(makeEngine('R'), PRODUCER, 'R', { superseded: [marked('kept-old')] });
+
+    expect(deletesOf('kept-old')).toBe(1);
+    expect(listed(PRODUCER)).not.toContain('kept-old');
+  });
+
+  it('a no-change deploy of a held producer saves the mark on its carried entries', async () => {
+    const queue = new NestedCleanupQueue();
+    const engine = makeEngine('R', undefined, queue);
+    live.add('carried-old');
+    const carried: SupersededResourceRecord = {
+      logicalId: 'Old',
+      supersededAt: 1,
+      state: record('carried-old', REVISION, { FunctionName: 'carried-old' }),
+    };
+    const currentState = {
+      version: 12,
+      stackName: PRODUCER,
+      region: 'us-east-1',
+      resources: {},
+      outputs: {},
+      supersededResources: [carried],
+      lastModified: 0,
+    } as unknown as StackState;
+    await noChangeDeploy(engine, currentState);
+
+    expect(queue.size).toBe(1);
+    expect(deletesOf('carried-old')).toBe(0);
+    expect(
+      supersededResourcesOf(store.get(PRODUCER)!.state).map((e) => e.heldForConsumers)
+    ).toEqual([true]);
+  });
+
+  /** A producer record carrying `entries`, deployed with no change. */
+  const noChangeState = (
+    entries: SupersededResourceRecord[],
+    resources: Record<string, ResourceState> = {}
+  ): StackState =>
+    ({
+      version: 12,
+      stackName: PRODUCER,
+      region: 'us-east-1',
+      resources,
+      outputs: {},
+      supersededResources: entries,
+      lastModified: 0,
+    }) as unknown as StackState;
+
+  it('a no-change deploy of the producer alone keeps a marked entry the consumer still names', async () => {
+    live.add('kept-old');
+    store.set('Consumer', consumerNaming('kept-old'));
+    await noChangeDeploy(makeEngine('R'), noChangeState([marked('kept-old')]));
+
+    expect(deletesOf('kept-old')).toBe(0);
+    expect(
+      printed.info.some((l) =>
+        l.includes("Consumer (importing this stack's outputs) still uses it")
+      )
+    ).toBe(true);
+  });
+
+  it('a no-change deploy of the producer alone deletes it once the consumer moved off', async () => {
+    live.add('kept-old');
+    store.set('Consumer', consumerNaming('kept-new'));
+    await noChangeDeploy(makeEngine('R'), noChangeState([marked('kept-old')]));
+
+    expect(deletesOf('kept-old')).toBe(1);
+  });
+
+  it('a held no-change pass still keeps it for a consumer outside the run that names it', async () => {
+    live.add('kept-old');
+    store.set('Consumer', consumerNaming('kept-old'));
+    const queue = new NestedCleanupQueue();
+    await noChangeDeploy(makeEngine('R', undefined, queue), noChangeState([marked('kept-old')]));
+    await queue.runAll({ interrupted: () => false }, { info: vi.fn(), warn: vi.fn() });
+
+    expect(deletesOf('kept-old')).toBe(0);
+  });
+
+  // A value the old copy shares with a live record of the producer (a VPC
+  // id) names nothing old: a consumer spelling only it has moved off.
+  const SHARED = 'vpc-shared-00000001';
+  const markedSharing = (physicalId: string): SupersededResourceRecord => {
+    const entry = marked(physicalId);
+    entry.state.attributes = { VpcId: SHARED };
+    return entry;
+  };
+  const liveSharing = (): ResourceState => {
+    const live = record('live-new', REVISION, { FunctionName: 'live-new' });
+    live.attributes = { VpcId: SHARED };
+    return live;
+  };
+
+  it('the cleanup phase passes the live records: a value one shares holds nothing', async () => {
+    live.add('kept-old');
+    store.set('Consumer', consumerNaming(SHARED));
+    await deployStack(makeEngine('R'), PRODUCER, 'R', {
+      superseded: [markedSharing('kept-old')],
+      extraRecords: { Live: liveSharing() },
+    });
+    expect(deletesOf('kept-old')).toBe(1);
+  });
+
+  it('a no-change deploy passes the live records: a value one shares holds nothing', async () => {
+    live.add('kept-old');
+    store.set('Consumer', consumerNaming(SHARED));
+    await noChangeDeploy(
+      makeEngine('R'),
+      noChangeState([markedSharing('kept-old')], { Live: liveSharing() })
+    );
+    expect(deletesOf('kept-old')).toBe(1);
+  });
+
+  async function noChangeDeploy(engine: DeployEngine, currentState: StackState): Promise<void> {
+    store.set(PRODUCER, { state: structuredClone(currentState), etag: 'etag-0' });
+    const template = { Resources: {} } as unknown as CloudFormationTemplate;
+    await deployWithoutChanges(engine, {
+      stackName: PRODUCER,
+      template,
+      currentState,
+      currentEtag: 'etag-0',
+      effectiveTemplate: template,
+      outputsDigestSource: template,
+      parameterValues: {},
+      conditions: {},
+      conditionVerdicts: undefined,
+      migrationPending: false,
+      maskedFingerprintsBackfilled: false,
+      orphansChanged: false,
+      terminationProtectionChanged: false,
+      ssmNamesHealed: false,
+      nestedSsmNamesMarked: false,
+      resolveStackInstanceId: async () => {},
+      startProvenanceCapture: () => {},
+      startTime: 0,
+      clock: { lap: () => {} },
+    } as unknown as Parameters<typeof deployWithoutChanges>[1]);
+  }
 });

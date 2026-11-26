@@ -17,6 +17,8 @@
 #      with q2 but kept q1 (it says so, and its state still records q1); the
 #      consumer rolled back, its QURL is q1's URL, that URL resolves, and its
 #      event source mapping reads q1.
+#   2b. deploy the producer alone (go-to-k/cdkd#7017): q1 survives, still
+#      recorded, and a line names the consumer that still uses it.
 #   3. deploy both, phase 2 without failure: succeeds; QURL is q2's URL, q1 is
 #      gone, and the producer's state records nothing left to delete.
 #   4. destroy both; every resource and state record is gone.
@@ -201,6 +203,24 @@ if ! grep -qxF "arn:aws:sqs:${AWS_REGION}:${ACCOUNT_ID}:${Q1}" <<<"${POLICY}"; t
   echo "FAIL: the rolled-back role policy does not grant on ${Q1}: ${POLICY}" >&2
   exit 1
 fi
+
+echo "==> Step 2b: deploy the producer alone (go-to-k/cdkd#7017)"
+OUT=$(env -u CDKD_TEST_FAIL CDKD_TEST_UPDATE=true ${CDKD} deploy "${PROD}" --exclusively \
+  --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" 2>&1)
+echo "${OUT}"
+if gone_probe aws sqs get-queue-url --queue-name "${Q1}" --region "${AWS_REGION}"; then
+  echo "FAIL: a deploy of the producer alone deleted ${Q1} while the rolled-back consumer still uses it (go-to-k/cdkd#7017)" >&2
+  exit 1
+fi
+if ! grep -q "${CONS} (importing this stack's outputs) still uses it" <<<"${OUT}"; then
+  echo "FAIL: no line says the consumer still uses the kept queue" >&2
+  exit 1
+fi
+if ! grep -qxF "${Q1_URL}" <<<"$(superseded_ids)"; then
+  echo "FAIL: the producer's state no longer records ${Q1} as still to delete" >&2
+  exit 1
+fi
+expect_eq "QURL after the producer-alone deploy" "$(fn_qurl)" "${Q1_URL}"
 
 echo "==> Step 3: deploy both, phase 2 without the failure"
 env -u CDKD_TEST_FAIL CDKD_TEST_UPDATE=true ${CDKD} deploy --all --region "${AWS_REGION}" \
