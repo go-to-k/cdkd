@@ -135,9 +135,10 @@ export class RDSProviderBase {
     logicalId: string,
     dbInstanceIdentifier: string,
     done: (instance: DBInstance) => boolean,
-    change: string
+    change: string,
+    signal?: AbortSignal
   ): Promise<DBInstance> {
-    return waitForInstanceState.call(this, logicalId, dbInstanceIdentifier, done, change);
+    return waitForInstanceState.call(this, logicalId, dbInstanceIdentifier, done, change, signal);
   }
   waitForInstanceAvailable(
     this: RDSProvider,

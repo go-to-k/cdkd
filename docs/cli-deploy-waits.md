@@ -80,7 +80,14 @@ endpoints, on create and, where the update skips the wait, on update. These wait
 skipped:
 
 - an RDS, DocumentDB or Neptune update's waits for a changed setting to apply
-  or read back: the database stays available while the change applies;
+  or read back: the database stays available while the change applies. The
+  exception is a value the change moves: an update that changes an RDS DB
+  instance's `Port`, `CACertificateIdentifier` or `MultiAZ`, or a Neptune
+  cluster's `DBPort`, records the attribute it moves (`Endpoint.Port`,
+  `CertificateDetails`, `SecondaryAvailabilityZone`, the cluster's `Port`)
+  only once AWS reports the change applied. Until then a `Fn::GetAtt` of it
+  waits for the change, then reads the resource again, so it never gets the
+  old value;
 - a load balancer's capacity reservation: the load balancer serves at once;
 - an Auto Scaling group's instance refresh: the group keeps serving while it
   replaces instances.

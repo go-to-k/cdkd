@@ -1,4 +1,4 @@
-import type { ModifyDBClusterCommandInput } from '@aws-sdk/client-neptune';
+import type { DBCluster, ModifyDBClusterCommandInput } from '@aws-sdk/client-neptune';
 import { isDeepStrictEqual } from 'node:util';
 import { enclosingDeadlineRemainingMs } from '../../../deployment/resource-deadline.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
@@ -37,6 +37,35 @@ export function clusterAttributes(
     ClusterResourceId: cluster?.DbClusterResourceId,
   });
 }
+
+/**
+ * go-to-k/cdkd#7006: whether a cluster has applied a port change: it reports
+ * the port sent and is out of `modifying`. Compared with the port SENT, so a
+ * read taken before Neptune has even started the change counts as unapplied.
+ */
+export function clusterPortApplied(cluster: DBCluster | undefined, port: number): boolean {
+  return cluster !== undefined && cluster.Status !== 'modifying' && cluster.Port === port;
+}
+
+/**
+ * The port a cluster update changes (`DBPort`, or its legacy alias `Port`),
+ * or `undefined` when it keeps the port: only a changed one moves the
+ * recorded `Port` / `Endpoint.Port` late.
+ */
+export function changedClusterPort(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>
+): number | undefined {
+  const desired = properties['DBPort'] ?? properties['Port'];
+  if (desired == null) return undefined;
+  const port = Number(desired);
+  if (!Number.isInteger(port)) return undefined;
+  const previous = previousProperties['DBPort'] ?? previousProperties['Port'];
+  return previous != null && Number(previous) === port ? undefined : port;
+}
+
+/** The recorded keys a port change moves (`clusterAttributes`). */
+export const CLUSTER_PORT_ATTRIBUTE_KEYS: readonly string[] = ['Port', 'Endpoint.Port'];
 
 /**
  * The attribute map a Neptune DB instance records (issue #3650): `Endpoint` /

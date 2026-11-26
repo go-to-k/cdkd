@@ -11164,6 +11164,7 @@
         "outputs-only-export",
         "perf-cross-backend-check",
         "profile-region-default",
+        "rds-dbinstance-getatt-attributes",
         "rds-full-stack",
         "recreate-nested-logical-id-collision",
         "recreate-target-readers",
@@ -11512,6 +11513,10 @@
           "literal"
         ],
         "profile-region-default": [
+          "l2",
+          "literal"
+        ],
+        "rds-dbinstance-getatt-attributes": [
           "l2",
           "literal"
         ],

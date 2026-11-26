@@ -64,6 +64,13 @@ import {
   unconfirmedCreateTimeKeys,
 } from './instance-restore.js';
 import { POINT_IN_TIME_KEYS, declaresPointInTimeRestore } from './instance-pitr.js';
+import {
+  movedAttributeChanges,
+  movedChangesText,
+  unappliedMovedChanges,
+  withoutUnappliedMovedAttributes,
+} from './instance-moved-attributes.js';
+import { deferReadiness } from '../../deferred-readiness.js';
 
 export async function updateDBInstance(
   this: RDSProvider,
@@ -751,6 +758,21 @@ export async function updateDBInstance(
       );
     }
 
+    // go-to-k/cdkd#7006: a changed port, CA certificate or Multi-AZ setting
+    // applies after ModifyDBInstance returns (a port change reboots the
+    // instance), and until then the instance reports the old value, the new
+    // one under PendingModifiedValues. CloudFormation reports the update once
+    // nothing is pending, so a reader of `Endpoint.Port`,
+    // `CertificateDetails.*` or `SecondaryAvailabilityZone` gets the new value.
+    // An update changing none of them adds no call.
+    const moved = movedAttributeChanges(properties, previousProperties, backfillMembers, context);
+    const movedApplied = (instance: DBInstance): boolean =>
+      moved === undefined || unappliedMovedChanges(moved, instance).length === 0;
+    const noWait = process.env['CDKD_NO_WAIT'] === 'true';
+    if (!noWait && moved !== undefined) {
+      await this.waitForInstanceState(logicalId, physicalId, movedApplied, movedChangesText(moved));
+    }
+
     // Describe to get updated attributes
     let described = await this.describeDBInstance(physicalId);
     // go-to-k/cdkd#2762: CloudFormation reboots after an update that leaves
@@ -809,6 +831,24 @@ export async function updateDBInstance(
       );
     }
 
+    // go-to-k/cdkd#7006: under `--no-wait` the wait above is skipped, so what
+    // the describe reports for a change still unapplied is the OLD value: it
+    // is left absent, never recorded stale, and the same wait is handed to the
+    // deploy. A reference to it then waits for the change and reads the
+    // instance again; nothing else waits.
+    const unapplied = noWait && moved !== undefined ? unappliedMovedChanges(moved, described) : [];
+    if (unapplied.length > 0 && moved !== undefined) {
+      deferReadiness(logicalId, resourceType, physicalId, (signal) =>
+        this.waitForInstanceState(
+          logicalId,
+          physicalId,
+          movedApplied,
+          movedChangesText(moved),
+          signal
+        )
+      );
+    }
+
     return {
       physicalId,
       wasReplaced: false,
@@ -818,9 +858,10 @@ export async function updateDBInstance(
       // ModifyDBInstance returns): then no `DBInstanceStatus` is recorded, a
       // reference to it in this deploy is refused (no re-read of a record
       // this deploy wrote), and the next deploy re-reads it.
-      attributes: dbInstanceAttributes(described, {
-        settled: process.env['CDKD_NO_WAIT'] !== 'true',
-      }),
+      attributes: withoutUnappliedMovedAttributes(
+        dbInstanceAttributes(described, { settled: !noWait }),
+        unapplied
+      ),
       ...(effectiveProperties !== undefined && { effectiveProperties }),
     };
   } catch (error) {

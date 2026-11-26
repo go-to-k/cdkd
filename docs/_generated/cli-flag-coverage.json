@@ -743,7 +743,8 @@
         "lambda-microvm-image",
         "no-wait-agentcore-runtime-endpoint",
         "no-wait-cr-nat-egress",
-        "no-wait-getatt-rds-endpoint"
+        "no-wait-getatt-rds-endpoint",
+        "rds-dbinstance-getatt-attributes"
       ]
     },
     {
