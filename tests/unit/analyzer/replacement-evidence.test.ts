@@ -179,9 +179,11 @@ describe('replacement verdict evidence (go-to-k/cdkd#7024, #7038)', () => {
   // DELETE the resource: it read "Some interruptions" for a DynamoDB KeySchema
   // and an Events rule's EventBusName, and CloudFormation replaced both
   // (measured on #7038). Deliberately one-sided: a wrong `update` verdict hides
-  // a replacement from the diff, but the deploy's in-place call then succeeds
-  // or fails loudly and destroys nothing, whereas a wrong `replace` deletes
-  // data. The docs-only `update` rows are measured on #7048.
+  // a replacement from the diff, and the deploy's in-place call succeeds or
+  // fails loudly; it destroys something only where a provider re-creates
+  // inside `update()`, which #6656's planners and gate cover. A wrong
+  // `replace` always deletes the resource. The docs-only `update` rows are
+  // measured on #7048.
   it('a verdict that can replace never rests on the documentation alone', () => {
     const docsOnly = [...REPLACEMENT_EVIDENCE]
       .filter(([key, evidence]) => {
