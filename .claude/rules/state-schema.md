@@ -23,7 +23,7 @@ interface StackState {
   exportNames?: string[]; // v9+: see below
   skippedOutputs?: Record<string, string>; // no bump
   orphans?: StackOrphanRecord[]; // no bump: rollback-orphaned Retain resources (the discarded ResourceState verbatim); re-adopted on legacy stacks only
-  supersededResources?: SupersededResourceRecord[]; // no bump: a replacement's old resource whose delete was deferred (its ResourceState verbatim, scrubbed as orphans are); retried by every deploy's cleanup, deleted by destroy, dropped once a record holds its id (#5111)
+  supersededResources?: SupersededResourceRecord[]; // no bump: a replaced old resource to delete (record scrubbed like orphans); retried at cleanup, deleted by destroy, dropped once a record holds it (#5111); `heldForConsumers`: kept while an importer names it (#7017)
   conditionVerdicts?: Record<string, { verdict: boolean; fingerprint: string }>; // no bump: see below
   parentStack?: string; // v6+: nested-stack CHILD records only (absent = top-level); key cdkd/{parentStack}~{parentLogicalId}/{region}/state.json
   parentLogicalId?: string; // v6+: the child's row logical id in the parent

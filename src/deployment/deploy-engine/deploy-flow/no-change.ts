@@ -1,5 +1,6 @@
 import { retryCarriedSupersededResources } from '../superseded-retry.js';
 import { queueNestedCleanup } from '../nested-cleanup.js';
+import { carriedNotHeldByConsumers } from '../consumer-held-superseded.js';
 import { supersededResourcesOf } from '../../superseded-resources.js';
 import { redactOutputs } from '../masking.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
@@ -93,21 +94,28 @@ export async function deployWithoutChanges(
   // retried by every deploy, an unchanged one included. A nested child's
   // waits for the ROOT deploy's success, which persists the drop itself
   // (go-to-k/cdkd#6398).
-  const supersededChanged =
-    engine.options.dryRun ||
-    queueNestedCleanup(engine, stackName, currentState, async (stillOwed) => {
-      await retryCarriedSupersededResources(
-        engine,
-        currentState,
-        supersededResourcesOf(currentState).filter(stillOwed),
-        currentState.resources
-      );
-    })
-      ? false
+  // go-to-k/cdkd#7017: a producer held for its consumers marks its entries,
+  // and the mark is saved below before they start.
+  const unmarked = supersededResourcesOf(currentState).some((e) => e.heldForConsumers !== true);
+  const supersededChanged = engine.options.dryRun
+    ? false
+    : queueNestedCleanup(engine, stackName, currentState, async (stillOwed) => {
+          await retryCarriedSupersededResources(
+            engine,
+            currentState,
+            await carriedNotHeldByConsumers(
+              engine,
+              stackName,
+              supersededResourcesOf(currentState).filter(stillOwed)
+            ),
+            currentState.resources
+          );
+        })
+      ? engine.options.parentStackInfo === undefined && unmarked
       : await retryCarriedSupersededResources(
           engine,
           currentState,
-          supersededResourcesOf(currentState),
+          await carriedNotHeldByConsumers(engine, stackName, supersededResourcesOf(currentState)),
           currentState.resources
         );
 

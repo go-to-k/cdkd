@@ -24,6 +24,7 @@ import {
 } from './replacement.js';
 import { recordedDependencies } from './dependencies.js';
 import { retryCarriedSupersededResources } from './superseded-retry.js';
+import { carriedNotHeldByConsumers, markHeldForConsumers } from './consumer-held-superseded.js';
 import { isConditionFailure } from '../../state/s3-state-backend/shared.js';
 
 /**
@@ -62,8 +63,10 @@ export async function runCleanupPhase(
   } finally {
     restampReplacedVerdicts(engine, completedOperations);
   }
-  // go-to-k/cdkd#5111: an earlier deploy's, after this deploy's own.
-  await retryCarriedSupersededResources(engine, host, carried, resources, {
+  // go-to-k/cdkd#5111: an earlier deploy's, after this deploy's own; one a
+  // consumer still names stays (go-to-k/cdkd#7017).
+  const sendable = await carriedNotHeldByConsumers(engine, stackName, carried);
+  await retryCarriedSupersededResources(engine, host, sendable, resources, {
     waitInUse: releasedSomething,
   });
 }
@@ -207,6 +210,9 @@ export function queueNestedCleanup(
   // name scope, AWS clients and producer regions). A child's runs in the
   // root's, as before.
   const inDeployScope = nested ? undefined : AsyncLocalStorage.snapshot();
+  // go-to-k/cdkd#7017: the producer's entries say they wait for consumers,
+  // so a later deploy of it alone keeps one a consumer still names.
+  if (!nested) markHeldForConsumers(host);
   const runPass = (context: NestedCleanupContext): Promise<NestedCleanupOutcome> =>
     runQueuedNestedCleanup(engine, stackName, host, pass, context);
   return queue.enqueue({

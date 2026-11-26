@@ -166,9 +166,12 @@ deployed, and deletes it then. This holds every old copy the producer's deploy
 would delete, not only the ones an export names. If one of those stacks
 fails, is cancelled or never runs, its rollback (or its unchanged state) may
 still name an old copy, so cdkd keeps them, says so in one line, and records
-them in the producer's state; the next deploy of both stacks deletes them.
-Deploy the producer and the consumer together then: a deploy of the producer
-alone deletes the kept copies even while the consumer still uses them.
+them in the producer's state. A later deploy deletes a kept copy only once no
+stack importing the producer's outputs names it in its records any more: a
+deploy of the producer alone keeps it, and says which stack still uses it,
+while the consumer stays rolled back. The next deploy of both stacks deletes
+it. Checking costs that deploy one read of every stack's state, made only
+while such a copy is kept.
 
 `cdkd diff ProducerStack ConsumerStack` previews the same run: the consumer
 reads the export as the producer's deploy will publish it, shown as

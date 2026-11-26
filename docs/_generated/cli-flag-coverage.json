@@ -126,6 +126,7 @@
       "flag": "--exclusively",
       "integs": [
         "cross-stack-export-in-use",
+        "cross-stack-replace-consumer-rollback",
         "cross-stack-secret-import",
         "custom-resource-noecho-nested",
         "importvalue-chain",
