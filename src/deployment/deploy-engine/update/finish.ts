@@ -361,10 +361,11 @@ export async function finishUpdate(
     if (value !== undefined)
       previousForProvider = setAtCoordinate(previousForProvider, coordinate, value);
   }
-  // go-to-k/cdkd#7050: a key the plan proved UNCHANGED (its masked-property
-  // and input fingerprints equal, `redaction-masks.ts`) whose record holds
-  // the mask: the provider must never diff `***` against the plaintext, so
-  // its previous side is the value it is sent, and the key is left alone.
+  // go-to-k/cdkd#7050: a key outside `changedProperties` (equal as written,
+  // its masked inputs not moved, nothing unsettled) whose record holds the
+  // mask anywhere: the provider must never diff `***` against the plaintext,
+  // so its previous side is the value it is sent, and the key is left alone.
+  // In memory only: the provider's call, never the record.
   previousForProvider = unmaskedUnchangedKeys(
     previousForProvider,
     resolvedProps,
