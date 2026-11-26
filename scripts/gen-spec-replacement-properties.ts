@@ -97,7 +97,9 @@ export function labelOf(candidate: SpecReplacementCandidate): Label {
 export function renderSrc(candidates: readonly SpecReplacementCandidate[]): string {
   const byType = new Map<string, string[][]>();
   for (const c of candidates) {
-    if (labelOf(c) !== 'replace') continue;
+    // An element row cannot be compared per element: never a table row (the
+    // problem list below reports it).
+    if (labelOf(c) !== 'replace' || c.path.includes('*')) continue;
     byType.set(c.type, [...(byType.get(c.type) ?? []), [...c.path]]);
   }
   const lines = [
@@ -176,9 +178,11 @@ function atomicWrite(path: string, content: string): void {
 
 function main(): void {
   const { candidates, specVersion, typesWithoutSchema } = loadSpecReplacementCandidates();
+  const check = process.argv.includes('--check');
+  const problems: string[] = [];
   const unclassified = candidates.filter((c) => labelOf(c) === 'unclassified');
   if (unclassified.length > 0) {
-    throw new Error(
+    problems.push(
       'candidates with no verdict — measure each and add a REPLACEMENT_EVIDENCE row, or add it to ' +
         'evidence-baseline.ts: ' +
         unclassified.map((c) => candidateKey(c.type, c.path)).join(', ')
@@ -186,31 +190,38 @@ function main(): void {
   }
   const elementReplace = candidates.filter((c) => labelOf(c) === 'replace' && c.path.includes('*'));
   if (elementReplace.length > 0) {
-    throw new Error(
+    problems.push(
       `a \`replace\` verdict on an array or map member cannot be compared per element: ` +
         elementReplace.map((c) => candidateKey(c.type, c.path)).join(', ')
     );
   }
   const src = renderSrc(candidates);
   const md = renderMarkdown(candidates, specVersion);
-  if (process.argv.includes('--check')) {
+  if (check) {
     const stale =
       !existsSync(OUT_SRC) ||
       readFileSync(OUT_SRC, 'utf8') !== src ||
       !existsSync(OUT_MD) ||
       readFileSync(OUT_MD, 'utf8') !== md;
     if (stale) {
-      process.stderr.write(
-        'spec-replacement-properties: FAIL\n  ' +
-          'src/analyzer/replacement-rules/spec-replacement-properties.generated.ts or ' +
+      problems.push(
+        'src/analyzer/replacement-rules/spec-replacement-properties.generated.ts or ' +
           'docs/_generated/spec-replacement-candidates.md is stale — ' +
-          'run `vp run gen:spec-replacement-properties` and commit.\n'
+          'run `vp run gen:spec-replacement-properties` and commit.'
       );
-      process.exit(1);
     }
   } else {
     atomicWrite(OUT_SRC, src);
     atomicWrite(OUT_MD, md);
+  }
+  if (problems.length > 0) {
+    // Write mode WARNS and exits 0, like the generators beside it in
+    // `gen:all-matrices`: the schema-refresh job runs that chain, and its PR
+    // must still open for the `--check` step and the evidence test to red.
+    const verdict = check ? 'FAIL' : 'WARN';
+    process.stderr.write(`spec-replacement-properties: ${verdict}\n  ${problems.join('\n  ')}\n`);
+    if (check) process.exit(1);
+    return;
   }
   process.stderr.write(
     `spec-replacement-properties: OK — ${candidates.length} candidates, ` +
