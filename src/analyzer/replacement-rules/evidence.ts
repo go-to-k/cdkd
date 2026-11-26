@@ -187,7 +187,14 @@ export const REPLACEMENT_EVIDENCE: ReadonlyMap<string, ReplacementEvidence> = ne
   ['AWS::DocDB::DBCluster#EngineVersion', update('cfn-measured', 7038, 7048)],
   ['AWS::DynamoDB::GlobalTable#KeySchema', update('refused', 7038)],
   ['AWS::EC2::EIP#Domain', update('single-value', 5449)],
-  ['AWS::ECS::Service#DeploymentController', update('cfn-measured', 5634, 7038, 7048)],
+  [
+    'AWS::ECS::Service#DeploymentController',
+    unmeasurable(
+      'a change that succeeds needs a load-balanced service and a CodeDeploy deployment group; without them CloudFormation fails before showing whether it replaces',
+      5634,
+      7038
+    ),
+  ],
   ['AWS::EMR::InstanceFleetConfig#InstanceTypeConfigs', update('cfn-measured', 1160)],
   ['AWS::Events::EventBus#EventSourceName', update('aws-api', 7038)],
   ['AWS::FSx::FileSystem#FileSystemTypeVersion', update('cfn-measured', 7038, 7048)],

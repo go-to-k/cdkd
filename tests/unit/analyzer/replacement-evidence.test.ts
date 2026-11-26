@@ -184,8 +184,9 @@ describe('replacement verdict evidence (go-to-k/cdkd#7024, #7038)', () => {
     const docsOnly = [...REPLACEMENT_EVIDENCE]
       .filter(
         ([, evidence]) =>
-          evidence.kind === 'cfn-docs' &&
-          (evidence.verdict !== 'update' || !evidence.unmeasurable?.trim())
+          (evidence.kind === 'cfn-docs') !== (evidence.unmeasurable !== undefined) ||
+          (evidence.kind === 'cfn-docs' &&
+            (evidence.verdict !== 'update' || !evidence.unmeasurable?.trim()))
       )
       .map(([key]) => key);
     expect(docsOnly).toEqual([]);
