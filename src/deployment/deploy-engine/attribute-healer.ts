@@ -369,7 +369,12 @@ export class AttributeHealer {
     // it, or proved it absent): a member it withheld as masked, or did not
     // report, was not re-read, and a stamp would freeze its stale value.
     const settled = [...staleKeys].every(
-      (key) => Object.hasOwn(healed.attributes, key) || !Object.hasOwn(attributes ?? {}, key)
+      (key) =>
+        (Object.hasOwn(healed.attributes, key) &&
+          healed.attributes[key] !== undefined &&
+          healed.attributes[key] !== null &&
+          healed.attributes[key] !== '') ||
+        !Object.hasOwn(attributes ?? {}, key)
     );
     return staleKeys.size === 0 || !settled
       ? next
