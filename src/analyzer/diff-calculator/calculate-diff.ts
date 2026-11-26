@@ -33,6 +33,7 @@ import type { ReadProvenanceSources } from '../read-provenance-promotion.js';
 import { DiffCalculator } from '../diff-calculator.js';
 import { markLegacyHandleHeals } from './legacy-handle-heal.js';
 import {
+  holdsStaleNoEchoLeafAt,
   maskUnmovedRedactionMasks,
   reportUnverifiedPassedSecrets,
   type PassedSecretBackfill,
@@ -520,7 +521,20 @@ export async function calculateDiff(
         currentResource,
         rawDesiredProps,
         maskedFingerprinter,
-        maskedInputs?.rebaselined && ((key, fingerprint) => rebaselined.push([key, fingerprint])),
+        maskedInputs?.rebaselined &&
+          ((key, fingerprint) => {
+            // A `NoEcho` leaf whose source is gone is decided by the deploy's
+            // readback, never re-baselined unsent (#7050 review).
+            if (
+              holdsStaleNoEchoLeafAt(
+                currentResource,
+                key,
+                noEchoCompared?.desired ?? desiredPropsForCompare
+              )
+            )
+              return;
+            rebaselined.push([key, fingerprint]);
+          }),
         (key, verdict) => unverified.push([key, verdict])
       );
       if (rebaselined.length > 0) {

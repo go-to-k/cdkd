@@ -75,6 +75,7 @@ import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
 
+const READBACK: { dbName?: string } = {};
 const USERNAME = '{{resolve:secretsmanager:db-secret:SecretString:username::}}';
 
 interface Run {
@@ -127,7 +128,10 @@ async function deploy(
       calls.push('delete:' + id);
     }),
     getAttribute: vi.fn(),
-    readCurrentState: vi.fn().mockResolvedValue(undefined),
+    // What AWS reports back for `DBName` (`undefined`: nothing readable).
+    readCurrentState: vi.fn(async () =>
+      READBACK.dbName === undefined ? undefined : { DBName: READBACK.dbName }
+    ),
   };
   const saveState = vi.fn().mockResolvedValue('etag');
   const diffCalculator = new CapturingDiffCalculator();
@@ -321,27 +325,82 @@ describe('an unprovable redaction mask beside a tainted Ref reads unchanged (#70
   }
 });
 
-describe('a NoEcho leaf whose NoEcho is removed is never compared masked (#7050 review)', () => {
-  it('an older record (no input fingerprint): a changed value is planned, not hidden', async () => {
-    SUFFIX.v = 'noecho-old-value';
-    SUFFIX.noEcho = true;
-    const dbName = { 'Fn::Join': ['_', [USERNAME, { Ref: 'Suffix' }]] };
-    try {
-      const created = await deploy({}, tpl(dbName, 1));
-      expect(created.thrown).toBeUndefined();
-      const record = structuredClone(created.persisted!) as Record<string, unknown>;
-      expect((record['properties'] as Record<string, unknown>)['DBName']).toBe('***');
-      delete record['maskedPropertyInputFingerprints'];
-      SUFFIX.noEcho = false;
-      SUFFIX.v = 'noecho-new-value';
-      const moved = await deploy({ Db: record as never }, tpl(dbName, 1));
-      // Seen: planned (a create-only DBName on a stateful type is then
-      // refused loudly), never NO_CHANGE.
-      expect(moved.diff?.get('Db')?.changeType).not.toBe('NO_CHANGE');
-      expect((moved.diff?.get('Db')?.propertyChanges ?? []).map((pc) => pc.path)).toContain('DBName');
-    } finally {
-      SUFFIX.v = 'x9';
-      SUFFIX.noEcho = false;
-    }
-  });
+// #7050 review: a record leaf masked for a `NoEcho` parameter whose `NoEcho`
+// is then removed (a STALE `NoEcho` leaf). Its input fingerprint proves
+// nothing either way (it hashed the parameter as written), so the deploy's
+// readback decides it: never re-baselined unsent (a later deploy would read a
+// changed value unchanged for good), never refused forever on an unchanged
+// value. Three deploys in a row, each from the record the previous one saved.
+describe('a NoEcho leaf whose NoEcho is removed is decided by the readback (#7050 review)', () => {
+  const dbName = { 'Fn::Join': ['_', [USERNAME, { Ref: 'Suffix' }]] };
+  type Readback = 'none' | 'today' | 'old';
+  for (const [older, changed, readback] of [
+    [true, false, 'none'],
+    [true, true, 'none'],
+    [true, false, 'today'],
+    [true, true, 'today'],
+    [true, true, 'old'],
+    [false, false, 'none'],
+    [false, false, 'today'],
+    [false, true, 'old'],
+  ] as Array<[boolean, boolean, Readback]>) {
+    const label = `${older ? 'an older record (no input fingerprint)' : 'a fingerprinted record'}, value ${changed ? 'changed' : 'unchanged'}, AWS reporting ${readback === 'none' ? 'nothing' : readback === 'today' ? "today's value" : 'the old value'}`;
+    it(label, async () => {
+      const log = getLogger() as unknown as Record<string, ReturnType<typeof vi.fn>>;
+      SUFFIX.v = 'noecho-old-value';
+      SUFFIX.noEcho = true;
+      try {
+        const created = await deploy({}, tpl(dbName, 1));
+        expect(created.thrown).toBeUndefined();
+        let record = structuredClone(created.persisted!) as unknown as Record<string, unknown>;
+        expect((record['properties'] as Record<string, unknown>)['DBName']).toBe('***');
+        if (older) delete record['maskedPropertyInputFingerprints'];
+        SUFFIX.noEcho = false;
+        if (changed) SUFFIX.v = 'noecho-new-value';
+        READBACK.dbName =
+          readback === 'none' ? undefined : `pg_${readback === 'today' ? SUFFIX.v : 'noecho-old-value'}`;
+        for (const run of [1, 2, 3]) {
+          log['warn']!.mockClear();
+          const r = await deploy({ Db: record as never }, tpl(dbName, 1));
+          const plan = r.diff?.get('Db');
+          expect(r.calls).toEqual([]);
+          if (r.persisted !== undefined) expect(exposes(r.persisted)).toBeUndefined();
+          if (readback === 'today') {
+            // AWS holds today's value: settled on #1, unmarked, then NO_CHANGE.
+            expect(r.thrown).toBeUndefined();
+            if (run === 1) {
+              expect((plan?.propertyChanges ?? []).map((pc) => pc.path)).toEqual(['DBName']);
+              expect(r.persisted?.properties['DBName']).toBe(`${USERNAME}_${SUFFIX.v}`);
+              expect(r.persisted?.noEchoLeaves).toBeUndefined();
+            } else {
+              expect(plan?.changeType).toBe('NO_CHANGE');
+            }
+          } else {
+            // Nothing confirms it (no readback, or another value from a
+            // provider not known to report it exactly: never replaced on a
+            // readback's word): planned on every deploy, and warned of, so
+            // it is never hidden; no refusal of an unchanged value.
+            expect(r.thrown).toBeUndefined();
+            expect((plan?.propertyChanges ?? []).map((pc) => pc.path)).toEqual(['DBName']);
+            const warned = log['warn']!.mock.calls.map((c) => String(c[0]));
+            expect(
+              warned.filter(
+                (w) =>
+                  w.includes('Db.DBName') &&
+                  w.includes(readback === 'old' ? '(differs' : '(not-readable)') &&
+                  w.includes('not applied')
+              )
+            ).toHaveLength(1);
+            // ...and never re-baselined to the value it never sent.
+            if (older) expect(r.persisted?.maskedPropertyInputFingerprints?.['DBName']).toBeUndefined();
+          }
+          if (r.persisted !== undefined) record = structuredClone(r.persisted) as unknown as Record<string, unknown>;
+        }
+      } finally {
+        SUFFIX.v = 'x9';
+        SUFFIX.noEcho = false;
+        READBACK.dbName = undefined;
+      }
+    });
+  }
 });

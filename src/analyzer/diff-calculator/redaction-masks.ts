@@ -2,6 +2,8 @@ import {
   SECRET_MASK,
   carriesSecretMask,
   dynamicReferenceTokens,
+  noEchoLeavesOf,
+  valueAtCoordinate,
 } from '../../deployment/secret-redaction.js';
 import {
   REFUSED_FINGERPRINT,
@@ -278,9 +280,22 @@ export async function reportUnverifiedPassedSecrets(args: {
 
 /** Does the record name a `NoEcho` leaf under top-level `key` (`noEchoLeaves`)? */
 function holdsNoEchoLeafAt(record: ResourceState, key: string): boolean {
-  const leaves = (record as { noEchoLeaves?: unknown }).noEchoLeaves;
-  return (
-    Array.isArray(leaves) &&
-    leaves.some((coordinate) => Array.isArray(coordinate) && coordinate[0] === key)
+  return (noEchoLeavesOf(record) ?? []).some((coordinate) => coordinate[0] === key);
+}
+
+/**
+ * go-to-k/cdkd#7050 review: does the record name a `NoEcho` leaf under `key`
+ * that `desired` (the `NoEcho` comparison's side) no longer masks, its
+ * `NoEcho` source gone? Today's input fingerprint then hashes a value the
+ * record never proved it holds, so it is never re-baselined: stamped
+ * unsent, it would read a changed value unmoved on every later deploy.
+ */
+export function holdsStaleNoEchoLeafAt(
+  record: ResourceState,
+  key: string,
+  desired: Record<string, unknown>
+): boolean {
+  return (noEchoLeavesOf(record) ?? []).some(
+    (coordinate) => coordinate[0] === key && valueAtCoordinate(desired, coordinate) !== SECRET_MASK
   );
 }

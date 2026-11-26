@@ -427,6 +427,13 @@ export async function resolveUpdateInputs(
       }
     }
   }
+  // go-to-k/cdkd#7050 review: a STALE `NoEcho` leaf's input fingerprint was
+  // hashed with the `NoEcho` input kept as written and is hashed with its value
+  // today, so it differs whatever the value: no proof of a move. The readback
+  // below decides the leaf, as it does for a record with no fingerprint.
+  for (const coordinate of staleCoordinates) {
+    if (typeof coordinate[0] === 'string') movedMasked.delete(coordinate[0]);
+  }
   // What the save stamps if this deploy writes the record: the input
   // fingerprint of each property it may record as the mask.
   if (fingerprints !== undefined) {
