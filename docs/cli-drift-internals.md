@@ -229,7 +229,7 @@ refusal is warned about by name, and the drift is still reported next run.
 WITHOUT `--accept` / `--revert` and read its exit code, or read `--json`'s
 `notCompared[].cause` and `notSupported`.
 
-**Exit `2` on `--revert`** (`PartialFailureError`) covers four shapes: a
+**Exit `2` on `--revert`** (`PartialFailureError`) covers five shapes: a
 resource refused because it was deleted outside cdkd (see
 [Deleted resources](cli-drift-accept-revert.md#deleted-resources)), a
 `provider.update` call that failed, one that threw
@@ -242,7 +242,16 @@ recorded baseline holds only the redaction mask and AWS reports nothing to
 preserve there, and one refused because its baseline holds a raw
 CloudFormation intrinsic **object** (`Fn::Join` / `Ref`) cdkd cannot resolve
 outside a deploy — for both, no AWS call is made and the message names the
-remedy.
+remedy. The fifth is a revert AWS accepted without applying
+(go-to-k/cdkd#7025): after the updates, each stack with a reverted resource is
+re-detected through the same `runDriftForStack`, after its lock is released,
+and a resource whose re-read still differs on a path its revert sent (the
+same path, or one under or above it) is counted `not applied by AWS`. A
+differing path is re-read twice more, 5 s and 8 s apart, before it counts. A
+re-read that cannot compare the resource (not compared, no reader, deleted,
+or a thrown stack read) is a `not verified` warning, not a failure. A key the
+provider reported narrowing (#1644) is not verified, since its answer is the
+value AWS applied. The re-read writes nothing.
 
 A resource whose baseline a
 [`cdkd import`](import-after.md#the-drift-baseline-an-import-records) run refused is

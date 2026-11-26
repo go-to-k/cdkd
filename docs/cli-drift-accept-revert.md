@@ -76,12 +76,20 @@ The run ends with a count of what happened:
 Revert summary: 3 reverted, 1 update-not-supported, 1 failed.
 ```
 
-When anything was not reverted, the command exits `2`. Each count other than
-`reverted` has a line higher up that names the resource:
+After the updates, cdkd reads each stack with a reverted resource again and
+compares it the way `cdkd drift` does. A property that still differs is read
+up to twice more over about 13 seconds, since a read right after an update can
+lag.
+
+When anything was not reverted, or AWS did not apply a revert, the command
+exits `2`. Each count other than `reverted` has a line higher up that names
+the resource:
 
 | Count | Meaning |
 | --- | --- |
-| `reverted` | The resource was updated. |
+| `reverted` | AWS accepted the update. |
+| `not applied by AWS` | AWS accepted the update, but the re-read still shows the drift on a property the revert sent. Also counted in `reverted`. |
+| `not verified` | The re-read could not compare the resource. Also counted in `reverted`; does not change the exit code. |
 | `failed` | The AWS update call failed. |
 | `update-not-supported` | The type cannot be updated in place. |
 | `reference-unresolvable` | cdkd could not work out a secret value to send. |
@@ -90,6 +98,15 @@ What to do for each:
 
 - **`failed`** is printed on a line starting with `✗`. Read the AWS error on
   that line, fix the cause, and run `--revert` again.
+- **`not applied by AWS`** is printed as
+  `✗ <stack>/<id> (<type>): not applied by AWS — ...`, naming the properties
+  that still differ. The service ignored the value it was sent, so running
+  `--revert` again sends the same update. This is usually a cdkd bug; please
+  report it. A property that drifted elsewhere on the resource after the
+  revert does not count.
+- **`not verified`** is printed as
+  `? <stack>/<id> (<type>): reverted, but cdkd could not verify it: ...`. Run
+  `cdkd drift` to check the resource.
 - **`update-not-supported`** is printed as
   `⊘ <stack>/<id> (<type>): could not revert — ...`. Redeploy with
   `cdkd deploy --replace`, or destroy and redeploy the stack.

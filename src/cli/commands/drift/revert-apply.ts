@@ -281,6 +281,7 @@ async function applyRevertUpdateInScope(args: ApplyRevertUpdateArgs): Promise<vo
     }
     // Issue #1644: keep whatever the provider says it ACTUALLY delivered,
     // so a narrowing does not re-surface as drift on the next run.
+    let narrowedKeys: readonly string[] = [];
     //
     // AFTER the success accounting, and in its OWN try: the AWS update
     // has already landed, so a throw in here (a provider handing back a
@@ -290,7 +291,8 @@ async function applyRevertUpdateInScope(args: ApplyRevertUpdateArgs): Promise<vo
     try {
       if (updateResult?.effectiveProperties) {
         const delta = collectNarrowedTopLevelKeys(newProperties, updateResult.effectiveProperties);
-        if (Object.keys(delta).length > 0) {
+        narrowedKeys = Object.keys(delta);
+        if (narrowedKeys.length > 0) {
           // Issue #1914: the delta is the provider's echo of a bag we
           // just resolved secrets INTO, and it is persisted below — so
           // this is a state-write surface, and fixing the revert without
@@ -446,6 +448,18 @@ async function applyRevertUpdateInScope(args: ApplyRevertUpdateArgs): Promise<vo
           `${maskSecretsInText(describeAwsFailure(captureErr).detail, secrets)}`
       );
     }
+    // go-to-k/cdkd#7025 step 6: the paths the post-revert verification
+    // re-reads. A key the provider reported narrowing is left out: its
+    // answer says what AWS applied there, and that is recorded, not ignored.
+    tally.reverted.push({
+      stackName: report.stackName,
+      region: report.region,
+      logicalId: outcome.logicalId,
+      resourceType: outcome.resourceType,
+      paths: outcome.changes
+        .map((change) => change.path)
+        .filter((path) => !narrowedKeys.includes(path.split('.', 1)[0] ?? '')),
+    });
     recordReturnedIdentity(args, updateResult, 'reverted');
   } catch (err) {
     // Distinguish "the AWS update failed" from "this resource type
