@@ -543,6 +543,7 @@
         "servicediscovery-namespaces",
         "ses-identity",
         "sg-circular-dependency",
+        "sg-ingress-secret-source",
         "sg-ingress-source-replacement",
         "sg-rule-description-update",
         "shared-stackname-multi-region",
@@ -1208,6 +1209,7 @@
         "servicediscovery-namespaces",
         "ses-identity",
         "sg-circular-dependency",
+        "sg-ingress-secret-source",
         "sg-ingress-source-replacement",
         "sg-rule-description-update",
         "shared-stackname-multi-region",
@@ -1809,6 +1811,7 @@
         "servicediscovery-namespaces",
         "ses-identity",
         "sg-circular-dependency",
+        "sg-ingress-secret-source",
         "sg-ingress-source-replacement",
         "sg-rule-description-update",
         "shared-stackname-multi-region",
@@ -1898,7 +1901,8 @@
         "nested-stack-replace-guard",
         "replace-squatter-refusal",
         "rollback-same-id-recreate",
-        "schedule-group-rename-rollback"
+        "schedule-group-rename-rollback",
+        "sg-ingress-secret-source"
       ]
     },
     {
@@ -2489,6 +2493,7 @@
         "servicediscovery-namespaces",
         "ses-identity",
         "sg-circular-dependency",
+        "sg-ingress-secret-source",
         "sg-ingress-source-replacement",
         "sg-rule-description-update",
         "shared-stackname-multi-region",
@@ -3122,6 +3127,7 @@
         "servicediscovery-namespaces",
         "ses-identity",
         "sg-circular-dependency",
+        "sg-ingress-secret-source",
         "sg-ingress-source-replacement",
         "sg-rule-description-update",
         "shared-stackname-multi-region",

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vite-plus/test';
 import {
   equalIdNamesDifferentResources,
   equalIdNamesSameResource,
+  recordedIdsNameDifferentResources,
 } from '../../../src/deployment/type-change-guard.js';
 import { SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 
@@ -272,5 +273,27 @@ describe.each([
   ])('is false for %s', (_n, oldApi, newApi) => {
     expect(check(oldApi, newApi)).toBe(false);
     expect(check(newApi, oldApi)).toBe(false);
+  });
+});
+
+/**
+ * go-to-k/cdkd#7084: two different recorded sgr- rule ids are two rules,
+ * whatever the properties say; any record without one keeps the property reading.
+ */
+describe('recordedIdsNameDifferentResources (go-to-k/cdkd#7084)', () => {
+  const T = 'AWS::EC2::SecurityGroupIngress';
+  it('is true for two different sgr- ids on an ingress rule', () => {
+    expect(recordedIdsNameDifferentResources(T, { Id: 'sgr-0a1' }, { Id: 'sgr-0b2' })).toBe(true);
+  });
+  it.each([
+    ['the same sgr- id', T, { Id: 'sgr-0a1' }, { Id: 'sgr-0a1' }],
+    ['a record without an id', T, {}, { Id: 'sgr-0b2' }],
+    ['absent attributes', T, undefined, { Id: 'sgr-0b2' }],
+    ['a composite wearing the prefix', T, { Id: 'sgr-0a1|tcp|1|1' }, { Id: 'sgr-0b2' }],
+    ['a mask', T, { Id: SECRET_MASK }, { Id: 'sgr-0b2' }],
+    ['another type', 'AWS::SQS::Queue', { Id: 'sgr-0a1' }, { Id: 'sgr-0b2' }],
+  ])('is false for %s', (_n, type, a, b) => {
+    expect(recordedIdsNameDifferentResources(type, a, b)).toBe(false);
+    expect(recordedIdsNameDifferentResources(type, b, a)).toBe(false);
   });
 });

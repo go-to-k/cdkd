@@ -26,7 +26,8 @@ import {
   replacementOldHoldsSentName,
   replacementRequestsDifferentName,
 } from '../../replacement-name-holder.js';
-import { withCurrentResourceSecrets } from '../../resource-secrets-scope.js';
+import { withCurrentResourceSecrets, withPrintingSecrets } from '../../resource-secrets-scope.js';
+import { recordedIdsNameDifferentResources } from '../../type-change-guard.js';
 import { isNameCollisionErrorFrom, markNonRetryable } from '../../retryable-errors.js';
 import {
   createSecretMasker,
@@ -444,6 +445,33 @@ export async function replaceCreateFirst(
       currentResource.physicalId,
       currentResource.resourceType
     );
+    // go-to-k/cdkd#7084: the create minted another AWS id than the record's,
+    // so it made a NEW resource the property compare could not tell apart (an
+    // ingress rule whose source is masked). Unless `--replace` goes on to
+    // adopt it, it is deleted by its own id before the refusal, so a refused
+    // deploy leaves no untracked resource behind.
+    const createdAnother =
+      engine.options.replace !== true &&
+      recordedIdsNameDifferentResources(
+        resourceType,
+        currentResource.attributes,
+        createResult.attributes
+      );
+    if (createdAnother) {
+      await withPrintingSecrets(updateSecrets, () =>
+        replaceProvider.delete(logicalId, createResult.physicalId, resourceType, replaceProps, {
+          expectedRegion: engine.stackRegion,
+          recordedAttributes: createResult.attributes,
+          maskSecrets: createUnionSecretMasker([
+            updateSecrets,
+            secretNameBagFor(engine.secretsRun, logicalId),
+          ]),
+        })
+      );
+    }
+    const createdAnotherNote = createdAnother
+      ? ' The resource this create made under the same id was deleted again.'
+      : '';
     if (updateReplacePolicy === 'Retain') {
       throw new CdkdError(
         safeMsg`${logicalId} (${resourceType}) requires replacement, but its Create API is ` +
@@ -452,7 +480,8 @@ export async function replaceCreateFirst(
           `UpdateReplacePolicy: Retain pins that resource in place. ` +
           safeMsg`${idempotentNameOrigin.descriptor}. ${idempotentNameOrigin.remedy} — with ` +
           `Retain, the old resource keeps the name, so a same-name replacement can ` +
-          `never proceed.`,
+          `never proceed.` +
+          createdAnotherNote,
         'NAMED_REPLACEMENT_IDEMPOTENT_CREATE'
       );
     }
@@ -468,7 +497,8 @@ export async function replaceCreateFirst(
           `it under the same name (the resource is briefly unavailable while it is ` +
           `recreated). Note: this branch is also reached when the old resource was ` +
           `deleted out-of-band and the physical id is name-derived — there the ` +
-          `create was a genuine fresh create; \`--replace\` converges that case too.`,
+          `create was a genuine fresh create; \`--replace\` converges that case too.` +
+          createdAnotherNote,
         'NAMED_REPLACEMENT_IDEMPOTENT_CREATE'
       );
     }

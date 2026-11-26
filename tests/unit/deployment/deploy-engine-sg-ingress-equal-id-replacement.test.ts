@@ -71,7 +71,7 @@ describe('DeployEngine — an equal SecurityGroupIngress id from another source 
     provider = {
       create: vi.fn().mockImplementation(async () => {
         callOrder.push('create');
-        return { physicalId: ID, attributes: { Id: 'sgr-0new' } };
+        return { physicalId: ID, attributes: { Id: 'sgr-0bb2' } };
       }),
       update: vi.fn(),
       delete: vi.fn().mockImplementation(async () => {
@@ -140,7 +140,7 @@ describe('DeployEngine — an equal SecurityGroupIngress id from another source 
         physicalId: ID,
         resourceType: TYPE,
         properties: oldProps,
-        attributes: { Id: 'sgr-0old' },
+        attributes: { Id: 'sgr-0aa1' },
         dependencies: [],
         provisionedBy: 'sdk',
       },
@@ -165,14 +165,60 @@ describe('DeployEngine — an equal SecurityGroupIngress id from another source 
       ID,
       TYPE,
       oldProps,
-      expect.objectContaining({ recordedAttributes: { Id: 'sgr-0old' } })
+      expect.objectContaining({ recordedAttributes: { Id: 'sgr-0aa1' } })
     );
     expect(state['Rule']!.physicalId).toBe(ID);
     expect(state['Rule']!.properties).toEqual(newProps);
-    expect(state['Rule']!.attributes).toEqual({ Id: 'sgr-0new' });
+    expect(state['Rule']!.attributes).toEqual({ Id: 'sgr-0bb2' });
+  });
+
+  // go-to-k/cdkd#7084: a masked source cannot be compared, so the refusal
+  // stays; but the create's sgr- id is not the record's, so it made a new rule,
+  // which is revoked by that id before the refusal.
+  it('revokes the rule a masked-source create made, then refuses', async () => {
+    // The record holds the mask; the deploy sends the resolved new value.
+    const masked = { ...base, CidrIp: '***' };
+    const err = await invokeProvision(masked, NEW, 'CidrIp').then(
+      () => null,
+      (e: unknown) => e
+    );
+    const e = err as { code?: string; message?: string; cause?: { code?: string; message?: string } } | null;
+
+    expect(e?.cause?.code ?? e?.code).toBe('NAMED_REPLACEMENT_IDEMPOTENT_CREATE');
+    expect(callOrder).toEqual(['create', 'delete']);
+    expect(provider.delete).toHaveBeenCalledWith(
+      'Rule',
+      ID,
+      TYPE,
+      NEW,
+      expect.objectContaining({ recordedAttributes: { Id: 'sgr-0bb2' } })
+    );
+    expect(String(e?.cause?.message ?? e?.message)).toContain('was deleted again');
+  });
+
+  it('CONTROL: a masked-source create that returned the recorded rule deletes nothing', async () => {
+    vi.mocked(provider.create).mockImplementation(async () => {
+      callOrder.push('create');
+      return { physicalId: ID, attributes: { Id: 'sgr-0aa1' } };
+    });
+    // The record holds the mask; the deploy sends the resolved new value.
+    const masked = { ...base, CidrIp: '***' };
+    const err = await invokeProvision(masked, NEW, 'CidrIp').then(
+      () => null,
+      (e: unknown) => e
+    );
+    const e = err as { code?: string; cause?: { code?: string } } | null;
+
+    expect(e?.cause?.code ?? e?.code).toBe('NAMED_REPLACEMENT_IDEMPOTENT_CREATE');
+    expect(provider.delete).not.toHaveBeenCalled();
   });
 
   it('CONTROL: two spellings of one network keep the name-idempotent refusal', async () => {
+    // EC2 hands the existing rule back for a duplicate: the record's sgr- id.
+    vi.mocked(provider.create).mockImplementation(async () => {
+      callOrder.push('create');
+      return { physicalId: ID, attributes: { Id: 'sgr-0aa1' } };
+    });
     const err = await invokeProvision(SAME_OLD, SAME_NEW, 'CidrIp').then(
       () => null,
       (e: unknown) => e
