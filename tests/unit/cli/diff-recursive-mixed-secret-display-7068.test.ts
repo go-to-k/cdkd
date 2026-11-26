@@ -685,6 +685,11 @@ describe('maskPassedSecretReasons (#7068 review)', () => {
     Resources: {
       Cr: { Type: 'Custom::Thing', Properties: { ServiceToken: { Ref: 'X' } } },
       Plain: { Type: 'Custom::Thing', Properties: { ServiceToken: 'arn:plain' } },
+      // Tainted through another property: its token is no value of the secret.
+      OtherProp: {
+        Type: 'Custom::Thing',
+        Properties: { ServiceToken: 'arn:other', Name: { Ref: 'X' } },
+      },
     },
   };
   const token = (id: string, desired: string) =>
@@ -692,12 +697,16 @@ describe('maskPassedSecretReasons (#7068 review)', () => {
 
   it('masks the desired token of a tainted ServiceToken only', () => {
     const shown = maskPassedSecretReasons(
-      [token('Cr', 'arn:h-Q7'), token('Plain', 'arn:plain2')],
+      [token('Cr', 'arn:h-Q7'), token('Plain', 'arn:plain2'), token('OtherProp', 'arn:other2')],
       template as never,
-      new Set(['X', 'Cr']),
+      new Set(['X', 'Cr', 'OtherProp']),
       undefined
     );
-    expect(shown).toEqual([token('Cr', '***'), token('Plain', 'arn:plain2')]);
+    expect(shown).toEqual([
+      token('Cr', '***'),
+      token('Plain', 'arn:plain2'),
+      token('OtherProp', 'arn:other2'),
+    ]);
   });
 
   it('masks a tainted orphan record physical id, never an untainted one', () => {
