@@ -45,7 +45,11 @@ export async function healZonelessDbInstanceRecords(input: {
   resolve: (value: unknown) => Promise<unknown>;
   /** Omitted: nothing is read, and only a drift baseline can prove the zone. */
   readLiveZone?: LiveDbInstanceZoneReader | undefined;
-  log: (line: string) => void;
+  /**
+   * `info` for a record left as added (the refusal that follows then names
+   * why), `debug` for a healed one.
+   */
+  log: (line: string, level: 'debug' | 'info') => void;
 }): Promise<string[]> {
   const { resources, template, resolve, readLiveZone, log } = input;
   const candidates: [string, ResourceState, unknown][] = [];
@@ -80,13 +84,15 @@ export async function healZonelessDbInstanceRecords(input: {
           live = await readLiveZone(record.physicalId);
         } catch (error) {
           log(
-            safeMsg`${logicalId}: its state record holds no AvailabilityZone and the instance's zone could not be read (${error instanceof Error ? error.name : 'error'}); the declared zone is compared as added`
+            safeMsg`${logicalId}: its state record holds no AvailabilityZone and the instance's zone could not be read (${error instanceof Error ? error.name : 'error'}); the declared zone is compared as added`,
+            'info'
           );
           return undefined;
         }
         if (live !== desired) {
           log(
-            safeMsg`${logicalId}: its state record holds no AvailabilityZone and the instance runs in ${live ?? 'no reported zone'}, not the declared ${desired}; the declared zone is compared as added`
+            safeMsg`${logicalId}: its state record holds no AvailabilityZone and the instance runs in ${live ?? 'no reported zone'}, not the declared ${desired}; the declared zone is compared as added`,
+            'info'
           );
           return undefined;
         }
@@ -96,7 +102,8 @@ export async function healZonelessDbInstanceRecords(input: {
         properties: { ...record.properties, AvailabilityZone: live },
       };
       log(
-        safeMsg`${logicalId}: its state record holds no AvailabilityZone and the instance runs in the declared ${live}; recorded, not a change`
+        safeMsg`${logicalId}: its state record holds no AvailabilityZone and the instance runs in the declared ${live}; recorded, not a change`,
+        'debug'
       );
       return logicalId;
     })

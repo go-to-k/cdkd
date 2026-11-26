@@ -100,7 +100,7 @@ export async function calculateDeployDiff(
     template: effectiveTemplate,
     resolve: diffResolveFn,
     readLiveZone: (identifier) => readDbInstanceAvailabilityZone(identifier, engine.stackRegion),
-    log: (line) => engine.logger.debug(line),
+    log: (line, level) => engine.logger[level](line),
   });
   const maskedInputSourcesForDiff = maskedInputSources(
     engine.resolverContextDeps(),

@@ -150,6 +150,28 @@ describe('the zone-less record, compared with the instance (go-to-k/cdkd#7057)',
     }
   });
 
+  it('a declared zone resolving to an empty string: no read', async () => {
+    const resources = { Db: record(BASE) };
+    const run = await heal(
+      resources,
+      templateOf({ ...BASE, AvailabilityZone: { Ref: 'Zone' } }),
+      undefined,
+      async () => ''
+    );
+    expect(run.resolver).toHaveBeenCalledTimes(1);
+    expect(run.reader).not.toHaveBeenCalled();
+    expect(run.healed).toEqual([]);
+  });
+
+  it('a record holding AvailabilityZone: null or empty is zone-less too', async () => {
+    for (const zone of [null, '']) {
+      const resources = { Db: record({ ...BASE, AvailabilityZone: zone }) };
+      const run = await heal(resources, templateOf({ ...BASE, AvailabilityZone: 'us-east-1a' }));
+      expect(run.reader).toHaveBeenCalledTimes(1);
+      expect(resources.Db.properties['AvailabilityZone']).toBe('us-east-1a');
+    }
+  });
+
   it('several such records are read once each', async () => {
     const resources = { A: record(BASE, { physicalId: 'a' }), B: record(BASE, { physicalId: 'b' }) };
     const template: CloudFormationTemplate = {

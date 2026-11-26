@@ -13,11 +13,12 @@ const rds = vi.hoisted(() => ({
   sent: [] as { input: unknown; region: unknown }[],
 }));
 
+const infos = vi.hoisted(() => [] as string[]);
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
     setLevel: vi.fn(),
     debug: vi.fn(),
-    info: vi.fn(),
+    info: (m: unknown): void => void infos.push(String(m)),
     warn: vi.fn(),
     error: vi.fn(),
     child: () => fns,
@@ -179,6 +180,7 @@ const zoneless = (): StackState['resources'] =>
 beforeEach(() => {
   rds.zone = 'eu-west-1a';
   rds.sent.length = 0;
+  infos.length = 0;
 });
 
 describe('a zone-less pre-#5640 DBInstance record (go-to-k/cdkd#7057)', () => {
@@ -214,6 +216,8 @@ describe('a zone-less pre-#5640 DBInstance record (go-to-k/cdkd#7057)', () => {
   it('the instance runs in another zone: the replacement stands and the stateful guard refuses it', async () => {
     rds.zone = 'eu-west-1b';
     const run = await deploy(zoneless(), template());
+    // The refusal's reason is named at info: the instance's own zone.
+    expect(infos.some((m) => m.includes('runs in eu-west-1b, not the declared eu-west-1a'))).toBe(true);
     expect(chainText(run.thrown)).toContain('--force-stateful-recreation');
     expect(run.calls).toEqual([]);
     expect(rds.sent).toHaveLength(1);

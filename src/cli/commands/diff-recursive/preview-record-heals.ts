@@ -70,7 +70,7 @@ export async function previewZonelessDbInstanceHeal(
     template,
     resolve,
     readLiveZone,
-    log: (line) => logger.debug(line),
+    log: (line, level) => logger[level](line),
   });
   return healed.length === 0 ? state : { ...state, resources };
 }

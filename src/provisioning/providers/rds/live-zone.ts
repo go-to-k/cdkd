@@ -5,20 +5,29 @@ import { ambientClientDefaults } from '../../../utils/ambient-client-defaults.js
  * go-to-k/cdkd#7057: the zone a DB instance runs in, read with ONE
  * `DescribeDBInstances` by its identifier in `region`, through a client built
  * as `RDSProvider.getClient` builds its own (the ambient identity, the named
- * region). `undefined` when the answer names no zone, or names another
- * instance than the one asked about; a failed call rejects.
+ * region) and destroyed after the call. `undefined` when the answer names no
+ * zone, or names another instance than the one asked about; a failed call
+ * rejects.
  */
 export async function readDbInstanceAvailabilityZone(
   identifier: string,
   region: string,
-  client: RDSClient = new RDSClient({ ...ambientClientDefaults(), region })
+  client?: RDSClient
 ): Promise<string | undefined> {
-  const response = await client.send(
-    new DescribeDBInstancesCommand({ DBInstanceIdentifier: identifier })
-  );
-  const instance = response.DBInstances?.[0];
-  // RDS stores the identifier lowercased and matches it case-insensitively.
-  if (instance?.DBInstanceIdentifier?.toLowerCase() !== identifier.toLowerCase()) return undefined;
-  const zone = instance.AvailabilityZone;
-  return typeof zone === 'string' && zone !== '' ? zone : undefined;
+  const owned = client === undefined;
+  const rds = client ?? new RDSClient({ ...ambientClientDefaults(), region });
+  try {
+    const response = await rds.send(
+      new DescribeDBInstancesCommand({ DBInstanceIdentifier: identifier })
+    );
+    const instance = response.DBInstances?.[0];
+    // RDS stores the identifier lowercased and matches it case-insensitively.
+    if (instance?.DBInstanceIdentifier?.toLowerCase() !== identifier.toLowerCase()) {
+      return undefined;
+    }
+    const zone = instance.AvailabilityZone;
+    return typeof zone === 'string' && zone !== '' ? zone : undefined;
+  } finally {
+    if (owned) rds.destroy();
+  }
 }

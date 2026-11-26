@@ -44,10 +44,13 @@ vi.mock('@aws-sdk/client-sts', async (importOriginal) => {
   };
 });
 
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { buildDiffTree, computeStackDiff } from '../../../src/cli/commands/diff-recursive.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
-import type { StackState } from '../../../src/types/state.js';
+import type { ResourceState, StackState } from '../../../src/types/state.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 
 const BASE = { Engine: 'mysql', DBInstanceClass: 'db.t4g.micro' };
@@ -153,5 +156,61 @@ describe('cdkd diff previews the zone heal (go-to-k/cdkd#7057)', () => {
     });
     expect(regions).toEqual(['eu-west-1']);
     expect(tree.changes.get('Db')?.changeType).toBe('NO_CHANGE');
+  });
+
+  it('a nested child node gets the reader too, and previews the same verdict', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-7057-'));
+    try {
+      writeFileSync(join(dir, 'child.json'), JSON.stringify(template));
+      const parentTemplate = {
+        Resources: {
+          Child: {
+            Type: 'AWS::CloudFormation::Stack',
+            Metadata: { 'aws:asset:path': 'child.json' },
+            Properties: {},
+          },
+        },
+      } as unknown as CloudFormationTemplate;
+      const childRow: ResourceState = {
+        physicalId: 'arn:aws:cloudformation:eu-west-1:123456789012:stack/x/1',
+        resourceType: 'AWS::CloudFormation::Stack',
+        properties: {},
+        attributes: {},
+        dependencies: [],
+      };
+      const states: Record<string, StackState> = {
+        S: { ...stateWith(BASE), resources: { Child: childRow } },
+        'S~Child': { ...stateWith(BASE), stackName: 'S~Child' },
+      };
+      const regions: string[] = [];
+      const reads: string[] = [];
+      const tree = await buildDiffTree({
+        stackName: 'S',
+        displayName: 'S',
+        region: 'eu-west-1',
+        template: parentTemplate,
+        nestedTemplates: { Child: join(dir, 'child.json') },
+        recursive: true,
+        stateBackend: {
+          getState: async (name: string) => (states[name] ? { state: states[name], etag: 'e' } : null),
+        } as unknown as S3StateBackend,
+        diffCalculator: new DiffCalculator(),
+        isNestedChild: false,
+        liveDbInstanceZoneReaderFor: (region) => {
+          regions.push(region);
+          return async (id) => {
+            reads.push(id);
+            return 'eu-west-1a';
+          };
+        },
+      });
+      const child = tree.children.find((c) => c.stackName === 'S~Child');
+      expect(child).toBeDefined();
+      expect(regions).toEqual(['eu-west-1', 'eu-west-1']);
+      expect(reads).toEqual(['db-legacy']);
+      expect(child?.changes.get('Db')?.changeType).toBe('NO_CHANGE');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
