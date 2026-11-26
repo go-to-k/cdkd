@@ -8,12 +8,7 @@ import {
 import { enclosingDeadlineRemainingMs } from '../../../deployment/resource-deadline.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import { isTerminalDbWaitStatus } from '../deletion-protection-compensation.js';
-import {
-  CLUSTER_AVAILABLE_MAX_WAIT_MS,
-  DEADLINE_MARGIN_MS,
-  SETTLE_MAX_WAIT_MS,
-  clusterPortApplied,
-} from './shared.js';
+import { CLUSTER_AVAILABLE_MAX_WAIT_MS, DEADLINE_MARGIN_MS, SETTLE_MAX_WAIT_MS } from './shared.js';
 import { abortableSleep, throwIfReadinessAborted } from '../../deferred-readiness.js';
 
 /**
@@ -172,54 +167,6 @@ export async function waitForSecurityGroupsApplied(
   }
   throw new Error(
     `Timed out waiting for Neptune DBCluster ${logicalId} to apply its new VPC security groups`
-  );
-}
-
-/**
- * go-to-k/cdkd#7006: wait until the cluster reports `port` and is out of
- * `modifying` (`clusterPortApplied`), as the RDS and DocumentDB providers
- * wait for a changed cluster port (issue #1160): ModifyDBCluster returns
- * before the cluster moves to it. A vanished cluster or a terminal status
- * fails at once. The budget is the resource's own deadline, 30 minutes when
- * none is in scope; `signal` stops the poll of a wait `--no-wait` deferred.
- */
-export async function waitForClusterPortApplied(
-  this: NeptuneProvider,
-  logicalId: string,
-  dbClusterIdentifier: string,
-  port: number,
-  signal?: AbortSignal
-): Promise<void> {
-  const remaining = enclosingDeadlineRemainingMs();
-  // Ends DEADLINE_MARGIN_MS before the resource deadline, as `pollUntilSettled`
-  // does, so this wait's own error names the cause rather than the deadline's.
-  const maxWaitMs = Number.isFinite(remaining)
-    ? remaining - DEADLINE_MARGIN_MS
-    : CLUSTER_AVAILABLE_MAX_WAIT_MS;
-  const startTime = Date.now();
-  let delay = 5_000;
-  for (let first = true; first || Date.now() - startTime < maxWaitMs; first = false) {
-    throwIfReadinessAborted(signal);
-    const cluster = await this.describeDBCluster(dbClusterIdentifier);
-    if (cluster === undefined) {
-      throw new Error(
-        safeMsg`DescribeDBClusters returned no cluster for Neptune DBCluster ${logicalId} while waiting for its new port`
-      );
-    }
-    if (isTerminalDbWaitStatus(cluster.Status)) {
-      throw new Error(
-        safeMsg`Neptune DBCluster ${logicalId} entered status ${cluster.Status ?? ''} while applying its new port`
-      );
-    }
-    if (clusterPortApplied(cluster, port)) return;
-    this.logger.debug(
-      safeMsg`Neptune DBCluster ${logicalId} port not applied yet (status ${cluster.Status ?? 'unknown'})`
-    );
-    await abortableSleep((ms) => this.sleep(ms), delay, signal);
-    delay = Math.min(delay * 2, 10_000);
-  }
-  throw new Error(
-    safeMsg`Timed out waiting for Neptune DBCluster ${logicalId} to apply its new port`
   );
 }
 

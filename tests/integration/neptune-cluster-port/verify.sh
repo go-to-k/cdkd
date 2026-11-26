@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# verify.sh — cdkd Neptune DBCluster in-place DBPort change (issue #7006).
+# verify.sh — cdkd Neptune DBCluster in-place DBPort change (issue #7006):
+# a REGRESSION NET, not a fix's proof.
 #
-# A changed DBPort applies after ModifyDBCluster returns, so an update that
-# recorded the cluster from the read right after the call kept the OLD `Port`,
-# and a reader re-resolved after the update (here an SSM parameter holding
-# `Fn::GetAtt [Cluster, Port]`) kept it too.
+# Issue #7006 suspected Neptune of the RDS instance's stale-port window, but a
+# probe (us-east-1, a cluster with no instance) read the new port in the
+# ModifyDBCluster response and in every DescribeDBClusters after it, never
+# `modifying`. So Neptune needed no change, and this run passes without one.
+# It guards that a reader of `Fn::GetAtt [Cluster, Port]` (an SSM parameter),
+# the output and the record keep following an in-place DBPort change.
 #
 # Phase 1 deploys one Neptune cluster (no instance) on port 8182 and asserts
 # the reader, the output and the record against DescribeDBClusters. Phase 2
@@ -70,8 +73,12 @@ cleanup() {
   fi
   aws neptune delete-db-cluster --region "${REGION}" --db-cluster-identifier "${CLUSTER_ID}" \
     --skip-final-snapshot >/dev/null 2>&1 || true
-  # A re-run right after would collide with a cluster still `deleting`.
-  aws neptune wait db-cluster-deleted --region "${REGION}" --db-cluster-identifier "${CLUSTER_ID}" >/dev/null 2>&1 || true
+  # A re-run right after would collide with a cluster still `deleting`
+  # (bounded: a cleanup never blocks for long).
+  for _ in $(seq 1 60); do
+    ( gone_probe aws neptune describe-db-clusters --region "${REGION}" --db-cluster-identifier "${CLUSTER_ID}" ) && break
+    sleep 10
+  done
   aws ssm delete-parameter --region "${REGION}" --name "${PORT_PARAM}" >/dev/null 2>&1 || true
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
@@ -83,6 +90,7 @@ trap cleanup EXIT
 trap '(exit 130); cleanup; exit 130' INT
 trap '(exit 143); cleanup; exit 143' TERM
 
+RUN_START="$(date +%s)"
 [ -z "${STATE_BUCKET:-}" ] && { echo "FAIL: STATE_BUCKET required" >&2; exit 1; }
 [ ! -f "${LOCAL_DIST}" ] && { echo "FAIL: build dist first" >&2; exit 1; }
 [ -d node_modules ] || npm install
@@ -134,8 +142,7 @@ echo "==> Phase 2: change DBPort to 8183 in place (issue #7006)"
 CDKD_TEST_DB_PORT=8183 node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 # Compare the record with the port the cluster SETTLES on: wait until it is
 # out of `modifying` (bounded), so a record taken mid-change cannot match a
-# live read taken mid-change too. The elapsed time is the measurement #7006
-# lacked for Neptune.
+# live read taken mid-change too.
 SETTLE_START="$(date +%s)"
 for _ in $(seq 1 60); do
   STATUS="$(live_cluster | jq -r '.Status')"
@@ -167,4 +174,5 @@ assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-
 echo "    OK: cluster, SSM parameter and state gone"
 
 echo ""
+echo "    duration: $(( $(date +%s) - RUN_START ))s"
 echo "[verify] PASS — neptune-cluster-port: after an in-place DBPort change the SSM reader, the output and the recorded Port equal DescribeDBClusters"

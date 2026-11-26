@@ -82,13 +82,15 @@ skipped:
 - an RDS, DocumentDB or Neptune update's waits for a changed setting to apply
   or read back: the database stays available while the change applies. The
   exception is a value the change moves: an update that changes an RDS DB
-  instance's `Port`, `CACertificateIdentifier` or `MultiAZ`, or a Neptune
-  cluster's `DBPort`, records the attribute it moves (`Endpoint.Port`,
-  `CertificateDetails`, `SecondaryAvailabilityZone`, the cluster's `Port`)
+  instance's `Port`, `CACertificateIdentifier` or `MultiAZ` records the
+  attribute it moves (`Endpoint.Port`, `CertificateDetails`,
+  `SecondaryAvailabilityZone`)
   only once AWS reports the change applied. A CA certificate rotated without
-  `CertificateRotationRestart: true` is never waited for, as in
-  CloudFormation, and the certificate the instance reports (the one in use)
-  is recorded, as CloudFormation returns it. Otherwise, until the
+  `CertificateRotationRestart: true` is waited for only when the engine
+  version rotates certificates without a restart (the instance switches
+  within seconds). Otherwise nothing waits for it, as in CloudFormation, and
+  the certificate the instance reports (the one in use) is recorded, as
+  CloudFormation returns it. Otherwise, until the
   change applies, a `Fn::GetAtt` of it
   waits for the change, then reads the resource again, so it never gets the
   old value, and a custom resource downstream of the resource waits for the

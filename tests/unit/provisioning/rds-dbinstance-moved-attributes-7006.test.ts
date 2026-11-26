@@ -88,6 +88,8 @@ const PORT_MOVED: Input = {
 };
 
 let reads: Input[] = [];
+/** What DescribeDBEngineVersions answers: a support flag, or a thrown error. */
+let engineVersion: { supports?: boolean; error?: Error } = {};
 
 /** DescribeDBInstances answers each queued read in turn (the last repeats). */
 function arm(queued: Input[]): void {
@@ -114,6 +116,21 @@ function arm(queued: Input[]): void {
       }
       case 'ListTagsForResourceCommand':
         return Promise.resolve({ TagList: [] });
+      case 'DescribeDBEngineVersionsCommand':
+        if (engineVersion.error !== undefined) return Promise.reject(engineVersion.error);
+        return Promise.resolve({
+          DBEngineVersions: [
+            {
+              Engine: 'mysql',
+              EngineVersion: '8.0.40',
+              ...(engineVersion.supports !== undefined && {
+                SupportsCertificateRotationWithoutRestart: engineVersion.supports,
+              }),
+            },
+          ],
+        });
+      case 'ModifyDBInstanceCommand':
+        return Promise.resolve({ DBInstance: { Engine: 'mysql', EngineVersion: '8.0.40' } });
       default:
         return Promise.resolve({});
     }
@@ -142,6 +159,7 @@ describe('RDS DBInstance attributes an in-place update moves late (go-to-k/cdkd#
 
   beforeEach(() => {
     mockSend.mockReset();
+    engineVersion = {};
     provider = new RDSProvider();
     (provider as unknown as { sleep: (ms: number) => Promise<void> }).sleep = async () => {};
   });
@@ -290,6 +308,52 @@ describe('RDS DBInstance attributes an in-place update moves late (go-to-k/cdkd#
       const result = await withDeferredReadinessScope(bound, () => update(changed, previous));
       expect(result.attributes?.['CertificateDetails.CAIdentifier']).toBe(OLD_CERT.CAIdentifier);
       expect(bound.deferred.size).toBe(0);
+    });
+
+    describe('without a restart, on an engine version that rotates in place', () => {
+      const engineReads = () =>
+        mockSend.mock.calls
+          .map(([command]) => command as { constructor: { name: string }; input: Input })
+          .filter((command) => command.constructor.name === 'DescribeDBEngineVersionsCommand');
+
+      it('waits for the identifier to switch, not for the pending value, then records it', async () => {
+        engineVersion = { supports: true };
+        const switched = {
+          CACertificateIdentifier: NEW_CERT.CAIdentifier,
+          CertificateDetails: NEW_CERT,
+          PendingModifiedValues: { CACertificateIdentifier: NEW_CERT.CAIdentifier },
+        };
+        arm([{ PendingModifiedValues: { CACertificateIdentifier: NEW_CERT.CAIdentifier } }, switched]);
+        const result = await update({ ...changed, CertificateRotationRestart: false }, previous);
+        expect(result.attributes?.['CertificateDetails.CAIdentifier']).toBe(NEW_CERT.CAIdentifier);
+        // Two wait reads, then the attributes read.
+        expect(describes()).toBe(3);
+        // The instance's own engine and version, as the modify reported them.
+        expect(engineReads().map((command) => command.input)).toStrictEqual([
+          { Engine: 'mysql', EngineVersion: '8.0.40' },
+        ]);
+      });
+
+      it.each([
+        ['false', { supports: false }],
+        ['not reported', {}],
+        ['unreadable', { error: Object.assign(new Error('denied'), { name: 'AccessDenied' }) }],
+      ])('when the support flag is %s, waits for nothing and records the certificate in use', async (_label, answer) => {
+        engineVersion = answer;
+        arm([{ PendingModifiedValues: { CACertificateIdentifier: NEW_CERT.CAIdentifier } }]);
+        const result = await update({ ...changed, CertificateRotationRestart: false }, previous);
+        expect(describes()).toBe(1);
+        expect(result.attributes?.['CertificateDetails.CAIdentifier']).toBe(OLD_CERT.CAIdentifier);
+      });
+
+      it('asks nothing for an update changing no certificate, nor beside a restart', async () => {
+        engineVersion = { supports: true };
+        arm([{}]);
+        await update({ ...BASE, DBInstanceClass: 'db.t4g.small' });
+        arm([{ CACertificateIdentifier: NEW_CERT.CAIdentifier, CertificateDetails: NEW_CERT }]);
+        await update({ ...changed, CertificateRotationRestart: true }, previous);
+        expect(engineReads()).toHaveLength(0);
+      });
     });
 
     it('without a restart, records a certificate the instance already switched to', async () => {

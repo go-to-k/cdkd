@@ -913,8 +913,13 @@ const INSTANCE_CASE: TypeCase = {
     // the listed ARN, which the arm cannot name (the client region is no
     // input); rds-dbinstance-backup-replication-5640.test.ts pins those waits.
     const waitForInstanceState = provider.waitForInstanceState.bind(provider);
+    // go-to-k/cdkd#7006: a changed port, CA certificate or Multi-AZ setting
+    // waits for the instance to report it applied, which this arm's fixed
+    // describe never does; rds-dbinstance-moved-attributes-7006.test.ts pins
+    // those waits.
     provider.waitForInstanceState = async (logicalId, id, done, change) =>
-      change.startsWith('automated backup replication')
+      change.startsWith('automated backup replication') ||
+      /^(port|CA certificate|Multi-AZ)(, (port|CA certificate|Multi-AZ))* change$/.test(change)
         ? ((await provider.describeDBInstance(id)) ?? {})
         : waitForInstanceState(logicalId, id, done, change);
     return provider;

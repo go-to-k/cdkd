@@ -29,14 +29,9 @@ import {
   planAssociatedRoleChanges,
   type AssociatedRole,
 } from '../db-associated-roles.js';
-import { deferReadiness } from '../../deferred-readiness.js';
-import { waitForClusterPortApplied } from './waits.js';
 import {
   CLUSTER_KEPT_ON_REMOVAL,
   CLUSTER_MODIFY_KEYS,
-  CLUSTER_PORT_ATTRIBUTE_KEYS,
-  changedClusterPort,
-  clusterPortApplied,
   CLUSTER_UNMEASURED_ON_REMOVAL,
   DEADLINE_MARGIN_MS,
   ROLE_AVAILABLE_MAX_WAIT_MS,
@@ -181,30 +176,9 @@ export async function updateDBCluster(
     }
 
     this.logger.debug(`Successfully updated Neptune DBCluster ${logicalId}`);
-    // go-to-k/cdkd#7006: a changed port applies after ModifyDBCluster
-    // returns, so the describe below could still read the old one and record
-    // it for `Fn::GetAtt <cluster>.Port`. CloudFormation reports the update
-    // once it has settled, so wait for the new port first, as the RDS and
-    // DocumentDB providers do. An unchanged port adds no call.
-    const noWait = process.env['CDKD_NO_WAIT'] === 'true';
-    const portChanged = changedClusterPort(properties, previousProperties);
-    if (!noWait && portChanged !== undefined) {
-      await waitForClusterPortApplied.call(this, logicalId, physicalId, portChanged);
-    }
     const described = await this.describeDBCluster(physicalId);
-    // Under `--no-wait` a port not applied yet is left absent, never recorded
-    // stale, and the same wait is handed to the deploy: a reference to it
-    // waits for the port and reads the cluster again, and a custom resource
-    // downstream waits before its handler runs (go-to-k/cdkd#6940).
-    const portPending =
-      noWait && portChanged !== undefined && !clusterPortApplied(described, portChanged);
-    if (portPending) {
-      deferReadiness(logicalId, resourceType, physicalId, (signal) =>
-        waitForClusterPortApplied.call(this, logicalId, physicalId, portChanged, signal)
-      );
-    }
 
-    if (logExportConfig !== undefined && !noWait) {
+    if (logExportConfig !== undefined && process.env['CDKD_NO_WAIT'] !== 'true') {
       // The delta, not the whole list: a type enabled out of band is not ours.
       const { EnableLogTypes: enabled = [], DisableLogTypes: disabled = [] } = logExportConfig;
       await this.waitForApplied(logicalId, 'EnableCloudwatchLogsExports', async () => {
@@ -216,7 +190,7 @@ export async function updateDBCluster(
       });
     }
 
-    if (networkChange && !noWait) {
+    if (networkChange && process.env['CDKD_NO_WAIT'] !== 'true') {
       await this.waitForApplied(
         logicalId,
         'NetworkType',
@@ -242,7 +216,10 @@ export async function updateDBCluster(
     // wait here, but ONLY when the sent list differs from the previous one:
     // an unchanged list (re-sent on every update) adds no time. `--no-wait`
     // skips it, exactly as create() skips waitForClusterAvailable.
-    if (!noWait && securityGroupListChanged(vpcSgIds, previousProperties['VpcSecurityGroupIds'])) {
+    if (
+      process.env['CDKD_NO_WAIT'] !== 'true' &&
+      securityGroupListChanged(vpcSgIds, previousProperties['VpcSecurityGroupIds'])
+    ) {
       await this.waitForSecurityGroupsApplied(physicalId, logicalId, vpcSgIds ?? []);
       for (const member of described?.DBClusterMembers ?? []) {
         if (member.DBInstanceIdentifier) {
@@ -283,13 +260,7 @@ export async function updateDBCluster(
     return {
       physicalId,
       wasReplaced: false,
-      attributes: portPending
-        ? Object.fromEntries(
-            Object.entries(clusterAttributes(described)).filter(
-              ([key]) => !CLUSTER_PORT_ATTRIBUTE_KEYS.includes(key)
-            )
-          )
-        : clusterAttributes(described),
+      attributes: clusterAttributes(described),
     };
   } catch (error) {
     if (error instanceof ProvisioningError) throw error;

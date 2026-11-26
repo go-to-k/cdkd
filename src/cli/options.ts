@@ -239,8 +239,7 @@ export function guardStackRegionOptions(cmd: Command): void {
  * and RDS applies only afterwards (go-to-k/cdkd#7006): an RDS DB instance's
  * `Endpoint.Port` / `ListenerEndpoint.Port`, `CertificateDetails.*` or
  * `SecondaryAvailabilityZone` after a Port, CACertificateIdentifier or
- * MultiAZ change, and a Neptune cluster's `Port` after a DBPort change; the
- * update records them absent rather than stale. A provider opts in with
+ * MultiAZ change; the update records them absent rather than stale. A provider opts in with
  * `deferReadiness()` (`src/provisioning/deferred-readiness.ts`). A plain
  * dependent never waits.
  *
@@ -260,7 +259,7 @@ export function guardStackRegionOptions(cmd: Command): void {
  */
 export const noWaitOption = new Option(
   '--no-wait',
-  'Skip waiting for async resources to stabilize (RDS, ElastiCache, NAT Gateway, EC2 Instance, ELBv2 LoadBalancer, Lambda MicroVM Image, Bedrock AgentCore Runtime, EventBridge Archive, Connect Instance, VPC Endpoint, ECS Service steady state, Auto Scaling instance refresh under --update-policy; an AutoScalingReplacingUpdate still waits for its new instances, and a Lambda alias CodeDeploy deployment for its traffic shift; a Fn::GetAtt of a value that exists only once a resource is ready, or that an RDS instance or Neptune cluster update changed and has not applied yet (a port, a CA certificate, a Multi-AZ standby zone), or a custom resource invoked after one, still waits for it)'
+  'Skip waiting for async resources to stabilize (RDS, ElastiCache, NAT Gateway, EC2 Instance, ELBv2 LoadBalancer, Lambda MicroVM Image, Bedrock AgentCore Runtime, EventBridge Archive, Connect Instance, VPC Endpoint, ECS Service steady state, Auto Scaling instance refresh under --update-policy; an AutoScalingReplacingUpdate still waits for its new instances, and a Lambda alias CodeDeploy deployment for its traffic shift; a Fn::GetAtt of a value that exists only once a resource is ready, or that an RDS instance update changed and has not applied yet (a port, a CA certificate, a Multi-AZ standby zone), or a custom resource invoked after one, still waits for it)'
 );
 
 /**

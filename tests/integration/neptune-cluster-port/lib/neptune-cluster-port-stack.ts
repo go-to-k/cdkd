@@ -5,11 +5,10 @@ import * as neptune from 'aws-cdk-lib/aws-neptune';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 
 /**
- * Issue #7006, the Neptune arm: an in-place `DBPort` change applies after
- * ModifyDBCluster returns, so an update recording the cluster from the read
- * right after the call kept the OLD `Port`, and a reader re-resolved after
- * the update got it. `CDKD_TEST_DB_PORT` sets the port; the SSM parameter is
- * the READER verify.sh reads live after the update.
+ * Issue #7006, a regression net: a reader of the cluster `Port` keeps
+ * following an in-place `DBPort` change. Neptune reports the new port at
+ * once (probed), so no fix was needed. `CDKD_TEST_DB_PORT` sets the port;
+ * the SSM parameter is the READER verify.sh reads live after the update.
  *
  * One cluster with no instance (Neptune allows that), in an isolated VPC: the
  * lightest Neptune shape. Every property set is one the Neptune SDK provider

@@ -29,6 +29,15 @@ export interface MovedAttributeChanges {
    * read, as CloudFormation's GetAtt returns its live model.
    */
   readonly caRotationRestarts?: boolean;
+  /**
+   * Whether the instance's engine version rotates a certificate without a
+   * restart (`DescribeDBEngineVersions.SupportsCertificateRotationWithoutRestart`),
+   * read only for a CA change without `CertificateRotationRestart: true`
+   * (`withCertificateRotationInPlace`). Such an engine switches the
+   * identifier within seconds (measured: MySQL, ~7 s), so the update waits
+   * for the switch, though not for the pending value.
+   */
+  readonly caRotatesInPlace?: boolean;
   /** The Multi-AZ setting sent, when the template changed it. */
   readonly multiAZ?: boolean;
 }
@@ -135,14 +144,18 @@ export function unappliedMovedChanges(
 
 /**
  * The unapplied changes the update waits for: every one but a CA certificate
- * rotated without a restart (`MovedAttributeChanges.caRotationRestarts`).
+ * rotated without a restart by an engine that cannot rotate in place
+ * (`MovedAttributeChanges.caRotationRestarts` / `caRotatesInPlace`).
  */
 export function blockingMovedChanges(
   changes: MovedAttributeChanges,
   unapplied: readonly MovedChange[]
 ): MovedChange[] {
   return unapplied.filter(
-    (change) => change !== 'caIdentifier' || changes.caRotationRestarts === true
+    (change) =>
+      change !== 'caIdentifier' ||
+      changes.caRotationRestarts === true ||
+      changes.caRotatesInPlace === true
   );
 }
 
@@ -151,7 +164,8 @@ export function waitsForMovedChanges(changes: MovedAttributeChanges): boolean {
   return (
     changes.port !== undefined ||
     changes.multiAZ !== undefined ||
-    (changes.caIdentifier !== undefined && changes.caRotationRestarts === true)
+    (changes.caIdentifier !== undefined &&
+      (changes.caRotationRestarts === true || changes.caRotatesInPlace === true))
   );
 }
 
@@ -186,4 +200,35 @@ export function movedChangesText(changes: MovedAttributeChanges): string {
     .filter((word): word is string => word !== undefined)
     .join(', ')
     .concat(' change');
+}
+
+/**
+ * `changes` with `caRotatesInPlace` read from the engine version, for a CA
+ * change the template rotates without `CertificateRotationRestart: true`; any
+ * other update makes no call. An unreadable answer (a failed read, a version
+ * AWS does not list, no flag) leaves the change unwaited, recording the
+ * certificate the instance reports, as CloudFormation does.
+ */
+export async function withCertificateRotationInPlace(
+  changes: MovedAttributeChanges | undefined,
+  engine: string | undefined,
+  engineVersion: string | undefined,
+  readSupport: (engine: string, engineVersion: string) => Promise<boolean | undefined>,
+  onUnreadable: (error: unknown) => void
+): Promise<MovedAttributeChanges | undefined> {
+  if (
+    changes?.caIdentifier === undefined ||
+    changes.caRotationRestarts === true ||
+    engine === undefined ||
+    engine === '' ||
+    engineVersion === undefined ||
+    engineVersion === ''
+  ) {
+    return changes;
+  }
+  const supports = await readSupport(engine, engineVersion).catch((error: unknown) => {
+    onUnreadable(error);
+    return undefined;
+  });
+  return supports === true ? { ...changes, caRotatesInPlace: true } : changes;
 }

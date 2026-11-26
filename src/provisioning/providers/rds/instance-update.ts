@@ -1,4 +1,5 @@
 import {
+  DescribeDBEngineVersionsCommand,
   ModifyDBInstanceCommand,
   PromoteReadReplicaCommand,
   type DBInstance,
@@ -70,6 +71,7 @@ import {
   movedChangesText,
   unappliedMovedChanges,
   waitsForMovedChanges,
+  withCertificateRotationInPlace,
   withoutUnappliedMovedAttributes,
 } from './instance-moved-attributes.js';
 import { deferReadiness } from '../../deferred-readiness.js';
@@ -767,7 +769,26 @@ export async function updateDBInstance(
     // nothing is pending, so a reader of `Endpoint.Port`,
     // `CertificateDetails.*` or `SecondaryAvailabilityZone` gets the new value.
     // An update changing none of them adds no call.
-    const moved = movedAttributeChanges(properties, previousProperties, backfillMembers, context);
+    // A CA change rotated without a restart is waited for only on an engine
+    // version that rotates in place: one DescribeDBEngineVersions, made only
+    // for such a change.
+    const moved = await withCertificateRotationInPlace(
+      movedAttributeChanges(properties, previousProperties, backfillMembers, context),
+      modified?.Engine ?? (properties['Engine'] as string | undefined),
+      modified?.EngineVersion ?? String((properties['EngineVersion'] as string | undefined) ?? ''),
+      async (engine, engineVersion) =>
+        (
+          await this.getClient().send(
+            new DescribeDBEngineVersionsCommand({ Engine: engine, EngineVersion: engineVersion })
+          )
+        ).DBEngineVersions?.[0]?.SupportsCertificateRotationWithoutRestart,
+      (error) =>
+        this.logger.debug(
+          sourceMask(
+            safeMsg`DBInstance ${logicalId}: could not read whether its engine version rotates a CA certificate without a restart, so the update does not wait for the certificate: ${describeAwsFailure(error).summary}`
+          )
+        )
+    );
     const movedApplied = (instance: DBInstance): boolean =>
       moved === undefined ||
       blockingMovedChanges(moved, unappliedMovedChanges(moved, instance)).length === 0;
