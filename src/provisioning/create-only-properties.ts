@@ -317,8 +317,8 @@ export function withSpecReplacementPaths(
 ): ReadonlyArray<readonly string[]> {
   const extra = SPEC_REPLACEMENT_PATHS.get(resourceType);
   if (extra === undefined) return paths;
-  const seen = new Set(paths.map((path) => path.join('\0')));
-  return [...paths, ...extra.filter((path) => !seen.has(path.join('\0')))];
+  const seen = new Set(paths.map((path) => JSON.stringify(path)));
+  return [...paths, ...extra.filter((path) => !seen.has(JSON.stringify(path)))];
 }
 
 /**
