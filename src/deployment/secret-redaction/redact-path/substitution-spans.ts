@@ -155,13 +155,20 @@ export function positionBySubstitutionSpans(
         continue;
       }
       const answer = redactGap(piece.text, own, secrets, copies, scan);
-      if (answer === 'refuse') return undefined;
       if (answer === 'mask') return SECRET_MASK;
       persisted += answer.text;
     }
     if (i < spans.length) {
       const span = spans[i]!;
-      persisted += span.secret ? span.token : bag.slice(span.start, span.end);
+      if (span.secret) {
+        persisted += span.token;
+      } else {
+        // A PUBLIC token's value (an ssm `String`) is a value like a gap's,
+        // and is redacted as one: it can hold a secret's text too.
+        const answer = redactGap(bag.slice(span.start, span.end), own, secrets, copies, scan);
+        if (answer === 'mask') return SECRET_MASK;
+        persisted += answer.text;
+      }
       cursor = span.end;
     }
   }
@@ -169,7 +176,7 @@ export function positionBySubstitutionSpans(
 }
 
 /** What {@link redactGap} decided for one gap. */
-type GapAnswer = { text: string } | 'mask' | 'refuse';
+type GapAnswer = { text: string } | 'mask';
 
 /**
  * A gap's bytes as persisted (go-to-k/cdkd#7050). By provenance a gap is a
@@ -183,12 +190,11 @@ type GapAnswer = { text: string } | 'mask' | 'refuse';
  * - the leaf is MASKED when two tokens resolved to that text: which one the
  *   gap holds is not known, and a survivor would send the wrong value on a
  *   replay;
- * - the arm REFUSES where the value scan would change the gap for any other
- *   reason (another secret of the bag at 4+ characters, a mask-only value):
- *   the older arms (parameter placeholders, cross-stack reads) answer such a
- *   gap from their own associations. Another secret's sub-floor text in a gap
- *   is kept, as the value scan keeps it: rewriting it would spell a public
- *   value as an unrelated reference (a perpetual plan diff).
+ * - every other recorded secret goes through the value scan, as any value's
+ *   does (one the gap equals whole at any length, a substring from 4
+ *   characters); a mask-only value MASKS the leaf whole. Another secret's
+ *   sub-floor text inside a larger gap is kept, as the scan keeps it:
+ *   rewriting it would spell a public value as an unrelated reference.
  */
 function redactGap(
   gap: string,
@@ -217,7 +223,12 @@ function redactGap(
   for (const plaintext of own.keys()) {
     if (exposedAt(text, plaintext, copies).length > 0) return 'mask';
   }
-  return scan(text) === text ? { text } : 'refuse';
+  // Then the value scan, for every other recorded secret (4+ characters, or
+  // one the gap equals whole): its answer is taken, as the scan's is for any
+  // value. A mask-only value in the gap masks the leaf whole, never inline.
+  const scanned = scan(text);
+  if (typeof scanned !== 'string' || scanned.includes(SECRET_MASK)) return 'mask';
+  return { text: scanned };
 }
 
 /**
@@ -225,19 +236,22 @@ function redactGap(
  * and every physical-id copy: non-overlapping, leftmost first.
  */
 function exposedAt(text: string, plaintext: string, copies: readonly string[]): number[] {
-  const shielded: Array<readonly [number, number]> = dynamicReferenceSpans(text).map(
-    (s) => [s.start, s.end] as const
-  );
+  const tokens = dynamicReferenceSpans(text).map((s) => [s.start, s.end] as const);
+  const copyRanges: Array<readonly [number, number]> = [];
   for (const copy of copies) {
     for (let at = text.indexOf(copy); at !== -1; at = text.indexOf(copy, at + 1)) {
-      shielded.push([at, at + copy.length]);
+      copyRanges.push([at, at + copy.length]);
     }
   }
   const out: number[] = [];
   for (let at = text.indexOf(plaintext); at !== -1;) {
     const end = at + plaintext.length;
-    const inside = shielded.some(([from, to]) => at >= from && end <= to);
-    if (inside) {
+    // Touching a token at all is shielded (rewriting across its edge would
+    // corrupt it); a copy shields only what lies wholly inside it.
+    const shielded =
+      tokens.some(([from, to]) => at < to && end > from) ||
+      copyRanges.some(([from, to]) => at >= from && end <= to);
+    if (shielded) {
       at = text.indexOf(plaintext, at + 1);
       continue;
     }

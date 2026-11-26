@@ -23,7 +23,7 @@ import {
 import { dynamicReferenceSpans, withoutLiteralRendering } from '../redact-path.js';
 import { positionBySubstitutionSpans } from '../redact-path/substitution-spans.js';
 import { SPELLED_SECRET_REFERENCE_PREFIXES } from '../anchors.js';
-import { wholeStringLeavesOf } from '../mask-only.js';
+import { recordDerivedMaskOnlyValue, wholeStringLeavesOf } from '../mask-only.js';
 import {
   NESTED_STACK_RESOURCE_TYPE,
   UNFRAMED_SPELLING,
@@ -894,6 +894,11 @@ function substitutionSpelling(
     TEMPLATE_DERIVED_RULES,
     (text) => redactForState(text, { provenance: 'value-scan', secrets })
   );
+  // A row value the arm MASKS (two references share its secret text) is a
+  // mask-only needle of the row's bag, so a child reading the parameter whole
+  // masks it too rather than keep the plaintext the parent would not.
+  // CONTAINMENT too, so a child leaf embedding the value is masked whole.
+  if (spelled === SECRET_MASK) recordDerivedMaskOnlyValue(secrets, resolvedValue);
   return spelled === undefined || spelled === SECRET_MASK || spelled === resolvedValue
     ? undefined
     : spelled;

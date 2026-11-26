@@ -57,6 +57,66 @@ describe('positionBySubstitutionSpans (#7050)', () => {
     expect(position('pg-pgapgb', source, secrets)).toBe(`pg-${U}a${U}b`);
   });
 
+  it("redacts a PUBLIC token's value like a gap: a secret's text in it never stays (security review)", () => {
+    const LONG = '{{resolve:ssm:/app/long}}';
+    const PUB = '{{resolve:ssm:/app/publong}}';
+    const secrets = bag([[LONG, 'rootpw']]);
+    const source = { 'Fn::Join': ['', [LONG, '@', PUB]] };
+    recordIntrinsicLeafResolution(secrets, source, {
+      input: `${LONG}@${PUB}`,
+      output: 'rootpw@rootpw-host',
+      substitutions: [
+        { token: LONG, value: 'rootpw', secret: true },
+        { token: PUB, value: 'rootpw-host', secret: false },
+      ],
+      complete: true,
+    });
+    expect(position('rootpw@rootpw-host', source, secrets)).toBe(`${LONG}@${LONG}-host`);
+    // ...and the leaf's own sub-floor secret inside a public value.
+    const PIN = '{{resolve:ssm:/app/pin}}';
+    const pins = bag([[PIN, 'q7']]);
+    const pinned = { 'Fn::Join': ['', [PUB, '/', PIN]] };
+    recordIntrinsicLeafResolution(pins, pinned, {
+      input: `${PUB}/${PIN}`,
+      output: 'xq7y/q7',
+      substitutions: [
+        { token: PUB, value: 'xq7y', secret: false },
+        { token: PIN, value: 'q7', secret: true },
+      ],
+      complete: true,
+    });
+    expect(position('xq7y/q7', pinned, pins)).toBe(`x${PIN}y/${PIN}`);
+  });
+
+  it('keeps placing its own token where a gap also holds ANOTHER secret (security review)', () => {
+    const PIN = '{{resolve:ssm:/app/pin}}';
+    const X9 = '{{resolve:ssm:/app/x9}}';
+    const LONG = '{{resolve:ssm:/app/long}}';
+    const secrets = bag([
+      [PIN, 'q7'],
+      [X9, 'x9'],
+      [LONG, 'rootpw'],
+    ]);
+    // The gap IS another secret's whole value.
+    const whole = { 'Fn::Join': ['', [PIN, '@', { Ref: 'Sep' }]] };
+    recordIntrinsicLeafResolution(secrets, whole, {
+      input: `${PIN}@x9`,
+      output: 'q7@x9',
+      substitutions: [{ token: PIN, value: 'q7', secret: true }],
+      complete: true,
+    });
+    expect(position('q7@x9', whole, secrets)).toBe(`${PIN}@${X9}`);
+    // The gap holds the own secret's text AND another 4+ character secret.
+    const mixed = { 'Fn::Join': ['', [PIN, '@', { Ref: 'Other' }]] };
+    recordIntrinsicLeafResolution(secrets, mixed, {
+      input: `${PIN}@q7-rootpw`,
+      output: 'q7@q7-rootpw',
+      substitutions: [{ token: PIN, value: 'q7', secret: true }],
+      complete: true,
+    });
+    expect(position('q7@q7-rootpw', mixed, secrets)).toBe(`${PIN}@${PIN}-${LONG}`);
+  });
+
   it('refuses a record whose replay does not reproduce its output', () => {
     const secrets = bag([[U, 'pg']]);
     const source = { 'Fn::Join': ['', ['tt:', U, { Ref: 'Alias' }]] };

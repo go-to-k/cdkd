@@ -215,4 +215,27 @@ describe('a nested stack row: a sub-floor secret beside a parameter holding its 
       expect(exposed(child)).toBe(false);
     });
   }
+
+  it('a row value masked because two references share its text masks the child read too (security review)', async () => {
+    const { bag, resolved, record } = await deployRow(
+      {
+        X: { 'Fn::Join': ['', [{ Ref: 'Sep' }, '/', '{{resolve:ssm-secure:/app/a}}']] },
+        Y: '{{resolve:ssm-secure:/app/b}}',
+      },
+      { Sep: PIN }
+    );
+    expect(record.Parameters['X']).toBe('***');
+    const child = await childPersist(bag, 'X', String(resolved.Parameters['X']));
+    expect(child).toBe('***');
+    // ...and a child leaf EMBEDDING it.
+    const embedding = new Map() as RecordedSecretValues;
+    inheritNestedStackParameterAssociations(embedding, bag);
+    const source = { Value: { 'Fn::Join': ['', ['a-', { Ref: 'X' }]] } };
+    const childResolved = (await new IntrinsicFunctionResolver('us-east-1').resolve(
+      source,
+      contextFor({ X: String(resolved.Parameters['X']) }, embedding, bag) as never
+    )) as Record<string, unknown>;
+    const persisted = redactSecretsForState(structuredClone(childResolved), embedding, source, TEMPLATE_DERIVED_RULES, true) as { Value: unknown };
+    expect(exposed(persisted.Value)).toBe(false);
+  });
 });
