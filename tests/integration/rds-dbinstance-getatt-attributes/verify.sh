@@ -180,14 +180,12 @@ assert_moved() { # usage: assert_moved <phase> <port> <ca>
 assert_moved "phase 1" 5432 rds-ca-rsa2048-g1
 
 echo "==> Phase 2: change the port and the CA certificate in place (default mode, issue #7006)"
-UPDATE_LOG="$(mktemp)"
 CDKD_TEST_DB_PORT=5433 CDKD_TEST_DB_CA=rds-ca-rsa4096-g1 \
-  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${UPDATE_LOG}"
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 # The instance must have been UPDATED in place, not replaced: a replacement
 # records a fresh instance and would pass the reader checks without the fix.
 expect_eq "phase 2: DbiResourceId kept (no replacement)" \
   "$(aws rds describe-db-instances --region "${REGION}" --db-instance-identifier "${DB_ID}" --query 'DBInstances[0].DbiResourceId' --output text)" "${LIVE_DBI}"
-rm -f "${UPDATE_LOG}"
 assert_moved "phase 2" 5433 rds-ca-rsa4096-g1
 
 echo "==> Phase 3: change the port again under --no-wait (issue #7006)"

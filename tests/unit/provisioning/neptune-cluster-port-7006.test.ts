@@ -6,12 +6,16 @@
 // handed to the deploy (`deferReadiness`).
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
-const { mockSend } = vi.hoisted(() => ({ mockSend: vi.fn() }));
+const { mockSend, deadline } = vi.hoisted(() => ({
+  mockSend: vi.fn(),
+  deadline: { remaining: 30_300 },
+}));
 
-// A short resource deadline: a wait that never settles fails its test at once.
+// A short resource deadline: a wait that never settles fails its test at
+// once. The port wait ends DEADLINE_MARGIN_MS (30 s) before it.
 vi.mock('../../../src/deployment/resource-deadline.js', async (importOriginal) => ({
   ...((await importOriginal()) as Record<string, unknown>),
-  enclosingDeadlineRemainingMs: () => 300,
+  enclosingDeadlineRemainingMs: () => deadline.remaining,
 }));
 
 vi.mock('@aws-sdk/client-neptune', async (importOriginal) => ({
@@ -108,6 +112,7 @@ describe('Neptune DBCluster port change (go-to-k/cdkd#7006)', () => {
 
   beforeEach(() => {
     mockSend.mockReset();
+    deadline.remaining = 30_300;
     provider = new NeptuneProvider();
     (provider as unknown as { sleep: (ms: number) => Promise<void> }).sleep = async () => {};
   });
@@ -142,6 +147,16 @@ describe('Neptune DBCluster port change (go-to-k/cdkd#7006)', () => {
     await expect(update({ ...BASE, DBPort: 8183 })).rejects.toThrow(
       /Timed out waiting for Neptune DBCluster Graph to apply its new port/
     );
+  });
+
+  it('ends its wait before the resource deadline, so its own error names the cause', async () => {
+    // Inside the 30 s margin: one read, then the port wait's own timeout.
+    deadline.remaining = 20_000;
+    arm([PENDING]);
+    await expect(update({ ...BASE, DBPort: 8183 })).rejects.toThrow(
+      /Timed out waiting for Neptune DBCluster Graph to apply its new port/
+    );
+    expect(describes()).toBe(1);
   });
 
   it('adds no read for an unchanged port, which every update re-sends', async () => {

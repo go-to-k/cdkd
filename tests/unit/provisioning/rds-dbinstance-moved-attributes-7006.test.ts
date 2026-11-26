@@ -169,6 +169,24 @@ describe('RDS DBInstance attributes an in-place update moves late (go-to-k/cdkd#
       expect(result.attributes?.['ListenerEndpoint.Port']).toBe('3307');
     });
 
+    it('waits for a listener endpoint port that lags the endpoint port', async () => {
+      arm([
+        { ...PORT_MOVED, ListenerEndpoint: { ...ENDPOINT, Port: 3306 } },
+        { ...PORT_MOVED, ListenerEndpoint: { ...ENDPOINT, Port: 3307 } },
+      ]);
+      const result = await update({ ...BASE, Port: '3307' });
+      expect(result.attributes?.['ListenerEndpoint.Port']).toBe('3307');
+      // Two wait reads, then the attributes read.
+      expect(describes()).toBe(3);
+    });
+
+    it("waits for nothing on a cluster member, whose port is the cluster's", async () => {
+      arm([PORT_PENDING]);
+      const member = { ...BASE, DBClusterIdentifier: 'aurora-1' };
+      await update({ ...member, Port: '3307' }, member);
+      expect(describes()).toBe(1);
+    });
+
     it('waits while the port reads new but RDS still lists it pending', async () => {
       arm([
         { Endpoint: { ...ENDPOINT, Port: 3307 }, PendingModifiedValues: { Port: 3307 } },
@@ -239,28 +257,41 @@ describe('RDS DBInstance attributes an in-place update moves late (go-to-k/cdkd#
       ['undeclared', undefined],
       ['false', false],
     ])(
-      'with CertificateRotationRestart %s, a certificate still pending (until the next reboot) does not hold the update, as in CloudFormation',
+      'with CertificateRotationRestart %s, a certificate the instance has not switched to (until the next reboot) holds nothing, as in CloudFormation, and is left absent',
       async (_label, restart) => {
-        arm([
-          { PendingModifiedValues: { CACertificateIdentifier: NEW_CERT.CAIdentifier } },
-          {
-            CACertificateIdentifier: NEW_CERT.CAIdentifier,
-            CertificateDetails: NEW_CERT,
-            PendingModifiedValues: { CACertificateIdentifier: NEW_CERT.CAIdentifier },
-          },
-        ]);
+        // The identifier never switches: an engine that cannot rotate in place.
+        arm([{ PendingModifiedValues: { CACertificateIdentifier: NEW_CERT.CAIdentifier } }]);
         const result = await update(
           { ...changed, ...(restart !== undefined && { CertificateRotationRestart: restart }) },
           previous
         );
-        expect(result.attributes?.['CertificateDetails.CAIdentifier']).toBe(NEW_CERT.CAIdentifier);
+        expect(describes()).toBe(1);
+        expect(result.attributes).not.toHaveProperty('CertificateDetails.CAIdentifier');
+        expect(result.attributes).not.toHaveProperty('CertificateDetails.ValidTill');
       }
     );
+
+    it('without a restart, records a certificate the instance already switched to', async () => {
+      arm([
+        {
+          CACertificateIdentifier: NEW_CERT.CAIdentifier,
+          CertificateDetails: NEW_CERT,
+          PendingModifiedValues: { CACertificateIdentifier: NEW_CERT.CAIdentifier },
+        },
+      ]);
+      const result = await update(changed, previous);
+      expect(describes()).toBe(1);
+      expect(result.attributes?.['CertificateDetails.CAIdentifier']).toBe(NEW_CERT.CAIdentifier);
+    });
 
     it('compares the certificate as RDS stores it, lower-cased', async () => {
       arm([{ CACertificateIdentifier: NEW_CERT.CAIdentifier, CertificateDetails: NEW_CERT }]);
       const result = await update(
-        { ...BASE, CACertificateIdentifier: NEW_CERT.CAIdentifier.toUpperCase() },
+        {
+          ...BASE,
+          CACertificateIdentifier: NEW_CERT.CAIdentifier.toUpperCase(),
+          CertificateRotationRestart: true,
+        },
         previous
       );
       expect(result.attributes?.['CertificateDetails.CAIdentifier']).toBe(NEW_CERT.CAIdentifier);
@@ -280,6 +311,17 @@ describe('RDS DBInstance attributes an in-place update moves late (go-to-k/cdkd#
       ]);
       const result = await update({ ...BASE, MultiAZ: true }, { ...BASE, MultiAZ: false });
       expect(result.attributes?.['SecondaryAvailabilityZone']).toBe('us-east-1b');
+    });
+
+    it('takes the standby zone, once named, as converted while the instance is still modifying', async () => {
+      arm([
+        { PendingModifiedValues: { MultiAZ: true } },
+        { DBInstanceStatus: 'modifying', MultiAZ: true, SecondaryAvailabilityZone: 'us-east-1b' },
+        { MultiAZ: true, SecondaryAvailabilityZone: 'us-east-1b' },
+      ]);
+      await update({ ...BASE, MultiAZ: true }, { ...BASE, MultiAZ: false });
+      // Two wait reads, then the attributes read.
+      expect(describes()).toBe(3);
     });
 
     it('takes an available instance with nothing pending as converted, for a configuration naming no standby zone', async () => {

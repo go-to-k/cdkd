@@ -138,6 +138,21 @@ if [ "$(jq -r '.Port' <<<"${LIVE}")" = "8182" ]; then
   exit 1
 fi
 expect_eq "phase 2: DbClusterResourceId kept (no replacement)" "$(jq -r '.DbClusterResourceId' <<<"${LIVE}")" "${RESOURCE_ID}"
+# Compare the record with the port the cluster SETTLES on: wait until it is
+# out of `modifying` (bounded), so a record taken mid-change cannot match a
+# live read taken mid-change too. The elapsed time is the measurement #7006
+# lacked for Neptune.
+SETTLE_START="$(date +%s)"
+for _ in $(seq 1 60); do
+  STATUS="$(live_cluster | jq -r '.Status')"
+  [ "${STATUS}" != "modifying" ] && break
+  sleep 10
+done
+if [ "${STATUS}" = "modifying" ]; then
+  echo "FAIL: phase 2: the cluster was still modifying 10 minutes after the DBPort change" >&2
+  exit 1
+fi
+echo "    OK: cluster ${STATUS} $(( $(date +%s) - SETTLE_START ))s after the deploy returned"
 assert_port "phase 2" 8183
 
 echo "==> Phase 3: destroy"

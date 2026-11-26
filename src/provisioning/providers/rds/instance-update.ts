@@ -65,9 +65,11 @@ import {
 } from './instance-restore.js';
 import { POINT_IN_TIME_KEYS, declaresPointInTimeRestore } from './instance-pitr.js';
 import {
+  blockingMovedChanges,
   movedAttributeChanges,
   movedChangesText,
   unappliedMovedChanges,
+  waitsForMovedChanges,
   withoutUnappliedMovedAttributes,
 } from './instance-moved-attributes.js';
 import { deferReadiness } from '../../deferred-readiness.js';
@@ -767,9 +769,10 @@ export async function updateDBInstance(
     // An update changing none of them adds no call.
     const moved = movedAttributeChanges(properties, previousProperties, backfillMembers, context);
     const movedApplied = (instance: DBInstance): boolean =>
-      moved === undefined || unappliedMovedChanges(moved, instance).length === 0;
+      moved === undefined ||
+      blockingMovedChanges(moved, unappliedMovedChanges(moved, instance)).length === 0;
     const noWait = process.env['CDKD_NO_WAIT'] === 'true';
-    if (!noWait && moved !== undefined) {
+    if (!noWait && moved !== undefined && waitsForMovedChanges(moved)) {
       await this.waitForInstanceState(logicalId, physicalId, movedApplied, movedChangesText(moved));
     }
 
@@ -837,8 +840,11 @@ export async function updateDBInstance(
     // deploy. A reference to it then waits for the change and reads the
     // instance again, and a custom resource downstream waits before its
     // handler runs (go-to-k/cdkd#6940); a plain dependent does not.
-    const unapplied = noWait && moved !== undefined ? unappliedMovedChanges(moved, described) : [];
-    if (unapplied.length > 0 && moved !== undefined) {
+    // A CA certificate rotated without a restart is never waited for, in
+    // either mode: until it reads the one sent it is left absent too, and a
+    // reference reads the instance live (the certificate still in use).
+    const unapplied = moved !== undefined ? unappliedMovedChanges(moved, described) : [];
+    if (noWait && moved !== undefined && blockingMovedChanges(moved, unapplied).length > 0) {
       deferReadiness(logicalId, resourceType, physicalId, (signal) =>
         this.waitForInstanceState(
           logicalId,

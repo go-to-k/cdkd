@@ -63,6 +63,9 @@ export class RdsDbinstanceGetattAttributesStack extends cdk.Stack {
     db.grantConnect(role, 'app');
 
     const cfnDb = db.node.defaultChild as rds.CfnDBInstance;
+    // A CA change waits only beside a restart, as CloudFormation counts it
+    // (issue #7006); declared so phase 2's CA reader takes that wait.
+    cfnDb.addPropertyOverride('CertificateRotationRestart', true);
     new cdk.CfnOutput(this, 'DbiResourceId', { value: db.instanceResourceId });
     new cdk.CfnOutput(this, 'EndpointHostedZoneId', { value: cfnDb.attrEndpointHostedZoneId });
     new cdk.CfnOutput(this, 'CertCA', { value: cfnDb.attrCertificateDetailsCaIdentifier });

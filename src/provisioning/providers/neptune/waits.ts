@@ -191,10 +191,14 @@ export async function waitForClusterPortApplied(
   signal?: AbortSignal
 ): Promise<void> {
   const remaining = enclosingDeadlineRemainingMs();
-  const maxWaitMs = Number.isFinite(remaining) ? remaining : CLUSTER_AVAILABLE_MAX_WAIT_MS;
+  // Ends DEADLINE_MARGIN_MS before the resource deadline, as `pollUntilSettled`
+  // does, so this wait's own error names the cause rather than the deadline's.
+  const maxWaitMs = Number.isFinite(remaining)
+    ? remaining - DEADLINE_MARGIN_MS
+    : CLUSTER_AVAILABLE_MAX_WAIT_MS;
   const startTime = Date.now();
   let delay = 5_000;
-  while (Date.now() - startTime < maxWaitMs) {
+  for (let first = true; first || Date.now() - startTime < maxWaitMs; first = false) {
     throwIfReadinessAborted(signal);
     const cluster = await this.describeDBCluster(dbClusterIdentifier);
     if (cluster === undefined) {

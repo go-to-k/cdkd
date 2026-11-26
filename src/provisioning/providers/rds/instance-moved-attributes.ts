@@ -20,11 +20,13 @@ export interface MovedAttributeChanges {
   /** The CA certificate sent, when the template changed it. */
   readonly caIdentifier?: string;
   /**
-   * Whether a pending CA certificate holds the change: only when the template
+   * Whether the CA certificate change holds the update: only when the template
    * declares `CertificateRotationRestart: true`, as CloudFormation's
    * `isCaCertificateChangesApplied` counts it (`instanceHasPendingChanges`).
-   * Without a restart, an engine that cannot rotate in place keeps the
-   * certificate pending until the next reboot.
+   * Without a restart, an engine that cannot rotate in place keeps the OLD
+   * certificate in use until the next reboot, so nothing waits for it: the
+   * certificate attributes are recorded only once they read the one sent,
+   * and are left absent otherwise, so a reader reads the instance live.
    */
   readonly caRotationRestarts?: boolean;
   /** The Multi-AZ setting sent, when the template changed it. */
@@ -64,7 +66,12 @@ export function movedAttributeChanges(
     caRotationRestarts?: boolean;
     multiAZ?: boolean;
   } = {};
-  if (instanceValueChanged(properties, previousProperties, 'Port', context)) {
+  // A cluster member's port is the cluster's (an Aurora instance takes its
+  // port from `AWS::RDS::DBCluster`), so its own Port never moves it.
+  const clusterMember =
+    typeof properties['DBClusterIdentifier'] === 'string' &&
+    properties['DBClusterIdentifier'] !== '';
+  if (!clusterMember && instanceValueChanged(properties, previousProperties, 'Port', context)) {
     const port = Number(properties['Port']);
     if (Number.isInteger(port)) changes.port = port;
   }
@@ -92,7 +99,12 @@ export function unappliedMovedChanges(
   const unapplied: MovedChange[] = [];
   if (
     changes.port !== undefined &&
-    (instance?.Endpoint?.Port !== changes.port || pending?.Port !== undefined)
+    (instance?.Endpoint?.Port !== changes.port ||
+      // An instance with a listener endpoint (SQL Server Multi-AZ) records
+      // its port too.
+      (instance?.ListenerEndpoint !== undefined &&
+        instance.ListenerEndpoint.Port !== changes.port) ||
+      pending?.Port !== undefined)
   ) {
     unapplied.push('port');
   }
@@ -121,6 +133,28 @@ export function unappliedMovedChanges(
   return unapplied;
 }
 
+/**
+ * The unapplied changes the update waits for: every one but a CA certificate
+ * rotated without a restart (`MovedAttributeChanges.caRotationRestarts`).
+ */
+export function blockingMovedChanges(
+  changes: MovedAttributeChanges,
+  unapplied: readonly MovedChange[]
+): MovedChange[] {
+  return unapplied.filter(
+    (change) => change !== 'caIdentifier' || changes.caRotationRestarts === true
+  );
+}
+
+/** Whether any change the update makes is one it waits for (`blockingMovedChanges`). */
+export function waitsForMovedChanges(changes: MovedAttributeChanges): boolean {
+  return (
+    changes.port !== undefined ||
+    changes.multiAZ !== undefined ||
+    (changes.caIdentifier !== undefined && changes.caRotationRestarts === true)
+  );
+}
+
 /** A CA certificate identifier as RDS compares it (it stores the name lower-cased). */
 function sameCertificate(live: string | undefined, sent: string): boolean {
   return live !== undefined && live.toLowerCase() === sent.toLowerCase();
@@ -130,8 +164,9 @@ function sameCertificate(live: string | undefined, sent: string): boolean {
  * `attributes` without the keys an unapplied change moves: a value read
  * before RDS applied the change is the old one, so it is left ABSENT rather
  * than recorded stale. A reference to it in this deploy then waits for the
- * change (the deferred readiness `updateDBInstance` reports) and reads the
- * instance again; a later deploy re-reads it.
+ * change (the deferred readiness `updateDBInstance` reports, under
+ * `--no-wait`) or reads the instance live (a CA certificate rotated without
+ * a restart); a later deploy re-reads it.
  */
 export function withoutUnappliedMovedAttributes(
   attributes: Record<string, unknown>,

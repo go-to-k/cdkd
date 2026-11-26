@@ -85,7 +85,11 @@ skipped:
   instance's `Port`, `CACertificateIdentifier` or `MultiAZ`, or a Neptune
   cluster's `DBPort`, records the attribute it moves (`Endpoint.Port`,
   `CertificateDetails`, `SecondaryAvailabilityZone`, the cluster's `Port`)
-  only once AWS reports the change applied. Until then a `Fn::GetAtt` of it
+  only once AWS reports the change applied. A CA certificate rotated without
+  `CertificateRotationRestart: true` is never waited for, as in
+  CloudFormation: until the instance uses it, its attributes are left out of
+  the record and a `Fn::GetAtt` reads the instance live. Otherwise, until the
+  change applies, a `Fn::GetAtt` of it
   waits for the change, then reads the resource again, so it never gets the
   old value, and a custom resource downstream of the resource waits for the
   change before its handler runs;
