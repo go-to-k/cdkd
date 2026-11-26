@@ -11218,6 +11218,7 @@
         "cross-stack-secret-import",
         "custom-resource-getatt-data",
         "custom-resource-noecho-nested",
+        "datasync-location-role",
         "deep-getatt-chains",
         "deletion-policy-retain",
         "depends-on-flip",
@@ -11412,6 +11413,9 @@
         "custom-resource-noecho-nested": [
           "l2",
           "literal"
+        ],
+        "datasync-location-role": [
+          "l1"
         ],
         "deep-getatt-chains": [
           "l1"

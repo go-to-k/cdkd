@@ -20,8 +20,12 @@
 #      Control reads it back as `Schedule: {}`, which `UpdateTask` refused on
 #      every update (issue #6676). Assert AWS holds NONE, then change it out of
 #      band, `drift --revert` it and assert NONE again and a clean drift.
-#   3. Destroy. Assert the locations, the task, the role and the state file are
-#      gone.
+#   2c. go-to-k/cdkd#7007: redeploy with `CDKD_TEST_SUBDIR=1`, which moves
+#      ONLY the destination location's `Subdirectory` in place. Its
+#      `LocationUri` moves with it; the SSM parameter reading the URI must hold
+#      the live one (before the fix it stayed NO_CHANGE on the old URI).
+#   3. Destroy. Assert the locations, the task, the role, the SSM parameter and
+#      the state file are gone.
 #
 # Required env vars: STATE_BUCKET; AWS_REGION (defaults us-east-1).
 
@@ -70,6 +74,7 @@ DST_LOGICAL="LocDst"
 TASK_LOGICAL="Task"
 ROLE_LOGICAL="Role1ABCC5F0"
 SRC_BUCKET_LOGICAL="SrcBucket613E28A1"
+URI_PARAM="cdkd-datasync-location-role-dst-uri"
 DIFF_LOG="${TMPDIR:-/tmp}/cdkd-6573-diff.$$.log"
 
 # The S3 auto-delete custom resource's Lambda log group is created when it runs,
@@ -109,6 +114,15 @@ cleanup() {
   # generated ids with no prefix to sweep; a failed create leaves none (Cloud
   # Control rolls it back).
   LEFT_BY_PREFIX=""
+  # The URI reader has a fixed name: a peer's run may hold it before ours.
+  if aws ssm get-parameter --name "${URI_PARAM}" --region "${REGION}" >/dev/null 2>&1; then
+    if [ "${PRE_RUN}" = "1" ]; then
+      LEFT_BY_PREFIX="${LEFT_BY_PREFIX} ssm:${URI_PARAM}"
+    else
+      aws ssm delete-parameter --name "${URI_PARAM}" --region "${REGION}" >/dev/null 2>&1 ||
+        echo "WARN: could not delete SSM parameter ${URI_PARAM}" >&2
+    fi
+  fi
   case "${STACK}" in
     CdkdDatasync?*)
       if SWEPT_ROLES="$(aws iam list-roles \
@@ -244,6 +258,39 @@ CDKD_TEST_UPDATE=verify node "${LOCAL_DIST}" drift "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}"
 echo "    drift --revert restored VerifyMode=NONE and drift is clean"
 
+# --- Phase 2c: move ONLY the destination Subdirectory in place (#7007) -----
+dst_uri() {
+  aws datasync describe-location-s3 --location-arn "${DST_ARN}" --region "${REGION}" \
+    --query LocationUri --output text
+}
+uri_reader() {
+  aws ssm get-parameter --name "${URI_PARAM}" --region "${REGION}" \
+    --query Parameter.Value --output text
+}
+echo "==> Phase 2c: redeploy moving only the destination Subdirectory (issue #7007)"
+# Premise: no earlier phase moved the URI (2b and its drift --revert touch the
+# task only), so the reader starts on the live value and only a fix moves it.
+URI_BEFORE="$(dst_uri)"
+READER_BEFORE="$(uri_reader)"
+if [ "${READER_BEFORE}" != "${URI_BEFORE}" ]; then
+  echo "FAIL: premise: the URI reader holds '${READER_BEFORE}', the live URI is '${URI_BEFORE}'" >&2
+  exit 1
+fi
+CDKD_TEST_UPDATE=verify CDKD_TEST_SUBDIR=1 node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+URI_AFTER="$(dst_uri)"
+READER_AFTER="$(uri_reader)"
+echo "    uri before '${URI_BEFORE}', after '${URI_AFTER}', reader '${READER_AFTER}'"
+if [ "${URI_AFTER}" = "${URI_BEFORE}" ]; then
+  echo "FAIL: premise: the Subdirectory update did not move the LocationUri ('${URI_BEFORE}')" >&2
+  exit 1
+fi
+if [ "${READER_AFTER}" != "${URI_AFTER}" ]; then
+  echo "FAIL: the LocationUri reader holds '${READER_AFTER}', the live URI is '${URI_AFTER}' (issue #7007)" >&2
+  exit 1
+fi
+echo "    the LocationUri reader follows the in-place Subdirectory update"
+
 # --- Phase 3: destroy -------------------------------------------------------
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
@@ -263,6 +310,8 @@ assert_gone "role ${ROLE_NAME} still exists after destroy" \
   aws iam get-role --role-name "${ROLE_NAME}" --region "${REGION}"
 assert_gone "bucket ${SRC_BUCKET} still exists after destroy" \
   aws s3api head-bucket --bucket "${SRC_BUCKET}" --region "${REGION}"
+assert_gone "SSM parameter ${URI_PARAM} still exists after destroy" \
+  aws ssm get-parameter --name "${URI_PARAM}" --region "${REGION}"
 assert_gone "state file ${STATE_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 
