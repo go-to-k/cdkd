@@ -21,7 +21,11 @@ import {
   templateCarriesNeedle,
 } from './core.js';
 import { isPlainObject, type MaskedInputSources } from './input-walk.js';
-import { everyOtherInputConcrete, maskedInputWalk } from './nested-outputs.js';
+import {
+  everyOtherInputConcrete,
+  everyOtherInputProven,
+  maskedInputWalk,
+} from './nested-outputs.js';
 
 /**
  * One property's input fingerprint by key, computed at most once per key. A
@@ -40,14 +44,35 @@ export type BindingFingerprinter = InputFingerprinter & {
   binding(key: string): Promise<string | undefined>;
   /** go-to-k/cdkd#7050: {@link everyOtherInputConcrete} for `key`'s template value. */
   concrete(key: string): Promise<boolean>;
+  /**
+   * go-to-k/cdkd#7050: the passed-secret parameters `key` reads
+   * ({@link MaskedInputSources.passedSecretMacs}) and its input fingerprint
+   * when every OTHER input was resolved and hashed (`undefined`: unproven).
+   * `undefined` when the key reads none, or the sources hold no MACs.
+   */
+  passedSecretBinding(
+    key: string
+  ): Promise<{ parameters: readonly string[]; fingerprint: string | undefined } | undefined>;
+  /** go-to-k/cdkd#7050: {@link passedSecretVerdictOf} for `key` of `record`. */
+  passedSecretVerdict(key: string, record: unknown): Promise<PassedSecretVerdict>;
 };
+
+/**
+ * What a masked key's passed-secret value MACs say (go-to-k/cdkd#7050):
+ * `'n/a'` when it reads no parameter a parent passed as `secret` (the
+ * fingerprints alone decide), else whether the record's MACs, bound to
+ * today's proven input fingerprint, equal today's. `'none'` (no MAC, an old
+ * record, an unproven walk, no KMS) proves nothing either way.
+ */
+export type PassedSecretVerdict = 'n/a' | 'confirmed' | 'changed' | 'none';
 
 export function inputFingerprinter(
   templateProps: Record<string, unknown>,
   sources: MaskedInputSources,
   coveredFor?: (key: string) => ReadonlySet<string> | undefined
 ): BindingFingerprinter {
-  const memo = new Map<string, Promise<{ fingerprint: string; proven: boolean } | undefined>>();
+  type Walked = Promise<{ fingerprint: string; proven: boolean } | undefined>;
+  const memo = new Map<string, Walked>();
   const walk = (key: string) => {
     let pending = memo.get(key);
     if (pending === undefined) {
@@ -55,6 +80,36 @@ export function inputFingerprinter(
         ? maskedInputWalk(templateProps[key], sources, coveredFor?.(key)).catch(() => undefined)
         : Promise.resolve(undefined);
       memo.set(key, pending);
+    }
+    return pending;
+  };
+  // A walk of its own: the cover above is the `NoEcho` MACs', and a proof
+  // over it must never count a passed-secret parameter as covered.
+  const passedMemo = new Map<
+    string,
+    Promise<{ parameters: readonly string[]; fingerprint: string | undefined } | undefined>
+  >();
+  const passedSecretBinding = (key: string) => {
+    let pending = passedMemo.get(key);
+    if (pending === undefined) {
+      const passed = sources.passedSecretMacs;
+      const parameters =
+        passed === undefined || !Object.hasOwn(templateProps, key)
+          ? []
+          : passed.readBy(templateProps[key]);
+      // The fingerprint is the key's own (a cover never changes the form);
+      // the proof counts `{{resolve:...}}` text as the concrete path does.
+      pending =
+        parameters.length === 0
+          ? Promise.resolve(undefined)
+          : Promise.all([
+              walk(key),
+              everyOtherInputProven(templateProps[key], sources, new Set(parameters)),
+            ]).then(([walked, proven]) => ({
+              parameters,
+              fingerprint: proven ? walked?.fingerprint : undefined,
+            }));
+      passedMemo.set(key, pending);
     }
     return pending;
   };
@@ -67,7 +122,35 @@ export function inputFingerprinter(
     concrete: async (key: string) =>
       Object.hasOwn(templateProps, key) &&
       (await everyOtherInputConcrete(templateProps[key], sources)),
+    passedSecretBinding,
+    passedSecretVerdict: async (key: string, record: unknown): Promise<PassedSecretVerdict> => {
+      const bound = await passedSecretBinding(key);
+      if (bound === undefined) return 'n/a';
+      if (bound.fingerprint === undefined || sources.passedSecretMacs === undefined) return 'none';
+      return sources.passedSecretMacs
+        .verdict({ record, key, parameters: bound.parameters, fingerprint: bound.fingerprint })
+        .catch(() => 'none' as const);
+    },
   });
+}
+
+/**
+ * {@link BindingFingerprinter.passedSecretVerdict} of any fingerprinter: one
+ * built without it (a test double, a bare function) is `'n/a'`, which is the
+ * comparison every caller had before go-to-k/cdkd#7050. A throw is `'none'`.
+ */
+export async function passedSecretVerdictOf(
+  fingerprinter: InputFingerprinter | undefined,
+  key: string,
+  record: unknown
+): Promise<PassedSecretVerdict> {
+  const verdict = (fingerprinter as Partial<BindingFingerprinter> | undefined)?.passedSecretVerdict;
+  if (verdict === undefined) return 'n/a';
+  try {
+    return await verdict(key, record);
+  } catch {
+    return 'none';
+  }
 }
 
 /**
@@ -227,6 +310,7 @@ export async function movedMaskedProperties(
   record: Pick<ResourceState, 'properties'> & {
     maskedPropertyFingerprints?: unknown;
     maskedPropertyInputFingerprints?: unknown;
+    noEchoValueMacs?: unknown;
   },
   templateProps: Record<string, unknown>,
   fingerprinter?: InputFingerprinter,
@@ -246,6 +330,15 @@ export async function movedMaskedProperties(
       continue;
     }
     if (fingerprinter === undefined) continue;
+    // go-to-k/cdkd#7050: a parameter the parent passed as `secret` is kept as
+    // written, so the fingerprints below hash the same whatever its value.
+    // Only its value MACs, bound to today's proven inputs, show it did not
+    // move: anything short of that proof is a move, never a hidden one.
+    const passed = await passedSecretVerdictOf(fingerprinter, key, record);
+    if (passed === 'changed' || passed === 'none') {
+      moved.push(key);
+      continue;
+    }
     const bound = inputs.get(key);
     if (bound === undefined && onRebaseline === undefined) continue;
     const now = await fingerprinter(key);

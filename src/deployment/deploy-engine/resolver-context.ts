@@ -8,6 +8,7 @@ import {
   type RecordedSecretValues,
 } from '../secret-redaction.js';
 import type { MaskedInputSources } from '../masked-property-fingerprints.js';
+import { passedSecretMacSources } from '../noecho-value-macs.js';
 import { noteSecretNamedRecord } from './masking.js';
 
 /**
@@ -308,10 +309,20 @@ export function maskedInputSources(
 ): MaskedInputSources | undefined {
   const parameters = deps.secretsRun().fingerprintParameters;
   if (parameters === undefined) return undefined;
+  // go-to-k/cdkd#7050: the plan and every provisioning arm read the same
+  // passed-secret parameters and the same memoized run MACs.
+  const noEchoRun = deps.noEchoRun();
+  const passedSecret = noEchoRun.passedSecretParameters;
   return {
     template,
     parameterInput: parameters.parameterInput,
     conditions,
+    ...(passedSecret !== undefined &&
+      passedSecret.size > 0 && {
+        passedSecretMacs: passedSecretMacSources(passedSecret, conditions, async () =>
+          noEchoRun.noEchoMacs === undefined ? undefined : noEchoRun.noEchoMacs.macs()
+        ),
+      }),
     childTemplate: deps.secretsRun().fingerprintChildTemplates,
     resolve: async (node: unknown) => {
       // No healer, and the stale-attribute PROBE phase: an `Fn::GetAtt` the

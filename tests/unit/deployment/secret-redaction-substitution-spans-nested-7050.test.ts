@@ -289,6 +289,29 @@ vi.mock('@aws-sdk/client-cloudformation', async (importOriginal) => {
   return { ...actual, CloudFormationClient: vi.fn(() => ({ send: () => Promise.reject(new Error('DescribeType unavailable')) })) };
 });
 vi.mock('p-limit', () => ({ default: vi.fn(() => <T>(fn: () => T) => fn()) }));
+// The passed-secret value MACs (#7050): a local HMAC double of KMS, so the
+// MACs are real keyed MACs of what the engine asks for.
+const kms = vi.hoisted(() => ({
+  calls: 0,
+  keyArn: 'arn:aws:kms:us-east-1:123456789012:key/11111111-2222-3333-4444-555555555555',
+  fail: false,
+}));
+vi.mock('@aws-sdk/client-kms', async (importOriginal) => {
+  const actual = (await importOriginal()) as object;
+  const { createHmac } = await import('node:crypto');
+  class FakeKMSClient {
+    async send(command: { input: { Message: Uint8Array } }): Promise<unknown> {
+      kms.calls++;
+      if (kms.fail) throw Object.assign(new Error('denied'), { name: 'AccessDeniedException' });
+      return {
+        KeyId: kms.keyArn,
+        Mac: new Uint8Array(createHmac('sha256', 'local-hmac-key-7050').update(command.input.Message).digest()),
+      };
+    }
+    destroy(): void {}
+  }
+  return { ...actual, KMSClient: FakeKMSClient };
+});
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
@@ -394,9 +417,10 @@ describe('a masked child read redeploys without a phantom change (#7050, #7059)'
     ['a public row holding an unrelated secret\'s text, embedding read', 'C', { 'Fn::Join': ['', ['a-', { Ref: 'X' }]] }],
   ] as const) {
     // A parameter the parent passed as SECRET is kept as written by the input
-    // walk, so only the moved arm is asserted for it: a value that really
-    // moved is never hidden (#7050 final review).
+    // walk: its value MACs (#7050) prove it unchanged, and a value that
+    // really moved is never hidden.
     for (const passed of ['secret', 'clean'] as const) it(`${label} (passed as ${passed})`, async () => {
+      kms.fail = false;
       const { bag, resolved } = row === 'M'
         ? await deployRow({ X: { 'Fn::Join': ['', [{ Ref: 'Sep' }, '/', '{{resolve:ssm-secure:/app/a}}']] }, Y: '{{resolve:ssm-secure:/app/b}}' }, { Sep: PIN })
         : row === 'C'
@@ -423,7 +447,17 @@ describe('a masked child read redeploys without a phantom change (#7050, #7059)'
         parameters: { X: `moved-${value}` },
       });
       expect((moved.diff?.get('Db')?.propertyChanges ?? []).map((pc) => pc.path)).toContain('DBName');
-      if (passed === 'secret') return;
+      // The deploy acts on the planned change (sends, or refuses it out loud).
+      expect(moved.calls.length > 0 || moved.thrown !== undefined).toBe(true);
+      // A secret-bearing value (the masked rows) is in neither the plan nor
+      // the record (its MAC member included), nor any log line.
+      if (row === 'M' || row === 'S') {
+        const logged = JSON.stringify(Object.values(logSpies).map((spy) => spy.mock.calls));
+        for (const text of [JSON.stringify(moved.diff?.get('Db')), JSON.stringify(created.persisted), logged]) {
+          expect(text).not.toContain(value);
+          expect(text).not.toContain(`moved-${value}`);
+        }
+      }
       const same = await deploy({ Db: structuredClone(created.persisted!) }, tpl(1), opts);
       expect(same.thrown).toBeUndefined();
       expect(same.diff?.get('Db')?.changeType).toBe('NO_CHANGE');
@@ -433,6 +467,69 @@ describe('a masked child read redeploys without a phantom change (#7050, #7059)'
       expect((next.diff?.get('Db')?.propertyChanges ?? []).map((pc) => pc.path)).toEqual(['BackupRetentionPeriod']);
       expect(next.calls).toEqual(['update:Db']);
       expect(JSON.stringify(next.sent)).not.toContain('***');
+    });
+  }
+});
+
+// #7050: a passed-secret parameter's value is compared only through its keyed
+// MACs. Without that proof (an older record, a malformed member, no KMS this
+// run) the masked key is a VISIBLE change on the plan and the deploy acts on
+// it: nothing is hidden behind the mask.
+describe('a masked child read with no passed-secret MAC proof is a visible change (#7050)', () => {
+  const masked = async () => {
+    const { bag, resolved } = await deployRow(
+      { X: { 'Fn::Join': ['', [{ Ref: 'Sep' }, '/', '{{resolve:ssm-secure:/app/a}}']] }, Y: '{{resolve:ssm-secure:/app/b}}' },
+      { Sep: PIN }
+    );
+    return {
+      dryRun: false,
+      parameters: { X: String(resolved.Parameters['X']) },
+      inheritedSecrets: bag,
+      parentStackInfo: { parentStack: 'Parent', parentLogicalId: 'Child', parentRegion: 'us-east-1' },
+      passedParameterClasses: new Map([['X', 'secret' as const]]),
+    };
+  };
+  const tpl = { Db: { Type: 'AWS::RDS::DBInstance', Properties: { Engine: 'mysql', DBName: { Ref: 'X' }, BackupRetentionPeriod: 1 } } };
+
+  it('the record stamps keyed MACs, never the value', async () => {
+    kms.fail = false;
+    const opts = await masked();
+    const created = await deploy({}, tpl, opts);
+    const member = (created.persisted?.noEchoValueMacs?.['DBName'] as Record<string, unknown> | undefined)?.['cdkd:passed'] as
+      | { fingerprint: string; macs: Record<string, string> }
+      | undefined;
+    expect(member?.fingerprint).toBe(created.persisted?.maskedPropertyInputFingerprints?.['DBName']);
+    expect(Object.keys(member?.macs ?? {})).toEqual(['X']);
+    expect(member?.macs['X']).toMatch(/^kms-hmac-sha256:arn:aws:kms:[^:]+:\d+:key\/[0-9a-f-]+:[A-Za-z0-9+/]+=*$/);
+  });
+
+  for (const [label, edit] of [
+    ['an older record with no MAC', (r: Record<string, unknown>) => void delete r['noEchoValueMacs']],
+    ['a malformed MAC member', (r: Record<string, unknown>) => {
+      (r['noEchoValueMacs'] as Record<string, Record<string, unknown>>)['DBName']!['cdkd:passed'] = { fingerprint: 'x', macs: 'y' };
+    }],
+    ['a MAC under another key', (r: Record<string, unknown>) => {
+      const member = (r['noEchoValueMacs'] as Record<string, Record<string, { macs: Record<string, string> }>>)['DBName']!['cdkd:passed']!;
+      member.macs['X'] = member.macs['X']!.replace(/key\/[0-9a-f-]+:/, 'key/99999999-0000-0000-0000-000000000000:');
+    }],
+    ['no KMS this run', () => {
+      kms.fail = true;
+    }],
+  ] as const) {
+    it(`${label}: an unchanged redeploy plans the change and the deploy does not skip it`, async () => {
+      kms.fail = false;
+      const opts = await masked();
+      const created = await deploy({}, tpl, opts);
+      expect(created.persisted?.noEchoValueMacs).toBeDefined();
+      const record = structuredClone(created.persisted!) as unknown as Record<string, unknown>;
+      edit(record);
+      const same = await deploy({ Db: record as never }, tpl, opts);
+      kms.fail = false;
+      expect(same.diff?.get('Db')?.changeType).not.toBe('NO_CHANGE');
+      expect((same.diff?.get('Db')?.propertyChanges ?? []).map((pc) => pc.path)).toContain('DBName');
+      // The engine acts on it (sends, or refuses the replacement out loud).
+      expect(same.calls.length > 0 || same.thrown !== undefined).toBe(true);
+      expect(JSON.stringify(same.diff?.get('Db'))).not.toContain(opts.parameters.X);
     });
   }
 });

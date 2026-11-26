@@ -26,7 +26,7 @@ import { type FreshNoEchoReadback, keyOrderFreeJson } from '../deploy-value-equa
 import { getCreateOnlyPropertyPaths } from '../../provisioning/create-only-properties.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { declaresNoEcho } from '../noecho-declared.js';
-import type { NoEchoValueMacs } from '../noecho-value-macs.js';
+import type { NoEchoValueMacs, PassedSecretMacsMember } from '../noecho-value-macs.js';
 
 /**
  * One deploy's `NoEcho` positional-arm state (go-to-k/cdkd#4043, #2449,
@@ -139,6 +139,17 @@ export class NoEchoRunState {
    * UPDATE matches the record's binding against it, the save stamps it.
    */
   noEchoMacInputBindings = new Map<string, ReadonlyMap<string, string>>();
+  /**
+   * go-to-k/cdkd#7050: a nested child's parameters the parent passed as
+   * `secret` (`passedSecretParametersOf`), MACed with the `NoEcho` ones.
+   */
+  passedSecretParameters: ReadonlySet<string> = new Set();
+  /**
+   * go-to-k/cdkd#7050: per logical id, the passed-secret MAC member of each
+   * masked key from its latest resolution (`passedSecretMacEntriesFor`): what
+   * the save stamps (`cdkd:passed`).
+   */
+  passedSecretMacEntries = new Map<string, ReadonlyMap<string, PassedSecretMacsMember>>();
   /** go-to-k/cdkd#6146: this deploy's schema write-only lookups (`macWriteOnlyKeys`). */
   macWriteOnlyLookups = new Map<string, Promise<ReadonlySet<string> | undefined>>();
 }

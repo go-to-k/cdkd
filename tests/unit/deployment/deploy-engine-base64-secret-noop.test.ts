@@ -67,8 +67,28 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
   }),
 }));
 vi.mock('p-limit', () => ({ default: vi.fn(() => <T>(fn: () => T) => fn()) }));
+// go-to-k/cdkd#7050: a passed-secret parameter is compared through its keyed
+// value MACs. KMS is a local HMAC double a test turns on; off, it refuses, as
+// the network fence would, and no value has a MAC.
+const kms = vi.hoisted(() => ({ on: false }));
+vi.mock('@aws-sdk/client-kms', async (importOriginal) => {
+  const actual = (await importOriginal()) as object;
+  const { createHmac } = await import('node:crypto');
+  class FakeKMSClient {
+    async send(command: { input: { Message: Uint8Array } }): Promise<unknown> {
+      if (!kms.on) throw Object.assign(new Error('fenced'), { name: 'AccessDeniedException' });
+      return {
+        KeyId: 'arn:aws:kms:us-east-1:123456789012:key/11111111-2222-3333-4444-555555555555',
+        Mac: new Uint8Array(createHmac('sha256', 'local-7050').update(command.input.Message).digest()),
+      };
+    }
+    destroy(): void {}
+  }
+  return { ...actual, KMSClient: FakeKMSClient };
+});
 
 beforeEach(() => {
+  kms.on = false;
   secretValues.clear();
 });
 
@@ -695,13 +715,20 @@ describe('DeployEngine - a resolved input behind unchanged template text is sent
       expect(h3.provider.update).not.toHaveBeenCalled();
     });
 
-    it('a value the parent classified SECRET stays out of the hash', async () => {
+    it('a value the parent classified SECRET stays out of the hash: its value MACs decide (#7050)', async () => {
+      kms.on = true;
       const first = await child('one', SECRET).deployTemplate(withParameter('d'));
       const h2 = child('two', SECRET);
       h2.setState(first);
       const second = await h2.deployTemplate(withParameter('d'));
-      expect(h2.provider.update).not.toHaveBeenCalled();
+      // Moved: the MACs differ, so it is sent, never hidden behind the mask.
+      expect(h2.provider.update).toHaveBeenCalledTimes(1);
       expect(fps(second.resources['R']!)).toEqual(fps(first.resources['R']!));
+      // ...and the same value again sends nothing.
+      const h3 = child('two', SECRET);
+      h3.setState(second);
+      await h3.deployTemplate(withParameter('d'));
+      expect(h3.provider.update).not.toHaveBeenCalled();
       // An input fingerprint was stamped (the value is held as `{Ref: P}`).
       expect(first.resources['R']!.maskedPropertyInputFingerprints!['Value']).toMatch(
         /^inputs-sha256:/
@@ -1165,9 +1192,12 @@ describe('DeployEngine - a masked property reading a CLEAN nested-stack output i
           passedParameterClasses: classes,
         },
       });
+    // go-to-k/cdkd#7050: a SECRET-classed value is compared through its value
+    // MACs, so its move is sent too, never hidden.
+    kms.on = true;
     for (const [classes, sends] of [
       [clean, 1],
-      [noAssembly, 0],
+      [noAssembly, 1],
     ] as const) {
       const first = await consumer('target-one', classes).deployTemplate(consumerTemplate);
       const moved = consumer('target-two', classes);

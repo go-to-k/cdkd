@@ -8,7 +8,11 @@ import type { CloudFormationTemplate, UpdateContext } from '../../types/resource
 import type { ResourceState } from '../../types/state.js';
 import { noEchoParametersReadBy, type NoEchoPositionSources } from '../secret-redaction.js';
 import type { BindingFingerprinter } from '../masked-property-fingerprints.js';
-import { noEchoMacParametersOf } from '../noecho-value-macs.js';
+import {
+  noEchoMacParametersOf,
+  noEchoValueMacsFor,
+  type PassedSecretMacsMember,
+} from '../noecho-value-macs.js';
 import { noEchoPositionSources } from './noecho.js';
 import { readsOnlyNoEchoParameters } from './update/noecho-macs.js';
 
@@ -95,6 +99,35 @@ export async function noEchoMacInputBindingsFor(
   }
   if (bindings.size > 0) engine.noEchoRun.noEchoMacInputBindings.set(logicalId, bindings);
   return bindings;
+}
+
+/**
+ * go-to-k/cdkd#7050: records the passed-secret MAC member of each key of
+ * `stampable` (the input fingerprints the save may stamp for `logicalId`)
+ * that reads a parameter the parent passed as `secret`: today's MACs of those
+ * parameters, bound to the key's input fingerprint when it is proven over them
+ * and equal to the one stamped. A key short of that (unproven, no MAC this
+ * run) gets none, so the next deploy sends it. Replaces the logical id's
+ * previous entry. Makes the run's MACs (KMS) only when such a key exists.
+ */
+export async function passedSecretMacEntriesFor(
+  engine: Pick<DeployEngine, 'noEchoRun'>,
+  logicalId: string,
+  fingerprinter: BindingFingerprinter | undefined,
+  stampable: Readonly<Record<string, string>> | undefined
+): Promise<void> {
+  const run = engine.noEchoRun;
+  run.passedSecretMacEntries.delete(logicalId);
+  if (fingerprinter === undefined || stampable === undefined) return;
+  if (run.passedSecretParameters.size === 0 || run.noEchoMacs === undefined) return;
+  const entries = new Map<string, PassedSecretMacsMember>();
+  for (const [key, stamped] of Object.entries(stampable)) {
+    const bound = await fingerprinter.passedSecretBinding(key).catch(() => undefined);
+    if (bound?.fingerprint === undefined || bound.fingerprint !== stamped) continue;
+    const macs = noEchoValueMacsFor(bound.parameters, await run.noEchoMacs.macs());
+    if (macs !== undefined) entries.set(key, { fingerprint: bound.fingerprint, macs });
+  }
+  if (entries.size > 0) run.passedSecretMacEntries.set(logicalId, entries);
 }
 
 /**

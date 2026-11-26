@@ -1927,6 +1927,23 @@ stack with no instance id.
   record it does not write keeps the binding beside the MACs it describes.
   `cdkd diff` also marks such a key whose MAC differs as changed when its
   other inputs resolve to values holding no `NoEcho` value.
+- **Passed-secret MACs** (`cdkd:passed`, no version bump, issue #7050): in a
+  nested child, a key the record holds masked that reads a parameter the
+  parent passed as `secret` (`passedParameterClasses`) gets
+  `{ "fingerprint": "inputs-sha256:...", "macs": { "<Parameter>": "kms-hmac-sha256:..." } }`.
+  The MACs use the same key and message as the `NoEcho` ones. The fingerprint is
+  the key's input fingerprint, stamped only when every input other than
+  those parameters and `{{resolve:...}}` text was resolved and hashed, and
+  only while equal to the same save's `maskedPropertyInputFingerprints`
+  entry. The input walk keeps such a parameter as written, so the
+  fingerprints alone hash the same whatever its value. The deploy's plan and
+  its update path (`movedMaskedProperties`) count the key unchanged only
+  when the binding equals today's and every MAC equals today's. A differing
+  MAC is a move. No MAC (absent, malformed, under another key, no KMS this
+  run, an older binary's rebuild that dropped it) is a move too: the key is
+  sent, never compared equal. The entry may hold no `NoEcho` MAC at all. An
+  older binary never reads the object member. `cdkd diff` holds no MACs for
+  it and compares such a key as before.
 - **Not an oracle**: testing a guess needs `kms:GenerateMac` on the key, which
   reading `state.json` (a cross-account `Fn::GetStackOutput` consumer, a
   noncurrent S3 version) does not grant. This is why it is not the salted
@@ -2548,7 +2565,7 @@ interface ResourceState {
   acceptedCreateOnlyDrops?: string[] // optional, no bump: create-only properties the SDK route was told to drop, so never sent
   maskedPropertyFingerprints?: Record<string, string> // optional, no bump: per property `properties` holds as `***`, a hash of its template text (issue #4451)
   maskedPropertyInputFingerprints?: Record<string, string> // optional, no bump: per such property, a hash of its template value with its non-secret inputs resolved, bound to the text hash (issue #4543)
-  noEchoValueMacs?: Record<string, Record<string, string | { fingerprint: string }>> // v17+, written only with a MAC: per property reading a NoEcho parameter, per parameter, a KMS HMAC of the value last sent (issue #6146); `cdkd:inputs` binds it to the input fingerprint it was sent with (no bump, issue #6209)
+  noEchoValueMacs?: Record<string, Record<string, string | { fingerprint: string; macs?: Record<string, string> }>> // v17+, written only with a MAC: per property reading a NoEcho parameter, per parameter, a KMS HMAC of the value last sent (issue #6146); `cdkd:inputs` binds it to the input fingerprint it was sent with (no bump, issue #6209); `cdkd:passed` holds the MACs of passed-secret nested-child parameters a masked key reads (no bump, issue #7050)
   secretNamedAttributes?: string[] // optional, no bump: on a nested-stack row, the `Outputs.<Key>` attributes holding a child resource's name taken from a secret; keys only, read only to mask log lines (issue #3869)
   nameGeneration?: number                      // v13+, id stacks only: the generation its generated name was derived at; absent = 0
   nameGenerationHigh?: number                  // v13+, id stacks only: the highest generation a replacement created, when above nameGeneration (a rollback restored this record); absent = none

@@ -30,7 +30,11 @@ import {
   printNestedStackReadsOnly,
 } from '../resolver-context.js';
 import { noEchoAttributeOverridesFor, noEchoPositionSources } from '../noecho.js';
-import { noEchoMacCover, noEchoMacInputBindingsFor } from '../noecho-macs.js';
+import {
+  noEchoMacCover,
+  noEchoMacInputBindingsFor,
+  passedSecretMacEntriesFor,
+} from '../noecho-macs.js';
 import { isWhollyMask } from './helpers.js';
 import { aliasPolicySecretGuard, resolveAliasUpdatePolicy } from '../update-policy.js';
 
@@ -414,6 +418,13 @@ export async function resolveUpdateInputs(
     engine,
     logicalId,
     macCover,
+    fingerprints,
+    fingerprints && engine.secretsRun.perResourceInputFingerprints.get(logicalId)
+  );
+  // go-to-k/cdkd#7050: and the passed-secret MACs of each key it may record masked.
+  await passedSecretMacEntriesFor(
+    engine,
+    logicalId,
     fingerprints,
     fingerprints && engine.secretsRun.perResourceInputFingerprints.get(logicalId)
   );

@@ -11,6 +11,7 @@ import {
 import {
   maskedPropertyFingerprintsOf,
   maskedPropertyInputFingerprintsOf,
+  passedSecretVerdictOf,
   type InputFingerprinter,
 } from '../../deployment/masked-property-fingerprints/records.js';
 import type { ResourceState } from '../../types/state.js';
@@ -35,7 +36,11 @@ import type { ResourceState } from '../../types/state.js';
  *   refused, and equal to today's;
  * - the record's fingerprint of the value's resolved INPUTS (parameters,
  *   referenced attributes, conditions; go-to-k/cdkd#4543) is present and
- *   equal to today's.
+ *   equal to today's;
+ * - every input other than `{{resolve:...}}` text was resolved and hashed,
+ *   or, where the key reads a parameter a nested child's parent passed as
+ *   `secret`, the record's keyed MACs of those values equal today's
+ *   (`cdkd:passed`, bound to the same proven input fingerprint).
  * Only the positions holding the mask are masked on the desired side; every
  * other leaf of the key is compared as before.
  */
@@ -85,14 +90,19 @@ export async function maskUnmovedRedactionMasks(
     }
     // An input kept AS WRITTEN (a secret-class or `NoEcho` parameter, a
     // tainted attribute) hashes the same whatever its value: equal
-    // fingerprints prove nothing then, so the key is compared as is.
+    // fingerprints prove nothing then, so the key is compared as is. A
+    // parameter the parent passed as `secret` is proven by its value MACs
+    // instead (bound to today's inputs, every other one resolved and hashed);
+    // `movedMaskedProperties` reports the key moved on anything less.
     let concrete = false;
     try {
       concrete = (await fingerprinter.concrete?.(key)) === true;
     } catch {
       concrete = false;
     }
-    if (!concrete) continue;
+    if (!concrete && (await passedSecretVerdictOf(fingerprinter, key, record)) !== 'confirmed') {
+      continue;
+    }
     (out ??= { ...desired })[key] = maskedWhere(current[key], desired[key]);
   }
   return out ?? desired;

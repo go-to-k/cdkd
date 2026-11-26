@@ -32,6 +32,7 @@ import {
   isWrittenFromDeployedTemplate,
   maskedPropertyInputFingerprintsOf,
 } from './masked-property-fingerprints.js';
+import type { PassedSecretMacSources } from './masked-property-fingerprints/input-walk.js';
 import { noEchoParametersReadBy, type NoEchoPositionSources } from './secret-redaction.js';
 import { declaresNoEcho } from './noecho-declared.js';
 
@@ -138,6 +139,115 @@ export function noEchoMacInputBindingsOf(record: unknown): Map<string, string> {
     }
   }
   return read;
+}
+
+/**
+ * go-to-k/cdkd#7050: the member of a property's MAC entry holding the MACs of
+ * the nested-child parameters the parent passed as `secret` that the property
+ * reads, with the input fingerprint of the deploy that sent the value, proven
+ * over them (every other input resolved and hashed). Stamped only for a key
+ * the record holds masked, beside the same save's input fingerprint. Like
+ * {@link NOECHO_MAC_INPUT_BINDING}, an OBJECT no parameter name can spell: an
+ * older cdkd never reads it and drops it from an entry it rebuilds, which the
+ * next deploy reads as no MAC (the key is sent, never compared equal).
+ */
+export const PASSED_SECRET_MACS = 'cdkd:passed';
+
+/** The persisted spelling of a {@link PASSED_SECRET_MACS} member. */
+export interface PassedSecretMacsMember {
+  fingerprint: string;
+  macs: Record<string, string>;
+}
+
+/** A record's {@link PASSED_SECRET_MACS} members by property, read tolerantly (malformed: absent). */
+export function passedSecretMacsOf(
+  record: unknown
+): Map<string, { fingerprint: string; macs: Map<string, string> }> {
+  const read = new Map<string, { fingerprint: string; macs: Map<string, string> }>();
+  if (!isPlainRecord(record)) return read;
+  const field = (record as { noEchoValueMacs?: unknown }).noEchoValueMacs;
+  if (!isPlainRecord(field)) return read;
+  for (const [key, entry] of Object.entries(field)) {
+    if (!isPlainRecord(entry) || !Object.hasOwn(entry, PASSED_SECRET_MACS)) continue;
+    const member = entry[PASSED_SECRET_MACS];
+    if (!isPlainRecord(member)) continue;
+    const { fingerprint, macs } = member;
+    if (typeof fingerprint !== 'string' || !fingerprint.startsWith(BINDING_PREFIX)) continue;
+    if (!isPlainRecord(macs)) continue;
+    const values = Object.entries(macs);
+    if (values.length === 0 || values.some(([, mac]) => typeof mac !== 'string')) continue;
+    read.set(key, { fingerprint, macs: new Map(values as Array<[string, string]>) });
+  }
+  return read;
+}
+
+/**
+ * go-to-k/cdkd#7050: the verdict of `key`'s passed-secret MACs: `'none'`
+ * unless the record holds a member for it bound to `fingerprint` (today's
+ * input fingerprint, proven over `parameters`), naming exactly `parameters`,
+ * under the key of today's MACs; then whether every MAC is equal.
+ */
+export function passedSecretMacVerdict(
+  record: unknown,
+  key: string,
+  parameters: readonly string[],
+  fingerprint: string,
+  current: ReadonlyMap<string, NoEchoMac> | undefined
+): NoEchoMacVerdict {
+  const member = passedSecretMacsOf(record).get(key);
+  if (member === undefined || member.fingerprint !== fingerprint) return 'none';
+  return noEchoMacVerdict(member.macs, parameters, current);
+}
+
+/**
+ * The plan's and the deploy's {@link PassedSecretMacSources}: `parameters`
+ * (the passed-secret names, `passedSecretParametersOf`) read by a template
+ * value under `conditions`, and the verdict against `macs` (the run's MACs,
+ * made on the first verdict asked; `undefined` when the run has none).
+ */
+export function passedSecretMacSources(
+  parameters: ReadonlySet<string>,
+  conditions: Readonly<Record<string, boolean>> | undefined,
+  macs: () => Promise<ReadonlyMap<string, NoEchoMac> | undefined>
+): PassedSecretMacSources {
+  return {
+    readBy: (templateValue) =>
+      noEchoParametersReadBy(templateValue, {
+        parameters,
+        ...(conditions !== undefined && { conditions }),
+      }).sort(),
+    verdict: async ({ record, key, parameters: read, fingerprint }) =>
+      passedSecretMacVerdict(record, key, read, fingerprint, await macs()),
+  };
+}
+
+/**
+ * go-to-k/cdkd#7050: the parameters of a nested child the parent passed as
+ * `secret` (`passedParameterClasses`) and bound: the ones the input walk keeps
+ * as written for that class alone. A `NoEcho` one (declared, or `inherited`
+ * from the parent's) is left to the `NoEcho` MACs. Empty outside a nested child.
+ */
+export function passedSecretParametersOf(args: {
+  template: { Parameters?: unknown };
+  parameterValues: Readonly<Record<string, unknown>>;
+  passedClasses: ReadonlyMap<string, string> | undefined;
+  inheritedNoEcho: ReadonlySet<string>;
+  nestedChild: boolean;
+}): ReadonlySet<string> {
+  const names = new Set<string>();
+  const declared = args.template.Parameters;
+  if (!args.nestedChild || args.passedClasses === undefined || !isPlainRecord(declared)) {
+    return names;
+  }
+  for (const [name, passed] of args.passedClasses) {
+    if (passed !== 'secret' || !Object.hasOwn(declared, name)) continue;
+    if (declaresNoEcho(declared[name]) || args.inheritedNoEcho.has(name)) continue;
+    if (!Object.hasOwn(args.parameterValues, name) || args.parameterValues[name] === undefined) {
+      continue;
+    }
+    names.add(name);
+  }
+  return names;
 }
 
 /**
@@ -398,6 +508,12 @@ export function createNoEchoValueMacs(args: {
   template: { Parameters?: unknown };
   parameterValues: Readonly<Record<string, unknown>>;
   inherited?: ReadonlySet<string>;
+  /**
+   * go-to-k/cdkd#7050: a nested child's passed-secret parameters
+   * ({@link passedSecretParametersOf}): MACed with the same key and message,
+   * read only by a masked key's passed-secret verdict and stamp.
+   */
+  passedSecret?: ReadonlySet<string>;
   stackName: string;
   region: string;
   stackInstanceId: () => string | undefined;
@@ -406,7 +522,7 @@ export function createNoEchoValueMacs(args: {
   purpose?: 'deploy' | 'diff';
 }): NoEchoValueMacs | undefined {
   const declared = args.template.Parameters;
-  const parameters = new Set<string>(args.inherited ?? []);
+  const parameters = new Set<string>([...(args.inherited ?? []), ...(args.passedSecret ?? [])]);
   if (declared !== null && typeof declared === 'object') {
     for (const [name, definition] of Object.entries(declared)) {
       if (declaresNoEcho(definition)) parameters.add(name);
@@ -463,7 +579,8 @@ export function withNoEchoValueMacs(
   sources: NoEchoPositionSources | undefined,
   current: ReadonlyMap<string, NoEchoMac> | undefined,
   kept?: ReadonlySet<string>,
-  inputBindings?: ReadonlyMap<string, string>
+  inputBindings?: ReadonlyMap<string, string>,
+  passedSecrets?: ReadonlyMap<string, PassedSecretMacsMember>
 ): ResourceState {
   if (!isWrittenFromDeployedTemplate(writtenBag)) return persisted;
   if (templateProps === undefined) {
@@ -476,16 +593,28 @@ export function withNoEchoValueMacs(
   // Read only when a kept entry or a binding needs them.
   let previousBindings: Map<string, string> | undefined;
   let stamped: ReadonlyMap<string, string> | undefined;
-  const entries: Array<[string, Record<string, string | NoEchoMacInputBinding>]> = [];
-  const withBinding = (
-    entry: Record<string, string>,
-    fingerprint: string | undefined
-  ): Record<string, string | NoEchoMacInputBinding> =>
+  type Entry = Record<string, string | NoEchoMacInputBinding | PassedSecretMacsMember>;
+  const entries: Array<[string, Entry]> = [];
+  const withBinding = (entry: Record<string, string>, fingerprint: string | undefined): Entry =>
     fingerprint === undefined ? entry : { ...entry, [NOECHO_MAC_INPUT_BINDING]: { fingerprint } };
   for (const key of Object.keys(templateProps)) {
+    // go-to-k/cdkd#7050: this deploy's passed-secret MACs of the key, only
+    // while bound to the input fingerprint this same save stamps for it (so
+    // only for a key it records masked, its inputs hashed from no secret).
+    const passed = passedSecrets?.get(key);
+    if (passed !== undefined) stamped ??= maskedPropertyInputFingerprintsOf(persisted);
+    const passedMember: Entry =
+      passed !== undefined && passed.fingerprint === stamped?.get(key)
+        ? { [PASSED_SECRET_MACS]: { fingerprint: passed.fingerprint, macs: { ...passed.macs } } }
+        : {};
     const parameters = noEchoMacParametersOf(templateProps[key], sources);
-    if (parameters.length === 0) continue;
+    if (parameters.length === 0) {
+      if (Object.keys(passedMember).length > 0) entries.push([key, passedMember]);
+      continue;
+    }
     if (kept?.has(key) === true) {
+      // Unsent: today's passed-secret MACs describe nothing AWS holds, so the
+      // key carries none, and the next deploy sends it (go-to-k/cdkd#7050).
       const before = previous.get(key);
       if (before !== undefined) {
         previousBindings ??= noEchoMacInputBindingsOf(persisted);
@@ -497,9 +626,17 @@ export function withNoEchoValueMacs(
     const binding = inputBindings?.get(key);
     if (entry !== undefined && binding !== undefined) {
       stamped ??= maskedPropertyInputFingerprintsOf(persisted);
-      entries.push([key, withBinding(entry, binding === stamped.get(key) ? binding : undefined)]);
+      entries.push([
+        key,
+        {
+          ...withBinding(entry, binding === stamped.get(key) ? binding : undefined),
+          ...passedMember,
+        },
+      ]);
     } else if (entry !== undefined) {
-      entries.push([key, entry]);
+      entries.push([key, { ...entry, ...passedMember }]);
+    } else if (Object.keys(passedMember).length > 0) {
+      entries.push([key, passedMember]);
     }
   }
   const { noEchoValueMacs: _previous, ...rest } = persisted;

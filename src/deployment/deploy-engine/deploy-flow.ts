@@ -62,7 +62,7 @@ import { deployWithoutChanges } from './deploy-flow/no-change.js';
 import { prepareChangeExecution } from './deploy-flow/change-plan.js';
 import { settleSuccessfulDeploy } from './deploy-flow/success-settle.js';
 import { keptHistorySources } from './deploy-flow/kept-history.js';
-import { createNoEchoValueMacs } from '../noecho-value-macs.js';
+import { createNoEchoValueMacs, passedSecretParametersOf } from '../noecho-value-macs.js';
 import {
   healSlashedSsmParameterNames,
   slashedSsmNameHealNote,
@@ -442,10 +442,20 @@ export async function doDeployWithPrefetch(
     // made only when a resource reading one is provisioned (nothing otherwise),
     // bound to the stack instance id the creates run under (read then, so a
     // first deploy's write-ahead id is in place).
+    // go-to-k/cdkd#7050: and of a nested child's parameters the parent passed
+    // as `secret`, which a masked key's fingerprints cannot see move.
+    engine.noEchoRun.passedSecretParameters = passedSecretParametersOf({
+      template,
+      parameterValues,
+      passedClasses: engine.options.passedParameterClasses,
+      inheritedNoEcho: engine.noEchoRun.inheritedNoEchoParameters,
+      nestedChild: engine.options.parentStackInfo !== undefined,
+    });
     engine.noEchoRun.noEchoMacs = createNoEchoValueMacs({
       template,
       parameterValues,
       inherited: engine.noEchoRun.inheritedNoEchoParameters,
+      passedSecret: engine.noEchoRun.passedSecretParameters,
       stackName,
       region: engine.stackRegion,
       stackInstanceId: () => currentState.stackInstanceId,

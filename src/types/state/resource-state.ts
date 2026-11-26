@@ -509,8 +509,22 @@ export interface ResourceState {
    * equal to it. An older cdkd reads only the string members: it never counts
    * the binding, drops it from an entry it rebuilds or keeps, and leaves it
    * beside the MACs it describes in a record it does not write.
+   *
+   * go-to-k/cdkd#7050 (no bump): an entry may also hold `cdkd:passed`, an
+   * OBJECT `{ fingerprint, macs }`: the MACs (same key, same message) of the
+   * nested-child parameters the parent passed as `secret` that a key the
+   * record holds MASKED reads, bound to the input fingerprint proven over
+   * them. The input walk keeps such a parameter as written, so only an equal
+   * MAC lets the plan and the deploy compare that key as unchanged; without
+   * one (absent, malformed, an older cdkd's rebuild) the key is sent. Such an
+   * entry may hold no `NoEcho` MAC at all.
    */
-  noEchoValueMacs?: Record<string, Record<string, string | { fingerprint: string }>> | undefined;
+  noEchoValueMacs?:
+    | Record<
+        string,
+        Record<string, string | { fingerprint: string; macs?: Record<string, string> }>
+      >
+    | undefined;
 
   /**
    * No bump (go-to-k/cdkd#6309): on a custom resource, the coordinates of

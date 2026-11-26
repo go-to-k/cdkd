@@ -68,6 +68,32 @@ export interface MaskedInputSources {
    * `nestedStackOutputClass`). Absent: every such read is kept as written.
    */
   childTemplate?: ChildTemplateLoader | undefined;
+  /**
+   * go-to-k/cdkd#7050: a nested child's parameters the parent passed as
+   * `secret`, which {@link parameterInputsFor} keeps as written, so their
+   * values never enter a fingerprint. Their keyed value MACs (the `NoEcho`
+   * value MAC key, `noecho-value-macs.ts`) decide instead whether a masked
+   * key reading one moved. Absent: no such parameter, or a caller (`cdkd
+   * diff`) that holds no MACs.
+   */
+  passedSecretMacs?: PassedSecretMacSources | undefined;
+}
+
+/** What a masked key's passed-secret MAC verdict reads ({@link MaskedInputSources.passedSecretMacs}). */
+export interface PassedSecretMacSources {
+  /** The passed-secret parameters `templateValue` reads, sorted (`[]`: none). */
+  readBy(templateValue: unknown): readonly string[];
+  /**
+   * Whether the MACs the record holds for `key` (bound to `fingerprint`, the
+   * key's input fingerprint proven over `parameters`) equal today's:
+   * `'none'` for anything missing, malformed or under another key.
+   */
+  verdict(args: {
+    record: unknown;
+    key: string;
+    parameters: readonly string[];
+    fingerprint: string;
+  }): Promise<'confirmed' | 'changed' | 'none'>;
 }
 
 /** A nested stack's template, and the loader for the nested stacks IT declares. */
@@ -230,6 +256,14 @@ function carriesReference(operand: unknown): boolean {
 }
 
 /**
+ * {@link carriesReference} for a proof, which a walk counting a reference's
+ * text as concrete (`Walk.tokensConcrete`, go-to-k/cdkd#7050) never refuses on.
+ */
+function joinsReference(operand: unknown, walk: Walk): boolean {
+  return walk.tokensConcrete !== true && carriesReference(operand);
+}
+
+/**
  * `{ proven }` when `walk` computes proof (`covered` set), else nothing: the
  * diff's and the masked-property skip's walks pay no work for it.
  */
@@ -247,8 +281,9 @@ export type Taint = 'clean' | 'tainted' | 'unknown';
 export interface Walk {
   /**
    * go-to-k/cdkd#7050: count a `{{resolve:...}}` reference's TEXT as concrete,
-   * so `concrete` answers only whether every OTHER input was resolved. Read
-   * only by {@link everyOtherInputConcrete}; never set for a fingerprint.
+   * so `concrete` answers only whether every OTHER input was resolved, and a
+   * proof never refuses a reference an intrinsic joins. Set only by
+   * `everyOtherInputConcrete` / `everyOtherInputProven`; never for a fingerprint.
    */
   tokensConcrete?: true;
   sources: MaskedInputSources;
@@ -683,7 +718,7 @@ export async function inputForm(value: unknown, walk: Walk): Promise<InputForm> 
       let concrete =
         vars.concrete && (walk.tokensConcrete === true || !text.includes(DYNAMIC_REFERENCE_OPEN));
       // Computed only for a walk with a cover (`proof`).
-      let proven = walk.covered !== undefined && isProven(vars) && !carriesReference(operand);
+      let proven = walk.covered !== undefined && isProven(vars) && !joinsReference(operand, walk);
       for (const name of subPlaceholders(text)) {
         if (Object.hasOwn(explicit, name)) continue;
         const dot = name.indexOf('.');
@@ -735,7 +770,7 @@ export async function inputForm(value: unknown, walk: Walk): Promise<InputForm> 
       return {
         form: { [key]: args.form },
         concrete: args.concrete,
-        ...proof(walk, () => isProven(args) && !carriesReference(operand)),
+        ...proof(walk, () => isProven(args) && !joinsReference(operand, walk)),
       };
     }
   }

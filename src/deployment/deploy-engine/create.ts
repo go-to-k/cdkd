@@ -82,7 +82,11 @@ import {
   noEchoAttributeOverridesFor,
   noEchoPositionSources,
 } from './noecho.js';
-import { noEchoMacCover, noEchoMacInputBindingsFor } from './noecho-macs.js';
+import {
+  noEchoMacCover,
+  noEchoMacInputBindingsFor,
+  passedSecretMacEntriesFor,
+} from './noecho-macs.js';
 
 /** The `CREATE` arm of `provisionResourceBody` (`deployment/deploy-engine/provision.ts`, #4200 phase 3a). */
 export async function provisionCreate(
@@ -200,6 +204,13 @@ export async function provisionCreate(
     engine,
     logicalId,
     macCover,
+    fingerprinter,
+    engine.secretsRun.perResourceInputFingerprints.get(logicalId)
+  );
+  // go-to-k/cdkd#7050: and the passed-secret MACs of each key it may record masked.
+  await passedSecretMacEntriesFor(
+    engine,
+    logicalId,
     fingerprinter,
     engine.secretsRun.perResourceInputFingerprints.get(logicalId)
   );
