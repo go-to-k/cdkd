@@ -72,7 +72,8 @@ function stampedRecord(caInProperties: string): ResourceState {
 async function scrubWith(
   caTemplate: string,
   record: ResourceState,
-  extra: Partial<StackState> = {}
+  extra: Partial<StackState> = {},
+  extraResources: Record<string, unknown> = {}
 ): Promise<StackState> {
   const template = {
     Resources: {
@@ -80,6 +81,7 @@ async function scrubWith(
         Type: 'AWS::RDS::DBInstance',
         Properties: { Port: '5433', CACertificateIdentifier: caTemplate, MasterUserPassword: PW_REF },
       },
+      ...extraResources,
     },
     Outputs: {},
   } as unknown as CloudFormationTemplate;
@@ -113,6 +115,35 @@ async function scrubWith(
 }
 
 describe('cdkd scrub and the stale-shape stamp (#7015)', () => {
+  it('leaves a record it does not rewrite exactly as read, a lapsed stamp included', async () => {
+    const { MasterUserPassword: _pw, ...rest } = stampedRecord('rds-ca-rsa2048-g1').properties;
+    const untouched = {
+      ...stampedRecord('rds-ca-rsa2048-g1'),
+      properties: rest,
+      attributesReadAfterApply: 'a-stamp-another-writer-let-lapse',
+    } as ResourceState;
+    const saved = await scrubWith(
+      'rds-ca-rsa2048-g1',
+      untouched,
+      {
+        resources: {
+          Db: untouched,
+          Param: {
+            physicalId: 'p',
+            resourceType: 'AWS::SSM::Parameter',
+            properties: { Type: 'String', Value: SECRETS.pw },
+            attributes: {},
+            dependencies: [],
+          },
+        },
+      } as Partial<StackState>,
+      { Param: { Type: 'AWS::SSM::Parameter', Properties: { Type: 'String', Value: PW_REF } } }
+    );
+    // The Db template still declares the password; the record does not hold it.
+    expect(saved.resources['Param']!.properties['Value']).not.toBe(SECRETS.pw);
+    expect(saved.resources['Db']).toEqual(untouched);
+  });
+
   it('drops it from an orphan and a superseded record whose inputs it rewrites', async () => {
     const saved = await scrubWith(CA_REF, stampedRecord(SECRETS.ca), {
       orphans: [{ logicalId: 'OldDb', orphanedAt: 0, state: stampedRecord(SECRETS.ca) }],
