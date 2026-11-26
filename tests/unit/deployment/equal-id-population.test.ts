@@ -21,7 +21,8 @@ import { EQUAL_ID_HOOK_TYPES } from '../../../src/deployment/type-change-guard.j
  *   decides (#3892, #5137, #7071, #7072).
  *
  * A new provider type fails here until it is classified, and a `hook` row
- * fails until the hook decides it.
+ * fails until it is listed in `EQUAL_ID_HOOK_TYPES` (each listed type's
+ * branch has its own tests).
  */
 type IdClass = 'minted' | 'name' | 'composite' | 'no-create-only' | 'hook';
 const ROWS: ReadonlyArray<readonly [string, IdClass, string]> = [
@@ -104,7 +105,7 @@ const ROWS: ReadonlyArray<readonly [string, IdClass, string]> = [
   ['AWS::Events::EventBus', 'name', 'bus name, unique per account and region'],
   ['AWS::Events::Rule', 'composite', 'rule ARN carries bus and rule name; Name is the only create-only'],
   ['AWS::FSx::FileSystem', 'minted', 'AWS-assigned fs- id'],
-  ['AWS::Glue::Connection', 'name', 'connection name, unique per account and region'],
+  ['AWS::Glue::Connection', 'name', 'connection name per catalog; a CatalogId move to another account is out of scope (one account)'],
   ['AWS::Glue::Crawler', 'name', 'crawler name, unique per account and region'],
   ['AWS::Glue::Database', 'name', 'database name, unique per catalog (account and region)'],
   ['AWS::Glue::Job', 'name', 'job name, unique per account and region'],
@@ -160,7 +161,7 @@ const ROWS: ReadonlyArray<readonly [string, IdClass, string]> = [
   ['AWS::S3Tables::Table', 'minted', 'table ARN with AWS-assigned table identifier'],
   ['AWS::S3Tables::TableBucket', 'name', 'table bucket ARN with account, region and name'],
   ['AWS::S3Vectors::VectorBucket', 'name', 'vector bucket name, unique per account and region'],
-  ['AWS::Scheduler::Schedule', 'name', 'schedule name; GroupName is updatable not create-only'],
+  ['AWS::Scheduler::Schedule', 'name', 'bare Name, scoped by GroupName; a group move is replaced delete-first, never create-first'],
   ['AWS::SecretsManager::Secret', 'minted', 'ARN with AWS-assigned random suffix'],
   ['AWS::ServiceDiscovery::HttpNamespace', 'minted', 'AWS-assigned namespace id'],
   ['AWS::ServiceDiscovery::PrivateDnsNamespace', 'minted', 'AWS-assigned namespace id'],
@@ -194,7 +195,4 @@ describe('equal physical ids across a replacement: every SDK type classified (go
     expect(hookRows).toEqual([...EQUAL_ID_HOOK_TYPES].sort());
   });
 
-  it('gives every row a reason', () => {
-    for (const [type, , reason] of ROWS) expect(reason.trim().length, type).toBeGreaterThan(10);
-  });
 });

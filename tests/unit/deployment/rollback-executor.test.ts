@@ -3344,6 +3344,43 @@ describe('rollback of a SecurityGroupIngress source change that kept the id (go-
   });
 });
 
+// go-to-k/cdkd#7072: a stage's id is its bare name, so a stage moved to a
+// replaced API keeps the id. Rolled back, the new stage is deleted from the
+// NEW API and the old one re-created, never adopted as the live new stage.
+describe.each([
+  ['AWS::ApiGatewayV2::Stage', 'ApiId', '$default'],
+  ['AWS::ApiGateway::Stage', 'RestApiId', 'prod'],
+])('rollback of a %s moved to a replaced API (go-to-k/cdkd#7072)', (TYPE, KEY, ID) => {
+  const OLD = { StageName: ID, [KEY]: 'apiold0001' };
+  const NEW = { StageName: ID, [KEY]: 'apinew0002' };
+  const op: CompletedOperation = {
+    logicalId: 'B',
+    changeType: 'UPDATE',
+    resourceType: TYPE,
+    physicalId: ID,
+    properties: NEW,
+    previousState: res({ resourceType: TYPE, physicalId: ID, properties: OLD }),
+  };
+
+  it('classifies it as a replacement and deletes the new stage after re-creating the old one', async () => {
+    const state: Record<string, ResourceState> = {
+      B: res({ resourceType: TYPE, physicalId: ID, properties: NEW }),
+    };
+    expect(classifyRollbackOp(op, state, new Set())).toBe('reverse-replacement');
+    const create = vi.fn().mockResolvedValue({ physicalId: ID, attributes: {} });
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeCtx({ create, delete: del });
+
+    const result = await replayRollback([op], state, 'S', ctx);
+
+    expect(result.failures).toBe(0);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(del).toHaveBeenCalledTimes(1);
+    expect(del.mock.calls[0]![3]).toEqual(NEW);
+    expect(state.B).toMatchObject({ physicalId: ID, properties: OLD });
+  });
+});
+
 describe('rollback revert arms apply removalDefaults (issue #1160)', () => {
   // Both arms hand two STATE records to `update()`, so a key the record being
   // reverted FROM carries and the record being restored omits is a removal.
