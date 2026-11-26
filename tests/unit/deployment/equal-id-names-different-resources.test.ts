@@ -199,6 +199,12 @@ describe('equalIdNamesDifferentResources: AWS::EC2::SecurityGroupIngress (go-to-
     ],
     // A name can denote the group another rule names by id.
     ['a group named by SourceSecurityGroupName', { SourceSecurityGroupName: 'web' }, { SourceSecurityGroupId: 'sg-0a' }],
+    // The name beside an id still keeps it: the two can denote one group.
+    [
+      'a SourceSecurityGroupName beside a source key',
+      { SourceSecurityGroupName: 'web', SourceSecurityGroupId: 'sg-0a' },
+      { SourceSecurityGroupId: 'sg-0b' },
+    ],
     ['an unresolved intrinsic', { SourceSecurityGroupId: { 'Fn::GetAtt': ['Sg', 'GroupId'] } }, { SourceSecurityGroupId: 'sg-0a' }],
     ['a redaction mask', { CidrIp: SECRET_MASK }, { CidrIp: '0.0.0.0/0' }],
     ['a value that holds a mask', { SourceSecurityGroupId: `sg-${SECRET_MASK}` }, { SourceSecurityGroupId: 'sg-0a' }],

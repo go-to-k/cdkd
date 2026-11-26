@@ -82,10 +82,13 @@ cleanup() {
   for vpc in $(fixture_vpcs); do
     case "${vpc}" in
       vpc-?*)
+        # Twice: Dst's rule references Src, so Src's first delete can fail.
+        for _pass in 1 2; do
         for gid in $(aws ec2 describe-security-groups --region "${REGION}" \
           --filters "Name=vpc-id,Values=${vpc}" \
           --query "SecurityGroups[?GroupName!='default'].GroupId" --output text 2>/dev/null); do
           case "${gid}" in sg-?*) aws ec2 delete-security-group --group-id "${gid}" --region "${REGION}" >/dev/null 2>&1 || true ;; esac
+        done
         done
         for subnet in $(aws ec2 describe-subnets --region "${REGION}" \
           --filters "Name=vpc-id,Values=${vpc}" --query 'Subnets[].SubnetId' --output text 2>/dev/null); do
