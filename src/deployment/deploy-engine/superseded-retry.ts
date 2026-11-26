@@ -37,7 +37,11 @@ export async function retryCarriedSupersededResources(
   host: Pick<StackState, 'supersededResources'>,
   carried: readonly SupersededResourceRecord[],
   resources: Record<string, ResourceState>,
-  options: { waitInUse?: boolean } = {}
+  options: {
+    waitInUse?: boolean;
+    /** go-to-k/cdkd#7076: what a failure's warning names as next, when not the default. */
+    keptRemedy?: string;
+  } = {}
 ): Promise<boolean> {
   let changed = false;
   if (carried.length === 0) return changed;
@@ -128,7 +132,7 @@ export async function retryCarriedSupersededResources(
           }
           const detail = maskSecretsInText(describeAwsFailure(outcome.error).detail, bag);
           engine.logger.warn(
-            safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${displayPhysicalId(resourceType, physicalId)}): ${detail}. ${SUPERSEDED_KEPT_REMEDY}.`
+            safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${displayPhysicalId(resourceType, physicalId)}): ${detail}. ${options.keptRemedy ?? SUPERSEDED_KEPT_REMEDY}.`
           );
           return;
         }

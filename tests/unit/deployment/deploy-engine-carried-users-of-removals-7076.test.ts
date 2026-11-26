@@ -300,12 +300,37 @@ describe('carriedUsersOfRemovals (go-to-k/cdkd#7076)', () => {
   it('still takes a row whose logical id a removed resource names through its current record', () => {
     const withUser = {
       ...resources,
-      Ingress: record('in', 'AWS::EC2::SecurityGroupIngress', ['Group']),
+      Instance: record('i-1', 'AWS::EC2::Instance', ['Group']),
     };
     const rows = [kept('Group', record('sg-old', SG, ['Vpc']))];
     expect(
-      ids(carriedUsersOfRemovals(rows, withUser, new Set(['Vpc', 'Group', 'Ingress'])))
+      ids(carriedUsersOfRemovals(rows, withUser, new Set(['Vpc', 'Group', 'Instance'])))
     ).toEqual(['sg-old']);
+  });
+
+  it('leaves a row a removed resource must precede, and the taken rows it uses, to the cleanup', () => {
+    // A removed Lambda goes before any group (the type rule): the old group
+    // stays for the cleanup, and so does the old role it names.
+    const withLambda = { ...resources, Fn: record('fn', 'AWS::Lambda::Function') };
+    const rows = [
+      kept('Group', record('sg-old', SG, ['Vpc', 'Role'])),
+      kept('Role', record('r-old', 'AWS::IAM::Role', ['Vpc'])),
+      kept('Other', record('o-old', 'AWS::IAM::Role', ['Vpc'])),
+    ];
+    expect(ids(carriedUsersOfRemovals(rows, withLambda, new Set(['Vpc', 'Fn'])))).toEqual([
+      'o-old',
+    ]);
+  });
+
+  it('takes no row by type when its record names other dependencies', () => {
+    const rows = [kept('Group', record('sg-old', SG, ['OtherVpc']))];
+    expect(carriedUsersOfRemovals(rows, resources, new Set(['Vpc']))).toEqual([]);
+  });
+
+  it('reads a removed record by own key, so an inherited name is no current record', () => {
+    const withUser = { ...resources, User: record('user', 'AWS::EC2::Instance', ['constructor']) };
+    const rows = [kept('constructor', record('c-old', SG, ['Vpc']))];
+    expect(carriedUsersOfRemovals(rows, withUser, new Set(['Vpc', 'User']))).toEqual([]);
   });
 
   it('leaves a row held for consumers to the cleanup', () => {
