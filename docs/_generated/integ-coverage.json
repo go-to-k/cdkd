@@ -11184,6 +11184,7 @@
         "drift-revert",
         "dynamic-ref-cross-region",
         "ec2-instance",
+        "ec2-route-targets",
         "ec2-vpc-endpoint",
         "elasticache-replicationgroup-getatt",
         "eventbridge",
@@ -11409,6 +11410,9 @@
           "l1"
         ],
         "ec2-instance": [
+          "l1"
+        ],
+        "ec2-route-targets": [
           "l1"
         ],
         "ec2-vpc-endpoint": [

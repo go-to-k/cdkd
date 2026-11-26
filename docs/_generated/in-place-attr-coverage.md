@@ -13,7 +13,7 @@ Whether an in-place update moves each read-only `Fn::GetAtt` attribute (issue [#
 Source: `@aws-cdk/aws-service-spec` 0.1.235.
 
 - SDK-provider types: **131**, pairs classified by hand: **390** (moving: **66**)
-- Cloud Control types: **1584**, pairs: **5545** — by rule: `no-in-place-update` 1151, `creation-timestamp` 376, `own-identity` 812, `primary-identifier` 451, `arn-template` 59, `update-timestamp` 372; by hand: **1**; in the baseline: **2323**
+- Cloud Control types: **1584**, pairs: **5545** — by rule: `no-in-place-update` 1151, `creation-timestamp` 376, `own-identity` 812, `primary-identifier` 450, `arn-template` 59, `update-timestamp` 372, `creator` 26, `owner-account` 30, `identifier-arn-member` 68, `update-marker` 106; by hand: **11**; in the baseline: **2084**
 
 ## SDK-provider types (hand classification)
 
@@ -802,7 +802,17 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235.
 
 ## Cloud Control types classified by hand
 
+- `AWS::CodeStarConnections::SyncConfiguration` `OwnerId`: moved by `RepositoryLinkId` — the owner of the repository the link points at
+- `AWS::CodeStarConnections::SyncConfiguration` `ProviderType`: moved by `RepositoryLinkId` — the provider of the repository the link points at
+- `AWS::CodeStarConnections::SyncConfiguration` `RepositoryName`: moved by `RepositoryLinkId` — the name of the repository the link points at
+- `AWS::ControlTower::LandingZone` `LatestAvailableVersion`: never — the newest landing zone version AWS offers, a service catalog
 - `AWS::EC2::GatewayRouteTableAssociation` `AssociationId`: moved by `RouteTableId` — ReplaceRouteTableAssociation mints a new association id
+- `AWS::EC2::LaunchTemplate` `DefaultVersionNumber`: any-update — the new version becomes the default when the update sets it
+- `AWS::EC2::LaunchTemplate` `LatestVersionNumber`: any-update — a LaunchTemplateData edit mints the next version
+- `AWS::ODB::CloudExadataInfrastructure` `DbServerVersion`: never — the database server software level, moved by Oracle maintenance
+- `AWS::ODB::CloudExadataInfrastructure` `StorageServerVersion`: never — the storage server software level, moved by Oracle maintenance
+- `AWS::Redshift::Snapshot` `ClusterVersion`: never — the source cluster version, captured when the snapshot was taken
+- `AWS::Redshift::Snapshot` `EngineFullVersion`: never — the source engine version, captured when the snapshot was taken
 
 ## Cloud Control pairs a moving rule settles
 
@@ -810,48 +820,54 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 
 | Type | Attributes |
 | --- | --- |
-| `AWS::AIOps::InvestigationGroup` | `LastModifiedAt` |
+| `AWS::AIOps::InvestigationGroup` | `LastModifiedAt`, `LastModifiedBy` |
+| `AWS::ARCRegionSwitch::Plan` | `Version` |
 | `AWS::AccessAnalyzer::ArchiveRule` | `UpdatedAt` |
 | `AWS::AccountAccess::Application` | `UpdatedAt` |
 | `AWS::AgentRegistry::Registry` | `UpdatedAt` |
 | `AWS::AgentRegistry::RegistryRecord` | `UpdatedAt` |
+| `AWS::AmazonMQ::Broker` | `ConfigurationRevision`, `EngineVersionCurrent` |
+| `AWS::AmazonMQ::Configuration` | `Revision` |
 | `AWS::AmplifyUIBuilder::Component` | `ModifiedAt` |
 | `AWS::AmplifyUIBuilder::Theme` | `ModifiedAt` |
 | `AWS::ApiGatewayV2::PortalProduct` | `LastModified` |
 | `AWS::AppConfig::ExperimentDefinition` | `UpdatedAt` |
 | `AWS::AppConfig::ExperimentRun` | `UpdatedAt` |
+| `AWS::AppConfig::Extension` | `VersionNumber` |
 | `AWS::AppFabric::AppAuthorization` | `UpdatedAt` |
 | `AWS::AppFabric::Ingestion` | `UpdatedAt` |
 | `AWS::AppFabric::IngestionDestination` | `UpdatedAt` |
-| `AWS::AppIntegrations::Application` | `LastModifiedTime` |
+| `AWS::AppIntegrations::Application` | `LastModifiedRegion`, `LastModifiedTime` |
 | `AWS::AppStream::Entitlement` | `LastModifiedTime` |
-| `AWS::AppTest::TestCase` | `LastUpdateTime` |
+| `AWS::AppTest::TestCase` | `LastUpdateTime`, `LatestVersion`, `TestCaseVersion` |
 | `AWS::ApplicationSignals::GroupingConfiguration` | `UpdatedAt` |
 | `AWS::ApplicationSignals::ServiceLevelObjective` | `LastUpdatedTime` |
 | `AWS::Athena::SystemTables` | `LastModifiedAt` |
-| `AWS::AuditManager::AssessmentFramework` | `LastUpdatedAt` |
+| `AWS::AuditManager::AssessmentFramework` | `LastUpdatedAt`, `LastUpdatedBy` |
 | `AWS::B2BI::Capability` | `ModifiedAt` |
 | `AWS::B2BI::Partnership` | `ModifiedAt` |
 | `AWS::B2BI::Profile` | `ModifiedAt` |
 | `AWS::B2BI::Transformer` | `ModifiedAt` |
 | `AWS::BCM::Dashboard` | `UpdatedAt` |
 | `AWS::BCM::ScheduledReport` | `UpdatedAt` |
+| `AWS::Backup::BackupPlan` | `VersionId` |
 | `AWS::Backup::TieringConfiguration` | `LastUpdatedTime` |
-| `AWS::Bedrock::Agent` | `UpdatedAt` |
+| `AWS::Bedrock::Agent` | `AgentVersion`, `UpdatedAt` |
 | `AWS::Bedrock::AgentAlias` | `UpdatedAt` |
 | `AWS::Bedrock::ApplicationInferenceProfile` | `UpdatedAt` |
-| `AWS::Bedrock::AutomatedReasoningPolicy` | `UpdatedAt` |
+| `AWS::Bedrock::AutomatedReasoningPolicy` | `UpdatedAt`, `Version` |
 | `AWS::Bedrock::AutomatedReasoningPolicyVersion` | `UpdatedAt` |
 | `AWS::Bedrock::Blueprint` | `LastModifiedTime` |
 | `AWS::Bedrock::DataAutomationProject` | `LastModifiedTime` |
 | `AWS::Bedrock::DataSource` | `UpdatedAt` |
-| `AWS::Bedrock::EnforcedGuardrailConfiguration` | `UpdatedAt` |
-| `AWS::Bedrock::Flow` | `UpdatedAt` |
+| `AWS::Bedrock::EnforcedGuardrailConfiguration` | `UpdatedAt`, `UpdatedBy` |
+| `AWS::Bedrock::Flow` | `UpdatedAt`, `Version` |
 | `AWS::Bedrock::FlowAlias` | `UpdatedAt` |
-| `AWS::Bedrock::Guardrail` | `UpdatedAt` |
+| `AWS::Bedrock::Guardrail` | `UpdatedAt`, `Version` |
 | `AWS::Bedrock::IntelligentPromptRouter` | `UpdatedAt` |
 | `AWS::Bedrock::KnowledgeBase` | `UpdatedAt` |
-| `AWS::Bedrock::Prompt` | `UpdatedAt` |
+| `AWS::Bedrock::KnowledgeBasePolicy` | `RevisionId` |
+| `AWS::Bedrock::Prompt` | `UpdatedAt`, `Version` |
 | `AWS::Bedrock::PromptVersion` | `UpdatedAt` |
 | `AWS::Bedrock::RetrievalInstruction` | `UpdatedAt` |
 | `AWS::Bedrock::Session` | `LastUpdatedAt` |
@@ -860,15 +876,15 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::BedrockAgentCore::BrowserProfile` | `LastUpdatedAt` |
 | `AWS::BedrockAgentCore::CapacityProvider` | `LastUpdatedAt` |
 | `AWS::BedrockAgentCore::CodeInterpreterCustom` | `LastUpdatedAt` |
-| `AWS::BedrockAgentCore::ConfigurationBundle` | `UpdatedAt` |
+| `AWS::BedrockAgentCore::ConfigurationBundle` | `UpdatedAt`, `VersionId` |
 | `AWS::BedrockAgentCore::ConsentPortal` | `UpdatedAt` |
 | `AWS::BedrockAgentCore::Dataset` | `UpdatedAt` |
 | `AWS::BedrockAgentCore::Gateway` | `UpdatedAt` |
 | `AWS::BedrockAgentCore::GatewayRateLimit` | `UpdatedAt` |
 | `AWS::BedrockAgentCore::GatewayRule` | `UpdatedAt` |
 | `AWS::BedrockAgentCore::GatewayTarget` | `UpdatedAt` |
-| `AWS::BedrockAgentCore::Harness` | `UpdatedAt` |
-| `AWS::BedrockAgentCore::HarnessEndpoint` | `UpdatedAt` |
+| `AWS::BedrockAgentCore::Harness` | `UpdatedAt`, `Version` |
+| `AWS::BedrockAgentCore::HarnessEndpoint` | `LiveVersion`, `UpdatedAt` |
 | `AWS::BedrockAgentCore::Memory` | `UpdatedAt` |
 | `AWS::BedrockAgentCore::OAuth2CredentialProvider` | `LastUpdatedTime` |
 | `AWS::BedrockAgentCore::OnlineEvaluationConfig` | `UpdatedAt` |
@@ -876,7 +892,7 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::BedrockAgentCore::PaymentManager` | `LastUpdatedAt` |
 | `AWS::BedrockAgentCore::Policy` | `UpdatedAt` |
 | `AWS::BedrockAgentCore::PolicyEngine` | `UpdatedAt` |
-| `AWS::BedrockAgentCore::RuntimeEndpoint` | `LastUpdatedAt` |
+| `AWS::BedrockAgentCore::RuntimeEndpoint` | `LastUpdatedAt`, `LiveVersion`, `TargetVersion` |
 | `AWS::BedrockAgentCore::WorkloadIdentity` | `LastUpdatedTime` |
 | `AWS::Billing::BillingView` | `UpdatedAt` |
 | `AWS::BillingConductor::BillingGroup` | `LastModifiedTime` |
@@ -899,17 +915,18 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::Chime::SipMediaApplication` | `UpdatedTimestamp` |
 | `AWS::Chime::VoiceConnector` | `UpdatedTimestamp` |
 | `AWS::CloudFormation::GeneratedTemplate` | `LastUpdatedTime` |
+| `AWS::CloudFront::AnycastIpList` | `ETag` |
 | `AWS::CloudFront::CachePolicy` | `LastModifiedTime` |
-| `AWS::CloudFront::ConnectionFunction` | `LastModifiedTime` |
-| `AWS::CloudFront::ConnectionGroup` | `LastModifiedTime` |
+| `AWS::CloudFront::ConnectionFunction` | `ETag`, `LastModifiedTime` |
+| `AWS::CloudFront::ConnectionGroup` | `ETag`, `LastModifiedTime` |
 | `AWS::CloudFront::ContinuousDeploymentPolicy` | `LastModifiedTime` |
-| `AWS::CloudFront::DistributionTenant` | `LastModifiedTime` |
+| `AWS::CloudFront::DistributionTenant` | `ETag`, `LastModifiedTime` |
 | `AWS::CloudFront::FieldLevelEncryptionConfig` | `LastModifiedTime` |
 | `AWS::CloudFront::FieldLevelEncryptionProfile` | `LastModifiedTime` |
 | `AWS::CloudFront::KeyGroup` | `LastModifiedTime` |
 | `AWS::CloudFront::OriginRequestPolicy` | `LastModifiedTime` |
 | `AWS::CloudFront::ResponseHeadersPolicy` | `LastModifiedTime` |
-| `AWS::CloudFront::TrustStore` | `LastModifiedTime` |
+| `AWS::CloudFront::TrustStore` | `ETag`, `LastModifiedTime` |
 | `AWS::CloudFront::VpcOrigin` | `LastModifiedTime` |
 | `AWS::CloudTrail::Dashboard` | `UpdatedTimestamp` |
 | `AWS::CloudTrail::EventDataStore` | `UpdatedTimestamp` |
@@ -927,17 +944,18 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::CloudWatch::ResourceMetricsConfiguration` | `UpdatedAt` |
 | `AWS::CloudWatch::Space` | `UpdatedAt` |
 | `AWS::CloudWatch::View` | `UpdatedAt` |
+| `AWS::CodePipeline::Pipeline` | `Version` |
 | `AWS::Comprehend::DocumentClassifierEndpoint` | `LastModifiedTime` |
 | `AWS::Comprehend::EntityRecognizerEndpoint` | `LastModifiedTime` |
-| `AWS::ComputeOptimizer::AutomationRule` | `LastUpdatedTimestamp` |
-| `AWS::Connect::AgentStatus` | `LastModifiedTime` |
-| `AWS::Connect::DataTable` | `LastModifiedTime` |
-| `AWS::Connect::DataTableAttribute` | `LastModifiedTime` |
-| `AWS::Connect::Metric` | `LastModifiedTime` |
-| `AWS::Connect::PredefinedAttribute` | `LastModifiedTime` |
-| `AWS::Connect::Queue` | `LastModifiedTime` |
-| `AWS::Connect::SecurityProfile` | `LastModifiedTime` |
-| `AWS::Connect::TestCase` | `LastModifiedTime` |
+| `AWS::ComputeOptimizer::AutomationRule` | `LastUpdatedTimestamp`, `RuleRevision` |
+| `AWS::Connect::AgentStatus` | `LastModifiedRegion`, `LastModifiedTime` |
+| `AWS::Connect::DataTable` | `LastModifiedRegion`, `LastModifiedTime`, `LockVersion` |
+| `AWS::Connect::DataTableAttribute` | `LastModifiedRegion`, `LastModifiedTime`, `LockVersion` |
+| `AWS::Connect::Metric` | `LastModifiedRegion`, `LastModifiedTime`, `LastModifiedUser` |
+| `AWS::Connect::PredefinedAttribute` | `LastModifiedRegion`, `LastModifiedTime` |
+| `AWS::Connect::Queue` | `LastModifiedRegion`, `LastModifiedTime` |
+| `AWS::Connect::SecurityProfile` | `LastModifiedRegion`, `LastModifiedTime` |
+| `AWS::Connect::TestCase` | `LastModifiedRegion`, `LastModifiedTime` |
 | `AWS::Connect::Vocabulary` | `LastModifiedTime` |
 | `AWS::CustomerProfiles::CalculatedAttributeDefinition` | `LastUpdatedAt` |
 | `AWS::CustomerProfiles::Domain` | `LastUpdatedAt` |
@@ -947,6 +965,7 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::CustomerProfiles::ObjectType` | `LastUpdatedAt` |
 | `AWS::CustomerProfiles::Recommender` | `LastUpdatedAt` |
 | `AWS::DRS::RecoveryPlan` | `UpdatedAt` |
+| `AWS::DSQL::Cluster` | `PolicyVersion` |
 | `AWS::DataExchange::DataSet` | `UpdatedAt` |
 | `AWS::DataExchange::EventAction` | `UpdatedAt` |
 | `AWS::DataZone::DataSource` | `UpdatedAt` |
@@ -955,15 +974,18 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::DataZone::Environment` | `UpdatedAt` |
 | `AWS::DataZone::EnvironmentBlueprintConfiguration` | `UpdatedAt` |
 | `AWS::DataZone::EnvironmentProfile` | `UpdatedAt` |
+| `AWS::DataZone::FormType` | `Revision` |
 | `AWS::DataZone::Project` | `LastUpdatedAt` |
 | `AWS::DataZone::ProjectProfile` | `LastUpdatedAt` |
-| `AWS::DataZone::SubscriptionTarget` | `UpdatedAt` |
+| `AWS::DataZone::SubscriptionTarget` | `UpdatedAt`, `UpdatedBy` |
 | `AWS::DevOpsAgent::AgentSpace` | `UpdatedAt` |
-| `AWS::DevOpsAgent::Asset` | `UpdatedAt` |
+| `AWS::DevOpsAgent::Asset` | `UpdatedAt`, `Version` |
 | `AWS::DevOpsAgent::Association` | `UpdatedAt` |
 | `AWS::DevOpsAgent::Trigger` | `UpdatedAt` |
+| `AWS::EC2::FcaPolicy` | `LatestVersion`, `VersionExpectedEffectiveAt` |
 | `AWS::EC2::FpgaImage` | `UpdateTime` |
 | `AWS::EC2::NetworkInsightsAccessScope` | `UpdatedDate` |
+| `AWS::EC2::PrefixList` | `Version` |
 | `AWS::EC2::SqlHaStandbyDetectedInstance` | `LastUpdatedTime` |
 | `AWS::EC2::VerifiedAccessEndpoint` | `LastUpdatedTime` |
 | `AWS::EC2::VerifiedAccessGroup` | `LastUpdatedTime` |
@@ -973,42 +995,55 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::ECS::Daemon` | `UpdatedAt` |
 | `AWS::ECS::ExpressGatewayService` | `UpdatedAt` |
 | `AWS::ECS::Gateway` | `UpdatedAt` |
-| `AWS::EKS::Capability` | `ModifiedAt` |
+| `AWS::EKS::Capability` | `ModifiedAt`, `Version` |
 | `AWS::EVS::Environment` | `ModifiedAt` |
+| `AWS::ElastiCache::ServerlessCache` | `FullEngineVersion` |
 | `AWS::EntityResolution::IdMappingWorkflow` | `UpdatedAt` |
 | `AWS::EntityResolution::IdNamespace` | `UpdatedAt` |
 | `AWS::EntityResolution::MatchingWorkflow` | `UpdatedAt` |
 | `AWS::EntityResolution::SchemaMapping` | `UpdatedAt` |
-| `AWS::EventSchemas::Schema` | `LastModified` |
+| `AWS::EventSchemas::Schema` | `LastModified`, `SchemaVersion`, `VersionCreatedDate` |
 | `AWS::EventsV2::EventBus` | `LastModifiedTime` |
 | `AWS::EventsV2::EventSource` | `LastModifiedTime` |
+| `AWS::EventsV2::ResourcePolicy` | `RevisionId` |
 | `AWS::EventsV2::Subscriber` | `LastModifiedTime` |
 | `AWS::FMS::ApplicationsList` | `LastUpdateTime` |
 | `AWS::FMS::ProtocolsList` | `LastUpdateTime` |
-| `AWS::FraudDetector::Detector` | `LastUpdatedTime` |
+| `AWS::FraudDetector::Detector` | `DetectorVersionId`, `LastUpdatedTime` |
 | `AWS::FraudDetector::EntityType` | `LastUpdatedTime` |
 | `AWS::FraudDetector::EventType` | `LastUpdatedTime` |
 | `AWS::FraudDetector::Label` | `LastUpdatedTime` |
 | `AWS::FraudDetector::List` | `LastUpdatedTime` |
 | `AWS::FraudDetector::Outcome` | `LastUpdatedTime` |
 | `AWS::FraudDetector::Variable` | `LastUpdatedTime` |
+| `AWS::GameLift::ContainerGroupDefinition` | `VersionNumber` |
 | `AWS::Glue::Blueprint` | `LastModifiedOn` |
 | `AWS::Glue::Catalog` | `UpdateTime` |
 | `AWS::Grafana::Workspace` | `ModificationTimestamp` |
+| `AWS::Greengrass::ConnectorDefinition` | `LatestVersionArn` |
+| `AWS::Greengrass::CoreDefinition` | `LatestVersionArn` |
+| `AWS::Greengrass::DeviceDefinition` | `LatestVersionArn` |
+| `AWS::Greengrass::FunctionDefinition` | `LatestVersionArn` |
+| `AWS::Greengrass::Group` | `LatestVersionArn` |
+| `AWS::Greengrass::LoggerDefinition` | `LatestVersionArn` |
+| `AWS::Greengrass::ResourceDefinition` | `LatestVersionArn` |
+| `AWS::Greengrass::SubscriptionDefinition` | `LatestVersionArn` |
 | `AWS::GuardDuty::CustomDetectionRuleAssociation` | `UpdatedAt` |
 | `AWS::GuardDuty::ThreatEntitySet` | `UpdatedAt` |
 | `AWS::GuardDuty::TrustedEntitySet` | `UpdatedAt` |
 | `AWS::HealthImaging::Datastore` | `UpdatedAt` |
-| `AWS::IdentityStore::User` | `UpdatedAt` |
+| `AWS::IdentityStore::User` | `UpdatedAt`, `UpdatedBy` |
+| `AWS::ImageBuilder::Image` | `LatestVersion` |
 | `AWS::InspectorV2::CodeSecurityIntegration` | `LastUpdatedAt` |
 | `AWS::InspectorV2::Connector` | `LastUpdatedAt` |
 | `AWS::InternetMonitor::Monitor` | `ModifiedAt` |
 | `AWS::Invoicing::InvoiceUnit` | `LastModified` |
-| `AWS::Invoicing::ProcurementPortalPreference` | `LastUpdateDate` |
+| `AWS::Invoicing::ProcurementPortalPreference` | `LastUpdateDate`, `Version` |
 | `AWS::IoT::EncryptionConfiguration` | `LastModifiedDate` |
-| `AWS::IoT::FleetMetric` | `LastModifiedDate` |
+| `AWS::IoT::FleetMetric` | `LastModifiedDate`, `Version` |
 | `AWS::IoT::OTAUpdate` | `LastModifiedDate` |
-| `AWS::IoT::Stream` | `LastUpdatedAt` |
+| `AWS::IoT::Stream` | `LastUpdatedAt`, `StreamVersion` |
+| `AWS::IoTCoreDeviceAdvisor::SuiteDefinition` | `SuiteDefinitionVersion` |
 | `AWS::IoTFleetWise::Campaign` | `LastModificationTime` |
 | `AWS::IoTFleetWise::DecoderManifest` | `LastModificationTime` |
 | `AWS::IoTFleetWise::Fleet` | `LastModificationTime` |
@@ -1024,9 +1059,12 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::IoTTwinMaker::SyncJob` | `UpdateDateTime` |
 | `AWS::IoTTwinMaker::Workspace` | `UpdateDateTime` |
 | `AWS::Lambda::Runtime` | `LastModified` |
-| `AWS::Lambda::RuntimeAlias` | `LastModified` |
+| `AWS::Lambda::RuntimeAlias` | `LastModified`, `RuntimeVersionArn` |
 | `AWS::Lambda::RuntimeVersion` | `LastModified` |
 | `AWS::Lambda::WebFunction` | `UpdatedAt` |
+| `AWS::Lex::ResourcePolicy` | `RevisionId` |
+| `AWS::LicenseManager::Grant` | `Version` |
+| `AWS::LicenseManager::License` | `Version` |
 | `AWS::Location::APIKey` | `UpdateTime` |
 | `AWS::Location::GeofenceCollection` | `UpdateTime` |
 | `AWS::Location::Map` | `UpdateTime` |
@@ -1039,8 +1077,10 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::MGN::Application` | `LastModifiedDateTime` |
 | `AWS::MGN::NetworkMigrationDefinition` | `UpdatedAt` |
 | `AWS::MGN::Wave` | `LastModifiedDateTime` |
-| `AWS::MPA::ApprovalTeam` | `LastUpdateTime` |
-| `AWS::MWAAServerless::Workflow` | `ModifiedAt` |
+| `AWS::MPA::ApprovalTeam` | `LastUpdateTime`, `VersionId` |
+| `AWS::MSK::ClusterPolicy` | `CurrentVersion` |
+| `AWS::MSK::Replicator` | `CurrentVersion` |
+| `AWS::MWAAServerless::Workflow` | `ModifiedAt`, `WorkflowVersion` |
 | `AWS::Macie::Member` | `UpdatedAt` |
 | `AWS::MediaConnect::DestinationEndpoint` | `UpdatedAt` |
 | `AWS::MediaConnect::RouterInput` | `UpdatedAt` |
@@ -1064,11 +1104,11 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::NetworkManager::VpcAttachment` | `UpdatedAt` |
 | `AWS::NetworkMonitor::Monitor` | `ModifiedAt` |
 | `AWS::NetworkMonitor::Probe` | `ModifiedAt` |
-| `AWS::NetworkSecurityManager::Deployment` | `UpdatedAt` |
-| `AWS::NetworkSecurityManager::Policy` | `UpdatedAt` |
-| `AWS::NetworkSecurityManager::Rule` | `UpdatedAt` |
-| `AWS::NetworkSecurityManager::Scope` | `UpdatedAt` |
-| `AWS::NetworkSecurityManager::Template` | `UpdatedAt` |
+| `AWS::NetworkSecurityManager::Deployment` | `UpdatedAt`, `Version` |
+| `AWS::NetworkSecurityManager::Policy` | `UpdatedAt`, `Version` |
+| `AWS::NetworkSecurityManager::Rule` | `UpdatedAt`, `Version` |
+| `AWS::NetworkSecurityManager::Scope` | `UpdatedAt`, `Version` |
+| `AWS::NetworkSecurityManager::Template` | `UpdatedAt`, `Version` |
 | `AWS::ObservabilityAdmin::DatasetIntegration` | `UpdatedAt` |
 | `AWS::Omics::AnnotationStore` | `UpdateTime` |
 | `AWS::Omics::SequenceStore` | `UpdateTime` |
@@ -1090,9 +1130,9 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::QuickSight::Agent` | `UpdatedAt` |
 | `AWS::QuickSight::Analysis` | `LastUpdatedTime` |
 | `AWS::QuickSight::ApprovalPolicy` | `UpdatedAt` |
-| `AWS::QuickSight::Brand` | `LastUpdatedTime` |
+| `AWS::QuickSight::Brand` | `LastUpdatedTime`, `VersionId`, `VersionStatus` |
 | `AWS::QuickSight::DLPSetting` | `UpdatedAt` |
-| `AWS::QuickSight::Dashboard` | `LastUpdatedTime` |
+| `AWS::QuickSight::Dashboard` | `LastUpdatedTime`, `Version` |
 | `AWS::QuickSight::DataSet` | `LastUpdatedTime` |
 | `AWS::QuickSight::DataSource` | `LastUpdatedTime` |
 | `AWS::QuickSight::Flow` | `LastUpdatedTime` |
@@ -1101,10 +1141,10 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::QuickSight::LimitsProfile` | `UpdatedAt` |
 | `AWS::QuickSight::OAuthClientApplication` | `LastUpdatedTime` |
 | `AWS::QuickSight::Space` | `UpdatedAt` |
-| `AWS::QuickSight::Template` | `LastUpdatedTime` |
-| `AWS::QuickSight::Theme` | `LastUpdatedTime` |
+| `AWS::QuickSight::Template` | `LastUpdatedTime`, `Version` |
+| `AWS::QuickSight::Theme` | `LastUpdatedTime`, `Version` |
 | `AWS::QuickSight::VPCConnection` | `LastUpdatedTime` |
-| `AWS::RAM::PermissionAssociation` | `LastUpdatedTime` |
+| `AWS::RAM::PermissionAssociation` | `LastUpdatedTime`, `PermissionVersion` |
 | `AWS::RAM::PrincipalAssociation` | `LastUpdatedTime` |
 | `AWS::RAM::ResourceAssociation` | `LastUpdatedTime` |
 | `AWS::RAM::ResourceShare` | `LastUpdatedTime` |
@@ -1120,6 +1160,7 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::ResilienceHubV2::ServiceFunction` | `UpdatedAt` |
 | `AWS::ResilienceHubV2::System` | `UpdatedAt` |
 | `AWS::ResilienceHubV2::UserJourney` | `UpdatedAt` |
+| `AWS::Route53::TrafficPolicy` | `Version` |
 | `AWS::Route53GlobalResolver::AccessSource` | `UpdatedAt` |
 | `AWS::Route53GlobalResolver::AccessToken` | `UpdatedAt` |
 | `AWS::Route53GlobalResolver::DnsView` | `UpdatedAt` |
@@ -1133,16 +1174,17 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::Route53Resolver::OutpostResolver` | `ModificationTime` |
 | `AWS::SCN::DataIntegrationFlow` | `LastModifiedTime` |
 | `AWS::SCN::Dataset` | `LastModifiedTime` |
-| `AWS::SCN::Instance` | `LastModifiedTime` |
+| `AWS::SCN::Instance` | `LastModifiedTime`, `VersionNumber` |
 | `AWS::SCN::Namespace` | `LastModifiedTime` |
 | `AWS::SSM::CloudConnector` | `UpdatedAt` |
-| `AWS::SSM::DefaultHostManagementConfiguration` | `LastModifiedDate` |
-| `AWS::SSM::OpsItem` | `LastModifiedTime` |
-| `AWS::SSM::ServiceSetting` | `LastModifiedDate` |
+| `AWS::SSM::DefaultHostManagementConfiguration` | `LastModifiedDate`, `LastModifiedUser` |
+| `AWS::SSM::OpsItem` | `LastModifiedBy`, `LastModifiedTime`, `Version` |
+| `AWS::SSM::ServiceSetting` | `LastModifiedDate`, `LastModifiedUser` |
 | `AWS::SSMQuickSetup::ConfigurationManager` | `LastModifiedAt` |
 | `AWS::SageMaker::Action` | `LastModifiedTime` |
 | `AWS::SageMaker::Artifact` | `LastModifiedTime` |
-| `AWS::SageMaker::ComputeQuota` | `LastModifiedTime` |
+| `AWS::SageMaker::ClusterSchedulerConfig` | `ClusterSchedulerConfigVersion` |
+| `AWS::SageMaker::ComputeQuota` | `ComputeQuotaVersion`, `LastModifiedTime` |
 | `AWS::SageMaker::Context` | `LastModifiedTime` |
 | `AWS::SageMaker::Experiment` | `LastModifiedTime` |
 | `AWS::SageMaker::ExperimentTrialComponent` | `LastModifiedTime` |
@@ -1150,9 +1192,10 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::SageMaker::Hub` | `LastModifiedTime` |
 | `AWS::SageMaker::InferenceComponent` | `LastModifiedTime` |
 | `AWS::SageMaker::InferenceExperiment` | `LastModifiedTime` |
-| `AWS::SageMaker::MlflowApp` | `LastModifiedTime` |
-| `AWS::SageMaker::ModelCard` | `LastModifiedTime` |
+| `AWS::SageMaker::MlflowApp` | `LastModifiedTime`, `MlflowVersion` |
+| `AWS::SageMaker::ModelCard` | `LastModifiedTime`, `ModelCardVersion` |
 | `AWS::SageMaker::MonitoringSchedule` | `LastModifiedTime` |
+| `AWS::SageMaker::PartnerApp` | `CurrentVersionEolDate` |
 | `AWS::SageMaker::ProcessingJob` | `LastModifiedTime` |
 | `AWS::SageMaker::TrialComponent` | `LastModifiedTime` |
 | `AWS::Scheduler::ScheduleGroup` | `LastModificationDate` |
@@ -1172,16 +1215,17 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::VpcLattice::Service` | `LastUpdatedAt` |
 | `AWS::VpcLattice::ServiceNetwork` | `LastUpdatedAt` |
 | `AWS::VpcLattice::TargetGroup` | `LastUpdatedAt` |
-| `AWS::WellArchitected::AgentContext` | `LastModifiedAt` |
-| `AWS::WellArchitected::AgentGoal` | `LastModifiedAt` |
-| `AWS::WellArchitected::AgentOrganizationalProfile` | `LastModifiedAt` |
-| `AWS::WellArchitected::AgentProfile` | `LastModifiedAt` |
-| `AWS::WellArchitected::Profile` | `UpdatedAt` |
+| `AWS::WellArchitected::AgentContext` | `LastModifiedAt`, `LastModifiedBy` |
+| `AWS::WellArchitected::AgentGoal` | `LastModifiedAt`, `LastModifiedBy` |
+| `AWS::WellArchitected::AgentOrganizationalProfile` | `LastModifiedAt`, `LastModifiedBy` |
+| `AWS::WellArchitected::AgentProfile` | `LastModifiedAt`, `LastModifiedBy` |
+| `AWS::WellArchitected::Profile` | `ProfileVersion`, `UpdatedAt` |
 | `AWS::WellArchitected::ReviewTemplate` | `UpdatedAt` |
 | `AWS::Wisdom::AIAgent` | `ModifiedTimeSeconds` |
 | `AWS::Wisdom::AIGuardrail` | `ModifiedTimeSeconds` |
 | `AWS::Wisdom::AIPrompt` | `ModifiedTimeSeconds` |
-| `AWS::WorkSpacesThinClient::Environment` | `UpdatedAt` |
+| `AWS::Wisdom::Content` | `RevisionId` |
+| `AWS::WorkSpacesThinClient::Environment` | `PendingSoftwareSetVersion`, `UpdatedAt` |
 
 ## Cloud Control baseline
 
@@ -1191,54 +1235,51 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | --- | --- |
 | `AWS::ACMPCA::CertificateAuthority` | 1 |
 | `AWS::ACMPCA::CertificateAuthorityActivation` | 1 |
-| `AWS::AIOps::InvestigationGroup` | 2 |
 | `AWS::APS::Scraper` | 1 |
 | `AWS::APS::Workspace` | 1 |
-| `AWS::ARCRegionSwitch::Plan` | 5 |
+| `AWS::ARCRegionSwitch::Plan` | 4 |
 | `AWS::AWSExternalAnthropic::Workspace` | 1 |
-| `AWS::AgentRegistry::Registry` | 3 |
-| `AWS::AgentRegistry::RegistryRecord` | 5 |
-| `AWS::AmazonMQ::Broker` | 11 |
-| `AWS::AmazonMQ::Configuration` | 2 |
-| `AWS::Amplify::App` | 3 |
+| `AWS::AgentRegistry::Registry` | 2 |
+| `AWS::AgentRegistry::RegistryRecord` | 4 |
+| `AWS::AmazonMQ::Broker` | 9 |
+| `AWS::AmazonMQ::Configuration` | 1 |
+| `AWS::Amplify::App` | 2 |
 | `AWS::Amplify::Branch` | 1 |
 | `AWS::Amplify::Domain` | 5 |
-| `AWS::Amplify::Webhook` | 2 |
+| `AWS::Amplify::Webhook` | 1 |
 | `AWS::ApiGateway::DomainName` | 4 |
 | `AWS::ApiGateway::DomainNameV2` | 1 |
 | `AWS::ApiGatewayV2::DomainName` | 2 |
-| `AWS::ApiGatewayV2::PortalProduct` | 1 |
 | `AWS::ApiGatewayV2::VpcLink` | 1 |
 | `AWS::AppConfig::ConfigurationProfile` | 1 |
 | `AWS::AppConfig::ExperimentDefinition` | 2 |
 | `AWS::AppConfig::ExperimentRun` | 3 |
-| `AWS::AppConfig::Extension` | 2 |
+| `AWS::AppConfig::Extension` | 1 |
 | `AWS::AppConfig::ExtensionAssociation` | 2 |
 | `AWS::AppFabric::AppAuthorization` | 4 |
 | `AWS::AppFabric::IngestionDestination` | 1 |
 | `AWS::AppFlow::ConnectorProfile` | 1 |
-| `AWS::AppIntegrations::Application` | 2 |
-| `AWS::AppMesh::GatewayRoute` | 2 |
-| `AWS::AppMesh::Mesh` | 3 |
-| `AWS::AppMesh::Route` | 2 |
-| `AWS::AppMesh::VirtualGateway` | 2 |
-| `AWS::AppMesh::VirtualNode` | 2 |
-| `AWS::AppMesh::VirtualRouter` | 2 |
-| `AWS::AppMesh::VirtualService` | 2 |
+| `AWS::AppMesh::GatewayRoute` | 1 |
+| `AWS::AppMesh::Mesh` | 2 |
+| `AWS::AppMesh::Route` | 1 |
+| `AWS::AppMesh::VirtualGateway` | 1 |
+| `AWS::AppMesh::VirtualNode` | 1 |
+| `AWS::AppMesh::VirtualRouter` | 1 |
+| `AWS::AppMesh::VirtualService` | 1 |
 | `AWS::AppRunner::Service` | 2 |
 | `AWS::AppRunner::VpcIngressConnection` | 2 |
 | `AWS::AppStream::ImageBuilder` | 1 |
-| `AWS::AppSync::Api` | 4 |
+| `AWS::AppSync::Api` | 3 |
 | `AWS::AppSync::DomainName` | 2 |
 | `AWS::AppSync::DomainNameApiAssociation` | 1 |
 | `AWS::AppSync::FunctionConfiguration` | 2 |
 | `AWS::AppSync::SourceApiAssociation` | 7 |
 | `AWS::AppSync::Type` | 1 |
-| `AWS::AppTest::TestCase` | 4 |
+| `AWS::AppTest::TestCase` | 2 |
 | `AWS::ApplicationSignals::ServiceLevelObjective` | 1 |
 | `AWS::Athena::CapacityReservation` | 3 |
 | `AWS::Athena::WorkGroup` | 2 |
-| `AWS::AuditManager::AssessmentFramework` | 4 |
+| `AWS::AuditManager::AssessmentFramework` | 1 |
 | `AWS::AutoScaling::ScalingPolicy` | 1 |
 | `AWS::AutoScaling::ScheduledAction` | 1 |
 | `AWS::AutoScalingPlans::ScalingPlan` | 3 |
@@ -1249,43 +1290,41 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::BCM::Dashboard` | 2 |
 | `AWS::BCM::ScheduledReport` | 2 |
 | `AWS::BCMDataExports::Export` | 1 |
-| `AWS::Backup::BackupPlan` | 2 |
+| `AWS::Backup::BackupPlan` | 1 |
 | `AWS::Backup::Framework` | 2 |
 | `AWS::Backup::LogicallyAirGappedBackupVault` | 2 |
 | `AWS::Backup::TieringConfiguration` | 1 |
 | `AWS::Batch::ComputeEnvironment` | 1 |
 | `AWS::Batch::ConsumableResource` | 2 |
 | `AWS::Batch::JobDefinition` | 1 |
-| `AWS::BcmPricingCalculator::BillEstimate` | 6 |
-| `AWS::BcmPricingCalculator::BillScenario` | 4 |
-| `AWS::BcmPricingCalculator::WorkloadEstimate` | 6 |
-| `AWS::Bedrock::Agent` | 6 |
+| `AWS::BcmPricingCalculator::BillEstimate` | 5 |
+| `AWS::BcmPricingCalculator::BillScenario` | 3 |
+| `AWS::BcmPricingCalculator::WorkloadEstimate` | 5 |
+| `AWS::Bedrock::Agent` | 5 |
 | `AWS::Bedrock::AgentAlias` | 3 |
-| `AWS::Bedrock::AutomatedReasoningPolicy` | 4 |
+| `AWS::Bedrock::AutomatedReasoningPolicy` | 2 |
 | `AWS::Bedrock::Blueprint` | 1 |
 | `AWS::Bedrock::DataAutomationLibrary` | 2 |
 | `AWS::Bedrock::DataAutomationProject` | 2 |
 | `AWS::Bedrock::DataSource` | 3 |
-| `AWS::Bedrock::EnforcedGuardrailConfiguration` | 5 |
-| `AWS::Bedrock::Flow` | 4 |
+| `AWS::Bedrock::EnforcedGuardrailConfiguration` | 3 |
+| `AWS::Bedrock::Flow` | 2 |
 | `AWS::Bedrock::FlowAlias` | 3 |
-| `AWS::Bedrock::Guardrail` | 5 |
+| `AWS::Bedrock::Guardrail` | 3 |
 | `AWS::Bedrock::KnowledgeBase` | 2 |
-| `AWS::Bedrock::KnowledgeBasePolicy` | 1 |
-| `AWS::Bedrock::Prompt` | 2 |
 | `AWS::Bedrock::RetrievalInstruction` | 2 |
 | `AWS::Bedrock::Session` | 1 |
 | `AWS::BedrockAgentCore::ApiKeyCredentialProvider` | 2 |
 | `AWS::BedrockAgentCore::CapacityProvider` | 1 |
-| `AWS::BedrockAgentCore::ConfigurationBundle` | 3 |
+| `AWS::BedrockAgentCore::ConfigurationBundle` | 1 |
 | `AWS::BedrockAgentCore::ConsentPortal` | 2 |
 | `AWS::BedrockAgentCore::Dataset` | 2 |
 | `AWS::BedrockAgentCore::Gateway` | 6 |
 | `AWS::BedrockAgentCore::GatewayRateLimit` | 1 |
 | `AWS::BedrockAgentCore::GatewayRule` | 3 |
 | `AWS::BedrockAgentCore::GatewayTarget` | 7 |
-| `AWS::BedrockAgentCore::Harness` | 7 |
-| `AWS::BedrockAgentCore::HarnessEndpoint` | 3 |
+| `AWS::BedrockAgentCore::Harness` | 5 |
+| `AWS::BedrockAgentCore::HarnessEndpoint` | 2 |
 | `AWS::BedrockAgentCore::Memory` | 2 |
 | `AWS::BedrockAgentCore::OAuth2CredentialProvider` | 6 |
 | `AWS::BedrockAgentCore::OnlineEvaluationConfig` | 1 |
@@ -1294,9 +1333,9 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::BedrockAgentCore::PaymentManager` | 2 |
 | `AWS::BedrockAgentCore::Policy` | 2 |
 | `AWS::BedrockAgentCore::PolicyEngine` | 2 |
-| `AWS::BedrockAgentCore::RuntimeEndpoint` | 6 |
+| `AWS::BedrockAgentCore::RuntimeEndpoint` | 4 |
 | `AWS::BedrockMantle::Project` | 1 |
-| `AWS::Billing::BillingView` | 2 |
+| `AWS::Billing::BillingView` | 1 |
 | `AWS::BillingConductor::BillingGroup` | 3 |
 | `AWS::BillingConductor::CustomLineItem` | 3 |
 | `AWS::BillingConductor::PricingPlan` | 1 |
@@ -1314,7 +1353,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Chime::AppInstance` | 1 |
 | `AWS::Chime::AppInstanceBot` | 1 |
 | `AWS::Chime::AppInstanceUser` | 1 |
-| `AWS::Chime::Channel` | 4 |
+| `AWS::Chime::Channel` | 3 |
 | `AWS::Chime::ChannelFlow` | 3 |
 | `AWS::Chime::MediaPipelineKinesisVideoStreamPool` | 1 |
 | `AWS::Chime::SipMediaApplication` | 2 |
@@ -1333,14 +1372,14 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::CloudFormation::HookTypeConfig` | 1 |
 | `AWS::CloudFormation::ResourceDefaultVersion` | 1 |
 | `AWS::CloudFormation::TypeActivation` | 1 |
-| `AWS::CloudFront::AnycastIpList` | 3 |
-| `AWS::CloudFront::ConnectionFunction` | 3 |
-| `AWS::CloudFront::ConnectionGroup` | 4 |
-| `AWS::CloudFront::DistributionTenant` | 3 |
+| `AWS::CloudFront::AnycastIpList` | 2 |
+| `AWS::CloudFront::ConnectionFunction` | 2 |
+| `AWS::CloudFront::ConnectionGroup` | 3 |
+| `AWS::CloudFront::DistributionTenant` | 2 |
 | `AWS::CloudFront::Function` | 2 |
 | `AWS::CloudFront::KeyValueStore` | 1 |
 | `AWS::CloudFront::StreamingDistribution` | 1 |
-| `AWS::CloudFront::TrustStore` | 3 |
+| `AWS::CloudFront::TrustStore` | 2 |
 | `AWS::CloudFront::VpcOrigin` | 2 |
 | `AWS::CloudHSM::Cluster` | 5 |
 | `AWS::CloudTrail::Dashboard` | 3 |
@@ -1348,55 +1387,50 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::CloudWatch::AccessProfile` | 2 |
 | `AWS::CloudWatch::AlarmMuteRule` | 2 |
 | `AWS::CloudWatch::Alert` | 1 |
-| `AWS::CloudWatch::Domain` | 6 |
-| `AWS::CloudWatch::DomainForOrganization` | 9 |
+| `AWS::CloudWatch::Domain` | 5 |
+| `AWS::CloudWatch::DomainForOrganization` | 8 |
 | `AWS::CloudWatch::Integration` | 1 |
 | `AWS::CloudWatch::MetricDataQueryDefinition` | 2 |
 | `AWS::CloudWatch::MetricStream` | 1 |
 | `AWS::CloudWatch::OTelEnrichment` | 1 |
-| `AWS::CloudWatch::OmniDashboard` | 1 |
-| `AWS::CloudWatch::Space` | 4 |
+| `AWS::CloudWatch::Space` | 2 |
 | `AWS::CloudWatch::View` | 1 |
 | `AWS::CodeArtifact::Domain` | 2 |
 | `AWS::CodeArtifact::Repository` | 1 |
 | `AWS::CodeConnections::Host` | 1 |
-| `AWS::CodePipeline::Pipeline` | 2 |
+| `AWS::CodePipeline::Pipeline` | 1 |
 | `AWS::CodePipeline::Webhook` | 1 |
 | `AWS::CodeStarConnections::RepositoryLink` | 1 |
-| `AWS::CodeStarConnections::SyncConfiguration` | 3 |
 | `AWS::Cognito::IdentityPool` | 1 |
 | `AWS::Cognito::UserPoolClient` | 2 |
 | `AWS::Cognito::UserPoolDomain` | 1 |
 | `AWS::Comprehend::DocumentClassifierEndpoint` | 1 |
 | `AWS::Comprehend::EntityRecognizerEndpoint` | 2 |
-| `AWS::ComputeOptimizer::AutomationRule` | 4 |
+| `AWS::ComputeOptimizer::AutomationRule` | 3 |
 | `AWS::Config::ConfigRule` | 1 |
 | `AWS::Config::ConfigurationRecorder` | 1 |
 | `AWS::Config::ConformancePack` | 1 |
-| `AWS::Connect::AgentStatus` | 2 |
+| `AWS::Connect::AgentStatus` | 1 |
 | `AWS::Connect::ContactFlow` | 1 |
 | `AWS::Connect::ContactFlowModule` | 2 |
 | `AWS::Connect::ContactFlowModuleAlias` | 2 |
-| `AWS::Connect::DataTable` | 3 |
-| `AWS::Connect::DataTableAttribute` | 2 |
+| `AWS::Connect::DataTable` | 1 |
 | `AWS::Connect::EmailAddress` | 1 |
 | `AWS::Connect::HoursOfOperation` | 1 |
-| `AWS::Connect::Metric` | 16 |
+| `AWS::Connect::Metric` | 14 |
 | `AWS::Connect::PhoneNumber` | 1 |
-| `AWS::Connect::PredefinedAttribute` | 1 |
 | `AWS::Connect::Prompt` | 1 |
-| `AWS::Connect::Queue` | 3 |
+| `AWS::Connect::Queue` | 2 |
 | `AWS::Connect::QuickConnect` | 2 |
 | `AWS::Connect::RoutingProfile` | 1 |
 | `AWS::Connect::Rule` | 1 |
-| `AWS::Connect::SecurityProfile` | 1 |
 | `AWS::Connect::TaskTemplate` | 1 |
-| `AWS::Connect::TestCase` | 2 |
+| `AWS::Connect::TestCase` | 1 |
 | `AWS::Connect::TrafficDistributionGroup` | 2 |
 | `AWS::Connect::UserHierarchyGroup` | 1 |
 | `AWS::Connect::View` | 3 |
 | `AWS::Connect::Workspace` | 2 |
-| `AWS::ControlTower::LandingZone` | 4 |
+| `AWS::ControlTower::LandingZone` | 3 |
 | `AWS::CustomerProfiles::CalculatedAttributeDefinition` | 2 |
 | `AWS::CustomerProfiles::Domain` | 3 |
 | `AWS::CustomerProfiles::ObjectType` | 1 |
@@ -1410,8 +1444,8 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::DMS::MigrationProject` | 3 |
 | `AWS::DMS::ReplicationInstance` | 2 |
 | `AWS::DRS::RecoveryPlan` | 3 |
-| `AWS::DSQL::Cluster` | 7 |
-| `AWS::DataExchange::DataSet` | 2 |
+| `AWS::DSQL::Cluster` | 6 |
+| `AWS::DataExchange::DataSet` | 1 |
 | `AWS::DataSync::Agent` | 2 |
 | `AWS::DataSync::LocationAzureBlob` | 3 |
 | `AWS::DataSync::LocationFSxWindows` | 3 |
@@ -1424,55 +1458,47 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::DataZone::DataSource` | 7 |
 | `AWS::DataZone::Domain` | 4 |
 | `AWS::DataZone::DomainUnit` | 2 |
-| `AWS::DataZone::Environment` | 8 |
-| `AWS::DataZone::EnvironmentProfile` | 3 |
-| `AWS::DataZone::FormType` | 4 |
+| `AWS::DataZone::Environment` | 6 |
+| `AWS::DataZone::EnvironmentProfile` | 2 |
+| `AWS::DataZone::FormType` | 2 |
 | `AWS::DataZone::GroupProfile` | 2 |
-| `AWS::DataZone::Project` | 2 |
+| `AWS::DataZone::Project` | 1 |
 | `AWS::DataZone::ProjectMembership` | 1 |
-| `AWS::DataZone::ProjectProfile` | 4 |
-| `AWS::DataZone::SubscriptionTarget` | 3 |
+| `AWS::DataZone::ProjectProfile` | 3 |
+| `AWS::DataZone::SubscriptionTarget` | 1 |
 | `AWS::DataZone::UserProfile` | 2 |
 | `AWS::Deadline::Budget` | 3 |
-| `AWS::Deadline::Farm` | 1 |
 | `AWS::Deadline::Fleet` | 6 |
 | `AWS::Deadline::Limit` | 1 |
-| `AWS::Deadline::Monitor` | 3 |
+| `AWS::Deadline::Monitor` | 2 |
 | `AWS::Deadline::Queue` | 2 |
 | `AWS::Deadline::QueueEnvironment` | 1 |
 | `AWS::DevOpsAgent::AgentSpace` | 8 |
-| `AWS::DevOpsAgent::Asset` | 2 |
+| `AWS::DevOpsAgent::Asset` | 1 |
 | `AWS::DevOpsAgent::Association` | 1 |
 | `AWS::DevOpsAgent::PrivateConnection` | 2 |
 | `AWS::DevOpsAgent::Service` | 2 |
 | `AWS::DevOpsGuru::ResourceCollection` | 1 |
-| `AWS::DirectConnect::Connection` | 2 |
-| `AWS::DirectConnect::DirectConnectGateway` | 1 |
-| `AWS::DirectConnect::Lag` | 2 |
-| `AWS::DirectConnect::PrivateVirtualInterface` | 1 |
-| `AWS::DirectConnect::PublicVirtualInterface` | 1 |
-| `AWS::DirectConnect::ResiliencyGroup` | 1 |
-| `AWS::DirectConnect::TransitVirtualInterface` | 1 |
+| `AWS::DirectConnect::Connection` | 1 |
+| `AWS::DirectConnect::Lag` | 1 |
 | `AWS::DirectoryService::MicrosoftAD` | 2 |
 | `AWS::DirectoryService::SimpleAD` | 2 |
 | `AWS::DocDB::GlobalCluster` | 1 |
 | `AWS::DocDBElastic::Cluster` | 1 |
-| `AWS::EC2::ApplicationStatusCheck` | 1 |
 | `AWS::EC2::CapacityReservation` | 10 |
-| `AWS::EC2::FcaPolicy` | 5 |
-| `AWS::EC2::FpgaImage` | 6 |
+| `AWS::EC2::FcaPolicy` | 2 |
+| `AWS::EC2::FpgaImage` | 5 |
 | `AWS::EC2::IPAM` | 6 |
 | `AWS::EC2::IPAMPool` | 6 |
 | `AWS::EC2::IPAMPrefixListResolver` | 1 |
 | `AWS::EC2::IPAMPrefixListResolverTarget` | 1 |
 | `AWS::EC2::IPAMResourceDiscovery` | 4 |
 | `AWS::EC2::IPAMScope` | 4 |
-| `AWS::EC2::InstanceEventWindow` | 2 |
-| `AWS::EC2::LaunchTemplate` | 2 |
+| `AWS::EC2::InstanceEventWindow` | 1 |
 | `AWS::EC2::LocalGatewayRoute` | 2 |
 | `AWS::EC2::NetworkInsightsAnalysis` | 9 |
 | `AWS::EC2::NetworkInterface` | 5 |
-| `AWS::EC2::PrefixList` | 3 |
+| `AWS::EC2::PrefixList` | 2 |
 | `AWS::EC2::SqlHaStandbyDetectedInstance` | 2 |
 | `AWS::EC2::TransitGateway` | 1 |
 | `AWS::EC2::TransitGatewayMeteringPolicy` | 2 |
@@ -1491,7 +1517,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::ECS::ExpressGatewayService` | 17 |
 | `AWS::ECS::Gateway` | 3 |
 | `AWS::EKS::Addon` | 1 |
-| `AWS::EKS::Capability` | 4 |
+| `AWS::EKS::Capability` | 3 |
 | `AWS::EKS::Cluster` | 11 |
 | `AWS::EKS::Nodegroup` | 1 |
 | `AWS::EKS::PodIdentityAssociation` | 1 |
@@ -1500,7 +1526,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::ElastiCache::GlobalReplicationGroup` | 2 |
 | `AWS::ElastiCache::ParameterGroup` | 1 |
 | `AWS::ElastiCache::ReplicationGroup` | 15 |
-| `AWS::ElastiCache::ServerlessCache` | 7 |
+| `AWS::ElastiCache::ServerlessCache` | 6 |
 | `AWS::ElastiCache::User` | 1 |
 | `AWS::ElastiCache::UserGroup` | 1 |
 | `AWS::ElasticBeanstalk::ConfigurationTemplate` | 1 |
@@ -1511,13 +1537,11 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Elasticsearch::Domain` | 2 |
 | `AWS::ElementalInference::Feed` | 1 |
 | `AWS::EventSchemas::Discoverer` | 1 |
-| `AWS::EventSchemas::Schema` | 2 |
 | `AWS::Events::ApiDestination` | 1 |
 | `AWS::Events::Connection` | 4 |
 | `AWS::Events::Endpoint` | 3 |
 | `AWS::EventsV2::EventBus` | 1 |
 | `AWS::EventsV2::EventSource` | 2 |
-| `AWS::EventsV2::ResourcePolicy` | 1 |
 | `AWS::EventsV2::Subscriber` | 1 |
 | `AWS::Evidently::Segment` | 1 |
 | `AWS::FMS::ApplicationsList` | 1 |
@@ -1527,11 +1551,11 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::FSx::Snapshot` | 1 |
 | `AWS::FSx::StorageVirtualMachine` | 1 |
 | `AWS::FSx::Volume` | 2 |
-| `AWS::FinSpace::Environment` | 5 |
-| `AWS::FraudDetector::Detector` | 4 |
+| `AWS::FinSpace::Environment` | 4 |
+| `AWS::FraudDetector::Detector` | 3 |
 | `AWS::GameLift::Build` | 1 |
 | `AWS::GameLift::ContainerFleet` | 5 |
-| `AWS::GameLift::ContainerGroupDefinition` | 4 |
+| `AWS::GameLift::ContainerGroupDefinition` | 3 |
 | `AWS::GameLift::GameServerGroup` | 2 |
 | `AWS::GameLift::Script` | 2 |
 | `AWS::GlobalAccelerator::Accelerator` | 4 |
@@ -1544,14 +1568,14 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Glue::Schema` | 1 |
 | `AWS::Glue::UserDefinedFunction` | 1 |
 | `AWS::Grafana::Workspace` | 4 |
-| `AWS::Greengrass::ConnectorDefinition` | 2 |
-| `AWS::Greengrass::CoreDefinition` | 2 |
-| `AWS::Greengrass::DeviceDefinition` | 2 |
-| `AWS::Greengrass::FunctionDefinition` | 2 |
-| `AWS::Greengrass::Group` | 3 |
-| `AWS::Greengrass::LoggerDefinition` | 2 |
-| `AWS::Greengrass::ResourceDefinition` | 2 |
-| `AWS::Greengrass::SubscriptionDefinition` | 2 |
+| `AWS::Greengrass::ConnectorDefinition` | 1 |
+| `AWS::Greengrass::CoreDefinition` | 1 |
+| `AWS::Greengrass::DeviceDefinition` | 1 |
+| `AWS::Greengrass::FunctionDefinition` | 1 |
+| `AWS::Greengrass::Group` | 2 |
+| `AWS::Greengrass::LoggerDefinition` | 1 |
+| `AWS::Greengrass::ResourceDefinition` | 1 |
+| `AWS::Greengrass::SubscriptionDefinition` | 1 |
 | `AWS::GroundStation::Config` | 3 |
 | `AWS::GroundStation::MissionProfile` | 1 |
 | `AWS::GuardDuty::CustomDetectionRuleAssociation` | 1 |
@@ -1568,8 +1592,8 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::IVS::Stage` | 1 |
 | `AWS::IVSChat::LoggingConfiguration` | 2 |
 | `AWS::IVSChat::Room` | 1 |
-| `AWS::IdentityStore::User` | 4 |
-| `AWS::ImageBuilder::Image` | 8 |
+| `AWS::IdentityStore::User` | 1 |
+| `AWS::ImageBuilder::Image` | 7 |
 | `AWS::ImageBuilder::ImagePipeline` | 1 |
 | `AWS::InspectorV2::CisScanConfiguration` | 1 |
 | `AWS::InspectorV2::CodeSecurityIntegration` | 4 |
@@ -1577,16 +1601,15 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::InspectorV2::Filter` | 1 |
 | `AWS::Interconnect::Connection` | 6 |
 | `AWS::InternetMonitor::Monitor` | 2 |
-| `AWS::Invoicing::ProcurementPortalPreference` | 5 |
+| `AWS::Invoicing::ProcurementPortalPreference` | 3 |
 | `AWS::IoT::DomainConfiguration` | 2 |
 | `AWS::IoT::EncryptionConfiguration` | 1 |
-| `AWS::IoT::FleetMetric` | 2 |
+| `AWS::IoT::FleetMetric` | 1 |
 | `AWS::IoT::OTAUpdate` | 1 |
 | `AWS::IoT::SoftwarePackageVersion` | 4 |
-| `AWS::IoT::Stream` | 1 |
 | `AWS::IoT::TopicRuleDestination` | 1 |
 | `AWS::IoTAnalytics::Dataset` | 1 |
-| `AWS::IoTCoreDeviceAdvisor::SuiteDefinition` | 2 |
+| `AWS::IoTCoreDeviceAdvisor::SuiteDefinition` | 1 |
 | `AWS::IoTFleetHub::Application` | 8 |
 | `AWS::IoTFleetWise::Campaign` | 1 |
 | `AWS::IoTFleetWise::SignalCatalog` | 5 |
@@ -1612,17 +1635,14 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::KinesisVideo::Stream` | 1 |
 | `AWS::Lambda::CapacityProvider` | 1 |
 | `AWS::Lambda::Runtime` | 1 |
-| `AWS::Lambda::RuntimeAlias` | 3 |
+| `AWS::Lambda::RuntimeAlias` | 2 |
 | `AWS::Lambda::RuntimeVersion` | 4 |
 | `AWS::Lambda::Version` | 1 |
 | `AWS::LaunchWizard::Deployment` | 3 |
 | `AWS::Lex::Bot` | 1 |
 | `AWS::Lex::BotAlias` | 2 |
 | `AWS::Lex::BotVersion` | 1 |
-| `AWS::Lex::ResourcePolicy` | 1 |
-| `AWS::LicenseManager::Grant` | 1 |
-| `AWS::LicenseManager::License` | 1 |
-| `AWS::LicenseManager::LicenseConfiguration` | 3 |
+| `AWS::LicenseManager::LicenseConfiguration` | 1 |
 | `AWS::LicenseManager::ReportGenerator` | 2 |
 | `AWS::Lightsail::Bucket` | 3 |
 | `AWS::Lightsail::Container` | 3 |
@@ -1636,19 +1656,14 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Logs::LogAnomalyDetector` | 2 |
 | `AWS::Logs::ScheduledQuery` | 2 |
 | `AWS::M2::Deployment` | 2 |
-| `AWS::M2::Environment` | 1 |
-| `AWS::MGN::Application` | 2 |
-| `AWS::MGN::Connector` | 1 |
+| `AWS::MGN::Application` | 1 |
 | `AWS::MGN::LaunchConfigurationTemplate` | 1 |
-| `AWS::MGN::NetworkMigrationDefinition` | 1 |
-| `AWS::MGN::Wave` | 3 |
-| `AWS::MPA::ApprovalTeam` | 6 |
+| `AWS::MGN::Wave` | 2 |
+| `AWS::MPA::ApprovalTeam` | 5 |
 | `AWS::MSK::Channel` | 2 |
-| `AWS::MSK::ClusterPolicy` | 1 |
 | `AWS::MSK::Configuration` | 3 |
-| `AWS::MSK::Replicator` | 1 |
 | `AWS::MWAA::Environment` | 10 |
-| `AWS::MWAAServerless::Workflow` | 4 |
+| `AWS::MWAAServerless::Workflow` | 3 |
 | `AWS::Macie::AllowList` | 2 |
 | `AWS::Macie::FindingsFilter` | 2 |
 | `AWS::Macie::Session` | 2 |
@@ -1659,9 +1674,9 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::MediaConnect::FlowOutput` | 1 |
 | `AWS::MediaConnect::FlowSource` | 6 |
 | `AWS::MediaConnect::FlowVpcInterface` | 1 |
-| `AWS::MediaConnect::RouterInput` | 15 |
-| `AWS::MediaConnect::RouterNetworkInterface` | 5 |
-| `AWS::MediaConnect::RouterOutput` | 7 |
+| `AWS::MediaConnect::RouterInput` | 14 |
+| `AWS::MediaConnect::RouterNetworkInterface` | 4 |
+| `AWS::MediaConnect::RouterOutput` | 6 |
 | `AWS::MediaConnect::SourceEndpoint` | 8 |
 | `AWS::MediaLive::Channel` | 2 |
 | `AWS::MediaLive::ChannelPlacementGroup` | 3 |
@@ -1694,26 +1709,26 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::NetworkFirewall::Firewall` | 3 |
 | `AWS::NetworkFlowMonitor::Monitor` | 1 |
 | `AWS::NetworkFlowMonitor::PerformanceMonitor` | 2 |
-| `AWS::NetworkManager::ConnectAttachment` | 10 |
+| `AWS::NetworkManager::ConnectAttachment` | 9 |
 | `AWS::NetworkManager::ConnectPeer` | 1 |
 | `AWS::NetworkManager::Connection` | 1 |
 | `AWS::NetworkManager::ContextStore` | 1 |
-| `AWS::NetworkManager::CoreNetwork` | 5 |
+| `AWS::NetworkManager::CoreNetwork` | 4 |
 | `AWS::NetworkManager::Device` | 1 |
-| `AWS::NetworkManager::DirectConnectGatewayAttachment` | 11 |
+| `AWS::NetworkManager::DirectConnectGatewayAttachment` | 10 |
 | `AWS::NetworkManager::Link` | 1 |
 | `AWS::NetworkManager::Site` | 1 |
-| `AWS::NetworkManager::SiteToSiteVpnAttachment` | 10 |
+| `AWS::NetworkManager::SiteToSiteVpnAttachment` | 9 |
 | `AWS::NetworkManager::TransitGatewayPeering` | 1 |
-| `AWS::NetworkManager::TransitGatewayRouteTableAttachment` | 11 |
-| `AWS::NetworkManager::VpcAttachment` | 12 |
+| `AWS::NetworkManager::TransitGatewayRouteTableAttachment` | 10 |
+| `AWS::NetworkManager::VpcAttachment` | 11 |
 | `AWS::NetworkMonitor::Monitor` | 1 |
 | `AWS::NetworkMonitor::Probe` | 3 |
-| `AWS::NetworkSecurityManager::Deployment` | 3 |
-| `AWS::NetworkSecurityManager::Policy` | 3 |
-| `AWS::NetworkSecurityManager::Rule` | 3 |
-| `AWS::NetworkSecurityManager::Scope` | 3 |
-| `AWS::NetworkSecurityManager::Template` | 3 |
+| `AWS::NetworkSecurityManager::Deployment` | 1 |
+| `AWS::NetworkSecurityManager::Policy` | 1 |
+| `AWS::NetworkSecurityManager::Rule` | 1 |
+| `AWS::NetworkSecurityManager::Scope` | 1 |
+| `AWS::NetworkSecurityManager::Template` | 1 |
 | `AWS::NimbleStudio::LaunchProfile` | 1 |
 | `AWS::NimbleStudio::StreamingImage` | 7 |
 | `AWS::NimbleStudio::Studio` | 3 |
@@ -1722,10 +1737,10 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Notifications::NotificationConfiguration` | 1 |
 | `AWS::NotificationsContacts::EmailContact` | 1 |
 | `AWS::ODB::CloudAutonomousVmCluster` | 26 |
-| `AWS::ODB::CloudExadataInfrastructure` | 20 |
+| `AWS::ODB::CloudExadataInfrastructure` | 17 |
 | `AWS::ODB::CloudVmCluster` | 13 |
-| `AWS::ODB::OdbNetwork` | 6 |
-| `AWS::ODB::OdbPeeringConnection` | 4 |
+| `AWS::ODB::OdbNetwork` | 5 |
+| `AWS::ODB::OdbPeeringConnection` | 3 |
 | `AWS::OSIS::Pipeline` | 3 |
 | `AWS::Oam::Link` | 1 |
 | `AWS::ObservabilityAdmin::OrganizationTelemetryRule` | 1 |
@@ -1733,7 +1748,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::ObservabilityAdmin::TelemetryRule` | 1 |
 | `AWS::Omics::AnnotationStore` | 3 |
 | `AWS::Omics::Configuration` | 1 |
-| `AWS::Omics::RunCache` | 2 |
+| `AWS::Omics::RunCache` | 1 |
 | `AWS::Omics::SequenceStore` | 4 |
 | `AWS::Omics::VariantStore` | 3 |
 | `AWS::Omics::Workflow` | 3 |
@@ -1748,8 +1763,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Organizations::Organization` | 4 |
 | `AWS::Organizations::OrganizationalUnit` | 2 |
 | `AWS::Organizations::Policy` | 2 |
-| `AWS::Outposts::Outpost` | 4 |
-| `AWS::Outposts::Site` | 1 |
+| `AWS::Outposts::Outpost` | 3 |
 | `AWS::PCS::Cluster` | 3 |
 | `AWS::PCS::ComputeNodeGroup` | 4 |
 | `AWS::PCS::Queue` | 2 |
@@ -1764,7 +1778,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::PinpointEmail::Identity` | 6 |
 | `AWS::Polly::Lexicon` | 4 |
 | `AWS::PricingPlanManager::Subscription` | 3 |
-| `AWS::Proton::EnvironmentAccountConnection` | 2 |
+| `AWS::Proton::EnvironmentAccountConnection` | 1 |
 | `AWS::QBusiness::Application` | 2 |
 | `AWS::QBusiness::DataAccessor` | 2 |
 | `AWS::QBusiness::DataSource` | 3 |
@@ -1773,27 +1787,26 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::QBusiness::Retriever` | 2 |
 | `AWS::QBusiness::WebExperience` | 2 |
 | `AWS::QuickSight::ActionConnector` | 3 |
-| `AWS::QuickSight::Agent` | 5 |
+| `AWS::QuickSight::Agent` | 4 |
 | `AWS::QuickSight::Analysis` | 1 |
 | `AWS::QuickSight::ApprovalPolicy` | 1 |
-| `AWS::QuickSight::Brand` | 4 |
-| `AWS::QuickSight::Customization` | 1 |
+| `AWS::QuickSight::Brand` | 1 |
 | `AWS::QuickSight::DLPSetting` | 2 |
-| `AWS::QuickSight::Dashboard` | 13 |
+| `AWS::QuickSight::Dashboard` | 12 |
 | `AWS::QuickSight::DataSet` | 3 |
 | `AWS::QuickSight::DataSource` | 2 |
 | `AWS::QuickSight::Flow` | 3 |
 | `AWS::QuickSight::Group` | 1 |
 | `AWS::QuickSight::KnowledgeBase` | 6 |
 | `AWS::QuickSight::LimitsProfile` | 1 |
-| `AWS::QuickSight::Space` | 2 |
-| `AWS::QuickSight::Template` | 11 |
-| `AWS::QuickSight::Theme` | 15 |
+| `AWS::QuickSight::Space` | 1 |
+| `AWS::QuickSight::Template` | 10 |
+| `AWS::QuickSight::Theme` | 14 |
 | `AWS::QuickSight::Topic` | 1 |
 | `AWS::QuickSight::TopicV2` | 1 |
 | `AWS::QuickSight::VPCConnection` | 4 |
-| `AWS::RAM::PermissionAssociation` | 5 |
-| `AWS::RAM::ResourceShare` | 3 |
+| `AWS::RAM::PermissionAssociation` | 4 |
+| `AWS::RAM::ResourceShare` | 2 |
 | `AWS::RDS::CustomDBEngineVersion` | 1 |
 | `AWS::RDS::DBClusterEndpoint` | 4 |
 | `AWS::RDS::DBShardGroup` | 2 |
@@ -1803,7 +1816,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::RTBFabric::LinkRoutingRule` | 1 |
 | `AWS::RTBFabric::OutboundExternalLink` | 1 |
 | `AWS::RTBFabric::RequesterGateway` | 4 |
-| `AWS::RTBFabric::ResponderGateway` | 4 |
+| `AWS::RTBFabric::ResponderGateway` | 3 |
 | `AWS::Rbin::Rule` | 2 |
 | `AWS::Redshift::Cluster` | 6 |
 | `AWS::Redshift::ClusterSubnetGroup` | 1 |
@@ -1813,10 +1826,10 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Redshift::QEV2IdcApplication` | 2 |
 | `AWS::Redshift::RedshiftIdcApplication` | 2 |
 | `AWS::Redshift::ScheduledAction` | 2 |
-| `AWS::Redshift::Snapshot` | 19 |
+| `AWS::Redshift::Snapshot` | 16 |
 | `AWS::Redshift::SnapshotSchedule` | 1 |
 | `AWS::RedshiftServerless::Namespace` | 12 |
-| `AWS::RedshiftServerless::Snapshot` | 12 |
+| `AWS::RedshiftServerless::Snapshot` | 11 |
 | `AWS::RedshiftServerless::Workgroup` | 18 |
 | `AWS::RefactorSpaces::Route` | 1 |
 | `AWS::ResilienceHub::App` | 1 |
@@ -1825,8 +1838,8 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::ResilienceHubV2::ServiceFunction` | 2 |
 | `AWS::ResourceExplorer2::DefaultViewAssociation` | 1 |
 | `AWS::ResourceExplorer2::Index` | 1 |
-| `AWS::Route53::TrafficPolicy` | 3 |
-| `AWS::Route53::TrafficPolicyInstance` | 3 |
+| `AWS::Route53::TrafficPolicy` | 1 |
+| `AWS::Route53::TrafficPolicyInstance` | 2 |
 | `AWS::Route53GlobalResolver::AccessSource` | 2 |
 | `AWS::Route53GlobalResolver::AccessToken` | 4 |
 | `AWS::Route53GlobalResolver::DnsView` | 2 |
@@ -1842,10 +1855,10 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Route53RecoveryReadiness::Cell` | 1 |
 | `AWS::Route53RecoveryReadiness::ReadinessCheck` | 1 |
 | `AWS::Route53Resolver::FirewallConfig` | 1 |
-| `AWS::Route53Resolver::FirewallDomainList` | 5 |
-| `AWS::Route53Resolver::FirewallRuleGroup` | 6 |
-| `AWS::Route53Resolver::FirewallRuleGroupAssociation` | 5 |
-| `AWS::Route53Resolver::OutpostResolver` | 4 |
+| `AWS::Route53Resolver::FirewallDomainList` | 4 |
+| `AWS::Route53Resolver::FirewallRuleGroup` | 5 |
+| `AWS::Route53Resolver::FirewallRuleGroupAssociation` | 4 |
+| `AWS::Route53Resolver::OutpostResolver` | 3 |
 | `AWS::Route53Resolver::ResolverEndpoint` | 3 |
 | `AWS::Route53Resolver::ResolverRule` | 1 |
 | `AWS::S3::AccessGrant` | 1 |
@@ -1853,33 +1866,32 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::S3::MultiRegionAccessPointPolicy` | 2 |
 | `AWS::S3::StorageLens` | 1 |
 | `AWS::S3Express::AccessPoint` | 1 |
-| `AWS::S3Files::FileSystem` | 5 |
+| `AWS::S3Files::FileSystem` | 4 |
 | `AWS::S3Files::MountTarget` | 6 |
 | `AWS::S3ObjectLambda::AccessPoint` | 10 |
 | `AWS::S3Outposts::Endpoint` | 3 |
 | `AWS::S3Tables::TablePolicy` | 3 |
-| `AWS::SCN::Instance` | 4 |
+| `AWS::SCN::Instance` | 1 |
 | `AWS::SES::EmailIdentity` | 6 |
 | `AWS::SES::MailManagerArchive` | 1 |
 | `AWS::SES::MailManagerIngressPoint` | 2 |
 | `AWS::SES::ReceiptRule` | 1 |
 | `AWS::SMSVOICE::NotifyConfiguration` | 3 |
 | `AWS::SMSVOICE::PhoneNumber` | 1 |
-| `AWS::SMSVOICE::RcsAgent` | 4 |
-| `AWS::SSM::CloudConnector` | 1 |
-| `AWS::SSM::DefaultHostManagementConfiguration` | 4 |
-| `AWS::SSM::OpsItem` | 6 |
+| `AWS::SMSVOICE::RcsAgent` | 3 |
+| `AWS::SSM::DefaultHostManagementConfiguration` | 3 |
+| `AWS::SSM::OpsItem` | 3 |
 | `AWS::SSM::ResourcePolicy` | 1 |
-| `AWS::SSM::ServiceSetting` | 2 |
+| `AWS::SSM::ServiceSetting` | 1 |
 | `AWS::SSMContacts::ContactChannel` | 1 |
 | `AWS::SSMQuickSetup::ConfigurationManager` | 1 |
 | `AWS::SSO::Application` | 2 |
-| `AWS::SSO::Instance` | 3 |
+| `AWS::SSO::Instance` | 2 |
 | `AWS::SSO::TrustedTokenIssuer` | 1 |
 | `AWS::SageMaker::App` | 1 |
 | `AWS::SageMaker::Cluster` | 2 |
-| `AWS::SageMaker::ClusterSchedulerConfig` | 3 |
-| `AWS::SageMaker::ComputeQuota` | 3 |
+| `AWS::SageMaker::ClusterSchedulerConfig` | 1 |
+| `AWS::SageMaker::ComputeQuota` | 1 |
 | `AWS::SageMaker::Domain` | 5 |
 | `AWS::SageMaker::ExperimentTrialComponent` | 1 |
 | `AWS::SageMaker::Extension` | 2 |
@@ -1888,12 +1900,12 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::SageMaker::ImageVersion` | 4 |
 | `AWS::SageMaker::InferenceComponent` | 8 |
 | `AWS::SageMaker::InferenceExperiment` | 5 |
-| `AWS::SageMaker::MlflowApp` | 3 |
+| `AWS::SageMaker::MlflowApp` | 1 |
 | `AWS::SageMaker::MlflowTrackingServer` | 1 |
-| `AWS::SageMaker::ModelCard` | 9 |
+| `AWS::SageMaker::ModelCard` | 8 |
 | `AWS::SageMaker::ModelPackage` | 2 |
 | `AWS::SageMaker::ModelPackageGroup` | 1 |
-| `AWS::SageMaker::PartnerApp` | 2 |
+| `AWS::SageMaker::PartnerApp` | 1 |
 | `AWS::SageMaker::Project` | 1 |
 | `AWS::SageMaker::Space` | 2 |
 | `AWS::SageMaker::TrialComponent` | 1 |
@@ -1902,10 +1914,9 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::SecurityAgent::PrivateConnection` | 8 |
 | `AWS::SecurityAgent::TargetDomain` | 4 |
 | `AWS::SecurityHub::AggregatorV2` | 1 |
-| `AWS::SecurityHub::AutomationRule` | 1 |
 | `AWS::SecurityHub::AutomationRuleV2` | 1 |
-| `AWS::SecurityHub::ConfigurationPolicy` | 2 |
-| `AWS::SecurityHub::Connector` | 6 |
+| `AWS::SecurityHub::ConfigurationPolicy` | 1 |
+| `AWS::SecurityHub::Connector` | 5 |
 | `AWS::SecurityHub::ConnectorV2` | 7 |
 | `AWS::SecurityHub::FindingAggregator` | 1 |
 | `AWS::SecurityHub::Hub` | 1 |
@@ -1924,7 +1935,6 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::StorageGateway::NFSFileShare` | 3 |
 | `AWS::StorageGateway::SMBFileShare` | 3 |
 | `AWS::Synthetics::Canary` | 3 |
-| `AWS::Textract::Adapter` | 1 |
 | `AWS::Timestream::InfluxDBCluster` | 9 |
 | `AWS::Timestream::InfluxDBInstance` | 7 |
 | `AWS::Timestream::Table` | 1 |
@@ -1932,7 +1942,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Transfer::Certificate` | 5 |
 | `AWS::Transfer::Connector` | 3 |
 | `AWS::Transfer::HostKey` | 4 |
-| `AWS::Transfer::Server` | 3 |
+| `AWS::Transfer::Server` | 2 |
 | `AWS::Transfer::WebApp` | 2 |
 | `AWS::Translate::ParallelData` | 7 |
 | `AWS::Translate::Terminology` | 6 |
@@ -1942,7 +1952,6 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::VpcLattice::AccessLogSubscription` | 2 |
 | `AWS::VpcLattice::AuthPolicy` | 1 |
 | `AWS::VpcLattice::Listener` | 2 |
-| `AWS::VpcLattice::ResourceConfiguration` | 1 |
 | `AWS::VpcLattice::Service` | 3 |
 | `AWS::VpcLattice::ServiceNetworkServiceAssociation` | 9 |
 | `AWS::VpcLattice::ServiceNetworkVpcAssociation` | 5 |
@@ -1950,23 +1959,21 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::WAFv2::IPSet` | 1 |
 | `AWS::WAFv2::LoggingConfiguration` | 1 |
 | `AWS::WAFv2::RuleGroup` | 1 |
-| `AWS::WellArchitected::AgentContext` | 4 |
-| `AWS::WellArchitected::AgentGoal` | 2 |
-| `AWS::WellArchitected::AgentOrganizationalProfile` | 3 |
-| `AWS::WellArchitected::AgentProfile` | 2 |
-| `AWS::WellArchitected::Profile` | 2 |
+| `AWS::WellArchitected::AgentContext` | 2 |
+| `AWS::WellArchitected::AgentOrganizationalProfile` | 1 |
+| `AWS::WellArchitected::Profile` | 1 |
 | `AWS::WellArchitected::ReviewTemplate` | 2 |
 | `AWS::WellArchitected::Workload` | 2 |
-| `AWS::Wickr::Network` | 4 |
+| `AWS::Wickr::Network` | 2 |
 | `AWS::Wisdom::AIAgent` | 1 |
 | `AWS::Wisdom::AIGuardrail` | 1 |
 | `AWS::Wisdom::AIPrompt` | 1 |
-| `AWS::Wisdom::Content` | 6 |
+| `AWS::Wisdom::Content` | 5 |
 | `AWS::Wisdom::MessageTemplate` | 3 |
 | `AWS::Wisdom::MessageTemplateVersion` | 2 |
 | `AWS::Wisdom::QuickResponse` | 4 |
 | `AWS::WorkSpaces::Directory` | 11 |
-| `AWS::WorkSpacesThinClient::Environment` | 7 |
+| `AWS::WorkSpacesThinClient::Environment` | 6 |
 | `AWS::WorkSpacesWeb::BrowserSettings` | 1 |
 | `AWS::WorkSpacesWeb::DataProtectionSettings` | 1 |
 | `AWS::WorkSpacesWeb::IdentityProvider` | 1 |

@@ -1,5 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 import type { Construct } from 'constructs';
 
 /**
@@ -74,8 +75,22 @@ export class Ec2RouteTargetsStack extends cdk.Stack {
       prefixListName: 'cdkd-route-targets-pl',
       addressFamily: 'IPv4',
       maxEntries: 4,
-      entries: [{ cidr: '10.100.0.0/16', description: 'integ test destination' }],
+      entries: [
+        { cidr: '10.100.0.0/16', description: 'integ test destination' },
+        // go-to-k/cdkd#7007: the UPDATE adds an entry in place, which bumps the
+        // list's read-only Version.
+        ...(isUpdate ? [{ cidr: '10.101.0.0/16', description: 'integ test 7007' }] : []),
+      ],
       tags: [{ key: 'Name', value: 'cdkd-route-targets-pl' }],
+    });
+    // go-to-k/cdkd#7007: a reader of the prefix list's Version, which an
+    // in-place entries edit moves.
+    // The integer is joined into a string: SSM takes no number, and cdkd
+    // sends a resolved scalar as is.
+    new ssm.CfnParameter(this, 'PrefixListVersionReader', {
+      name: 'cdkd-route-targets-pl-version',
+      type: 'String',
+      value: cdk.Fn.join('', ['v', cdk.Token.asString(prefixList.getAtt('Version'))]),
     });
 
     const tgw = new ec2.CfnTransitGateway(this, 'Tgw', {

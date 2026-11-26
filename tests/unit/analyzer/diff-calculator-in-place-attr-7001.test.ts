@@ -74,7 +74,7 @@ const SAMPLES: Readonly<Record<string, readonly [unknown, unknown]>> = {
 
 // go-to-k/cdkd#7007: a Cloud Control pair classified by hand drives it too.
 const movedBy = [...REPORT.sdk, ...REPORT.ccHand].filter((r) => r.verdict === 'moved-by');
-const anyUpdate = REPORT.sdk.filter((r) => r.verdict === 'any-update');
+const anyUpdate = [...REPORT.sdk, ...REPORT.ccHand].filter((r) => r.verdict === 'any-update');
 /** go-to-k/cdkd#7007: the Cloud Control pairs a moving rule settles. */
 const ccAnyUpdate: SdkRow[] = Object.entries(REPORT.ccMoving).flatMap(([type, attrs]) =>
   attrs.map((attribute) => ({ type, attribute, verdict: 'any-update' as const }))
