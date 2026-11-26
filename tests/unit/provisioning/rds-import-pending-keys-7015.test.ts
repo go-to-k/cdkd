@@ -25,14 +25,17 @@ const INSTANCE = {
   Endpoint: { Address: 'mydb.x.us-east-1.rds.amazonaws.com', Port: 5432, HostedZoneId: 'Z' },
 };
 
-const importOnce = async (instance: Record<string, unknown>) => {
+const importOnce = async (
+  instance: Record<string, unknown>,
+  properties: Record<string, unknown> = {}
+) => {
   mockRdsSend.mockResolvedValueOnce({ DBInstances: [instance] });
   return new RDSProvider().import({
     logicalId: 'Db',
     resourceType: 'AWS::RDS::DBInstance',
     stackName: 'S',
     region: 'us-east-1',
-    properties: {},
+    properties,
     knownPhysicalId: 'mydb',
   });
 };
@@ -66,6 +69,13 @@ describe('pending moved attribute keys (#7015)', () => {
     // The live (old) port is still the one reported.
     expect(pending?.attributes?.['Endpoint.Port']).toBe('5432');
     expect(pending?.pendingAttributeKeys).toEqual(['Endpoint.Port', 'ListenerEndpoint.Port']);
+
+    // The record's CertificateRotationRestart reaches the CA verdict.
+    const caPending = { ...INSTANCE, PendingModifiedValues: { CACertificateIdentifier: 'rds-ca-ecc384-g1' } };
+    expect((await importOnce(caPending, { CertificateRotationRestart: true }))?.pendingAttributeKeys).toEqual(
+      ['CertificateDetails.CAIdentifier', 'CertificateDetails.ValidTill']
+    );
+    expect(await importOnce(caPending)).not.toHaveProperty('pendingAttributeKeys');
 
     const settled = await importOnce({ ...INSTANCE, DBInstanceStatus: 'available' });
     expect(settled).not.toHaveProperty('pendingAttributeKeys');
