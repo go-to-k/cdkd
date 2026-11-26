@@ -383,6 +383,7 @@ export const CC_IN_PLACE_UPDATE_DERIVED_ATTRS: Readonly<Record<string, readonly 
   'AWS::SageMaker::MlflowApp': ['LastModifiedTime', 'MlflowVersion'],
   'AWS::SageMaker::ModelCard': ['LastModifiedTime', 'ModelCardVersion'],
   'AWS::SageMaker::MonitoringSchedule': ['LastModifiedTime'],
+  'AWS::SageMaker::PartnerApp': ['CurrentVersionEolDate'],
   'AWS::SageMaker::ProcessingJob': ['LastModifiedTime'],
   'AWS::SageMaker::TrialComponent': ['LastModifiedTime'],
   'AWS::Scheduler::ScheduleGroup': ['LastModificationDate'],

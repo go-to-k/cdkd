@@ -170,7 +170,6 @@ export const NOT_UPDATE_MARKERS: ReadonlySet<string> = new Set([
   'AWS::ControlTower::LandingZone.LatestAvailableVersion',
   'AWS::ODB::CloudExadataInfrastructure.DbServerVersion',
   'AWS::ODB::CloudExadataInfrastructure.StorageServerVersion',
-  'AWS::SageMaker::PartnerApp.CurrentVersionEolDate',
 ]);
 /** Who or where last wrote it, or a token every write replaces. */
 const LAST_WRITER = /^(LastModified(By|User|Region)|(Last)?UpdatedBy|ETag)$/;

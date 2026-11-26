@@ -270,9 +270,6 @@ export const SDK_IN_PLACE_ATTR_CLASSIFICATION: Readonly<
     ClusterVersion: never('the source cluster version, captured when the snapshot was taken'),
     EngineFullVersion: never('the source engine version, captured when the snapshot was taken'),
   },
-  'AWS::SageMaker::PartnerApp': {
-    CurrentVersionEolDate: never('the end-of-life date AWS sets for the app version'),
-  },
   // Cloud Control: the shared.ts row of issue #985 (a LaunchTemplateData edit
   // mints version N+1), held here so the audit reads it as a hand verdict.
   'AWS::EC2::LaunchTemplate': {

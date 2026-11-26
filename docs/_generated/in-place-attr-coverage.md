@@ -13,7 +13,7 @@ Whether an in-place update moves each read-only `Fn::GetAtt` attribute (issue [#
 Source: `@aws-cdk/aws-service-spec` 0.1.235.
 
 - SDK-provider types: **131**, pairs classified by hand: **390** (moving: **66**)
-- Cloud Control types: **1584**, pairs: **5545** — by rule: `no-in-place-update` 1151, `creation-timestamp` 376, `own-identity` 812, `primary-identifier` 450, `arn-template` 59, `update-timestamp` 372, `creator` 26, `owner-account` 30, `identifier-arn-member` 68, `update-marker` 105; by hand: **12**; in the baseline: **2084**
+- Cloud Control types: **1584**, pairs: **5545** — by rule: `no-in-place-update` 1151, `creation-timestamp` 376, `own-identity` 812, `primary-identifier` 450, `arn-template` 59, `update-timestamp` 372, `creator` 26, `owner-account` 30, `identifier-arn-member` 68, `update-marker` 106; by hand: **11**; in the baseline: **2084**
 
 ## SDK-provider types (hand classification)
 
@@ -813,7 +813,6 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235.
 - `AWS::ODB::CloudExadataInfrastructure` `StorageServerVersion`: never — the storage server software level, moved by Oracle maintenance
 - `AWS::Redshift::Snapshot` `ClusterVersion`: never — the source cluster version, captured when the snapshot was taken
 - `AWS::Redshift::Snapshot` `EngineFullVersion`: never — the source engine version, captured when the snapshot was taken
-- `AWS::SageMaker::PartnerApp` `CurrentVersionEolDate`: never — the end-of-life date AWS sets for the app version
 
 ## Cloud Control pairs a moving rule settles
 
@@ -1196,6 +1195,7 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::SageMaker::MlflowApp` | `LastModifiedTime`, `MlflowVersion` |
 | `AWS::SageMaker::ModelCard` | `LastModifiedTime`, `ModelCardVersion` |
 | `AWS::SageMaker::MonitoringSchedule` | `LastModifiedTime` |
+| `AWS::SageMaker::PartnerApp` | `CurrentVersionEolDate` |
 | `AWS::SageMaker::ProcessingJob` | `LastModifiedTime` |
 | `AWS::SageMaker::TrialComponent` | `LastModifiedTime` |
 | `AWS::Scheduler::ScheduleGroup` | `LastModificationDate` |

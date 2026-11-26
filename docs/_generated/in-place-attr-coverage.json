@@ -16,9 +16,9 @@
       "creator": 26,
       "owner-account": 30,
       "identifier-arn-member": 68,
-      "update-marker": 105
+      "update-marker": 106
     },
-    "ccByHand": 12,
+    "ccByHand": 11,
     "ccBaseline": 2084
   },
   "sdk": [
@@ -2694,12 +2694,6 @@
       "attribute": "EngineFullVersion",
       "verdict": "never",
       "reason": "the source engine version, captured when the snapshot was taken"
-    },
-    {
-      "type": "AWS::SageMaker::PartnerApp",
-      "attribute": "CurrentVersionEolDate",
-      "verdict": "never",
-      "reason": "the end-of-life date AWS sets for the app version"
     }
   ],
   "ccMoving": {
@@ -3893,6 +3887,9 @@
     ],
     "AWS::SageMaker::MonitoringSchedule": [
       "LastModifiedTime"
+    ],
+    "AWS::SageMaker::PartnerApp": [
+      "CurrentVersionEolDate"
     ],
     "AWS::SageMaker::ProcessingJob": [
       "LastModifiedTime"

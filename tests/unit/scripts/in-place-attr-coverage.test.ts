@@ -556,6 +556,10 @@ describe('the #7007 rules, on real spec inputs', () => {
         pair
       ).toBe(true);
     }
+    // An in-place AppVersion change moves the current version's end of life.
+    expect(classifyByRule(real('AWS::SageMaker::PartnerApp'), 'CurrentVersionEolDate')).toBe(
+      'update-marker'
+    );
     // A version resource's own number is its identity, not a counter.
     expect(classifyByRule(real('AWS::Lambda::Version'), 'Version')).toBeUndefined();
     expect(MOVING_RULES.has('update-marker')).toBe(true);
