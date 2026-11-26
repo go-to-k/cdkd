@@ -25,6 +25,7 @@ import {
 } from './redact-path/definition.js';
 import { hasPlainPrototype } from './redact-path/json-equality.js';
 import { isSourcePlainLiteral, rerenderedSourceLiteral } from './redact-path/template-literal.js';
+import { positionByLiteralRendering } from './redact-path/literal-rendering.js';
 
 export { sourceElementsKeptFor, arrayPairsWhateverDrops } from './redact-path/array-drop.js';
 export {
@@ -265,6 +266,11 @@ export function redactByPath(
     // order is what keeps them disjoint if the skeleton ever gains a
     // wildcard-only arm, since a lookup against a recorded leaf identity is
     // strictly better evidence than a pattern that matched everything.
+    // An `Fn::Join` / `Fn::Sub` of template text and whole secret tokens only
+    // (go-to-k/cdkd#7037): the text stays text, each token stays itself. It
+    // refuses every value-bearing part, so it is disjoint from the arms below.
+    const rendered = positionByLiteralRendering(bag, source, secrets, rules);
+    if (rendered !== undefined) return rendered;
     const certified = positionByCrossStackSource(bag, source, secrets);
     if (certified !== undefined) return certified;
     // The EMBEDDING twin of the `{Ref: <Param>}` arm above (issue #2320): an

@@ -112,6 +112,72 @@ describe('a template literal EQUAL to a recorded plaintext (#7037)', () => {
   });
 });
 
+describe('an Fn::Join / Fn::Sub of template text and references (#7037)', () => {
+  const walk = (bag: string, src: unknown, provenance: 'template-derived' | 'state-readback') =>
+    (
+      redactForState(
+        { L: bag },
+        provenance === 'template-derived'
+          ? { provenance, secrets: pass(), source: { L: src }, generation: 'same-generation' }
+          : { provenance, secrets: pass(), source: { L: src } }
+      ) as Record<string, unknown>
+    )['L'];
+
+  it('keeps the text, the reference parts stay references', () => {
+    expect(walk('postgres:postgres', { 'Fn::Join': [':', ['postgres', USERNAME]] }, 'template-derived')).toBe(
+      `postgres:${USERNAME}`
+    );
+    expect(walk(`postgres-${PW}`, { 'Fn::Sub': `postgres-${PASSWORD}` }, 'template-derived')).toBe(
+      `postgres-${PASSWORD}`
+    );
+    expect(walk('postgres', { 'Fn::Join': ['', ['post', 'gres']] }, 'template-derived')).toBe('postgres');
+  });
+
+  it('a value-bearing part is never kept as text: a parameter, an attribute, a placeholder', () => {
+    // The `Ref` / `GetAtt` / `${...}` part resolved to the PASSWORD: text the
+    // template does not hold. The literal-rendering arm refuses it, and the
+    // value scan redacts the password.
+    for (const src of [
+      { 'Fn::Join': ['-', ['postgres', { Ref: 'DbPassword' }]] },
+      { 'Fn::Join': ['-', ['postgres', { 'Fn::GetAtt': ['Secret', 'Value'] }]] },
+      { 'Fn::Sub': 'postgres-${DbPassword}' },
+      { 'Fn::Sub': ['postgres-${X}', { X: { Ref: 'DbPassword' } }] },
+    ]) {
+      const out = walk(`postgres-${PW}`, src, 'template-derived');
+      expect(out).not.toContain(PW);
+    }
+  });
+
+  it('refuses where the rendering does not equal the bag, and from a STATE source', () => {
+    // A token whose recorded plaintext is not what the bag holds there.
+    expect(walk(`postgres:${PW}`, { 'Fn::Join': [':', ['postgres', USERNAME]] }, 'template-derived')).toBe(
+      `${USERNAME}:${PASSWORD}`
+    );
+    expect(walk('postgres:postgres', { 'Fn::Join': [':', ['postgres', USERNAME]] }, 'state-readback')).not.toBe(
+      `postgres:${USERNAME}`
+    );
+  });
+
+  it('an Fn::If takes its literal branch only where no other branch could have produced the value', () => {
+    expect(walk('postgres', { 'Fn::If': ['C', 'postgres', 'mysql'] }, 'template-derived')).toBe('postgres');
+    // The other branch is a value (a `NoEcho` parameter): the literal would
+    // confirm it. And a reference resolving to the same text: which branch ran
+    // is unknown, so the literal is not persisted either.
+    expect(walk('postgres', { 'Fn::If': ['C', { Ref: 'DbUser' }, 'postgres'] }, 'template-derived')).toBe(USERNAME);
+    expect(walk('postgres', { 'Fn::If': ['C', USERNAME, 'postgres'] }, 'template-derived')).toBe(USERNAME);
+    expect(
+      walk('postgres', { 'Fn::If': ['C', 'postgres', { Ref: 'AWS::NoValue' }] }, 'template-derived')
+    ).toBe('postgres');
+  });
+
+  it('a token no plaintext was recorded for is not trusted as text', () => {
+    const other = '{{resolve:secretsmanager:other:SecretString:k::}}';
+    expect(walk('postgres:zzz', { 'Fn::Join': [':', ['postgres', other]] }, 'template-derived')).not.toBe(
+      `postgres:${other}`
+    );
+  });
+});
+
 describe('a record a pre-#7037 walk wrote, met by a re-positioning pass', () => {
   it('`cdkd scrub`: the whole-token record takes the template literal', () => {
     const out = redactForState(
