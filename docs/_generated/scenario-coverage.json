@@ -1446,6 +1446,11 @@
       "scenarios": []
     },
     {
+      "name": "esm-replacement-rollback",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "event-driven",
       "annotated": true,
       "scenarios": []
@@ -4392,6 +4397,7 @@
     "efs-immutable-replacement",
     "elasticache-snapshot-arns",
     "elbv2-same-name-replacement",
+    "esm-replacement-rollback",
     "eventbridge-api-destination",
     "eventbridge-input-transformer",
     "eventbridge-pipes",

@@ -198,6 +198,7 @@ elbv2-same-name-replacement	2026-11-16T08:22:27Z	PASS	95	verify.sh	rc ok, orph c
 emr-cluster	2026-11-23T13:13:13Z	PASS	2136	verify.sh	rc ok, orph clean, clusters terminated
 emr-instance-configs	2026-11-22T06:33:25Z	PASS	1995	verify.sh	#6810 rerun at 9430853b6 (probe fix); rc ok, orph clean (us-east-1)
 emr-instance-fleets	2026-11-22T05:59:15Z	PASS	1516	verify.sh	#6810 run at b9718f87f; rc ok, orph clean (us-east-1)
+esm-replacement-rollback	2026-11-26T02:14:10Z	PASS	110	verify.sh	rc ok, orph clean; pre-fix delete.ts fails step 2 (Rollback failed ResourceInUseException)
 event-driven	2026-11-04T05:26:26Z	PASS	52	standard	batch 3 (rc=0, destroy 19 deleted 0 errors); account clean
 eventbridge	2026-11-17T03:42:27Z	PASS	161	verify.sh	rc ok, destroy 0 errors, orph clean; at 607f11bb9 (#6479)
 eventbridge-api-destination	2026-11-04T09:00:37Z	PASS	80	verify.sh	batch 15; rc ok, orph clean

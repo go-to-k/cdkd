@@ -1,0 +1,19 @@
+{
+  "name": "cdkd-example-esm-replacement-rollback",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Rolls back a Lambda EventSourceMapping replacement seconds after the new mapping was created (#7011)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}
