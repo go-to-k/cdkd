@@ -1,4 +1,5 @@
 import { movedToHint, type MovedTo } from '../../../analyzer/refactor-hints.js';
+import { formatChangeCounts, orphanedLogicalIds } from '../../../analyzer/destructive-changes.js';
 import { stripForDisplay } from '../../../utils/regexp.js';
 import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 import type { ResourceChange } from '../../../types/state.js';
@@ -165,17 +166,23 @@ function renderDiffValue(
  * annotations can apply to one row; adoption is printed first because it is
  * why the row exists at all, where the routing describes how it will be
  * carried out.
+ *
+ * `orphaned` names the removals the deploy keeps in AWS by their recorded
+ * `DeletionPolicy` (go-to-k/cdkd#7005): their rows say so and they count as
+ * `orphan`, not `delete`.
  */
 export function renderChangeLines(
   changes: Map<string, ResourceChange>,
   logFn: (msg: string) => void,
   ccApiRoutes?: Map<string, string[]>,
   adoptedOrphans?: readonly string[],
-  refactorHints?: ReadonlyMap<string, MovedTo>
-): { create: number; update: number; delete: number } {
+  refactorHints?: ReadonlyMap<string, MovedTo>,
+  orphaned?: ReadonlySet<string>
+): { create: number; update: number; delete: number; orphan: number } {
   let createCount = 0;
   let updateCount = 0;
   let deleteCount = 0;
+  let orphanCount = 0;
 
   const adopted = new Set(adoptedOrphans ?? []);
   const annotateAdoption = (logicalId: string): string =>
@@ -309,11 +316,14 @@ export function renderChangeLines(
         break;
       }
       case 'DELETE':
-        deleteCount++;
         {
+          const orphan = orphaned?.has(logicalId) === true;
+          if (orphan) orphanCount++;
+          else deleteCount++;
           const movedTo = refactorHints?.get(logicalId);
           logFn(
             `  [-] ${logicalId} (${change.resourceType})` +
+              (orphan ? ' [orphan: its DeletionPolicy keeps it in AWS]' : '') +
               (movedTo !== undefined ? movedToHint(movedTo) : '')
           );
         }
@@ -321,7 +331,7 @@ export function renderChangeLines(
     }
   }
 
-  return { create: createCount, update: updateCount, delete: deleteCount };
+  return { create: createCount, update: updateCount, delete: deleteCount, orphan: orphanCount };
 }
 
 /**
@@ -488,19 +498,16 @@ export function renderDiffTree(
     );
   }
   if (hasChanges) {
-    const {
-      create,
-      update,
-      delete: del,
-    } = renderChangeLines(
+    const counts = renderChangeLines(
       node.changes,
       logFn,
       node.ccApiRoutes,
       node.adoptedOrphans,
-      node.refactorHints
+      node.refactorHints,
+      orphanedLogicalIds(node.destructiveChanges)
     );
     const outputs = renderOutputChangeLines(node.outputChanges, logFn);
-    logFn(`\n${create} to create, ${update} to update, ${del} to delete`);
+    logFn(`\n${formatChangeCounts(counts)}`);
     // A SECOND summary line rather than extra terms on the first: the resource
     // counts drive what the deploy does to AWS, while an Outputs change is a
     // state / exports-index write with no resource operation behind it. Folding
