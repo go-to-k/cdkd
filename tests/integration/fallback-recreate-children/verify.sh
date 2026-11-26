@@ -83,15 +83,33 @@ created() {
     --query "logGroups[?logGroupName=='${LOG_GROUP}'].creationTime | [0]" --output text
 }
 
-# The generated-name log group's names seen so far (one per line), for cleanup.
+# The logical id of the ONE state record whose id starts with $1 (CDK may
+# append a hash to a construct's id); FAILs on none or several.
+record_key() {
+  local json keys n
+  json=$(state_json) || exit 1
+  keys=$(jq -r --arg p "$1" '.resources | keys[] | select(startswith($p))' <<<"${json}")
+  n=$(printf '%s' "${keys}" | grep -c . || true)
+  [ "${n}" = "1" ] || { echo "FAIL: ${n} state records whose logical id starts with $1, expected 1" >&2; exit 1; }
+  printf '%s\n' "${keys}"
+}
+
+# Field $2 (a jq path) of the one state record whose logical id starts with $1.
+record_field() {
+  local key
+  key=$(record_key "$1") || exit 1
+  state_json | jq -r --arg k "${key}" ".resources[\$k]$2 // empty"
+}
+
+# The generated-name log group's current name, for the arm and for cleanup.
 gen_group() {
-  state_json | jq -r '.resources.GeneratedLogGroup.physicalId // empty'
+  record_field GeneratedLogGroup .physicalId
 }
 
 cleanup() {
   echo "==> Cleanup"
   set +eu
-  [ -n "${STATE_BUCKET:-}" ] && gen_group >>"${GEN_IDS_FILE}" 2>/dev/null
+  [ -n "${STATE_BUCKET:-}" ] && (gen_group) >>"${GEN_IDS_FILE}" 2>/dev/null
   [ -f "${LOCAL_DIST}" ] && node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   aws logs delete-log-group --log-group-name "${LOG_GROUP}" --region "${REGION}" >/dev/null 2>&1 || true
   while read -r g; do
@@ -122,7 +140,8 @@ F0=$(streams)
 [ "${F0}" = "1" ] || { echo "FAIL: phase 1: ${F0} log stream(s) named ${STREAM_NAME} in ${LOG_GROUP}, expected 1" >&2; exit 1; }
 C0=$(created)
 [ -n "${C0}" ] && [ "${C0}" != "None" ] || { echo "FAIL: no creationTime for ${LOG_GROUP}" >&2; exit 1; }
-STREAM_KEY=$(state_json | jq -r '.resources | to_entries[] | select(.value.resourceType == "AWS::Logs::LogStream") | .key' | head -1)
+# Two log streams exist (the arm below adds one), so this one is named.
+STREAM_KEY=$(record_key ChildStream)
 [ -n "${STREAM_KEY}" ] || { echo "FAIL: no AWS::Logs::LogStream record after phase 1" >&2; exit 1; }
 echo "    OK: log group ${LOG_GROUP} with its log stream"
 G0=$(gen_group)
@@ -196,12 +215,12 @@ OLD_LEFT=$(aws logs describe-log-groups --log-group-name-prefix "${G0}" --region
 [ "${OLD_LEFT}" = "0" ] || { echo "FAIL: premise: the replaced log group ${G0} still exists" >&2; exit 1; }
 V1=$(aws ssm get-parameter --name "${GEN_PARAM}" --region "${REGION}" --query Parameter.Value --output text)
 [ "${V1}" = "${G1}" ] || { echo "FAIL: SSM parameter ${GEN_PARAM} holds ${V1} after the fallback replaced the generated-name log group ${G0} -> ${G1}; expected the new name (issue #7081)" >&2; exit 1; }
-V1_STATE=$(state_json | jq -r '.resources.GeneratedNameParam.properties.Value // empty')
+V1_STATE=$(record_field GeneratedNameParam .properties.Value)
 [ "${V1_STATE}" = "${G1}" ] || { echo "FAIL: state records ${GEN_PARAM}'s value as ${V1_STATE}, expected ${G1} (issue #7081)" >&2; exit 1; }
 GEN_STREAMS=$(aws logs describe-log-streams --log-group-name "${G1}" --log-stream-name-prefix "${STREAM_NAME}" \
   --region "${REGION}" --query "length(logStreams[?logStreamName=='${STREAM_NAME}'])" --output text)
 [ "${GEN_STREAMS}" = "1" ] || { echo "FAIL: the replacement log group ${G1} holds ${GEN_STREAMS} log stream(s) named ${STREAM_NAME}, expected 1 -- the reader whose create-only LogGroupName names it was not replaced (issue #7081)" >&2; exit 1; }
-GEN_STREAM_GROUP=$(state_json | jq -r '.resources.GeneratedChildStream.properties.LogGroupName // empty')
+GEN_STREAM_GROUP=$(record_field GeneratedChildStream .properties.LogGroupName)
 [ "${GEN_STREAM_GROUP}" = "${G1}" ] || { echo "FAIL: state records GeneratedChildStream in log group ${GEN_STREAM_GROUP}, expected ${G1} (issue #7081)" >&2; exit 1; }
 echo "    OK: the generated-name log group moved ${G0} -> ${G1}; its parameter and log stream followed it"
 
