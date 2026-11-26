@@ -135,7 +135,11 @@ export type StaleLeafInputsVerdict = 'proven' | 'moved' | 'unprovable';
  * (create-only) or sent on every deploy: a known limit, out of any realistic
  * template's reach. `moved` also stands for nothing to compare (no recorded
  * fingerprint, a stale leaf whose template node is not found or reads no
- * parameter, an input unknown today): the caller keeps its verdict.
+ * parameter, or an input unknown today in every set tried): the caller keeps
+ * its verdict. A walk over a set that covers an unknown parameter as written
+ * can still match, so an unknown inside parameter may yield `unprovable`
+ * (unmoved and warned, its stale leaf compared by the readback), never
+ * `proven`.
  */
 export async function staleLeafInputsVerdict(args: {
   record: unknown;
