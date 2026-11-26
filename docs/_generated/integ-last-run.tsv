@@ -13,11 +13,12 @@ alb-advanced	2026-11-06T16:14:57Z	PASS	151	standard	#5881 split head; rc ok, orp
 alb-listener-rule-update	2026-11-20T07:05:13Z	PASS	286	verify.sh	rc ok, orph clean; #6663
 api-cognito	2026-11-12T11:22:31Z	PASS	40	standard	deploy+destroy rc 0, orph clean; #6140 (us-east-1)
 apigateway	2026-11-19T18:50:43Z	PASS	151	verify.sh	#6640 regression 84223153c: rc ok, orph clean
-apigatewayv2-update-removal	2026-11-06T16:39:58Z	PASS	210	verify.sh	#5885 split head; rc ok, orph clean
+apigatewayv2-update-removal	2026-11-26T19:42:20Z	FAIL	20	verify.sh	blocked before assertions: account has no apigateway cloudwatchRoleArn (precondition); nothing leaked
 apigw-cloudwatch-role-redeploy	2026-11-12T11:22:31Z	PASS	350	verify.sh	rc ok, orph clean; #6140 (ap-northeast-1; 1st try UpdateAccount throttled in teardown, re-run alone passed)
 apigw-gateway-response	2026-11-12T11:22:31Z	PASS	180	verify.sh	rc ok, orph clean; #6140 (us-east-1)
 apigw-restapi-spec	2026-11-20T11:22:10Z	PASS	571	verify.sh	PR6652 be63cc056, us-east-1, revert-identity kept, orph clean
-apigw-stage-props	2026-11-21T14:47:26Z	PASS	123	verify.sh	rc 0 at 8ee78065c; Phase 2b Tags + ApiKeyRequired drift OK; orph clean
+apigw-stage-api-replacement	2026-11-26T19:42:20Z	PASS	105	verify.sh	rc ok, orph clean (PR 7087)
+apigw-stage-props	2026-11-26T19:42:20Z	PASS	155	verify.sh	rc ok, orph clean
 apigw-stage-throttling	2026-11-12T11:22:31Z	PASS	191	verify.sh	rc ok, orph clean; #6140 (eu-west-1)
 apigw-usage-plan-key	2026-11-12T11:22:31Z	PASS	120	verify.sh	rc ok, orph clean; #6140 (us-east-1)
 apigw-vpclink-integration-target	2026-11-12T11:22:31Z	PASS	346	verify.sh	rc ok, orph clean; #6140 (us-east-1)
@@ -516,7 +517,7 @@ servicediscovery-http-namespace-update	2026-11-17T06:22:39Z	PASS	145	verify.sh	r
 servicediscovery-namespaces	2026-11-17T05:50:34Z	PASS	145	verify.sh	rc ok, destroy 0 errors, orph clean; at 148f393bc (#6484)
 ses-identity	2026-11-04T05:36:33Z	PASS	196	verify.sh	batch 4; all 3 phases clean, 0 err 0 orph
 sg-circular-dependency	2026-11-04T21:40:26Z	PASS	376	verify.sh	us-east-1; own temp state bucket; rc ok, orph clean
-sg-ingress-source-replacement	2026-11-26T18:43:17Z	PASS	161	verify.sh	PR7075 run at 430bf0ba0, rc ok, orph clean
+sg-ingress-source-replacement	2026-11-26T19:42:20Z	PASS	125	verify.sh	rc ok, orph clean
 sg-rule-description-update	2026-11-26T18:43:17Z	PASS	235	verify.sh	PR7075 run at 430bf0ba0, rc ok, orph clean
 shared-stackname-multi-region	2026-11-05T07:40:12Z	PASS	105	verify.sh	rc ok, us-east-1+us-west-2, orph clean both regions (own temp state bucket)
 sns-event-source	2026-11-04T08:15:09Z	PASS	65	verify.sh	rc ok, orph clean
