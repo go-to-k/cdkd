@@ -57,6 +57,7 @@ describe('the committed audit (#7001)', () => {
     expect(report.summary.ccPairs).toBeGreaterThanOrEqual(5500);
     expect(report.summary.ccByRule['no-in-place-update']).toBeGreaterThan(1000);
     expect(report.summary.ccByRule['creation-timestamp']).toBeGreaterThan(300);
+    expect(report.summary.ccBaseline).toBeGreaterThan(0);
     expect(report.summary.ccByRule['own-identity']).toBeGreaterThan(800);
     // A type the spec lacks is read from its schema fixture.
     expect(report.sdk.some((r) => r.type === 'AWS::BedrockAgentCore::Browser')).toBe(true);
@@ -102,8 +103,10 @@ describe('the hand verdicts equal the shared.ts tables (#7001)', () => {
         if (sdkTypes.has(type)) {
           expect(verdictOf(type, attr), `${type} ${attr}`).toBe('any-update');
         } else {
+          // A Cloud Control row must name a real pair that no rule calls `never`.
           const t = inputs.types.find((x) => x.type === type);
           expect(t?.attributes, `${type} ${attr}`).toContain(attr);
+          expect(classifyByRule(t!, attr), `${type} ${attr}`).toBeUndefined();
         }
       }
     }
@@ -120,17 +123,23 @@ describe('classifyByRule (#7001)', () => {
     attributes: string[] = []
   ): TypeInput => ({ type, properties, attributes });
 
-  it('settles every pair of a type whose only in-place property is Tags', () => {
+  it('settles every pair of a type whose only in-place property is Tags, bar an update timestamp', () => {
     const t = input('AWS::X::Thing', { Name: 'yes', Config: 'yes', Tags: undefined });
     expect(classifyByRule(t, 'Status')).toBe('no-in-place-update');
+    // A tag edit may stamp it.
+    for (const a of ['UpdatedAt', 'LastModifiedTime', 'LastUpdatedDateTime']) {
+      expect(classifyByRule(t, a), a).toBeUndefined();
+    }
   });
 
-  it('settles a creation timestamp, never an update one', () => {
+  it('settles an undotted creation timestamp, never an update one or a nested member', () => {
     const t = input('AWS::X::Thing', { Config: undefined });
-    for (const a of ['CreatedAt', 'CreationTime', 'CreateDate', 'Detail.CreatedTimestamp']) {
+    for (const a of ['CreatedAt', 'CreationTime', 'CreateDate', 'CreatedTimestamp']) {
       expect(classifyByRule(t, a), a).toBe('creation-timestamp');
     }
-    for (const a of ['UpdatedAt', 'LastModifiedTime', 'CreatedBy']) {
+    // A nested object an update re-creates (an MSK configuration's latest
+    // revision) carries its own creation time.
+    for (const a of ['UpdatedAt', 'LastModifiedTime', 'CreatedBy', 'LatestRevision.CreationTime']) {
       expect(classifyByRule(t, a), a).toBeUndefined();
     }
   });

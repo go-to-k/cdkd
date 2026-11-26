@@ -7,11 +7,11 @@
     "ccTypes": 1584,
     "ccPairs": 5545,
     "ccByRule": {
-      "no-in-place-update": 1190,
-      "creation-timestamp": 386,
+      "no-in-place-update": 1162,
+      "creation-timestamp": 376,
       "own-identity": 925
     },
-    "ccBaseline": 3044
+    "ccBaseline": 3082
   },
   "sdk": [
     {
@@ -263,8 +263,14 @@
     {
       "type": "AWS::BedrockAgentCore::Evaluator",
       "attribute": "UpdatedAt",
-      "verdict": "any-update",
-      "reason": "every UpdateEvaluator stamps it"
+      "verdict": "moved-by",
+      "properties": [
+        "Description",
+        "EvaluatorConfig",
+        "Level",
+        "KmsKeyArn"
+      ],
+      "reason": "stamped by UpdateEvaluator, which a Tags-only edit does not call"
     },
     {
       "type": "AWS::BedrockAgentCore::Runtime",
@@ -1356,7 +1362,7 @@
         "Users",
         "Groups"
       ],
-      "reason": "the principals the policy is attached to"
+      "reason": "the number of principals attached; a same-length swap keeps it"
     },
     {
       "type": "AWS::IAM::ManagedPolicy",
@@ -1730,8 +1736,15 @@
     {
       "type": "AWS::Lambda::WebFunctionEndpoint",
       "attribute": "UpdatedAt",
-      "verdict": "any-update",
-      "reason": "every update stamps it"
+      "verdict": "moved-by",
+      "properties": [
+        "Description",
+        "AuthType",
+        "RevisionWeights",
+        "ScalingConfig",
+        "ThrottleConfig"
+      ],
+      "reason": "stamped by UpdateWebFunctionEndpoint (every in-place property but the create-only ones)"
     },
     {
       "type": "AWS::Lambda::WebFunctionRevision",
@@ -1910,8 +1923,20 @@
     {
       "type": "AWS::Pipes::Pipe",
       "attribute": "LastModifiedTime",
-      "verdict": "any-update",
-      "reason": "every UpdatePipe stamps it"
+      "verdict": "moved-by",
+      "properties": [
+        "Description",
+        "DesiredState",
+        "Enrichment",
+        "EnrichmentParameters",
+        "KmsKeyIdentifier",
+        "LogConfiguration",
+        "RoleArn",
+        "SourceParameters",
+        "Target",
+        "TargetParameters"
+      ],
+      "reason": "stamped by UpdatePipe; a Tags-only edit skips it"
     },
     {
       "type": "AWS::Pipes::Pipe",
@@ -2459,7 +2484,7 @@
       "type": "AWS::Scheduler::Schedule",
       "attribute": "Arn",
       "verdict": "never",
-      "reason": "built from the create-only Name and its group"
+      "reason": "built from the create-only Name and the group, whose change the update refuses"
     },
     {
       "type": "AWS::SecretsManager::Secret",
@@ -2553,7 +2578,7 @@
         "TracingConfiguration",
         "EncryptionConfiguration"
       ],
-      "reason": "a changed definition or configuration mints a revision; an identical update or a tag edit does not (measured)"
+      "reason": "a changed definition, tracing or logging mints a revision; an identical update or a tag edit does not (measured)"
     },
     {
       "type": "AWS::WAFv2::WebACL",
@@ -2613,6 +2638,9 @@
       "Id"
     ],
     "AWS::AccessAnalyzer::ArchiveRule": [
+      "UpdatedAt"
+    ],
+    "AWS::AccountAccess::Application": [
       "UpdatedAt"
     ],
     "AWS::AgentRegistry::Registry": [
@@ -2749,6 +2777,9 @@
       "Status",
       "UpdatedAt"
     ],
+    "AWS::AppFabric::Ingestion": [
+      "UpdatedAt"
+    ],
     "AWS::AppFabric::IngestionDestination": [
       "Status",
       "UpdatedAt"
@@ -2866,6 +2897,9 @@
       "AllocatedDpus",
       "LastSuccessfulAllocationTime",
       "Status"
+    ],
+    "AWS::Athena::SystemTables": [
+      "LastModifiedAt"
     ],
     "AWS::Athena::WorkGroup": [
       "WorkGroupConfiguration.EngineVersion.EffectiveEngineVersion",
@@ -2995,6 +3029,9 @@
       "AgentAliasStatus",
       "UpdatedAt"
     ],
+    "AWS::Bedrock::ApplicationInferenceProfile": [
+      "UpdatedAt"
+    ],
     "AWS::Bedrock::AutomatedReasoningPolicy": [
       "DefinitionHash",
       "KmsKeyArn",
@@ -3002,6 +3039,9 @@
       "PolicyId",
       "UpdatedAt",
       "Version"
+    ],
+    "AWS::Bedrock::AutomatedReasoningPolicyVersion": [
+      "UpdatedAt"
     ],
     "AWS::Bedrock::Blueprint": [
       "BlueprintStage",
@@ -3055,6 +3095,9 @@
       "UpdatedAt",
       "Version"
     ],
+    "AWS::Bedrock::IntelligentPromptRouter": [
+      "UpdatedAt"
+    ],
     "AWS::Bedrock::KnowledgeBase": [
       "FailureReasons",
       "KnowledgeBaseArn",
@@ -3071,6 +3114,9 @@
       "UpdatedAt",
       "Version"
     ],
+    "AWS::Bedrock::PromptVersion": [
+      "UpdatedAt"
+    ],
     "AWS::Bedrock::RetrievalInstruction": [
       "LastTransitionStatus",
       "Status",
@@ -3085,9 +3131,18 @@
       "ApiKeySecretJsonKey",
       "LastUpdatedTime"
     ],
+    "AWS::BedrockAgentCore::BrowserCustom": [
+      "LastUpdatedAt"
+    ],
+    "AWS::BedrockAgentCore::BrowserProfile": [
+      "LastUpdatedAt"
+    ],
     "AWS::BedrockAgentCore::CapacityProvider": [
       "LastUpdatedAt",
       "Status"
+    ],
+    "AWS::BedrockAgentCore::CodeInterpreterCustom": [
+      "LastUpdatedAt"
     ],
     "AWS::BedrockAgentCore::ConfigurationBundle": [
       "BundleArn",
@@ -3278,6 +3333,9 @@
       "LastModifiedTime",
       "TemplateArn",
       "TemplateId"
+    ],
+    "AWS::Cassandra::Type": [
+      "LastModifiedTimestamp"
     ],
     "AWS::CertificateManager::AcmeEndpoint": [
       "EndpointUrl"
@@ -3497,6 +3555,9 @@
       "Status",
       "UpdatedTimestamp"
     ],
+    "AWS::CloudWatch::AccessGrant": [
+      "UpdatedAt"
+    ],
     "AWS::CloudWatch::AccessProfile": [
       "Arn",
       "AssumeStatus",
@@ -3523,6 +3584,9 @@
       "IdentityCenterApplicationArn",
       "Region",
       "Status",
+      "UpdatedAt"
+    ],
+    "AWS::CloudWatch::DomainAccessGrantForOrganization": [
       "UpdatedAt"
     ],
     "AWS::CloudWatch::DomainForOrganization": [
@@ -3750,6 +3814,9 @@
       "ViewArn",
       "ViewContentSha256",
       "ViewId"
+    ],
+    "AWS::Connect::Vocabulary": [
+      "LastModifiedTime"
     ],
     "AWS::Connect::Workspace": [
       "Arn",
@@ -4057,9 +4124,12 @@
     "AWS::DevOpsAgent::AgentSpace": [
       "AgentSpaceId",
       "Arn",
+      "OperatorApp.Iam.CreatedAt",
       "OperatorApp.Iam.UpdatedAt",
+      "OperatorApp.Idc.CreatedAt",
       "OperatorApp.Idc.IdcApplicationArn",
       "OperatorApp.Idc.UpdatedAt",
+      "OperatorApp.Idp.CreatedAt",
       "OperatorApp.Idp.UpdatedAt",
       "OperatorApp.Idp.UserIdClaim",
       "UpdatedAt"
@@ -4226,6 +4296,9 @@
     "AWS::EC2::LocalGatewayRoute": [
       "State",
       "Type"
+    ],
+    "AWS::EC2::NetworkInsightsAccessScope": [
+      "UpdatedDate"
     ],
     "AWS::EC2::NetworkInsightsAnalysis": [
       "AlternatePathHints",
@@ -4510,6 +4583,9 @@
     "AWS::EntityResolution::MatchingWorkflow": [
       "UpdatedAt"
     ],
+    "AWS::EntityResolution::SchemaMapping": [
+      "UpdatedAt"
+    ],
     "AWS::EventSchemas::Discoverer": [
       "State"
     ],
@@ -4609,6 +4685,7 @@
     "AWS::FraudDetector::Detector": [
       "DetectorVersionId",
       "EventType.Arn",
+      "EventType.CreatedTime",
       "EventType.LastUpdatedTime",
       "LastUpdatedTime"
     ],
@@ -4814,6 +4891,9 @@
       "Status",
       "UpdatedAt"
     ],
+    "AWS::HealthImaging::Datastore": [
+      "UpdatedAt"
+    ],
     "AWS::HealthLake::FHIRDatastore": [
       "CreatedAt.Nanos",
       "CreatedAt.Seconds",
@@ -4956,6 +5036,9 @@
       "MetricArn",
       "Version"
     ],
+    "AWS::IoT::OTAUpdate": [
+      "LastModifiedDate"
+    ],
     "AWS::IoT::ResourceSpecificLogging": [
       "TargetId"
     ],
@@ -5010,6 +5093,9 @@
     ],
     "AWS::IoTFleetWise::Vehicle": [
       "LastModificationTime"
+    ],
+    "AWS::IoTSiteWise::Application": [
+      "UpdatedAt"
     ],
     "AWS::IoTSiteWise::Asset": [
       "AssetArn",
@@ -5175,6 +5261,9 @@
     "AWS::Lambda::Version": [
       "FunctionArn",
       "Version"
+    ],
+    "AWS::Lambda::WebFunction": [
+      "UpdatedAt"
     ],
     "AWS::LaunchWizard::Deployment": [
       "DeletedAt",
@@ -5355,6 +5444,7 @@
       "CurrentVersion"
     ],
     "AWS::MSK::Configuration": [
+      "LatestRevision.CreationTime",
       "LatestRevision.Description",
       "LatestRevision.Revision"
     ],
@@ -5388,6 +5478,9 @@
       "Arn",
       "FindingsFilterListItems",
       "Id"
+    ],
+    "AWS::Macie::Member": [
+      "UpdatedAt"
     ],
     "AWS::Macie::Session": [
       "AutomatedDiscoveryStatus",
@@ -6063,6 +6156,9 @@
       "ErrorInfo",
       "Status"
     ],
+    "AWS::Panorama::ApplicationInstance": [
+      "LastUpdatedTime"
+    ],
     "AWS::Panorama::Package": [
       "StorageLocation.BinaryPrefixLocation",
       "StorageLocation.Bucket",
@@ -6087,6 +6183,9 @@
     "AWS::Personalize::Campaign": [
       "LastUpdatedDateTime",
       "Status"
+    ],
+    "AWS::Personalize::Filter": [
+      "LastUpdatedDateTime"
     ],
     "AWS::Personalize::MetricAttribution": [
       "Status"
@@ -6223,6 +6322,7 @@
       "LastUpdatedTime",
       "Version",
       "Version.Arn",
+      "Version.CreatedTime",
       "Version.DataSetArns",
       "Version.Description",
       "Version.Errors",
@@ -6284,6 +6384,7 @@
       "Arn",
       "LastUpdatedTime",
       "Version",
+      "Version.CreatedTime",
       "Version.DataSetConfigurations",
       "Version.Description",
       "Version.Errors",
@@ -6305,6 +6406,7 @@
       "Version.Configuration.Sheet",
       "Version.Configuration.Typography",
       "Version.Configuration.UIColorPalette",
+      "Version.CreatedTime",
       "Version.Description",
       "Version.Errors",
       "Version.Status",
@@ -6331,12 +6433,21 @@
       "PermissionVersion",
       "ResourceType"
     ],
+    "AWS::RAM::PrincipalAssociation": [
+      "LastUpdatedTime"
+    ],
+    "AWS::RAM::ResourceAssociation": [
+      "LastUpdatedTime"
+    ],
     "AWS::RAM::ResourceShare": [
       "Arn",
       "FeatureSet",
       "LastUpdatedTime",
       "OwningAccountId",
       "Status"
+    ],
+    "AWS::RAM::SourceAssociation": [
+      "LastUpdatedTime"
     ],
     "AWS::RDS::DBClusterEndpoint": [
       "DBClusterEndpointResourceIdentifier",
@@ -6478,6 +6589,7 @@
     "AWS::RedshiftServerless::Namespace": [
       "Namespace",
       "Namespace.AdminUsername",
+      "Namespace.CreationDate",
       "Namespace.DbName",
       "Namespace.DefaultIamRoleArn",
       "Namespace.IamRoles",
@@ -6505,6 +6617,7 @@
     "AWS::RedshiftServerless::Workgroup": [
       "Workgroup.BaseCapacity",
       "Workgroup.ConfigParameters",
+      "Workgroup.CreationDate",
       "Workgroup.Endpoint",
       "Workgroup.Endpoint.Address",
       "Workgroup.Endpoint.Port",
@@ -7025,6 +7138,9 @@
       "BaseUrl",
       "CurrentVersionEolDate"
     ],
+    "AWS::SageMaker::ProcessingJob": [
+      "LastModifiedTime"
+    ],
     "AWS::SageMaker::Project": [
       "ProjectStatus"
     ],
@@ -7048,6 +7164,9 @@
       "ApplicationName",
       "Domain",
       "IdCConfiguration.IdCApplicationArn"
+    ],
+    "AWS::SecurityAgent::Artifact": [
+      "UpdatedAt"
     ],
     "AWS::SecurityAgent::Pentest": [
       "UpdatedAt"

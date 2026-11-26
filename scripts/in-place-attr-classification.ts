@@ -56,6 +56,20 @@ const MICROVM_BUILD_KEYS = [
   'KmsKeyIdentifier',
 ] as const;
 
+/** Every in-place `AWS::Pipes::Pipe` property but `Tags`: what UpdatePipe sends. */
+const PIPE_UPDATE_KEYS = [
+  'Description',
+  'DesiredState',
+  'Enrichment',
+  'EnrichmentParameters',
+  'KmsKeyIdentifier',
+  'LogConfiguration',
+  'RoleArn',
+  'SourceParameters',
+  'Target',
+  'TargetParameters',
+] as const;
+
 const ID = never('an id AWS mints at create, fixed for the resource life');
 const ARN = never('the ARN is built from create-only inputs');
 const OWN_REF = never('the physical id, which an in-place update keeps');
@@ -125,7 +139,10 @@ export const SDK_IN_PLACE_ATTR_CLASSIFICATION: Readonly<
       'Custom / CustomCode / CustomDerived follows the kind of EvaluatorConfig'
     ),
     Provider: movedBy(['EvaluatorConfig'], 'follows the evaluator configuration'),
-    UpdatedAt: anyUpdate('every UpdateEvaluator stamps it'),
+    UpdatedAt: movedBy(
+      ['Description', 'EvaluatorConfig', 'Level', 'KmsKeyArn'],
+      'stamped by UpdateEvaluator, which a Tags-only edit does not call'
+    ),
   },
   'AWS::BedrockAgentCore::Runtime': {
     AgentRuntimeArn: ID,
@@ -347,7 +364,10 @@ export const SDK_IN_PLACE_ATTR_CLASSIFICATION: Readonly<
     IsAttachable: never('every customer managed policy is attachable'),
     DefaultVersionId: movedBy(['PolicyDocument'], 'a document change creates the next default version'),
     UpdateDate: movedBy(['PolicyDocument'], 'stamped by the new policy version'),
-    AttachmentCount: movedBy(['Roles', 'Users', 'Groups'], 'the principals the policy is attached to'),
+    AttachmentCount: movedBy(
+      ['Roles', 'Users', 'Groups'],
+      'the number of principals attached; a same-length swap keeps it'
+    ),
     PermissionsBoundaryUsageCount: never('other principals using it as a boundary move it'),
   },
   'AWS::IAM::Policy': { Id: OWN_REF },
@@ -407,7 +427,10 @@ export const SDK_IN_PLACE_ATTR_CLASSIFICATION: Readonly<
     StateReason: STEADY_STATUS,
     UpdateStatus: STEADY_STATUS,
     UpdateStatusReason: STEADY_STATUS,
-    UpdatedAt: anyUpdate('every update stamps it'),
+    UpdatedAt: movedBy(
+      ['Description', 'AuthType', 'RevisionWeights', 'ScalingConfig', 'ThrottleConfig'],
+      'stamped by UpdateWebFunctionEndpoint (every in-place property but the create-only ones)'
+    ),
   },
   'AWS::Lambda::WebFunctionRevision': {
     FunctionArn: never('every property is create-only'),
@@ -450,7 +473,7 @@ export const SDK_IN_PLACE_ATTR_CLASSIFICATION: Readonly<
     CreationTime: CREATED,
     CurrentState: movedBy(['DesiredState'], 'RUNNING or STOPPED, as DesiredState asks'),
     StateReason: STEADY_STATUS,
-    LastModifiedTime: anyUpdate('every UpdatePipe stamps it'),
+    LastModifiedTime: movedBy(PIPE_UPDATE_KEYS, 'stamped by UpdatePipe; a Tags-only edit skips it'),
   },
   'AWS::RDS::DBCluster': {
     DBClusterArn: ARN,
@@ -553,7 +576,9 @@ export const SDK_IN_PLACE_ATTR_CLASSIFICATION: Readonly<
   'AWS::SQS::Queue': { Arn: ARN, QueueUrl: never('derived from the create-only QueueName') },
   'AWS::SQS::QueuePolicy': { Id: OWN_REF },
   'AWS::SSM::Parameter': { Arn: ARN },
-  'AWS::Scheduler::Schedule': { Arn: never('built from the create-only Name and its group') },
+  'AWS::Scheduler::Schedule': {
+    Arn: never('built from the create-only Name and the group, whose change the update refuses'),
+  },
   'AWS::SecretsManager::Secret': { Id: ID },
   'AWS::ServiceDiscovery::HttpNamespace': { Id: ID, Arn: never('derived from the namespace id') },
   'AWS::ServiceDiscovery::PrivateDnsNamespace': {
@@ -581,7 +606,7 @@ export const SDK_IN_PLACE_ATTR_CLASSIFICATION: Readonly<
         'TracingConfiguration',
         'EncryptionConfiguration',
       ],
-      'a changed definition or configuration mints a revision; an identical update or a tag edit does not (measured)'
+      'a changed definition, tracing or logging mints a revision; an identical update or a tag edit does not (measured)'
     ),
   },
   'AWS::WAFv2::WebACL': {

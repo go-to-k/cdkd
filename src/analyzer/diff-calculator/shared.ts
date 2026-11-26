@@ -112,11 +112,6 @@ export const IN_PLACE_UPDATE_DERIVED_ATTRS: Readonly<Record<string, ReadonlySet<
     // if a tag-only update minted none, the re-resolve-and-skip drops the
     // promotion. The update records the version UpdateAgentRuntime answers.
     'AWS::BedrockAgentCore::Runtime': new Set(['AgentRuntimeVersion', 'LastUpdatedAt']),
-    // go-to-k/cdkd#7001: update timestamps every update call stamps (a
-    // Tags-only edit may not call it; the re-resolve-and-skip drops those).
-    'AWS::BedrockAgentCore::Evaluator': new Set(['UpdatedAt']),
-    'AWS::Lambda::WebFunctionEndpoint': new Set(['UpdatedAt']),
-    'AWS::Pipes::Pipe': new Set(['LastModifiedTime']),
   });
 
 /** What rebuilds a MicroVM image: the provider's `BUILD_AFFECTING_CFN_KEYS`. */
@@ -202,9 +197,12 @@ export const IN_PLACE_UPDATE_ATTRS_MOVED_BY: Readonly<
   }),
   // go-to-k/cdkd#7001: the rest of the audit (`scripts/in-place-attr-classification.ts`
   // carries each row's reason; `vp run audit:in-place-attr-coverage:check`).
+  // An update timestamp is moved by the properties its update call sends, so
+  // a Tags-only edit moves none of them.
   'AWS::BedrockAgentCore::Evaluator': Object.freeze({
     EvaluatorType: new Set(['EvaluatorConfig']),
     Provider: new Set(['EvaluatorConfig']),
+    UpdatedAt: new Set(['Description', 'EvaluatorConfig', 'Level', 'KmsKeyArn']),
   }),
   'AWS::CloudFormation::WaitCondition': Object.freeze({
     Data: new Set(['Handle', 'Count', 'Timeout']),
@@ -250,6 +248,15 @@ export const IN_PLACE_UPDATE_ATTRS_MOVED_BY: Readonly<
     LatestFailedImageVersion: MICROVM_IMAGE_BUILD_KEYS,
     UpdatedAt: MICROVM_IMAGE_BUILD_KEYS,
   }),
+  'AWS::Lambda::WebFunctionEndpoint': Object.freeze({
+    UpdatedAt: new Set([
+      'Description',
+      'AuthType',
+      'RevisionWeights',
+      'ScalingConfig',
+      'ThrottleConfig',
+    ]),
+  }),
   'AWS::Lambda::NetworkConnector': Object.freeze({
     LatestVersion: new Set(['Configuration', 'OperatorRole']),
     LatestVersionArn: new Set(['Configuration', 'OperatorRole']),
@@ -263,6 +270,18 @@ export const IN_PLACE_UPDATE_ATTRS_MOVED_BY: Readonly<
   }),
   'AWS::Pipes::Pipe': Object.freeze({
     CurrentState: new Set(['DesiredState']),
+    LastModifiedTime: new Set([
+      'Description',
+      'DesiredState',
+      'Enrichment',
+      'EnrichmentParameters',
+      'KmsKeyIdentifier',
+      'LogConfiguration',
+      'RoleArn',
+      'SourceParameters',
+      'Target',
+      'TargetParameters',
+    ]),
   }),
   'AWS::S3::Bucket': Object.freeze({
     'MetadataTableConfiguration.S3TablesDestination.TableArn': new Set([
@@ -320,6 +339,19 @@ function streamSpecificationMovesStreamArn(oldValue: unknown, newValue: unknown)
 }
 
 /**
+ * go-to-k/cdkd#7001: a managed policy's `AttachmentCount` moves only when a
+ * principal list changes LENGTH; a same-length swap keeps the count. A side
+ * that is not a list (an intrinsic) answers `true`.
+ */
+function principalListLengthMoves(oldValue: unknown, newValue: unknown): boolean {
+  const length = (v: unknown): number | undefined =>
+    v === undefined || v === null ? 0 : Array.isArray(v) ? v.length : undefined;
+  const before = length(oldValue);
+  const after = length(newValue);
+  return before === undefined || after === undefined || before !== after;
+}
+
+/**
  * Narrower tests for rows of {@link IN_PLACE_UPDATE_ATTRS_MOVED_BY}: per type
  * -> attribute -> property, whether that property's change from the recorded
  * to the desired value moves the attribute. A row with no test moves on any
@@ -339,6 +371,13 @@ export const IN_PLACE_UPDATE_ATTR_MOVE_TESTS: Readonly<
   }),
   'AWS::DynamoDB::GlobalTable': Object.freeze({
     StreamArn: Object.freeze({ StreamSpecification: streamSpecificationMovesStreamArn }),
+  }),
+  'AWS::IAM::ManagedPolicy': Object.freeze({
+    AttachmentCount: Object.freeze({
+      Roles: principalListLengthMoves,
+      Users: principalListLengthMoves,
+      Groups: principalListLengthMoves,
+    }),
   }),
 });
 

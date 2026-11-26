@@ -59,6 +59,10 @@ const SAMPLES: Readonly<Record<string, readonly [unknown, unknown]>> = {
     { LlmAsAJudge: { Instructions: 'a' } },
     { LlmAsAJudge: { Instructions: 'b' } },
   ],
+  'AWS::Pipes::Pipe.SourceParameters': [
+    { SqsQueueParameters: { BatchSize: 1 } },
+    { SqsQueueParameters: { BatchSize: 5 } },
+  ],
   'AWS::EC2::VPCEndpoint.DnsOptions': [
     { DnsRecordIpType: 'ipv4' },
     { DnsRecordIpType: 'dualstack' },
@@ -148,9 +152,9 @@ function expectReaderPromoted(changes: Map<string, ResourceChange>): void {
 describe('a reader of an attribute the audit classifies as moving follows it (#7001)', () => {
   it('the audit has moving rows to drive this suite', () => {
     // A floor read from nothing this suite derives: the committed audit at
-    // the time of #7001 holds 57 moved-by and 8 any-update pairs.
-    expect(movedBy.length).toBeGreaterThanOrEqual(57);
-    expect(anyUpdate.length).toBeGreaterThanOrEqual(8);
+    // the time of #7001 holds 60 moved-by and 5 any-update pairs.
+    expect(movedBy.length).toBeGreaterThanOrEqual(60);
+    expect(anyUpdate.length).toBeGreaterThanOrEqual(5);
   });
 
   it.each(movedByCases)('%s promotes the reader', async (_name, row, prop) => {
@@ -189,6 +193,26 @@ describe('a reader of an attribute the audit classifies as moving follows it (#7
       expectReaderPromoted(changes);
     }
   );
+});
+
+describe('a managed policy AttachmentCount reader (#7001)', () => {
+  const row: SdkRow = {
+    type: 'AWS::IAM::ManagedPolicy',
+    attribute: 'AttachmentCount',
+    verdict: 'moved-by',
+    properties: ['Roles', 'Users', 'Groups'],
+  };
+
+  it('follows a principal list that changes length', async () => {
+    const changes = await diffReader(row, { Roles: ['a'] }, { Roles: ['a', 'b'] });
+    expectReaderPromoted(changes);
+  });
+
+  it('is left alone by a same-length swap, which keeps the count', async () => {
+    const changes = await diffReader(row, { Roles: ['a'] }, { Roles: ['b'] });
+    expect(changes.get('Up')?.changeType).toBe('UPDATE');
+    expect(changes.get('Reader')?.changeType).toBe('NO_CHANGE');
+  });
 });
 
 describe('the export-change guard counts an export of a moving attribute as changed (#7001)', () => {
