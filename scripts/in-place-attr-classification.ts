@@ -86,7 +86,8 @@ const STEADY_STATUS = never(
  * name, MEASURED with throwaway CloudFormation stacks (us-east-1, 2026-11-27):
  * create, change every in-place name property, update, and compare the
  * physical id, `Ref` and the GetAtt before and after. Each update recorded
- * here completed in place (no replacement) and left the value as recorded.
+ * here completed in place (no replacement) and left the value as recorded;
+ * the IAM server certificate's ARN is a move all the same (see its entry).
  */
 const renamed = (stack: string, change: string, value: string): InPlaceAttrVerdict =>
   never(`measured (${stack}): ${change} in place left it ${value}`);
