@@ -79,8 +79,6 @@ function collectEntries(): Entry[] {
   const entries = new Map<string, Entry>();
   const add = (type: string, prop: string, verdict: Verdict, ruled: boolean): void => {
     const key = `${type}#${prop}`;
-    // A planner beside a rule keeps the stricter (hand-made) reading.
-    if (entries.has(key) && !ruled) return;
     entries.set(key, { key, verdict, ruled, fixture: fixtures.get(type), spec: spec(type, prop) });
   };
   for (const [type, fixture] of fixtures) {
@@ -135,6 +133,7 @@ function needsEvidence(e: Entry): boolean {
 }
 
 describe('replacement verdict evidence (go-to-k/cdkd#7024, #7038)', () => {
+  const fixtures = loadFixtures();
   const entries = collectEntries();
   const needing = new Set(entries.filter(needsEvidence).map((e) => e.key));
 
@@ -165,7 +164,7 @@ describe('replacement verdict evidence (go-to-k/cdkd#7024, #7038)', () => {
     for (const [key, evidence] of REPLACEMENT_EVIDENCE) {
       if (evidence.kind === 'schema-nested') {
         const [type, prop] = key.split('#');
-        const fixture = loadFixtures().get(type);
+        const fixture = fixtures.get(type);
         expect(
           fixture?.createOnlyPropertyPaths?.some((p) => p.length > 1 && p[0] === prop),
           key
@@ -179,7 +178,10 @@ describe('replacement verdict evidence (go-to-k/cdkd#7024, #7038)', () => {
   // The reference page is not evidence on its own for a verdict that may
   // DELETE the resource: it read "Some interruptions" for a DynamoDB KeySchema
   // and an Events rule's EventBusName, and CloudFormation replaced both
-  // (measured on #7038).
+  // (measured on #7038). Deliberately one-sided: a wrong `update` verdict hides
+  // a replacement from the diff, but the deploy's in-place call then succeeds
+  // or fails loudly and destroys nothing, whereas a wrong `replace` deletes
+  // data. The docs-only `update` rows are measured on #7048.
   it('a verdict that can replace never rests on the documentation alone', () => {
     const docsOnly = [...REPLACEMENT_EVIDENCE]
       .filter(([key, evidence]) => {
@@ -190,9 +192,14 @@ describe('replacement verdict evidence (go-to-k/cdkd#7024, #7038)', () => {
   });
 
   it('a fixture-less type is still covered by the spec', () => {
-    // EC2 Volume, Lambda Version, SSM Document and ELBv2 ListenerRule have no
-    // committed fixture (the corpus holds registered SDK types only).
-    for (const type of ['AWS::Lambda::Version', 'AWS::SSM::Document']) {
+    // Types with rules but no committed fixture (the corpus holds registered
+    // SDK types only) are still judged against the spec.
+    for (const type of [
+      'AWS::Lambda::Version',
+      'AWS::SSM::Document',
+      'AWS::EC2::Volume',
+      'AWS::ElasticLoadBalancingV2::ListenerRule',
+    ]) {
       expect(existsSync(join(FIXTURES, `${type.replace(/::/g, '-')}.json`))).toBe(false);
       expect(entries.some((e) => e.key.startsWith(`${type}#`) && e.spec !== undefined)).toBe(true);
     }
