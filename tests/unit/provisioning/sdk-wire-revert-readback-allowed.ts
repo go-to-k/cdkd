@@ -156,6 +156,8 @@ export const REVERT_PLACEHOLDER_ALLOWED: Record<string, string> = {
   'AWS::ECS::Service#CapacityProviderStrategy': 'UNMEASURED — see report: `capacityProviderStrategy: []` on a service with no launch type',
   'AWS::ECS::Service#PlacementConstraints': REVERT_OK('ECS service'),
 
+  'AWS::ElasticLoadBalancingV2::LoadBalancer#Subnets':
+    'unreachable: a live load balancer always reports its subnets',
   'AWS::Events::Archive#Description': REVERT_OK('event archive'),
   'AWS::Events::Archive#KmsKeyIdentifier': REVERT_OK('event archive'),
   'AWS::Events::Archive#RetentionDays': REVERT_OK('event archive'),

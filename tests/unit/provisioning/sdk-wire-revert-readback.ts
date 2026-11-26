@@ -272,8 +272,8 @@ async function checkOne(
       continue;
     }
     // A placeholder under a member set whole is part of that change; one
-    // already probed on a revert making the same calls says nothing new.
-    const calls = base.threw ? 'threw' : base.wire.split('\n').map((l) => l.slice(0, l.indexOf(','))).join(' ');
+    // already probed on a revert sending the same requests says nothing new.
+    const calls = base.threw ? `threw ${base.message}` : base.wire;
     const probes = placeholderPaths.filter(
       (path) =>
         !changed.every((seg, i) => path[i] === seg) && !probedOn.has(`${calls} ${path.join('.')}`)
@@ -395,6 +395,11 @@ export function describeRevertReadback(t: TypeCase): void {
       expect(r.failedReadbacks, 'a read-back no revert of which succeeds').toEqual([]);
     } else {
       expect(r.failedReadbacks.join(' | '), failed.why).toMatch(failed.says);
+    }
+    // A skipped declared revert names a member the case still declares.
+    for (const key of Object.keys(REVERT_DECLARED_SKIPPED)) {
+      const [type, member] = key.split('#');
+      if (type === t.resourceType) expect(t.bags[0]?.bag ?? {}, key).toHaveProperty([member!]);
     }
     const refused = r.hits.filter((h) => !(h.key in REVERT_PLACEHOLDER_ALLOWED));
     expect(
