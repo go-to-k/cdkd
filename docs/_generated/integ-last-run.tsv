@@ -84,7 +84,7 @@ cloudwatch-anomaly-detector	2026-11-22T05:59:15Z	PASS	111	verify.sh	#6810 run at
 cloudwatch-metric-stream-default-name	2026-11-18T14:11:36Z	PASS	205	verify.sh	rc ok, orph clean; rerun with clean-diff line fix, both diff phases clean (#6555 PR #6556)
 codebuild-project	2026-11-25T06:31:09Z	PASS	210	verify.sh	rc ok, orph clean; Phase 1b cc-api recreate + back to sdk ok (re-run at 5201ff579)
 codebuild-webhook	2026-11-02T13:36:25Z	PASS	111	verify.sh	rc ok, destroy 0 errors, 0 orphans, 0 hooks left (#5627 Triggers; pre-fix red at Phase 1)
-codecommit	2026-11-23T12:11:05Z	PASS	193	verify.sh	PR6876 828e1c821 us-east-1 rc ok, orph clean (duration not timed; see logs)
+codecommit	2026-11-26T02:19:01Z	PASS	241	verify.sh	PR7008 bbf2a7a62 us-east-1 rc ok, orph clean, clone-URL reader follows rename (#7001)
 codedeploy-lambda-deployment-group	2026-11-17T09:08:06Z	PASS	1182	verify.sh	rc ok, orph clean (#6437 PR #6483)
 cognito	2026-11-22T05:45:00Z	PASS	249	verify.sh	PR6814 2ae78b7f6, us-east-1, rc ok, orph clean
 cognito-custom-attribute-add	2026-11-06T16:03:49Z	PASS	70	verify.sh	post-hoc on main after #5861 split; rc ok, orph clean
@@ -198,6 +198,7 @@ elbv2-same-name-replacement	2026-11-16T08:22:27Z	PASS	95	verify.sh	rc ok, orph c
 emr-cluster	2026-11-23T13:13:13Z	PASS	2136	verify.sh	rc ok, orph clean, clusters terminated
 emr-instance-configs	2026-11-22T06:33:25Z	PASS	1995	verify.sh	#6810 rerun at 9430853b6 (probe fix); rc ok, orph clean (us-east-1)
 emr-instance-fleets	2026-11-22T05:59:15Z	PASS	1516	verify.sh	#6810 run at b9718f87f; rc ok, orph clean (us-east-1)
+esm-replacement-rollback	2026-11-26T02:14:10Z	PASS	110	verify.sh	rc ok, orph clean; pre-fix delete.ts fails step 2 (Rollback failed ResourceInUseException)
 event-driven	2026-11-04T05:26:26Z	PASS	52	standard	batch 3 (rc=0, destroy 19 deleted 0 errors); account clean
 eventbridge	2026-11-17T03:42:27Z	PASS	161	verify.sh	rc ok, destroy 0 errors, orph clean; at 607f11bb9 (#6479)
 eventbridge-api-destination	2026-11-04T09:00:37Z	PASS	80	verify.sh	batch 15; rc ok, orph clean

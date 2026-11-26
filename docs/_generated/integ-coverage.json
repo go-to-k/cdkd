@@ -8119,6 +8119,7 @@
         "ecr",
         "efs-lambda",
         "elasticache-snapshot-arns",
+        "esm-replacement-rollback",
         "event-driven",
         "eventbridge",
         "eventbridge-scheduler",
@@ -8367,6 +8368,9 @@
           "l2"
         ],
         "elasticache-snapshot-arns": [
+          "l2"
+        ],
+        "esm-replacement-rollback": [
           "l2"
         ],
         "event-driven": [
@@ -10568,6 +10572,7 @@
         "drift-verbatim-readback",
         "dynamodb-globaltable",
         "dynamodb-stream-filter",
+        "esm-replacement-rollback",
         "event-driven",
         "eventbridge",
         "eventbridge-input-transformer",
@@ -10746,6 +10751,10 @@
           "l1"
         ],
         "dynamodb-stream-filter": [
+          "l2"
+        ],
+        "esm-replacement-rollback": [
+          "l1",
           "l2"
         ],
         "event-driven": [
@@ -11055,6 +11064,7 @@
         "cc-api-lookup",
         "cc-to-sdk-reroute-common-types",
         "cdk-cross-account-lookup-role",
+        "codecommit",
         "composite-stack",
         "conditions-and-if",
         "conditions-update-2",
@@ -11204,6 +11214,9 @@
         "cdk-cross-account-lookup-role": [
           "l1",
           "literal"
+        ],
+        "codecommit": [
+          "l2"
         ],
         "composite-stack": [
           "l2",
