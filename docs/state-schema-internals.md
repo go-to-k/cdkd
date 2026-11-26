@@ -1994,10 +1994,13 @@ stack with no instance id.
   names the `--recreate-via-*` remedy); an updatable one is decided by its
   readback. When no subset matched, it is a move (its input fingerprint
   still covers that leaf's inputs), refused or sent as the plan reports it.
-  Known limit: the subset walk stops after 1024 re-hashes (every subset of
+  Known limit: the whole set of the stale leaves' parameters, with and
+  without the ones the key also reads outside them, is always tried; the
+  walk over their other subsets stops after 1024 re-hashes (every subset of
   up to ten parameters) and then reads the key as a move, never unchanged,
   so a key whose stale leaves read more parameters than that, some of them
-  plain, can be refused (create-only) or sent on every deploy. The plan needs no such
+  plain when recorded (the matching subset is then a strict one), can be
+  refused (create-only) or sent on every deploy. The plan needs no such
   drop: the stale leaf's key is planned from its masked record anyway. An
   updatable key is sent, as
   any planned key is, and its record settles. For a create-only key, a

@@ -128,8 +128,10 @@ export type StaleLeafInputsVerdict = 'proven' | 'moved' | 'unprovable';
  * No subset matching is `moved`: a plain input moved, and the caller keeps the
  * move, as the plan does. So is running out of the budget before any matched:
  * failing toward a visible change (refused, or sent), never toward reading a
- * real move unmoved. A key whose stale leaves read so many parameters, some of
- * them plain, that the matching subset lies past the budget is then refused
+ * real move unmoved. The whole set, with and without the parameters read
+ * outside, is always tried (outside the budget), so only a key whose stale
+ * leaves read so many parameters, some of them plain then, that the matching
+ * subset is a strict one past the budget is refused
  * (create-only) or sent on every deploy: a known limit, out of any realistic
  * template's reach. `moved` also stands for nothing to compare (no recorded
  * fingerprint, a stale leaf whose template node is not found or reads no
@@ -207,13 +209,24 @@ export async function staleLeafInputsVerdict(args: {
     if (now === undefined) return undefined;
     return splitInputFingerprint(now.fingerprint).input === recorded;
   };
-  // Proven: some subset of the parameters read only at the stale leaves, the
-  // whole set first. Then, with one read outside covered: a match leaves its
-  // value unseen, so unprovable. Every re-hash (a skipped subset too) counts
+  // Proven: some subset of the parameters read only at the stale leaves. Then,
+  // with one read outside covered: a match leaves its value unseen, so
+  // unprovable. Each phase's whole set (the usual record) is tried first,
+  // outside the budget, so the first phase's enumeration never starves the
+  // second's whole set. Every other re-hash (a skipped subset too) counts
   // against one budget; past it, moved.
-  let budget = MAX_STALE_REHASHES;
   const candidates = [...read].filter((name) => !outside.has(name));
+  const whole = await matches(new Set(candidates));
+  if (whole === undefined) return 'moved';
+  if (whole) return 'proven';
+  if (outside.size > 0) {
+    const wholeRead = await matches(read);
+    if (wholeRead === undefined) return 'moved';
+    if (wholeRead) return 'unprovable';
+  }
+  let budget = MAX_STALE_REHASHES;
   for (const subset of subsetsLargestFirst(candidates)) {
+    if (subset.length === candidates.length) continue;
     if (budget-- <= 0) return 'moved';
     const matched = await matches(new Set(subset));
     if (matched === undefined) return 'moved';
@@ -221,6 +234,7 @@ export async function staleLeafInputsVerdict(args: {
   }
   if (outside.size > 0) {
     for (const subset of subsetsLargestFirst([...read])) {
+      if (subset.length === read.size) continue;
       if (budget-- <= 0) return 'moved';
       if (!subset.some((name) => outside.has(name))) continue;
       const matched = await matches(new Set(subset));

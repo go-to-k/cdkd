@@ -243,4 +243,64 @@ describe('staleLeafInputsVerdict (#7050 review)', () => {
       expect(await many(TWELVE, ['A', 'C', 'D', 'E', 'F'])).toBe('moved');
     });
   });
+
+  describe('many parameters with some also read outside the stale leaf: the budget spans both phases', () => {
+    // The stale leaf joins `inside` and `outside`; the sibling masked leaf
+    // reads every `outside` one too. All NoEcho when recorded but `plain`;
+    // none is NoEcho today.
+    async function spanning(
+      inside: readonly string[],
+      outside: readonly string[],
+      plain: readonly string[],
+      moved: Record<string, unknown> = {}
+    ): Promise<string> {
+      const names = [...inside, ...outside];
+      const shape = [
+        { AttributeName: { 'Fn::Join': [':', names.map((name) => ({ Ref: name }))] }, KeyType: 'HASH' },
+        {
+          AttributeName: { 'Fn::Sub': `{{resolve:ssm-secure:${outside.map((name) => `\${${name}}`).join('-')}}}` },
+          KeyType: 'RANGE',
+        },
+      ];
+      const then = Object.fromEntries(names.map((name) => [name, `${name.toLowerCase()}-1`]));
+      const declare = (noEcho: readonly string[], values: Record<string, unknown>): MaskedInputSources => {
+        const template = {
+          Parameters: Object.fromEntries(
+            names.map((name) => [name, { Type: 'String', ...(noEcho.includes(name) && { NoEcho: true }) }])
+          ),
+          Resources: {},
+        };
+        return {
+          template: template as never,
+          parameterInput: parameterInputsFor({ template: template as never, values }).parameterInput,
+          resolve: () => Promise.reject(new Error('no input node here')),
+        };
+      };
+      const walked = await maskedInputWalk(shape, declare(names.filter((name) => !plain.includes(name)), then));
+      const today = { ...then, ...moved };
+      return staleLeafInputsVerdict({
+        record: {
+          maskedPropertyFingerprints: { KeySchema: maskedPropertyFingerprint(shape) },
+          maskedPropertyInputFingerprints: { KeySchema: walked!.fingerprint },
+        },
+        key: 'KeySchema',
+        templateProps: { KeySchema: shape },
+        resolvedProps: {
+          KeySchema: [
+            { AttributeName: names.map((name) => today[name]).join(':'), KeyType: 'HASH' },
+            { AttributeName: '***', KeyType: 'RANGE' },
+          ],
+        },
+        staleCoordinates: [['KeySchema', 0, 'AttributeName']],
+        sources: declare([], today),
+      });
+    }
+    const TEN = ['A', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K'];
+    it('ten inside plus one outside, nothing moved: the whole set matches although the inside enumeration fills the budget', async () => {
+      expect(await spanning(TEN, ['X'], [])).toBe('unprovable');
+    });
+    it('one inside plus ten outside, a plain one moved: the outside enumeration exhausts the budget, so a move, never unprovable', async () => {
+      expect(await spanning(['User'], TEN, ['User'], { User: 'user-2' })).toBe('moved');
+    });
+  });
 });
