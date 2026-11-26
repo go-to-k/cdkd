@@ -28,10 +28,12 @@ import {
  * (the plan reports such a key from its masked record anyway). A key whose TEXT fingerprint moved, or whose passed-secret
  * MAC proves a move, keeps it. Of the rest, a key holding no masked leaf but
  * stale ones is `unmoved` (the readback decides them); one holding another
- * masked leaf is `unmoved` and `proven` when {@link staleLeafInputsUnmoved}
- * proves its other inputs unmoved, and keeps its move (go-to-k/cdkd#4543)
- * otherwise. A `proven` key's fingerprint is re-stamped once its stale leaves
- * settle, since only a send stamps one.
+ * masked leaf is `unmoved` and `proven` when {@link staleLeafInputsVerdict}
+ * proves its other inputs unmoved, `unmoved` and `unprovable` when it can
+ * prove neither (the caller warns of it on every deploy and never re-stamps
+ * it), and keeps its move (go-to-k/cdkd#4543) otherwise. A `proven` key's
+ * fingerprint is re-stamped once its stale leaves settle, since only a send
+ * stamps one.
  */
 export async function staleNoEchoNonProofs(args: {
   record: { properties?: unknown };
@@ -41,10 +43,12 @@ export async function staleNoEchoNonProofs(args: {
   moved: Iterable<string>;
   fingerprinter: InputFingerprinter | undefined;
   sources: MaskedInputSources | undefined;
-}): Promise<{ unmoved: Set<string>; proven: Set<string> }> {
+  macVerdict?: (key: string, parameters: readonly string[]) => Promise<StaleMacVerdict>;
+}): Promise<{ unmoved: Set<string>; proven: Set<string>; unprovable: Set<string> }> {
   const { record, templateProps, staleCoordinates, fingerprinter, sources } = args;
   const unmoved = new Set<string>();
   const proven = new Set<string>();
+  const unprovable = new Set<string>();
   const moved = new Set(args.moved);
   const recordedText = maskedPropertyFingerprintsOf(record);
   const recordedProps = (isPlainObject(record.properties) ? record.properties : {}) as Record<
@@ -57,22 +61,22 @@ export async function staleNoEchoNonProofs(args: {
     if ((await passedSecretVerdictOf(fingerprinter, key, record)) === 'changed') continue;
     if (everyMaskedLeafIsStale(recordedProps[key], [key], staleCoordinates)) {
       unmoved.add(key);
-    } else if (
-      sources !== undefined &&
-      (await staleLeafInputsUnmoved({
+    } else if (sources !== undefined) {
+      const verdict = await staleLeafInputsVerdict({
         record,
         key,
         templateProps,
         resolvedProps: args.resolvedProps,
         staleCoordinates,
         sources,
-      }))
-    ) {
+        ...(args.macVerdict !== undefined && { macVerdict: args.macVerdict }),
+      });
+      if (verdict === 'moved') continue;
       unmoved.add(key);
-      proven.add(key);
+      (verdict === 'proven' ? proven : unprovable).add(key);
     }
   }
-  return { unmoved, proven };
+  return { unmoved, proven, unprovable };
 }
 
 /** Is every leaf of `node` (the record's value at `path`) that carries the mask at or under one of `stale`? */
@@ -91,28 +95,39 @@ function everyMaskedLeafIsStale(
   return !carriesSecretMask(node);
 }
 
-/** The most parameters the stale leaves may read before the proof gives up (2^n re-hashes). */
+/** The most parameters a subset walk enumerates before trying only the whole set (2^n re-hashes). */
 const MAX_STALE_PARAMETERS = 6;
+
+/**
+ * What {@link staleLeafInputsVerdict} proves of a key's inputs other than its
+ * stale leaves: `proven` unmoved, `moved` (or nothing to compare), or
+ * `unprovable` (no evidence either way).
+ */
+export type StaleLeafInputsVerdict = 'proven' | 'moved' | 'unprovable';
 
 /**
  * Whether `key`'s recorded input fingerprint equals today's re-hashed with
  * some of the parameters its stale leaves read kept as written (as the record
  * hashed the ones that were `NoEcho` then). The record does not say which of
  * those parameters were `NoEcho`, a plain one beside it was hashed as its
- * value, so each subset of them is tried (at most
- * {@link MAX_STALE_PARAMETERS}, beyond which the proof fails closed). Any
- * matching subset is sound: the inputs it leaves uncovered are proven equal,
- * and the covered ones are read only at the stale leaves, whose readback
- * compares them. `true` proves every other input of the key unmoved, and the
- * stale leaves are then the readback's to decide; `false` (a move, or nothing
- * to compare: no recorded fingerprint, a stale leaf whose template node is not
- * found or reads no parameter, too many parameters, an input unknown today, or
- * a covered parameter the key also reads outside its stale leaves, where no
- * readback compares it and a lossy stale leaf such as `Fn::Select` of an
- * `Fn::Split` would hide its move) proves nothing, and the caller keeps its
- * verdict.
+ * value, so subsets of them are tried, the whole set first (each subset only
+ * up to {@link MAX_STALE_PARAMETERS} of them). A matching subset none of whose
+ * parameters the key reads outside its stale leaves is `proven`: the inputs
+ * it leaves uncovered are proven equal, and the covered ones are read only at
+ * the stale leaves, whose readback compares them.
+ *
+ * A parameter the key also reads outside its stale leaves (a live `NoEcho`
+ * sibling's, where no readback compares it, and a lossy stale leaf such as
+ * `Fn::Select` of an `Fn::Split` would hide its move) is never covered on the
+ * hash's word: a match only with it covered leaves its value unseen. The
+ * record's `NoEcho` value MACs of it, when `macVerdict` reads them, decide
+ * (`confirmed` is `proven`, `changed` is `moved`); without them the key is
+ * `unprovable`, and so is one with too many parameters to try every subset
+ * that matched none. `moved` also stands for nothing to compare (no recorded
+ * fingerprint, a stale leaf whose template node is not found or reads no
+ * parameter, an input unknown today): the caller keeps its verdict.
  */
-export async function staleLeafInputsUnmoved(args: {
+export async function staleLeafInputsVerdict(args: {
   record: unknown;
   key: string;
   /** The template (unresolved) properties. */
@@ -122,12 +137,14 @@ export async function staleLeafInputsUnmoved(args: {
   /** The record's stale `NoEcho` coordinates (any key's). */
   staleCoordinates: readonly NoEchoCoordinate[];
   sources: MaskedInputSources;
-}): Promise<boolean> {
+  /** The record's `NoEcho` value MACs of `parameters` for `key` against today's. */
+  macVerdict?: (key: string, parameters: readonly string[]) => Promise<StaleMacVerdict>;
+}): Promise<StaleLeafInputsVerdict> {
   const { record, key, templateProps, resolvedProps, sources } = args;
   const bound = maskedPropertyInputFingerprintsOf(record).get(key);
-  if (bound === undefined || !Object.hasOwn(templateProps, key)) return false;
+  if (bound === undefined || !Object.hasOwn(templateProps, key)) return 'moved';
   const stale = args.staleCoordinates.filter((coordinate) => coordinate[0] === key);
-  if (stale.length === 0) return false;
+  if (stale.length === 0) return 'moved';
   const declared = new Set(
     isPlainObject(sources.template.Parameters) ? Object.keys(sources.template.Parameters) : []
   );
@@ -144,14 +161,14 @@ export async function staleLeafInputsUnmoved(args: {
     const at = nodes.find(
       (entry) => JSON.stringify(entry.coordinate) === JSON.stringify(coordinate)
     );
-    if (at === undefined) return false;
+    if (at === undefined) return 'moved';
     const names = noEchoParametersReadBy(at.node, readSources(declared));
-    if (names.length === 0) return false;
+    if (names.length === 0) return 'moved';
     staleNodes.add(at.node);
     for (const name of names) read.add(name);
   }
-  if (read.size > MAX_STALE_PARAMETERS) return false;
-  // A parameter the key also reads outside its stale leaves is never covered.
+  // A parameter the key also reads outside its stale leaves is never covered
+  // on the hash's word.
   const outside = new Set(
     noEchoParametersReadBy(withoutNodes(templateProps[key], staleNodes), readSources(read))
   );
@@ -161,24 +178,68 @@ export async function staleLeafInputsUnmoved(args: {
     if (!resolved.has(node)) resolved.set(node, sources.resolve(node));
     return resolved.get(node)!;
   };
+  // One child template load per row across every subset walk (a nested
+  // output's class depends on the covered parameters, so it is walked anew).
+  const loadChild = sources.childTemplate;
+  const children = new Map<string, ReturnType<NonNullable<typeof loadChild>>>();
+  const childTemplate =
+    loadChild &&
+    ((logicalId: string) => {
+      if (!children.has(logicalId)) children.set(logicalId, loadChild(logicalId));
+      return children.get(logicalId);
+    });
   const recorded = splitInputFingerprint(bound).input;
-  // Largest subsets first: the usual record had every one of them `NoEcho`.
-  const subsets = Array.from({ length: 2 ** candidates.length }, (_, mask) =>
-    candidates.filter((_name, index) => (mask & (1 << index)) !== 0)
-  ).sort((a, b) => b.length - a.length);
-  for (const subset of subsets) {
-    const covered = new Set(subset);
+  /** Does the key re-hash to the recorded fingerprint with `covered` kept as written? `undefined`: unknown input. */
+  const matches = async (covered: ReadonlySet<string>): Promise<boolean | undefined> => {
     const asWritten: MaskedInputSources = {
       ...sources,
       resolve,
+      ...(childTemplate !== undefined && { childTemplate }),
       parameterInput: (name) =>
         covered.has(name) ? { kind: 'secret' } : sources.parameterInput(name),
     };
     const now = await maskedInputWalk(templateProps[key], asWritten).catch(() => undefined);
-    if (now === undefined) return false;
-    if (splitInputFingerprint(now.fingerprint).input === recorded) return true;
+    if (now === undefined) return undefined;
+    return splitInputFingerprint(now.fingerprint).input === recorded;
+  };
+  // Proven: some subset of the candidates alone, the whole set first.
+  let exhaustive = candidates.length <= MAX_STALE_PARAMETERS;
+  for (const subset of subsetsOf(candidates)) {
+    const matched = await matches(new Set(subset));
+    if (matched === undefined) return 'moved';
+    if (matched) return 'proven';
   }
-  return false;
+  if (outside.size > 0) {
+    // Matched only with a parameter read outside covered: its value is
+    // unseen there, so only its value MACs decide.
+    const all = [...read];
+    exhaustive &&= all.length <= MAX_STALE_PARAMETERS;
+    for (const subset of subsetsOf(all)) {
+      const covering = subset.filter((name) => outside.has(name));
+      if (covering.length === 0) continue;
+      const matched = await matches(new Set(subset));
+      if (matched === undefined) return 'moved';
+      if (!matched) continue;
+      const verdict = (await args.macVerdict?.(key, covering)) ?? 'none';
+      if (verdict === 'confirmed') return 'proven';
+      if (verdict === 'changed') return 'moved';
+      return 'unprovable';
+    }
+  }
+  // Every subset tried and none matched: something else moved. Short of
+  // trying them all, nothing is proven either way.
+  return exhaustive ? 'moved' : 'unprovable';
+}
+
+/** What a key's recorded `NoEcho` value MACs of some parameters say against today's. */
+export type StaleMacVerdict = 'confirmed' | 'changed' | 'none';
+
+/** Every subset of `names` largest first (the usual record had every one of them `NoEcho`), or only the whole set past the cap. */
+function subsetsOf(names: readonly string[]): string[][] {
+  if (names.length > MAX_STALE_PARAMETERS) return [[...names]];
+  return Array.from({ length: 2 ** names.length }, (_, mask) =>
+    names.filter((_name, index) => (mask & (1 << index)) !== 0)
+  ).sort((a, b) => b.length - a.length);
 }
 
 /** `value` with each of `nodes` (by identity) replaced by `null`. */

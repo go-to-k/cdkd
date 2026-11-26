@@ -809,26 +809,68 @@ describe('a stale NoEcho leaf beside another masked leaf of a create-only key se
     }
   });
 
-  // The stale leaf is a lossy function of `Suffix`, which a sibling leaf
-  // still served by the NoEcho `Bee` also reads: a move in the part the stale
-  // leaf drops is never proven unmoved (the proof never covers a parameter
-  // read outside the stale leaves), so it stays planned and the fingerprint
-  // is never re-stamped away. (A `{{resolve:...}}` reference built from
-  // `Suffix` is refused while it is NoEcho, so no such record exists.)
-  it('the stale parameter, also read by a live NoEcho sibling, moved in the part the stale leaf drops: never re-stamped away', async () => {
-    const hash = { 'Fn::Select': [0, { 'Fn::Split': [',', { Ref: 'Suffix' }] }] };
-    const sibling = { 'Fn::Join': ['_', [{ Ref: 'Bee' }, { Ref: 'Suffix' }]] };
-    const record = await staleTable(sibling, hash, 'head,old-tail');
+  // The stale leaf reads `Suffix`, which a sibling leaf still served by the
+  // NoEcho `Bee` also reads: the record hashed `Suffix` as written there, and
+  // no readback compares it at the sibling, so the key's other inputs are
+  // UNPROVABLE (no value MAC of `Suffix` is recorded). It reads unmoved and is
+  // warned of on every deploy; its stale leaf is kept and its fingerprint is
+  // never re-stamped on that evidence. A move in the part a lossy stale leaf
+  // drops is then not applied (warned of), never re-stamped away, and a move
+  // elsewhere is still planned and refused. (A `{{resolve:...}}` reference
+  // built from `Suffix` is refused while it is NoEcho, so no such record exists.)
+  const BEE_SUFFIX = { 'Fn::Join': ['_', [{ Ref: 'Bee' }, { Ref: 'Suffix' }]] };
+  const LOSSY_HASH = { 'Fn::Select': [0, { 'Fn::Split': [',', { Ref: 'Suffix' }] }] };
+  const unprovableWarnings = (log: Record<string, ReturnType<typeof vi.fn>>): string[] =>
+    log['warn']!.mock.calls
+      .map((c) => String(c[0]))
+      .filter((w) => w.includes('Db.KeySchema') && w.includes('cannot prove the key unchanged'));
+  const UNPROVABLE = [
+    ['the stale leaf reads the parameter whole', undefined, 'noecho-old-value', 'noecho-old-value', 'noecho-old-value'],
+    ['the stale leaf drops part of the parameter', LOSSY_HASH, 'head,old-tail', 'head,old-tail', 'head'],
+    ['the stale leaf drops part of the parameter, and that part moved', LOSSY_HASH, 'head,old-tail', 'head,new-tail', 'head'],
+  ] as const;
+  for (const [label, hash, then, now, readHash] of UNPROVABLE) {
+    it(`a stale parameter a live NoEcho sibling also reads, ${label}: three deploys, warned on each, never refused nor re-stamped`, async () => {
+      const log = getLogger() as unknown as Record<string, ReturnType<typeof vi.fn>>;
+      let record = await staleTable(BEE_SUFFIX, hash, then);
+      const recordedInput = (record['maskedPropertyInputFingerprints'] as Record<string, string>)['KeySchema'];
+      SUFFIX.v = now;
+      READBACK.props = { KeySchema: keySchema(readHash, `${BEE}_${then}`) };
+      for (const run of [1, 2, 3]) {
+        log['warn']!.mockClear();
+        const r = await deploy({ Db: structuredClone(record) as never }, table(BEE_SUFFIX, hash));
+        expect(r.thrown, `run ${run}: ${refusal(r.thrown)}`).toBeUndefined();
+        expect(r.calls, `run ${run}`).toEqual([]);
+        // The plan reports the kept stale leaf on every run; the deploy settles it unsent.
+        expect((r.diff?.get('Db')?.propertyChanges ?? []).map((pc) => pc.path), `run ${run}`).toContain('KeySchema');
+        expect(unprovableWarnings(log), `run ${run}`).toHaveLength(1);
+        expect(log['warn']!.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain(BEE);
+        if (r.persisted !== undefined) {
+          expect(JSON.stringify(r.all)).not.toContain(BEE);
+          record = structuredClone(r.persisted) as unknown as Record<string, unknown>;
+        }
+        expect((record['maskedPropertyInputFingerprints'] as Record<string, string>)['KeySchema'], `run ${run}`).toBe(recordedInput);
+        expect(JSON.stringify(record['noEchoLeaves'] ?? []), `run ${run}`).toContain('"KeySchema",0');
+      }
+    });
+  }
+
+  it('a stale parameter a live NoEcho sibling also reads, a plain parameter beside it moved: planned and refused, never skipped', async () => {
+    EXTRA_PARAMETERS['User'] = { Type: 'String', Default: 'user-1' };
+    const record = await staleTable(BEE_SUFFIX, USER_HASH);
     const recordedInput = (record['maskedPropertyInputFingerprints'] as Record<string, string>)['KeySchema'];
-    SUFFIX.v = 'head,new-tail';
-    READBACK.props = { KeySchema: keySchema('head', `${BEE}_head,old-tail`) };
-    let current = record;
+    EXTRA_PARAMETERS['User'] = { Type: 'String', Default: 'user-2' };
+    READBACK.props = { KeySchema: keySchema('user-1:noecho-old-value', `${BEE}_noecho-old-value`) };
     for (const run of [1, 2]) {
-      const r = await deploy({ Db: structuredClone(current) as never }, table(sibling, hash));
-      expect((r.diff?.get('Db')?.propertyChanges ?? []).map((pc) => pc.path), `run ${run}`).toEqual(['KeySchema']);
-      expect(r.calls).toEqual([]);
-      if (r.persisted !== undefined) current = structuredClone(r.persisted) as unknown as Record<string, unknown>;
-      expect((current['maskedPropertyInputFingerprints'] as Record<string, string>)['KeySchema'], `run ${run}`).toBe(recordedInput);
+      const moved = await deploy({ Db: structuredClone(record) as never }, table(BEE_SUFFIX, USER_HASH));
+      const rows = moved.diff?.get('Db')?.propertyChanges ?? [];
+      expect(rows.map((pc) => [pc.path, pc.requiresReplacement]), `run ${run}`).toEqual([['KeySchema', true]]);
+      expect(moved.calls).toEqual([]);
+      expect(refusal(moved.thrown)).toMatch(/force-stateful-recreation/);
+      const persisted = moved.persisted as unknown as Record<string, unknown> | undefined;
+      if (persisted !== undefined) {
+        expect((persisted['maskedPropertyInputFingerprints'] as Record<string, string>)['KeySchema']).toBe(recordedInput);
+      }
     }
   });
 });

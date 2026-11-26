@@ -97,8 +97,12 @@ export type {
   UnverifiedPassedSecret,
 } from './masked-property-fingerprints/records.js';
 export {
-  staleLeafInputsUnmoved,
+  staleLeafInputsVerdict,
   staleNoEchoNonProofs,
+} from './masked-property-fingerprints/stale-noecho-cover.js';
+export type {
+  StaleLeafInputsVerdict,
+  StaleMacVerdict,
 } from './masked-property-fingerprints/stale-noecho-cover.js';
 export {
   maskedPropertyReferenceFingerprintsOf,

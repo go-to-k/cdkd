@@ -1977,14 +1977,23 @@ stack with no instance id.
   public `ssm` value moved, or whose passed-secret value MAC proves a
   move, is still a move. A key that holds another masked leaf is re-hashed
   with some of the parameters its stale leaves read kept as written, as the
-  record hashed the ones that were `NoEcho` then (each subset of at most six
-  is tried, since a plain parameter beside them was hashed by its value;
-  more, and it stays a move). A parameter the key also reads outside its
-  stale leaves is never kept as written, since no readback compares it
-  there. Equal to the recorded input fingerprint, only the stale leaves
-  moved and the readback decides them (the settle re-stamps today's
-  fingerprint, so the next deploy compares it); otherwise it is a move (its
-  input fingerprint still covers that leaf's inputs). The plan needs no such
+  record hashed the ones that were `NoEcho` then (the whole set first, then
+  each subset when there are at most six, since a plain parameter beside
+  them was hashed by its value). Equal to the recorded input fingerprint,
+  only the stale leaves moved and the readback decides them (the settle
+  re-stamps today's fingerprint, so the next deploy compares it). A
+  parameter the key also reads outside its stale leaves (a live `NoEcho`
+  sibling's, say) is never kept as written on the hash's word, since no
+  readback compares it there: a match only with it kept as written is
+  decided by the record's value MACs of it against today's (equal, proven;
+  different, a move), and without them the key is UNPROVABLE. So is one
+  with more than six such parameters that only some subset could match.
+  An unprovable key is treated as unchanged and warned of on every deploy,
+  naming the resource and the key, never a value: it is never refused, its
+  stale leaves stay marked, and its input fingerprint is never re-stamped,
+  so no stamp ever rests on that evidence and a change to such a parameter
+  is not applied there. When every subset was tried and none matched, it
+  is a move (its input fingerprint still covers that leaf's inputs). The plan needs no such
   drop: the stale leaf's key is planned from its masked record anyway. An
   updatable key is sent, as
   any planned key is, and its record settles. For a create-only key, a

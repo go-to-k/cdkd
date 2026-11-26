@@ -84,6 +84,7 @@ export async function provisionUpdate(
     lostWithParent,
     staleCoordinates,
     staleUnmovedKeys,
+    staleUnprovableKeys,
     desiredProps,
     noEchoSources,
     parameterCoordinates,
@@ -695,8 +696,15 @@ export async function provisionUpdate(
     // holds `***` where no NoEcho source serves the leaf any more) that AWS
     // confirmed holding the resolved value is rewritten to that value and
     // unmarked, so the diff stops comparing `***` with it on every run.
+    // go-to-k/cdkd#7050 review: a key whose other inputs are unprovable
+    // (`staleUnprovableKeys`) keeps its stale leaves, so the next deploy
+    // weighs the same evidence and warns again; settled without a re-stamp it
+    // would read moved, and be refused, on every later deploy.
     const staleHeld = staleCoordinates.filter(
-      (coordinate) => typeof coordinate[0] === 'string' && parameterHeldKeys.has(coordinate[0])
+      (coordinate) =>
+        typeof coordinate[0] === 'string' &&
+        parameterHeldKeys.has(coordinate[0]) &&
+        !staleUnprovableKeys.has(coordinate[0])
     );
     if (staleHeld.length > 0) {
       let properties = currentResource.properties;
