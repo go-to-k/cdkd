@@ -415,12 +415,13 @@ export async function resolveUpdateInputs(
   // passed-secret MAC proves a move stays moved, and so does one holding any
   // masked leaf that is not a stale `NoEcho` leaf: its input fingerprint
   // still proves that leaf's inputs (go-to-k/cdkd#4543), unless the key's
-  // inputs re-hashed with the stale leaves' parameters kept as written (as the
-  // record hashed them) equal the recorded ones: then only the stale leaves
+  // inputs re-hashed with some of the stale leaves' parameters kept as written
+  // (as the record hashed its `NoEcho` ones) equal the recorded ones, none of
+  // them read outside the stale leaves: then only the stale leaves
   // moved, and the readback decides them. Such a key is in `staleUnmovedKeys`:
   // the skip that settles its stale leaves re-stamps its input fingerprint,
   // else it would read moved again on every later deploy (only a send stamps).
-  // The plan drops the same keys through the same helper.
+  // The plan needs no such drop: its masked record plans a stale leaf's key anyway.
   const recordedText = maskedPropertyFingerprintsOf(currentResource);
   const staleNonProofs = await staleNoEchoNonProofs({
     record: currentResource,

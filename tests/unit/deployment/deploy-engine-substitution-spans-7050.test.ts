@@ -645,13 +645,13 @@ describe('a readback list element holding a 1-3 character secret is positioned o
 // template, never a hidden change behind the sibling.
 describe('a stale NoEcho leaf beside another masked leaf of a create-only key settles (#7050 review)', () => {
   const BEE = 'bee-secret-value';
-  const table = (sibling: unknown): Record<string, unknown> => ({
+  const table = (sibling: unknown, hash: unknown = { Ref: 'Suffix' }): Record<string, unknown> => ({
     Db: {
       Type: 'AWS::DynamoDB::Table',
       Properties: {
         BillingMode: 'PAY_PER_REQUEST',
         KeySchema: [
-          { AttributeName: { Ref: 'Suffix' }, KeyType: 'HASH' },
+          { AttributeName: hash, KeyType: 'HASH' },
           { AttributeName: sibling, KeyType: 'RANGE' },
         ],
       },
@@ -673,15 +673,16 @@ describe('a stale NoEcho leaf beside another masked leaf of a create-only key se
     READBACK.props = undefined;
     PLAIN.v = 'db-secret';
     delete EXTRA_PARAMETERS['Bee'];
+    delete EXTRA_PARAMETERS['User'];
   });
   /** Deploy with `Suffix` NoEcho, then drop its NoEcho: the record to start from. */
-  async function staleTable(sibling: unknown): Promise<Record<string, unknown>> {
+  async function staleTable(sibling: unknown, hash?: unknown, value = 'noecho-old-value'): Promise<Record<string, unknown>> {
     // A 1-3 character `Plain` beside the secret: the leaf is recorded wholly masked.
     PLAIN.v = 'pg';
     EXTRA_PARAMETERS['Bee'] = { Type: 'String', NoEcho: true, Default: BEE };
-    SUFFIX.v = 'noecho-old-value';
+    SUFFIX.v = value;
     SUFFIX.noEcho = true;
-    const created = await deploy({}, table(sibling));
+    const created = await deploy({}, table(sibling, hash));
     expect(created.thrown).toBeUndefined();
     SUFFIX.noEcho = false;
     const record = structuredClone(created.persisted!) as unknown as Record<string, unknown>;
@@ -765,4 +766,69 @@ describe('a stale NoEcho leaf beside another masked leaf of a create-only key se
       }
     });
   }
+
+  // A plain (never NoEcho) parameter beside the stale one in the same leaf was
+  // hashed by its value: only the stale parameter is covered as written.
+  const USER_HASH = { 'Fn::Join': [':', [{ Ref: 'User' }, { Ref: 'Suffix' }]] };
+  it('a plain parameter beside the stale one in its leaf, nothing moved: three deploys, never refused, settled', async () => {
+    EXTRA_PARAMETERS['User'] = { Type: 'String', Default: 'user-1' };
+    let record = await staleTable({ Ref: 'Bee' }, USER_HASH);
+    const recordedInput = (record['maskedPropertyInputFingerprints'] as Record<string, string>)['KeySchema'];
+    READBACK.props = { KeySchema: keySchema('user-1:noecho-old-value', BEE) };
+    const settledRows: unknown[][] = [];
+    for (const run of [1, 2, 3]) {
+      const r = await deploy({ Db: record as never }, table({ Ref: 'Bee' }, USER_HASH));
+      expect(r.thrown, `run ${run}: ${refusal(r.thrown)}`).toBeUndefined();
+      expect(r.calls).toEqual([]);
+      settledRows.push(
+        (r.diff?.get('Db')?.propertyChanges ?? []).filter((pc) => pc.noEchoPromoted !== true).map((pc) => pc.path)
+      );
+      if (r.persisted !== undefined) {
+        expect(JSON.stringify(r.all)).not.toContain(BEE);
+        record = structuredClone(r.persisted) as unknown as Record<string, unknown>;
+      }
+    }
+    expect(settledRows).toEqual([['KeySchema'], [], []]);
+    expect((record['properties'] as Record<string, unknown>)['KeySchema']).toEqual(
+      keySchema('user-1:noecho-old-value', '***')
+    );
+    expect((record['maskedPropertyInputFingerprints'] as Record<string, string>)['KeySchema']).not.toBe(recordedInput);
+  });
+
+  it('a plain parameter beside the stale one in its leaf really moved: planned and refused, never skipped', async () => {
+    EXTRA_PARAMETERS['User'] = { Type: 'String', Default: 'user-1' };
+    const record = await staleTable({ Ref: 'Bee' }, USER_HASH);
+    EXTRA_PARAMETERS['User'] = { Type: 'String', Default: 'user-2' };
+    READBACK.props = { KeySchema: keySchema('user-1:noecho-old-value', BEE) };
+    for (const run of [1, 2]) {
+      const moved = await deploy({ Db: structuredClone(record) as never }, table({ Ref: 'Bee' }, USER_HASH));
+      const rows = moved.diff?.get('Db')?.propertyChanges ?? [];
+      expect(rows.map((pc) => [pc.path, pc.requiresReplacement]), `run ${run}`).toEqual([['KeySchema', true]]);
+      expect(moved.calls).toEqual([]);
+      expect(refusal(moved.thrown)).toMatch(/force-stateful-recreation/);
+    }
+  });
+
+  // The stale leaf is a lossy function of `Suffix`, which a sibling leaf
+  // still served by the NoEcho `Bee` also reads: a move in the part the stale
+  // leaf drops is never proven unmoved (the proof never covers a parameter
+  // read outside the stale leaves), so it stays planned and the fingerprint
+  // is never re-stamped away. (A `{{resolve:...}}` reference built from
+  // `Suffix` is refused while it is NoEcho, so no such record exists.)
+  it('the stale parameter, also read by a live NoEcho sibling, moved in the part the stale leaf drops: never re-stamped away', async () => {
+    const hash = { 'Fn::Select': [0, { 'Fn::Split': [',', { Ref: 'Suffix' }] }] };
+    const sibling = { 'Fn::Join': ['_', [{ Ref: 'Bee' }, { Ref: 'Suffix' }]] };
+    const record = await staleTable(sibling, hash, 'head,old-tail');
+    const recordedInput = (record['maskedPropertyInputFingerprints'] as Record<string, string>)['KeySchema'];
+    SUFFIX.v = 'head,new-tail';
+    READBACK.props = { KeySchema: keySchema('head', `${BEE}_head,old-tail`) };
+    let current = record;
+    for (const run of [1, 2]) {
+      const r = await deploy({ Db: structuredClone(current) as never }, table(sibling, hash));
+      expect((r.diff?.get('Db')?.propertyChanges ?? []).map((pc) => pc.path), `run ${run}`).toEqual(['KeySchema']);
+      expect(r.calls).toEqual([]);
+      if (r.persisted !== undefined) current = structuredClone(r.persisted) as unknown as Record<string, unknown>;
+      expect((current['maskedPropertyInputFingerprints'] as Record<string, string>)['KeySchema'], `run ${run}`).toBe(recordedInput);
+    }
+  });
 });

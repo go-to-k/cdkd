@@ -1976,12 +1976,17 @@ stack with no instance id.
   whose text fingerprint moved (the template itself was edited), or whose
   public `ssm` value moved, or whose passed-secret value MAC proves a
   move, is still a move. A key that holds another masked leaf is re-hashed
-  with the stale leaf's parameters kept as written, as the record hashed
-  them: equal to the recorded input fingerprint, only the stale leaf moved
-  and the readback decides it (the settle re-stamps today's fingerprint, so
-  the next deploy compares it); different, it is a move (its input
-  fingerprint still covers that leaf's inputs). The plan drops the same
-  keys. An updatable key is sent, as
+  with some of the parameters its stale leaves read kept as written, as the
+  record hashed the ones that were `NoEcho` then (each subset of at most six
+  is tried, since a plain parameter beside them was hashed by its value;
+  more, and it stays a move). A parameter the key also reads outside its
+  stale leaves is never kept as written, since no readback compares it
+  there. Equal to the recorded input fingerprint, only the stale leaves
+  moved and the readback decides them (the settle re-stamps today's
+  fingerprint, so the next deploy compares it); otherwise it is a move (its
+  input fingerprint still covers that leaf's inputs). The plan needs no such
+  drop: the stale leaf's key is planned from its masked record anyway. An
+  updatable key is sent, as
   any planned key is, and its record settles. For a create-only key, a
   readback holding today's value settles the leaf and unmarks it; one
   holding another value, which the provider reports exactly, is a change

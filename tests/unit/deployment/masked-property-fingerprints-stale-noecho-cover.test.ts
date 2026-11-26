@@ -101,4 +101,68 @@ describe('staleLeafInputsUnmoved (#7050 review)', () => {
       })
     ).toBe(false);
   });
+
+  // A key whose parameters other than the stale one are declared by the shape.
+  async function shaped(
+    keySchema: unknown,
+    noEchoThen: readonly string[],
+    plain: readonly string[],
+    recordedValues: Record<string, unknown>,
+    todayValues: Record<string, unknown>,
+    resolvedHash: unknown
+  ): Promise<boolean> {
+    const declare = (noEcho: readonly string[]): MaskedInputSources => {
+      const template = {
+        Parameters: Object.fromEntries(
+          [...noEchoThen, ...plain].map((name) => [name, { Type: 'String', ...(noEcho.includes(name) && { NoEcho: true }) }])
+        ),
+        Resources: {},
+      };
+      const values = noEcho === noEchoThen ? recordedValues : todayValues;
+      return {
+        template: template as never,
+        parameterInput: parameterInputsFor({ template: template as never, values }).parameterInput,
+        resolve: () => Promise.reject(new Error('no input node here')),
+      };
+    };
+    const walked = await maskedInputWalk(keySchema, declare(noEchoThen));
+    return staleLeafInputsUnmoved({
+      record: {
+        maskedPropertyFingerprints: { KeySchema: maskedPropertyFingerprint(keySchema) },
+        maskedPropertyInputFingerprints: { KeySchema: walked!.fingerprint },
+      },
+      key: 'KeySchema',
+      templateProps: { KeySchema: keySchema },
+      resolvedProps: { KeySchema: [{ AttributeName: resolvedHash, KeyType: 'HASH' }, { AttributeName: '***', KeyType: 'RANGE' }] },
+      staleCoordinates: [['KeySchema', 0, 'AttributeName']],
+      // Today only `B` is still NoEcho.
+      sources: declare(noEchoThen.filter((name) => name !== 'A')),
+    });
+  }
+
+  describe('a plain parameter beside the stale one in its leaf was hashed by its value', () => {
+    const SHAPE = [
+      { AttributeName: { 'Fn::Join': [':', [{ Ref: 'User' }, { Ref: 'A' }]] }, KeyType: 'HASH' },
+      { AttributeName: { Ref: 'B' }, KeyType: 'RANGE' },
+    ];
+    const then = { A: 'a-1', B: 'b-1', User: 'u-1' };
+    it('nothing moved: proven', async () => {
+      expect(await shaped(SHAPE, ['A', 'B'], ['User'], then, then, 'u-1:a-1')).toBe(true);
+    });
+    it('`User` moved: a move', async () => {
+      expect(await shaped(SHAPE, ['A', 'B'], ['User'], then, { ...then, User: 'u-2' }, 'u-2:a-1')).toBe(false);
+    });
+  });
+
+  describe('a stale parameter the key also reads outside its stale leaf is never covered', () => {
+    // The stale leaf drops all but the first element of `A`; the sibling
+    // masked leaf reads `A` whole, and no readback compares it there.
+    const SHAPE = [
+      { AttributeName: { 'Fn::Select': [0, { 'Fn::Split': [',', { Ref: 'A' }] }] }, KeyType: 'HASH' },
+      { AttributeName: { 'Fn::Sub': '{{resolve:ssm-secure:${A}}}' }, KeyType: 'RANGE' },
+    ];
+    it('`A` moved in the part the stale leaf drops: never proven unmoved', async () => {
+      expect(await shaped(SHAPE, ['A'], [], { A: 'h,t-1' }, { A: 'h,t-2' }, 'h')).toBe(false);
+    });
+  });
 });

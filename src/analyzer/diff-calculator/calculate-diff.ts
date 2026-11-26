@@ -18,17 +18,12 @@ import {
   inputFingerprinter,
   maskedPropertyFingerprintsOf,
   movedMaskedProperties,
-  staleNoEchoNonProofs,
   publicReferencesMoved,
   type MaskedInputSources,
   type PublicReferenceOf,
   type UnverifiedPassedSecret,
 } from '../../deployment/masked-property-fingerprints.js';
-import {
-  carriesSecretMask,
-  isStaleNoEchoLeaf,
-  noEchoLeavesOf,
-} from '../../deployment/secret-redaction.js';
+import { carriesSecretMask } from '../../deployment/secret-redaction.js';
 import type { MaskerFn } from '../../provisioning/masked-retry-logger.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import type { LockRecoveryContext } from '../../state/lock-contention-message.js';
@@ -522,7 +517,7 @@ export async function calculateDiff(
       // go-to-k/cdkd#7050 review: a key with no usable passed-secret MAC and
       // unmoved inputs: warned of, and backfilled when it never held one.
       const unverified: Array<[string, UnverifiedPassedSecret | 'none']> = [];
-      const reportedMoved = await movedMaskedProperties(
+      const moved = await movedMaskedProperties(
         currentResource,
         rawDesiredProps,
         maskedFingerprinter,
@@ -545,25 +540,10 @@ export async function calculateDiff(
       if (rebaselined.length > 0) {
         maskedInputs!.rebaselined!.set(logicalId, Object.fromEntries(rebaselined));
       }
-      // go-to-k/cdkd#7050 review: as the deploy reads it, a stale `NoEcho`
-      // leaf's input-fingerprint non-proof is no move (the readback decides
-      // the leaf), so the plan and the engine agree on which keys moved.
-      const staleNonProofs = await staleNoEchoNonProofs({
-        record: currentResource,
-        templateProps: rawDesiredProps,
-        resolvedProps: desiredPropsForCompare,
-        staleCoordinates: (noEchoLeavesOf(currentResource) ?? []).filter((coordinate) =>
-          isStaleNoEchoLeaf(
-            currentResource.properties,
-            noEchoCompared?.desired ?? desiredPropsForCompare,
-            coordinate
-          )
-        ),
-        moved: reportedMoved,
-        fingerprinter: maskedFingerprinter || undefined,
-        sources: maskedInputs?.sources,
-      });
-      const moved = reportedMoved.filter((key) => !staleNonProofs.unmoved.has(key));
+      // go-to-k/cdkd#7050 review: the deploy drops a stale `NoEcho` leaf's
+      // input-fingerprint non-proof (`staleNoEchoNonProofs`); the plan need
+      // not, since such a key is already reported above (its record holds the
+      // mask where the desired side no longer does), so either way it shows.
       await reportUnverifiedPassedSecrets({
         logicalId,
         record: currentResource,

@@ -11,7 +11,7 @@ import {
   noEchoParameterNodesAt,
   noEchoParametersReadBy,
 } from '../secret-redaction.js';
-import type { NoEchoCoordinate } from '../secret-redaction.js';
+import type { NoEchoCoordinate, NoEchoPositionSources } from '../secret-redaction.js';
 import { maskedPropertyFingerprint, splitInputFingerprint } from './core.js';
 import { isPlainObject, type MaskedInputSources } from './input-walk.js';
 import { maskedInputWalk } from './nested-outputs.js';
@@ -24,8 +24,8 @@ import {
 
 /**
  * The keys of `moved` (what `movedMaskedProperties` reported) whose move is
- * only a stale `NoEcho` leaf's input-fingerprint non-proof, for the plan and
- * the deploy alike. A key whose TEXT fingerprint moved, or whose passed-secret
+ * only a stale `NoEcho` leaf's input-fingerprint non-proof, for the deploy
+ * (the plan reports such a key from its masked record anyway). A key whose TEXT fingerprint moved, or whose passed-secret
  * MAC proves a move, keeps it. Of the rest, a key holding no masked leaf but
  * stale ones is `unmoved` (the readback decides them); one holding another
  * masked leaf is `unmoved` and `proven` when {@link staleLeafInputsUnmoved}
@@ -91,14 +91,26 @@ function everyMaskedLeafIsStale(
   return !carriesSecretMask(node);
 }
 
+/** The most parameters the stale leaves may read before the proof gives up (2^n re-hashes). */
+const MAX_STALE_PARAMETERS = 6;
+
 /**
  * Whether `key`'s recorded input fingerprint equals today's re-hashed with
- * the parameters its stale leaves read kept as written (as the record hashed
- * them while they were `NoEcho`). `true` proves every other input of the key
- * unmoved, and the stale leaves are then the readback's to decide; `false`
- * (a move, or nothing to compare: no recorded fingerprint, a stale leaf whose
- * template node is not found or reads no parameter, an input unknown today)
- * proves nothing, and the caller keeps its verdict.
+ * some of the parameters its stale leaves read kept as written (as the record
+ * hashed the ones that were `NoEcho` then). The record does not say which of
+ * those parameters were `NoEcho`, a plain one beside it was hashed as its
+ * value, so each subset of them is tried (at most
+ * {@link MAX_STALE_PARAMETERS}, beyond which the proof fails closed). Any
+ * matching subset is sound: the inputs it leaves uncovered are proven equal,
+ * and the covered ones are read only at the stale leaves, whose readback
+ * compares them. `true` proves every other input of the key unmoved, and the
+ * stale leaves are then the readback's to decide; `false` (a move, or nothing
+ * to compare: no recorded fingerprint, a stale leaf whose template node is not
+ * found or reads no parameter, too many parameters, an input unknown today, or
+ * a covered parameter the key also reads outside its stale leaves, where no
+ * readback compares it and a lossy stale leaf such as `Fn::Select` of an
+ * `Fn::Split` would hide its move) proves nothing, and the caller keeps its
+ * verdict.
  */
 export async function staleLeafInputsUnmoved(args: {
   record: unknown;
@@ -119,30 +131,63 @@ export async function staleLeafInputsUnmoved(args: {
   const declared = new Set(
     isPlainObject(sources.template.Parameters) ? Object.keys(sources.template.Parameters) : []
   );
+  const readSources = (parameters: ReadonlySet<string>): NoEchoPositionSources => ({
+    parameters,
+    ...(sources.conditions !== undefined && { conditions: sources.conditions }),
+  });
   const nodes = [
     ...noEchoParameterNodesAt(templateProps, resolvedProps, declared, sources.conditions).values(),
   ];
-  const covered = new Set<string>();
+  const staleNodes = new Set<unknown>();
+  const read = new Set<string>();
   for (const coordinate of stale) {
     const at = nodes.find(
       (entry) => JSON.stringify(entry.coordinate) === JSON.stringify(coordinate)
     );
     if (at === undefined) return false;
-    const names = noEchoParametersReadBy(at.node, {
-      parameters: declared,
-      ...(sources.conditions !== undefined && { conditions: sources.conditions }),
-    });
+    const names = noEchoParametersReadBy(at.node, readSources(declared));
     if (names.length === 0) return false;
-    for (const name of names) covered.add(name);
+    staleNodes.add(at.node);
+    for (const name of names) read.add(name);
   }
-  const asWritten: MaskedInputSources = {
-    ...sources,
-    parameterInput: (name) =>
-      covered.has(name) ? { kind: 'secret' } : sources.parameterInput(name),
-  };
-  const now = await maskedInputWalk(templateProps[key], asWritten).catch(() => undefined);
-  return (
-    now !== undefined &&
-    splitInputFingerprint(now.fingerprint).input === splitInputFingerprint(bound).input
+  if (read.size > MAX_STALE_PARAMETERS) return false;
+  // A parameter the key also reads outside its stale leaves is never covered.
+  const outside = new Set(
+    noEchoParametersReadBy(withoutNodes(templateProps[key], staleNodes), readSources(read))
   );
+  const candidates = [...read].filter((name) => !outside.has(name));
+  const resolved = new Map<unknown, ReturnType<MaskedInputSources['resolve']>>();
+  const resolve: MaskedInputSources['resolve'] = (node) => {
+    if (!resolved.has(node)) resolved.set(node, sources.resolve(node));
+    return resolved.get(node)!;
+  };
+  const recorded = splitInputFingerprint(bound).input;
+  // Largest subsets first: the usual record had every one of them `NoEcho`.
+  const subsets = Array.from({ length: 2 ** candidates.length }, (_, mask) =>
+    candidates.filter((_name, index) => (mask & (1 << index)) !== 0)
+  ).sort((a, b) => b.length - a.length);
+  for (const subset of subsets) {
+    const covered = new Set(subset);
+    const asWritten: MaskedInputSources = {
+      ...sources,
+      resolve,
+      parameterInput: (name) =>
+        covered.has(name) ? { kind: 'secret' } : sources.parameterInput(name),
+    };
+    const now = await maskedInputWalk(templateProps[key], asWritten).catch(() => undefined);
+    if (now === undefined) return false;
+    if (splitInputFingerprint(now.fingerprint).input === recorded) return true;
+  }
+  return false;
+}
+
+/** `value` with each of `nodes` (by identity) replaced by `null`. */
+function withoutNodes(value: unknown, nodes: ReadonlySet<unknown>): unknown {
+  if (nodes.has(value)) return null;
+  if (Array.isArray(value)) return value.map((item) => withoutNodes(item, nodes));
+  if (isPlainObject(value))
+    return Object.fromEntries(
+      Object.entries(value).map(([child, item]) => [child, withoutNodes(item, nodes)])
+    );
+  return value;
 }
