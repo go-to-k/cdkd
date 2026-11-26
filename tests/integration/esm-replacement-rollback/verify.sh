@@ -11,8 +11,9 @@
 # What this asserts:
 #   1. v1 deploys (queue q1 + function + mapping).
 #   2. v2 + failure: the deploy exits non-zero, the rollback prints no
-#      `Rollback failed`, the function has exactly ONE mapping, on q1, and it
-#      is the one state records; q2 is gone.
+#      `Rollback failed`, the function has exactly ONE mapping that is not
+#      `Deleting`, on q1, and it is the one state records; the `Deleting` one
+#      goes; q2 is gone.
 #   3. v1 redeploys cleanly (no collision).
 #   4. destroy leaves no function, queue, mapping or state.
 set -euo pipefail
@@ -152,12 +153,16 @@ if grep -q 'Rollback failed for' "${LOG_DIR}/fail.log"; then
   exit 1
 fi
 
-MAPPINGS="$(aws lambda list-event-source-mappings --function-name "${FN}" --region "${REGION}" --query 'EventSourceMappings[].[UUID,EventSourceArn]' --output text)"
+# The rolled-back new mapping's delete is ACCEPTED (Lambda deletes a mapping
+# asynchronously), so it can still be listed as `Deleting` here: count the
+# others, then wait for it to go.
+ALL_MAPPINGS="$(aws lambda list-event-source-mappings --function-name "${FN}" --region "${REGION}" --query 'EventSourceMappings[].[UUID,EventSourceArn,State]' --output text)"
 echo "[verify]   mappings after rollback:"
-echo "${MAPPINGS}" | sed 's/^/    /'
+echo "${ALL_MAPPINGS}" | sed 's/^/    /'
+MAPPINGS="$(awk '$3 != "Deleting" {print $1, $2}' <<<"${ALL_MAPPINGS}")"
 COUNT="$(grep -c . <<<"${MAPPINGS}" || true)"
 if [ "${COUNT}" != "1" ]; then
-  echo "[verify] FAIL: expected exactly 1 mapping on the function after the rollback, found ${COUNT}"
+  echo "[verify] FAIL: expected exactly 1 mapping (not Deleting) on the function after the rollback, found ${COUNT}"
   exit 1
 fi
 LIVE_UUID="$(awk '{print $1}' <<<"${MAPPINGS}")"
@@ -166,6 +171,17 @@ if [ "${LIVE_SRC}" != "${Q1_ARN}" ]; then
   echo "[verify] FAIL: the surviving mapping reads ${LIVE_SRC}, expected the restored queue ${Q1_ARN}"
   exit 1
 fi
+for DELETING_UUID in $(awk '$3 == "Deleting" {print $1}' <<<"${ALL_MAPPINGS}"); do
+  i=0
+  while ! gone_probe aws lambda get-event-source-mapping --uuid "${DELETING_UUID}" --region "${REGION}"; do
+    i=$((i + 1))
+    if [ "${i}" -ge 36 ]; then
+      echo "[verify] FAIL: mapping ${DELETING_UUID} still exists 3 minutes after the rollback deleted it"
+      exit 1
+    fi
+    sleep 5
+  done
+done
 ST="$(read_state)"
 STATE_UUID="$(jq -r '.resources | to_entries[] | select(.value.resourceType == "AWS::Lambda::EventSourceMapping") | .value.physicalId' <<<"${ST}")"
 if [ "${STATE_UUID}" != "${LIVE_UUID}" ]; then
