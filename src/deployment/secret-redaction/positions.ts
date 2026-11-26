@@ -23,6 +23,7 @@ export {
   positionByEmbeddedSpan,
   renderedTokenOf,
   rendersLiteralTo,
+  literalTextHoldsSubFloorSecret,
   certifiesRenderedLiteral,
   mixedLiteralAnswered,
   withLegacyMixedScan,

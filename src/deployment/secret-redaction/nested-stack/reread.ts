@@ -1,11 +1,14 @@
 import { resolvedPlaintextOf, type RecordedSecretValues } from '../pairs.js';
 import { isPlainObject } from '../rules.js';
 import { redactForState } from '../context.js';
-import { rendersLiteralTo } from '../positions.js';
+import { literalTextHoldsSubFloorSecret, rendersLiteralTo } from '../positions.js';
 import { dynamicReferenceSpans, deepEqualJsonValue } from '../redact-path.js';
 import { spanNamesResolvableService } from '../anchors.js';
 import { takenIfBranchOf } from '../resolver-outcomes.js';
-import { inheritedParameterReads, redactInheritedParameterValue } from './inherited-parameters.js';
+import {
+  inheritedParameterReads,
+  persistedInheritedParameterValue,
+} from './inherited-parameters.js';
 import { type ParameterBinding, REREAD_TRIGGERS, pseudoBindingOf } from './pseudo-parameters.js';
 import { carriesChildOnlyPlaintext } from './child-only-plaintext.js';
 
@@ -298,6 +301,9 @@ function rendersReadTo(
   value: unknown
 ): boolean {
   if (typeof spelling === 'string' && typeof value === 'string') {
+    // go-to-k/cdkd#7050: a sub-floor secret's text the scan below cannot see
+    // is never certified either.
+    if (literalTextHoldsSubFloorSecret(spelling, parentSecrets)) return false;
     if (spelling === value)
       return (
         redactForState(spelling, { provenance: 'value-scan', secrets: parentSecrets }) === spelling
@@ -340,7 +346,10 @@ type RereadOutcome =
   | typeof REREAD_PARAMETER_FREE
   | undefined;
 
-/** The bindings and `Fn::Split` the DIFF side evaluates a re-read with. */
+/**
+ * The bindings and `Fn::Split` the DIFF side evaluates a re-read with; a
+ * `sub-floor` parameter's binding masked as the persist side writes it.
+ */
 function diffSideReading(
   bind: ParameterBinding,
   parentSecrets: RecordedSecretValues
@@ -348,7 +357,9 @@ function diffSideReading(
   return {
     bind: (name) => {
       const bound = bind(name);
-      return bound && { value: redactInheritedParameterValue(parentSecrets, name, bound.value) };
+      // go-to-k/cdkd#7050: as the `{Ref}` arm persists it, so a sub-floor
+      // secret's text is never certified as a piece.
+      return bound && { value: persistedInheritedParameterValue(parentSecrets, name, bound.value) };
     },
     // A token the parent resolved stands for its plaintext; any other is text
     // the child received as text. The resolver's diff pass asks the same bag.
@@ -494,7 +505,8 @@ function rereadAssignments(
  * [#4919](https://github.com/go-to-k/cdkd/issues/4919)): `resolved` is the
  * source evaluated with `bind`'s real values, `redacted` with each value as
  * {@link redactInheritedParameterValue} answers it -- the function
- * `redactParametersForDiff` (`deploy-engine/masking.ts`) binds -- so `redacted` is what the
+ * `redactParametersForDiff` (`deploy-engine/masking.ts`) binds, masked for a
+ * `sub-floor` parameter as `persistedInheritedParameterValue` does -- so `redacted` is what the
  * diff side computes for the leaf, splitting as it does
  * ({@link splitOutsideDynamicReferences}: a token stays whole, issue
  * [#4914](https://github.com/go-to-k/cdkd/issues/4914)). A re-read requires

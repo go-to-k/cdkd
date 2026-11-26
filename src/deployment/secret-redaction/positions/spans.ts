@@ -1,5 +1,5 @@
 import { isSingleDynamicReferenceToken, MIN_NEEDLE_LENGTH } from '../rules.js';
-import { type RecordedSecretValues, resolvedPlaintextOf } from '../pairs.js';
+import { type RecordedSecretValues, resolvedPlaintextOf, SECRET_MASK } from '../pairs.js';
 import { redactForState } from '../context.js';
 import { provenPublicValue } from '../mask-only.js';
 import { dynamicReferenceSpans } from '../redact-path.js';
@@ -298,7 +298,36 @@ export function rendersLiteralTo(
   secrets: RecordedSecretValues,
   value: string
 ): boolean {
+  // go-to-k/cdkd#7050: nor a sub-floor one, which the value scan cannot see.
+  if (literalTextHoldsSubFloorSecret(spelling, secrets)) return false;
   return renderedLiteralSpans(spelling, secrets, value) !== undefined;
+}
+
+/**
+ * Does `spelling`'s text OUTSIDE its `{{resolve:...}}` spans hold a recorded
+ * secret's text under the value scan's floor (go-to-k/cdkd#7050)? The scan
+ * never rewrites such text, so a nested reader that certified it would
+ * persist the secret: a sub-floor-marked parameter is placed only by a
+ * spelling whose literal text holds none, and masked otherwise. Mask-only
+ * pairs are skipped, as `holdsSubFloorSecret` skips them.
+ */
+export function literalTextHoldsSubFloorSecret(
+  spelling: string,
+  secrets: RecordedSecretValues
+): boolean {
+  const pieces: string[] = [];
+  let cursor = 0;
+  for (const span of dynamicReferenceSpans(spelling)) {
+    pieces.push(spelling.slice(cursor, span.start));
+    cursor = span.end;
+  }
+  pieces.push(spelling.slice(cursor));
+  for (const [plaintext, expression] of secrets) {
+    if (plaintext === '' || plaintext.length >= MIN_NEEDLE_LENGTH) continue;
+    if (expression === SECRET_MASK) continue;
+    if (pieces.some((piece) => piece.includes(plaintext))) return true;
+  }
+  return false;
 }
 
 /** {@link rendersLiteralTo}'s test, returning the paired spans it passed on. */
