@@ -17,7 +17,13 @@
 #   4. `cdkd drift` exits 1, names Description on both, never UpdateTime.
 #   5. `cdkd drift --revert -y` exits 0; both live descriptions are back.
 #   6. `cdkd drift` exits 0 again.
-#   7. Destroy + gone-probes.
+#   7. go-to-k/cdkd#7007: an in-place Description change moves the Tracker's
+#      UpdateTime; the SSM parameter reading it must hold the LIVE value (before
+#      the fix it kept the one recorded at create).
+#   8. go-to-k/cdkd#7007: with a consumer stack importing the UpdateTime
+#      export, a tag-only edit is refused only if it moved UpdateTime (the
+#      guard judges the export after the update, as CloudFormation does).
+#   9. Destroy + gone-probes.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -61,6 +67,7 @@ cd "$(dirname "$0")"
 . ../revert-identity.sh
 
 STACK="CdkdDriftCcReadOnlyPropsExample"
+CONSUMER="CdkdDriftCcReadOnlyPropsConsumer"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 TRACKER="CdkdIntegDriftRoTracker"
@@ -79,18 +86,22 @@ cleanup() {
     rm -f "${REVERT_WORK}/revert-ids-5-before" "${REVERT_WORK}/revert-ids-5-after"
     rmdir "${REVERT_WORK}" 2>/dev/null
   fi
-  if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
-    node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" \
-      --region "${REGION}" --force >/dev/null 2>&1
-  fi
-  if [ -x "${LOCAL_DIST}" ]; then
-    node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
-  fi
-  if [ -n "${STATE_BUCKET:-}" ]; then
-    aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1
-    aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1
-    aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/rollback-journal.json" >/dev/null 2>&1
-  fi
+  # The consumer first: it imports the producer's export.
+  local s
+  for s in "${CONSUMER}" "${STACK}"; do
+    if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
+      node "${LOCAL_DIST}" destroy "${s}" --state-bucket "${STATE_BUCKET}" \
+        --region "${REGION}" --force >/dev/null 2>&1
+    fi
+    if [ -x "${LOCAL_DIST}" ]; then
+      node "${LOCAL_DIST}" state destroy "${s}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
+    fi
+    if [ -n "${STATE_BUCKET:-}" ]; then
+      aws s3 rm "s3://${STATE_BUCKET}/cdkd/${s}/${REGION}/state.json" >/dev/null 2>&1
+      aws s3 rm "s3://${STATE_BUCKET}/cdkd/${s}/${REGION}/lock.json" >/dev/null 2>&1
+      aws s3 rm "s3://${STATE_BUCKET}/cdkd/${s}/${REGION}/rollback-journal.json" >/dev/null 2>&1
+    fi
+  done
   set -eu
 }
 
@@ -200,12 +211,77 @@ echo "==> Phase 6: cdkd drift is clean again"
 run_drift
 expect_drift_rc 0 "Phase 6"
 
-echo "==> Phase 7: destroy"
+# go-to-k/cdkd#7007 helpers. Both sides are ISO-8601 timestamps that may be
+# spelled differently (Cloud Control `...Z`, the CLI `...+00:00`): compare the
+# instants.
+live_update_time() {
+  aws location describe-tracker --tracker-name "${TRACKER}" --query UpdateTime --output text
+}
+reader_value() {
+  local id
+  id="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.resources.TimeReader.physicalId // empty')"
+  [ -n "${id}" ] || { echo "FAIL: no TimeReader record" >&2; return 1; }
+  aws ssm get-parameter --name "${id}" --query Parameter.Value --output text
+}
+same_instant() { # usage: same_instant <a> <b>
+  python3 -c 'import sys,datetime as d
+p=lambda s: d.datetime.fromisoformat(s.replace("Z","+00:00"))
+sys.exit(0 if p(sys.argv[1])==p(sys.argv[2]) else 1)' "$1" "$2"
+}
+
+echo "==> Phase 7: an in-place Description change moves the UpdateTime reader (#7007)"
+READER_BEFORE="$(reader_value)"
+CDKD_INTEG_TRACKER_DESCRIPTION=integ-7007 \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+LIVE_7="$(live_update_time)"
+READER_7="$(reader_value)"
+echo "    reader before '${READER_BEFORE}', after '${READER_7}', live '${LIVE_7}'"
+# Premise: the update moved UpdateTime, so a stale reader shows.
+if same_instant "${READER_BEFORE}" "${LIVE_7}"; then
+  echo "FAIL: Phase 7 premise: the Description update did not move UpdateTime" >&2
+  exit 1
+fi
+if ! same_instant "${READER_7}" "${LIVE_7}"; then
+  echo "FAIL: Phase 7: the UpdateTime reader holds '${READER_7}', live is '${LIVE_7}'" >&2
+  exit 1
+fi
+echo "    ok: Phase 7: the reader follows the live UpdateTime"
+
+echo "==> Phase 8: a tag-only edit is refused only if it moved the imported UpdateTime (#7007)"
+CDKD_INTEG_TRACKER_DESCRIPTION=integ-7007 \
+  node "${LOCAL_DIST}" deploy "${CONSUMER}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+set +e
+TAG_OUT="$(CDKD_INTEG_TRACKER_DESCRIPTION=integ-7007 CDKD_INTEG_TRACKER_TAG=on \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)"
+TAG_RC=$?
+set -e
+sed 's/^/    | /' <<<"${TAG_OUT}"
+LIVE_8="$(live_update_time)"
+REFUSAL="  - ${CONSUMER} (${REGION}): imports export '.*', which this deploy would change"
+if same_instant "${LIVE_7}" "${LIVE_8}"; then
+  echo "NOTE: Phase 8: a tag edit left the Tracker's UpdateTime unchanged"
+  if [ "${TAG_RC}" != "0" ]; then
+    echo "FAIL: Phase 8: the tag edit moved nothing, but the deploy exited ${TAG_RC}" >&2
+    exit 1
+  fi
+else
+  echo "NOTE: Phase 8: a tag edit moved the Tracker's UpdateTime"
+  if [ "${TAG_RC}" = "0" ] || ! grep -q "${REFUSAL}" <<<"${TAG_OUT}"; then
+    echo "FAIL: Phase 8: the imported UpdateTime moved, but the deploy was not refused (rc ${TAG_RC})" >&2
+    exit 1
+  fi
+fi
+echo "    ok: Phase 8: the export guard judged the moved value"
+
+echo "==> Phase 9: destroy"
+node "${LOCAL_DIST}" destroy "${CONSUMER}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 assert_gone "tracker ${TRACKER} leaked" aws location describe-tracker --tracker-name "${TRACKER}"
 assert_gone "geofence collection ${COLLECTION} leaked" \
   aws location describe-geofence-collection --collection-name "${COLLECTION}"
 assert_gone "state ${STATE_KEY} leaked" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
+assert_gone "consumer state leaked" aws s3api head-object --bucket "${STATE_BUCKET}" \
+  --key "cdkd/${CONSUMER}/${REGION}/state.json"
 
 trap - EXIT INT TERM
 rm -f "${DRIFT_LOG:-}"

@@ -1,7 +1,9 @@
 /**
  * The hand classification behind `scripts/gen-in-place-attr-coverage.ts`
  * (issue #7001): for every read-only `Fn::GetAtt` attribute of a type with an
- * SDK provider, whether an IN-PLACE update moves it.
+ * SDK provider, whether an IN-PLACE update moves it. A Cloud Control type takes
+ * an entry only for a pair no rule of the generator can settle rightly (a
+ * moving id); it wins over the rules (go-to-k/cdkd#7007).
  *
  *   - `never`      — no in-place update moves it (an id or ARN fixed for the
  *                    resource's life, a value derived only from create-only
@@ -247,6 +249,12 @@ export const SDK_IN_PLACE_ATTR_CLASSIFICATION: Readonly<
     PublicIp: anyUpdate('a stop/start update gives an instance without an EIP a new address (#5446)'),
     PublicDnsName: anyUpdate('follows the public address (#5446)'),
     PrivateDnsName: anyUpdate('a PrivateDnsNameOptions change renames it (#5630)'),
+  },
+  // Cloud Control: an in-place RouteTableId change calls
+  // ReplaceRouteTableAssociation, which answers a NEW association id
+  // (`NewAssociationId`) (go-to-k/cdkd#7007).
+  'AWS::EC2::GatewayRouteTableAssociation': {
+    AssociationId: movedBy(['RouteTableId'], 'ReplaceRouteTableAssociation mints a new association id'),
   },
   'AWS::EC2::InternetGateway': { InternetGatewayId: ID },
   'AWS::EC2::NatGateway': {

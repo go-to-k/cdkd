@@ -67,7 +67,7 @@ describe('the committed audit (#7001)', () => {
     expect(report.summary.ccBaseline).toBeGreaterThan(0);
     expect(report.summary.ccByRule['own-identity']).toBeGreaterThan(800);
     // Literals from the #7007 measurement.
-    expect(report.summary.ccByRule['primary-identifier']).toBeGreaterThan(500);
+    expect(report.summary.ccByRule['primary-identifier']).toBeGreaterThan(400);
     expect(report.summary.ccByRule['arn-template']).toBeGreaterThan(50);
     expect(report.summary.ccByRule['update-timestamp']).toBeGreaterThan(350);
     // A type the spec lacks is read from its schema fixture.
@@ -76,10 +76,12 @@ describe('the committed audit (#7001)', () => {
 });
 
 describe('the hand verdicts equal the shared.ts tables (#7001)', () => {
-  const sdkTypes = new Set(report.sdk.map((r) => r.type));
+  // go-to-k/cdkd#7007: a Cloud Control pair classified by hand is held equal too.
+  const hand = [...report.sdk, ...report.ccHand];
+  const sdkTypes = new Set(hand.map((r) => r.type));
 
   it('every moving verdict has its row, of the same kind and properties', () => {
-    for (const r of report.sdk) {
+    for (const r of hand) {
       const movedBy = IN_PLACE_UPDATE_ATTRS_MOVED_BY[r.type]?.[r.attribute];
       const derived = IN_PLACE_UPDATE_DERIVED_ATTRS[r.type]?.has(r.attribute) === true;
       const where = `${r.type} ${r.attribute}`;
@@ -100,7 +102,7 @@ describe('the hand verdicts equal the shared.ts tables (#7001)', () => {
 
   it('every shared.ts row of an SDK type has a moving verdict', () => {
     const verdictOf = (type: string, attr: string) =>
-      report.sdk.find((r) => r.type === type && r.attribute === attr)?.verdict;
+      hand.find((r) => r.type === type && r.attribute === attr)?.verdict;
     for (const [type, byAttr] of Object.entries(IN_PLACE_UPDATE_ATTRS_MOVED_BY)) {
       for (const attr of Object.keys(byAttr)) {
         expect(sdkTypes.has(type), type).toBe(true);
@@ -320,6 +322,15 @@ describe('the #7007 rules, on real spec inputs', () => {
     expect(agent.primaryIdentifier).toEqual(['AgentId']);
     expect(classifyByRule(agent, 'AgentId')).toBe('primary-identifier');
     expect(classifyByRule(agent, 'AgentArn')).toBeUndefined();
+    // An ARN with no template on a type whose name or alias is in place.
+    const activation = real('AWS::CloudFormation::TypeActivation');
+    expect(activation.arnTemplate).toBeUndefined();
+    expect(activation.primaryIdentifier).toContain('Arn');
+    expect(classifyByRule(activation, 'Arn')).toBeUndefined();
+    // sampling-rule/${SamplingRuleName} ends with the in-place RuleName.
+    const sampling = real('AWS::XRay::SamplingRule');
+    expect(sampling.primaryIdentifier).toContain('RuleARN');
+    expect(classifyByRule(sampling, 'RuleARN')).toBeUndefined();
     // A composite identifier: each identity-shaped member.
     const alias = real('AWS::Bedrock::AgentAlias');
     expect(classifyByRule(alias, 'AgentAliasId')).toBe('primary-identifier');
@@ -352,9 +363,33 @@ describe('the #7007 rules, on real spec inputs', () => {
     expect(classifyByRule(t('WidgetArn', 'arn:x:widget/${Kind}/${ResourceId}'), 'WidgetArn')).toBe(
       'primary-identifier'
     );
-    for (const ph of ['Name', 'WidgetName']) {
+    for (const ph of ['Name', 'WidgetName', 'OtherWidgetName']) {
       expect(classifyByRule(t('WidgetArn', `arn:x:widget/\${${ph}}`), 'WidgetArn'), ph).toBeUndefined();
     }
+  });
+
+  it('settles no own id of an association an in-place target change re-creates', () => {
+    // ReplaceRouteTableAssociation answers a new association id.
+    const gateway = real('AWS::EC2::GatewayRouteTableAssociation');
+    expect(gateway.properties.RouteTableId).not.toBe('yes');
+    expect(classifyByRule(gateway, 'AssociationId')).toBeUndefined();
+    // ...and its hand verdict wins over the rules.
+    expect(report.ccHand).toContainEqual(
+      expect.objectContaining({
+        type: 'AWS::EC2::GatewayRouteTableAssociation',
+        attribute: 'AssociationId',
+        verdict: 'moved-by',
+        properties: ['RouteTableId'],
+      })
+    );
+    const synthetic = (type: string): TypeInput => ({
+      type,
+      attributes: ['AssociationId'],
+      properties: { TargetId: undefined },
+    });
+    expect(classifyByRule(synthetic('AWS::X::ThingAssociation'), 'AssociationId')).toBeUndefined();
+    expect(classifyByRule(synthetic('AWS::X::Association'), 'AssociationId')).toBeUndefined();
+    expect(classifyByRule(synthetic('AWS::X::Thing'), 'Id')).toBe('own-identity');
   });
 
   it('holds out a pair whose live probe is pending', () => {
@@ -393,7 +428,12 @@ describe('the #7007 rules, on real spec inputs', () => {
     for (const ok of ['widget/${WidgetId}', 'widget/${Kind}/${WidgetId}']) {
       expect(classifyByRule(t(env + ok), 'Arn'), ok).toBe('arn-template');
     }
-    for (const bad of ['widget/${WidgetName}', 'widget/${WidgetId}/${Name}', 'widget/${Other}']) {
+    for (const bad of [
+      'widget/${WidgetName}',
+      'widget/${SpecialWidgetName}',
+      'widget/${WidgetId}/${Name}',
+      'widget/${Other}',
+    ]) {
       expect(classifyByRule(t(env + bad), 'Arn'), bad).toBeUndefined();
     }
     const { arnTemplate: _, ...none } = t(env);

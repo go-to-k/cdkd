@@ -9,12 +9,13 @@
     "ccByRule": {
       "no-in-place-update": 1151,
       "creation-timestamp": 376,
-      "own-identity": 814,
-      "primary-identifier": 527,
+      "own-identity": 812,
+      "primary-identifier": 451,
       "arn-template": 59,
       "update-timestamp": 372
     },
-    "ccBaseline": 2246
+    "ccByHand": 1,
+    "ccBaseline": 2323
   },
   "sdk": [
     {
@@ -2611,6 +2612,17 @@
       "reason": "built from the create-only Name"
     }
   ],
+  "ccHand": [
+    {
+      "type": "AWS::EC2::GatewayRouteTableAssociation",
+      "attribute": "AssociationId",
+      "verdict": "moved-by",
+      "properties": [
+        "RouteTableId"
+      ],
+      "reason": "ReplaceRouteTableAssociation mints a new association id"
+    }
+  ],
   "ccMoving": {
     "AWS::AIOps::InvestigationGroup": [
       "LastModifiedAt"
@@ -3763,6 +3775,7 @@
     ],
     "AWS::AgentRegistry::RegistryRecord": [
       "CreatedBy",
+      "RecordArn",
       "RecordId",
       "RegistryArn",
       "Status"
@@ -3788,6 +3801,9 @@
       "AppId",
       "AppName",
       "DefaultDomain"
+    ],
+    "AWS::Amplify::Branch": [
+      "Arn"
     ],
     "AWS::Amplify::Domain": [
       "Certificate",
@@ -3905,7 +3921,11 @@
       "AppSyncDomainName",
       "HostedZoneId"
     ],
+    "AWS::AppSync::DomainNameApiAssociation": [
+      "ApiAssociationIdentifier"
+    ],
     "AWS::AppSync::FunctionConfiguration": [
+      "FunctionArn",
       "FunctionId"
     ],
     "AWS::AppSync::SourceApiAssociation": [
@@ -3970,9 +3990,11 @@
       "TransformerArn"
     ],
     "AWS::BCM::Dashboard": [
+      "Arn",
       "Type"
     ],
     "AWS::BCM::ScheduledReport": [
+      "Arn",
       "HealthStatus"
     ],
     "AWS::BCMDataExports::Export": [
@@ -4074,6 +4096,7 @@
       "Version"
     ],
     "AWS::Bedrock::FlowAlias": [
+      "Arn",
       "FlowId",
       "Id"
     ],
@@ -4243,38 +4266,58 @@
       "EffectiveStart"
     ],
     "AWS::Cases::CaseRule": [
+      "CaseRuleArn",
       "CaseRuleId"
     ],
     "AWS::Cases::Field": [
+      "FieldArn",
       "FieldId",
       "Namespace"
     ],
     "AWS::Cases::Layout": [
+      "LayoutArn",
       "LayoutId"
     ],
     "AWS::Cases::Template": [
+      "TemplateArn",
       "TemplateId"
     ],
     "AWS::CertificateManager::AcmeEndpoint": [
       "EndpointUrl"
     ],
+    "AWS::Chatbot::MicrosoftTeamsChannelConfiguration": [
+      "Arn"
+    ],
+    "AWS::Chime::AppInstance": [
+      "AppInstanceArn"
+    ],
+    "AWS::Chime::AppInstanceBot": [
+      "AppInstanceBotArn"
+    ],
+    "AWS::Chime::AppInstanceUser": [
+      "AppInstanceUserArn"
+    ],
     "AWS::Chime::Channel": [
+      "Arn",
       "ChannelFlowArn",
       "CreatedBy",
       "LastMessageTimestamp"
     ],
     "AWS::Chime::ChannelFlow": [
       "AppInstanceId",
+      "Arn",
       "ChannelFlowId"
     ],
     "AWS::Chime::MediaPipelineKinesisVideoStreamPool": [
       "PoolStatus"
     ],
     "AWS::Chime::SipMediaApplication": [
+      "SipMediaApplicationArn",
       "SipMediaApplicationId"
     ],
     "AWS::Chime::VoiceConnector": [
       "OutboundHostName",
+      "VoiceConnectorArn",
       "VoiceConnectorId"
     ],
     "AWS::CleanRooms::AnalysisTemplate": [
@@ -4324,6 +4367,18 @@
       "Progress",
       "Status",
       "TotalWarnings"
+    ],
+    "AWS::CloudFormation::HookDefaultVersion": [
+      "Arn"
+    ],
+    "AWS::CloudFormation::HookTypeConfig": [
+      "ConfigurationArn"
+    ],
+    "AWS::CloudFormation::ResourceDefaultVersion": [
+      "Arn"
+    ],
+    "AWS::CloudFormation::TypeActivation": [
+      "Arn"
     ],
     "AWS::CloudFront::AnycastIpList": [
       "AnycastIpList",
@@ -4400,6 +4455,7 @@
       "Status"
     ],
     "AWS::CloudWatch::DomainForOrganization": [
+      "Arn",
       "CustomEndpointUrls",
       "DomainEndpointUrl",
       "DomainId",
@@ -4413,6 +4469,7 @@
       "Status"
     ],
     "AWS::CloudWatch::MetricDataQueryDefinition": [
+      "Arn",
       "Id"
     ],
     "AWS::CloudWatch::MetricStream": [
@@ -4477,6 +4534,7 @@
     ],
     "AWS::ComputeOptimizer::AutomationRule": [
       "AccountId",
+      "RuleArn",
       "RuleId",
       "RuleRevision"
     ],
@@ -4490,21 +4548,34 @@
       "Type"
     ],
     "AWS::Connect::AgentStatus": [
+      "AgentStatusArn",
       "LastModifiedRegion"
     ],
+    "AWS::Connect::ContactFlow": [
+      "ContactFlowArn"
+    ],
     "AWS::Connect::ContactFlowModule": [
+      "ContactFlowModuleArn",
       "Status"
     ],
     "AWS::Connect::ContactFlowModuleAlias": [
-      "AliasId"
+      "AliasId",
+      "ContactFlowModuleAliasARN"
     ],
     "AWS::Connect::DataTable": [
+      "Arn",
       "LastModifiedRegion",
       "LockVersion"
     ],
     "AWS::Connect::DataTableAttribute": [
       "LastModifiedRegion",
       "LockVersion"
+    ],
+    "AWS::Connect::EmailAddress": [
+      "EmailAddressArn"
+    ],
+    "AWS::Connect::HoursOfOperation": [
+      "HoursOfOperationArn"
     ],
     "AWS::Connect::Metric": [
       "Category",
@@ -4515,6 +4586,7 @@
       "Groupings",
       "LastModifiedRegion",
       "LastModifiedUser",
+      "MetricArn",
       "PrimaryEventSource",
       "PrimaryEventSourceEffectiveTimestampType",
       "RefreshRate",
@@ -4529,28 +4601,48 @@
     "AWS::Connect::PredefinedAttribute": [
       "LastModifiedRegion"
     ],
+    "AWS::Connect::Prompt": [
+      "PromptArn"
+    ],
     "AWS::Connect::Queue": [
       "LastModifiedRegion",
+      "QueueArn",
       "Type"
     ],
     "AWS::Connect::QuickConnect": [
+      "QuickConnectArn",
       "QuickConnectType"
+    ],
+    "AWS::Connect::RoutingProfile": [
+      "RoutingProfileArn"
+    ],
+    "AWS::Connect::Rule": [
+      "RuleArn"
     ],
     "AWS::Connect::SecurityProfile": [
       "LastModifiedRegion"
     ],
+    "AWS::Connect::TaskTemplate": [
+      "Arn"
+    ],
     "AWS::Connect::TestCase": [
-      "LastModifiedRegion"
+      "LastModifiedRegion",
+      "TestCaseArn"
     ],
     "AWS::Connect::TrafficDistributionGroup": [
       "IsDefault",
       "Status"
     ],
+    "AWS::Connect::UserHierarchyGroup": [
+      "UserHierarchyGroupArn"
+    ],
     "AWS::Connect::View": [
+      "ViewArn",
       "ViewContentSha256",
       "ViewId"
     ],
     "AWS::Connect::Workspace": [
+      "Arn",
       "Id"
     ],
     "AWS::ControlTower::LandingZone": [
@@ -4606,6 +4698,7 @@
       "ReplicationInstancePublicIpAddresses"
     ],
     "AWS::DRS::RecoveryPlan": [
+      "Arn",
       "RecoveryPlanID",
       "Status"
     ],
@@ -4623,6 +4716,7 @@
       "Origin"
     ],
     "AWS::DataSync::Agent": [
+      "AgentArn",
       "EndpointType"
     ],
     "AWS::DataSync::LocationAzureBlob": [
@@ -4656,7 +4750,8 @@
     "AWS::DataSync::Task": [
       "DestinationNetworkInterfaceArns",
       "SourceNetworkInterfaceArns",
-      "Status"
+      "Status",
+      "TaskArn"
     ],
     "AWS::DataZone::Connection": [
       "DomainUnitId",
@@ -4732,6 +4827,7 @@
       "Type"
     ],
     "AWS::Deadline::Budget": [
+      "Arn",
       "BudgetId",
       "Status"
     ],
@@ -4739,6 +4835,7 @@
       "FarmId"
     ],
     "AWS::Deadline::Fleet": [
+      "Arn",
       "Capabilities",
       "FleetId",
       "Status",
@@ -4754,6 +4851,7 @@
       "Url"
     ],
     "AWS::Deadline::Queue": [
+      "Arn",
       "QueueId"
     ],
     "AWS::Deadline::QueueEnvironment": [
@@ -4772,6 +4870,9 @@
     "AWS::DevOpsAgent::Asset": [
       "Arn",
       "Version"
+    ],
+    "AWS::DevOpsAgent::Association": [
+      "AssociationId"
     ],
     "AWS::DevOpsAgent::PrivateConnection": [
       "CertificateExpiryTime",
@@ -5282,6 +5383,9 @@
     "AWS::Glue::Schema": [
       "InitialSchemaVersionId"
     ],
+    "AWS::Glue::UserDefinedFunction": [
+      "Arn"
+    ],
     "AWS::Grafana::Workspace": [
       "Endpoint",
       "SamlConfigurationStatus",
@@ -5322,6 +5426,7 @@
       "LatestVersionArn"
     ],
     "AWS::GroundStation::Config": [
+      "Arn",
       "Id",
       "Type"
     ],
@@ -5400,7 +5505,11 @@
     "AWS::ImageBuilder::ImagePipeline": [
       "DeploymentId"
     ],
+    "AWS::InspectorV2::CisScanConfiguration": [
+      "Arn"
+    ],
     "AWS::InspectorV2::CodeSecurityIntegration": [
+      "Arn",
       "AuthorizationUrl",
       "Status",
       "StatusReason"
@@ -5415,6 +5524,9 @@
       "ProviderConfiguration.Azure.ScopeConfiguration.ServerlessScanning.StateReason",
       "ProviderConfiguration.Azure.ScopeConfiguration.VmScanning.State",
       "ProviderConfiguration.Azure.ScopeConfiguration.VmScanning.StateReason"
+    ],
+    "AWS::InspectorV2::Filter": [
+      "Arn"
     ],
     "AWS::Interconnect::Connection": [
       "BillingTier",
@@ -5554,12 +5666,15 @@
       "Arn"
     ],
     "AWS::Kendra::FeaturedResultsSet": [
+      "Arn",
       "FeaturedResultsSetId"
     ],
     "AWS::Kendra::QuerySuggestionsBlockList": [
+      "Arn",
       "Id"
     ],
     "AWS::Kendra::Thesaurus": [
+      "Arn",
       "Id"
     ],
     "AWS::KendraRanking::ExecutionPlan": [
@@ -5772,6 +5887,7 @@
       "ServiceRole"
     ],
     "AWS::MediaConnect::Bridge": [
+      "BridgeArn",
       "BridgeState"
     ],
     "AWS::MediaConnect::DestinationEndpoint": [
@@ -5798,11 +5914,15 @@
     "AWS::MediaConnect::FlowMediaStream": [
       "Fmt"
     ],
+    "AWS::MediaConnect::FlowOutput": [
+      "OutputArn"
+    ],
     "AWS::MediaConnect::FlowSource": [
       "IngestIp",
       "RtmpPushDetails",
       "RtmpPushDetails.ApplicationName",
       "RtmpPushDetails.StreamName",
+      "SourceArn",
       "SourceIngestPort"
     ],
     "AWS::MediaConnect::FlowVpcInterface": [
@@ -5900,6 +6020,7 @@
       "State"
     ],
     "AWS::MediaLive::Node": [
+      "Arn",
       "ChannelPlacementGroups",
       "ConnectionState",
       "Id",
@@ -6365,6 +6486,7 @@
       "Status"
     ],
     "AWS::PCS::ComputeNodeGroup": [
+      "Arn",
       "ErrorInfo",
       "Id",
       "Status"
@@ -6842,9 +6964,11 @@
       "Status"
     ],
     "AWS::Route53RecoveryControl::RoutingControl": [
+      "RoutingControlArn",
       "Status"
     ],
     "AWS::Route53RecoveryControl::SafetyRule": [
+      "SafetyRuleArn",
       "Status"
     ],
     "AWS::Route53RecoveryReadiness::Cell": [
@@ -7008,16 +7132,23 @@
       "LastModifiedUser",
       "Status"
     ],
+    "AWS::SSMContacts::ContactChannel": [
+      "Arn"
+    ],
     "AWS::SSMQuickSetup::ConfigurationManager": [
       "StatusSummaries"
     ],
     "AWS::SSO::Application": [
+      "ApplicationArn",
       "IdentityStoreArn"
     ],
     "AWS::SSO::Instance": [
       "IdentityStoreId",
       "OwnerAccountId",
       "Status"
+    ],
+    "AWS::SSO::TrustedTokenIssuer": [
+      "TrustedTokenIssuerArn"
     ],
     "AWS::SageMaker::App": [
       "BuiltInLifecycleConfigArn"
@@ -7182,12 +7313,16 @@
     "AWS::SecurityHub::HubV2": [
       "SubscribedAt"
     ],
+    "AWS::SecurityHub::Insight": [
+      "InsightArn"
+    ],
     "AWS::SecurityHub::OrganizationConfiguration": [
       "MemberAccountLimitReached",
       "Status",
       "StatusMessage"
     ],
     "AWS::SecurityHub::PolicyAssociation": [
+      "AssociationIdentifier",
       "AssociationStatus",
       "AssociationStatusMessage",
       "AssociationType"
@@ -7386,6 +7521,7 @@
       "LastModifiedBy"
     ],
     "AWS::WellArchitected::AgentOrganizationalProfile": [
+      "Arn",
       "CreatedBy",
       "LastModifiedBy"
     ],
@@ -7429,6 +7565,7 @@
       "Status"
     ],
     "AWS::Wisdom::MessageTemplate": [
+      "MessageTemplateArn",
       "MessageTemplateContentSha256",
       "MessageTemplateId"
     ],
@@ -7438,6 +7575,7 @@
     ],
     "AWS::Wisdom::QuickResponse": [
       "Contents",
+      "QuickResponseArn",
       "QuickResponseId",
       "Status"
     ],
@@ -7469,6 +7607,9 @@
     "AWS::WorkSpacesWeb::DataProtectionSettings": [
       "AssociatedPortalArns"
     ],
+    "AWS::WorkSpacesWeb::IdentityProvider": [
+      "IdentityProviderArn"
+    ],
     "AWS::WorkSpacesWeb::IpAccessSettings": [
       "AssociatedPortalArns"
     ],
@@ -7497,6 +7638,12 @@
       "BrandingConfiguration.FaviconMetadata",
       "BrandingConfiguration.LogoMetadata",
       "BrandingConfiguration.WallpaperMetadata"
+    ],
+    "AWS::XRay::Group": [
+      "GroupARN"
+    ],
+    "AWS::XRay::SamplingRule": [
+      "RuleARN"
     ]
   }
 }

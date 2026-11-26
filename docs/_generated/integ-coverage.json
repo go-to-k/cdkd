@@ -11180,6 +11180,7 @@
         "destroy-manifest-deps",
         "diff-fail-on-destructive",
         "docdb-neptune",
+        "drift-cc-read-only-props",
         "drift-revert",
         "dynamic-ref-cross-region",
         "ec2-instance",
@@ -11397,6 +11398,9 @@
         ],
         "docdb-neptune": [
           "l2"
+        ],
+        "drift-cc-read-only-props": [
+          "l1"
         ],
         "drift-revert": [
           "l1"

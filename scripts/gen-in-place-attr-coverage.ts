@@ -37,7 +37,9 @@
  *     `IN_PLACE_UPDATE_DERIVED_ATTRS`. A pair no rule settles is
  *     in the committed baseline (`ccBaseline` in the generated JSON), which the
  *     writer only SHRINKS: it drops entries a rule now settles or the database
- *     no longer has, and never adds one.
+ *     no longer has, and never adds one. A Cloud Control pair no rule can
+ *     settle RIGHTLY (a moving id) takes a hand verdict in the same file, which
+ *     wins over the rules (`ccHand` in the report).
  *
  * `--check` FAILS on an unclassified SDK pair, a classification entry naming no
  * pair, a Cloud Control pair neither a rule nor the baseline settles, a stale
@@ -204,8 +206,12 @@ const OWN_IDENTITY = /^(.*?)(Arn|ARN|Id|ID|Uuid|UUID)$/;
  *   of an update. A member of another shape can be derived from writable
  *   input despite the contract (`AWS::EC2::VPCGatewayAttachment`
  *   `AttachmentType`, which an internet / VPN gateway swap moves). Neither is
- *   a `Version...` / `Revision...` member (an update can mint one), nor an
- *   ARN whose `arnTemplate` names an in-place property.
+ *   a `Version...` / `Revision...` member (an update can mint one), an ARN
+ *   whose `arnTemplate` has a placeholder ENDING with an in-place property's
+ *   name, nor an ARN with no template on a type with an in-place name or path.
+ * - No rule settles an own id or ARN of an `...Association` type with an
+ *   in-place `...Id` property: re-pointing it replaces the
+ *   association under a new id.
  * - `arn-template`: the type's own `Arn`, on an unversioned type (as for
  *   `own-identity`), whose documented `arnTemplate` is built only from the
  *   environment and from values fixed for the resource's life: a
@@ -224,6 +230,8 @@ export function classifyByRule(input: TypeInput, attribute: string): RuleName | 
   );
   if (writable.length === 0 && !UPDATE_TIMESTAMP.test(attribute)) return 'no-in-place-update';
   if (attribute.includes('.')) return undefined;
+  // After `no-in-place-update` on purpose: a tag-only type's update time is
+  // moving too, since a tag edit may stamp it.
   if (UPDATE_TIME.test(attribute)) return 'update-timestamp';
   if (CREATION_TIMESTAMP.test(attribute)) return 'creation-timestamp';
   const primaryIdentifier = input.primaryIdentifier ?? [];
@@ -231,21 +239,30 @@ export function classifyByRule(input: TypeInput, attribute: string): RuleName | 
   const placeholders = [...(input.arnTemplate ?? '').matchAll(/\$\{([^}]*)\}/g)].map(
     (x) => x[1]!
   );
-  const writableNamed = (name: string): boolean =>
-    Object.hasOwn(input.properties, name) && input.properties[name] !== 'yes';
-  const templateNamesWritable = placeholders.some(
-    (ph) =>
-      writableNamed(ph) ||
-      ['Id', 'Name', 'Identifier'].some((s) => ph === `${typeName}${s}` && writableNamed(s))
+  // A placeholder names an in-place property when it ends with one's name
+  // (`sampling-rule/${SamplingRuleName}` over an in-place `RuleName`).
+  const templateNamesWritable = placeholders.some((ph) =>
+    writable.some(([name]) => ph.endsWith(name))
   );
+  const isArn = /(Arn|ARN)$/.test(attribute);
+  const mutableName = writable.some(([name]) => name.endsWith('Name') || name === 'Path');
+  // An association whose target is in place is re-pointed by REPLACING the
+  // association, which mints a new id (EC2 `ReplaceRouteTableAssociation` /
+  // `ReplaceNetworkAclAssociation` return `NewAssociationId`): no own id or ARN
+  // of it is settled.
+  const reassociable =
+    typeName.endsWith('Association') && writable.some(([name]) => name.endsWith('Id'));
+  if (reassociable) return undefined;
   // A versioned id (`MessageTemplateVersionArn`) can be minted by the update
-  // itself, and an ARN whose documented template names an in-place property
-  // (`segment/${SegmentName}`) contradicts the contract: neither is settled.
+  // itself; an ARN whose documented template names an in-place property
+  // (`segment/${SegmentName}`) contradicts the contract; and an ARN with no
+  // template, on a type with an in-place name, may embed it. None is settled.
   const isPrimaryIdentifier =
     IDENTITY_SHAPED.test(attribute) &&
     !VERSIONED.test(attribute) &&
     primaryIdentifier.includes(attribute) &&
-    !(/(Arn|ARN)$/.test(attribute) && templateNamesWritable);
+    !(isArn && templateNamesWritable) &&
+    !(isArn && input.arnTemplate === undefined && mutableName);
   const m = OWN_IDENTITY.exec(attribute);
   const prefix = m?.[1]!.toLowerCase();
   const own = prefix !== undefined && (prefix === '' || typeName.toLowerCase().endsWith(prefix));
@@ -254,10 +271,9 @@ export function classifyByRule(input: TypeInput, attribute: string): RuleName | 
     REVISIONED_ARN_TYPES.has(input.type) ||
     input.attributes.some((a) => VERSIONED.test(a)) ||
     writable.some(([name]) => VERSIONED.test(name));
-  const mutableName = writable.some(([name]) => name.endsWith('Name') || name === 'Path');
   if (!versioned && !mutableName) return 'own-identity';
   if (isPrimaryIdentifier) return 'primary-identifier';
-  if (versioned || !/(Arn|ARN)$/.test(attribute) || input.arnTemplate === undefined) {
+  if (versioned || !isArn || input.arnTemplate === undefined || templateNamesWritable) {
     return undefined;
   }
   const fixed = (name: string): boolean =>
@@ -309,9 +325,15 @@ export interface Report {
     readonly ccTypes: number;
     readonly ccPairs: number;
     readonly ccByRule: Readonly<Record<RuleName, number>>;
+    readonly ccByHand: number;
     readonly ccBaseline: number;
   };
   readonly sdk: readonly SdkRow[];
+  /**
+   * Cloud Control pairs classified BY HAND (a verdict no rule can reach, such
+   * as a moving id), which take precedence over the rules.
+   */
+  readonly ccHand: readonly SdkRow[];
   /** Cloud Control pairs a MOVING rule settles (`any-update`): type -> attributes. */
   readonly ccMoving: Readonly<Record<string, readonly string[]>>;
   /** Cloud Control pairs no rule settles, frozen: type -> attributes. */
@@ -345,6 +367,7 @@ export function buildReport(input: BuildInput): { report: Report; findings: Find
     staleBaseline: [],
   };
   const sdk: SdkRow[] = [];
+  const ccHand: SdkRow[] = [];
   const ccBaseline: Record<string, string[]> = {};
   const ccMoving: Record<string, string[]> = {};
   const ccByRule: Record<RuleName, number> = {
@@ -360,6 +383,24 @@ export function buildReport(input: BuildInput): { report: Report; findings: Find
   const sdkTypes = new Set<string>();
   const usedKeys = new Set<string>();
   const unsettledCc = new Set<string>();
+  const handRow = (
+    type: string,
+    byAttr: Readonly<Record<string, InPlaceAttrVerdict>>,
+    attribute: string
+  ): SdkRow | undefined => {
+    const key = classificationKeyFor(byAttr, attribute);
+    if (key === undefined) return undefined;
+    usedKeys.add(`${type}\0${key}`);
+    const v = byAttr[key]!;
+    return {
+      type,
+      attribute,
+      verdict: v.kind,
+      ...(v.kind === 'moved-by' && { properties: [...v.properties] }),
+      ...(v.kind === 'prefix' && { prefix: v.prefix }),
+      reason: v.reason,
+    };
+  };
 
   for (const t of [...input.types].sort((a, b) => (a.type < b.type ? -1 : 1))) {
     if (t.attributes.length === 0) continue;
@@ -369,27 +410,21 @@ export function buildReport(input: BuildInput): { report: Report; findings: Find
         ? input.classification[t.type]!
         : {};
       for (const attribute of t.attributes) {
-        const key = classificationKeyFor(byAttr, attribute);
-        if (key === undefined) {
-          findings.unclassifiedSdk.push(`${t.type}.${attribute}`);
-          continue;
-        }
-        usedKeys.add(`${t.type}\0${key}`);
-        const v = byAttr[key]!;
-        sdk.push({
-          type: t.type,
-          attribute,
-          verdict: v.kind,
-          ...(v.kind === 'moved-by' && { properties: [...v.properties] }),
-          ...(v.kind === 'prefix' && { prefix: v.prefix }),
-          reason: v.reason,
-        });
+        const row = handRow(t.type, byAttr, attribute);
+        if (row === undefined) findings.unclassifiedSdk.push(`${t.type}.${attribute}`);
+        else sdk.push(row);
       }
       continue;
     }
     ccTypes++;
+    const byAttr = Object.hasOwn(input.classification, t.type) ? input.classification[t.type]! : {};
     for (const attribute of t.attributes) {
       ccPairs++;
+      const hand = handRow(t.type, byAttr, attribute);
+      if (hand !== undefined) {
+        ccHand.push(hand);
+        continue;
+      }
       const rule = classifyByRule(t, attribute);
       if (rule !== undefined) {
         ccByRule[rule]++;
@@ -429,13 +464,26 @@ export function buildReport(input: BuildInput): { report: Report; findings: Find
       ccTypes,
       ccPairs,
       ccByRule,
+      ccByHand: ccHand.length,
       ccBaseline: baselineCount,
     },
     sdk,
+    ccHand,
     ccMoving,
     ccBaseline,
   };
   return { report, findings };
+}
+
+function handLine(r: SdkRow, withType = true): string {
+  const verdict =
+    r.verdict === 'moved-by'
+      ? `moved by ${r.properties!.map((p) => `\`${p}\``).join(', ')}`
+      : r.verdict === 'prefix'
+        ? `family \`${r.prefix}*\``
+        : r.verdict;
+  const subject = withType ? `\`${r.type}\` \`${r.attribute}\`` : `\`${r.attribute}\``;
+  return `- ${subject}: ${verdict} — ${r.reason.replaceAll('\n', ' ')}`;
 }
 
 export function renderMarkdown(report: Report): string {
@@ -464,7 +512,7 @@ export function renderMarkdown(report: Report): string {
       Object.entries(s.ccByRule)
         .map(([rule, n]) => `\`${rule}\` ${n}`)
         .join(', ') +
-      `; in the baseline: **${s.ccBaseline}**`,
+      `; by hand: **${s.ccByHand}**; in the baseline: **${s.ccBaseline}**`,
     '',
     '## SDK-provider types (hand classification)',
   ];
@@ -474,14 +522,10 @@ export function renderMarkdown(report: Report): string {
       lines.push('', `### \`${r.type}\``, '');
       lastType = r.type;
     }
-    const verdict =
-      r.verdict === 'moved-by'
-        ? `moved by ${r.properties!.map((p) => `\`${p}\``).join(', ')}`
-        : r.verdict === 'prefix'
-          ? `family \`${r.prefix}*\``
-          : r.verdict;
-    lines.push(`- \`${r.attribute}\`: ${verdict} — ${r.reason.replaceAll('\n', ' ')}`);
+    lines.push(handLine(r, false));
   }
+  lines.push('', '## Cloud Control types classified by hand', '');
+  for (const r of report.ccHand) lines.push(handLine(r));
   lines.push(
     '',
     '## Cloud Control pairs a moving rule settles',
