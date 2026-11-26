@@ -45,6 +45,7 @@ import {
 import { BackgroundTaskCancelledError, type ScheduledTask } from '../utils/concurrency-limiter.js';
 import { parseCreateOnlyPropertyPointers } from './create-only-paths.js';
 import { CREATE_ONLY_PATHS_SNAPSHOT } from './create-only-snapshot.generated.js';
+import { SPEC_REPLACEMENT_PATHS } from '../analyzer/replacement-rules/spec-replacement-properties.generated.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { getLogger } from '../utils/logger.js';
 import { parseJsonNamingNoBody } from '../utils/json-parse-failure.js';
@@ -132,7 +133,9 @@ export function cachedCreateOnlyPropertyPaths(
   const cached = createOnlyPropertiesCache.get(resourceType);
   if (cached !== undefined) return cached;
   const snapshot = CREATE_ONLY_PATHS_SNAPSHOT.get(resourceType);
-  return snapshot === undefined ? undefined : Promise.resolve(snapshot);
+  return snapshot === undefined
+    ? undefined
+    : Promise.resolve(withSpecReplacementPaths(resourceType, snapshot));
 }
 
 /** What {@link prefetchCreateOnlyPropertyPaths} returns. */
@@ -275,7 +278,7 @@ function fallBackToSnapshot(
           : 'replacement uses the registry-only classification'
       );
     }
-    return snapshot ?? [];
+    return withSpecReplacementPaths(resourceType, snapshot ?? []);
   }
   const message = describeAwsFailure(error).detail;
   const child = getLogger().child('CreateOnlyProperties');
@@ -288,7 +291,7 @@ function fallBackToSnapshot(
         `has since made updatable may be classified as a replacement. Grant ` +
         `cloudformation:DescribeType to use the live schema.`
     );
-    return snapshot;
+    return withSpecReplacementPaths(resourceType, snapshot);
   }
   report(
     `Failed to resolve create-only properties for ${resourceType} via ` +
@@ -297,7 +300,25 @@ function fallBackToSnapshot(
       `may be mis-classified as an in-place update. Grant cloudformation:DescribeType ` +
       `to enable schema-driven replacement detection.`
   );
-  return [];
+  return withSpecReplacementPaths(resourceType, []);
+}
+
+/**
+ * THE seam that adds the measured spec-replacement paths (go-to-k/cdkd#7070)
+ * to a type's create-only paths, whichever source answered: properties
+ * CloudFormation replaces although the registry schema leaves them mutable.
+ * Only rows whose evidence verdict is `replace` are in the table, and never a
+ * property a hand rule decides: some readers here (the `NoEcho` echo-fidelity
+ * candidates, the v12 persist writer) consult no hand rule.
+ */
+export function withSpecReplacementPaths(
+  resourceType: string,
+  paths: ReadonlyArray<readonly string[]>
+): ReadonlyArray<readonly string[]> {
+  const extra = SPEC_REPLACEMENT_PATHS.get(resourceType);
+  if (extra === undefined) return paths;
+  const seen = new Set(paths.map((path) => JSON.stringify(path)));
+  return [...paths, ...extra.filter((path) => !seen.has(JSON.stringify(path)))];
 }
 
 /**
@@ -416,5 +437,5 @@ function parseCreateOnlyResponse(
       `Resolved ${result.length} create-only property paths for ${resourceType}` +
         (result.length > 0 ? `: ${result.map((p) => p.join('.')).join(', ')}` : '')
     );
-  return result;
+  return withSpecReplacementPaths(resourceType, result);
 }

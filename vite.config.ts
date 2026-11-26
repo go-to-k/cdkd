@@ -570,6 +570,23 @@ export default defineConfig({
         command: 'node --experimental-strip-types scripts/gen-in-place-attr-coverage.ts --check',
         cache: false,
       },
+      // Issue #7070: the spec-replacement candidates measured as replacing,
+      // unioned with the schema's create-only paths. Offline; the registry
+      // snapshot it reads is refreshed by the network-only task below, which
+      // is outside `gen:all-matrices` like `gen:cfn-schemas-from-zip`.
+      'gen:spec-replacement-properties': {
+        command: 'node --experimental-strip-types scripts/gen-spec-replacement-properties.ts',
+        cache: false,
+      },
+      'audit:spec-replacement-properties:check': {
+        command:
+          'node --experimental-strip-types scripts/gen-spec-replacement-properties.ts --check',
+        cache: false,
+      },
+      'gen:cfn-registry-create-only-paths': {
+        command: 'node --experimental-strip-types scripts/refresh-registry-create-only-paths.ts',
+        cache: false,
+      },
       // Issue #6676: the measured table of Cloud Control update paths; every type
       // measured as refusing has a registered fix or a recorded exemption.
       'gen:cc-update-measurements': {
@@ -770,6 +787,7 @@ export default defineConfig({
           'vp run gen:nested-key-coverage',
           'vp run gen:getatt-attributes',
           'vp run gen:in-place-attr-coverage',
+          'vp run gen:spec-replacement-properties',
           // Not a matrix, but the same class of CI guard: a rebase can
           // denormalize the committed integ ledger, and the failure looks
           // identical (regenerate-and-commit).

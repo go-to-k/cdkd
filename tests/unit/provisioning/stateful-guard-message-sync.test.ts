@@ -400,9 +400,12 @@ describe('the healthimaging-stateful-update-fallback fixture greps strings cdkd 
   });
 
   it('a failed create-only lookup with no snapshot still logs LOOKUP_MARKER + REGISTRY_ONLY_MARKER', () => {
-    // The report() AFTER the snapshot arm's `return snapshot;` is the
-    // no-snapshot one, the only one this fixture can see.
-    const snapshotArm = CREATE_ONLY_SRC.indexOf('return snapshot;');
+    // The report() AFTER the snapshot arm's return is the no-snapshot one, the
+    // only one this fixture can see. The arm adds the measured spec paths
+    // (go-to-k/cdkd#7070) to the snapshot it returns.
+    const snapshotArm = CREATE_ONLY_SRC.indexOf(
+      'return withSpecReplacementPaths(resourceType, snapshot);'
+    );
     expect(snapshotArm, 'the snapshot arm moved').toBeGreaterThan(0);
     const noSnapshot = CREATE_ONLY_SRC.indexOf('report(', snapshotArm);
     expect(noSnapshot, 'the no-snapshot report() moved').toBeGreaterThan(snapshotArm);

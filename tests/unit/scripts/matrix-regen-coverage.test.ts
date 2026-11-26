@@ -103,6 +103,7 @@ describe('CI regenerates through gen:all-matrices (#1417)', () => {
         'gen:provider-replace-branches',
         'gen:ref-segment-coverage',
         'gen:sdk-attr-coverage',
+        'gen:spec-replacement-properties',
         'gen:unsupported-types',
         'gen:update-path-coverage',
         'gen:update-wrap-coverage',

@@ -16,6 +16,23 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
   }),
 }));
 
+// go-to-k/cdkd#7070: one synthetic table row on a type the committed snapshot
+// holds, so the snapshot arms are exercised (no real row is on such a type).
+vi.mock(
+  '../../../src/analyzer/replacement-rules/spec-replacement-properties.generated.js',
+  async (importOriginal) => {
+    const actual = await importOriginal<
+      typeof import('../../../src/analyzer/replacement-rules/spec-replacement-properties.generated.js')
+    >();
+    return {
+      SPEC_REPLACEMENT_PATHS: new Map([
+        ...actual.SPEC_REPLACEMENT_PATHS,
+        ['AWS::Glue::Database', [['ProbeOnlyPath']]],
+      ]),
+    };
+  }
+);
+
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
     child: () => ({
@@ -32,6 +49,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 }));
 
 import {
+  cachedCreateOnlyPropertyPaths,
   getCreateOnlyPropertyPaths,
   prefetchCreateOnlyPropertyPaths,
   templateResourceTypes,
@@ -1078,5 +1096,67 @@ describe('getCreateOnlyPropertyPaths under --aws-emulator (#6249)', () => {
     expect(mockLoggerWarn).toHaveBeenCalledTimes(1);
     expect(String(mockLoggerWarn.mock.calls[0]![0])).toContain('Grant cloudformation:DescribeType');
     expect(mockLoggerInfo).not.toHaveBeenCalled();
+  });
+});
+
+// go-to-k/cdkd#7070: the measured spec-replacement paths join the create-only
+// paths whichever source answered.
+describe('spec-replacement paths (go-to-k/cdkd#7070)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearCreateOnlyPropertiesCache();
+  });
+
+  it('adds them to a live schema that leaves them mutable', async () => {
+    mockCloudFormationSend.mockResolvedValueOnce(schemaResponse(['/properties/RuleType']));
+    const paths = await getCreateOnlyPropertyPaths('AWS::Route53Resolver::ResolverRule');
+    expect(paths).toEqual([['RuleType'], ['DomainName']]);
+  });
+
+  it('adds them when the lookup fails and no snapshot exists', async () => {
+    mockCloudFormationSend.mockRejectedValueOnce(new Error('AccessDenied'));
+    const paths = await getCreateOnlyPropertyPaths('AWS::Route53Resolver::ResolverRule');
+    expect(paths).toEqual([['DomainName']]);
+  });
+
+  it('adds them to the committed snapshot on a failed lookup', async () => {
+    mockCloudFormationSend.mockRejectedValueOnce(new Error('AccessDenied'));
+    const paths = await getCreateOnlyPropertyPaths('AWS::Glue::Database');
+    expect(paths).toEqual([...CREATE_ONLY_PATHS_SNAPSHOT.get('AWS::Glue::Database')!, ['ProbeOnlyPath']]);
+  });
+
+  it('adds nothing twice when the schema already lists the path', async () => {
+    mockCloudFormationSend.mockResolvedValueOnce(schemaResponse(['/properties/DomainName']));
+    const paths = await getCreateOnlyPropertyPaths('AWS::Route53Resolver::ResolverRule');
+    expect(paths).toEqual([['DomainName']]);
+  });
+
+  it('adds them to the snapshot answer of the no-call reader', async () => {
+    expect(await cachedCreateOnlyPropertyPaths('AWS::Glue::Database')).toEqual([
+      ...CREATE_ONLY_PATHS_SNAPSHOT.get('AWS::Glue::Database')!,
+      ['ProbeOnlyPath'],
+    ]);
+    expect(mockCloudFormationSend).not.toHaveBeenCalled();
+  });
+
+  it('adds them on an emulator registry miss', async () => {
+    resetAwsEmulatorRegistryMissReportForTests();
+    setAwsEndpointOverrideSource(() => ({ endpoint: 'https://127.0.0.1:9497' }));
+    try {
+      const error = new Error("The type 'AWS::Route53Resolver::ResolverRule' cannot be found.");
+      error.name = 'TypeNotFoundException';
+      mockCloudFormationSend.mockRejectedValueOnce(error);
+      expect(await getCreateOnlyPropertyPaths('AWS::Route53Resolver::ResolverRule')).toEqual([
+        ['DomainName'],
+      ]);
+      expect(mockLoggerWarn).not.toHaveBeenCalled();
+    } finally {
+      setAwsEndpointOverrideSource(undefined);
+    }
+  });
+
+  it('leaves a type with no measured row untouched', async () => {
+    mockCloudFormationSend.mockResolvedValueOnce(schemaResponse(['/properties/Name']));
+    expect(await getCreateOnlyPropertyPaths('AWS::Location::Map')).toEqual([['Name']]);
   });
 });
