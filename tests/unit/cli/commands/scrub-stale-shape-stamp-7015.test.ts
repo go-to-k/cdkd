@@ -69,7 +69,11 @@ function stampedRecord(caInProperties: string): ResourceState {
   return { ...record, attributesReadAfterApply: staleShapeFingerprint(record)! };
 }
 
-async function scrubWith(caTemplate: string, record: ResourceState): Promise<ResourceState> {
+async function scrubWith(
+  caTemplate: string,
+  record: ResourceState,
+  extra: Partial<StackState> = {}
+): Promise<StackState> {
   const template = {
     Resources: {
       Db: {
@@ -86,6 +90,7 @@ async function scrubWith(caTemplate: string, record: ResourceState): Promise<Res
     resources: { Db: record },
     outputs: {},
     lastModified: 0,
+    ...extra,
   } as StackState;
   const saveState = vi.fn().mockResolvedValue('etag-2');
   await scrubStack(
@@ -104,19 +109,30 @@ async function scrubWith(caTemplate: string, record: ResourceState): Promise<Res
     { dryRun: false, logger } as never
   );
   expect(saveState).toHaveBeenCalled();
-  return (saveState.mock.calls.at(-1)![2] as StackState).resources['Db']!;
+  return saveState.mock.calls.at(-1)![2] as StackState;
 }
 
 describe('cdkd scrub and the stale-shape stamp (#7015)', () => {
+  it('drops it from an orphan and a superseded record whose inputs it rewrites', async () => {
+    const saved = await scrubWith(CA_REF, stampedRecord(SECRETS.ca), {
+      orphans: [{ logicalId: 'OldDb', orphanedAt: 0, state: stampedRecord(SECRETS.ca) }],
+      supersededResources: [
+        { logicalId: 'Db', supersededAt: 0, state: { ...stampedRecord(SECRETS.ca), physicalId: 'olddb' } },
+      ],
+    } as Partial<StackState>);
+    expect(saved.orphans?.[0]?.state).not.toHaveProperty('attributesReadAfterApply');
+    expect(saved.supersededResources?.[0]?.state).not.toHaveProperty('attributesReadAfterApply');
+  });
+
   it('drops the stamp when it rewrites one of the check inputs', async () => {
-    const saved = await scrubWith(CA_REF, stampedRecord(SECRETS.ca));
+    const saved = (await scrubWith(CA_REF, stampedRecord(SECRETS.ca))).resources['Db']!;
     expect(saved.properties['CACertificateIdentifier']).not.toBe(SECRETS.ca);
     expect(saved).not.toHaveProperty('attributesReadAfterApply');
   });
 
   it('control: keeps the stamp when it rewrites only another leaf', async () => {
     const record = stampedRecord('rds-ca-rsa2048-g1');
-    const saved = await scrubWith('rds-ca-rsa2048-g1', record);
+    const saved = (await scrubWith('rds-ca-rsa2048-g1', record)).resources['Db']!;
     expect(saved.properties['MasterUserPassword']).not.toBe(SECRETS.pw);
     expect(saved.attributesReadAfterApply).toBe(record.attributesReadAfterApply);
   });

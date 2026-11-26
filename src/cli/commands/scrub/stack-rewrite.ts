@@ -457,10 +457,12 @@ export async function scrubStackRewritePass({
           });
     // go-to-k/cdkd#4847: provenance only for the tokens the record still holds.
     // go-to-k/cdkd#7015: a stamp over inputs this pass rewrote names values
-    // the record no longer holds.
-    const written = withoutLapsedStaleShapeStamp(
-      keepHeldTokenProvenance(applyScrubNoEcho(migrated, record, plan))
-    );
+    // the record no longer holds; a record this pass leaves alone keeps it.
+    const rewritten = keepHeldTokenProvenance(applyScrubNoEcho(migrated, record, plan));
+    const written =
+      JSON.stringify(rewritten) === JSON.stringify(record)
+        ? rewritten
+        : withoutLapsedStaleShapeStamp(rewritten);
     if (JSON.stringify(written) !== JSON.stringify(record)) recordsChanged++;
     newResources[logicalId] = written;
   }
@@ -491,17 +493,15 @@ export async function scrubStackRewritePass({
     const needles = new Map(allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets));
     for (const [plaintext, expression] of own ?? []) needles.set(plaintext, expression);
     if (needles.size === 0) return record;
-    const scrubbed = withoutLapsedStaleShapeStamp(
-      keepHeldTokenProvenance(
-        scrubResourceRecord(record.state, needles, undefined, 'state-cross-generation', {
-          properties: 'unproven',
-          observed: 'unproven',
-        })
-      )
+    const scrubbed = keepHeldTokenProvenance(
+      scrubResourceRecord(record.state, needles, undefined, 'state-cross-generation', {
+        properties: 'unproven',
+        observed: 'unproven',
+      })
     );
     if (JSON.stringify(scrubbed) === JSON.stringify(record.state)) return record;
     recordsChanged++;
-    return { ...record, state: scrubbed };
+    return { ...record, state: withoutLapsedStaleShapeStamp(scrubbed) };
   });
   // go-to-k/cdkd#5111: a superseded resource's record moved out of
   // `resources` verbatim, so it gets the same pass an orphan does, with this
@@ -513,17 +513,15 @@ export async function scrubStackRewritePass({
           allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets)
         );
         if (needles.size === 0) return entry;
-        const scrubbed = withoutLapsedStaleShapeStamp(
-          keepHeldTokenProvenance(
-            scrubResourceRecord(entry.state, needles, undefined, 'state-cross-generation', {
-              properties: 'unproven',
-              observed: 'unproven',
-            })
-          )
+        const scrubbed = keepHeldTokenProvenance(
+          scrubResourceRecord(entry.state, needles, undefined, 'state-cross-generation', {
+            properties: 'unproven',
+            observed: 'unproven',
+          })
         );
         if (JSON.stringify(scrubbed) === JSON.stringify(entry.state)) return entry;
         recordsChanged++;
-        return { ...entry, state: scrubbed };
+        return { ...entry, state: withoutLapsedStaleShapeStamp(scrubbed) };
       })
     : undefined;
   // --- CROSS-STACK READ NAMES (go-to-k/cdkd#3337) -------------------------
