@@ -21,7 +21,10 @@ import {
   rendersLiteralTo,
 } from '../positions.js';
 import { dynamicReferenceSpans, withoutLiteralRendering } from '../redact-path.js';
-import { positionBySubstitutionSpans } from '../redact-path/substitution-spans.js';
+import {
+  TAINTED_WITHOUT_SPAN,
+  positionBySubstitutionSpans,
+} from '../redact-path/substitution-spans.js';
 import { SPELLED_SECRET_REFERENCE_PREFIXES } from '../anchors.js';
 import { recordDerivedMaskOnlyValue, wholeStringLeavesOf } from '../mask-only.js';
 import {
@@ -894,13 +897,15 @@ function substitutionSpelling(
   secrets: RecordedSecretValues,
   name: string
 ): string | undefined {
-  const spelled = positionBySubstitutionSpans(
+  const placed = positionBySubstitutionSpans(
     resolvedValue,
     sourceLeaf,
     secrets,
     TEMPLATE_DERIVED_RULES,
     (text) => redactForState(text, { provenance: 'value-scan', secrets })
   );
+  // A consumed secret with no span to place it by masks the row (fail closed).
+  const spelled = placed === TAINTED_WITHOUT_SPAN ? SECRET_MASK : placed;
   // A row value the arm MASKS (two references share its secret text) is a
   // mask-only needle of the row's bag, so a child reading the parameter whole
   // masks it too rather than keep the plaintext the parent would not.

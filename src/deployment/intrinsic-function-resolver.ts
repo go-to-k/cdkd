@@ -1,4 +1,7 @@
-import { withConsumptionScope } from './secret-redaction/consumed-references.js';
+import {
+  consumptionScopeOpenFor,
+  withConsumptionScope,
+} from './secret-redaction/consumed-references.js';
 import { GetParameterCommand } from '@aws-sdk/client-ssm';
 import { getLogger } from '../utils/logger.js';
 import { canonicalizeRegion, sameRegion } from '../utils/aws-partition.js';
@@ -430,20 +433,21 @@ export class IntrinsicFunctionResolver {
   /** Recursively resolve a value. */
   /** @internal */
   async resolveValue(value: unknown, context: ResolverContext): Promise<unknown> {
-    // go-to-k/cdkd#7050: every intrinsic OBJECT is stamped with the references
-    // its resolution consumed (`consumed-references.ts`), whatever it is.
+    // go-to-k/cdkd#7050: every intrinsic CALL (one `Ref` / `Fn::*` /
+    // `Condition` key, whatever the function) is stamped with the references
+    // its resolution consumed (`consumed-references.ts`). Plain objects are
+    // not: their leaves are stamped at their own calls, and a scope per plain
+    // level would deepen the stack of a deep bag.
     if (
-      context.recordedSecretValues === undefined ||
-      value === null ||
-      typeof value !== 'object' ||
-      Array.isArray(value)
+      context.recordedSecretValues !== undefined &&
+      value !== null &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      isIntrinsicCallShape(value) &&
+      !consumptionScopeOpenFor(value)
     ) {
-      return this.resolveValueUnstamped(value, context);
+      return withConsumptionScope(value, () => this.resolveValue(value, context));
     }
-    return withConsumptionScope(value, () => this.resolveValueUnstamped(value, context));
-  }
-
-  private async resolveValueUnstamped(value: unknown, context: ResolverContext): Promise<unknown> {
     // Primitives: return as-is (but check strings for dynamic references)
     if (typeof value !== 'object' || value === null) {
       if (typeof value === 'string' && value.includes('{{resolve:')) {
@@ -784,4 +788,12 @@ export class IntrinsicFunctionResolver {
   evaluateConditions(context: ResolverContext): Promise<Record<string, boolean>> {
     return evaluateTemplateConditions(this, context);
   }
+}
+
+/** One key naming an intrinsic call, generically: `Ref`, `Condition`, or `Fn::*`. */
+function isIntrinsicCallShape(value: object): boolean {
+  const keys = Object.keys(value);
+  if (keys.length !== 1) return false;
+  const key = keys[0]!;
+  return key === 'Ref' || key === 'Condition' || key.startsWith('Fn::');
 }

@@ -1,3 +1,4 @@
+import { SECRET_MASK } from '../../secret-redaction/pairs.js';
 import { warnUnwaitedCreationPolicy } from '../signal-receiver-run.js';
 import { survivesParent } from '../../child-of-recreated-parent.js';
 import { type DeployEngine } from '../../deploy-engine.js';
@@ -360,6 +361,15 @@ export async function finishUpdate(
     if (value !== undefined)
       previousForProvider = setAtCoordinate(previousForProvider, coordinate, value);
   }
+  // go-to-k/cdkd#7050: a key the plan proved UNCHANGED (its masked-property
+  // and input fingerprints equal, `redaction-masks.ts`) whose record holds
+  // the mask: the provider must never diff `***` against the plaintext, so
+  // its previous side is the value it is sent, and the key is left alone.
+  previousForProvider = unmaskedUnchangedKeys(
+    previousForProvider,
+    resolvedProps,
+    changedProperties
+  );
   return markRestored(
     await updateInPlace(engine, {
       conditions,
@@ -389,4 +399,19 @@ export async function finishUpdate(
       reattach: lostChild?.mode === 'reattach',
     })
   );
+}
+
+function unmaskedUnchangedKeys(
+  previous: Record<string, unknown>,
+  resolved: Record<string, unknown>,
+  changed: ReadonlySet<string>
+): Record<string, unknown> {
+  let out = previous;
+  for (const key of Object.keys(previous)) {
+    if (changed.has(key) || !Object.hasOwn(resolved, key)) continue;
+    if (!JSON.stringify(previous[key] ?? null).includes(SECRET_MASK)) continue;
+    if (out === previous) out = { ...previous };
+    out[key] = resolved[key];
+  }
+  return out;
 }

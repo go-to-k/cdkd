@@ -80,6 +80,7 @@ interface Run {
   persisted: StackState['resources'][string] | undefined;
   thrown: unknown;
   diff: Map<string, ResourceChange> | undefined;
+  sent?: Array<{ props: unknown; previous: unknown }>;
 }
 
 class CapturingDiffCalculator extends DiffCalculator {
@@ -107,13 +108,15 @@ async function deploy(
     lastModified: 0,
   } as StackState;
   const calls: string[] = [];
+  const sent: Array<{ props: unknown; previous: unknown }> = [];
   const provider = {
     create: vi.fn(async (id: string) => {
       calls.push('create:' + id);
       return { physicalId: 'new', attributes: {} };
     }),
-    update: vi.fn(async (id: string) => {
+    update: vi.fn(async (id: string, _pid: string, _type: string, props: unknown, previous: unknown) => {
       calls.push('update:' + id);
+      sent.push({ props, previous });
       return { physicalId: resources[id]!.physicalId, attributes: {} };
     }),
     delete: vi.fn(async (id: string) => {
@@ -162,7 +165,7 @@ async function deploy(
     .filter(
       (a): a is StackState => typeof a === 'object' && a !== null && 'resources' in (a as object)
     );
-  return { calls, persisted: saved[saved.length - 1]?.resources['Db'], thrown, diff: diffCalculator.last };
+  return { calls, persisted: saved[saved.length - 1]?.resources['Db'], thrown, diff: diffCalculator.last, sent };
 }
 
 const OTHER = '{{resolve:secretsmanager:db-secret:SecretString:other::}}';
@@ -221,6 +224,8 @@ describe('a secret beside a value-bearing part never leaks or reads as a change 
         'BackupRetentionPeriod',
       ]);
       expect(next.calls).toEqual(['update:Db']);
+      // The update arm never hands the provider the mask, on either side.
+      expect(JSON.stringify(next.sent)).not.toContain('***');
       expect(exposes(next.persisted)).toBeUndefined();
     });
   }

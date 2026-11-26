@@ -26,7 +26,10 @@ import {
 import { hasPlainPrototype } from './redact-path/json-equality.js';
 import { isSourcePlainLiteral, rerenderedSourceLiteral } from './redact-path/template-literal.js';
 import { positionByLiteralRendering } from './redact-path/literal-rendering.js';
-import { positionBySubstitutionSpans } from './redact-path/substitution-spans.js';
+import {
+  TAINTED_WITHOUT_SPAN,
+  positionBySubstitutionSpans,
+} from './redact-path/substitution-spans.js';
 import { attributionRefusedReadsOf } from './nested-stack/refused-parameter-reads.js';
 
 export { sourceElementsKeptFor, arrayPairsWhateverDrops } from './redact-path/array-drop.js';
@@ -285,39 +288,35 @@ export function redactByPath(
     // (go-to-k/cdkd#7050): its plaintext never stays, whatever its length or
     // whatever else in the leaf spells the same text.
     // Fail closed: an arm that cannot finish masks the leaf, never leaves it.
-    let substituted: string | undefined;
+    let substituted: ReturnType<typeof positionBySubstitutionSpans>;
     try {
       substituted = positionBySubstitutionSpans(bag, source, secrets, rules, valueScan);
     } catch {
       return SECRET_MASK;
     }
-    if (substituted !== undefined) return substituted;
-    const rendered = positionByLiteralRendering(bag, source, secrets, rules, valueScan);
-    if (rendered !== undefined) return rendered;
-    const certified = positionByCrossStackSource(bag, source, secrets);
-    if (certified !== undefined) return certified;
-    // The EMBEDDING twin of the `{Ref: <Param>}` arm above (issue #2320): an
-    // `Fn::Sub` / `Fn::Join` over the child's own parameters, or embedding a
-    // cross-stack read (issue #2298), each placeholder answered from its OWN
-    // association. Before the skeleton arm, because an
-    // association is exact evidence where a pattern is a search.
-    const placeheld = positionByParameterPlaceholders(bag, source, secrets);
-    if (placeheld !== undefined) return placeheld;
-    const positioned = positionByIntrinsicSkeleton(bag, source, secrets, secretExpressions);
-    if (positioned !== undefined) return positioned;
-    // The FRAME arm LAST (issue #2745): a leaf that EMBEDS one token inside
-    // the intrinsic's literal text, which the skeleton arm declines — and a
-    // whole-token leaf the skeleton arm REFUSED, answered here only on
-    // pass-local pair evidence the skeleton's stores cannot hold (its
-    // docstring names the one shape).
-    const framed = positionByIntrinsicFrame(
-      bag,
-      source,
-      secrets,
-      secretExpressions,
-      bagIsSameGeneration
-    );
-    if (framed !== undefined) return framed;
+    // A consumed secret's text with no span to place it by
+    // (go-to-k/cdkd#7050): only the arms below that place by PROVENANCE or
+    // structure may answer it, never the template-text rendering arm, and if
+    // none does the leaf is masked, never searched for by the value scan.
+    const tainted = substituted === TAINTED_WITHOUT_SPAN;
+    if (!tainted && substituted !== undefined) return substituted;
+    try {
+      const answered = positionByCertifiedArms(
+        bag,
+        source,
+        secrets,
+        secretExpressions,
+        bagIsSameGeneration,
+        tainted
+          ? undefined
+          : () => positionByLiteralRendering(bag, source, secrets, rules, valueScan)
+      );
+      if (answered !== undefined) return answered;
+    } catch (error) {
+      if (tainted) return SECRET_MASK;
+      throw error;
+    }
+    if (tainted) return SECRET_MASK;
     // go-to-k/cdkd#7059: a read of a parameter holding a sub-floor secret's
     // text that no certified arm above placed is masked: the value scan
     // below cannot see that text.
@@ -542,4 +541,45 @@ export function redactByPath(
   // has an object, a key the source lacks): fall back to the value scan, which
   // is strictly better than leaving the subtree unredacted.
   return redactForState(bag, { provenance: 'value-scan', secrets });
+}
+
+/**
+ * The certified positional arms, in order (`rendered` first when given).
+ * Split out so a TAINTED leaf (go-to-k/cdkd#7050) runs them without the
+ * template-text rendering arm.
+ */
+function positionByCertifiedArms(
+  bag: string,
+  source: Record<string, unknown>,
+  secrets: RecordedSecretValues,
+  secretExpressions: Parameters<typeof positionByIntrinsicSkeleton>[3],
+  bagIsSameGeneration: Parameters<typeof positionByIntrinsicFrame>[4],
+  render: (() => string | undefined) | undefined
+): string | undefined {
+  const rendered = render?.();
+  if (rendered !== undefined) return rendered;
+  const certified = positionByCrossStackSource(bag, source, secrets);
+  if (certified !== undefined) return certified;
+  // The EMBEDDING twin of the `{Ref: <Param>}` arm above (issue #2320): an
+  // `Fn::Sub` / `Fn::Join` over the child's own parameters, or embedding a
+  // cross-stack read (issue #2298), each placeholder answered from its OWN
+  // association. Before the skeleton arm, because an
+  // association is exact evidence where a pattern is a search.
+  const placeheld = positionByParameterPlaceholders(bag, source, secrets);
+  if (placeheld !== undefined) return placeheld;
+  const positioned = positionByIntrinsicSkeleton(bag, source, secrets, secretExpressions);
+  if (positioned !== undefined) return positioned;
+  // The FRAME arm LAST (issue #2745): a leaf that EMBEDS one token inside
+  // the intrinsic's literal text, which the skeleton arm declines — and a
+  // whole-token leaf the skeleton arm REFUSED, answered here only on
+  // pass-local pair evidence the skeleton's stores cannot hold (its
+  // docstring names the one shape).
+  const framed = positionByIntrinsicFrame(
+    bag,
+    source,
+    secrets,
+    secretExpressions,
+    bagIsSameGeneration
+  );
+  return framed;
 }

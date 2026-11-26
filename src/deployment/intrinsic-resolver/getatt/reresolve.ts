@@ -1,6 +1,7 @@
 import type { IntrinsicFunctionResolver } from '../../intrinsic-function-resolver.js';
 import { displayMasked } from '../masking-display.js';
 import { resolveDynamicReferences } from '../dynamic-refs.js';
+import { withoutConsumptionStamps } from '../../secret-redaction/consumed-references.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import {
   NESTED_STACK_OUTPUT_ATTRIBUTE_PREFIX,
@@ -52,6 +53,21 @@ import { reresolveCrossStackValue } from '../cross-stack.js';
  * caller could persist the plaintext unredacted.
  */
 export async function reresolveRecordedReferences(
+  resolver: IntrinsicFunctionResolver,
+  value: unknown,
+  logicalId: string,
+  context: ResolverContext,
+  origin: string,
+  sourceKey: string | undefined
+): Promise<unknown> {
+  // go-to-k/cdkd#7050: the re-resolved value's spelling is the producer's
+  // own persisted one, so it is not a consumption that taints the reader.
+  return await withoutConsumptionStamps(() =>
+    reresolveRecordedReferencesUnstamped(resolver, value, logicalId, context, origin, sourceKey)
+  );
+}
+
+async function reresolveRecordedReferencesUnstamped(
   resolver: IntrinsicFunctionResolver,
   value: unknown,
   logicalId: string,

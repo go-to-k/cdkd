@@ -238,4 +238,48 @@ describe('a nested stack row: a sub-floor secret beside a parameter holding its 
     const persisted = redactSecretsForState(structuredClone(childResolved), embedding, source, TEMPLATE_DERIVED_RULES, true) as { Value: unknown };
     expect(exposed(persisted.Value)).toBe(false);
   });
+
+  // #7059: the child reads a parameter holding a sub-floor secret's text.
+  async function childLeaf(bag: RecordedSecretValues, value: string, node: unknown): Promise<unknown> {
+    const child = new Map() as RecordedSecretValues;
+    inheritNestedStackParameterAssociations(child, bag);
+    const source = { Value: node };
+    const resolved = (await new IntrinsicFunctionResolver('us-east-1').resolve(
+      source,
+      contextFor({ X: value }, child, bag) as never
+    )) as Record<string, unknown>;
+    return (
+      redactSecretsForState(structuredClone(resolved), child, source, TEMPLATE_DERIVED_RULES, true) as {
+        Value: unknown;
+      }
+    ).Value;
+  }
+
+  it('#7059: a child SPLITTING the parameter never keeps the sub-floor secret', async () => {
+    const { bag, resolved } = await deployRow({
+      X: { 'Fn::Join': ['', ['{{resolve:ssm-secure:/app/a}}', '/tail']] },
+    });
+    const value = String(resolved.Parameters['X']);
+    expect(value).toBe(`${PIN}/tail`);
+    const piece = await childLeaf(bag, value, { 'Fn::Select': [0, { 'Fn::Split': ['/', { Ref: 'X' }] }] });
+    expect(exposed(piece)).toBe(false);
+    const joined = await childLeaf(bag, value, { 'Fn::Join': ['', ['a-', { Ref: 'X' }]] });
+    expect(exposed(joined)).toBe(false);
+  });
+
+  it('#7059: a row value under 4 characters is never kept by the child', async () => {
+    const { bag, resolved } = await deployRow({
+      X: { 'Fn::Join': ['', ['{{resolve:ssm:/app/kin}}', 'x']] },
+    });
+    const value = String(resolved.Parameters['X']);
+    expect(value).toBe('inx');
+    for (const node of [
+      { Ref: 'X' },
+      { 'Fn::Join': ['', ['a-', { Ref: 'X' }]] },
+      { 'Fn::Select': [0, { 'Fn::Split': ['x', { Ref: 'X' }] }] },
+    ]) {
+      const out = String(await childLeaf(bag, value, node));
+      expect(out.split(/\{\{resolve:[^}]+\}\}/).join('|')).not.toContain('in');
+    }
+  });
 });

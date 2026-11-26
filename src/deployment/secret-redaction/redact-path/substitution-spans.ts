@@ -78,6 +78,13 @@ function substitutionSpans(
 }
 
 /**
+ * The leaf holds the text of a secret its resolution consumed, but the record
+ * holds no span for it: only an arm certified by PROVENANCE may still place
+ * it, else the leaf masks (`redact-path.ts`).
+ */
+export const TAINTED_WITHOUT_SPAN: unique symbol = Symbol('tainted-without-span');
+
+/**
  * The persisted spelling of an intrinsic leaf whose SECRET tokens are placed
  * where the resolver substituted them (go-to-k/cdkd#7050), or `undefined`.
  *
@@ -102,7 +109,7 @@ export function positionBySubstitutionSpans(
   secrets: RecordedSecretValues,
   rules: PathSourceRules,
   scan: ValueScan
-): string | undefined {
+): string | typeof TAINTED_WITHOUT_SPAN | undefined {
   if (rules.sourceIsTemplate !== true || typeof bag !== 'string') return undefined;
   if (!isPlainObject(source)) return undefined;
   if (literalRenderingSuspended()) return undefined;
@@ -123,7 +130,7 @@ export function positionBySubstitutionSpans(
   const resolution = intrinsicLeafResolutionOf(secrets, source);
   const spans = resolution === undefined ? undefined : substitutionSpans(resolution, bag);
   if (spans === undefined || !spans.some((span) => span.secret)) {
-    return tainted ? SECRET_MASK : undefined;
+    return tainted ? TAINTED_WITHOUT_SPAN : undefined;
   }
   // A node the template-text reader cannot read (a token assembled from
   // parts) has no segments: every stretch is then a gap.

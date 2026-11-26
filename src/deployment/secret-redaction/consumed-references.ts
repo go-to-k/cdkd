@@ -19,14 +19,31 @@ import type { RecordedSecretValues } from './pairs.js';
  */
 const stamps = new WeakMap<RecordedSecretValues, WeakMap<object, Set<string>>>();
 const path = new AsyncLocalStorage<ReadonlyArray<object>>();
+const suspended = new AsyncLocalStorage<true>();
+
+/**
+ * Run `fn` without stamping: a value RE-RESOLVED out of a persisted record
+ * (go-to-k/cdkd#4800) carries the producer's own redacted spelling, so its
+ * reader's leaf is positioned by that provenance, not tainted by it.
+ */
+export function withoutConsumptionStamps<T>(fn: () => T): T {
+  return suspended.run(true, fn);
+}
 
 /** Run `fn` with `node` on the consumption path. */
 export function withConsumptionScope<T>(node: object, fn: () => Promise<T>): Promise<T> {
   return path.run([...(path.getStore() ?? []), node], fn);
 }
 
+/** Is `node` the innermost object on the path (its scope already open)? */
+export function consumptionScopeOpenFor(node: object): boolean {
+  const nodes = path.getStore();
+  return nodes !== undefined && nodes[nodes.length - 1] === node;
+}
+
 /** Note that the pass owning `secrets` replaced `token` for every object on the path. */
 export function noteReferenceConsumed(secrets: RecordedSecretValues, token: string): void {
+  if (suspended.getStore() === true) return;
   const nodes = path.getStore();
   if (nodes === undefined || nodes.length === 0) return;
   let table = stamps.get(secrets);

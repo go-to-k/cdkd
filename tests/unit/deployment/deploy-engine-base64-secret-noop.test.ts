@@ -121,7 +121,9 @@ describe('DeployEngine - a Base64-encoded secret is not re-sent on an unchanged 
   });
 
   it('masks WHOLE a leaf EMBEDDING the encoding, and still skips the unchanged redeploy (go-to-k/cdkd#2453)', async () => {
-    const { created, provider } = await createThenRedeploy(EMBEDDED_PROPS, 'UPDATE');
+    // go-to-k/cdkd#7050: the plan proves the masked leaf unchanged by its
+    // fingerprints, so the redeploy no longer even lists an UPDATE row.
+    const { created, provider } = await createThenRedeploy(EMBEDDED_PROPS, 'NO_CHANGE');
     // The value AWS received really did embed the encoding...
     expect(provider.create.mock.calls[0]![2]).toMatchObject({
       Value: `#!/bin/bash\nUD=${encoded}\n`,
