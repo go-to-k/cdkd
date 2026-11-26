@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Events::Rule",
-  "generatedAt": "2026-09-23",
+  "generatedAt": "2026-11-26",
   "properties": [
     "Arn",
     "Description",
@@ -28,6 +28,11 @@
   ],
   "primaryIdentifier": [
     "Arn"
+  ],
+  "conditionalCreateOnlyPropertyPaths": [
+    [
+      "EventBusName"
+    ]
   ],
   "nestedProperties": {
     "Targets": [

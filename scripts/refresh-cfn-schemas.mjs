@@ -190,6 +190,22 @@ export function extractCreateOnlyPropertyPaths(schemaJson) {
 }
 
 /**
+ * Extract the per-type CONDITIONALLY create-only property paths: the
+ * properties whose update CloudFormation may answer with a replacement,
+ * depending on the change (go-to-k/cdkd#7038). Same parse and order as
+ * {@link extractCreateOnlyPropertyPaths}. cdkd's replacement-evidence check
+ * requires a recorded reason for its verdict on each of them.
+ *
+ * @param {string} schemaJson
+ * @returns {string[][]}
+ */
+export function extractConditionalCreateOnlyPropertyPaths(schemaJson) {
+  /** @type {{conditionalCreateOnlyProperties?: unknown}} */
+  const schema = JSON.parse(schemaJson);
+  return parseCreateOnlyPropertyPointers(schema.conditionalCreateOnlyProperties).sort(comparePaths);
+}
+
+/**
  * @param {string[]} a
  * @param {string[]} b
  * @returns {number}
@@ -1109,6 +1125,7 @@ export function buildFixture(schemaJson, resourceType, generatedAt) {
   const nestedRequired = extractNestedRequired(schemaJson);
   const propertyShapes = extractPropertyShapes(schemaJson);
   const { propertyTypes, propertyEnums } = extractPropertyTypes(schemaJson);
+  const conditionalCreateOnlyPropertyPaths = extractConditionalCreateOnlyPropertyPaths(schemaJson);
   return {
     resourceType,
     generatedAt,
@@ -1120,6 +1137,9 @@ export function buildFixture(schemaJson, resourceType, generatedAt) {
     // says none" (issue #3718).
     createOnlyPropertyPaths: extractCreateOnlyPropertyPaths(schemaJson),
     primaryIdentifier: extractPrimaryIdentifier(schemaJson),
+    // go-to-k/cdkd#7038. Omitted when empty, so a type without any keeps its
+    // byte shape.
+    ...(conditionalCreateOnlyPropertyPaths.length > 0 ? { conditionalCreateOnlyPropertyPaths } : {}),
     // Omitted entirely when the type has no nested property (keeps
     // scalar-only fixtures byte-stable vs the pre-#1373 shape).
     ...(Object.keys(nestedProperties).length > 0 ? { nestedProperties } : {}),
