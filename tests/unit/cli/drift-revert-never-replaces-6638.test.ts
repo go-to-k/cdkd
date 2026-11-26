@@ -21,7 +21,7 @@ const NEW_ID = 'arn:aws:sns:us-east-1:123456789012:orders:new-0002';
 
 function harness(update: ResourceProvider['update']) {
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
-  const tally = { totalFailed: 0, totalUnsupported: 0, totalSucceeded: 0, totalUnresolvable: 0 };
+  const tally = { totalFailed: 0, totalUnsupported: 0, totalSucceeded: 0, totalUnresolvable: 0, reverted: [] };
   const reRecordedByLogicalId: ApplyRevertUpdateArgs['reRecordedByLogicalId'] = new Map();
   const stateResource = {
     physicalId: RECORDED_ID,

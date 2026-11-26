@@ -5,6 +5,13 @@
  * record then describes what AWS holds.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+
+// go-to-k/cdkd#7025 step 6: this file's fake AWS keeps answering the drifted
+// read after an update, so the post-revert re-read is stubbed out here; it is
+// covered by `tests/unit/cli/drift-revert-verify-7025.test.ts`.
+vi.mock('../../../src/cli/commands/drift/revert-verify.js', () => ({
+  verifyRevertedStack: vi.fn(async () => ({ notApplied: 0, unverified: 0 })),
+}));
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 
 const logLines = vi.hoisted(() => [] as string[]);
