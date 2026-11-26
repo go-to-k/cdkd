@@ -187,7 +187,8 @@ export async function updateDBInstance(
   // REPLACES the instance (go-to-k/cdkd#7044), which `cdkd diff` now classifies
   // too (`replacement-rules/rds-immutability.ts`), so a template change takes
   // the stateful replacement guard and this refusal is reached only by a
-  // `drift --revert`, a rollback or a direct call. On an instance restored to a point in time, `SourceDBInstanceIdentifier`
+  // `drift --revert`, a rollback, a value the diff could not resolve
+  // (go-to-k/cdkd#7052) or a direct call. On an instance restored to a point in time, `SourceDBInstanceIdentifier`
   // names the restore's source, so a changed one is refused the same way
   // (`isSourceDBInstanceIdentifierMutable`), and so is an added or changed
   // `SourceDBClusterIdentifier`, which the restore never read
@@ -249,8 +250,8 @@ export async function updateDBInstance(
       restoreMask(
         `${changedRestoreKeys.join(' and ')} cannot be added or changed on an existing DB instance — ` +
           `an instance is restored ${how} only when it is created. CloudFormation answers ` +
-          `the same change with a new instance; cdkd does not replace it from an in-place ` +
-          `update. Removing it changes nothing. ` +
+          `the same change with a new instance; cdkd replaces it only with the replace ` +
+          `flags below. Removing it changes nothing. ` +
           `Nothing was applied to DB instance ${physicalId}. To keep the instance as it is, ` +
           (toPointInTime
             ? `declare the values the previous deploy declared (or none, if it declared none). `
@@ -345,8 +346,8 @@ export async function updateDBInstance(
         sourceMask(
           `${sourceKeys} cannot be added or changed on an existing DB instance — ` +
             `an instance becomes a read replica only when it is created. CloudFormation ` +
-            `answers the same change with a new instance; cdkd does not replace it from an ` +
-            `in-place update. Removing it promotes the ` +
+            `answers the same change with a new instance; cdkd replaces it only with the ` +
+            `replace flags below. Removing it promotes the ` +
             `replica instead` +
             (sourceChange.removed.length > 0
               ? ` (here it replaces ${sourceChange.removed.join(' and ')}, so nothing is promoted)`
@@ -454,7 +455,7 @@ export async function updateDBInstance(
         zoneMask(
           `AvailabilityZone cannot change on an existing DB instance — ModifyDBInstance has no ` +
             `such member. CloudFormation answers the same change with a new instance; cdkd ` +
-            `does not replace it from an in-place update. ` +
+            `replaces it only with the replace flags below. ` +
             `Nothing was applied to DB instance ${physicalId}. ` +
             (liveZoneRead === 'not-found'
               ? `RDS reports no such DB instance: it was deleted outside cdkd, so the state ` +

@@ -478,11 +478,12 @@ export function logExportsApplied(
 /**
  * go-to-k/cdkd#5640: whether a DBInstance update may leave its
  * `AvailabilityZone` where it is. ModifyDBInstance has no such member, and
- * CloudFormation's update handler refuses the update ("Resource is
- * immutable", `ImmutabilityHelper.isAvailabilityZoneChangeMutable`) unless
- * the zone is unchanged, or the template drops it while declaring
- * `MultiAZ: true` (the zone is then RDS's to choose). The property is not
- * create-only in the registry schema, so the engine never replaces for it.
+ * CloudFormation's update handler calls the change immutable
+ * (`ImmutabilityHelper.isAvailabilityZoneChangeMutable`) and replaces the
+ * instance unless the zone is unchanged, or the template drops it while
+ * declaring `MultiAZ: true` (the zone is then RDS's to choose). `cdkd diff`
+ * classifies that replacement (go-to-k/cdkd#7044), so an update reaches this
+ * check only for a change the diff kept in place.
  */
 export function instanceAvailabilityZoneKept(
   properties: Record<string, unknown>,
