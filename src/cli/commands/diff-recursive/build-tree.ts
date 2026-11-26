@@ -466,13 +466,12 @@ export async function buildDiffTree(args: {
     ccRouteUnavailableReason ?? (() => undefined)
   );
   // go-to-k/cdkd#7068: what this node PRINTS, masked by provenance; every
-  // decision below reads the unmasked `changes`. A nested row's `Parameters`
-  // keys are masked again after the child walk, which knows each key's value.
+  // decision below reads the unmasked `changes`.
   const node: DiffTreeNode = {
     stackName,
     displayName,
     region,
-    changes: maskPassedSecretChanges(changes, template, passedSecretNames, new Map()),
+    changes: maskPassedSecretChanges(changes, template, passedSecretNames),
     securityDiff: securityDiffWithPassedSecretWithheld(securityDiff, changes, passedSecretNames),
     ccApiRoutes,
     outputChanges: maskPassedSecretOutputs(outputChanges, template, passedSecretNames),
@@ -510,7 +509,6 @@ export async function buildDiffTree(args: {
   // A condition-false row is absent here, so a child still in state falls
   // through to the state-only DELETE loop below.
   const templateChildIds = new Set<string>();
-  const rowMixedSecretKeys = new Map<string, ReadonlySet<string>>();
   for (const [logicalId, resource] of Object.entries(effectiveTemplate.Resources ?? {})) {
     if (resource?.Type !== NESTED_STACK_RESOURCE_TYPE) continue;
     templateChildIds.add(logicalId);
@@ -660,16 +658,13 @@ export async function buildDiffTree(args: {
       consumerAccount,
       { inherited: inheritedSecretTokens, child: childSecretTokens }
     );
-    // go-to-k/cdkd#7068: the row keys passing a mixed secret, masked on this
-    // node's row and on every child leaf reading them.
+    // go-to-k/cdkd#7068: the row keys passing a mixed secret, masked on every
+    // child leaf reading them (this node's row masks them by itself).
     const childMixedSecretParameters = mixedSecretRowKeys(
       resource.Properties,
       childParameters,
       passedSecretNames
     );
-    if (childMixedSecretParameters.size > 0) {
-      rowMixedSecretKeys.set(logicalId, childMixedSecretParameters);
-    }
     // Each such value WHOLE is a mask-only needle of the child's walk too, so
     // a resolver line embedding it is masked (its length clears the floor).
     const passedSecretNeedles: RecordedSecretValues = new Map();
@@ -757,15 +752,6 @@ export async function buildDiffTree(args: {
       await (hasMaskableValues(childDerivedNames)
         ? withPrintingSecrets(childDerivedNames, buildChild)
         : buildChild())
-    );
-  }
-
-  if (rowMixedSecretKeys.size > 0) {
-    node.changes = maskPassedSecretChanges(
-      changes,
-      template,
-      passedSecretNames,
-      rowMixedSecretKeys
     );
   }
 

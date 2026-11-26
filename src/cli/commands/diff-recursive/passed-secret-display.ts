@@ -153,13 +153,12 @@ const SIDES = ['oldValue', 'newValue', 'newValueTemplate'] as const;
 /**
  * A nested-stack row's `Parameters` change with its mixed-secret keys masked
  * on EVERY side: a key is flagged when any side holds a mixed value there (a
- * legacy record's old side may hold the plaintext with no reference left),
- * the child walk flagged it, or its template value reads a tainted name.
+ * legacy record's old side may hold the plaintext with no reference left)
+ * or its template value reads a tainted name.
  */
 function maskRowParameters(
   change: PropertyChange,
   templateValue: unknown,
-  rowKeys: ReadonlySet<string> | undefined,
   tainted: ReadonlySet<string>
 ): PropertyChange {
   const present = SIDES.filter(
@@ -176,7 +175,7 @@ function maskRowParameters(
     return maskedSides(change);
   }
   const raw = recordOf(templateValue);
-  const flagged = new Set<string>(rowKeys ?? []);
+  const flagged = new Set<string>();
   for (const [key, value] of Object.entries(raw)) {
     if (readsTainted(value, tainted)) flagged.add(key);
   }
@@ -204,14 +203,13 @@ function maskRowParameters(
  * One node's resource changes as `cdkd diff` prints them under go-to-k/cdkd#7068:
  * a property whose template reads a tainted name is shown as `***` on every
  * side, and a nested-stack row's `Parameters` key holding (or reading) a mixed
- * secret is shown as `***`. Returns `changes` itself when nothing is masked;
+ * secret is shown as `***`, also at the root and without `--recursive`. Returns `changes` itself when nothing is masked;
  * never mutates it.
  */
 export function maskPassedSecretChanges(
   changes: Map<string, ResourceChange>,
   template: CloudFormationTemplate,
-  tainted: ReadonlySet<string>,
-  rowKeys: ReadonlyMap<string, ReadonlySet<string>>
+  tainted: ReadonlySet<string>
 ): Map<string, ResourceChange> {
   const resources = recordOf(template.Resources as unknown);
   let anyChanged = false;
@@ -231,7 +229,7 @@ export function maskPassedSecretChanges(
         : undefined;
       const next =
         isNestedRow && propertyChange.path === 'Parameters'
-          ? maskRowParameters(propertyChange, templateValue, rowKeys.get(logicalId), tainted)
+          ? maskRowParameters(propertyChange, templateValue, tainted)
           : readsTainted(templateValue, tainted)
             ? maskedSides(propertyChange)
             : propertyChange;
