@@ -7053,6 +7053,7 @@
         "dlm-lifecycle-policy",
         "docdb-neptune",
         "drift-revert",
+        "drift-revert-firehose",
         "drift-verbatim-readback",
         "ec2-instance",
         "ec2-instance-fanout",
@@ -7271,6 +7272,9 @@
           "l2"
         ],
         "drift-revert": [
+          "l2"
+        ],
+        "drift-revert-firehose": [
           "l2"
         ],
         "drift-verbatim-readback": [
@@ -7968,6 +7972,7 @@
       "resourceType": "AWS::KinesisFirehose::DeliveryStream",
       "integs": [
         "cloudwatch-metric-stream-default-name",
+        "drift-revert-firehose",
         "firehose-iceberg-destination",
         "firehose-msk-source",
         "log-pipeline",
@@ -7976,6 +7981,9 @@
       "signals": {
         "cloudwatch-metric-stream-default-name": [
           "literal"
+        ],
+        "drift-revert-firehose": [
+          "l1"
         ],
         "firehose-iceberg-destination": [
           "l1",
@@ -8098,6 +8106,7 @@
         "deploy-force-quit-rollback",
         "destroy-interrupt",
         "docker-image-asset",
+        "drift-revert-firehose",
         "drift-rotation-schedule-revert",
         "dynamodb-stream-filter",
         "dynamodb-streams",
@@ -8330,6 +8339,9 @@
         "docker-image-asset": [
           "l2",
           "literal"
+        ],
+        "drift-revert-firehose": [
+          "l2"
         ],
         "drift-rotation-schedule-revert": [
           "l2"
@@ -9020,6 +9032,7 @@
         "cross-region-concurrent-stacks",
         "custom-resource-payload-types",
         "drift-revert",
+        "drift-revert-firehose",
         "drift-rotation-schedule-revert",
         "ec2-vpc",
         "ecs-fargate",
@@ -9104,6 +9117,9 @@
         ],
         "drift-revert": [
           "l1"
+        ],
+        "drift-revert-firehose": [
+          "l2"
         ],
         "drift-rotation-schedule-revert": [
           "l2"
@@ -9635,6 +9651,7 @@
         "diff-intrinsic-target-change",
         "drift-revert",
         "drift-revert-arrays",
+        "drift-revert-firehose",
         "drift-verbatim-readback",
         "event-driven",
         "export",
@@ -9772,6 +9789,9 @@
           "l2"
         ],
         "drift-revert-arrays": [
+          "l2"
+        ],
+        "drift-revert-firehose": [
           "l2"
         ],
         "drift-verbatim-readback": [

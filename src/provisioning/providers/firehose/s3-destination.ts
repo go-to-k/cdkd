@@ -2,9 +2,11 @@ import type { FirehoseProvider } from '../firehose-provider.js';
 import type {
   S3DestinationConfiguration,
   ExtendedS3DestinationConfiguration,
+  ExtendedS3DestinationDescription,
   ExtendedS3DestinationUpdate,
   S3DestinationUpdate,
 } from '@aws-sdk/client-firehose';
+import { isPlainRecord } from './shared.js';
 
 // ─── Helpers ───────────────────────────────────────────────────────
 
@@ -245,6 +247,49 @@ export function mapExtendedS3ConfigToUpdate(
   }
   if (config['CustomTimeZone'] !== undefined) {
     result.CustomTimeZone = config['CustomTimeZone'] as string;
+  }
+  return result;
+}
+
+/**
+ * go-to-k/cdkd#7019: what an EMPTY block of the desired ExtendedS3 config
+ * sends. `readCurrentState` emits `{}` for each of these blocks when AWS
+ * reports none (`mapExtendedS3DescriptionToCfn`), and `drift --revert` sends
+ * that readback back, so forwarding the placeholder as written broke every
+ * revert (measured): `S3BackupUpdate: {}` is refused (`Bucket ARN is
+ * required`), `DataFormatConversionConfiguration: {}` reads as ENABLED, and
+ * `ProcessingConfiguration: {}` / `DynamicPartitioningConfiguration: {}`
+ * write explicit disabled defaults the next drift reports. An empty block
+ * means "none": nothing is sent for it, except `{ Enabled: false }` for
+ * processing / data format conversion while the LIVE stream has it enabled
+ * (a revert to the unset state). Dynamic partitioning cannot be switched
+ * either way on a live stream, and a backup cannot be removed.
+ */
+export function withEmptyBlocksAsNone(
+  update: ExtendedS3DestinationUpdate,
+  config: Record<string, unknown>,
+  live: ExtendedS3DestinationDescription | undefined
+): ExtendedS3DestinationUpdate {
+  const isEmpty = (key: string): boolean => {
+    const value = config[key];
+    return isPlainRecord(value) && Object.keys(value).length === 0;
+  };
+  const result = { ...update };
+  if (isEmpty('S3BackupConfiguration')) delete result.S3BackupUpdate;
+  if (isEmpty('DynamicPartitioningConfiguration')) delete result.DynamicPartitioningConfiguration;
+  if (isEmpty('ProcessingConfiguration')) {
+    if (live?.ProcessingConfiguration?.Enabled === true) {
+      result.ProcessingConfiguration = { Enabled: false };
+    } else {
+      delete result.ProcessingConfiguration;
+    }
+  }
+  if (isEmpty('DataFormatConversionConfiguration')) {
+    if (live?.DataFormatConversionConfiguration?.Enabled === true) {
+      result.DataFormatConversionConfiguration = { Enabled: false };
+    } else {
+      delete result.DataFormatConversionConfiguration;
+    }
   }
   return result;
 }

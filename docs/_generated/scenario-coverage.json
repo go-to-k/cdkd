@@ -1179,6 +1179,11 @@
       ]
     },
     {
+      "name": "drift-revert-firehose",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "drift-revert-nested-write-only",
       "annotated": false,
       "scenarios": []
@@ -4363,6 +4368,7 @@
     "docdb-restore",
     "drift-cc-read-only-props",
     "drift-ecs-capacity-association",
+    "drift-revert-firehose",
     "drift-revert-nested-write-only",
     "drift-rotation-schedule-revert",
     "drift-sg-sibling-rules",
