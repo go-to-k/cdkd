@@ -41,6 +41,10 @@ import {
   IN_USE_SETTLE_BUDGET_MS,
 } from '../../../src/provisioning/providers/lambda-eventsource/delete.js';
 import {
+  clearResolvedResourceTimeouts,
+  setResolvedResourceTimeouts,
+} from '../../../src/provisioning/resource-timeout-registry.js';
+import {
   disarmInterruptWatchForTests,
   interruptWatchTestSeam,
   isInterruptedWaitError,
@@ -168,6 +172,26 @@ describe('LambdaEventSourceMappingProvider.delete — a mapping still settling',
       provider.delete('L', UUID, TYPE, undefined, { expectedRegion: 'us-east-1' })
     ).rejects.toThrow(/ResourceInUseException|in use/);
     expect(sentOf(DeleteEventSourceMappingCommand)).toBe(1);
+  });
+
+  it('keeps the wait within half an explicit --resource-timeout', async () => {
+    setResolvedResourceTimeouts({ globalMs: 60_000 });
+    try {
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof GetEventSourceMappingCommand) {
+          return Promise.resolve({ UUID, State: 'Creating' });
+        }
+        if (cmd instanceof DeleteEventSourceMappingCommand) return Promise.reject(inUse());
+        return Promise.resolve({});
+      });
+
+      const done = provider.delete('L', UUID, TYPE, undefined, { expectedRegion: 'us-east-1' });
+      const settled = expect(done).rejects.toThrow(/Failed to delete event source mapping L/);
+      await vi.advanceTimersByTimeAsync(30_000 + IN_USE_POLL_INTERVAL_MS * 2);
+      await settled;
+    } finally {
+      clearResolvedResourceTimeouts();
+    }
   });
 
   it('does not wait on any other delete failure', async () => {

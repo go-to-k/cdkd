@@ -8,6 +8,7 @@ import { ProvisioningError } from '../../../utils/error-handler.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import { assertRegionMatch, type DeleteContext } from '../../region-check.js';
 import { isInterruptedWaitError, startInterruptWatch } from '../../interrupt-watch.js';
+import { resolvedResourceTimeoutMs } from '../../resource-timeout-registry.js';
 
 /**
  * States a mapping passes through on its own; Lambda refuses a delete with
@@ -42,9 +43,17 @@ function isInUse(error: unknown): boolean {
 async function deleteWhenSettled(
   this: LambdaEventSourceMappingProvider,
   logicalId: string,
-  physicalId: string
+  physicalId: string,
+  resourceType: string
 ): Promise<void> {
-  const deadline = Date.now() + IN_USE_SETTLE_BUDGET_MS;
+  // Within half an explicit --resource-timeout, so the outer deadline never
+  // abandons a wait that keeps sending calls behind it.
+  const userTimeoutMs = resolvedResourceTimeoutMs(resourceType);
+  const budgetMs =
+    userTimeoutMs === undefined
+      ? IN_USE_SETTLE_BUDGET_MS
+      : Math.min(IN_USE_SETTLE_BUDGET_MS, userTimeoutMs / 2);
+  const deadline = Date.now() + budgetMs;
   for (;;) {
     try {
       await this.lambdaClient.send(new DeleteEventSourceMappingCommand({ UUID: physicalId }));
@@ -123,7 +132,7 @@ export async function deleteImpl(
       throw error;
     }
 
-    await deleteWhenSettled.call(this, logicalId, physicalId);
+    await deleteWhenSettled.call(this, logicalId, physicalId, resourceType);
     this.logger.debug(`Successfully deleted event source mapping ${logicalId}`);
   } catch (error) {
     if (error instanceof ResourceNotFoundException) {
