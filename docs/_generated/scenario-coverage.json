@@ -2978,6 +2978,11 @@
       "scenarios": []
     },
     {
+      "name": "route53resolver-rule",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "s3-analytics-inventory",
       "annotated": false,
       "scenarios": []
@@ -4581,6 +4586,7 @@
     "rollback-command",
     "rollback-regenerated-secret",
     "rollback-replay-cc-generated-name",
+    "route53resolver-rule",
     "s3-analytics-inventory",
     "s3-bucket-policy-existing",
     "s3-event-notification",

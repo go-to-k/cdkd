@@ -23,6 +23,15 @@ vi.mock('../../../src/utils/logger.js', () => ({
 import { ReplacementRulesRegistry } from '../../../src/analyzer/replacement-rules.js';
 import { PROVIDER_REPLACEMENT_PLANNERS } from '../../../src/analyzer/diff-calculator/provider-replacement.js';
 import { REPLACEMENT_EVIDENCE } from '../../../src/analyzer/replacement-rules/evidence.js';
+import { UNMEASURED_SPEC_REPLACEMENT_CANDIDATES } from '../../../src/analyzer/replacement-rules/evidence-baseline.js';
+import { withSpecReplacementPaths } from '../../../src/provisioning/create-only-properties.js';
+import {
+  candidateKey,
+  loadSpecReplacementCandidates,
+  readRegistryCreateOnlySnapshot,
+  SPEC_TYPES_WITHOUT_REGISTRY_SCHEMA,
+} from '../../../scripts/spec-replacement-candidates.ts';
+import { labelOf } from '../../../scripts/gen-spec-replacement-properties.ts';
 
 const FIXTURES = join(__dirname, '../../fixtures/cfn-schemas');
 
@@ -67,6 +76,8 @@ interface Entry {
   key: string;
   verdict: Verdict;
   ruled: boolean;
+  /** A spec-replacement candidate (go-to-k/cdkd#7070) no hand rule decides. */
+  candidate?: boolean;
   fixture: Fixture | undefined;
   spec: Spec | undefined;
 }
@@ -82,7 +93,7 @@ function collectEntries(): Entry[] {
     entries.set(key, { key, verdict, ruled, fixture: fixtures.get(type), spec: spec(type, prop) });
   };
   for (const [type, fixture] of fixtures) {
-    const paths = fixture.createOnlyPropertyPaths ?? [];
+    const paths = withSpecReplacementPaths(type, fixture.createOnlyPropertyPaths ?? []);
     for (const prop of fixture.properties) {
       if (registry.isClassified(type, prop)) continue;
       const whole = paths.some((p) => p.length === 1 && p[0] === prop);
@@ -102,12 +113,49 @@ function collectEntries(): Entry[] {
     for (const prop of rule.updateableProperties ?? []) add(type, prop, 'update', true);
     for (const prop of rule.replacementProperties) add(type, prop, 'replace', true);
   }
+  // go-to-k/cdkd#7070: every spec-replacement candidate on ANY type. Its
+  // verdict is cdkd's: replaced when the paths the diff reads (the schema's,
+  // unioned with the generated table) cover it.
+  const registrySnapshot = readRegistryCreateOnlySnapshot();
+  for (const c of loadSpecReplacementCandidates().candidates) {
+    const top = c.path[0]!;
+    if (isHandDecided(registry, c.type, top)) continue;
+    const key = candidateKey(c.type, c.path);
+    const existing = entries.get(key);
+    if (existing) {
+      existing.candidate = true;
+      continue;
+    }
+    const schemaPaths =
+      fixtures.get(c.type)?.createOnlyPropertyPaths ?? registrySnapshot.get(c.type) ?? [];
+    const covered = withSpecReplacementPaths(c.type, schemaPaths).some(
+      (p) => p.length <= c.path.length && p.every((segment, i) => segment === c.path[i])
+    );
+    entries.set(key, {
+      key,
+      verdict: covered ? 'replace' : 'update',
+      ruled: false,
+      candidate: true,
+      fixture: fixtures.get(c.type),
+      spec: c.spec,
+    });
+  }
   return [...entries.values()];
+}
+
+/** A hand rule or a provider-replacement planner decides the property. */
+function isHandDecided(registry: ReplacementRulesRegistry, type: string, prop: string): boolean {
+  return (
+    registry.isClassified(type, prop) ||
+    (PROVIDER_REPLACEMENT_PLANNERS.get(type)?.properties.includes(prop) ?? false)
+  );
 }
 
 /** Whether the entry's verdict needs a row: hand logic, a disagreement, or no oracle. */
 function needsEvidence(e: Entry): boolean {
   if (e.verdict === 'conditional') return true;
+  // A spec-replacement candidate needs a measured verdict, or a baseline line.
+  if (e.candidate) return !UNMEASURED_SPEC_REPLACEMENT_CANDIDATES.has(e.key);
   const prop = e.key.split('#')[1];
   // The registry schema says CloudFormation may replace on some changes of
   // it, so a verdict that never depends on the change needs its reason.
@@ -158,6 +206,56 @@ describe('replacement verdict evidence (go-to-k/cdkd#7024, #7038)', () => {
       .filter(([key, evidence]) => byKey.has(key) && byKey.get(key) !== evidence.verdict)
       .map(([key, evidence]) => `${key}: row ${evidence.verdict}, cdkd ${byKey.get(key)}`);
     expect(flipped).toEqual([]);
+  });
+
+  // go-to-k/cdkd#7070: the spec is a candidate list, never an oracle, so each
+  // candidate is either measured (a `replace` / `update` row) or baselined.
+  it('every baseline line is a candidate with no measured verdict', () => {
+    const candidates = new Set(entries.filter((e) => e.candidate).map((e) => e.key));
+    expect(candidates.size).toBeGreaterThanOrEqual(200);
+    const stale = [...UNMEASURED_SPEC_REPLACEMENT_CANDIDATES].filter(
+      (key) => !candidates.has(key) || REPLACEMENT_EVIDENCE.has(key)
+    );
+    expect(stale.sort()).toEqual([]);
+  });
+
+  // The generator cannot load the hand rules, so its `hand rule` label is
+  // vouched for here; and a member of an array or map cannot be replaced per
+  // element, so no such row may say `replace`.
+  it('the generated labels hold: hand rule iff a hand rule, no element replace', () => {
+    const registry = new ReplacementRulesRegistry();
+    const { candidates } = loadSpecReplacementCandidates();
+    const misread = candidates
+      .filter(
+        (c) => (labelOf(c) === 'hand rule') !== isHandDecided(registry, c.type, c.path[0]!)
+      )
+      .map((c) => candidateKey(c.type, c.path));
+    expect(misread).toEqual([]);
+    expect(candidates.filter((c) => labelOf(c) === 'unclassified')).toEqual([]);
+    expect(candidates.filter((c) => labelOf(c) === 'hand rule').length).toBeGreaterThanOrEqual(40);
+    const elementReplace = candidates
+      .filter((c) => c.path.includes('*') && labelOf(c) === 'replace')
+      .map((c) => candidateKey(c.type, c.path));
+    expect(elementReplace).toEqual([]);
+    expect(candidates.filter((c) => c.path.includes('*')).length).toBeGreaterThanOrEqual(30);
+  });
+
+  // The skip set is pinned whole: a type dropping out of the snapshot (a
+  // truncated refresh) or gaining a schema must be a deliberate edit.
+  it('the spec types with no registry schema are exactly the committed list', () => {
+    const { typesWithoutSchema } = loadSpecReplacementCandidates();
+    expect(typesWithoutSchema).toEqual([...SPEC_TYPES_WITHOUT_REGISTRY_SCHEMA.keys()].sort());
+    for (const [type, kind] of SPEC_TYPES_WITHOUT_REGISTRY_SCHEMA) {
+      expect(kind === 'sam-transform', type).toBe(type.startsWith('AWS::Serverless::'));
+    }
+  });
+
+  it('every measured candidate is a plain replace or update', () => {
+    const odd = entries
+      .filter((e) => e.candidate && REPLACEMENT_EVIDENCE.has(e.key))
+      .filter((e) => !['replace', 'update'].includes(REPLACEMENT_EVIDENCE.get(e.key)!.verdict))
+      .map((e) => e.key);
+    expect(odd).toEqual([]);
   });
 
   it('every row names where its evidence is recorded', () => {

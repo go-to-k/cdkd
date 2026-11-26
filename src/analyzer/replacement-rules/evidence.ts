@@ -13,6 +13,13 @@
  *  - every other verdict that disagrees with the committed schema fixture's
  *    create-only paths or with `@aws-cdk/aws-service-spec` (what `cdk diff`
  *    reads), or that neither of them covers;
+ *  - every property, on ANY type, the spec calls a replacement while the
+ *    registry schema leaves it mutable (go-to-k/cdkd#7070,
+ *    `scripts/spec-replacement-candidates.ts`), keyed `<Type>#<A>.<B>` when
+ *    nested, unless a hand rule decides it or it sits in the unmeasured
+ *    baseline (`./evidence-baseline.ts`). Its `replace` rows are the ONLY
+ *    ones that reach the deploy path, through
+ *    `spec-replacement-properties.generated.ts`;
  *
  * and fails on a row that no longer matches such a verdict. The spec is a
  * dev dependency updated weekly, so a CloudFormation change re-runs the check.
@@ -30,6 +37,13 @@ export type ReplacementEvidenceKind =
   | 'cfn-docs'
   /** The AWS API cannot apply the change in place (no update member, or it refuses). */
   | 'aws-api'
+  /**
+   * A Cloud Control update of only this property, recorded on `refs`: it
+   * applied in place under the same identifier (`update`), or Cloud Control
+   * refused it (`replace`). Cloud Control runs the registry handler
+   * CloudFormation runs for the type.
+   */
+  | 'cc-measured'
   /** A nested create-only path the committed fixture lists under the property. */
   | 'schema-nested'
   /** A deliberate, safer difference from CloudFormation, decided on `refs`. */
@@ -259,6 +273,24 @@ export const REPLACEMENT_EVIDENCE: ReadonlyMap<string, ReplacementEvidence> = ne
   ['AWS::SNS::Subscription#Region', update('cfn-measured', 7038, 7048)],
   ['AWS::EC2::Instance#InstanceType', update('cfn-measured', 5446, 7038)],
   ['AWS::ElastiCache::CacheCluster#NumCacheNodes', update('cfn-measured', 7038)],
+  // --- spec-replacement candidates (go-to-k/cdkd#7070): the spec calls a
+  // replacement, the registry schema leaves the path mutable.
+  ['AWS::Route53Resolver::ResolverRule#DomainName', replace('cfn-measured', 7069, 7070)],
+  // CloudFormation does not replace on it either: the update fails (#3750),
+  // and the provider refuses the rename before any call (`refuseNestedRename`).
+  ['AWS::Glue::Database#DatabaseInput.Name', update('refused', 3750, 7070)],
+  ['AWS::Batch::SchedulingPolicy#Tags', update('cc-measured', 7070)],
+  ['AWS::DataBrew::Recipe#Tags', update('cc-measured', 7070)],
+  ['AWS::ElastiCache::User#Engine', update('cc-measured', 7070)],
+  ['AWS::EntityResolution::SchemaMapping#Description', update('cc-measured', 7070)],
+  ['AWS::ImageBuilder::Component#Tags', update('cc-measured', 7070)],
+  ['AWS::IoTWireless::NetworkAnalyzerConfiguration#Tags', update('cc-measured', 7070)],
+  ['AWS::Location::GeofenceCollection#Description', update('cc-measured', 7070)],
+  ['AWS::Location::Map#Description', update('cc-measured', 7070)],
+  ['AWS::Location::RouteCalculator#Description', update('cc-measured', 7070)],
+  ['AWS::Location::Tracker#PositionFiltering', update('cc-measured', 7070)],
+  ['AWS::RedshiftServerless::Namespace#Tags', update('cc-measured', 7070)],
+  ['AWS::SageMaker::AppImageConfig#Tags', update('cc-measured', 7070)],
   // --- updateableProperties beyond the fixture or the spec
   ['AWS::Budgets::Budget#NotificationsWithSubscribers', update('deviation', 7038)],
   ['AWS::EC2::Subnet#Ipv6CidrBlock', update('cfn-measured', 5632)],
