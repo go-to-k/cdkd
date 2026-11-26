@@ -264,7 +264,8 @@ update does when its topics change. A journal written by an older cdkd does not
 record the provider's answer, so there a changed physical id still reads as a
 replacement. A `Type` change, and an equal id that names two resources (a Glue
 table whose recorded database differs, a Lambda permission on another function,
-a security group ingress rule from another source), stay replacements whatever
+a security group ingress rule from another source, an API Gateway stage on
+another API), stay replacements whatever
 the provider answered.
 
 On the create-first order, cdkd deletes the new resource first only when it

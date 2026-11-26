@@ -459,6 +459,11 @@
       "scenarios": []
     },
     {
+      "name": "apigw-stage-api-replacement",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "apigw-stage-props",
       "annotated": false,
       "scenarios": []
@@ -4321,6 +4326,7 @@
     "alb-listener-rule-update",
     "apigatewayv2-update-removal",
     "apigw-restapi-spec",
+    "apigw-stage-api-replacement",
     "apigw-stage-props",
     "apigw-stage-throttling",
     "apigw-usage-plan-key",
