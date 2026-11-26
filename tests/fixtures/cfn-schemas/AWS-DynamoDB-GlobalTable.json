@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::DynamoDB::GlobalTable",
-  "generatedAt": "2026-10-21",
+  "generatedAt": "2026-11-26",
   "properties": [
     "Arn",
     "AttributeDefinitions",
@@ -41,6 +41,17 @@
   ],
   "primaryIdentifier": [
     "TableName"
+  ],
+  "conditionalCreateOnlyPropertyPaths": [
+    [
+      "GlobalTableSourceArn"
+    ],
+    [
+      "KeySchema"
+    ],
+    [
+      "LocalSecondaryIndexes"
+    ]
   ],
   "nestedProperties": {
     "SSESpecification": [

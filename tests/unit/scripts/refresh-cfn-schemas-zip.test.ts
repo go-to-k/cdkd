@@ -944,3 +944,36 @@ describe('download and decompression bounds', () => {
     expect(readSchemaBundle(zip.toBuffer()).size).toBe(1);
   });
 });
+
+describe('conditionalCreateOnlyPropertyPaths (go-to-k/cdkd#7038)', () => {
+  const schemaWith = (extra: Record<string, unknown>): string =>
+    JSON.stringify({
+      typeName: 'AWS::Test::Type',
+      properties: { A: { type: 'string' }, B: { type: 'object' } },
+      ...extra,
+    });
+
+  it('captures the conditionally create-only paths, sorted, nested ones included', () => {
+    const fixture = buildFixture(
+      schemaWith({ conditionalCreateOnlyProperties: ['/properties/B/C', '/properties/A'] }),
+      'AWS::Test::Type',
+      '2026-01-01'
+    );
+    expect(fixture['conditionalCreateOnlyPropertyPaths']).toEqual([['A'], ['B', 'C']]);
+  });
+
+  it('omits the field when the schema declares none, keeping the fixture byte shape', () => {
+    const fixture = buildFixture(schemaWith({}), 'AWS::Test::Type', '2026-01-01');
+    expect('conditionalCreateOnlyPropertyPaths' in fixture).toBe(false);
+  });
+
+  it('reports drift when only the conditional list changes', () => {
+    const before = buildFixture(schemaWith({}), 'AWS::Test::Type', '2026-01-01');
+    const after = buildFixture(
+      schemaWith({ conditionalCreateOnlyProperties: ['/properties/A'] }),
+      'AWS::Test::Type',
+      '2026-01-01'
+    );
+    expect(fixtureDiffersIgnoringDate(after, serializeFixture(before))).toBe(true);
+  });
+});

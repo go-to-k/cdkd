@@ -11,6 +11,7 @@ import {
   wrapConstructableImplementation,
   type MockableImplementation,
 } from './constructable-implementation.js';
+import { installEventLoopWatchdog } from './event-loop-watchdog.js';
 import { installStreamFence } from './stream-fence.js';
 import { resetInjectedAwsRegionForTests } from '../src/utils/injected-aws-region.js';
 import { resetEmulatorDefaultRegionForTests } from '../src/utils/emulator-default-region.js';
@@ -161,6 +162,11 @@ vi.fn = ((implementation?: MockableImplementation) => {
 // replay them only when that test FAILS. See tests/stream-fence.ts for why a
 // green run printing 20 KB of product notices is a problem worth solving.
 installStreamFence();
+
+// Fail a test whose event loop stopped turning (a wait spinning on a sleep
+// double that resolves at once) instead of hanging the run. See
+// tests/event-loop-watchdog.ts.
+installEventLoopWatchdog();
 
 const originalExit = process.exit;
 

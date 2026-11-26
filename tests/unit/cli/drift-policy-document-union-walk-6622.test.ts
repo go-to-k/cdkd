@@ -14,6 +14,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
   reserveStdoutForPayload: vi.fn(),
   getLogger: () => ({
     setLevel: vi.fn(),
+    getLevel: () => 'info',
     debug: vi.fn(),
     info: vi.fn(),
     warn: vi.fn(),
