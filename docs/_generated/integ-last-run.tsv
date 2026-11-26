@@ -44,7 +44,7 @@ bootstrap-free-region	2026-11-04T07:51:26Z	PASS	140	verify.sh	rc 0, 0 orphans; c
 bucket-deployment	2026-11-13T07:46:30Z	PASS	95	verify.sh	rc 0, destroy clean, 0 orphans, no incomplete MPU (#6184)
 budgets	2026-11-21T11:32:52Z	PASS	134	verify.sh	rc 0, 0 orphans (PR #6763)
 budgets-action	2026-11-22T19:57:01Z	PASS	95	verify.sh	rc ok, orph clean; race hit: 4 Budgets assume refusals retried (#6845)
-cache-streaming	2026-11-24T15:26:28Z	PASS	3369	verify.sh	rc ok, orph clean (#6933 sweep)
+cache-streaming	2026-11-26T12:11:02Z	PASS	4423	verify.sh	rc ok, orph clean; 4j+4k #7045 cross-az replacement OK (PR #7056)
 cc-abandoned-create-resume	2026-11-05T03:51:49Z	PASS	120	verify.sh	rc ok, orph clean; fixture ran vp run build
 cc-api-fallback	2026-11-21T08:55:26Z	PASS	230	verify.sh	rc 0, orph clean (PR 6721 9efccc8+main)
 cc-api-fallback-transitions	2026-11-21T08:55:26Z	PASS	115	verify.sh	rc 0, orph clean (PR 6721 9efccc8+main)
