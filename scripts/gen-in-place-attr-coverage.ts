@@ -187,11 +187,18 @@ const IDENTITY_SHAPED = /(Arn|ARN|Id|ID|Identifier|Uuid|UUID)$/;
 const PSEUDO_PLACEHOLDERS: ReadonlySet<string> = new Set(['Partition', 'Region', 'Account']);
 
 /**
- * Pairs no rule settles because a live probe of them is pending (go-to-k/cdkd#7007:
- * an outside contributor's VpcLink rename probe holds this pair's verdict).
+ * Pairs no rule settles (go-to-k/cdkd#7007): a live probe of them is pending
+ * (an outside contributor's VpcLink rename probe), or the rule would read a
+ * create-only property the live registry makes in place.
  */
 export const RULE_HELD_OUT: ReadonlySet<string> = new Set([
   'AWS::ApiGatewayV2::VpcLink.VpcLinkId',
+  // The pinned spec calls every ONTAP property but Tags create-only, so
+  // no-in-place-update would settle these; the live registry makes Protocol
+  // in place, and whether an SMB password change re-mints the managed secret
+  // is not documented.
+  'AWS::DataSync::LocationFSxONTAP.Protocol.SMB.ManagedSecretConfig',
+  'AWS::DataSync::LocationFSxONTAP.Protocol.SMB.CmkSecretConfig.SecretArn',
 ]);
 
 /**

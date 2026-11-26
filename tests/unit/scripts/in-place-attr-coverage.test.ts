@@ -158,16 +158,22 @@ describe('the hand verdicts equal the shared.ts tables (#7001)', () => {
     expect(overlap).toEqual([]);
   });
 
-  it('no Cloud Control hand verdict overrides a pair a rule settles, bar a moving one over a moving rule (#7007)', () => {
+  it('no Cloud Control hand never overrides a moving rule, nor a hand verdict a never rule it agrees with (#7007)', () => {
     expect(report.ccHand.length).toBeGreaterThan(0);
     for (const r of report.ccHand) {
       const t = inputs.types.find((x) => x.type === r.type)!;
       const rule = classifyByRule(t, r.attribute);
       const where = `${r.type}.${r.attribute}: ${rule} under a ${r.verdict} hand verdict`;
-      expect(rule === undefined || (MOVING_RULES.has(rule) && r.verdict !== 'never'), where).toBe(
-        true
-      );
+      // A hand never silencing a moving rule hides a move; a hand never over
+      // a never rule is dead. A hand move over a never rule corrects a rule
+      // reading the stale spec (the DataSync locations).
+      if (r.verdict === 'never') expect(rule, where).toBeUndefined();
     }
+    const s3 = report.ccHand.find((r) => r.type === 'AWS::DataSync::LocationS3');
+    expect(classifyByRule(inputs.types.find((x) => x.type === s3!.type)!, 'LocationUri')).toBe(
+      'no-in-place-update'
+    );
+    expect(s3?.verdict).toBe('moved-by');
   });
 
   it('every Cloud Control pair a moving rule settles is an IN_PLACE_UPDATE_DERIVED_ATTRS row (#7007)', () => {
@@ -609,6 +615,8 @@ describe('the #7007 rules, on real spec inputs', () => {
     for (const [type, props] of [
       ['AWS::DataSync::LocationNFS', ['Subdirectory', 'ServerHostname']],
       ['AWS::DataSync::LocationFSxWindows', ['Subdirectory']],
+      ['AWS::DataSync::LocationS3', ['Subdirectory']],
+      ['AWS::DataSync::LocationFSxONTAP', ['Subdirectory', 'Protocol']],
       ['AWS::DataSync::LocationObjectStorage', ['Subdirectory', 'ServerHostname']],
       ['AWS::DataSync::LocationHDFS', ['Subdirectory', 'NameNodes']],
     ] as const) {

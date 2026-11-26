@@ -311,6 +311,26 @@ const REASONED: Classification = {
       '`object-storage://<host>/<bucket>/<subdirectory>/`'
     ),
   },
+  // The pinned spec calls these subdirectories (and ONTAP / OpenZFS
+  // protocols) create-only, so no-in-place-update would call the URI fixed;
+  // the live registry makes them in place, and UpdateLocation* takes them.
+  'AWS::DataSync::LocationS3': {
+    LocationUri: movedBy(['Subdirectory'], '`s3://<bucket>/<subdirectory>/`'),
+  },
+  'AWS::DataSync::LocationEFS': {
+    LocationUri: movedBy(['Subdirectory'], '`efs://<region>.<file system>/<subdirectory>/`'),
+  },
+  'AWS::DataSync::LocationFSxLustre': {
+    LocationUri: movedBy(['Subdirectory'], '`fsxl://<region>.<file system>/<subdirectory>/`'),
+  },
+  'AWS::DataSync::LocationFSxOpenZFS': {
+    LocationUri: movedBy(['Subdirectory'], '`fsxz://<region>.<file system>/<subdirectory>/`'),
+  },
+  // Unmeasured: the ONTAP URI scheme may name the protocol (NFS / SMB), so a
+  // Protocol change is taken as a move too.
+  'AWS::DataSync::LocationFSxONTAP': {
+    LocationUri: movedBy(['Subdirectory', 'Protocol'], 'the storage VM, protocol and subdirectory'),
+  },
   'AWS::DataSync::LocationAzureBlob': {
     LocationUri: movedBy(['Subdirectory'], 'the container URL and subdirectory'),
   },

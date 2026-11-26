@@ -13,7 +13,7 @@ Whether an in-place update moves each read-only `Fn::GetAtt` attribute (issue [#
 Source: `@aws-cdk/aws-service-spec` 0.1.235.
 
 - SDK-provider types: **131**, pairs classified by hand: **390** (moving: **66**)
-- Cloud Control types: **1584**, pairs: **5545** — by rule: `no-in-place-update` 1151, `creation-timestamp` 376, `own-identity` 812, `primary-identifier` 450, `arn-template` 59, `update-timestamp` 372, `creator` 26, `owner-account` 30, `identifier-arn-member` 68, `update-marker` 142, `parent-fixed` 2; by hand: **79**; in the baseline: **1978**
+- Cloud Control types: **1584**, pairs: **5545** — by rule: `no-in-place-update` 1144, `creation-timestamp` 376, `own-identity` 812, `primary-identifier` 450, `arn-template` 59, `update-timestamp` 372, `creator` 26, `owner-account` 30, `identifier-arn-member` 68, `update-marker` 142, `parent-fixed` 2; by hand: **84**; in the baseline: **1980**
 
 ## SDK-provider types (hand classification)
 
@@ -822,10 +822,15 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235.
 - `AWS::CodeStarConnections::SyncConfiguration` `RepositoryName`: moved by `RepositoryLinkId` — the name of the repository the link points at
 - `AWS::ControlTower::LandingZone` `LatestAvailableVersion`: never — the newest landing zone version AWS offers, a service catalog
 - `AWS::DataSync::LocationAzureBlob` `LocationUri`: moved by `Subdirectory` — the container URL and subdirectory
+- `AWS::DataSync::LocationEFS` `LocationUri`: moved by `Subdirectory` — `efs://<region>.<file system>/<subdirectory>/`
+- `AWS::DataSync::LocationFSxLustre` `LocationUri`: moved by `Subdirectory` — `fsxl://<region>.<file system>/<subdirectory>/`
+- `AWS::DataSync::LocationFSxONTAP` `LocationUri`: moved by `Subdirectory`, `Protocol` — the storage VM, protocol and subdirectory
+- `AWS::DataSync::LocationFSxOpenZFS` `LocationUri`: moved by `Subdirectory` — `fsxz://<region>.<file system>/<subdirectory>/`
 - `AWS::DataSync::LocationFSxWindows` `LocationUri`: moved by `Subdirectory` — `fsxw://<file system>/<subdirectory>/`
 - `AWS::DataSync::LocationHDFS` `LocationUri`: moved by `Subdirectory`, `NameNodes` — `hdfs://<name node>:<port>/<subdirectory>/`
 - `AWS::DataSync::LocationNFS` `LocationUri`: moved by `Subdirectory`, `ServerHostname` — `nfs://<host>/<subdirectory>/`
 - `AWS::DataSync::LocationObjectStorage` `LocationUri`: moved by `Subdirectory`, `ServerHostname` — `object-storage://<host>/<bucket>/<subdirectory>/`
+- `AWS::DataSync::LocationS3` `LocationUri`: moved by `Subdirectory` — `s3://<bucket>/<subdirectory>/`
 - `AWS::DataSync::LocationSMB` `LocationUri`: moved by `Subdirectory`, `ServerHostname` — `smb://<host>/<subdirectory>/`
 - `AWS::DataSync::Task` `TaskArn`: never — measured (cdkd-probe-7007-s4b): Name in place left it task/task-0be708b518a40c674
 - `AWS::Deadline::Budget` `Arn`: never — measured (cdkd-probe-7007-s3c): DisplayName in place left it .../budget/budget-4a2b9e7f...
@@ -1509,6 +1514,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::DataExchange::DataSet` | 1 |
 | `AWS::DataSync::Agent` | 2 |
 | `AWS::DataSync::LocationAzureBlob` | 2 |
+| `AWS::DataSync::LocationFSxONTAP` | 2 |
 | `AWS::DataSync::LocationFSxWindows` | 2 |
 | `AWS::DataSync::LocationHDFS` | 2 |
 | `AWS::DataSync::LocationObjectStorage` | 2 |

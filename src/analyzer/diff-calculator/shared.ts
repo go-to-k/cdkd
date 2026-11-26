@@ -219,6 +219,13 @@ export const IN_PLACE_UPDATE_ATTRS_MOVED_BY: Readonly<
   // host and subdirectory (an HDFS name node), which UpdateLocation*
   // rewrites; a Deadline monitor URL carries the subdomain UpdateMonitor takes.
   'AWS::DataSync::LocationFSxWindows': Object.freeze({ LocationUri: new Set(['Subdirectory']) }),
+  'AWS::DataSync::LocationS3': Object.freeze({ LocationUri: new Set(['Subdirectory']) }),
+  'AWS::DataSync::LocationEFS': Object.freeze({ LocationUri: new Set(['Subdirectory']) }),
+  'AWS::DataSync::LocationFSxLustre': Object.freeze({ LocationUri: new Set(['Subdirectory']) }),
+  'AWS::DataSync::LocationFSxOpenZFS': Object.freeze({ LocationUri: new Set(['Subdirectory']) }),
+  'AWS::DataSync::LocationFSxONTAP': Object.freeze({
+    LocationUri: new Set(['Subdirectory', 'Protocol']),
+  }),
   'AWS::DataSync::LocationNFS': Object.freeze({
     LocationUri: new Set(['Subdirectory', 'ServerHostname']),
   }),

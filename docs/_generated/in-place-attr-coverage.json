@@ -7,7 +7,7 @@
     "ccTypes": 1584,
     "ccPairs": 5545,
     "ccByRule": {
-      "no-in-place-update": 1151,
+      "no-in-place-update": 1144,
       "creation-timestamp": 376,
       "own-identity": 812,
       "primary-identifier": 450,
@@ -19,8 +19,8 @@
       "update-marker": 142,
       "parent-fixed": 2
     },
-    "ccByHand": 79,
-    "ccBaseline": 1978
+    "ccByHand": 84,
+    "ccBaseline": 1980
   },
   "sdk": [
     {
@@ -2751,6 +2751,43 @@
       "reason": "the container URL and subdirectory"
     },
     {
+      "type": "AWS::DataSync::LocationEFS",
+      "attribute": "LocationUri",
+      "verdict": "moved-by",
+      "properties": [
+        "Subdirectory"
+      ],
+      "reason": "`efs://<region>.<file system>/<subdirectory>/`"
+    },
+    {
+      "type": "AWS::DataSync::LocationFSxLustre",
+      "attribute": "LocationUri",
+      "verdict": "moved-by",
+      "properties": [
+        "Subdirectory"
+      ],
+      "reason": "`fsxl://<region>.<file system>/<subdirectory>/`"
+    },
+    {
+      "type": "AWS::DataSync::LocationFSxONTAP",
+      "attribute": "LocationUri",
+      "verdict": "moved-by",
+      "properties": [
+        "Subdirectory",
+        "Protocol"
+      ],
+      "reason": "the storage VM, protocol and subdirectory"
+    },
+    {
+      "type": "AWS::DataSync::LocationFSxOpenZFS",
+      "attribute": "LocationUri",
+      "verdict": "moved-by",
+      "properties": [
+        "Subdirectory"
+      ],
+      "reason": "`fsxz://<region>.<file system>/<subdirectory>/`"
+    },
+    {
       "type": "AWS::DataSync::LocationFSxWindows",
       "attribute": "LocationUri",
       "verdict": "moved-by",
@@ -2788,6 +2825,15 @@
         "ServerHostname"
       ],
       "reason": "`object-storage://<host>/<bucket>/<subdirectory>/`"
+    },
+    {
+      "type": "AWS::DataSync::LocationS3",
+      "attribute": "LocationUri",
+      "verdict": "moved-by",
+      "properties": [
+        "Subdirectory"
+      ],
+      "reason": "`s3://<bucket>/<subdirectory>/`"
     },
     {
       "type": "AWS::DataSync::LocationSMB",
@@ -5309,6 +5355,10 @@
     "AWS::DataSync::LocationAzureBlob": [
       "CmkSecretConfig.SecretArn",
       "ManagedSecretConfig"
+    ],
+    "AWS::DataSync::LocationFSxONTAP": [
+      "Protocol.SMB.CmkSecretConfig.SecretArn",
+      "Protocol.SMB.ManagedSecretConfig"
     ],
     "AWS::DataSync::LocationFSxWindows": [
       "CmkSecretConfig.SecretArn",
