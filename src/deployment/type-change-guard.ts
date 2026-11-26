@@ -42,6 +42,8 @@ import { displayPhysicalId } from '../provisioning/secret-physical-id.js';
 import { carriesSecretMask } from './secret-redaction.js';
 import { segmentAfterAnchor } from '../provisioning/composite-id.js';
 import { parseLambdaFunctionAddress } from '../utils/lambda-function-name.js';
+import { ingressRuleSourceKey } from '../provisioning/sg-rule-identity.js';
+import { isUsableIdentityValue } from './recorded-identity-attributes.js';
 
 /**
  * Do two records of ONE type that carry the SAME physical id nonetheless name
@@ -49,8 +51,9 @@ import { parseLambdaFunctionAddress } from '../utils/lambda-function-name.js';
  *
  * For almost every type an id is self-describing, so no — and this answers
  * `false`, leaving every caller's id-equality reading byte-for-byte as it was.
- * Two types are exceptions. `AWS::Lambda::Permission` (go-to-k/cdkd#5137):
- * see {@link permissionsOnDifferentFunctions}. And `AWS::Glue::Table`: its id `<databaseName>|<tableName>` is
+ * Three types are exceptions. `AWS::Lambda::Permission` (go-to-k/cdkd#5137):
+ * see {@link permissionsOnDifferentFunctions}. `AWS::EC2::SecurityGroupIngress`
+ * (go-to-k/cdkd#7071): see {@link ingressRulesFromDifferentSources}. And `AWS::Glue::Table`: its id `<databaseName>|<tableName>` is
  * placed by the recorded `DatabaseName`, and since both names may contain `|`,
  * table `db|orders` in database `my` and table `orders` in database `my|db`
  * share the id `my|db|orders`. A replacement that changes both names can
@@ -81,6 +84,9 @@ export function equalIdNamesDifferentResources(input: {
 }): boolean {
   if (input.resourceType === 'AWS::Lambda::Permission') {
     return permissionsOnDifferentFunctions(input.oldProperties, input.newProperties);
+  }
+  if (input.resourceType === 'AWS::EC2::SecurityGroupIngress') {
+    return ingressRulesFromDifferentSources(input.oldProperties, input.newProperties);
   }
   if (input.resourceType !== 'AWS::Glue::Table' || input.physicalId === undefined) return false;
   const oldDb = input.oldProperties?.['DatabaseName'];
@@ -118,6 +124,26 @@ function permissionsOnDifferentFunctions(
   const oldName = parseLambdaFunctionAddress(oldFn)?.name;
   const newName = parseLambdaFunctionAddress(newFn)?.name;
   return oldName !== undefined && newName !== undefined && oldName !== newName;
+}
+
+/**
+ * go-to-k/cdkd#7071: a standalone ingress rule's id is
+ * `<GroupId>|<IpProtocol>|<FromPort>|<ToPort>`, with no source, so a
+ * replacement changing only the source (`CidrIp`, `SourceSecurityGroupId`, all
+ * create-only) creates a NEW rule under the old id. EC2 keeps one rule per
+ * group, protocol, ports and source, so two readable sources that differ are
+ * two rules. A mask, an intrinsic, a group named by `SourceSecurityGroupName`
+ * or an absent bag answers `false`, the safe direction.
+ */
+function ingressRulesFromDifferentSources(
+  oldProperties: Record<string, unknown> | undefined,
+  newProperties: Record<string, unknown> | undefined
+): boolean {
+  const oldSource = ingressRuleSourceKey(oldProperties);
+  const newSource = ingressRuleSourceKey(newProperties);
+  // A mask anywhere in a value, or a secret reference, is no source.
+  if (!isUsableIdentityValue(oldSource) || !isUsableIdentityValue(newSource)) return false;
+  return oldSource !== newSource;
 }
 
 /**
