@@ -150,6 +150,14 @@ describe('structural GetAtt refusal (#6242)', () => {
     ).toBeInstanceOf(IntrinsicResolutionRefusalError);
   });
 
+  it('refuses VPCGatewayAttachment AttachmentType on a record lacking it: the physical id is `<gatewayId>|<vpcId>`, not IGW / VGW (#7009)', async () => {
+    expect(
+      await refusalOf(
+        resolve('AWS::EC2::VPCGatewayAttachment', 'igw-0abc|vpc-0abc', 'AttachmentType', 'sdk')
+      )
+    ).toBeInstanceOf(IntrinsicResolutionRefusalError);
+  });
+
   it.each([
     ['AWS::ApiGatewayV2::Integration', 'IntegrationId', 'int1'],
     ['AWS::ApiGateway::Resource', 'ResourceId', 'res1'],

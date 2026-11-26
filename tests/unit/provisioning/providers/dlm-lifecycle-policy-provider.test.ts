@@ -54,6 +54,7 @@ import {
   ProvisioningError,
   ResourceUpdateNotSupportedError,
 } from '../../../../src/utils/error-handler.js';
+import { attributesAfterUpdate } from '../../../../src/deployment/recorded-identity-attributes.js';
 
 const RESOURCE_TYPE = 'AWS::DLM::LifecyclePolicy';
 const POLICY_ID = 'policy-0123456789abcdef0';
@@ -351,11 +352,34 @@ describe('DLMLifecyclePolicyProvider update', () => {
 
     // No tag calls were attempted (nothing to address them against) and the
     // update still succeeds — but never silently: the branch logs a warning.
-    // The Arn attribute is omitted (not clobbered with '') so a previously
-    // cached value in state survives.
+    // No `attributes` at all, so the recorded Arn survives (#7009: `{}`
+    // REPLACED the record and erased it).
     expect(callsOf(TagResourceCommand)).toHaveLength(0);
     expect(callsOf(UntagResourceCommand)).toHaveLength(0);
-    expect(result.attributes).toEqual({});
+    expect(result).not.toHaveProperty('attributes');
+  });
+
+  it('keeps the Arn create recorded when the update read-back has no PolicyArn (#7009)', async () => {
+    routeSend({
+      CreateLifecyclePolicyCommand: { PolicyId: POLICY_ID },
+      GetLifecyclePolicyCommand: { Policy: { PolicyId: POLICY_ID, PolicyArn: POLICY_ARN } },
+    });
+    const created = await provider.create('MyPolicy', RESOURCE_TYPE, { State: 'ENABLED' });
+    expect(Object.keys(created.attributes ?? {})).toEqual(['Arn']);
+    routeSend({
+      UpdateLifecyclePolicyCommand: {},
+      GetLifecyclePolicyCommand: { Policy: { PolicyId: POLICY_ID } }, // no PolicyArn
+    });
+    const updated = await provider.update(
+      'MyPolicy',
+      created.physicalId,
+      RESOURCE_TYPE,
+      { State: 'DISABLED' },
+      { State: 'ENABLED' }
+    );
+    expect(attributesAfterUpdate(RESOURCE_TYPE, created.attributes, updated)).toEqual(
+      created.attributes
+    );
   });
 
   it('rejects a DefaultPolicy transition from unset to set with ResourceUpdateNotSupportedError', async () => {

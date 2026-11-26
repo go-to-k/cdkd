@@ -35,6 +35,7 @@ import {
   AgentCoreCodeInterpreterProvider,
   DEFAULT_CODE_INTERPRETER_ID,
 } from '../../../../src/provisioning/providers/agentcore-code-interpreter-provider.js';
+import { attributesAfterUpdate } from '../../../../src/deployment/recorded-identity-attributes.js';
 
 const DEFAULT_ARN =
   'arn:aws:bedrock-agentcore:us-east-1:aws:code-interpreter/aws.codeinterpreter.v1';
@@ -206,8 +207,31 @@ describe('AgentCoreCodeInterpreterProvider update with a recorded region (issue 
     const result = await provider.update('MyCodeInterpreter', DEFAULT_ARN, 'AWS::BedrockAgentCore::CodeInterpreter', {}, {}, {
       expectedRegion: 'us-west-2',
     });
-    expect(result).toEqual({ physicalId: DEFAULT_ARN, wasReplaced: false, attributes: {} });
+    expect(result).toEqual({ physicalId: DEFAULT_ARN, wasReplaced: false });
     expect(region).not.toHaveBeenCalled();
     expect(mockSend).not.toHaveBeenCalled();
+  });
+});
+
+describe('AgentCoreCodeInterpreterProvider update keeps the recorded attributes (issue #7009)', () => {
+  it('leaves every attribute create recorded on the record after an in-place update', async () => {
+    vi.clearAllMocks();
+    const provider = new AgentCoreCodeInterpreterProvider();
+    mockSend.mockResolvedValueOnce({
+      codeInterpreterId: DEFAULT_CODE_INTERPRETER_ID,
+      codeInterpreterArn: DEFAULT_ARN,
+      name: 'AgentCore Code Interpreter',
+      status: 'READY',
+    });
+    const type = 'AWS::BedrockAgentCore::CodeInterpreter';
+    const created = await provider.create('MyCodeInterpreter', type, {});
+    const updated = await provider.update('MyCodeInterpreter', created.physicalId, type, {}, {});
+    const recorded = attributesAfterUpdate(type, created.attributes, updated);
+    expect(Object.keys(created.attributes ?? {}).sort()).toEqual([
+      'CodeInterpreterArn',
+      'CodeInterpreterId',
+      'Status',
+    ]);
+    expect(recorded).toEqual(created.attributes);
   });
 });

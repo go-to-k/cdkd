@@ -220,19 +220,21 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
   }
 
   /**
-   * The status a create or update records: READY once the wait saw it, or
-   * the call's own answer under `--no-wait` (`CDKD_NO_WAIT=true`), which
-   * returns while the runtime is still CREATING / UPDATING
-   * (go-to-k/cdkd#6490). Cloud Control's handler waits for READY too.
+   * The status and `lastUpdatedAt` a create or update records: the READY
+   * read's once the wait saw it, or the call's own answer under `--no-wait`
+   * (`CDKD_NO_WAIT=true`), which returns while the runtime is still
+   * CREATING / UPDATING (go-to-k/cdkd#6490). Cloud Control's handler waits
+   * for READY too. `lastUpdatedAt` moves again when the runtime settles, and
+   * `CreateAgentRuntime` answers none (measured, go-to-k/cdkd#7009).
    */
   private async settledStatus(
     agentRuntimeId: string,
     logicalId: string,
     resourceType: string,
     operation: 'create' | 'update',
-    responseStatus: string | undefined,
+    response: { status?: string | undefined; lastUpdatedAt?: Date | undefined },
     mask: MaskerFn
-  ): Promise<string | undefined> {
+  ): Promise<{ status?: string | undefined; lastUpdatedAt?: Date | undefined }> {
     if (process.env['CDKD_NO_WAIT'] === 'true') {
       this.logger.debug(
         safeMsg`Skipping the READY wait for BedrockAgentCore Runtime ${logicalId} after ${operation} (CDKD_NO_WAIT=true)`
@@ -249,7 +251,7 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
           mask
         )
       );
-      return responseStatus;
+      return { status: response.status, lastUpdatedAt: response.lastUpdatedAt };
     }
     const ready = await waitForRuntimeReady(
       this.waitDeps(),
@@ -259,7 +261,7 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
       operation,
       mask
     );
-    return ready.status;
+    return { status: ready.status, lastUpdatedAt: ready.lastUpdatedAt };
   }
 
   /**
@@ -453,12 +455,12 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
 
       // READY first (go-to-k/cdkd#6490): a tag check that fails then leaves a
       // settled runtime, which the catch's retire can delete.
-      const status = await this.settledStatus(
+      const settled = await this.settledStatus(
         agentRuntimeId,
         logicalId,
         resourceType,
         'create',
-        response.status,
+        response,
         maskerOrIdentity(context?.maskSecrets)
       );
 
@@ -468,7 +470,7 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
 
       return {
         physicalId: agentRuntimeId,
-        attributes: this.buildAttributes({ ...response, status }, agentRuntimeName),
+        attributes: this.buildAttributes({ ...response, ...settled }, agentRuntimeName),
       };
     } catch (error) {
       if (createdRuntimeId !== undefined) markAuxiliaryFailure(error, logicalId);
@@ -665,12 +667,12 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
         mask
       );
 
-      const status = await this.settledStatus(
+      const settled = await this.settledStatus(
         agentRuntimeId,
         logicalId,
         resourceType,
         'update',
-        response.status,
+        response,
         mask
       );
 
@@ -680,7 +682,7 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
         physicalId: agentRuntimeId,
         wasReplaced: false,
         attributes: this.buildAttributes(
-          { ...response, status },
+          { ...response, ...settled },
           properties['AgentRuntimeName'] as string
         ),
       };
@@ -858,7 +860,7 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
    *
    * CloudFormation exposes `AWS::BedrockAgentCore::Runtime`'s read-only
    * attributes under the names `AgentRuntimeArn` / `AgentRuntimeId` /
-   * `AgentRuntimeVersion` / `Status` / `CreatedAt` /
+   * `AgentRuntimeVersion` / `Status` / `CreatedAt` / `LastUpdatedAt` /
    * `WorkloadIdentityDetails` (the type's registry-schema
    * `readOnlyProperties`). The stored `attributes` map is looked up BY CFn
    * attribute name during output / cross-resource `Fn::GetAtt` resolution
@@ -876,6 +878,7 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
       agentRuntimeVersion?: string | undefined;
       status?: string | undefined;
       createdAt?: Date | undefined;
+      lastUpdatedAt?: Date | undefined;
       workloadIdentityDetails?: unknown;
     },
     agentRuntimeName: string | undefined
@@ -896,6 +899,11 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
     }
     if (response.createdAt !== undefined) {
       attributes['CreatedAt'] = response.createdAt.toISOString();
+    }
+    // go-to-k/cdkd#7009: moved by every in-place update; recorded from the
+    // READY read (create's own answer carries none).
+    if (response.lastUpdatedAt !== undefined) {
+      attributes['LastUpdatedAt'] = response.lastUpdatedAt.toISOString();
     }
     if (response.workloadIdentityDetails !== undefined) {
       attributes['WorkloadIdentityDetails'] = camelToPascalCaseKeys(

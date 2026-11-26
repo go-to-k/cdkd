@@ -4,8 +4,7 @@
     {
       "resourceType": "AWS::BedrockAgentCore::Runtime",
       "attributes": [
-        "FailureReason",
-        "LastUpdatedAt"
+        "FailureReason"
       ]
     }
   ],
@@ -15,7 +14,7 @@
     "noArnAttr": 71,
     "gap": 0,
     "knownGap": 0,
-    "refused": 2
+    "refused": 1
   },
   "types": [
     {

@@ -435,20 +435,6 @@ export async function updateVpc(
       return v === true || v === 'true';
     };
 
-    // go-to-k/cdkd#5633: an IPAM-allocated VPC declares no CidrBlock; its
-    // CIDR (create-only, so unchanged by this update) is read back instead,
-    // before any change, so a failed read reports an update that applied nothing.
-    // The map REPLACES the record's, so a CidrBlock left out here would be
-    // lost to every later `Fn::GetAtt`.
-    const declaredCidr = properties['CidrBlock'];
-    const cidrBlock =
-      typeof declaredCidr === 'string' && declaredCidr !== ''
-        ? declaredCidr
-        : properties['Ipv4IpamPoolId'] !== undefined
-          ? (await this.ec2Client.send(new DescribeVpcsCommand({ VpcIds: [physicalId] })))
-              ?.Vpcs?.[0]?.CidrBlock
-          : undefined;
-
     // Update DNS settings — diff-based so a no-op round-trip
     // (`update(state, state)` from `cdkd drift --revert`) produces zero
     // ModifyVpcAttribute calls. AWS treats ModifyVpcAttribute as
@@ -498,14 +484,12 @@ export async function updateVpc(
 
     this.logger.debug(`Successfully updated VPC ${logicalId}`);
 
-    return {
-      physicalId,
-      wasReplaced: false,
-      attributes: definedAttributes({
-        VpcId: physicalId,
-        CidrBlock: cidrBlock,
-      }),
-    };
+    // No `attributes`: nothing this in-place update sends moves the recorded
+    // `VpcId` / `CidrBlock` / `DefaultSecurityGroup` / `DefaultNetworkAcl`,
+    // and a returned map REPLACES the record, so the old two-key map erased
+    // the defaults (go-to-k/cdkd#7009). An IPAM-allocated CIDR (go-to-k/cdkd#5633)
+    // stays recorded with no read: create and import record it.
+    return { physicalId, wasReplaced: false };
   } catch (error) {
     // The InstanceTenancy refusal is control flow the deploy engine matches
     // BY CLASS; a re-wrap would hide it.
