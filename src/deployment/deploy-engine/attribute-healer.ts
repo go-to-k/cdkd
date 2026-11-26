@@ -1,4 +1,5 @@
 import type { ProviderRegistry } from '../../provisioning/provider-registry.js';
+import { isDeepStrictEqual } from 'node:util';
 import { injectiveKey } from '../../state/record-keys.js';
 import type { Logger } from '../../types/config.js';
 import type { ResourceState } from '../../types/state.js';
@@ -8,11 +9,16 @@ import { isMaskedOwnIdCopy } from '../intrinsic-resolver/getatt-heal.js';
 import {
   staleShapeAttributeNames,
   staleShapeFingerprint,
+  staleShapeInputs,
   staleShapeReplaceableKeys,
 } from '../intrinsic-resolver/getatt-stale-shape.js';
 import { readRecordAttributes } from '../read-only-attribute-healer.js';
 import { type StateNamingSecrets, secretNamePrintingBags } from '../secret-name-needles.js';
-import type { RecordedSecretValues } from '../secret-redaction.js';
+import {
+  type RecordedSecretValues,
+  hasMaskableValues,
+  redactForState,
+} from '../secret-redaction.js';
 import { withPrintingSecrets } from '../resource-secrets-scope.js';
 import {
   type StaleAttributeHealOutcome,
@@ -354,7 +360,9 @@ export class AttributeHealer {
       attributes === record.attributes || attributes === undefined
         ? record
         : { ...record, attributes };
-    return staleKeys.size === 0 ? next : stampStaleShape(next);
+    return staleKeys.size === 0
+      ? next
+      : stampStaleShape(next, this.deps.resolvedSecretsOf(logicalId));
   }
 
   /** Would a save of `resources` persist something a heal read? The no-change path's trigger. */
@@ -399,10 +407,25 @@ function withoutUnreportedStaleKeys(
  * value), it is stamped with the check's input hash so later deploys do not
  * re-read it for this again; a record the read reconciled needs no stamp.
  */
-function stampStaleShape(record: ResourceState): ResourceState {
+function stampStaleShape(
+  record: ResourceState,
+  secrets: RecordedSecretValues | undefined
+): ResourceState {
   if (staleShapeAttributeNames(record).size === 0) return record;
   const stamp = staleShapeFingerprint(record);
   if (stamp === undefined || record.attributesReadAfterApply === stamp) return record;
+  // The hash sits outside the scrub: never one over a value this run's
+  // secrets would mask (its next load would read `***` and re-arm anyway).
+  const inputs = staleShapeInputs(record);
+  if (
+    hasMaskableValues(secrets) &&
+    !isDeepStrictEqual(
+      redactForState(inputs, { provenance: 'value-scan', secrets: secrets! }),
+      inputs
+    )
+  ) {
+    return record;
+  }
   return { ...record, attributesReadAfterApply: stamp };
 }
 

@@ -187,24 +187,32 @@ export function staleShapeAttributeNames(record: ResourceState): ReadonlySet<str
 }
 
 /**
- * The stamp {@link staleShapeAttributeNames}' inputs hash to, or `undefined`
- * for a type with no checks or an unusable input. A sha256 of non-secret
- * scalars (ports, a CA identifier, an AZ, a Multi-AZ flag, a cluster id), so
- * the field carries nothing the scrub would have had to mask.
+ * The values the checks compare (`undefined` for a type with none, or an
+ * unusable input), in a fixed order: what {@link staleShapeFingerprint} hashes.
  */
-export function staleShapeFingerprint(record: ResourceState): string | undefined {
+export function staleShapeInputs(record: ResourceState): unknown[] | undefined {
   const resourceType = record.resourceType as unknown;
   if (typeof resourceType !== 'string' || !Object.hasOwn(STALE_SHAPE_TYPES, resourceType)) {
     return undefined;
   }
-  const inputs = inputsOf(
+  return inputsOf(
     STALE_SHAPE_TYPES[resourceType]!,
     bagOf(record.properties),
     bagOf(record.attributes)
   );
+}
+
+/**
+ * The stamp {@link staleShapeAttributeNames}' inputs hash to, or `undefined`
+ * for a type with no checks or an unusable input. A sha256 of non-secret
+ * scalars (ports, a CA identifier, an AZ, a Multi-AZ flag, a cluster id); the
+ * persist merge refuses to stamp when any of them matches this run's secrets.
+ */
+export function staleShapeFingerprint(record: ResourceState): string | undefined {
+  const inputs = staleShapeInputs(record);
   if (inputs === undefined) return undefined;
   return createHash('sha256')
-    .update(JSON.stringify([resourceType, inputs.map((v) => (v === undefined ? null : v))]))
+    .update(JSON.stringify([record.resourceType, inputs.map((v) => (v === undefined ? null : v))]))
     .digest('hex');
 }
 

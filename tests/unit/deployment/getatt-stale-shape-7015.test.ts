@@ -20,6 +20,10 @@ import {
   staleShapeFingerprint,
 } from '../../../src/deployment/intrinsic-resolver/getatt-stale-shape.js';
 import type { ResourceState } from '../../../src/types/state.js';
+import {
+  recordResolvedPair,
+  type RecordedSecretValues,
+} from '../../../src/deployment/secret-redaction.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), child: () => fns };
@@ -84,14 +88,18 @@ const healerReading = (attributes: Record<string, unknown>) =>
   vi.fn(async (): Promise<StaleAttributeHealOutcome> => ({ kind: 'read', attributes }));
 
 /** A deploy's healer over `baseline`, its provider's read answering `live`. */
-function deployHealer(baseline: ResourceState, live: Record<string, unknown>) {
+function deployHealer(
+  baseline: ResourceState,
+  live: Record<string, unknown>,
+  secrets?: RecordedSecretValues
+) {
   const provider = { import: vi.fn(async () => ({ physicalId: 'mydb', attributes: live })) };
   const healer = new AttributeHealer({
     providerRegistry: { getProviderFor: () => ({ provider, provisionedBy: 'sdk' }) } as never,
     baseline: { Db: baseline },
     stackRegion: 'us-east-1',
     logger: { debug: () => undefined },
-    resolvedSecretsOf: () => undefined,
+    resolvedSecretsOf: () => secrets,
     namingSecrets: () => ({}) as never,
   });
   const asResolverHealer = (logicalId: string, resource: ResourceState) =>
@@ -273,6 +281,20 @@ describe('the bound: one re-read per record shape (#7015)', () => {
     const saved = healer.withHealedAttributes('Db', stale);
     expect(saved.attributes).not.toHaveProperty('SecondaryAvailabilityZone');
     expect(staleShapeAttributeNames(saved).size).toBe(0);
+  });
+
+  it('never stamps a hash over an input the run secrets would mask', async () => {
+    const stale = record({ CACertificateIdentifier: 'rds-ca-ecc384-g1' });
+    const secrets: RecordedSecretValues = new Map();
+    secrets.set('rds-ca-rsa2048-g1', '{{resolve:secretsmanager:ca}}');
+    recordResolvedPair(secrets, '{{resolve:secretsmanager:ca}}', 'rds-ca-rsa2048-g1');
+    const { healer, asResolverHealer } = deployHealer(stale, { ...ATTRS }, secrets);
+    await resolveAttr(stale, 'CertificateDetails.CAIdentifier', asResolverHealer);
+    expect(healer.withHealedAttributes('Db', stale)).not.toHaveProperty('attributesReadAfterApply');
+    // The same read with no such secret stamps.
+    const plain = deployHealer(stale, { ...ATTRS });
+    await resolveAttr(stale, 'CertificateDetails.CAIdentifier', plain.asResolverHealer);
+    expect(plain.healer.withHealedAttributes('Db', stale)).toHaveProperty('attributesReadAfterApply');
   });
 
   it('a stamped record is not re-read, and keeps its members add-only, on a miss heal', async () => {
