@@ -242,6 +242,32 @@ describe('runDestroyForStack graceful SIGINT (issue #816)', () => {
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('interrupted'));
   });
 
+  it('on first SIGINT: sends no superseded delete scheduled after the draining level, and keeps its row (#7073)', async () => {
+    // An old copy depending on A is scheduled right after B's level, before
+    // A's; the interrupt fires while B is deleted.
+    const old = {
+      logicalId: 'Replaced',
+      supersededAt: 1,
+      state: res(['A'], { physicalId: 'old-copy' }),
+    };
+    const state = makeState(
+      { A: res(), B: res(['A']) },
+      { supersededResources: [old] }
+    );
+    mockProviderDelete.mockImplementation((logicalId: string) => {
+      if (logicalId === 'B') capturedSigintHandlers[0]!();
+      return Promise.resolve();
+    });
+
+    const result = await runDestroyForStack('TestStack', state, makeCtx());
+
+    expect(mockProviderDelete.mock.calls.map((call) => call[0])).toEqual(['B']);
+    expect(result.interrupted).toBe(true);
+    expect(mockDeleteState).not.toHaveBeenCalled();
+    const lastSave = mockSaveState.mock.calls.at(-1)![2] as StackState;
+    expect(lastSave.supersededResources).toEqual([old]);
+  });
+
   it('the first SIGINT prints the drain notice through the live renderer', async () => {
     const state = makeState({ A: res() });
     const stderrSpy = vi

@@ -1,4 +1,5 @@
 import { nullPrototypeRecord } from '../../../utils/own-keys.js';
+import { replaceResourcesForStack } from './replace-resource-checks.js';
 import { bold, cyan, gray, green, red, yellow } from '../../../utils/colors.js';
 import { CdkdError, DeployCancelledError } from '../../../utils/error-handler.js';
 import {
@@ -214,6 +215,11 @@ export async function deployStackInScope(
     // the stack name they were validated against: the option object is
     // spread into every nested child engine, and an id set with no stack
     // on it matched a child's colliding logical id too.
+    const replaceResources = replaceResourcesForStack(
+      options.replaceResource,
+      stackInfo.stackName,
+      stackInfo.template
+    );
     let recreateTargets: DeployEngineOptions['recreateTargets'];
     if (options.recreateViaCcApi?.length || options.recreateViaSdkProvider?.length) {
       const stateForRecreateCheck = await stackStateBackend.getState(
@@ -410,6 +416,9 @@ export async function deployStackInScope(
           recreateTargets,
         }),
       ...(options.replace && { replace: true }),
+      // go-to-k/cdkd#7079: the ids THIS stack declares, scoped to it; the
+      // run-level check made each one name a single stack's resource.
+      ...(replaceResources && { replaceResources }),
       ...(options.forceStatefulRecreation && { forceStatefulRecreation: true }),
       ...(options.skipFinalSnapshot && { skipFinalSnapshot: true }),
       // Region-pinned clients for the pre-delete final snapshots

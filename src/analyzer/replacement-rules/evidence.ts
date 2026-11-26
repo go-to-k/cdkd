@@ -52,6 +52,12 @@ export type ReplacementVerdict = 'replace' | 'update' | 'conditional' | 'nested'
 
 export interface ReplacementEvidence {
   /**
+   * Why a `cfn-docs` row was not measured (go-to-k/cdkd#7048). Only such a row
+   * may rest on the CloudFormation reference; every other verdict cites an
+   * execution, the handler, the AWS API or the schema.
+   */
+  readonly unmeasurable?: string;
+  /**
    * The verdict the evidence supports. The check compares it with cdkd's
    * current verdict, so flipping a verdict (an entry moved between
    * `replacementProperties` and `updateableProperties`) needs new evidence.
@@ -69,6 +75,13 @@ const row =
     kind,
     refs,
   });
+/** An `update` verdict resting on the reference because no A/B is possible here. */
+const unmeasurable = (why: string, ...refs: number[]): ReplacementEvidence => ({
+  verdict: 'update',
+  kind: 'cfn-docs',
+  refs: [...refs, 7048],
+  unmeasurable: why,
+});
 const replace = row('replace');
 const update = row('update');
 const conditional = row('conditional');
@@ -98,16 +111,28 @@ export const REPLACEMENT_EVIDENCE: ReadonlyMap<string, ReplacementEvidence> = ne
   ['AWS::EC2::VPC#InstanceTenancy', conditional('cfn-measured', 5449)],
   ['AWS::RDS::DBCluster#Engine', conditional('cfn-handler', 5467)],
   ['AWS::RDS::DBInstance#Engine', conditional('cfn-handler', 5467)],
+  // The handlers' other immutability checks (rds-immutability.ts).
+  ['AWS::RDS::DBCluster#GlobalClusterIdentifier', conditional('cfn-handler', 7044)],
+  ['AWS::RDS::DBInstance#AvailabilityZone', conditional('cfn-measured', 7038, 7044)],
+  ['AWS::RDS::DBInstance#PerformanceInsightsKMSKeyId', conditional('cfn-measured', 7038, 7044)],
+  ['AWS::RDS::DBInstance#DBSnapshotIdentifier', conditional('cfn-handler', 7044)],
+  ['AWS::RDS::DBInstance#DBClusterSnapshotIdentifier', conditional('cfn-handler', 7044)],
+  ['AWS::RDS::DBInstance#RestoreTime', conditional('cfn-handler', 7044)],
+  ['AWS::RDS::DBInstance#UseLatestRestorableTime', conditional('cfn-handler', 7044)],
+  ['AWS::RDS::DBInstance#SourceDBInstanceAutomatedBackupsArn', conditional('cfn-handler', 7044)],
+  ['AWS::RDS::DBInstance#SourceDbiResourceId', conditional('cfn-handler', 7044)],
+  ['AWS::RDS::DBInstance#SourceDBInstanceIdentifier', conditional('cfn-handler', 7044)],
+  ['AWS::RDS::DBInstance#SourceDBClusterIdentifier', conditional('cfn-handler', 7044)],
   ['AWS::EC2::Instance#SecurityGroupIds', conditional('cfn-measured', 5446)],
   ['AWS::EC2::Instance#BlockDeviceMappings', conditional('cfn-measured', 5446)],
   ['AWS::EC2::Instance#Tenancy', conditional('cfn-measured', 5630)],
   ['AWS::EC2::Instance#PrivateDnsNameOptions', conditional('cfn-measured', 5630)],
   ['AWS::EC2::NatGateway#AvailabilityZoneAddresses', conditional('cfn-measured', 2762)],
   ['AWS::ECS::Service#LaunchType', conditional('cfn-measured', 5392)],
-  ['AWS::ElastiCache::CacheCluster#AZMode', conditional('open-divergence', 5558, 7045)],
+  ['AWS::ElastiCache::CacheCluster#AZMode', conditional('cfn-measured', 5558, 7038, 7045)],
   [
     'AWS::ElastiCache::CacheCluster#PreferredAvailabilityZones',
-    conditional('cfn-measured', 5458, 5558),
+    conditional('cfn-measured', 5458, 5558, 7038, 7045),
   ],
   ['AWS::EMR::Cluster#Instances', conditional('cfn-measured', 5418)],
   // --- provider-replacement planners
@@ -159,73 +184,81 @@ export const REPLACEMENT_EVIDENCE: ReadonlyMap<string, ReplacementEvidence> = ne
   // current CloudFormation reference (the spec reads an older one) or is
   // refused before any call; the per-property findings are on #7038.
   ['AWS::AppSync::GraphQLSchema#ApiId', update('refused', 5359, 7038)],
-  ['AWS::DocDB::DBCluster#EngineVersion', update('cfn-docs', 7038)],
+  ['AWS::DocDB::DBCluster#EngineVersion', update('cfn-measured', 7038, 7048)],
   ['AWS::DynamoDB::GlobalTable#KeySchema', update('refused', 7038)],
   ['AWS::EC2::EIP#Domain', update('single-value', 5449)],
-  ['AWS::ECS::Service#DeploymentController', update('cfn-docs', 5634, 7038)],
+  [
+    'AWS::ECS::Service#DeploymentController',
+    unmeasurable(
+      'a change that succeeds needs a load-balanced service and a CodeDeploy deployment group; without them CloudFormation fails before showing whether it replaces',
+      5634,
+      7038
+    ),
+  ],
   ['AWS::EMR::InstanceFleetConfig#InstanceTypeConfigs', update('cfn-measured', 1160)],
   ['AWS::Events::EventBus#EventSourceName', update('aws-api', 7038)],
-  ['AWS::FSx::FileSystem#FileSystemTypeVersion', update('cfn-docs', 7038)],
+  ['AWS::FSx::FileSystem#FileSystemTypeVersion', update('cfn-measured', 7038, 7048)],
   ['AWS::Glue::Database#CatalogId', update('refused', 7038)],
-  ['AWS::Lambda::EventSourceMapping#AmazonManagedKafkaEventSourceConfig', update('cfn-docs', 7038)],
+  [
+    'AWS::Lambda::EventSourceMapping#AmazonManagedKafkaEventSourceConfig',
+    unmeasurable('needs an MSK cluster (cost)', 7038),
+  ],
   [
     'AWS::Lambda::EventSourceMapping#SelfManagedKafkaEventSourceConfig',
     update('cfn-measured', 7038),
   ],
   ['AWS::RDS::DBCluster#AvailabilityZones', update('cfn-handler', 5639)],
-  ['AWS::RDS::DBInstance#Port', update('cfn-docs', 7038)],
+  ['AWS::RDS::DBInstance#Port', update('cfn-measured', 7038, 7048)],
   ['AWS::S3::Bucket#ObjectLockEnabled', update('cfn-measured', 5395, 7038)],
   // --- properties the schema makes conditionally create-only, or the spec
   // calls "maybe", that cdkd updates in place or refuses. CloudFormation
   // documents each as "Some interruptions" or "No interruption", or replaces
   // only on a shape cdkd refuses before any call; findings on #7038.
-  ['AWS::CodeCommit::Repository#Triggers', update('cfn-docs', 1066, 7038)],
+  ['AWS::CodeCommit::Repository#Triggers', update('cfn-measured', 1066, 7038, 7048)],
   ['AWS::EC2::Instance#AdditionalInfo', update('cfn-measured', 5630)],
-  ['AWS::EC2::Instance#Affinity', update('cfn-docs', 5630)],
-  ['AWS::EC2::Instance#HostId', update('cfn-docs', 5630)],
-  ['AWS::EC2::Instance#KernelId', update('cfn-docs', 5630)],
-  ['AWS::EC2::Instance#RamdiskId', update('cfn-docs', 5630)],
+  ['AWS::EC2::Instance#Affinity', unmeasurable('needs a Dedicated Host', 5630)],
+  ['AWS::EC2::Instance#HostId', unmeasurable('needs a Dedicated Host', 5630)],
+  [
+    'AWS::EC2::Instance#KernelId',
+    unmeasurable('needs a paravirtual AMI no current instance type launches', 5630),
+  ],
+  [
+    'AWS::EC2::Instance#RamdiskId',
+    unmeasurable('needs a paravirtual AMI no current instance type launches', 5630),
+  ],
   ['AWS::EC2::Instance#UserData', update('cfn-measured', 5446)],
   ['AWS::ElastiCache::CacheCluster#PreferredAvailabilityZone', update('cfn-measured', 5444)],
-  ['AWS::RDS::DBCluster#GlobalClusterIdentifier', update('open-divergence', 7038, 7044)],
   ['AWS::RDS::DBCluster#MasterUsername', update('cfn-measured', 5467)],
   ['AWS::RDS::DBInstance#AutoMinorVersionUpgrade', update('cfn-handler', 7038)],
   ['AWS::RDS::DBInstance#BackupRetentionPeriod', update('cfn-handler', 7038)],
   ['AWS::RDS::DBInstance#MultiAZ', update('cfn-handler', 7038)],
   ['AWS::RDS::DBInstance#PreferredMaintenanceWindow', update('cfn-handler', 7038)],
   ['AWS::RDS::DBInstance#StorageType', update('cfn-handler', 7038)],
-  ['AWS::RDS::DBInstance#DBParameterGroupName', update('cfn-docs', 7038)],
-  ['AWS::RDS::DBInstance#AvailabilityZone', update('open-divergence', 7038, 7044)],
-  ['AWS::RDS::DBInstance#DBSnapshotIdentifier', update('open-divergence', 7038, 7044)],
-  ['AWS::RDS::DBInstance#DBClusterSnapshotIdentifier', update('open-divergence', 7038, 7044)],
-  ['AWS::RDS::DBInstance#RestoreTime', update('open-divergence', 7038, 7044)],
-  ['AWS::RDS::DBInstance#UseLatestRestorableTime', update('open-divergence', 7038, 7044)],
-  [
-    'AWS::RDS::DBInstance#SourceDBInstanceAutomatedBackupsArn',
-    update('open-divergence', 7038, 7044),
-  ],
-  ['AWS::RDS::DBInstance#SourceDbiResourceId', update('open-divergence', 7038, 7044)],
-  ['AWS::RDS::DBInstance#SourceDBInstanceIdentifier', update('open-divergence', 7038, 7044)],
-  ['AWS::RDS::DBInstance#SourceDBClusterIdentifier', update('open-divergence', 7038, 7044)],
-  ['AWS::AppSync::GraphQLApi#LambdaAuthorizerConfig', update('cfn-docs', 7038)],
-  ['AWS::AppSync::GraphQLApi#OpenIDConnectConfig', update('cfn-docs', 7038)],
-  ['AWS::AppSync::GraphQLApi#UserPoolConfig', update('cfn-docs', 7038)],
+  ['AWS::RDS::DBInstance#DBParameterGroupName', update('cfn-measured', 7038, 7048)],
+  ['AWS::AppSync::GraphQLApi#LambdaAuthorizerConfig', update('cfn-measured', 7038, 7048)],
+  ['AWS::AppSync::GraphQLApi#OpenIDConnectConfig', update('cfn-measured', 7038, 7048)],
+  ['AWS::AppSync::GraphQLApi#UserPoolConfig', update('cfn-measured', 7038, 7048)],
   // An AutoScalingReplacingUpdate replaces the group only under `--update-policy`.
-  ['AWS::AutoScaling::AutoScalingGroup#LaunchConfigurationName', update('cfn-docs', 6437)],
-  ['AWS::AutoScaling::AutoScalingGroup#LaunchTemplate', update('cfn-docs', 6437)],
-  ['AWS::AutoScaling::AutoScalingGroup#MixedInstancesPolicy', update('cfn-docs', 6437)],
-  ['AWS::AutoScaling::AutoScalingGroup#VPCZoneIdentifier', update('cfn-docs', 6437)],
+  [
+    'AWS::AutoScaling::AutoScalingGroup#LaunchConfigurationName',
+    unmeasurable('launch configurations can no longer be created', 6437),
+  ],
+  ['AWS::AutoScaling::AutoScalingGroup#LaunchTemplate', update('cfn-measured', 6437, 7048)],
+  ['AWS::AutoScaling::AutoScalingGroup#MixedInstancesPolicy', update('cfn-measured', 6437, 7048)],
+  ['AWS::AutoScaling::AutoScalingGroup#VPCZoneIdentifier', update('cfn-measured', 6437, 7048)],
   // Cloud Control route: a NotUpdatable answer fails the deploy, never replaces.
-  ['AWS::DynamoDB::GlobalTable#GlobalTableSourceArn', update('cfn-docs', 7038)],
-  ['AWS::ElastiCache::CacheCluster#IpDiscovery', update('cfn-docs', 5545, 7038)],
+  [
+    'AWS::DynamoDB::GlobalTable#GlobalTableSourceArn',
+    unmeasurable('needs a second AWS account', 7038),
+  ],
+  ['AWS::ElastiCache::CacheCluster#IpDiscovery', update('cfn-measured', 5545, 7038, 7048)],
   ['AWS::Lambda::Function#AcceleratorConfig', update('refused', 6352, 6789)],
   ['AWS::Neptune::DBInstance#AutoMinorVersionUpgrade', update('cfn-measured', 5544)],
-  ['AWS::Neptune::DBInstance#DBParameterGroupName', update('cfn-docs', 5544, 7038)],
-  ['AWS::Neptune::DBInstance#PreferredMaintenanceWindow', update('cfn-docs', 5544, 7038)],
-  ['AWS::SNS::Subscription#Region', update('cfn-docs', 7038)],
+  ['AWS::Neptune::DBInstance#DBParameterGroupName', update('cfn-measured', 5544, 7038, 7048)],
+  ['AWS::Neptune::DBInstance#PreferredMaintenanceWindow', update('cfn-measured', 5544, 7038, 7048)],
+  ['AWS::SNS::Subscription#Region', update('cfn-measured', 7038, 7048)],
   ['AWS::EC2::Instance#InstanceType', update('cfn-measured', 5446, 7038)],
   ['AWS::ElastiCache::CacheCluster#NumCacheNodes', update('cfn-measured', 7038)],
-  ['AWS::RDS::DBInstance#PerformanceInsightsKMSKeyId', update('open-divergence', 7044)],
   // --- updateableProperties beyond the fixture or the spec
   ['AWS::Budgets::Budget#NotificationsWithSubscribers', update('deviation', 7038)],
   ['AWS::EC2::Subnet#Ipv6CidrBlock', update('cfn-measured', 5632)],

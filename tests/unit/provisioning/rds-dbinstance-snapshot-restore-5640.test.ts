@@ -46,6 +46,7 @@ import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.j
 import { findSdkUnwiredProperties } from '../../../src/provisioning/property-coverage.js';
 import { refuseRestoreFromItself } from '../../../src/provisioning/restore-source-guard.js';
 import { hasCreatedBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import { appliedAfterModify } from './rds-modify-applied.js';
 
 type Input = Record<string, unknown>;
 
@@ -71,6 +72,8 @@ interface Live {
 }
 
 function arm(live: Live = {}): void {
+  // What the last ModifyDBInstance applied (`appliedAfterModify`).
+  let modified: Input | undefined;
   mockSend.mockImplementation((command: { constructor: { name: string }; input: Input }) => {
     switch (command.constructor.name) {
       case 'DescribeDBSnapshotsCommand':
@@ -111,6 +114,7 @@ function arm(live: Live = {}): void {
               DBInstanceArn: 'arn:aws:rds:us-east-1:123456789012:db:db-1',
               DBInstanceStatus: 'available',
               Engine: 'postgres',
+              ...appliedAfterModify(modified),
             },
           ],
         });
@@ -125,6 +129,7 @@ function arm(live: Live = {}): void {
           },
         });
       case 'ModifyDBInstanceCommand':
+        modified = command.input;
         if (live.modifyError !== undefined) return Promise.reject(live.modifyError);
         return Promise.resolve({});
       case 'CreateDBInstanceReadReplicaCommand':

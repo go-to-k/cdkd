@@ -30,7 +30,10 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 }));
 
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
-import { findAffectedExports } from '../../../src/deployment/export-change-guard.js';
+import {
+  findAffectedExports,
+  findChangedDeferredExports,
+} from '../../../src/deployment/export-change-guard.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../../src/types/state.js';
@@ -44,7 +47,7 @@ interface SdkRow {
 
 const REPORT = JSON.parse(
   readFileSync(join(process.cwd(), 'docs/_generated/in-place-attr-coverage.json'), 'utf8')
-) as { sdk: SdkRow[] };
+) as { sdk: SdkRow[]; ccHand: SdkRow[]; ccMoving: Record<string, string[]> };
 
 /** A property no type declares: an edit that moves nothing a row names. */
 const UNRELATED = 'UnrelatedSetting7001';
@@ -69,8 +72,13 @@ const SAMPLES: Readonly<Record<string, readonly [unknown, unknown]>> = {
   ],
 };
 
-const movedBy = REPORT.sdk.filter((r) => r.verdict === 'moved-by');
-const anyUpdate = REPORT.sdk.filter((r) => r.verdict === 'any-update');
+// go-to-k/cdkd#7007: a Cloud Control pair classified by hand drives it too.
+const movedBy = [...REPORT.sdk, ...REPORT.ccHand].filter((r) => r.verdict === 'moved-by');
+const anyUpdate = [...REPORT.sdk, ...REPORT.ccHand].filter((r) => r.verdict === 'any-update');
+/** go-to-k/cdkd#7007: the Cloud Control pairs a moving rule settles. */
+const ccAnyUpdate: SdkRow[] = Object.entries(REPORT.ccMoving).flatMap(([type, attrs]) =>
+  attrs.map((attribute) => ({ type, attribute, verdict: 'any-update' as const }))
+);
 
 /** One (row, property) case per property a `moved-by` row names. */
 const movedByCases = movedBy.flatMap((r) =>
@@ -155,6 +163,8 @@ describe('a reader of an attribute the audit classifies as moving follows it (#7
     // the time of #7001 holds 60 moved-by and 5 any-update pairs.
     expect(movedBy.length).toBeGreaterThanOrEqual(60);
     expect(anyUpdate.length).toBeGreaterThanOrEqual(5);
+    // ...and #7007's update-timestamp rule settles over 350 Cloud Control pairs.
+    expect(ccAnyUpdate.length).toBeGreaterThan(350);
   });
 
   it.each(movedByCases)('%s promotes the reader', async (_name, row, prop) => {
@@ -181,7 +191,7 @@ describe('a reader of an attribute the audit classifies as moving follows it (#7
     }
   );
 
-  it.each(anyUpdate.map((r) => [`${r.type} ${r.attribute}`, r] as const))(
+  it.each([...anyUpdate, ...ccAnyUpdate].map((r) => [`${r.type} ${r.attribute}`, r] as const))(
     '%s: any in-place edit promotes the reader',
     async (_name, row) => {
       const changes = await diffReader(
@@ -353,7 +363,7 @@ describe('an S3 metadata table reader moves only when its table is created (#700
 describe('the export-change guard counts an export of a moving attribute as changed (#7001)', () => {
   const EXPORT = 'Producer:ExportsOutputUp';
 
-  const run = (row: SdkRow, path: string) =>
+  const run = (row: SdkRow, path: string, replaced = false) =>
     findAffectedExports({
       template: {
         Resources: { Up: { Type: row.type, Properties: {} } },
@@ -384,7 +394,7 @@ describe('the export-change guard counts an export of a moving attribute as chan
         exportNames: [EXPORT],
       } as unknown as StackState,
       resolve: () => Promise.resolve('recorded-value'),
-      replaces: () => false,
+      replaces: () => replaced,
     });
 
   it.each(movedByCases)('%s', async (_name, row, prop) => {
@@ -398,4 +408,107 @@ describe('the export-change guard counts an export of a moving attribute as chan
       expect(await run(row, UNRELATED)).toEqual([{ exportName: EXPORT, reason: 'changed' }]);
     }
   );
+});
+
+describe('an export of a Cloud Control update time is judged after the update (#7007)', () => {
+  const EXPORT = 'Producer:ExportsOutputUp';
+  const guard = (row: SdkRow, changeType: 'UPDATE' | 'DELETE', replaced: boolean) =>
+    findAffectedExports({
+      template: {
+        Resources: { Up: { Type: row.type, Properties: {} } },
+        Outputs: {
+          ExportsOutputUp: {
+            Value: { 'Fn::GetAtt': ['Up', row.attribute] },
+            Export: { Name: EXPORT },
+          },
+        },
+      },
+      conditions: {},
+      changes: new Map([
+        [
+          'Up',
+          {
+            logicalId: 'Up',
+            resourceType: row.type,
+            changeType,
+            propertyChanges: [
+              { path: 'Tags', oldValue: [], newValue: [{ Key: 'k', Value: 'v' }], requiresReplacement: false },
+            ],
+          },
+        ],
+      ]),
+      currentState: {
+        version: STATE_SCHEMA_VERSION_CURRENT,
+        outputs: { ExportsOutputUp: 'recorded-value', [EXPORT]: 'recorded-value' },
+        exportNames: [EXPORT],
+      } as unknown as StackState,
+      resolve: () => Promise.resolve('recorded-value'),
+      replaces: () => replaced,
+    });
+  const after = (found: Awaited<ReturnType<typeof guard>>, value: string) =>
+    findChangedDeferredExports(found, { outputs: { [EXPORT]: 'recorded-value' } }, () =>
+      Promise.resolve(value)
+    );
+
+  it.each(ccAnyUpdate.map((r) => [`${r.type} ${r.attribute}`, r] as const))(
+    '%s: a tag edit defers; refused only when the value moved',
+    async (_name, row) => {
+      const found = await guard(row, 'UPDATE', false);
+      expect(found).toEqual([
+        { exportName: EXPORT, reason: 'deferred', value: { 'Fn::GetAtt': ['Up', row.attribute] } },
+      ]);
+      expect(await after(found, 'recorded-value')).toEqual([]);
+      expect(await after(found, 'moved-value')).toEqual([{ exportName: EXPORT, reason: 'changed' }]);
+    }
+  );
+
+  it('a replaced or deleted upstream is still refused at plan time', async () => {
+    const row = ccAnyUpdate[0]!;
+    expect(await guard(row, 'UPDATE', true)).toEqual([{ exportName: EXPORT, reason: 'changed' }]);
+    expect(await guard(row, 'DELETE', false)).toEqual([{ exportName: EXPORT, reason: 'changed' }]);
+  });
+
+  it('a hand any-update row is still a plan-time change', async () => {
+    const row = anyUpdate.find((r) => r.type === 'AWS::EC2::Instance')!;
+    expect(await guard(row, 'UPDATE', false)).toEqual([{ exportName: EXPORT, reason: 'changed' }]);
+  });
+});
+
+describe('a server certificate Path change moves no ARN (#7007)', () => {
+  // The Cloud Control handler cannot apply a Path (no
+  // iam:UpdateServerCertificate; measured: the ARN stayed), so an imported
+  // Arn export is not refused, as CloudFormation accepts the deploy.
+  it('does not refuse an imported Arn export on a Path-only change', async () => {
+    const EXPORT = 'Producer:CertArn';
+    const found = await findAffectedExports({
+      template: {
+        Resources: { Cert: { Type: 'AWS::IAM::ServerCertificate', Properties: {} } },
+        Outputs: {
+          CertArn: { Value: { 'Fn::GetAtt': ['Cert', 'Arn'] }, Export: { Name: EXPORT } },
+        },
+      },
+      conditions: {},
+      changes: new Map([
+        [
+          'Cert',
+          {
+            logicalId: 'Cert',
+            resourceType: 'AWS::IAM::ServerCertificate',
+            changeType: 'UPDATE',
+            propertyChanges: [
+              { path: 'Path', oldValue: '/a/', newValue: '/b/', requiresReplacement: false },
+            ],
+          },
+        ],
+      ]),
+      currentState: {
+        version: STATE_SCHEMA_VERSION_CURRENT,
+        outputs: { CertArn: 'recorded-value', [EXPORT]: 'recorded-value' },
+        exportNames: [EXPORT],
+      } as unknown as StackState,
+      resolve: () => Promise.resolve('recorded-value'),
+      replaces: () => false,
+    });
+    expect(found).toEqual([]);
+  });
 });

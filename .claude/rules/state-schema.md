@@ -50,6 +50,7 @@ interface ResourceState {
   properties: Record<string, unknown>; // resolved values cdkd SENT (a narrowed or silently dropped property is absent)
   observedProperties?: Record<string, unknown>; // v3+: AWS-current snapshot (drift baseline)
   attributes?: Record<string, unknown>; // for Fn::GetAtt resolution
+  attributesReadAfterApply?: string; // no bump: stale-shape input hash; persist merge only (#7015)
   dependencies?: string[]; // for deletion order
   metadata?: Record<string, unknown>;
   deletionPolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate'; // v5+
@@ -78,23 +79,23 @@ interface ResourceState {
 
 Neither field hashes a secret-derived value. `noEchoValueMacs` (KMS MAC, no oracle): `docs/state-schema-internals.md`. The input field is SEPARATE so an older binary still sends template edits; an input entry whose `+sha256:` half differs from the text entry is stale and is re-baselined without sending. A template literal equal to a `NoEcho` value or a resolved needle gets `REFUSED_FINGERPRINT` (no hash). Helpers: `src/deployment/masked-property-fingerprints.ts`; the save rebuilds both only for a bag `propertiesToRecord` wrote this deploy; absent keeps the pre-#4451 comparison.
 
-`secretNamedAttributes` (#3869) is PRINT-ONLY attribute KEYS, read by `secretNameNeedlesOf`, rewritten by each create or update of the row; absent = not known.
+`secretNamedAttributes` (#3869) is PRINT-ONLY attribute KEYS, read by `secretNameNeedlesOf`, rewritten by each create / update; absent = not known.
 
 ## `exportNames` (v9+)
 
 `outputs` is keyed by output NAME, and an output carrying `Export:` is ADDITIONALLY aliased under its export name in the same bag (`src/deployment/outputs-export-alias.ts`).
 
-Every reader goes through ONE predicate, `importableOutputKeys(state)` (`src/types/state/helpers.ts`): `exportNames` intersected with the bag when present, every key when not. The FIELD is the discriminator, not `version`: `undefined` = NOT KNOWN (the legacy rule), `[]` = KNOWN to export nothing. A save that RE-RESOLVES outputs writes the set, `[]` included (unlike `imports` / `outputReads`); one that CARRIES a bag spreads `exportNamesCarriedFrom(previous)`.
+Every reader uses ONE predicate, `importableOutputKeys(state)` (`src/types/state/helpers.ts`): `exportNames` intersected with the bag when present, every key when not. The FIELD is the discriminator, not `version`: `undefined` = NOT KNOWN (the legacy rule), `[]` = KNOWN to export nothing. A save that RE-RESOLVES outputs writes the set, `[]` included (unlike `imports` / `outputReads`); one that CARRIES a bag spreads `exportNamesCarriedFrom(previous)`.
 
 ## `stackInstanceId` and name generations (v13+, #5064)
 
-Minted at a stack's FIRST state write (first deploy: written ahead to the `stack-instance.json` sibling before any create, reused on a re-run; `cdkd import` creating the record). Absent = legacy forever. Writers spread `stackInstanceIdCarriedFrom` (`stack-instance-id-carriers.test.ts`), which carries `retiredNameGenerations` and `supersededResources` too; read via `stackInstanceIdOf`. Never logged. v16 `stackIdFromInstance` (#6170): a context resolving `AWS::StackId` passes `stackIdTail`, else `cdkd`.
+Minted at a stack's FIRST state write (first deploy: written to the `stack-instance.json` sibling before any create, reused on a re-run; or `cdkd import`). Absent = legacy forever. Writers spread `stackInstanceIdCarriedFrom` (`stack-instance-id-carriers.test.ts`), which carries `retiredNameGenerations` and `supersededResources` too; read via `stackInstanceIdOf`. Never logged. v16 `stackIdFromInstance` (#6170): a context resolving `AWS::StackId` passes `stackIdTail`, else `cdkd`.
 
 Id stacks only: the generated-name suffix hashes the generation (`src/state/name-generation.ts`), a pure function of the record: a replacement creates at `nextNameGeneration`, a re-added id at retired + 1. Every path whose record leaves the stack retires its generation (`retiredNameGenerationsAfter` / `retiredAfterRollback`), a rollback's taken-back CREATE included. An id `StackScope` needs `nameGenerationsOf`'s map. Read via `nameGenerationOf` / `retiredNameGenerationsOf` (malformed, or a successor past a safe integer = refuse); writers spread `nameGenerationCarriedFrom` / `nameGenerationField`.
 
 ## `conditionVerdicts` (no bump)
 
-A deploy's verdict for each condition `cdkd diff` cannot evaluate (its closure reaches a secret-fed parameter). Each entry's `fingerprint` hashes the condition's definitions and the parameter inputs they read, a secret-fed one as its `{{resolve:...}}` expression; the diff reuses the verdict ONLY on an equal fingerprint, else takes FALSE. Writer, reader and the fingerprint's input live in `src/deployment/condition-verdicts.ts`: change them together. Absent or malformed means no record (`readRecordedConditionVerdicts`). Spreading writers carry it.
+A deploy's verdict for each condition `cdkd diff` cannot evaluate (its closure reaches a secret-fed parameter). Each entry's `fingerprint` hashes the condition's definitions and the parameter inputs they read, a secret-fed one as its `{{resolve:...}}` expression; the diff reuses the verdict ONLY on an equal fingerprint, else takes FALSE. All three live in `src/deployment/condition-verdicts.ts`. Absent or malformed = no record (`readRecordedConditionVerdicts`). Spreading writers carry it.
 
 ## `outputs`
 

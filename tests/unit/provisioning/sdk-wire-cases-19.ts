@@ -913,8 +913,13 @@ const INSTANCE_CASE: TypeCase = {
     // the listed ARN, which the arm cannot name (the client region is no
     // input); rds-dbinstance-backup-replication-5640.test.ts pins those waits.
     const waitForInstanceState = provider.waitForInstanceState.bind(provider);
+    // go-to-k/cdkd#7006: a changed port, CA certificate or Multi-AZ setting
+    // waits for the instance to report it applied, which this arm's fixed
+    // describe never does; rds-dbinstance-moved-attributes-7006.test.ts pins
+    // those waits.
     provider.waitForInstanceState = async (logicalId, id, done, change) =>
-      change.startsWith('automated backup replication')
+      change.startsWith('automated backup replication') ||
+      /^(port|CA certificate|Multi-AZ)(, (port|CA certificate|Multi-AZ))* change$/.test(change)
         ? ((await provider.describeDBInstance(id)) ?? {})
         : waitForInstanceState(logicalId, id, done, change);
     return provider;
@@ -1096,7 +1101,7 @@ const INSTANCE_CASE: TypeCase = {
         ['update-add', 'update-remove'].map((d) => [
           `${d}:AvailabilityZone`,
           {
-            why: `ModifyDBInstance cannot move an instance, and CloudFormation refuses a changed zone ("Resource is immutable"), so update() refuses it before any call (instanceAvailabilityZoneKept in ${SRC}, go-to-k/cdkd#5640)`,
+            why: `ModifyDBInstance cannot move an instance (CloudFormation replaces it, go-to-k/cdkd#7044, which the diff classifies), so update() refuses it before any call (instanceAvailabilityZoneKept in ${SRC}, go-to-k/cdkd#5640)`,
             says: /AvailabilityZone cannot change on an existing DB instance/,
           },
         ])

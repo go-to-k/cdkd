@@ -1,7 +1,9 @@
 /**
  * The hand classification behind `scripts/gen-in-place-attr-coverage.ts`
  * (issue #7001): for every read-only `Fn::GetAtt` attribute of a type with an
- * SDK provider, whether an IN-PLACE update moves it.
+ * SDK provider, whether an IN-PLACE update moves it. A Cloud Control type takes
+ * an entry only for a pair no rule of the generator can settle rightly (a
+ * moving id); it wins over the rules (go-to-k/cdkd#7007).
  *
  *   - `never`      — no in-place update moves it (an id or ARN fixed for the
  *                    resource's life, a value derived only from create-only
@@ -79,9 +81,264 @@ const STEADY_STATUS = never(
   'an operational status that settles back to its steady value after an update; no property sets it'
 );
 
-export const SDK_IN_PLACE_ATTR_CLASSIFICATION: Readonly<
-  Record<string, Readonly<Record<string, InPlaceAttrVerdict>>>
-> = {
+/**
+ * go-to-k/cdkd#7007: own ARNs / ids of Cloud Control types with an in-place
+ * name, MEASURED with throwaway CloudFormation stacks (us-east-1, 2026-11-27):
+ * create, change every in-place name property, update, and compare the
+ * physical id, `Ref` and the GetAtt before and after. Each update recorded
+ * here completed in place (no replacement) and left the value as recorded.
+ */
+const renamed = (stack: string, change: string, value: string): InPlaceAttrVerdict =>
+  never(`measured (${stack}): ${change} in place left it ${value}`);
+
+export const RENAME_MEASURED: Readonly<Record<string, Readonly<Record<string, InPlaceAttrVerdict>>>> = {
+  'AWS::Chime::AppInstance': {
+    AppInstanceArn: renamed('cdkd-probe-7007-s2c', 'Name', 'app-instance/2cf58ce3-...'),
+  },
+  'AWS::Chime::AppInstanceUser': {
+    AppInstanceUserArn: renamed('cdkd-probe-7007-s2c', 'Name', '.../user/cdkd-probe-7007-user'),
+  },
+  'AWS::Chime::Channel': {
+    Arn: renamed('cdkd-probe-7007-s3c', 'Name', '.../channel/fdc1ec1c-...'),
+  },
+  'AWS::Chime::ChannelFlow': {
+    Arn: renamed('cdkd-probe-7007-s4b', 'Name', '.../channel-flow/1109d9cb...'),
+    ChannelFlowId: renamed('cdkd-probe-7007-s4b', 'Name', '1109d9cb...'),
+  },
+  'AWS::Chime::VoiceConnector': {
+    VoiceConnectorArn: renamed('cdkd-probe-7007-s4b', 'Name', 'vc/dv56tpxjyzqla7zpqp6swq'),
+    VoiceConnectorId: renamed('cdkd-probe-7007-s4b', 'Name', 'dv56tpxjyzqla7zpqp6swq'),
+  },
+  'AWS::CleanRooms::Collaboration': {
+    Arn: renamed('cdkd-probe-7007-s2c', 'Name', 'collaboration/84408462-...'),
+  },
+  'AWS::DataSync::Task': {
+    TaskArn: renamed('cdkd-probe-7007-s4b', 'Name', 'task/task-0be708b518a40c674'),
+  },
+  'AWS::Deadline::Budget': {
+    Arn: renamed('cdkd-probe-7007-s3c', 'DisplayName', '.../budget/budget-4a2b9e7f...'),
+    BudgetId: renamed('cdkd-probe-7007-s3c', 'DisplayName', 'budget-4a2b9e7f...'),
+  },
+  'AWS::Deadline::Queue': {
+    Arn: renamed('cdkd-probe-7007-s2c', 'DisplayName', '.../queue/queue-f632d873...'),
+    QueueId: renamed('cdkd-probe-7007-s2c', 'DisplayName', 'queue-f632d873...'),
+  },
+  'AWS::EC2::PrefixList': {
+    Arn: renamed('cdkd-probe-7007-s1', 'PrefixListName', 'prefix-list/pl-0d520b78fc4478f52'),
+  },
+  'AWS::Glue::UserDefinedFunction': {
+    Arn: renamed('cdkd-probe-7007-s2c', 'ClassName / OwnerName', '.../<db>/<create-only name>'),
+  },
+  'AWS::IAM::ServerCertificate': {
+    // The handler completes a Path update without applying it: its update
+    // permissions are tag / list / get only (no iam:UpdateServerCertificate),
+    // and cdkd routes the type through Cloud Control, so the ARN stays.
+    Arn: renamed(
+      'cdkd-probe-7007-s1',
+      'Path',
+      'server-certificate/cdkd-probe-7007-a/cdkd-probe-7007-cert'
+    ),
+  },
+  'AWS::IVSChat::LoggingConfiguration': {
+    Id: renamed('cdkd-probe-7007-s3c', 'Name', 'r2zbNTcYVRdc'),
+  },
+  'AWS::IVSChat::Room': { Id: renamed('cdkd-probe-7007-s1', 'Name', '8NJl1byAY7iO') },
+  'AWS::KinesisVideo::Stream': {
+    Arn: renamed('cdkd-probe-7007-s1', 'DeviceName', 'stream/<create-only name>/1795710281819'),
+  },
+  'AWS::Lex::Bot': { Arn: renamed('cdkd-probe-7007-s3c', 'Name', 'bot/8ACWASRH4S') },
+  'AWS::Lex::BotAlias': {
+    Arn: renamed('cdkd-probe-7007-s3c', 'BotAliasName', 'bot-alias/8ACWASRH4S/7ETHCRHKIG'),
+  },
+  'AWS::Route53Resolver::FirewallRuleGroupAssociation': {
+    Arn: renamed('cdkd-probe-7007-s3c', 'Name', '.../rslvr-frgassoc-ad8eaddd39cc403a'),
+  },
+  // A DomainName change cannot be applied in place (a Cloud Control update
+  // fails NotUpdatable; go-to-k/cdkd#7070), so only Name is an in-place rename.
+  // cdkd-probe-7007-s1: a Name + DomainName update REPLACED the rule
+  // (rslvr-rr-c051d710... -> rslvr-rr-b961c68a...); a second, Name-only update
+  // completed in place, renamed it (live name cdkd-probe-7007-rr-c) and kept
+  // rslvr-rr-b961c68a7e1e43908.
+  'AWS::Route53Resolver::ResolverRule': {
+    Arn: renamed('cdkd-probe-7007-s1', 'Name only', 'resolver-rule/rslvr-rr-b961c68a7e1e43908'),
+  },
+  'AWS::WellArchitected::Workload': {
+    WorkloadId: renamed('cdkd-probe-7007-s3c', 'WorkloadName', 'd407459bb0b58e882b630018989ed8fb'),
+  },
+  // The handlers complete a rename without applying it: the name and ARN stay.
+  'AWS::XRay::Group': {
+    GroupARN: renamed('cdkd-probe-7007-s1', 'GroupName', 'group/<old name>/NIY2T2OJ...'),
+  },
+  // UpdateSamplingRule names the rule by name or ARN and has no rename, so no
+  // name field (RuleName, SamplingRule / SamplingRuleUpdate.RuleName) moves it.
+  'AWS::XRay::SamplingRule': {
+    RuleARN: renamed('cdkd-probe-7007-s1', 'SamplingRule.RuleName', 'sampling-rule/<old name>'),
+  },
+};
+
+type Classification = Readonly<Record<string, Readonly<Record<string, InPlaceAttrVerdict>>>>;
+
+/** `a` and `b` together; a type in both throws (a spread would drop one record). */
+export function mergeDisjoint(a: Classification, b: Classification): Classification {
+  const both = Object.keys(b).filter((type) => Object.hasOwn(a, type));
+  if (both.length > 0) throw new Error(`classified twice: ${both.join(', ')}`);
+  return { ...a, ...b };
+}
+
+/**
+ * go-to-k/cdkd#7007: Cloud Control pairs settled from the service's API model
+ * and documented formats (no probe). An ARN or id the service mints, or a
+ * host built from create-only inputs, never moves; an address the update API
+ * rewrites moves with the property it takes.
+ */
+const REASONED: Classification = {
+  // An in-place name property of these types names ANOTHER resource (a key
+  // pair, a certificate, a parameter group); the ARN is `<Type>/<uuid>` or
+  // carries only the create-only name.
+  'AWS::Lightsail::Distribution': {
+    DistributionArn: never('`Distribution/<uuid>`; CertificateName attaches a certificate'),
+  },
+  'AWS::Lightsail::Instance': {
+    InstanceArn: never('`Instance/<uuid>`; KeyPairName names a key pair'),
+  },
+  'AWS::Lightsail::LoadBalancer': {
+    LoadBalancerArn: never('`LoadBalancer/<uuid>`; TlsPolicyName names a TLS policy'),
+  },
+  'AWS::MemoryDB::Cluster': {
+    ARN: never('`cluster/<create-only ClusterName>`; the in-place names are a parameter group, ACL and snapshot'),
+  },
+  'AWS::ElastiCache::ServerlessCache': {
+    ARN: never('`serverlesscache:<create-only name>`; FinalSnapshotName names the final snapshot'),
+  },
+  'AWS::MediaTailor::PlaybackConfiguration': {
+    PlaybackConfigurationArn: never('built from the create-only Name; TranscodeProfileName names a profile'),
+  },
+  'AWS::Route53RecoveryReadiness::ReadinessCheck': {
+    ReadinessCheckArn: never('built from the create-only ReadinessCheckName; ResourceSetName names a set'),
+  },
+  'AWS::IoTWireless::WirelessDeviceImportTask': {
+    Arn: never('`ImportTask/<id>`; DestinationName names a destination'),
+  },
+  'AWS::Amplify::Branch': {
+    Arn: never('`apps/<app>/branches/<create-only BranchName>`; PullRequestEnvironmentName is a backend'),
+  },
+  'AWS::Chatbot::MicrosoftTeamsChannelConfiguration': {
+    Arn: never('built from the create-only ConfigurationName; TeamsChannelName labels the channel'),
+  },
+  'AWS::MediaConnect::FlowOutput': {
+    OutputArn: never('`output:<id>:<create-only Name>`; NdiProgramName is an NDI setting'),
+  },
+  'AWS::MediaConnect::FlowSource': {
+    SourceArn: never('`source:<id>:<create-only Name>`; VpcInterfaceName names an interface'),
+  },
+  'AWS::MediaPackage::OriginEndpoint': {
+    Arn: never('`origin_endpoints/<create-only Id>`; ManifestName names the manifest'),
+  },
+  'AWS::SageMaker::Space': {
+    SpaceArn: never('`space/<create-only domain>/<create-only SpaceName>`; SpaceDisplayName is a label'),
+    Url: never('built from the create-only domain and space name'),
+  },
+  // The update API names the resource by its minted id and takes the name as
+  // a field, so a rename keeps the id.
+  'AWS::StorageGateway::NFSFileShare': {
+    FileShareId: never('the share id; UpdateNFSFileShare takes FileShareARN and FileShareName'),
+  },
+  'AWS::StorageGateway::SMBFileShare': {
+    FileShareId: never('the share id; UpdateSMBFileShare takes FileShareARN and FileShareName'),
+  },
+  'AWS::FMS::ApplicationsList': {
+    ListId: never('PutAppsList updates the list its ListId names; the name is a field'),
+  },
+  'AWS::FMS::ProtocolsList': {
+    ListId: never('PutProtocolsList updates the list its ListId names; the name is a field'),
+  },
+  'AWS::MediaLive::CloudWatchAlarmTemplate': {
+    Arn: never('`cloudwatch-alarm-template:<id>`; UpdateCloudWatchAlarmTemplate keeps the id'),
+    Id: never('the minted id; UpdateCloudWatchAlarmTemplate names the template by it'),
+  },
+  // A host or address built from the resource's minted id or create-only
+  // inputs; no in-place property is part of it.
+  'AWS::Amplify::Webhook': { WebhookUrl: never('built from the webhook id and its creation token') },
+  'AWS::AppSync::Api': { Dns: never('the api id hosts, fixed for the api life') },
+  'AWS::AppSync::DomainName': {
+    AppSyncDomainName: never('the CloudFront host for the create-only DomainName'),
+  },
+  'AWS::APS::Workspace': {
+    PrometheusEndpoint: never('`aps-workspaces.<region>.../workspaces/<id>/`'),
+  },
+  'AWS::CloudFront::StreamingDistribution': {
+    DomainName: never('the `d....cloudfront.net` host assigned at create'),
+  },
+  'AWS::Events::Endpoint': {
+    EndpointUrl: never('`<endpoint id>.endpoint.events.amazonaws.com`'),
+  },
+  'AWS::HealthLake::FHIRDatastore': { DatastoreEndpoint: never('built from the datastore id') },
+  'AWS::OpenSearchServerless::Collection': {
+    CollectionEndpoint: never('`<collection id>.<region>.aoss.amazonaws.com`'),
+    DashboardEndpoint: never('built from the collection id'),
+    FipsEndpoints: never('built from the collection id'),
+  },
+  'AWS::RDS::DBShardGroup': {
+    Endpoint: never('built from the create-only identifier; PubliclyAccessible is create-only'),
+  },
+  'AWS::MediaPackageV2::Channel': {
+    IngestEndpoints: never('assigned per channel at create; InputType is create-only'),
+  },
+  'AWS::PCS::Cluster': { Endpoints: never('the cluster networking is create-only') },
+  'AWS::IoTFleetHub::Application': {
+    ApplicationUrl: never('built from the application id; UpdateApplication takes name and description only'),
+  },
+  // DataSync builds a location URI as `<type>://<host or id>/<subdirectory>/`,
+  // and each UpdateLocation* call takes the subdirectory (and a server
+  // hostname or HDFS name node; the live schemas make them in place, though
+  // the spec calls ServerHostname create-only): the URI moves with them. An
+  // object store's port and protocol are not in it.
+  'AWS::DataSync::LocationFSxWindows': {
+    LocationUri: movedBy(['Subdirectory'], '`fsxw://<file system>/<subdirectory>/`'),
+  },
+  'AWS::DataSync::LocationNFS': {
+    LocationUri: movedBy(['Subdirectory', 'ServerHostname'], '`nfs://<host>/<subdirectory>/`'),
+  },
+  'AWS::DataSync::LocationSMB': {
+    LocationUri: movedBy(['Subdirectory', 'ServerHostname'], '`smb://<host>/<subdirectory>/`'),
+  },
+  'AWS::DataSync::LocationHDFS': {
+    LocationUri: movedBy(['Subdirectory', 'NameNodes'], '`hdfs://<name node>:<port>/<subdirectory>/`'),
+  },
+  'AWS::DataSync::LocationObjectStorage': {
+    LocationUri: movedBy(
+      ['Subdirectory', 'ServerHostname'],
+      '`object-storage://<host>/<bucket>/<subdirectory>/`'
+    ),
+  },
+  // The pinned spec calls these subdirectories (and ONTAP / OpenZFS
+  // protocols) create-only, so no-in-place-update would call the URI fixed;
+  // the live registry makes them in place, and UpdateLocation* takes them.
+  'AWS::DataSync::LocationS3': {
+    LocationUri: movedBy(['Subdirectory'], '`s3://<bucket>/<subdirectory>/`'),
+  },
+  'AWS::DataSync::LocationEFS': {
+    LocationUri: movedBy(['Subdirectory'], '`efs://<region>.<file system>/<subdirectory>/`'),
+  },
+  'AWS::DataSync::LocationFSxLustre': {
+    LocationUri: movedBy(['Subdirectory'], '`fsxl://<region>.<file system>/<subdirectory>/`'),
+  },
+  'AWS::DataSync::LocationFSxOpenZFS': {
+    LocationUri: movedBy(['Subdirectory'], '`fsxz://<region>.<file system>/<subdirectory>/`'),
+  },
+  // Unmeasured: the ONTAP URI scheme may name the protocol (NFS / SMB), so a
+  // Protocol change is taken as a move too.
+  'AWS::DataSync::LocationFSxONTAP': {
+    LocationUri: movedBy(['Subdirectory', 'Protocol'], 'the storage VM, protocol and subdirectory'),
+  },
+  'AWS::DataSync::LocationAzureBlob': {
+    LocationUri: movedBy(['Subdirectory'], 'the container URL and subdirectory'),
+  },
+  // UpdateMonitor takes the subdomain: `https://<subdomain>.<region>.deadlinecloud...`.
+  'AWS::Deadline::Monitor': { Url: movedBy(['Subdomain'], 'the monitor subdomain host') },
+};
+
+const HAND_CLASSIFICATION: Classification = {
   'AWS::ApiGateway::Account': { Id: OWN_REF },
   'AWS::ApiGateway::Authorizer': { AuthorizerId: ID },
   'AWS::ApiGateway::Deployment': {
@@ -247,6 +504,38 @@ export const SDK_IN_PLACE_ATTR_CLASSIFICATION: Readonly<
     PublicIp: anyUpdate('a stop/start update gives an instance without an EIP a new address (#5446)'),
     PublicDnsName: anyUpdate('follows the public address (#5446)'),
     PrivateDnsName: anyUpdate('a PrivateDnsNameOptions change renames it (#5630)'),
+  },
+  // Cloud Control: the repository owner of the linked repository; a
+  // RepositoryLinkId change (UpdateSyncConfiguration) re-points it.
+  'AWS::CodeStarConnections::SyncConfiguration': {
+    OwnerId: movedBy(['RepositoryLinkId'], 'the owner of the repository the link points at'),
+    RepositoryName: movedBy(['RepositoryLinkId'], 'the name of the repository the link points at'),
+    ProviderType: movedBy(['RepositoryLinkId'], 'the provider of the repository the link points at'),
+  },
+  // Cloud Control (go-to-k/cdkd#7007): versions no update of the resource
+  // writes, kept out of the update-marker rule (NOT_UPDATE_MARKERS).
+  'AWS::ControlTower::LandingZone': {
+    LatestAvailableVersion: never('the newest landing zone version AWS offers, a service catalog'),
+  },
+  'AWS::ODB::CloudExadataInfrastructure': {
+    DbServerVersion: never('the database server software level, moved by Oracle maintenance'),
+    StorageServerVersion: never('the storage server software level, moved by Oracle maintenance'),
+  },
+  'AWS::Redshift::Snapshot': {
+    ClusterVersion: never('the source cluster version, captured when the snapshot was taken'),
+    EngineFullVersion: never('the source engine version, captured when the snapshot was taken'),
+  },
+  // Cloud Control: the shared.ts row of issue #985 (a LaunchTemplateData edit
+  // mints version N+1), held here so the audit reads it as a hand verdict.
+  'AWS::EC2::LaunchTemplate': {
+    LatestVersionNumber: anyUpdate('a LaunchTemplateData edit mints the next version'),
+    DefaultVersionNumber: anyUpdate('the new version becomes the default when the update sets it'),
+  },
+  // Cloud Control: an in-place RouteTableId change calls
+  // ReplaceRouteTableAssociation, which answers a NEW association id
+  // (`NewAssociationId`) (go-to-k/cdkd#7007).
+  'AWS::EC2::GatewayRouteTableAssociation': {
+    AssociationId: movedBy(['RouteTableId'], 'ReplaceRouteTableAssociation mints a new association id'),
   },
   'AWS::EC2::InternetGateway': { InternetGatewayId: ID },
   'AWS::EC2::NatGateway': {
@@ -618,3 +907,8 @@ export const SDK_IN_PLACE_ATTR_CLASSIFICATION: Readonly<
     Capacity: movedBy(['Rules'], 'the capacity units the rules use'),
   },
 };
+
+export const SDK_IN_PLACE_ATTR_CLASSIFICATION: Classification = mergeDisjoint(
+  mergeDisjoint(HAND_CLASSIFICATION, RENAME_MEASURED),
+  REASONED
+);

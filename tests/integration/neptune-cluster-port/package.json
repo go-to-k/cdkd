@@ -1,0 +1,20 @@
+{
+  "name": "cdkd-integ-neptune-cluster-port",
+  "version": "1.0.0",
+  "private": true,
+  "description": "cdkd Neptune DBCluster in-place DBPort change: readers of Fn::GetAtt Port get the applied port (#7006)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.1112.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

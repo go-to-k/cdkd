@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as kms from 'aws-cdk-lib/aws-kms';
 import * as rds from 'aws-cdk-lib/aws-rds';
 
 /**
@@ -49,11 +50,16 @@ import * as rds from 'aws-cdk-lib/aws-rds';
  *   CopyTagsToSnapshot / CACertificateIdentifier / EnablePerformanceInsights +
  *   PerformanceInsightsRetentionPeriod.
  * Not set here, unit-tested only: MultiAZ (a standby doubles the create and
- * delete time and rides the same update path as AutoMinorVersionUpgrade),
+ * delete time and rides the same update path as AutoMinorVersionUpgrade) and
  * OptionGroupName (a custom group is held by the #4030 final snapshot, so the
- * destroy could not delete it) and PerformanceInsightsKMSKeyId (only the
- * account's default key would keep the fixture self-contained, and that is
- * what AWS picks anyway).
+ * destroy could not delete it).
+ *
+ * go-to-k/cdkd#7052: PerformanceInsightsKMSKeyId is the stack's own key
+ * (PiKeyA) in every phase. Phase 2c-pi (CDKD_TEST_PI_KEY_NEW=true) moves it to
+ * a key created in that same deploy (PiKeyB), which the diff cannot resolve
+ * yet; CloudFormation's handler replaces the instance for a changed non-empty
+ * key (measured on #7038), so verify.sh asserts the diff's replacement and the
+ * stateful refusal, and no deploy ever applies it.
  *
  * Shape: db.t3.micro / 400 GiB gp3 / 2 isolated subnets / no NAT.
  */
@@ -140,6 +146,22 @@ export class RdsDbInstanceBackfillStack extends cdk.Stack {
       parameters: { max_connections: '60' },
     });
     const useParamGroupB = process.env.CDKD_TEST_PARAM_GROUP === 'b';
+
+    // go-to-k/cdkd#7052: the Performance Insights keys. Both are deleted with
+    // the stack (a KMS key's CDK default is to retain it) after the shortest
+    // pending window. PiKeyB exists only in phase 2c-pi, whose refused deploy
+    // rolls back the key it created.
+    const piKeyA = new kms.Key(this, 'PiKeyA', {
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pendingWindow: cdk.Duration.days(7),
+    });
+    const piKeyB =
+      process.env.CDKD_TEST_PI_KEY_NEW === 'true'
+        ? new kms.Key(this, 'PiKeyB', {
+            removalPolicy: cdk.RemovalPolicy.DESTROY,
+            pendingWindow: cdk.Duration.days(7),
+          })
+        : undefined;
 
     // go-to-k/cdkd#5640 (EnableCloudwatchLogsExports): phase 1 exports
     // `postgresql`; the phase-2 update adds `upgrade` (ModifyDBInstance's
@@ -232,6 +254,7 @@ export class RdsDbInstanceBackfillStack extends cdk.Stack {
       copyTagsToSnapshot: true,
       caCertificateIdentifier: 'rds-ca-rsa4096-g1',
       enablePerformanceInsights: true,
+      performanceInsightsKmsKeyId: (piKeyB ?? piKeyA).keyArn,
       // 31 is not the default (7), so a dropped create value reads back 7.
       performanceInsightsRetentionPeriod: isUpdate ? 7 : 31,
       // go-to-k/cdkd#2762, unchanged in phase 2. Each is the value RDS picks
@@ -250,13 +273,17 @@ export class RdsDbInstanceBackfillStack extends cdk.Stack {
       // to Cloud Control (the provisionedBy=sdk guard catches it).
       dbParameterGroupName: (useParamGroupB ? paramGroupB : paramGroupA).ref,
       ...(logsRemoved ? {} : { enableCloudwatchLogsExports: logExports }),
-      // go-to-k/cdkd#5640, unchanged in every phase: both ride CreateDBInstance
-      // only (DBName is create-only; CloudFormation refuses a changed zone).
-      // Before #5640 either one routed the instance to Cloud Control (the
-      // provisionedBy=sdk guard catches it). The zone is the subnet group's
-      // SECOND subnet's, read back from the state record by verify.sh.
+      // go-to-k/cdkd#5640: both ride CreateDBInstance only (DBName is
+      // create-only). Before #5640 either one routed the instance to Cloud
+      // Control (the provisionedBy=sdk guard catches it). The zone is the
+      // subnet group's SECOND subnet's, read back from the state record by
+      // verify.sh. go-to-k/cdkd#7044: CDKD_TEST_AZ_MOVED=true moves it to the
+      // FIRST subnet's, a change CloudFormation answers with a new instance;
+      // verify.sh asserts the diff's replacement and the stateful refusal, so
+      // no deploy ever applies it.
       dbName: 'cdkdbackfill',
-      availabilityZone: vpc.isolatedSubnets[1]!.availabilityZone,
+      availabilityZone: vpc.isolatedSubnets[process.env.CDKD_TEST_AZ_MOVED === 'true' ? 0 : 1]!
+        .availabilityZone,
       // go-to-k/cdkd#5640, unchanged in every phase: before #5640 either one
       // routed the instance to Cloud Control (the provisionedBy=sdk guard
       // catches it). EngineLifecycleSupport is not AWS's default, so verify.sh

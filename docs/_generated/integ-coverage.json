@@ -222,6 +222,7 @@
         "apigw-cloudwatch-role-redeploy",
         "apigw-gateway-response",
         "apigw-restapi-spec",
+        "apigw-stage-api-replacement",
         "apigw-stage-props",
         "apigw-stage-throttling",
         "apigw-vpclink-integration-target",
@@ -243,6 +244,10 @@
           "literal"
         ],
         "apigw-restapi-spec": [
+          "literal"
+        ],
+        "apigw-stage-api-replacement": [
+          "l1",
           "literal"
         ],
         "apigw-stage-props": [
@@ -272,6 +277,7 @@
         "apigw-cloudwatch-role-redeploy",
         "apigw-gateway-response",
         "apigw-restapi-spec",
+        "apigw-stage-api-replacement",
         "apigw-stage-props",
         "apigw-stage-throttling",
         "apigw-vpclink-integration-target",
@@ -295,6 +301,10 @@
           "literal"
         ],
         "apigw-restapi-spec": [
+          "literal"
+        ],
+        "apigw-stage-api-replacement": [
+          "l1",
           "literal"
         ],
         "apigw-stage-props": [
@@ -358,6 +368,7 @@
         "apigw-cloudwatch-role-redeploy",
         "apigw-gateway-response",
         "apigw-restapi-spec",
+        "apigw-stage-api-replacement",
         "apigw-stage-props",
         "apigw-stage-throttling",
         "apigw-vpclink-integration-target",
@@ -380,6 +391,10 @@
           "literal"
         ],
         "apigw-restapi-spec": [
+          "l1",
+          "literal"
+        ],
+        "apigw-stage-api-replacement": [
           "l1",
           "literal"
         ],
@@ -439,6 +454,7 @@
         "apigw-cloudwatch-role-redeploy",
         "apigw-gateway-response",
         "apigw-restapi-spec",
+        "apigw-stage-api-replacement",
         "apigw-stage-props",
         "apigw-stage-throttling",
         "apigw-vpclink-integration-target",
@@ -458,6 +474,10 @@
           "literal"
         ],
         "apigw-restapi-spec": [
+          "literal"
+        ],
+        "apigw-stage-api-replacement": [
+          "l1",
           "literal"
         ],
         "apigw-stage-props": [
@@ -480,6 +500,7 @@
       "resourceType": "AWS::ApiGatewayV2::Api",
       "integs": [
         "apigatewayv2-update-removal",
+        "apigw-stage-api-replacement",
         "cc-api-fallback",
         "cc-api-fallback-transitions",
         "cc-to-sdk-reroute-common-types-8",
@@ -499,6 +520,10 @@
       ],
       "signals": {
         "apigatewayv2-update-removal": [
+          "l1",
+          "literal"
+        ],
+        "apigw-stage-api-replacement": [
           "l1",
           "literal"
         ],
@@ -698,6 +723,7 @@
       "resourceType": "AWS::ApiGatewayV2::Stage",
       "integs": [
         "apigatewayv2-update-removal",
+        "apigw-stage-api-replacement",
         "cc-to-sdk-reroute-common-types-8",
         "drift-revert",
         "export",
@@ -715,6 +741,10 @@
       "signals": {
         "apigatewayv2-update-removal": [
           "l1"
+        ],
+        "apigw-stage-api-replacement": [
+          "l1",
+          "literal"
         ],
         "cc-to-sdk-reroute-common-types-8": [
           "l1",
@@ -1974,6 +2004,7 @@
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "neptune-cluster-port",
         "neptune-fix-forward-orphan",
         "neptune-restore",
         "nlb-quic-server-id",
@@ -1999,8 +2030,10 @@
         "rollback-failure-injection",
         "rollback-replay-effective-props",
         "sg-circular-dependency",
+        "sg-ingress-source-replacement",
         "sg-rule-description-update",
         "stack-copy-create-tokens",
+        "superseded-sg-destroy-order",
         "tags-propagation",
         "vpc-lambda",
         "vpc-lambda-cr-race",
@@ -2216,6 +2249,9 @@
         "multi-stack-deps": [
           "l2"
         ],
+        "neptune-cluster-port": [
+          "l2"
+        ],
         "neptune-fix-forward-orphan": [
           "l2"
         ],
@@ -2291,10 +2327,16 @@
         "sg-circular-dependency": [
           "l2"
         ],
+        "sg-ingress-source-replacement": [
+          "l2"
+        ],
         "sg-rule-description-update": [
           "l2"
         ],
         "stack-copy-create-tokens": [
+          "l2"
+        ],
+        "superseded-sg-destroy-order": [
           "l2"
         ],
         "tags-propagation": [
@@ -2382,6 +2424,7 @@
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "neptune-cluster-port",
         "neptune-fix-forward-orphan",
         "neptune-restore",
         "nlb-quic-server-id",
@@ -2405,8 +2448,10 @@
         "replace-snapshot-failed-rollback",
         "rollback-failure-injection",
         "sg-circular-dependency",
+        "sg-ingress-source-replacement",
         "sg-rule-description-update",
         "stack-copy-create-tokens",
+        "superseded-sg-destroy-order",
         "vpc-lambda",
         "vpc-lambda-cr-race",
         "vpc-nat-gateway",
@@ -2608,6 +2653,9 @@
         "multi-stack-deps": [
           "l2"
         ],
+        "neptune-cluster-port": [
+          "l2"
+        ],
         "neptune-fix-forward-orphan": [
           "l2"
         ],
@@ -2678,10 +2726,16 @@
         "sg-circular-dependency": [
           "l2"
         ],
+        "sg-ingress-source-replacement": [
+          "l2"
+        ],
         "sg-rule-description-update": [
           "l2"
         ],
         "stack-copy-create-tokens": [
+          "l2"
+        ],
+        "superseded-sg-destroy-order": [
           "l2"
         ],
         "vpc-lambda": [
@@ -2810,6 +2864,7 @@
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "neptune-cluster-port",
         "neptune-fix-forward-orphan",
         "neptune-restore",
         "nlb-quic-server-id",
@@ -2834,8 +2889,10 @@
         "rollback-failure-injection",
         "rollback-replay-effective-props",
         "sg-circular-dependency",
+        "sg-ingress-source-replacement",
         "sg-rule-description-update",
         "stack-copy-create-tokens",
+        "superseded-sg-destroy-order",
         "vpc-lambda",
         "vpc-lambda-cr-race",
         "vpc-nat-gateway",
@@ -3047,6 +3104,9 @@
         "multi-stack-deps": [
           "l2"
         ],
+        "neptune-cluster-port": [
+          "l2"
+        ],
         "neptune-fix-forward-orphan": [
           "l2"
         ],
@@ -3119,10 +3179,16 @@
         "sg-circular-dependency": [
           "l2"
         ],
+        "sg-ingress-source-replacement": [
+          "l2"
+        ],
         "sg-rule-description-update": [
           "l2"
         ],
         "stack-copy-create-tokens": [
+          "l2"
+        ],
+        "superseded-sg-destroy-order": [
           "l2"
         ],
         "vpc-lambda": [
@@ -3210,6 +3276,7 @@
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "neptune-cluster-port",
         "neptune-fix-forward-orphan",
         "neptune-restore",
         "nlb-quic-server-id",
@@ -3234,8 +3301,10 @@
         "rollback-failure-injection",
         "rollback-replay-effective-props",
         "sg-circular-dependency",
+        "sg-ingress-source-replacement",
         "sg-rule-description-update",
         "stack-copy-create-tokens",
+        "superseded-sg-destroy-order",
         "tags-propagation",
         "vpc-lambda",
         "vpc-lambda-cr-race",
@@ -3451,6 +3520,9 @@
         "multi-stack-deps": [
           "l2"
         ],
+        "neptune-cluster-port": [
+          "l2"
+        ],
         "neptune-fix-forward-orphan": [
           "l2"
         ],
@@ -3523,10 +3595,16 @@
         "sg-circular-dependency": [
           "l2"
         ],
+        "sg-ingress-source-replacement": [
+          "l2"
+        ],
         "sg-rule-description-update": [
           "l2"
         ],
         "stack-copy-create-tokens": [
+          "l2"
+        ],
+        "superseded-sg-destroy-order": [
           "l2"
         ],
         "tags-propagation": [
@@ -3606,8 +3684,10 @@
         "rollback-failure-injection",
         "rollback-replay-effective-props",
         "sg-circular-dependency",
+        "sg-ingress-source-replacement",
         "sg-rule-description-update",
         "stack-copy-create-tokens",
+        "superseded-sg-destroy-order",
         "tags-propagation",
         "update-replace",
         "vpc-lambda",
@@ -3801,11 +3881,19 @@
           "l2",
           "literal"
         ],
+        "sg-ingress-source-replacement": [
+          "l1",
+          "literal"
+        ],
         "sg-rule-description-update": [
           "l2",
           "literal"
         ],
         "stack-copy-create-tokens": [
+          "l2",
+          "literal"
+        ],
+        "superseded-sg-destroy-order": [
           "l2",
           "literal"
         ],
@@ -3834,6 +3922,7 @@
         "export",
         "rollback-replay-effective-props",
         "sg-circular-dependency",
+        "sg-ingress-source-replacement",
         "sg-rule-description-update"
       ],
       "signals": {
@@ -3856,6 +3945,10 @@
           "l1"
         ],
         "sg-circular-dependency": [
+          "l1",
+          "literal"
+        ],
+        "sg-ingress-source-replacement": [
           "l1",
           "literal"
         ],
@@ -3943,6 +4036,7 @@
         "list-parameters",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "neptune-cluster-port",
         "neptune-fix-forward-orphan",
         "neptune-restore",
         "nlb-quic-server-id",
@@ -3971,9 +4065,11 @@
         "replacement-rename-onto-holder",
         "rollback-failure-injection",
         "sg-circular-dependency",
+        "sg-ingress-source-replacement",
         "sg-rule-description-update",
         "stack-copy-create-tokens",
         "subnet-mappublicip-removal",
+        "superseded-sg-destroy-order",
         "tags-propagation",
         "vpc-lambda",
         "vpc-lambda-cr-race",
@@ -4214,6 +4310,9 @@
         "multi-stack-deps": [
           "l2"
         ],
+        "neptune-cluster-port": [
+          "l2"
+        ],
         "neptune-fix-forward-orphan": [
           "l2"
         ],
@@ -4302,6 +4401,9 @@
         "sg-circular-dependency": [
           "l2"
         ],
+        "sg-ingress-source-replacement": [
+          "l2"
+        ],
         "sg-rule-description-update": [
           "l2"
         ],
@@ -4310,6 +4412,10 @@
         ],
         "subnet-mappublicip-removal": [
           "l1",
+          "literal"
+        ],
+        "superseded-sg-destroy-order": [
+          "l2",
           "literal"
         ],
         "tags-propagation": [
@@ -4408,6 +4514,7 @@
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "neptune-cluster-port",
         "neptune-fix-forward-orphan",
         "neptune-restore",
         "nlb-quic-server-id",
@@ -4431,8 +4538,10 @@
         "replace-snapshot-failed-rollback",
         "rollback-failure-injection",
         "sg-circular-dependency",
+        "sg-ingress-source-replacement",
         "sg-rule-description-update",
         "stack-copy-create-tokens",
+        "superseded-sg-destroy-order",
         "vpc-lambda",
         "vpc-lambda-cr-race",
         "vpc-nat-gateway",
@@ -4637,6 +4746,9 @@
         "multi-stack-deps": [
           "l2"
         ],
+        "neptune-cluster-port": [
+          "l2"
+        ],
         "neptune-fix-forward-orphan": [
           "l2"
         ],
@@ -4706,10 +4818,16 @@
         "sg-circular-dependency": [
           "l2"
         ],
+        "sg-ingress-source-replacement": [
+          "l2"
+        ],
         "sg-rule-description-update": [
           "l2"
         ],
         "stack-copy-create-tokens": [
+          "l2"
+        ],
+        "superseded-sg-destroy-order": [
           "l2"
         ],
         "vpc-lambda": [
@@ -4809,6 +4927,7 @@
         "list-parameters",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "neptune-cluster-port",
         "neptune-fix-forward-orphan",
         "neptune-restore",
         "nlb-quic-server-id",
@@ -4840,9 +4959,11 @@
         "rollback-replay-effective-props",
         "servicediscovery",
         "sg-circular-dependency",
+        "sg-ingress-source-replacement",
         "sg-rule-description-update",
         "stack-copy-create-tokens",
         "subnet-mappublicip-removal",
+        "superseded-sg-destroy-order",
         "tags-propagation",
         "vpc-lambda",
         "vpc-lambda-cr-race",
@@ -5109,6 +5230,9 @@
         "multi-stack-deps": [
           "l2"
         ],
+        "neptune-cluster-port": [
+          "l2"
+        ],
         "neptune-fix-forward-orphan": [
           "l2"
         ],
@@ -5208,6 +5332,10 @@
           "l2",
           "literal"
         ],
+        "sg-ingress-source-replacement": [
+          "l2",
+          "literal"
+        ],
         "sg-rule-description-update": [
           "l2",
           "literal"
@@ -5218,6 +5346,10 @@
         ],
         "subnet-mappublicip-removal": [
           "l1"
+        ],
+        "superseded-sg-destroy-order": [
+          "l2",
+          "literal"
         ],
         "tags-propagation": [
           "l1"
@@ -5323,6 +5455,7 @@
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "neptune-cluster-port",
         "neptune-fix-forward-orphan",
         "neptune-restore",
         "nlb-quic-server-id",
@@ -5348,8 +5481,10 @@
         "rollback-failure-injection",
         "rollback-replay-effective-props",
         "sg-circular-dependency",
+        "sg-ingress-source-replacement",
         "sg-rule-description-update",
         "stack-copy-create-tokens",
+        "superseded-sg-destroy-order",
         "vpc-lambda",
         "vpc-lambda-cr-race",
         "vpc-nat-gateway",
@@ -5562,6 +5697,9 @@
         "multi-stack-deps": [
           "l2"
         ],
+        "neptune-cluster-port": [
+          "l2"
+        ],
         "neptune-fix-forward-orphan": [
           "l2"
         ],
@@ -5638,10 +5776,16 @@
         "sg-circular-dependency": [
           "l2"
         ],
+        "sg-ingress-source-replacement": [
+          "l2"
+        ],
         "sg-rule-description-update": [
           "l2"
         ],
         "stack-copy-create-tokens": [
+          "l2"
+        ],
+        "superseded-sg-destroy-order": [
           "l2"
         ],
         "vpc-lambda": [
@@ -7825,6 +7969,7 @@
         "lambda-microvm-image",
         "loggroup-kms-associate",
         "propagation-races-2",
+        "rds-dbinstance-backfill",
         "s3-directory-bucket",
         "s3-replication-and-filter",
         "s3-vectors"
@@ -7895,6 +8040,9 @@
         ],
         "propagation-races-2": [
           "l1"
+        ],
+        "rds-dbinstance-backfill": [
+          "l2"
         ],
         "s3-directory-bucket": [
           "l2"
@@ -9286,6 +9434,7 @@
       "integs": [
         "cc-final-snapshot-handlers",
         "docdb-neptune",
+        "neptune-cluster-port",
         "neptune-fix-forward-orphan",
         "neptune-restore"
       ],
@@ -9296,6 +9445,10 @@
         ],
         "docdb-neptune": [
           "l1"
+        ],
+        "neptune-cluster-port": [
+          "l1",
+          "literal"
         ],
         "neptune-fix-forward-orphan": [
           "l1"
@@ -9330,6 +9483,7 @@
       "integs": [
         "cc-final-snapshot-handlers",
         "docdb-neptune",
+        "neptune-cluster-port",
         "neptune-fix-forward-orphan",
         "neptune-restore"
       ],
@@ -9339,6 +9493,10 @@
         ],
         "docdb-neptune": [
           "l1"
+        ],
+        "neptune-cluster-port": [
+          "l1",
+          "literal"
         ],
         "neptune-fix-forward-orphan": [
           "l1"
@@ -10186,6 +10344,7 @@
         "composite-stack",
         "drift-sns-sibling-subscription",
         "noecho-named-producer",
+        "replace-resource-flag",
         "replaced-queue-topic-failed-rollback",
         "secret-derived-immutable-names",
         "sns-event-source",
@@ -10203,6 +10362,10 @@
           "literal"
         ],
         "noecho-named-producer": [
+          "l1",
+          "literal"
+        ],
+        "replace-resource-flag": [
           "l1",
           "literal"
         ],
@@ -10274,6 +10437,7 @@
         "refactor-command",
         "refactor-lambda-version",
         "refactor-move",
+        "replace-resource-flag",
         "replaced-queue-topic-failed-rollback",
         "replacement-fanout",
         "replacement-rename-onto-holder",
@@ -10434,6 +10598,10 @@
         ],
         "refactor-move": [
           "l2"
+        ],
+        "replace-resource-flag": [
+          "l1",
+          "literal"
         ],
         "replaced-queue-topic-failed-rollback": [
           "l2",
@@ -10655,6 +10823,7 @@
         "removal-delete-failure-kept",
         "rename-refactor",
         "replace-predelete-snapshot-failed-rollback",
+        "replace-resource-flag",
         "replace-snapshot-failed-rollback",
         "replaced-queue-topic-failed-rollback",
         "replacement-rename-onto-holder",
@@ -10683,6 +10852,7 @@
         "schema-v11-to-v12-migration",
         "secret-derived-immutable-names",
         "secrets-dynamic-ref",
+        "sg-ingress-source-replacement",
         "sns-inline-subscription",
         "sns-sqs-event",
         "sns-subscription-filter",
@@ -10929,6 +11099,10 @@
           "l1",
           "literal"
         ],
+        "replace-resource-flag": [
+          "l1",
+          "literal"
+        ],
         "replace-snapshot-failed-rollback": [
           "l1",
           "literal"
@@ -11022,6 +11196,10 @@
         ],
         "secrets-dynamic-ref": [
           "l1"
+        ],
+        "sg-ingress-source-replacement": [
+          "l1",
+          "literal"
         ],
         "sns-inline-subscription": [
           "l1"
@@ -11124,6 +11302,7 @@
         "cross-stack-secret-import",
         "custom-resource-getatt-data",
         "custom-resource-noecho-nested",
+        "datasync-location-role",
         "deep-getatt-chains",
         "deletion-policy-retain",
         "depends-on-flip",
@@ -11134,13 +11313,16 @@
         "destroy-manifest-deps",
         "diff-fail-on-destructive",
         "docdb-neptune",
+        "drift-cc-read-only-props",
         "drift-revert",
         "dynamic-ref-cross-region",
         "ec2-instance",
+        "ec2-route-targets",
         "ec2-vpc-endpoint",
         "elasticache-replicationgroup-getatt",
         "eventbridge",
         "export-nested-stack",
+        "fallback-recreate-children",
         "getatt-fallback-guard",
         "getstackoutput-crossregion",
         "import-attribute-readback",
@@ -11174,6 +11356,7 @@
         "macro-expansion",
         "microservices",
         "multi-region-same-stack",
+        "neptune-cluster-port",
         "nested-child-first-deploy-failure",
         "nested-stack",
         "nested-stack-3level",
@@ -11188,6 +11371,7 @@
         "outputs-only-export",
         "perf-cross-backend-check",
         "profile-region-default",
+        "rds-dbinstance-getatt-attributes",
         "rds-full-stack",
         "recreate-nested-logical-id-collision",
         "recreate-target-readers",
@@ -11197,6 +11381,7 @@
         "refactor-move",
         "remove-protection-journaled-orphan",
         "rename-refactor",
+        "replace-resource-flag",
         "replaced-queue-topic-failed-rollback",
         "replacement-fanout",
         "replacement-immutable-name",
@@ -11314,6 +11499,9 @@
           "l2",
           "literal"
         ],
+        "datasync-location-role": [
+          "l1"
+        ],
         "deep-getatt-chains": [
           "l1"
         ],
@@ -11350,6 +11538,9 @@
         "docdb-neptune": [
           "l2"
         ],
+        "drift-cc-read-only-props": [
+          "l1"
+        ],
         "drift-revert": [
           "l1"
         ],
@@ -11357,6 +11548,9 @@
           "l1"
         ],
         "ec2-instance": [
+          "l1"
+        ],
+        "ec2-route-targets": [
           "l1"
         ],
         "ec2-vpc-endpoint": [
@@ -11369,6 +11563,10 @@
           "l2"
         ],
         "export-nested-stack": [
+          "l2",
+          "literal"
+        ],
+        "fallback-recreate-children": [
           "l2",
           "literal"
         ],
@@ -11488,6 +11686,10 @@
         "multi-region-same-stack": [
           "l2"
         ],
+        "neptune-cluster-port": [
+          "l2",
+          "literal"
+        ],
         "nested-child-first-deploy-failure": [
           "l2"
         ],
@@ -11539,6 +11741,10 @@
           "l2",
           "literal"
         ],
+        "rds-dbinstance-getatt-attributes": [
+          "l2",
+          "literal"
+        ],
         "rds-full-stack": [
           "l2"
         ],
@@ -11567,6 +11773,10 @@
         ],
         "rename-refactor": [
           "l2",
+          "literal"
+        ],
+        "replace-resource-flag": [
+          "l1",
           "literal"
         ],
         "replaced-queue-topic-failed-rollback": [

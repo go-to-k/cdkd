@@ -776,11 +776,12 @@ export async function updateDBCluster(
  *   until the cluster is out and `available`. Here a template removal is
  *   `detach` (`detachFromGlobalCluster`, which does nothing once the live
  *   cluster is no longer listed).
- * - ADD or CHANGE fails `NotUpdatable` ("Resource is immutable"). Whether
- *   CloudFormation then replaces the cluster is not measured for this
- *   property (DocDB's handler failed both, go-to-k/cdkd#5628 A/B), so cdkd
- *   refuses it before any write, the conservative side: a replacement
- *   destroys the database. One exception: a cluster the live global cluster
+ * - ADD or CHANGE fails `NotUpdatable` ("Resource is immutable"), which
+ *   CloudFormation turns into a replacement (go-to-k/cdkd#7044). `cdkd diff`
+ *   classifies it so (`replacement-rules/rds-immutability.ts`), so a template
+ *   change takes the stateful replacement guard; this refusal is reached by a
+ *   direct call or an unresolved value, and refuses before any write. One
+ *   exception: a cluster the live global cluster
  *   already lists (a CDK `GlobalCluster` made with `SourceDBClusterIdentifier`
  *   holds it before the template names it) needs no change, so `none`.
  *

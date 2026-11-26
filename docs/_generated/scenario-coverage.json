@@ -459,6 +459,11 @@
       "scenarios": []
     },
     {
+      "name": "apigw-stage-api-replacement",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "apigw-stage-props",
       "annotated": false,
       "scenarios": []
@@ -2450,6 +2455,11 @@
       ]
     },
     {
+      "name": "neptune-cluster-port",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "neptune-fix-forward-orphan",
       "annotated": false,
       "scenarios": []
@@ -2809,6 +2819,11 @@
     },
     {
       "name": "replace-predelete-snapshot-failed-rollback",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "replace-resource-flag",
       "annotated": false,
       "scenarios": []
     },
@@ -3255,6 +3270,11 @@
       ]
     },
     {
+      "name": "sg-ingress-source-replacement",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "sg-rule-description-update",
       "annotated": false,
       "scenarios": []
@@ -3402,6 +3422,11 @@
     },
     {
       "name": "subnet-mappublicip-removal",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "superseded-sg-destroy-order",
       "annotated": false,
       "scenarios": []
     },
@@ -4301,6 +4326,7 @@
     "alb-listener-rule-update",
     "apigatewayv2-update-removal",
     "apigw-restapi-spec",
+    "apigw-stage-api-replacement",
     "apigw-stage-props",
     "apigw-stage-throttling",
     "apigw-usage-plan-key",
@@ -4503,6 +4529,7 @@
     "logs-delivery",
     "logs-loggroup-fix-forward-orphan",
     "lost-child-after-failed-deploy",
+    "neptune-cluster-port",
     "neptune-fix-forward-orphan",
     "neptune-restore",
     "nested-child-first-deploy-failure",
@@ -4556,6 +4583,7 @@
     "remove-protection-journaled-orphan",
     "rename-refactor",
     "replace-predelete-snapshot-failed-rollback",
+    "replace-resource-flag",
     "replace-snapshot-failed-rollback",
     "replace-squatter-refusal",
     "replaced-delete-failed-rollback",
@@ -4593,6 +4621,7 @@
     "select-out-of-bounds",
     "servicediscovery",
     "servicediscovery-http-namespace-update",
+    "sg-ingress-source-replacement",
     "sg-rule-description-update",
     "shared-stackname-multi-region",
     "sns-event-source",
@@ -4612,6 +4641,7 @@
     "stepfunctions-sync-managed-rule",
     "stream-delete-redeploy",
     "subnet-mappublicip-removal",
+    "superseded-sg-destroy-order",
     "synthetics-canary",
     "termination-protection",
     "unrecognized-key-autoroute",

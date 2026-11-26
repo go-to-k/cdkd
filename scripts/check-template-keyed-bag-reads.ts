@@ -94,6 +94,7 @@ export const SCANNED_FILES: readonly string[] = [
   'src/deployment/intrinsic-resolver/getatt/flat-object-attributes.ts',
   'src/deployment/intrinsic-resolver/getatt/secrecy.ts',
   'src/deployment/intrinsic-resolver/getatt-heal.ts',
+  'src/deployment/intrinsic-resolver/getatt-stale-shape.ts',
   'src/deployment/intrinsic-resolver/getatt-refusals.ts',
   'src/deployment/intrinsic-resolver/getatt-construct-core.ts',
   'src/deployment/intrinsic-resolver/getatt-construct-app.ts',

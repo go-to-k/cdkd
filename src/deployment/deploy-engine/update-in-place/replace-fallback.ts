@@ -895,6 +895,12 @@ export async function replaceFallbackFor(
   if (createResult.effectiveProperties) {
     replacementResult.effectiveProperties = createResult.effectiveProperties;
   }
+  // go-to-k/cdkd#7081: any other replacement is a different resource, so its
+  // readers move to it as a planned replacement's do; the diff, which saw an
+  // in-place row, promoted none of them.
+  if (!engine.replacementRun.recreatedUnderSameId.has(logicalId)) {
+    engine.replacementRun.fallbackReplacedElsewhere.add(logicalId);
+  }
   // Issue #2608: same decision, same statement — the two must not
   // be separable by a later edit.
   return {

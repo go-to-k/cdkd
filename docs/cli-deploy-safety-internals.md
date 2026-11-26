@@ -310,13 +310,20 @@ equal id is the existing resource, and the replacement is refused with
 `NAMED_REPLACEMENT_IDEMPOTENT_CREATE` rather than deleting what it just created
 (`--replace` deletes the old resource first instead, as for any name-idempotent
 create).
-Within one type an equal id is the same resource, with one exception: two
-`AWS::Glue::Table` records in DIFFERENT databases can share an id when either
-name contains `|` (table `db|orders` in database `my`, table `orders` in
-database `my|db`). When both records' `DatabaseName` prefix the shared id and
-differ, cdkd treats them as two tables, so such a replacement keeps the new
-table and deletes the old one through its own record, and a rollback reverses
-it.
+Within one type an equal id is the same resource, with these exceptions, where
+two records under one id name two resources:
+
+| Type | Two resources when |
+| --- | --- |
+| `AWS::Glue::Table` | Both records' `DatabaseName` prefix the shared id and differ (table `db\|orders` in database `my`, table `orders` in database `my\|db`). |
+| `AWS::Lambda::Permission` | The two `FunctionName`s name different functions. |
+| `AWS::EC2::SecurityGroupIngress` | The two rules admit traffic from different sources (`CidrIp`, `CidrIpv6`, `SourcePrefixListId` or `SourceSecurityGroupId`); the id holds only the group, protocol and ports. |
+| `AWS::ApiGateway::Stage`, `AWS::ApiGatewayV2::Stage` | The two stages belong to different APIs (`RestApiId` / `ApiId`); the id is the bare stage name, such as `$default`. |
+
+Such a replacement keeps the new resource and deletes the old one through its
+own record, and a rollback reverses it. A value cdkd cannot read (masked or
+unresolved), or a group named by `SourceSecurityGroupName`, keeps the
+same-resource reading.
 When the new resource's create collides on a name instead, the error says that
 the holder may be an unrelated resource of the new type, which `--replace`
 cannot free. Under `--replace`, cdkd deletes the old resource first only

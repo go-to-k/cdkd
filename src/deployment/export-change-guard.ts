@@ -9,6 +9,7 @@ import {
   REF_READ,
   attributeMovedByChangedProperty,
 } from '../analyzer/diff-calculator/shared.js';
+import { CC_IN_PLACE_UPDATE_DERIVED_ATTRS } from '../analyzer/diff-calculator/in-place-cc-derived-attrs.generated.js';
 import { importableOutputKeys } from '../types/state.js';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
 import { producerRecordKey } from '../state/record-keys.js';
@@ -150,6 +151,10 @@ async function valueMayChange(
   replaces: (logicalId: string) => boolean
 ): Promise<'changed' | 'deferred' | 'unchanged'> {
   let touchesChangedResource = false;
+  // A value known only after the update: a custom resource's (#6865), or a
+  // Cloud Control attribute any update MAY move (#7007: whether a tag edit
+  // stamps an update time is the handler's choice, and CloudFormation refuses
+  // only a value that moved).
   let readsUpdatedCustomResource = false;
   for (const [logicalId, reads] of extractGetAttRefs(output.Value)) {
     if (replaces(logicalId)) return 'changed';
@@ -157,8 +162,13 @@ async function valueMayChange(
     if (change === undefined || change.changeType === 'NO_CHANGE') continue;
     if (change.changeType !== 'UPDATE') return 'changed';
     touchesChangedResource = true;
-    if (isCustomResourceType(change.resourceType)) readsUpdatedCustomResource = true;
-    else if (inPlaceUpdateMayMove(change, reads)) return 'changed';
+    if (isCustomResourceType(change.resourceType)) {
+      readsUpdatedCustomResource = true;
+      continue;
+    }
+    const verdict = inPlaceUpdateMayMove(change, reads);
+    if (verdict === 'changed') return 'changed';
+    if (verdict === 'after-update') readsUpdatedCustomResource = true;
   }
   // A custom resource's new value is known only after its update; a value
   // that cannot be compared then is judged now, as every in-place custom
@@ -223,8 +233,15 @@ export async function findChangedDeferredExports(
  * `promoteInPlaceAttributeDependents`'s arms 1-3. Arm 4, any read of a custom
  * resource, is deferred by the caller (go-to-k/cdkd#6865).
  */
-function inPlaceUpdateMayMove(change: ResourceChange, reads: ReadonlySet<string>): boolean {
+function inPlaceUpdateMayMove(
+  change: ResourceChange,
+  reads: ReadonlySet<string>
+): 'changed' | 'after-update' | 'unchanged' {
   const type = change.resourceType;
+  const afterUpdate = Object.hasOwn(CC_IN_PLACE_UPDATE_DERIVED_ATTRS, type)
+    ? CC_IN_PLACE_UPDATE_DERIVED_ATTRS[type]
+    : undefined;
+  let deferred = false;
   const changed = new Set((change.propertyChanges ?? []).map((pc) => pc.path));
   const derived = Object.hasOwn(IN_PLACE_UPDATE_DERIVED_ATTRS, type)
     ? IN_PLACE_UPDATE_DERIVED_ATTRS[type]
@@ -234,17 +251,21 @@ function inPlaceUpdateMayMove(change: ResourceChange, reads: ReadonlySet<string>
     : undefined;
   for (const attr of reads) {
     if (attr === REF_READ) continue;
-    if (changed.has(attr) || derived?.has(attr) === true) return true;
+    if (changed.has(attr)) return 'changed';
+    if (derived?.has(attr) === true && afterUpdate?.includes(attr) !== true) return 'changed';
     if (
       attributeMovedByChangedProperty(type, attr, changed, (prop) =>
         recordedAndDesiredOf(change, prop)
       )
     ) {
-      return true;
+      return 'changed';
     }
-    if (prefixes?.some((prefix) => attr.startsWith(prefix)) === true) return true;
+    if (prefixes?.some((prefix) => attr.startsWith(prefix)) === true) return 'changed';
+    // A generated Cloud Control row (only one) is judged against the value
+    // the update recorded; a hand row above is a known move.
+    if (afterUpdate?.includes(attr) === true) deferred = true;
   }
-  return false;
+  return deferred ? 'after-update' : 'unchanged';
 }
 
 function holdsDynamicReference(value: unknown): boolean {

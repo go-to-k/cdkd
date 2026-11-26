@@ -3,6 +3,7 @@ import type { ReplacementSiblings } from '../replacement-rules.js';
 import { isIntrinsicShaped } from '../../provisioning/create-only-properties.js';
 import { SECRET_MASK } from '../../deployment/secret-redaction.js';
 import { maskDeep, type MaskerFn } from '../../provisioning/masked-retry-logger.js';
+import { CC_IN_PLACE_UPDATE_DERIVED_ATTRS } from './in-place-cc-derived-attrs.generated.js';
 
 /**
  * A type's CFn-schema create-only keys as the promotion passes read them
@@ -94,8 +95,11 @@ export type CanonicalizePropertiesFn = (
  * list, not "every read-only attr") so unrelated computed attributes that do
  * NOT track in-place edits (e.g. a Lambda `Arn`) never trigger spurious
  * dependent promotion.
+ *
+ * go-to-k/cdkd#7007: the Cloud Control rows a moving rule of the in-place
+ * attribute audit settles (an update timestamp) are generated and merged in.
  */
-export const IN_PLACE_UPDATE_DERIVED_ATTRS: Readonly<Record<string, ReadonlySet<string>>> =
+export const HAND_IN_PLACE_UPDATE_DERIVED_ATTRS: Readonly<Record<string, ReadonlySet<string>>> =
   Object.freeze({
     'AWS::EC2::LaunchTemplate': new Set(['LatestVersionNumber', 'DefaultVersionNumber']),
     // Issue #5446: an InstanceType / UserData update stops and starts the
@@ -113,6 +117,24 @@ export const IN_PLACE_UPDATE_DERIVED_ATTRS: Readonly<Record<string, ReadonlySet<
     // promotion. The update records the version UpdateAgentRuntime answers.
     'AWS::BedrockAgentCore::Runtime': new Set(['AgentRuntimeVersion', 'LastUpdatedAt']),
   });
+
+export const IN_PLACE_UPDATE_DERIVED_ATTRS: Readonly<Record<string, ReadonlySet<string>>> =
+  Object.freeze(
+    Object.fromEntries(
+      [
+        ...new Set([
+          ...Object.keys(HAND_IN_PLACE_UPDATE_DERIVED_ATTRS),
+          ...Object.keys(CC_IN_PLACE_UPDATE_DERIVED_ATTRS),
+        ]),
+      ].map((type) => [
+        type,
+        new Set([
+          ...(HAND_IN_PLACE_UPDATE_DERIVED_ATTRS[type] ?? []),
+          ...(CC_IN_PLACE_UPDATE_DERIVED_ATTRS[type] ?? []),
+        ]),
+      ])
+    )
+  );
 
 /** What rebuilds a MicroVM image: the provider's `BUILD_AFFECTING_CFN_KEYS`. */
 const MICROVM_IMAGE_BUILD_KEYS = new Set([
@@ -186,6 +208,43 @@ export const IN_PLACE_UPDATE_ATTRS_MOVED_BY: Readonly<
   // and its zonal DNS name; private DNS, DNS options and the IP address type
   // add or drop DNS names. The update records the described values, or, after
   // a --no-wait modify, none, so a reader reads the endpoint live.
+  // go-to-k/cdkd#7007 (Cloud Control): the linked repository's owner; a
+  // RepositoryLinkId change re-points the sync configuration.
+  'AWS::CodeStarConnections::SyncConfiguration': Object.freeze({
+    OwnerId: new Set(['RepositoryLinkId']),
+    RepositoryName: new Set(['RepositoryLinkId']),
+    ProviderType: new Set(['RepositoryLinkId']),
+  }),
+  // go-to-k/cdkd#7007 (Cloud Control): a DataSync location URI carries its
+  // host and subdirectory (an HDFS name node), which UpdateLocation*
+  // rewrites; a Deadline monitor URL carries the subdomain UpdateMonitor takes.
+  'AWS::DataSync::LocationFSxWindows': Object.freeze({ LocationUri: new Set(['Subdirectory']) }),
+  'AWS::DataSync::LocationS3': Object.freeze({ LocationUri: new Set(['Subdirectory']) }),
+  'AWS::DataSync::LocationEFS': Object.freeze({ LocationUri: new Set(['Subdirectory']) }),
+  'AWS::DataSync::LocationFSxLustre': Object.freeze({ LocationUri: new Set(['Subdirectory']) }),
+  'AWS::DataSync::LocationFSxOpenZFS': Object.freeze({ LocationUri: new Set(['Subdirectory']) }),
+  'AWS::DataSync::LocationFSxONTAP': Object.freeze({
+    LocationUri: new Set(['Subdirectory', 'Protocol']),
+  }),
+  'AWS::DataSync::LocationNFS': Object.freeze({
+    LocationUri: new Set(['Subdirectory', 'ServerHostname']),
+  }),
+  'AWS::DataSync::LocationSMB': Object.freeze({
+    LocationUri: new Set(['Subdirectory', 'ServerHostname']),
+  }),
+  'AWS::DataSync::LocationHDFS': Object.freeze({
+    LocationUri: new Set(['Subdirectory', 'NameNodes']),
+  }),
+  'AWS::DataSync::LocationObjectStorage': Object.freeze({
+    LocationUri: new Set(['Subdirectory', 'ServerHostname']),
+  }),
+  'AWS::DataSync::LocationAzureBlob': Object.freeze({ LocationUri: new Set(['Subdirectory']) }),
+  'AWS::Deadline::Monitor': Object.freeze({ Url: new Set(['Subdomain']) }),
+  // go-to-k/cdkd#7007 (Cloud Control): an in-place RouteTableId change calls
+  // ReplaceRouteTableAssociation, which answers a new association id.
+  'AWS::EC2::GatewayRouteTableAssociation': Object.freeze({
+    AssociationId: new Set(['RouteTableId']),
+  }),
   'AWS::EC2::VPCEndpoint': Object.freeze({
     NetworkInterfaceIds: new Set(['SubnetIds']),
     DnsEntries: new Set(['SubnetIds', 'PrivateDnsEnabled', 'DnsOptions', 'IpAddressType']),

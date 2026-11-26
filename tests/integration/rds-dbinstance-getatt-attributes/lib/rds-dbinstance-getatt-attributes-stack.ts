@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as rds from 'aws-cdk-lib/aws-rds';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 import type { Construct } from 'constructs';
 
 /**
@@ -15,7 +16,18 @@ import type { Construct } from 'constructs';
  * The role's inline policy (via `grantConnect`) and the Outputs are what
  * verify.sh compares with `DescribeDBInstances`.
  *
- * covers: AWS::RDS::DBInstance
+ * Issue #7006: the update phases change the port (`CDKD_TEST_DB_PORT`) and
+ * the CA certificate (`CDKD_TEST_DB_CA`) in place. RDS applies both after
+ * ModifyDBInstance returns, so the instance record must take them only once
+ * applied; the SSM parameters are the READERS whose values verify.sh reads
+ * live after each update.
+ *
+ * Issue #7015: `CDKD_TEST_NEW_PORT_READERS` (a count) adds port readers AFTER
+ * verify.sh hand-seeds a pre-#7006 record (the old `Endpoint.Port`), so each
+ * new reader resolves the recorded attribute on a deploy that does not update
+ * the instance.
+ *
+ * covers: AWS::RDS::DBInstance, AWS::SSM::Parameter
  */
 export class RdsDbinstanceGetattAttributesStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -28,6 +40,9 @@ export class RdsDbinstanceGetattAttributesStack extends cdk.Stack {
       subnetConfiguration: [{ name: 'iso', subnetType: ec2.SubnetType.PRIVATE_ISOLATED }],
     });
 
+    const port = Number(process.env['CDKD_TEST_DB_PORT'] ?? '5432');
+    const ca = process.env['CDKD_TEST_DB_CA'] ?? 'rds-ca-rsa2048-g1';
+
     const db = new rds.DatabaseInstance(this, 'Db', {
       instanceIdentifier: `${id.toLowerCase()}-db`,
       engine: rds.DatabaseInstanceEngine.postgres({ version: rds.PostgresEngineVersion.VER_16 }),
@@ -35,6 +50,9 @@ export class RdsDbinstanceGetattAttributesStack extends cdk.Stack {
       vpc,
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_ISOLATED },
       allocatedStorage: 20,
+      // Declared from the first deploy, so an update phase CHANGES each.
+      port,
+      caCertificate: rds.CaCertificate.of(ca),
       iamAuthentication: true,
       // No `deleteAutomatedBackups`: cdkd's SDK provider does not wire it, so
       // declaring it routes the instance through Cloud Control, which records
@@ -50,9 +68,31 @@ export class RdsDbinstanceGetattAttributesStack extends cdk.Stack {
     db.grantConnect(role, 'app');
 
     const cfnDb = db.node.defaultChild as rds.CfnDBInstance;
+    // A CA change waits only beside a restart, as CloudFormation counts it
+    // (issue #7006); declared so phase 2's CA reader takes that wait.
+    cfnDb.addPropertyOverride('CertificateRotationRestart', true);
     new cdk.CfnOutput(this, 'DbiResourceId', { value: db.instanceResourceId });
     new cdk.CfnOutput(this, 'EndpointHostedZoneId', { value: cfnDb.attrEndpointHostedZoneId });
     new cdk.CfnOutput(this, 'CertCA', { value: cfnDb.attrCertificateDetailsCaIdentifier });
     new cdk.CfnOutput(this, 'CertValidTill', { value: cfnDb.attrCertificateDetailsValidTill });
+    new cdk.CfnOutput(this, 'EndpointPort', { value: db.dbInstanceEndpointPort });
+
+    // Issue #7006: readers of what an in-place update moves late.
+    new ssm.StringParameter(this, 'PortReader', {
+      parameterName: `/${id}/db-port`,
+      stringValue: db.dbInstanceEndpointPort,
+    });
+    new ssm.StringParameter(this, 'CaReader', {
+      parameterName: `/${id}/db-ca`,
+      stringValue: cfnDb.attrCertificateDetailsCaIdentifier,
+    });
+
+    const newReaders = Number(process.env['CDKD_TEST_NEW_PORT_READERS'] ?? '0');
+    for (let n = 1; n <= newReaders; n++) {
+      new ssm.StringParameter(this, `NewPortReader${n}`, {
+        parameterName: `/${id}/db-port-new-${n}`,
+        stringValue: db.dbInstanceEndpointPort,
+      });
+    }
   }
 }

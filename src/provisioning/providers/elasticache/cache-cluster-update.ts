@@ -347,9 +347,12 @@ export async function planNodeChanges(
  * #5438). `PreferredAvailabilityZone` has no ModifyCacheCluster member, and
  * `AZMode` reaches AWS only beside zones for nodes to add
  * (`TransitEncryptionEnabled` is reported after the Modify, against the
- * live value: `warnTransitEncryptionNotApplied`). Real CloudFormation runs completed each such update with
- * the cluster unchanged, so cdkd completes it too, but says so: the
- * template and the cluster now disagree until the cluster is replaced.
+ * live value: `warnTransitEncryptionNotApplied`). Real CloudFormation runs completed a
+ * `PreferredAvailabilityZone` change, and an `AZMode` added with no node to
+ * add, with the cluster unchanged; a `single-az` -> `cross-az` move keeping
+ * the node count is a replacement planned before update() runs (#7045).
+ * cdkd completes the rest too, but says so: the template and the cluster
+ * now disagree until the cluster is replaced.
  */
 export function warnNotAppliedInPlace(
   this: ElastiCacheProvider,
@@ -361,6 +364,7 @@ export function warnNotAppliedInPlace(
   const changed = (next: unknown, prev: unknown): boolean =>
     next !== undefined && !isDeepStrictEqual(next, prev);
   const notApplied: string[] = [];
+  const reasons: string[] = [];
   if (
     changed(
       properties['PreferredAvailabilityZone'],
@@ -368,18 +372,28 @@ export function warnNotAppliedInPlace(
     )
   ) {
     notApplied.push('PreferredAvailabilityZone');
+    reasons.push(
+      'ModifyCacheCluster cannot change PreferredAvailabilityZone, and CloudFormation leaves it unchanged too'
+    );
   }
   if (
     placement?.azMode === undefined &&
     changed(properties['AZMode'], previousProperties['AZMode'])
   ) {
+    // Not "as CloudFormation leaves it": CloudFormation replaces the cluster
+    // for a single-az -> cross-az move that keeps the node count (#7045),
+    // which the replacement rules plan before update() runs, and the shapes
+    // left here were measured only for an AZMode added with no node (#5438).
     notApplied.push('AZMode');
+    reasons.push(
+      'ModifyCacheCluster carries AZMode only beside NewAvailabilityZones, and this change adds no node in a zone the live nodes do not cover'
+    );
   }
   if (notApplied.length === 0) return;
   this.logger.warn(
     safeMsg`CacheCluster ${logicalId}: the ${notApplied.join(', ')} change is not applied to the ` +
-      `existing cluster (ModifyCacheCluster cannot change it, and CloudFormation leaves it ` +
-      `unchanged too). To apply it, replace the cluster, for example by changing its logical ID.`
+      safeMsg`existing cluster (${reasons.join('; ')}). To apply it, replace the cluster, for ` +
+      `example by changing its logical ID.`
   );
 }
 

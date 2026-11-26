@@ -9,7 +9,7 @@ unlisted: true
 
 Run `vp run scenario-coverage` to regenerate.
 
-**97 / 98 canonical scenarios** have at least one integ fixture exercising them. **233 / 556 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**97 / 98 canonical scenarios** have at least one integ fixture exercising them. **233 / 561 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -138,7 +138,7 @@ These canonical scenarios have NO integ fixture tagged with them. Each is a real
 | `warn-arm-effective-properties` | A provider warn arm that SKIPS or SUBSTITUTES a malformed DECLARED value must record what it actually SENT (`effectiveProperties`), not the declared value. The deploy SUCCEEDS, so recording the declared bag makes state describe something AWS does not hold: `readCurrentState` can never match it, every later `cdkd drift` re-reports the same difference, and `drift --revert` re-issues the same skipped call (issues #1591 / #1612 / #1653 / #1654). Only a real deploy can produce the record and only a real read-side run can prove it converges, so a mocked client agrees with whatever wire assumption the author had. Covered arms: the DynamoDB GlobalTable `StreamSpecification` warn-and-SKIP (retains the PREVIOUS value; drops it when the previous side is malformed too) and the Lambda URL `AuthType` warn-and-SUBSTITUTE (records the previous value on the substituted arm, drops the key on the OMITTED arm) — each asserting the recorded value, the untouched LIVE resource, and that the corrected template then diffs clean against that record (a `cdkd drift` assertion would be vacuous here: drift prefers the `observedProperties` baseline, which is a live read and therefore matches AWS either way). The Lambda arm additionally asserts the security consequence directly (the URL is still IAM-guarded) and that a reverse-replacement replay of a record with no `AuthType` ANNOUNCES the PUBLIC default it falls back to. | [`dynamodb-globaltable`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/dynamodb-globaltable/)<br>[`lambda-url-authtype-replay`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/lambda-url-authtype-replay/) |
 | `wide-dag-throttle-retry` | Wide (~100-resource: 80 SSM Parameters + 10 IAM Roles + 10 SNS Topics, 10-deep SSM Fn::Sub chain) single-stack burst deployed under a HIGH `--concurrency` to stress the concurrency limiter + event-driven DAG executor + throttle/retry classifier: a `TooManyRequests` / `Rate exceeded` / HTTP 429 during the burst must be RETRIED (deploy still succeeds) not fatal, the chained subset proves strict DAG ordering, and the destroy burst absorbs ~100 deletes with 0 orphans. | [`throttle-wide-dag`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/throttle-wide-dag/) |
 
-## Un-annotated fixtures (323)
+## Un-annotated fixtures (328)
 
 These integ fixtures have no `.scenarios.json` sidecar. They may or may not exercise a canonical scenario — contributor review needed. To opt out (per-service smoke tests with no canonical pattern), add a sidecar with `{ "scenarios": [] }`.
 
@@ -147,6 +147,7 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 - [`alb-listener-rule-update`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/alb-listener-rule-update/)
 - [`apigatewayv2-update-removal`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/apigatewayv2-update-removal/)
 - [`apigw-restapi-spec`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/apigw-restapi-spec/)
+- [`apigw-stage-api-replacement`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/apigw-stage-api-replacement/)
 - [`apigw-stage-props`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/apigw-stage-props/)
 - [`apigw-stage-throttling`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/apigw-stage-throttling/)
 - [`apigw-usage-plan-key`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/apigw-usage-plan-key/)
@@ -349,6 +350,7 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 - [`logs-delivery`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/logs-delivery/)
 - [`logs-loggroup-fix-forward-orphan`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/logs-loggroup-fix-forward-orphan/)
 - [`lost-child-after-failed-deploy`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/lost-child-after-failed-deploy/)
+- [`neptune-cluster-port`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/neptune-cluster-port/)
 - [`neptune-fix-forward-orphan`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/neptune-fix-forward-orphan/)
 - [`neptune-restore`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/neptune-restore/)
 - [`nested-child-first-deploy-failure`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/nested-child-first-deploy-failure/)
@@ -402,6 +404,7 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 - [`remove-protection-journaled-orphan`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/remove-protection-journaled-orphan/)
 - [`rename-refactor`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/rename-refactor/)
 - [`replace-predelete-snapshot-failed-rollback`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/replace-predelete-snapshot-failed-rollback/)
+- [`replace-resource-flag`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/replace-resource-flag/)
 - [`replace-snapshot-failed-rollback`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/replace-snapshot-failed-rollback/)
 - [`replace-squatter-refusal`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/replace-squatter-refusal/)
 - [`replaced-delete-failed-rollback`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/replaced-delete-failed-rollback/)
@@ -439,6 +442,7 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 - [`select-out-of-bounds`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/select-out-of-bounds/)
 - [`servicediscovery`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/servicediscovery/)
 - [`servicediscovery-http-namespace-update`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/servicediscovery-http-namespace-update/)
+- [`sg-ingress-source-replacement`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/sg-ingress-source-replacement/)
 - [`sg-rule-description-update`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/sg-rule-description-update/)
 - [`shared-stackname-multi-region`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/shared-stackname-multi-region/)
 - [`sns-event-source`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/sns-event-source/)
@@ -458,6 +462,7 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 - [`stepfunctions-sync-managed-rule`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/stepfunctions-sync-managed-rule/)
 - [`stream-delete-redeploy`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/stream-delete-redeploy/)
 - [`subnet-mappublicip-removal`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/subnet-mappublicip-removal/)
+- [`superseded-sg-destroy-order`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/superseded-sg-destroy-order/)
 - [`synthetics-canary`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/synthetics-canary/)
 - [`termination-protection`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/termination-protection/)
 - [`unrecognized-key-autoroute`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/unrecognized-key-autoroute/)

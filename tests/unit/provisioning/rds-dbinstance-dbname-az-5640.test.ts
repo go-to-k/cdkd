@@ -44,15 +44,23 @@ import { RDSProvider } from '../../../src/provisioning/providers/rds-provider.js
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 import { UNNAMEABLE_ID_CLAUSE } from '../../../src/provisioning/replacement-protection-advice.js';
 import type { UpdateContext } from '../../../src/types/resource.js';
+import { appliedAfterModify } from './rds-modify-applied.js';
 
 type Input = Record<string, unknown>;
 
 const INSTANCE = 'AWS::RDS::DBInstance';
 
-/** Every DescribeDBInstances answers `live` over an available instance. */
+/**
+ * Every DescribeDBInstances answers `live` over an available instance, with
+ * what the last ModifyDBInstance applied (`appliedAfterModify`).
+ */
 function arm(live: Input = {}): void {
-  mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+  let modified: Input | undefined;
+  mockSend.mockImplementation((command: { constructor: { name: string }; input: Input }) => {
     switch (command.constructor.name) {
+      case 'ModifyDBInstanceCommand':
+        modified = command.input;
+        return Promise.resolve({});
       case 'DescribeDBInstancesCommand':
         return Promise.resolve({
           DBInstances: [
@@ -61,6 +69,7 @@ function arm(live: Input = {}): void {
               DBInstanceArn: 'arn:aws:rds:us-east-1:123456789012:db:db-1',
               DBInstanceStatus: 'available',
               ...live,
+              ...appliedAfterModify(modified),
             },
           ],
         });

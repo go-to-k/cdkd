@@ -44,6 +44,8 @@ these refusals, the resource the message names has not been deleted.
 | `STATEFUL_REPLACE_BLOCKED`, or `requires replacement ... but it is a stateful resource` | A template change replaces a resource that holds data | [Property-driven replacement](#property-driven-replacement-and-stateful-replace-blocked) |
 | `cannot be updated in place by the provisioning layer` | A rejected update would replace a resource that holds data | [An update the route cannot apply in place](#an-update-the-route-cannot-apply-in-place) |
 | `ResourceUpdateNotSupportedError` | AWS has no update call for the type | [`--replace`](cli-deploy-safety-replacement.md#replace-deploy) |
+| `Cloud Control cannot update ... in place (NotUpdatable)` | AWS refuses to update a property in place that cdkd does not know replaces | [`--replace-resource`](#replace-resource-deploy) |
+| `REPLACE_RESOURCE_REFUSED`, `REPLACE_RESOURCE_INVALID` | A `--replace-resource` target has no update to replace, is a nested stack, or does not name one resource of the deploy | [`--replace-resource`](#replace-resource-deploy) |
 | `NAMED_REPLACEMENT_COLLISION`, `NAMED_REPLACEMENT_IDEMPOTENT_CREATE` | The old resource still holds the name the new one needs | [Same-name replacement](cli-deploy-safety-replacement.md#same-name-replacement-delete-first-ordering) |
 | `NAMED_CREATE_COLLISION` | A resource with that explicit name already exists | [A create under a taken name](cli-deploy-safety-replacement.md#a-create-under-a-name-that-is-already-taken) |
 | `CREATE_ONLY_DROP_NEEDS_REPLACEMENT` | A property that was kept off AWS now needs a replacement | [`CREATE_ONLY_DROP_NEEDS_REPLACEMENT`](cli-deploy-safety-recreate.md#create-only-drop-needs-replacement) |
@@ -77,6 +79,7 @@ resource and create a new one, and that can cost you something:
 | [`--recreate-via-cc-api <LogicalId>`](cli-deploy-safety-recreate.md#recreate-via-cc-api-deploy) | deploy | Destroy and recreate one resource through Cloud Control API. |
 | [`--recreate-via-sdk-provider <LogicalId>`](cli-deploy-safety-recreate.md#recreate-via-sdk-provider-deploy) | deploy | Destroy and recreate one resource through cdkd's SDK provider. |
 | [`--replace`](cli-deploy-safety-replacement.md#replace-deploy) | deploy | Replace (delete and create) a resource that AWS has no update call for. |
+| [`--replace-resource <LogicalId>`](#replace-resource-deploy) | deploy | Plan one resource's update as a replacement, as a create-only property change is. |
 | [`--force-stateful-recreation`](#force-stateful-recreation) | deploy | Confirm the data loss when any replacement in the run targets a [stateful resource](#stateful-resource-guard). |
 | [`--strict-getatt`](cli-deploy-safety-ci-flags.md#strict-getatt-deploy) | deploy | Fail on any `Fn::GetAtt` that falls back to a physical ID, and on any unresolvable Output. |
 | [`--allow-unaddressed`](cli-deploy-safety-ci-flags.md#allow-unaddressed-deploy) | deploy | Exit 0 instead of 2 when the deploy left a resource alive that it no longer tracks. |
@@ -177,6 +180,7 @@ them. Every path that consults this guard:
 | `--recreate-via-cc-api` | Before anything is touched |
 | `--recreate-via-sdk-provider` | Before anything is touched |
 | A resource that reads a recreated resource through create-only properties | Before anything is touched |
+| [`--replace-resource`](#replace-resource-deploy), and a resource that reads its target through create-only properties | Before anything is touched |
 | `--replace`, after an update AWS has no call for | Mid-deploy |
 | The Cloud Control fallback, after an update it cannot perform | Mid-deploy |
 | A create-only property changed in the template | Mid-deploy |
@@ -242,6 +246,55 @@ stateful, the replacement goes ahead.
 
 [`--replace`](cli-deploy-safety-replacement.md#replace-deploy) is refused on
 the same terms when the resource it would replace is stateful.
+
+### `--replace-resource` (deploy)
+
+Some properties AWS refuses to update in place are not listed as create-only
+anywhere cdkd reads. cdkd sends such a change as an update, and Cloud Control
+refuses it with `NotUpdatable`. CloudFormation replaces the resource for the
+same change. The refusal names the resource and the property, gives the
+command that replaces it, and links a prefilled issue so a replacement rule
+can be added:
+
+```text
+MyResource (<Type>): Cloud Control refused this update in place
+(NotUpdatable), which changes <Property>; CloudFormation replaces the resource
+for such a change. To replace it in this deploy, as CloudFormation does: cdkd
+deploy MyStack --replace-resource MyResource.
+```
+
+For a stateful resource it adds that replacing it deletes its data; the
+deploy then asks for `--force-stateful-recreation`. The link carries only the
+resource type, the property and the error code, and is printed only for an
+`AWS::` or `Alexa::` type: a private or third-party registry type gets none.
+
+`--replace-resource <LogicalId>` (repeatable, one logical id per flag) plans
+that resource's update as a replacement, exactly as a template change to a
+create-only property is planned:
+
+- the plan and `--require-approval` show it as a replacement;
+- its same-stack readers are updated, or replaced when a create-only property
+  holds the reference;
+- the new resource is created first when its name changes; when it keeps a
+  name the old one holds, the replacement is refused as any
+  [same-name replacement](cli-deploy-safety-replacement.md#same-name-replacement-delete-first-ordering)
+  is, and that refusal names the way through;
+- a [stateful](#stateful-resource-guard) target, or a stateful reader it
+  would replace, is refused before anything is changed unless
+  `--force-stateful-recreation` is also passed (`UpdateReplacePolicy: Retain`
+  needs no confirmation, since the old resource is kept).
+
+The flag applies only to a resource this deploy updates. It refuses
+(`REPLACE_RESOURCE_REFUSED`) a resource with no change, which is what
+[`--recreate-via-*`](cli-deploy-safety-recreate.md) is for, and a nested stack.
+It warns and does nothing for a resource this deploy creates (one it deletes
+is no longer in a template, so it is refused as undeclared, below). A
+changed property whose value comes from a `NoEcho` source is refused too,
+since cdkd never replaces on such a value. Each id must name a resource of
+exactly one stack of the deploy: an id no stack declares, one two stacks
+declare (deploy that stack alone), or one `--recreate-via-*` also names is
+refused (`REPLACE_RESOURCE_INVALID`). It names a top-level stack's resources
+only.
 
 ### Under `UpdateReplacePolicy: Retain`
 

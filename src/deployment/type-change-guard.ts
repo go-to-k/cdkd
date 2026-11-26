@@ -42,6 +42,8 @@ import { displayPhysicalId } from '../provisioning/secret-physical-id.js';
 import { carriesSecretMask } from './secret-redaction.js';
 import { segmentAfterAnchor } from '../provisioning/composite-id.js';
 import { parseLambdaFunctionAddress } from '../utils/lambda-function-name.js';
+import { ingressRuleSourceKey } from '../provisioning/sg-rule-identity.js';
+import { isUsableIdentityValue } from './recorded-identity-attributes.js';
 
 /**
  * Do two records of ONE type that carry the SAME physical id nonetheless name
@@ -49,8 +51,12 @@ import { parseLambdaFunctionAddress } from '../utils/lambda-function-name.js';
  *
  * For almost every type an id is self-describing, so no — and this answers
  * `false`, leaving every caller's id-equality reading byte-for-byte as it was.
- * Two types are exceptions. `AWS::Lambda::Permission` (go-to-k/cdkd#5137):
- * see {@link permissionsOnDifferentFunctions}. And `AWS::Glue::Table`: its id `<databaseName>|<tableName>` is
+ * Five types are exceptions. `AWS::Lambda::Permission` (go-to-k/cdkd#5137):
+ * see {@link permissionsOnDifferentFunctions}. `AWS::EC2::SecurityGroupIngress`
+ * (go-to-k/cdkd#7071): see {@link ingressRulesFromDifferentSources}. The two
+ * API Gateway stage types (go-to-k/cdkd#7072): see {@link stagesOnDifferentApis}.
+ * Every registered SDK type is classified in `tests/unit/deployment/equal-id-population.test.ts`,
+ * which fails on a new type until someone decides whether it belongs here. And `AWS::Glue::Table`: its id `<databaseName>|<tableName>` is
  * placed by the recorded `DatabaseName`, and since both names may contain `|`,
  * table `db|orders` in database `my` and table `orders` in database `my|db`
  * share the id `my|db|orders`. A replacement that changes both names can
@@ -72,6 +78,19 @@ import { parseLambdaFunctionAddress } from '../utils/lambda-function-name.js';
  * name-idempotent refusals, whereas a wrong `true` would let the engine delete
  * "the old resource" by an id that is in fact the one it just created.
  */
+/**
+ * go-to-k/cdkd#7072: the types {@link equalIdNamesDifferentResources} decides,
+ * fenced against the reviewed classification of every registered SDK type in
+ * `tests/unit/deployment/equal-id-population.test.ts`.
+ */
+export const EQUAL_ID_HOOK_TYPES: ReadonlySet<string> = new Set([
+  'AWS::Glue::Table',
+  'AWS::Lambda::Permission',
+  'AWS::EC2::SecurityGroupIngress',
+  'AWS::ApiGateway::Stage',
+  'AWS::ApiGatewayV2::Stage',
+]);
+
 export function equalIdNamesDifferentResources(input: {
   resourceType: string;
   /** The id both records carry (the call sites act only where the two are equal). */
@@ -79,8 +98,16 @@ export function equalIdNamesDifferentResources(input: {
   oldProperties: Record<string, unknown> | undefined;
   newProperties: Record<string, unknown> | undefined;
 }): boolean {
+  if (!EQUAL_ID_HOOK_TYPES.has(input.resourceType)) return false;
   if (input.resourceType === 'AWS::Lambda::Permission') {
     return permissionsOnDifferentFunctions(input.oldProperties, input.newProperties);
+  }
+  if (input.resourceType === 'AWS::EC2::SecurityGroupIngress') {
+    return ingressRulesFromDifferentSources(input.oldProperties, input.newProperties);
+  }
+  const parentKey = STAGE_PARENT_KEYS[input.resourceType];
+  if (parentKey !== undefined) {
+    return stagesOnDifferentApis(input.oldProperties, input.newProperties, parentKey);
   }
   if (input.resourceType !== 'AWS::Glue::Table' || input.physicalId === undefined) return false;
   const oldDb = input.oldProperties?.['DatabaseName'];
@@ -118,6 +145,52 @@ function permissionsOnDifferentFunctions(
   const oldName = parseLambdaFunctionAddress(oldFn)?.name;
   const newName = parseLambdaFunctionAddress(newFn)?.name;
   return oldName !== undefined && newName !== undefined && oldName !== newName;
+}
+
+/**
+ * go-to-k/cdkd#7071: a standalone ingress rule's id is
+ * `<GroupId>|<IpProtocol>|<FromPort>|<ToPort>`, with no source, so a
+ * replacement changing only the source (`CidrIp`, `SourceSecurityGroupId`, all
+ * create-only) creates a NEW rule under the old id. EC2 keeps one rule per
+ * group, protocol, ports and source, so two readable sources that differ are
+ * two rules. A mask, an intrinsic, a group named by `SourceSecurityGroupName`
+ * or an absent bag answers `false`, the safe direction.
+ */
+function ingressRulesFromDifferentSources(
+  oldProperties: Record<string, unknown> | undefined,
+  newProperties: Record<string, unknown> | undefined
+): boolean {
+  const oldSource = ingressRuleSourceKey(oldProperties);
+  const newSource = ingressRuleSourceKey(newProperties);
+  // A mask anywhere in a value, or a secret reference, is no source.
+  if (!isUsableIdentityValue(oldSource) || !isUsableIdentityValue(newSource)) return false;
+  return oldSource !== newSource;
+}
+
+/**
+ * go-to-k/cdkd#7072: a stage's id is its bare stage name, scoped by an API the
+ * id does not carry, so a stage moved to a replaced API (`$default` on a new
+ * HTTP API, `prod` on a new REST API) is a NEW stage under the old id.
+ */
+const STAGE_PARENT_KEYS: Readonly<Record<string, string>> = {
+  'AWS::ApiGateway::Stage': 'RestApiId',
+  'AWS::ApiGatewayV2::Stage': 'ApiId',
+};
+
+/**
+ * Two stages are proven different only by two readable API ids that differ
+ * (AWS mints them, case-sensitive). A mask, a secret reference, an intrinsic
+ * or an absent bag answers `false`, the safe direction.
+ */
+function stagesOnDifferentApis(
+  oldProperties: Record<string, unknown> | undefined,
+  newProperties: Record<string, unknown> | undefined,
+  parentKey: string
+): boolean {
+  const oldApi = oldProperties?.[parentKey];
+  const newApi = newProperties?.[parentKey];
+  if (!isUsableIdentityValue(oldApi) || !isUsableIdentityValue(newApi)) return false;
+  return oldApi !== newApi;
 }
 
 /**

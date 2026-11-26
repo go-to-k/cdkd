@@ -41,6 +41,12 @@ import { RDSProvider } from '../../../src/provisioning/providers/rds-provider.js
 
 type Input = Record<string, unknown>;
 
+/** An instance that has applied the CA certificate the tests send, which the update waits for (go-to-k/cdkd#7006). */
+const ECC384_APPLIED: Input = {
+  CACertificateIdentifier: 'rds-ca-ecc384-g1',
+  CertificateDetails: { CAIdentifier: 'rds-ca-ecc384-g1' },
+};
+
 /** Every DescribeDBInstances answers `live`, CreateDBInstance the instance, every other call `{}`. */
 function armLive(live: Input): void {
   mockSend.mockImplementation((command: { constructor: { name: string } }) =>
@@ -240,7 +246,7 @@ describe('RDSProvider DBInstance EngineVersion and backfill (go-to-k/cdkd#2762)'
     });
 
     it('CertificateRotationRestart rides a changed CACertificateIdentifier', async () => {
-      armLive({});
+      armLive(ECC384_APPLIED);
       await update(
         { ...BASE, CACertificateIdentifier: 'rds-ca-ecc384-g1', CertificateRotationRestart: false },
         { ...BASE, CACertificateIdentifier: 'rds-ca-rsa2048-g1', CertificateRotationRestart: false }
@@ -262,7 +268,7 @@ describe('RDSProvider DBInstance EngineVersion and backfill (go-to-k/cdkd#2762)'
     });
 
     it('a changed CACertificateIdentifier with no declared CertificateRotationRestart sends no flag', async () => {
-      armLive({});
+      armLive(ECC384_APPLIED);
       await update(
         { ...BASE, CACertificateIdentifier: 'rds-ca-ecc384-g1' },
         { ...BASE, CACertificateIdentifier: 'rds-ca-rsa2048-g1' }

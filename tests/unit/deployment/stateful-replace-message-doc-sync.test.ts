@@ -261,6 +261,12 @@ describe('the stateful-replace refusal and its documented example stay in sync',
     //                                 replaces through a create-only reference
     //                                 to a target (go-to-k/cdkd#4383; the
     //                                 deploy pre-flight's refusal)
+    //   replace-resource-targets.ts -> --replace-resource (go-to-k/cdkd#7079;
+    //                                 its target's pre-flight refusal; its
+    //                                 readers go through recreate-target-readers.ts)
+    //   update-in-place/update-failure-remedy.ts -> NO row: ADVISORY, it only
+    //                                 says a NotUpdatable remedy's replacement
+    //                                 deletes data (go-to-k/cdkd#7079)
     //   rollback-executor.ts       -> NO row. It is an ADVISORY reader: it
     //                                 warns that a reverse-replacement cannot
     //                                 bring the data back, and gates nothing.
@@ -355,9 +361,11 @@ describe('the stateful-replace refusal and its documented example stay in sync',
     expect(readers.map((f) => f.slice(repoRoot.length + 1)).sort()).toEqual([
       'src/cli/commands/recreate-confirm-prompt.ts',
       'src/deployment/deploy-engine/update-in-place/replace-fallback.ts',
+      'src/deployment/deploy-engine/update-in-place/update-failure-remedy.ts',
       'src/deployment/deploy-engine/update-replace/preflight.ts',
       'src/deployment/recreate-target-readers.ts',
       'src/deployment/recreate-targets/validate.ts',
+      'src/deployment/replace-resource-targets.ts',
       'src/deployment/rollback-executor/replay-reverse-replacement.ts',
     ]);
 
@@ -370,6 +378,6 @@ describe('the stateful-replace refusal and its documented example stay in sync',
     const table = afterMarker.slice(0, afterMarker.indexOf('\n#'));
     const rows = table.split('\n').filter((line) => line.startsWith('| ') && line.includes(' | '));
     // Header row + separator row + one row per documented path.
-    expect(rows).toHaveLength(2 + 6);
+    expect(rows).toHaveLength(2 + 7);
   });
 });

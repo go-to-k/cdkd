@@ -1,9 +1,12 @@
 import { settleStackTagChildRuns } from '../../nested-stack-tags.js';
 import { healLegacyLiteralSpellings } from '../legacy-literal-heal.js';
+import { healZonelessDbInstanceRecords } from '../../zoneless-db-instance-heal.js';
+import { readDbInstanceAvailabilityZone } from '../../../provisioning/providers/rds/live-zone.js';
 import { freshNoEchoParametersWithDeclared, noEchoDiffComparison } from '../noecho.js';
 import { diffLogMasker, redactParametersForDiff } from '../masking.js';
 import { makeCanonicalizePropertiesFn } from '../../../provisioning/canonicalize-properties.js';
 import { recreateTargetIdsFor } from '../../recreate-target-promotion.js';
+import { replaceResourceIdsFor } from '../../replace-resource-targets.js';
 import { crossStackOutputProvenanceSource } from '../../read-provenance-sources.js';
 import type { CrossStackRead } from '../../intrinsic-resolver/context.js';
 import { buildResolverContext, maskedInputSources } from '../resolver-context.js';
@@ -92,6 +95,16 @@ export async function calculateDeployDiff(
   const crossStackReads = new Map<string, CrossStackRead>();
   diffResolverContext.crossStackReads = crossStackReads;
   const diffResolveFn = (value: unknown) => engine.resolver.resolve(value, diffResolverContext);
+  // go-to-k/cdkd#7057: a DBInstance record an older cdkd wrote without the
+  // zone the template declares is compared with the instance's zone, read
+  // once and only for a record in that shape; `cdkd diff` runs the same heal.
+  const zonelessRecordsHealed = await healZonelessDbInstanceRecords({
+    resources: currentState.resources,
+    template: effectiveTemplate,
+    resolve: diffResolveFn,
+    readLiveZone: (identifier) => readDbInstanceAvailabilityZone(identifier, engine.stackRegion),
+    log: (line, level) => engine.logger[level](line),
+  });
   const maskedInputSourcesForDiff = maskedInputSources(
     engine.resolverContextDeps(),
     effectiveTemplate,
@@ -179,7 +192,13 @@ export async function calculateDeployDiff(
     // its same-stack readers are promoted as for a property-driven
     // replacement, before anything below counts the changes. This stack's
     // targets only, never a nested child's or another stack's.
-    recreateTargetIdsFor(engine.options.recreateTargets, stackName),
+    // go-to-k/cdkd#7079: a `--replace-resource` target too: the plan checks
+    // turn its UPDATE row into a replacement, so its readers are promoted
+    // here exactly as a planned replacement's are.
+    forcedReplacementIds(
+      recreateTargetIdsFor(engine.options.recreateTargets, stackName),
+      replaceResourceIdsFor(engine.options.replaceResources, stackName)
+    ),
     // go-to-k/cdkd#4543: a masked property's resolved inputs, so a changed
     // parameter or flipped condition behind unchanged template text diffs.
     // A layout-1 fingerprint whose text still matches is re-baselined to
@@ -227,5 +246,21 @@ export async function calculateDeployDiff(
     resolve: diffResolveFn,
     secrets: diffResolverContext.recordedSecretValues,
   });
-  return { diffResolverContext, maskedInputs, changes, expectedChildTags };
+  return {
+    diffResolverContext,
+    maskedInputs,
+    changes,
+    expectedChildTags,
+    zonelessRecordsHealed: zonelessRecordsHealed.length > 0,
+  };
+}
+
+/** The union of two optional id sets; `undefined` when both are. */
+export function forcedReplacementIds(
+  a: ReadonlySet<string> | undefined,
+  b: ReadonlySet<string> | undefined
+): ReadonlySet<string> | undefined {
+  if (a === undefined) return b;
+  if (b === undefined) return a;
+  return new Set([...a, ...b]);
 }

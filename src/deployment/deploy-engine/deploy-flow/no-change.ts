@@ -59,6 +59,7 @@ export async function deployWithoutChanges(
     orphansChanged,
     terminationProtectionChanged,
     ssmNamesHealed,
+    zonelessRecordsHealed = false,
     nestedSsmNamesMarked,
     resolveStackInstanceId,
     startProvenanceCapture,
@@ -80,6 +81,8 @@ export async function deployWithoutChanges(
     terminationProtectionChanged: boolean;
     /** go-to-k/cdkd#6274: a record's SSM parameter name was re-spelled in memory. */
     ssmNamesHealed: boolean;
+    /** go-to-k/cdkd#7057: a DBInstance record took its live zone in memory. */
+    zonelessRecordsHealed?: boolean;
     /** go-to-k/cdkd#6282: the record newly carries `nestedSsmNamesChecked`. */
     nestedSsmNamesMarked: boolean;
     resolveStackInstanceId: () => Promise<void>;
@@ -394,6 +397,7 @@ export async function deployWithoutChanges(
       supersededChanged ||
       terminationProtectionChanged ||
       ssmNamesHealed ||
+      zonelessRecordsHealed ||
       nestedSsmNamesMarked ||
       healedAttributesPending ||
       readsAdded
