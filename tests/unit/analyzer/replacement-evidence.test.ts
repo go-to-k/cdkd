@@ -175,21 +175,18 @@ describe('replacement verdict evidence (go-to-k/cdkd#7024, #7038)', () => {
     }
   });
 
-  // The reference page is not evidence on its own for a verdict that may
-  // DELETE the resource: it read "Some interruptions" for a DynamoDB KeySchema
-  // and an Events rule's EventBusName, and CloudFormation replaced both
-  // (measured on #7038). Deliberately one-sided: a wrong `update` verdict hides
-  // a replacement from the diff, and the deploy's in-place call succeeds or
-  // fails loudly; it destroys something only where a provider re-creates
-  // inside `update()`, which the provider-replacement planners (#6509) and
-  // #6656's gate cover. A wrong
-  // `replace` always deletes the resource. The docs-only `update` rows are
-  // measured on #7048.
-  it('a verdict that can replace never rests on the documentation alone', () => {
+  // The reference page is not evidence on its own: it read "Some
+  // interruptions" for a DynamoDB KeySchema and an Events rule's
+  // EventBusName, and CloudFormation replaced both (measured on #7038). So a
+  // `cfn-docs` row must say why no A/B is possible here, and it may only vouch
+  // for `update`: a wrong `replace` deletes the resource (#7048).
+  it('the reference alone backs only an update no A/B can measure', () => {
     const docsOnly = [...REPLACEMENT_EVIDENCE]
-      .filter(([key, evidence]) => {
-        return evidence.kind === 'cfn-docs' && evidence.verdict !== 'update';
-      })
+      .filter(
+        ([, evidence]) =>
+          evidence.kind === 'cfn-docs' &&
+          (evidence.verdict !== 'update' || !evidence.unmeasurable?.trim())
+      )
       .map(([key]) => key);
     expect(docsOnly).toEqual([]);
   });
