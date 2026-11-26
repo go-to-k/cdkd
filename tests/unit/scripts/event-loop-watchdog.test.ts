@@ -15,7 +15,11 @@ import { dirname, join, resolve } from 'node:path';
 import { describe, expect, it } from 'vite-plus/test';
 
 import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
-import { WATCHDOG_GRACE_MS, WATCHDOG_MARKER } from '../../event-loop-watchdog.js';
+import {
+  HOOK_TIMEOUT_FLOOR_MS,
+  WATCHDOG_GRACE_MS,
+  WATCHDOG_MARKER,
+} from '../../event-loop-watchdog.js';
 
 const REPO_ROOT = resolve(import.meta.dirname, '../../..');
 const FIXTURE = 'tests/unit/scripts/event-loop-watchdog-fixture.test.ts';
@@ -46,7 +50,10 @@ function runFixture(): Promise<ChildRun> {
   delete env.CDKD_TEST_WATCHDOG;
 
   const started = Date.now();
-  const child = spawn(process.execPath, [vitestBin(), 'test', 'run', FIXTURE], {
+  // `verbose` prints each case's verdict; `forks` is the pool the watchdog
+  // needs (under `threads` its kill stops the whole run).
+  const args = [vitestBin(), 'test', 'run', '--reporter=verbose', '--pool=forks', FIXTURE];
+  const child = spawn(process.execPath, args, {
     cwd: REPO_ROOT,
     env,
     // Its own process group, so the backstop also stops the child's workers.
@@ -94,12 +101,17 @@ describe('event-loop watchdog (go-to-k/cdkd#7042)', () => {
       );
       expect(run.output, context).toMatch(/Worker exited unexpectedly with signal SIGKILL/);
       // The yielding control fails at vitest's own timeout, before any kill.
+      expect(run.output, context).toMatch(
+        /FAIL .*control: a never-satisfied wait whose sleep yields fails at the test timeout/
+      );
       expect(run.output, context).toMatch(/Test timed out in 1000ms/);
       // The satisfied control passes.
-      expect(run.output, context).toMatch(/Tests\s+1 failed \| 1 passed/);
+      expect(run.output, context).toMatch(/✓ .*control: a wait the third read satisfies passes/);
       // The child's start-up is the rest of the time; the hang itself costs
-      // its 1 s timeout plus the grace.
-      expect(run.elapsedMs, context).toBeLessThan(BACKSTOP_MS / 2 + WATCHDOG_GRACE_MS);
+      // its bound (never below the hook timeout) plus the grace.
+      expect(run.elapsedMs, context).toBeLessThan(
+        BACKSTOP_MS / 2 + HOOK_TIMEOUT_FLOOR_MS + WATCHDOG_GRACE_MS
+      );
     },
     CONTENDED_CASE_TIMEOUT_MS
   );

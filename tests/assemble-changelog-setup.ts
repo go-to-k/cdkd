@@ -1,4 +1,4 @@
-import { writeFileSync } from 'node:fs';
+import { renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { OUTPUT_PATH, assembleChangelog } from '../scripts/assemble-changelog.js';
 
@@ -31,5 +31,11 @@ import { OUTPUT_PATH, assembleChangelog } from '../scripts/assemble-changelog.js
  */
 export default function setup(): void {
   const root = join(import.meta.dirname, '..');
-  writeFileSync(join(root, OUTPUT_PATH), assembleChangelog(root));
+  const target = join(root, OUTPUT_PATH);
+  // Write beside it and rename: a second vitest run on the same tree (one a
+  // test spawns, as `event-loop-watchdog.test.ts` does) re-runs this while the
+  // first run's suites read the page, and a plain write truncates it first.
+  const temporary = `${target}.${process.pid}.tmp`;
+  writeFileSync(temporary, assembleChangelog(root));
+  renameSync(temporary, target);
 }

@@ -20,15 +20,20 @@
  *
  * Scope and limits:
  * - It is armed only while a test runs (from its `beforeEach` to its
- *   `afterEach`), against that test's own timeout, so a case that declares a
- *   longer bound (a spawning case, `tests/contended-case-timeout.ts`) keeps it.
+ *   `afterEach`), against that test's own timeout and never below the default
+ *   `hookTimeout`, so a case that declares a longer bound (a spawning case,
+ *   `tests/contended-case-timeout.ts`) keeps it. A hook declaring its own
+ *   longer timeout is not read, and a `retry` attempt that blocks past the
+ *   bound is killed rather than retried.
  * - A synchronous block (a `spawnSync`, a CPU-bound walk) also stops the
  *   heartbeat; one running past its test's timeout plus the grace is killed
  *   the same way, which vitest could not interrupt either.
  * - It never arms under an attached inspector (a paused debugger stops the
  *   heartbeat), nor with `CDKD_TEST_WATCHDOG=0`.
  * - Overlapping `concurrent` tests share one slot: the first to finish disarms
- *   it until the next `beforeEach`.
+ *   it until the next `beforeEach`, and the label names the latest to start.
+ * - It needs the `forks` pool (vitest's default, which `vite.config.ts`
+ *   keeps): under `threads` the kill would stop the whole run.
  */
 import inspector from 'node:inspector';
 import { Worker } from 'node:worker_threads';
@@ -40,6 +45,8 @@ export const WATCHDOG_GRACE_MS = 5_000;
 /** The line the watchdog writes before it kills the worker. */
 export const WATCHDOG_MARKER = '[event-loop-watchdog]';
 
+/** vitest's default `hookTimeout`; `vite.config.ts` does not override it. */
+export const HOOK_TIMEOUT_FLOOR_MS = 10_000;
 const HEARTBEAT_MS = 200;
 const CHECK_MS = 250;
 const LABEL_BYTES = 4096;
@@ -51,9 +58,10 @@ const LABEL_LENGTH = 2;
 
 interface WatchdogState {
   readonly origin: number;
-  // The real clock, taken when the watchdog starts: a test's fake timers
-  // replace `Date`, and `vi.setSystemTime` into the past would otherwise read
-  // as a stale heartbeat.
+  // A monotonic clock (a wall clock jumping forward would read as a stale
+  // heartbeat), taken when the watchdog starts: a test's fake timers replace
+  // `performance` and `Date`. The worker thread computes the same value from
+  // its own `performance`, whose `timeOrigin` differs from this thread's.
   readonly now: () => number;
   readonly slots: Int32Array;
   readonly label: Uint8Array;
@@ -68,7 +76,8 @@ const label = new Uint8Array(labelBuffer);
 setInterval(() => {
   const timeout = Atomics.load(slots, ${TIMEOUT});
   if (timeout <= 0) return;
-  const stale = Date.now() - origin - Atomics.load(slots, ${BEAT});
+  const stale =
+    performance.timeOrigin + performance.now() - origin - Atomics.load(slots, ${BEAT});
   if (stale <= timeout + graceMs) return;
   const name = Buffer.from(label.subarray(0, Atomics.load(slots, ${LABEL_LENGTH}))).toString('utf8');
   fs.writeSync(
@@ -87,7 +96,9 @@ const STATE_KEY = Symbol.for('cdkd.eventLoopWatchdog');
 
 function startWatchdog(): WatchdogState | null {
   if (inspector.url() !== undefined || process.env.CDKD_TEST_WATCHDOG === '0') return null;
-  const now = Date.now.bind(Date);
+  const realNow = performance.now.bind(performance);
+  const { timeOrigin } = performance;
+  const now = (): number => timeOrigin + realNow();
   const origin = now();
   const slotsBuffer = new SharedArrayBuffer(3 * Int32Array.BYTES_PER_ELEMENT);
   const labelBuffer = new SharedArrayBuffer(LABEL_BYTES);
@@ -127,15 +138,21 @@ export function installEventLoopWatchdog(): void {
   if (state === null || state === undefined) return;
 
   beforeEach((context) => {
-    const bytes = new TextEncoder().encode(context.task.fullName).subarray(0, LABEL_BYTES);
+    // At most 4 UTF-8 bytes per code unit, so the cut never splits a character.
+    const bytes = new TextEncoder().encode(context.task.fullName.slice(0, LABEL_BYTES / 4));
     state.label.set(bytes);
     Atomics.store(state.slots, LABEL_LENGTH, bytes.length);
     beat(state);
     const timeout = context.task.timeout;
+    // The armed window also holds the file's own `beforeEach` / `afterEach`
+    // hooks, which vitest bounds by `hookTimeout` (10 s by default, not
+    // overridden here), so the bound is never below it.
     Atomics.store(
       state.slots,
       TIMEOUT,
-      Number.isFinite(timeout) && timeout > 0 ? Math.min(timeout, 2 ** 30) : 0
+      Number.isFinite(timeout) && timeout > 0
+        ? Math.min(Math.max(timeout, HOOK_TIMEOUT_FLOOR_MS), 2 ** 30)
+        : 0
     );
   });
   afterEach(() => {
