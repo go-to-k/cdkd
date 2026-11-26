@@ -317,6 +317,40 @@ describe('AgentCoreEvaluatorProvider', () => {
       expect(tagCall.input.tags).toEqual({ env: 'prod', new: 'yes' });
     });
 
+    // go-to-k/cdkd#7051: `description` has a minimum length of 1, and the
+    // read-back spells "no description" as `''`.
+    it('a drift revert sends no empty description; a template update sends what it declares', async () => {
+      mockSend.mockResolvedValue({
+        evaluatorArn: EVALUATOR_ARN,
+        evaluatorId: EVALUATOR_ID,
+        status: 'ACTIVE',
+        updatedAt: new Date('2026-07-17T01:00:00Z'),
+      });
+      const live = { Description: '', EvaluatorConfig: CODE_BASED_CONFIG, Level: 'TRACE' };
+      await provider.update(
+        'MyEvaluator',
+        EVALUATOR_ARN,
+        'AWS::BedrockAgentCore::Evaluator',
+        { ...live, Level: 'SESSION' },
+        live,
+        { desiredFromAwsReadback: true }
+      );
+      const revert = mockSend.mock.calls[0][0];
+      expect(revert.constructor.name).toBe('UpdateEvaluatorCommand');
+      expect(revert.input).not.toHaveProperty('description');
+      expect(revert.input.level).toBe('SESSION');
+
+      mockSend.mockClear();
+      await provider.update(
+        'MyEvaluator',
+        EVALUATOR_ARN,
+        'AWS::BedrockAgentCore::Evaluator',
+        { ...live, Description: 'judge' },
+        live
+      );
+      expect(mockSend.mock.calls[0][0].input.description).toBe('judge');
+    });
+
     it('should untag everything (and never call TagResource) when Tags is removed entirely', async () => {
       mockSend.mockResolvedValue({
         evaluatorArn: EVALUATOR_ARN,
