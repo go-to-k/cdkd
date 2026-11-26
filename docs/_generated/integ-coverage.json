@@ -1966,6 +1966,7 @@
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "neptune-cluster-port",
         "neptune-fix-forward-orphan",
         "neptune-restore",
         "nlb-quic-server-id",
@@ -2208,6 +2209,9 @@
         "multi-stack-deps": [
           "l2"
         ],
+        "neptune-cluster-port": [
+          "l2"
+        ],
         "neptune-fix-forward-orphan": [
           "l2"
         ],
@@ -2374,6 +2378,7 @@
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "neptune-cluster-port",
         "neptune-fix-forward-orphan",
         "neptune-restore",
         "nlb-quic-server-id",
@@ -2600,6 +2605,9 @@
         "multi-stack-deps": [
           "l2"
         ],
+        "neptune-cluster-port": [
+          "l2"
+        ],
         "neptune-fix-forward-orphan": [
           "l2"
         ],
@@ -2802,6 +2810,7 @@
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "neptune-cluster-port",
         "neptune-fix-forward-orphan",
         "neptune-restore",
         "nlb-quic-server-id",
@@ -3039,6 +3048,9 @@
         "multi-stack-deps": [
           "l2"
         ],
+        "neptune-cluster-port": [
+          "l2"
+        ],
         "neptune-fix-forward-orphan": [
           "l2"
         ],
@@ -3202,6 +3214,7 @@
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "neptune-cluster-port",
         "neptune-fix-forward-orphan",
         "neptune-restore",
         "nlb-quic-server-id",
@@ -3441,6 +3454,9 @@
           "literal"
         ],
         "multi-stack-deps": [
+          "l2"
+        ],
+        "neptune-cluster-port": [
           "l2"
         ],
         "neptune-fix-forward-orphan": [
@@ -3935,6 +3951,7 @@
         "list-parameters",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "neptune-cluster-port",
         "neptune-fix-forward-orphan",
         "neptune-restore",
         "nlb-quic-server-id",
@@ -4206,6 +4223,9 @@
         "multi-stack-deps": [
           "l2"
         ],
+        "neptune-cluster-port": [
+          "l2"
+        ],
         "neptune-fix-forward-orphan": [
           "l2"
         ],
@@ -4400,6 +4420,7 @@
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "neptune-cluster-port",
         "neptune-fix-forward-orphan",
         "neptune-restore",
         "nlb-quic-server-id",
@@ -4629,6 +4650,9 @@
         "multi-stack-deps": [
           "l2"
         ],
+        "neptune-cluster-port": [
+          "l2"
+        ],
         "neptune-fix-forward-orphan": [
           "l2"
         ],
@@ -4801,6 +4825,7 @@
         "list-parameters",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "neptune-cluster-port",
         "neptune-fix-forward-orphan",
         "neptune-restore",
         "nlb-quic-server-id",
@@ -5101,6 +5126,9 @@
         "multi-stack-deps": [
           "l2"
         ],
+        "neptune-cluster-port": [
+          "l2"
+        ],
         "neptune-fix-forward-orphan": [
           "l2"
         ],
@@ -5315,6 +5343,7 @@
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "neptune-cluster-port",
         "neptune-fix-forward-orphan",
         "neptune-restore",
         "nlb-quic-server-id",
@@ -5552,6 +5581,9 @@
           "literal"
         ],
         "multi-stack-deps": [
+          "l2"
+        ],
+        "neptune-cluster-port": [
           "l2"
         ],
         "neptune-fix-forward-orphan": [
@@ -9266,6 +9298,7 @@
       "integs": [
         "cc-final-snapshot-handlers",
         "docdb-neptune",
+        "neptune-cluster-port",
         "neptune-fix-forward-orphan",
         "neptune-restore"
       ],
@@ -9276,6 +9309,10 @@
         ],
         "docdb-neptune": [
           "l1"
+        ],
+        "neptune-cluster-port": [
+          "l1",
+          "literal"
         ],
         "neptune-fix-forward-orphan": [
           "l1"
@@ -9310,6 +9347,7 @@
       "integs": [
         "cc-final-snapshot-handlers",
         "docdb-neptune",
+        "neptune-cluster-port",
         "neptune-fix-forward-orphan",
         "neptune-restore"
       ],
@@ -9319,6 +9357,10 @@
         ],
         "docdb-neptune": [
           "l1"
+        ],
+        "neptune-cluster-port": [
+          "l1",
+          "literal"
         ],
         "neptune-fix-forward-orphan": [
           "l1"
@@ -11150,6 +11192,7 @@
         "macro-expansion",
         "microservices",
         "multi-region-same-stack",
+        "neptune-cluster-port",
         "nested-child-first-deploy-failure",
         "nested-stack",
         "nested-stack-3level",
@@ -11464,6 +11507,10 @@
         ],
         "multi-region-same-stack": [
           "l2"
+        ],
+        "neptune-cluster-port": [
+          "l2",
+          "literal"
         ],
         "nested-child-first-deploy-failure": [
           "l2"

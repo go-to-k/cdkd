@@ -163,7 +163,7 @@ record_of() { # usage: record_of <attribute key>
 assert_moved() { # usage: assert_moved <phase> <port> <ca>
   local described live_port live_ca pending
   described="$(aws rds describe-db-instances --region "${REGION}" --db-instance-identifier "${DB_ID}" \
-    --query 'DBInstances[0]' --output json)"
+    --query 'DBInstances[0]' --output json)" || return 1
   live_port="$(jq -r '.Endpoint.Port' <<<"${described}")"
   live_ca="$(jq -r '.CertificateDetails.CAIdentifier' <<<"${described}")"
   pending="$(jq -c '.PendingModifiedValues // {}' <<<"${described}")"

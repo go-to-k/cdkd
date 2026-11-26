@@ -2445,6 +2445,11 @@
       ]
     },
     {
+      "name": "neptune-cluster-port",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "neptune-fix-forward-orphan",
       "annotated": false,
       "scenarios": []
@@ -4497,6 +4502,7 @@
     "logs-delivery",
     "logs-loggroup-fix-forward-orphan",
     "lost-child-after-failed-deploy",
+    "neptune-cluster-port",
     "neptune-fix-forward-orphan",
     "neptune-restore",
     "nested-child-first-deploy-failure",
