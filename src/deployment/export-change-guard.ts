@@ -252,13 +252,7 @@ function inPlaceUpdateMayMove(
   for (const attr of reads) {
     if (attr === REF_READ) continue;
     if (changed.has(attr)) return 'changed';
-    // A generated Cloud Control row is judged against the value the update
-    // recorded; a hand row is a known move.
-    if (afterUpdate?.includes(attr) === true) {
-      deferred = true;
-      continue;
-    }
-    if (derived?.has(attr) === true) return 'changed';
+    if (derived?.has(attr) === true && afterUpdate?.includes(attr) !== true) return 'changed';
     if (
       attributeMovedByChangedProperty(type, attr, changed, (prop) =>
         recordedAndDesiredOf(change, prop)
@@ -267,6 +261,9 @@ function inPlaceUpdateMayMove(
       return 'changed';
     }
     if (prefixes?.some((prefix) => attr.startsWith(prefix)) === true) return 'changed';
+    // A generated Cloud Control row (only one) is judged against the value
+    // the update recorded; a hand row above is a known move.
+    if (afterUpdate?.includes(attr) === true) deferred = true;
   }
   return deferred ? 'after-update' : 'unchanged';
 }

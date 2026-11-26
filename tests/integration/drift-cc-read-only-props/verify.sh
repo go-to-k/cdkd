@@ -231,13 +231,16 @@ sys.exit(0 if p(sys.argv[1])==p(sys.argv[2]) else 1)' "$1" "$2"
 
 echo "==> Phase 7: an in-place Description change moves the UpdateTime reader (#7007)"
 READER_BEFORE="$(reader_value)"
+# Phase 5's revert already moved the live UpdateTime: the premise compares
+# against the value just before this deploy.
+LIVE_6="$(live_update_time)"
 CDKD_INTEG_TRACKER_DESCRIPTION=integ-7007 \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 LIVE_7="$(live_update_time)"
 READER_7="$(reader_value)"
 echo "    reader before '${READER_BEFORE}', after '${READER_7}', live '${LIVE_7}'"
 # Premise: the update moved UpdateTime, so a stale reader shows.
-if same_instant "${READER_BEFORE}" "${LIVE_7}"; then
+if same_instant "${LIVE_6}" "${LIVE_7}"; then
   echo "FAIL: Phase 7 premise: the Description update did not move UpdateTime" >&2
   exit 1
 fi
