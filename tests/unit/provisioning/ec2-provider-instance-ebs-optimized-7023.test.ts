@@ -162,6 +162,27 @@ describe('AWS::EC2::Instance EbsOptimized update (go-to-k/cdkd#7023)', () => {
     ]);
   });
 
+  it('turns it off BEFORE an InstanceType change', async () => {
+    live.EbsOptimized = true;
+    await update(
+      { ...BASE, InstanceType: 't3.small', EbsOptimized: false },
+      { ...BASE, EbsOptimized: true }
+    );
+    expect(sent(ModifyInstanceAttributeCommand)).toEqual([
+      { InstanceId: 'i-1', EbsOptimized: { Value: false } },
+      { InstanceId: 'i-1', InstanceType: { Value: 't3.small' } },
+    ]);
+  });
+
+  it('refuses a recorded stand-in on a forward update before any call', async () => {
+    const error = await update({ ...BASE, EbsOptimized: '{{resolve:ssm:/ebs}}' }, BASE).catch(
+      (e: unknown) => e
+    );
+    expect((error as Error).message).toMatch(/EbsOptimized holds a recorded stand-in/);
+    expect(isRefusedBeforeApplying(error, 'Inst')).toBe(true);
+    expect(writes()).toEqual([]);
+  });
+
   it('refuses a malformed value on a forward update before any call', async () => {
     const error = await update({ ...BASE, EbsOptimized: 'yes' }, BASE).catch((e: unknown) => e);
     expect((error as Error).message).toMatch(/EbsOptimized/);

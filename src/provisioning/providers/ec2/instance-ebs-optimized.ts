@@ -30,7 +30,8 @@ export function planInstanceEbsOptimized(
   properties: Record<string, unknown>,
   context: UpdateContext | undefined,
   plan: InstanceMemberPlan,
-  changed: (key: string, same: (a: unknown, b: unknown) => boolean) => boolean
+  changed: (key: string, same: (a: unknown, b: unknown) => boolean) => boolean,
+  standInSkips: (key: string) => boolean
 ): void {
   const key = 'EbsOptimized';
   // Two readable booleans compare by value ('true' is true); an unreadable
@@ -57,6 +58,9 @@ export function planInstanceEbsOptimized(
       )
     );
   }
+  // A recorded stand-in ({{resolve:...}} or the mask) gets the shared
+  // refusal / rollback warning every other member gives it.
+  if (standInSkips(key)) return;
   const want = coerceCfnBoolean(raw);
   if (want === undefined) {
     const refusal = configBooleanRefusal(properties, key, resourceType);

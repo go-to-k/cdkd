@@ -561,7 +561,8 @@ export function planInstanceMemberUpdates(
     properties,
     context,
     plan,
-    changed
+    changed,
+    standInSkips
   );
 
   // InstanceInitiatedShutdownBehavior (go-to-k/cdkd#5630): CloudFormation

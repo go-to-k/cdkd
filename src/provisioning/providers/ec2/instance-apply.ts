@@ -432,6 +432,18 @@ export async function applyInstanceMemberUpdates(
       await this.waitForInstanceState(logicalId, physicalId, resourceType, 'stopped');
     }
     phase = 'modify';
+    // go-to-k/cdkd#7023: EBS optimization is turned off BEFORE a type change
+    // and on AFTER it, so neither modify meets a type that cannot hold the
+    // attribute's other value.
+    if (plan.ebsOptimized === false) {
+      await this.ec2Client.send(
+        new ModifyInstanceAttributeCommand({
+          InstanceId: physicalId,
+          EbsOptimized: { Value: plan.ebsOptimized },
+        })
+      );
+      applied.push('the new EbsOptimized');
+    }
     if (plan.instanceType !== undefined) {
       await this.ec2Client.send(
         new ModifyInstanceAttributeCommand({
@@ -481,7 +493,7 @@ export async function applyInstanceMemberUpdates(
       );
       applied.push('the new RamdiskId');
     }
-    if (plan.ebsOptimized !== undefined) {
+    if (plan.ebsOptimized === true) {
       await this.ec2Client.send(
         new ModifyInstanceAttributeCommand({
           InstanceId: physicalId,
