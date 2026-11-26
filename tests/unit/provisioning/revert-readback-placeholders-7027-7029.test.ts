@@ -261,3 +261,56 @@ describe('Glue Trigger: the read-back placeholders (#7029)', () => {
     }
   });
 });
+
+describe('AppSync GraphQLApi: logging switched off reads as no logging (#7027)', () => {
+  const API = 'AWS::AppSync::GraphQLApi';
+  const provider = new AppSyncProvider();
+  const role = 'arn:aws:iam::123456789012:role/r';
+
+  it('folds FieldLogLevel NONE with only its role to {}', () => {
+    for (const LogConfig of [
+      { CloudWatchLogsRoleArn: role, FieldLogLevel: 'NONE' },
+      { CloudWatchLogsRoleArn: role, FieldLogLevel: 'NONE', ExcludeVerboseContent: false },
+    ]) {
+      expect(provider.canonicalizeDriftProperties(API, { LogConfig })['LogConfig']).toEqual({});
+    }
+  });
+
+  it('keeps any other logging block, and other types, as they are', () => {
+    for (const LogConfig of [
+      { CloudWatchLogsRoleArn: role, FieldLogLevel: 'ERROR' },
+      { CloudWatchLogsRoleArn: role, FieldLogLevel: 'NONE', ExcludeVerboseContent: true },
+    ]) {
+      const bag = { LogConfig };
+      expect(provider.canonicalizeDriftProperties(API, bag)).toBe(bag);
+    }
+    const other = { LogConfig: { FieldLogLevel: 'NONE' } };
+    expect(provider.canonicalizeDriftProperties('AWS::AppSync::Resolver', other)).toBe(other);
+  });
+});
+
+describe('Glue Job: a revert of the capacity spelling itself (#7028)', () => {
+  it('keeps MaxCapacity and drops the live workers when only MaxCapacity changed', async () => {
+    const live = {
+      Role: 'arn:aws:iam::123456789012:role/glue',
+      Command: { Name: 'glueetl', ScriptLocation: 's3://b/x.py' },
+      WorkerType: 'G.1X',
+      NumberOfWorkers: 2,
+      MaxCapacity: 2,
+      AllocatedCapacity: 2,
+    };
+    await new GlueJobProvider().update(
+      'Job',
+      'job',
+      'AWS::Glue::Job',
+      { ...live, MaxCapacity: 10 },
+      live,
+      REVERT
+    );
+    const update = sentInput(glueSend, UpdateJobCommand)['JobUpdate'] as Record<string, unknown>;
+    expect(update['MaxCapacity']).toBe(10);
+    expect(update).not.toHaveProperty('WorkerType');
+    expect(update).not.toHaveProperty('NumberOfWorkers');
+    expect(update).not.toHaveProperty('AllocatedCapacity');
+  });
+});

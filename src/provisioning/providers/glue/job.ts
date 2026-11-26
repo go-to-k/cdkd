@@ -178,6 +178,7 @@ export async function jobUpdate(
             JOB_READBACK_PLACEHOLDERS,
             context?.desiredFromAwsReadback
           ),
+          previousProperties,
           context?.desiredFromAwsReadback
         )
       ),
@@ -311,16 +312,34 @@ export const JOB_READBACK_PLACEHOLDERS: Readonly<Record<string, unknown>> = {
  * `AllocatedCapacity` AWS computes from them. `UpdateJob` takes one spelling
  * only (measured: `Please set only Allocated Capacity or Max Capacity`), so a
  * read-back desired bag keeps the worker spelling when it holds one, else
- * `MaxCapacity`, and drops the echoes. A template's bag is sent as declared.
+ * `MaxCapacity`, and drops the echoes. The exception is a revert of the
+ * capacity itself, `MaxCapacity` changed while the workers are the live ones
+ * (a record with no observed baseline, whose template declares only
+ * `MaxCapacity`, on a job moved to workers out of band): it keeps
+ * `MaxCapacity` and drops the workers. A template's bag is sent as declared.
  */
 function withoutCapacityEchoes(
   properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
   desiredFromAwsReadback: boolean | undefined
 ): Record<string, unknown> {
   if (desiredFromAwsReadback !== true) return properties;
-  const workers =
+  const same = (key: string): boolean =>
+    JSON.stringify(properties[key]) === JSON.stringify(previousProperties[key]);
+  let workers =
     properties['WorkerType'] !== undefined && properties['NumberOfWorkers'] !== undefined;
-  const echoes = workers ? ['MaxCapacity', 'AllocatedCapacity'] : ['AllocatedCapacity'];
+  if (
+    workers &&
+    properties['MaxCapacity'] !== undefined &&
+    !same('MaxCapacity') &&
+    same('WorkerType') &&
+    same('NumberOfWorkers')
+  ) {
+    workers = false;
+  }
+  const echoes = workers
+    ? ['MaxCapacity', 'AllocatedCapacity']
+    : ['WorkerType', 'NumberOfWorkers', 'AllocatedCapacity'];
   if (!workers && properties['MaxCapacity'] === undefined) return properties;
   if (!echoes.some((key) => Object.hasOwn(properties, key))) return properties;
   const out = { ...properties };

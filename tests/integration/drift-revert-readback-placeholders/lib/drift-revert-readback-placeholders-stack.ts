@@ -15,6 +15,9 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
  *   security configuration / notification): `''` and `0` placeholders refused,
  *   then the computed `MaxCapacity` / `AllocatedCapacity` beside the workers.
  * - `Trigger` (`ON_DEMAND`): `EventBatchingCondition: {}` -> `BatchSize` 0 refused.
+ *
+ * `LogsRole` is unused by the template: the verify script turns the API's
+ * logging on with it out of band, for the revert back to "no logging".
  */
 export class DriftRevertReadbackPlaceholdersStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -23,6 +26,13 @@ export class DriftRevertReadbackPlaceholdersStack extends cdk.Stack {
     const api = new appsync.CfnGraphQLApi(this, 'Api', {
       name: `${this.stackName}-api`,
       authenticationType: 'API_KEY',
+    });
+    // The role the verify script turns logging on with, out of band.
+    new iam.Role(this, 'LogsRole', {
+      assumedBy: new iam.ServicePrincipal('appsync.amazonaws.com'),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSAppSyncPushToCloudWatchLogs'),
+      ],
     });
     new appsync.CfnGraphQLSchema(this, 'Schema', {
       apiId: api.attrApiId,

@@ -154,8 +154,9 @@ _revert_identity_probe() {
     AWS::Glue::Job)
       cls=unique; val="$(_revert_identity_aws glue get-job --region "${region}" --job-name "${pid}" --query 'Job.CreatedOn')" || rc=$? ;;
     AWS::AppSync::GraphQLApi)
-      # The physicalId is the API id AWS mints, so a re-created API has another.
-      cls=unique; val="$(_revert_identity_aws appsync get-graphql-api --region "${region}" --api-id "${pid}" --query 'graphqlApi.apiId')" || rc=$? ;;
+      # The physicalId is the API id AWS mints, and GetGraphqlApi returns no
+      # creation time: only the id's presence (a re-created API has another id).
+      cls=no-id; val="$(_revert_identity_aws appsync get-graphql-api --region "${region}" --api-id "${pid}" --query 'graphqlApi.apiId')" || rc=$? ;;
     AWS::Glue::Database)
       cls=unique; val="$(_revert_identity_aws glue get-database --region "${region}" --name "${pid}" --query 'Database.CreateTime')" || rc=$? ;;
     AWS::CodeBuild::Project)
