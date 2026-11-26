@@ -305,8 +305,13 @@ describe('issue #3156: what the provenance arm refuses', () => {
       { Tail: '' }
     );
     expect(bag.has(`port:${PIN}`)).toBe(false);
-    // Neither parent leaf takes the other's reference.
-    expect(record.Parameters).toEqual({ A: `port:${PIN}`, B: `port:${PIN}` });
+    // Neither parent leaf takes the other's reference. `B`'s token holds the
+    // map slot for the value, so the template-text arm positions it at its own
+    // spelling (#7037); `A`'s has no slot and keeps the scan's answer.
+    expect(record.Parameters).toEqual({
+      A: `port:${PIN}`,
+      B: 'port:{{resolve:ssm-secure:/app/b}}',
+    });
   });
 
   it('carries two non-literal frames of one value through the SAME token', async () => {

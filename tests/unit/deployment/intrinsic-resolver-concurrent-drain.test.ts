@@ -44,8 +44,22 @@ const FAIL_DEEP_ID = 'cdkd-drain-inner';
 const HANG_IDS = ['cdkd-drain-hang-a', 'cdkd-drain-hang-b', 'cdkd-drain-hang-c'];
 const ref = (id: string): string => `{{resolve:secretsmanager:${id}:SecretString:password}}`;
 const valueOf = (id: string): string => `${id}-plaintext`;
-/** `text` assembled by an `Fn::Join` of literals: resolves nothing, and is no plain literal. */
-const literalJoin = (text: string): unknown => ({ 'Fn::Join': ['', [text.slice(0, 4), text.slice(4)]] });
+/**
+ * `text` assembled so part of it is a VALUE the walk cannot read as template
+ * text (an `Fn::Split` of a computed string): it resolves no reference, and
+ * is no plain literal. Template text alone (a literal, a join of literals) is
+ * kept as written by the persist walk (go-to-k/cdkd#7037), so it would carry
+ * no needle.
+ */
+const literalJoin = (text: string): unknown => ({
+  'Fn::Join': [
+    '',
+    [
+      text.slice(0, 4),
+      { 'Fn::Select': [0, { 'Fn::Split': ['|', { 'Fn::Join': ['', [text.slice(4)]] }] }] },
+    ],
+  ],
+});
 
 /**
  * Per-secret-id control over the fake client, mutated by each test body.

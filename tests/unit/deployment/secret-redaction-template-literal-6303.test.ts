@@ -63,7 +63,7 @@ describe('a recorded plaintext inside the source\'s own plain literal (#6303)', 
     });
   }
 
-  it('a source literal EQUAL to a recorded plaintext takes the whole-value arm, as before', () => {
+  it('a source literal EQUAL to a recorded plaintext is kept too (#7037)', () => {
     const out = redactForState(
       { MasterUsername: 'postgres', Other: 'postgres' },
       {
@@ -73,7 +73,7 @@ describe('a recorded plaintext inside the source\'s own plain literal (#6303)', 
         generation: 'same-generation',
       }
     ) as Record<string, unknown>;
-    expect(out['MasterUsername']).toBe(USERNAME);
+    expect(out['MasterUsername']).toBe('postgres');
     expect(out['Other']).toBe(USERNAME);
   });
 
@@ -157,9 +157,9 @@ describe('the spelling a pre-#6303 walk persisted, met by a re-positioning pass'
     expect(out['Engine']).toBe(MANGLED_ENGINE);
   });
 
-  it('a literal EQUAL to a recorded plaintext keeps its whole-token record', () => {
-    // The whole-value arm spells such a literal as the reference on every
-    // walk, so the repair must not turn it back into the plaintext.
+  it('a literal EQUAL to a recorded plaintext takes its whole-token record (#7037)', () => {
+    // The pre-#7037 walk spelled such a literal as the reference; the
+    // template literal is public text, so the repair restores it.
     const out = redactForState(
       { MasterUsername: USERNAME },
       {
@@ -169,7 +169,7 @@ describe('the spelling a pre-#6303 walk persisted, met by a re-positioning pass'
         generation: 'unproven',
       }
     ) as Record<string, unknown>;
-    expect(out['MasterUsername']).toBe(USERNAME);
+    expect(out['MasterUsername']).toBe('postgres');
   });
 
   it('a mask-only entry never renders: a `***` leaf is not repaired', () => {
@@ -219,7 +219,7 @@ describe('keepTemplateLiteralLeaves (#6303)', () => {
       keepTemplateLiteralLeaves(
         { A: MANGLED_ENGINE, B: USERNAME, C: [MANGLED_ENGINE] },
         { A: 'aurora-postgresql', B: 'postgres', C: ['aurora-postgresql'] },
-        { A: 'aurora-postgresql', B: 'postgres', C: ['aurora-postgresql'] },
+        { A: 'aurora-postgresql', B: USERNAME, C: ['aurora-postgresql'] },
         pass()
       )
     ).toEqual({ A: 'aurora-postgresql', B: USERNAME, C: ['aurora-postgresql'] });

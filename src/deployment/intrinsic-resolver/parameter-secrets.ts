@@ -306,17 +306,18 @@ export function mirrorInheritedParameterReads(
  * [#4954](https://github.com/go-to-k/cdkd/issues/4954)) on the pass bag and
  * its persist mirror ({@link mirrorInheritedParameterReads}), as the
  * parameter reads are, so the walk persisting the leaf reads the branch.
- * Only in a nested child holding inherited secrets: its one reader,
- * `positionByParameterReread`, needs the inherited-reads record, which
- * {@link recordInheritedParameterSecrets} writes under the same condition, so
- * an ordinary stack skips the work.
+ * Recorded for every pass with a bag: `positionByParameterReread` reads it in
+ * a nested child (and needs its inherited-reads record too, so an ordinary
+ * stack's record changes nothing there), and `positionByLiteralRendering`
+ * spells an `Fn::If` leaf as its taken branch (go-to-k/cdkd#7037), so a
+ * literal branch whose text equals the other branch's secret is kept as the
+ * text the diff side also selects.
  */
 export function recordTakenIfBranchIn(
   context: ResolverContext,
   source: object,
   tookTrueBranch: boolean
 ): void {
-  if (!context.inheritedSecrets || context.inheritedSecrets.size === 0) return;
   const recorded = context.recordedSecretValues;
   if (recorded === undefined) return;
   recordTakenIfBranch(recorded, source, tookTrueBranch);

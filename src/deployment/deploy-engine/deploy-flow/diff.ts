@@ -1,4 +1,5 @@
 import { settleStackTagChildRuns } from '../../nested-stack-tags.js';
+import { healLegacyLiteralSpellings } from '../legacy-literal-heal.js';
 import { freshNoEchoParametersWithDeclared, noEchoDiffComparison } from '../noecho.js';
 import { diffLogMasker, redactParametersForDiff } from '../masking.js';
 import { makeCanonicalizePropertiesFn } from '../../../provisioning/canonicalize-properties.js';
@@ -37,6 +38,10 @@ export async function calculateDeployDiff(
   }
 ) {
   // 5. Calculate diff
+  // go-to-k/cdkd#7037: a record leaf an older cdkd spelled as a secret's
+  // reference where the template spells plain text is compared as that text
+  // when the secret proves it, so no plan reader acts on a change that is not.
+  await healLegacyLiteralSpellings(engine, currentState, effectiveTemplate);
   // Pass a best-effort resolver so that changes hidden inside intrinsics (e.g.
   // `Fn::Join` literal args like "-value" -> "-value2") are detected against
   // the already-resolved values stored in state.

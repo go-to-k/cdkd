@@ -223,6 +223,14 @@ describe('an Fn::Join / Fn::Sub leaf embedding one token is positioned by its li
 
         const persisted = redactSecretsForState({ Dsn: leaf }, secrets, { Dsn: source });
 
+        // go-to-k/cdkd#7037: a source of template text and whole tokens only
+        // is persisted as spelled, with or without the claim (its output is
+        // the source's, so no claim on the bag is needed); a source with a
+        // value-bearing part (`Ref`, a variable) still needs one.
+        if (source === LITERAL_JOIN || source === SUB) {
+          expect(persisted).toEqual({ Dsn: `port:${token}` });
+          return;
+        }
         expect(persisted).toEqual({ Dsn: redactSecretsForState(leaf, secrets) });
         expect(persisted).toEqual({ Dsn: leaf });
       });
@@ -266,6 +274,17 @@ describe('an Fn::Join / Fn::Sub leaf embedding one token is positioned by its li
       expect(persisted).toEqual({ Dsn: redactSecretsForState(leaf, secrets) });
       expect(persisted).not.toEqual({ Dsn: `port:${TOKEN_L2}` });
     });
+  });
+
+  it('a source spelling two tokens and text only is persisted as spelled (#7037)', () => {
+    const persisted = redactSecretsForState(
+      { Dsn: `port:${PIN}:${PIN}` },
+      resolvedAlone(TOKEN_NAME, PIN),
+      { Dsn: { 'Fn::Sub': `port:${TOKEN_NAME}:${TOKEN_NAME}` } },
+      TEMPLATE_DERIVED_RULES,
+      true
+    );
+    expect(persisted).toEqual({ Dsn: `port:${TOKEN_NAME}:${TOKEN_NAME}` });
   });
 
   describe('refuses, and the leaf keeps the value scan answer', () => {
@@ -403,14 +422,6 @@ describe('an Fn::Join / Fn::Sub leaf embedding one token is positioned by its li
           recordResolvedPair(secrets, TOKEN_L2, 'zz');
           return { bag: { Dsn: `port:${PIN}` }, source: { Dsn: L2_JOIN }, secrets };
         },
-      ],
-      [
-        'the source spells two tokens (the shared frame helper refuses it, as it does for the literal arm)',
-        () => ({
-          bag: { Dsn: `port:${PIN}:${PIN}` },
-          source: { Dsn: { 'Fn::Sub': `port:${TOKEN_NAME}:${TOKEN_NAME}` } },
-          secrets: resolvedAlone(TOKEN_NAME, PIN),
-        }),
       ],
       [
         'the token carries more unknowable parts than the skeleton cap allows',

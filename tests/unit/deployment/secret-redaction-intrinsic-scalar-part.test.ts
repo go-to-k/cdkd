@@ -205,12 +205,17 @@ describe('a number or boolean Fn::Join part is literal text to the intrinsic par
       ['an array', ['8080'], '8080'],
       ['a plain object', {}, '[object Object]'],
     ] as const) {
-      it(`still refuses a frame whose part is ${label}, keeping the middle in plaintext`, () => {
+      it(`positions the token beside a ${label} part, which is a gap (#7037)`, () => {
+        // The frame arm still refuses the part; the template-text arm reads it
+        // as a GAP, keeps the bag's bytes there (no secret in them) and the
+        // token at the position the template spells it.
         const secrets = resolvedAlone();
         const leaf = `port${text}:${PIN}`;
         const bag = { Dsn: leaf };
         const source = { Dsn: { 'Fn::Join': ['', ['port', part, `:${TOKEN}`]] } };
-        expect(redactSecretsForState(bag, secrets, source, TEMPLATE_DERIVED_RULES, true)).toEqual({ Dsn: leaf });
+        expect(redactSecretsForState(bag, secrets, source, TEMPLATE_DERIVED_RULES, true)).toEqual({
+          Dsn: `port${text}:${TOKEN}`,
+        });
       });
     }
   });

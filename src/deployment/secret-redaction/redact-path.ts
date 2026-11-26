@@ -25,6 +25,7 @@ import {
 } from './redact-path/definition.js';
 import { hasPlainPrototype } from './redact-path/json-equality.js';
 import { isSourcePlainLiteral, rerenderedSourceLiteral } from './redact-path/template-literal.js';
+import { positionByLiteralRendering } from './redact-path/literal-rendering.js';
 
 export { sourceElementsKeptFor, arrayPairsWhateverDrops } from './redact-path/array-drop.js';
 export {
@@ -46,6 +47,7 @@ export {
 } from './redact-path/definition.js';
 export { isUncertifiedBaselineMaskPosition } from './redact-path/baseline-mask.js';
 export { secretRerenderPairs, keepTemplateLiteralLeaves } from './redact-path/template-literal.js';
+export { staticTemplateText, withoutLiteralRendering } from './redact-path/literal-rendering.js';
 export {
   DYNAMIC_REFERENCE_TOKEN_SCAN,
   dynamicReferenceTokens,
@@ -214,11 +216,12 @@ export function redactByPath(
   // The source's own PLAIN literal (go-to-k/cdkd#6303): a recorded plaintext
   // inside it is a coincidence, never a substitution, so the value scan below
   // must not splice an expression into it. See {@link isSourcePlainLiteral}.
-  if (isSourcePlainLiteral(bag, source, secrets, rules)) return bag;
+  // A literal EQUAL to a recorded plaintext too (go-to-k/cdkd#7037).
+  if (isSourcePlainLiteral(bag, source, rules)) return bag;
   // ...and the spelling that scan persisted for one before the fix, which
   // `cdkd scrub` meets in a record it re-positions. See
   // {@link rerenderedSourceLiteral}.
-  const rerendered = rerenderedSourceLiteral(bag, source, secrets);
+  const rerendered = rerenderedSourceLiteral(bag, source, secrets, rules);
   if (rerendered !== undefined) return rerendered;
   if ((typeof bag === 'string' || Array.isArray(bag)) && isPlainObject(source)) {
     // A nested-stack child leaf spelled `{Ref: <Param>}` that this resource's
@@ -264,6 +267,15 @@ export function redactByPath(
     // order is what keeps them disjoint if the skeleton ever gains a
     // wildcard-only arm, since a lookup against a recorded leaf identity is
     // strictly better evidence than a pattern that matched everything.
+    // An intrinsic's TEMPLATE TEXT stays text (go-to-k/cdkd#7037): text and
+    // whole tokens are anchors kept as spelled, value-bearing parts are gaps
+    // kept as resolved only where no recorded secret sits in them. A gap that
+    // holds one refuses, leaving the leaf to the arms below, which exist for
+    // exactly those parts.
+    const rendered = positionByLiteralRendering(bag, source, secrets, rules, (text) =>
+      redactForState(text, { provenance: 'value-scan', secrets })
+    );
+    if (rendered !== undefined) return rendered;
     const certified = positionByCrossStackSource(bag, source, secrets);
     if (certified !== undefined) return certified;
     // The EMBEDDING twin of the `{Ref: <Param>}` arm above (issue #2320): an
