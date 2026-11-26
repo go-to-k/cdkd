@@ -8105,6 +8105,7 @@
         "ecr",
         "efs-lambda",
         "elasticache-snapshot-arns",
+        "esm-replacement-rollback",
         "event-driven",
         "eventbridge",
         "eventbridge-scheduler",
@@ -8349,6 +8350,9 @@
           "l2"
         ],
         "elasticache-snapshot-arns": [
+          "l2"
+        ],
+        "esm-replacement-rollback": [
           "l2"
         ],
         "event-driven": [
@@ -10549,6 +10553,7 @@
         "drift-verbatim-readback",
         "dynamodb-globaltable",
         "dynamodb-stream-filter",
+        "esm-replacement-rollback",
         "event-driven",
         "eventbridge",
         "eventbridge-input-transformer",
@@ -10722,6 +10727,10 @@
           "l1"
         ],
         "dynamodb-stream-filter": [
+          "l2"
+        ],
+        "esm-replacement-rollback": [
+          "l1",
           "l2"
         ],
         "event-driven": [
