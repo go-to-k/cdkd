@@ -14,11 +14,21 @@ import { displayStackName, safeMsg } from '../../../utils/display-safe.js';
  * cdkd lets one run change it when the consumer deploys in the same run
  * (go-to-k/cdkd#6088), so it keeps the old copy until those consumers are
  * done: all deployed, the pass runs as it would have; any one did not (it
- * failed, was cancelled, or never started), the pass is abandoned and every
- * old copy stays recorded in the producer's state, which its next deploy
- * deletes. The producer's state was saved with those entries before its
+ * failed, was cancelled, or never started), the pass is abandoned and each
+ * old copy recorded in the producer's state stays there for its next deploy
+ * to delete. The producer's state was saved with those entries before its
  * consumers started, so a Ctrl-C or force-quit in between leaves them
- * recorded too.
+ * recorded too. An old copy cdkd could defer only in memory (a delete that
+ * needs this run's NoEcho values, an id another record holds) is held too, so
+ * the rolled-back consumer still finds it; on abandon it is named with the
+ * existing "delete it manually" warning, and a force-quit leaves it untracked,
+ * as it would a nested child's (go-to-k/cdkd#6398).
+ *
+ * The whole cleanup phase is held, not only the old copies an export names:
+ * which replaced resource a consumer's imported value reaches is not known
+ * without resolving it, and holding an unrelated one costs only its delete
+ * waiting for the consumers. The pass runs outside the work graph's
+ * `--stack-concurrency` slots, as a nested child's pass runs at its root.
  *
  * Only a producer with an importing consumer in the run gets a queue, and the
  * engine queues into it only when there is something to delete, so a
@@ -140,7 +150,7 @@ export async function runHeldProducerCleanup<K extends { stackName: string }>(
   const notDeployed = await hold.waitForConsumers(producer);
   if (notDeployed.length > 0) {
     logger.info(
-      safeMsg`Keeping the replaced resources of stack ${displayStackName(producer.stackName)}: ${notDeployed.map((c) => displayStackName(c.stackName)).join(', ')}, which imports its outputs, did not deploy and may still use them. cdkd keeps them in state, and the next deploy deletes them`
+      safeMsg`Keeping the replaced resources of stack ${displayStackName(producer.stackName)}: ${notDeployed.map((c) => displayStackName(c.stackName)).join(', ')} (importing its outputs) did not deploy and may still use them. cdkd keeps them in state, and the next deploy deletes them`
     );
     queue.abandon('consumer-failed');
     return { updatePartial: 0, nestedUpdatePartial: 0 };

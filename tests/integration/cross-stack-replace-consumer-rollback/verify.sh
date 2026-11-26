@@ -86,7 +86,8 @@ sweep() { # best-effort; called from cleanup and, in a subshell, before the run
   aws logs delete-log-group --log-group-name "/aws/lambda/${FN}" --region "${AWS_REGION}" >/dev/null 2>&1
   for q in "${Q1}" "${Q2}" "${QBOOM}"; do
     url=$(aws sqs get-queue-url --queue-name "${q}" --region "${AWS_REGION}" --query QueueUrl --output text 2>/dev/null)
-    [ -n "${url}" ] && aws sqs delete-queue --queue-url "${url}" --region "${AWS_REGION}" >/dev/null 2>&1
+    [ -n "${url}" ] && aws sqs delete-queue --queue-url "${url}" --region "${AWS_REGION}" >/dev/null 2>&1 \
+      && SWEPT_QUEUE=1
   done
   for p in $(aws iam list-role-policies --role-name "${ROLE}" --query 'PolicyNames[]' --output text 2>/dev/null); do
     aws iam delete-role-policy --role-name "${ROLE}" --policy-name "${p}" >/dev/null 2>&1
@@ -96,6 +97,11 @@ sweep() { # best-effort; called from cleanup and, in a subshell, before the run
     aws iam detach-role-policy --role-name "${ROLE}" --policy-arn "${a}" >/dev/null 2>&1
   done
   aws iam delete-role --role-name "${ROLE}" >/dev/null 2>&1
+  for s in "${CONS}" "${PROD}"; do
+    for k in state.json lock.json; do
+      aws s3 rm "s3://${STATE_BUCKET}/cdkd/${s}/${AWS_REGION}/${k}" >/dev/null 2>&1
+    done
+  done
   return 0
 }
 
@@ -118,9 +124,18 @@ fn_qurl() { # prints the function's QURL environment variable
   aws lambda get-function-configuration --function-name "${FN}" --region "${AWS_REGION}" \
     --query 'Environment.Variables.QURL' --output text
 }
-esm_sources() { # prints the function's event source ARNs
+esm_sources() { # prints the event source ARNs of the function's mappings not being deleted
+  # A deleted mapping stays listed as `Deleting` for a while, and cdkd does not
+  # wait it out.
   aws lambda list-event-source-mappings --function-name "${FN}" --region "${AWS_REGION}" \
-    --query 'EventSourceMappings[].EventSourceArn' --output text
+    --query "EventSourceMappings[?State!='Deleting'].EventSourceArn" --output text
+}
+policy_resources() { # prints every Resource of the role's inline policies, one per line
+  local p
+  for p in $(aws iam list-role-policies --role-name "${ROLE}" --query 'PolicyNames[]' --output text); do
+    aws iam get-role-policy --role-name "${ROLE}" --policy-name "${p}" \
+      --query 'PolicyDocument.Statement[].Resource' --output text
+  done | tr '\t' '\n'
 }
 superseded_ids() { # prints the producer state's superseded physical ids, one per line
   aws s3 cp "s3://${STATE_BUCKET}/cdkd/${PROD}/${AWS_REGION}/state.json" - --region "${AWS_REGION}" |
@@ -134,7 +149,14 @@ expect_eq() { # usage: expect_eq <what> <actual> <expected>
 }
 
 echo "==> Pre-run sweep"
-( sweep )
+SWEPT_QUEUE=0
+sweep
+set -eu
+# SQS refuses a queue name deleted less than 60 s ago (QueueDeletedRecently).
+if [ "${SWEPT_QUEUE}" = "1" ]; then
+  echo "    a leftover queue was deleted; waiting 61 s before re-creating it"
+  sleep 61
+fi
 
 echo "==> Step 1: deploy both (phase 1)"
 env -u CDKD_TEST_UPDATE -u CDKD_TEST_FAIL ${CDKD} deploy --all --region "${AWS_REGION}" \
@@ -173,6 +195,12 @@ expect_eq "QURL after the rollback" "${ROLLED_BACK_URL}" "${Q1_URL}"
 expect_eq "the rolled-back QURL resolves" "$(queue_url "${ROLLED_BACK_URL##*/}")" "${Q1_URL}"
 expect_eq "event source after the rollback" "$(esm_sources)" \
   "arn:aws:sqs:${AWS_REGION}:${ACCOUNT_ID}:${Q1}"
+# The IAM grant the rollback restored names the live queue.
+POLICY=$(policy_resources)
+if ! grep -qxF "arn:aws:sqs:${AWS_REGION}:${ACCOUNT_ID}:${Q1}" <<<"${POLICY}"; then
+  echo "FAIL: the rolled-back role policy does not grant on ${Q1}: ${POLICY}" >&2
+  exit 1
+fi
 
 echo "==> Step 3: deploy both, phase 2 without the failure"
 env -u CDKD_TEST_FAIL CDKD_TEST_UPDATE=true ${CDKD} deploy --all --region "${AWS_REGION}" \

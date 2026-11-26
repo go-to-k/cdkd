@@ -304,6 +304,8 @@ describe('a producer holds its cleanup phase for its in-run consumers (go-to-k/c
       /** Template outputs, and the previous record's. */
       outputs?: Record<string, unknown>;
       previousOutputs?: Record<string, unknown>;
+      /** Records beside the stack's own, unchanged by the deploy. */
+      extraRecords?: Record<string, ResourceState>;
     } = {}
   ): Promise<{
     completedOperations: CompletedOperation[];
@@ -321,6 +323,7 @@ describe('a producer holds its cleanup phase for its in-run consumers (go-to-k/c
     const records: Record<string, ResourceState> = {
       [rev]: record(`${rev}-old`, REVISION, { FunctionName: 'f', Code: 'v1' }),
       [end]: record(`${end}-id`, ENDPOINT, { FunctionName: 'f', RevisionId: `${rev}-old` }),
+      ...opts.extraRecords,
     };
     const changes = new Map<string, ResourceChange>([
       [
@@ -469,6 +472,29 @@ describe('a producer holds its cleanup phase for its in-run consumers (go-to-k/c
       )
     ).toBe(true);
     expect(printed.warn).toEqual([]);
+  });
+
+  it('an old copy deferred only in memory is held too, and named for a manual delete on abandon', async () => {
+    const queue = new NestedCleanupQueue();
+    // Another record holds the old id: the deferral is never recorded in state.
+    await deployStack(makeEngine('R', undefined, queue), PRODUCER, 'R', {
+      extraRecords: { Twin: record('RRev-old', ENDPOINT, { FunctionName: 'twin' }) },
+    });
+    expect(deletesOf('RRev-old')).toBe(0);
+    expect(listed(PRODUCER)).toEqual([]);
+    expect(queue.size).toBe(1);
+
+    queue.abandon('consumer-failed');
+
+    expect(deletesOf('RRev-old')).toBe(0);
+    expect(
+      printed.warn.some(
+        (l) =>
+          l.includes('Old RRev (RRev-old) was not deleted') &&
+          l.includes('a stack of this run that imports its outputs did not deploy') &&
+          l.includes('It is no longer tracked in state, so delete it manually')
+      )
+    ).toBe(true);
   });
 
   it('a producer that replaced nothing and carries nothing queues nothing (no lock, no read)', async () => {

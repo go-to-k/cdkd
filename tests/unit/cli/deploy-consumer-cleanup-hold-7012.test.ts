@@ -171,6 +171,8 @@ const cancelledStacks = vi.hoisted(() => new Set<string>());
 const events = vi.hoisted(() => [] as string[]);
 /** Runs inside a stack's deploy before it lands, by stack name. */
 const deployHooks = vi.hoisted(() => new Map<string, () => Promise<void>>());
+/** What a stack's held pass reports as left undeleted, by stack name. */
+const heldLeft = vi.hoisted(() => new Map<string, number>());
 /** Stacks whose deploy throws after queueing its cleanup. */
 const failAfterQueueing = vi.hoisted(() => new Set<string>());
 /** Each engine's options, by stack name. */
@@ -201,7 +203,7 @@ vi.mock('../../../src/deployment/deploy-engine.js', () => ({
           producer: true,
           run: async () => {
             events.push(`cleanup ${stackName}`);
-            return { updatePartial: 0 };
+            return { updatePartial: heldLeft.get(stackName) ?? 0 };
           },
           abandon: (why) => events.push(`abandon ${stackName} ${why}`),
           fail: () => ({ updatePartial: 0 }),
@@ -298,6 +300,7 @@ describe('deploy holds a producer cleanup for its in-run consumers (#7012)', () 
     events.length = 0;
     engineOptions.clear();
     deployHooks.clear();
+    heldLeft.clear();
     failAfterQueueing.clear();
     failingStacks.clear();
     cancelledStacks.clear();
@@ -337,7 +340,7 @@ describe('deploy holds a producer cleanup for its in-run consumers (#7012)', () 
       l.includes('Keeping the replaced resources of stack Producer')
     );
     expect(kept).toHaveLength(1);
-    expect(kept[0]).toContain('Consumer, which imports its outputs, did not deploy');
+    expect(kept[0]).toContain('Consumer (importing its outputs) did not deploy');
   });
 
   it('keeps the old copies when the consumer is cancelled before it deploys', async () => {
@@ -391,6 +394,14 @@ describe('deploy holds a producer cleanup for its in-run consumers (#7012)', () 
     });
     await runDeploy(['--all', '--yes', '--stack-concurrency', '2']);
     expect(sawAbandon).toBe(true);
+  });
+
+  it('an old copy the held pass could not delete counts toward exit 2', async () => {
+    synthStacks.value = [producer(), consumer('Consumer')];
+    heldLeft.set('Producer', 1);
+    const { exitCode } = await runDeploy(['--all', '--yes']);
+    expect(events).toEqual(['deploy Producer', 'deploy Consumer', 'cleanup Producer']);
+    expect(exitCode).toBe(2);
   });
 
   it('a producer whose deploy fails after queueing its pass abandons it', async () => {
@@ -523,6 +534,6 @@ describe('ConsumerCleanupHold (#7012)', () => {
     expect(run).not.toHaveBeenCalled();
     expect(abandon).toHaveBeenCalledWith('consumer-failed');
     expect(logger.info).toHaveBeenCalledTimes(1);
-    expect(String(logger.info.mock.calls[0]![0])).toContain('A, which imports its outputs');
+    expect(String(logger.info.mock.calls[0]![0])).toContain('A (importing its outputs) did not deploy');
   });
 });
