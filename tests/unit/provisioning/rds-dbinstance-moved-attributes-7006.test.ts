@@ -226,6 +226,9 @@ describe('RDS DBInstance attributes an in-place update moves late (go-to-k/cdkd#
     it('waits for the conversion to name the standby zone, then records it', async () => {
       arm([
         { PendingModifiedValues: { MultiAZ: true } },
+        // Measured: MultiAZ reads true with nothing pending about a minute
+        // before RDS names the standby's zone.
+        { DBInstanceStatus: 'modifying', MultiAZ: true },
         { DBInstanceStatus: 'modifying', MultiAZ: true },
         { MultiAZ: true, SecondaryAvailabilityZone: 'us-east-1b' },
       ]);
