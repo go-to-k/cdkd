@@ -472,6 +472,7 @@ describe('taintedNamesOf (#7068)', () => {
         SelectJoin: row({
           X: { 'Fn::Select': [0, [{ 'Fn::Join': ['', [{ Ref: 'Sep' }, '/', A]] }, 'z']] },
         }),
+        Literal: row({ X: `q7/${A}` }),
         IfMixed: row({ X: { 'Fn::If': ['C', { 'Fn::Join': ['', [{ Ref: 'Sep' }, A]] }, B] } }),
         Reader: { Type: 'T', Properties: { V: { 'Fn::GetAtt': ['Mixed', 'Outputs.O'] } } },
       },
@@ -480,6 +481,7 @@ describe('taintedNamesOf (#7068)', () => {
       'IfMixed',
       'JoinIf',
       'JoinSelect',
+      'Literal',
       'Mixed',
       'Reader',
       'SelectJoin',
