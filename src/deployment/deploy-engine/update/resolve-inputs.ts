@@ -41,7 +41,6 @@ import {
   noEchoMacInputBindingsFor,
   passedSecretMacEntriesFor,
 } from '../noecho-macs.js';
-import { noEchoMacVerdict, noEchoValueMacsOf } from '../../noecho-value-macs.js';
 import { aliasPolicySecretGuard, resolveAliasUpdatePolicy } from '../update-policy.js';
 
 /**
@@ -432,29 +431,14 @@ export async function resolveUpdateInputs(
     moved: movedMasked,
     fingerprinter: fingerprints,
     sources: fingerprintSources,
-    // A stale parameter also read outside its stale leaves: only the record's
-    // value MACs of it (bound to today's) can tell whether it moved.
-    macVerdict: async (key, parameters) => {
-      const recorded = noEchoValueMacsOf(currentResource).get(key);
-      if (recorded === undefined || !parameters.every((name) => recorded.has(name))) return 'none';
-      return noEchoMacVerdict(
-        new Map(parameters.map((name) => [name, recorded.get(name)!])),
-        parameters,
-        await engine.noEchoRun.noEchoMacs?.macs()
-      );
-    },
   });
   for (const key of staleNonProofs.unmoved) movedMasked.delete(key);
   const staleUnmovedKeys = staleNonProofs.proven;
-  // Neither proven nor moved: read unmoved, warned of on every deploy, and
-  // its stale leaves kept and its fingerprint never re-stamped, so the same
-  // evidence is weighed again next time and no stamp ever rests on it.
+  // Neither proven nor moved: read unmoved, warned of on every deploy (by the
+  // caller, which knows whether the key is create-only), and its stale leaves
+  // kept and its fingerprint never re-stamped, so the same evidence is weighed
+  // again next time and no stamp ever rests on it.
   const staleUnprovableKeys = staleNonProofs.unprovable;
-  for (const key of staleUnprovableKeys) {
-    engine.logger.warn(
-      safeMsg`${logicalId}.${key} is recorded masked and reads a parameter whose NoEcho was removed, also outside the value it fed, so cdkd cannot prove the key unchanged and treats it as unchanged: a change to that parameter is not applied there. To apply one, deploy with --recreate-via-cc-api ${logicalId} or --recreate-via-sdk-provider ${logicalId}.`
-    );
-  }
   // go-to-k/cdkd#7050: a masked key whose public `ssm` value moved (or cannot
   // be told unmoved) is sent, as CloudFormation would; a secret's is not.
   if (fingerprints !== undefined) {

@@ -674,6 +674,7 @@ describe('a stale NoEcho leaf beside another masked leaf of a create-only key se
     PLAIN.v = 'db-secret';
     delete EXTRA_PARAMETERS['Bee'];
     delete EXTRA_PARAMETERS['User'];
+    for (const name of Object.keys(EXTRA_PARAMETERS)) if (/^S\d$/.test(name)) delete EXTRA_PARAMETERS[name];
   });
   /** Deploy with `Suffix` NoEcho, then drop its NoEcho: the record to start from. */
   async function staleTable(sibling: unknown, hash?: unknown, value = 'noecho-old-value'): Promise<Record<string, unknown>> {
@@ -844,6 +845,8 @@ describe('a stale NoEcho leaf beside another masked leaf of a create-only key se
         // The plan reports the kept stale leaf on every run; the deploy settles it unsent.
         expect((r.diff?.get('Db')?.propertyChanges ?? []).map((pc) => pc.path), `run ${run}`).toContain('KeySchema');
         expect(unprovableWarnings(log), `run ${run}`).toHaveLength(1);
+        // A create-only key is never sent: the warning names the remedy.
+        expect(unprovableWarnings(log)[0], `run ${run}`).toContain('--recreate-via-cc-api Db');
         expect(log['warn']!.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain(BEE);
         if (r.persisted !== undefined) {
           expect(JSON.stringify(r.all)).not.toContain(BEE);
@@ -872,5 +875,82 @@ describe('a stale NoEcho leaf beside another masked leaf of a create-only key se
         expect((persisted['maskedPropertyInputFingerprints'] as Record<string, string>)['KeySchema']).toBe(recordedInput);
       }
     }
+  });
+
+  // Seven stale parameters (`Suffix` and S1-S6, all NoEcho then) in the stale
+  // leaf, above the old subset cap of six; the live sibling joins the NoEcho
+  // `Bee` with the plain `User`. A move of `User` is a real move of a plain
+  // input: refused as the plan reports it, never read unmoved.
+  const SIX = ['S1', 'S2', 'S3', 'S4', 'S5', 'S6'];
+  const MANY_HASH = { 'Fn::Join': [':', [{ Ref: 'Suffix' }, ...SIX.map((name) => ({ Ref: name }))]] };
+  const BEE_USER = { 'Fn::Join': ['_', [{ Ref: 'Bee' }, { Ref: 'User' }]] };
+  const MANY_READ = ['noecho-old-value', ...SIX.map((name) => `${name.toLowerCase()}-v`)].join(':');
+  async function manyStaleTable(): Promise<Record<string, unknown>> {
+    EXTRA_PARAMETERS['User'] = { Type: 'String', Default: 'user-1' };
+    for (const name of SIX)
+      EXTRA_PARAMETERS[name] = { Type: 'String', NoEcho: true, Default: `${name.toLowerCase()}-v` };
+    const record = await staleTable(BEE_USER, MANY_HASH);
+    for (const name of SIX) EXTRA_PARAMETERS[name] = { Type: 'String', Default: `${name.toLowerCase()}-v` };
+    return record;
+  }
+  it('seven stale parameters beside a live sibling with a plain input, nothing moved: never refused, settled', async () => {
+    let record = await manyStaleTable();
+    READBACK.props = { KeySchema: keySchema(MANY_READ, `${BEE}_user-1`) };
+    const settledRows: unknown[][] = [];
+    for (const run of [1, 2, 3]) {
+      const r = await deploy({ Db: record as never }, table(BEE_USER, MANY_HASH));
+      expect(r.thrown, `run ${run}: ${refusal(r.thrown)}`).toBeUndefined();
+      expect(r.calls).toEqual([]);
+      settledRows.push(
+        (r.diff?.get('Db')?.propertyChanges ?? []).filter((pc) => pc.noEchoPromoted !== true).map((pc) => pc.path)
+      );
+      if (r.persisted !== undefined) {
+        expect(JSON.stringify(r.all)).not.toContain(BEE);
+        record = structuredClone(r.persisted) as unknown as Record<string, unknown>;
+      }
+    }
+    expect(settledRows).toEqual([['KeySchema'], [], []]);
+  });
+
+  it('seven stale parameters beside a live sibling whose plain input (User) moved: planned and refused, never skipped', async () => {
+    const log = getLogger() as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    const record = await manyStaleTable();
+    EXTRA_PARAMETERS['User'] = { Type: 'String', Default: 'user-2' };
+    READBACK.props = { KeySchema: keySchema(MANY_READ, `${BEE}_user-1`) };
+    for (const run of [1, 2]) {
+      log['warn']!.mockClear();
+      const moved = await deploy({ Db: structuredClone(record) as never }, table(BEE_USER, MANY_HASH));
+      const rows = moved.diff?.get('Db')?.propertyChanges ?? [];
+      expect(rows.map((pc) => [pc.path, pc.requiresReplacement]), `run ${run}`).toEqual([['KeySchema', true]]);
+      expect(moved.calls).toEqual([]);
+      expect(refusal(moved.thrown)).toMatch(/force-stateful-recreation/);
+      expect(unprovableWarnings(log), `run ${run}`).toEqual([]);
+    }
+  });
+
+  it('an UPDATABLE unprovable key is warned of as decided by its readback, with no --recreate-via remedy', async () => {
+    const log = getLogger() as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    const groups = [{ Ref: 'Suffix' }, BEE_SUFFIX];
+    const template = tpl(undefined, 1, { VPCSecurityGroups: groups });
+    EXTRA_PARAMETERS['Bee'] = { Type: 'String', NoEcho: true, Default: BEE };
+    SUFFIX.v = 'noecho-old-value';
+    SUFFIX.noEcho = true;
+    const created = await deploy({}, template);
+    expect(created.thrown).toBeUndefined();
+    SUFFIX.noEcho = false;
+    const record = structuredClone(created.persisted!) as unknown as Record<string, unknown>;
+    expect((record['properties'] as Record<string, unknown>)['VPCSecurityGroups']).toEqual(['***', '***']);
+    READBACK.props = { VPCSecurityGroups: ['noecho-old-value', `${BEE}_noecho-old-value`] };
+    log['warn']!.mockClear();
+    const r = await deploy({ Db: record as never }, template);
+    expect(r.thrown, refusal(r.thrown)).toBeUndefined();
+    const warned = log['warn']!.mock.calls
+      .map((c) => String(c[0]))
+      .filter((w) => w.includes('Db.VPCSecurityGroups') && w.includes('cannot prove the key unchanged'));
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toContain('the readback decides this key');
+    expect(warned[0]).not.toContain('--recreate-via');
+    expect(warned[0]).not.toContain('not applied');
+    expect(warned[0]).not.toContain(BEE);
   });
 });

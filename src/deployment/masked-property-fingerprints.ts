@@ -100,10 +100,7 @@ export {
   staleLeafInputsVerdict,
   staleNoEchoNonProofs,
 } from './masked-property-fingerprints/stale-noecho-cover.js';
-export type {
-  StaleLeafInputsVerdict,
-  StaleMacVerdict,
-} from './masked-property-fingerprints/stale-noecho-cover.js';
+export type { StaleLeafInputsVerdict } from './masked-property-fingerprints/stale-noecho-cover.js';
 export {
   maskedPropertyReferenceFingerprintsOf,
   maskedReferenceFingerprintsFor,

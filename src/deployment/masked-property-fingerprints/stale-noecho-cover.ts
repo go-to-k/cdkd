@@ -43,7 +43,6 @@ export async function staleNoEchoNonProofs(args: {
   moved: Iterable<string>;
   fingerprinter: InputFingerprinter | undefined;
   sources: MaskedInputSources | undefined;
-  macVerdict?: (key: string, parameters: readonly string[]) => Promise<StaleMacVerdict>;
 }): Promise<{ unmoved: Set<string>; proven: Set<string>; unprovable: Set<string> }> {
   const { record, templateProps, staleCoordinates, fingerprinter, sources } = args;
   const unmoved = new Set<string>();
@@ -69,7 +68,6 @@ export async function staleNoEchoNonProofs(args: {
         resolvedProps: args.resolvedProps,
         staleCoordinates,
         sources,
-        ...(args.macVerdict !== undefined && { macVerdict: args.macVerdict }),
       });
       if (verdict === 'moved') continue;
       unmoved.add(key);
@@ -95,13 +93,17 @@ function everyMaskedLeafIsStale(
   return !carriesSecretMask(node);
 }
 
-/** The most parameters a subset walk enumerates before trying only the whole set (2^n re-hashes). */
-const MAX_STALE_PARAMETERS = 6;
+/**
+ * The most re-hashes one {@link staleLeafInputsVerdict} spends (each resolve is
+ * memoized, so a re-hash walks the key alone): every subset of up to 10
+ * parameters, and the largest subsets of more. Past it the key reads `moved`.
+ */
+export const MAX_STALE_REHASHES = 2 ** 10;
 
 /**
  * What {@link staleLeafInputsVerdict} proves of a key's inputs other than its
- * stale leaves: `proven` unmoved, `moved` (or nothing to compare), or
- * `unprovable` (no evidence either way).
+ * stale leaves: `proven` unmoved, `moved` (or nothing to compare, or past the
+ * re-hash budget), or `unprovable` (no evidence either way).
  */
 export type StaleLeafInputsVerdict = 'proven' | 'moved' | 'unprovable';
 
@@ -110,20 +112,26 @@ export type StaleLeafInputsVerdict = 'proven' | 'moved' | 'unprovable';
  * some of the parameters its stale leaves read kept as written (as the record
  * hashed the ones that were `NoEcho` then). The record does not say which of
  * those parameters were `NoEcho`, a plain one beside it was hashed as its
- * value, so subsets of them are tried, the whole set first (each subset only
- * up to {@link MAX_STALE_PARAMETERS} of them). A matching subset none of whose
- * parameters the key reads outside its stale leaves is `proven`: the inputs
- * it leaves uncovered are proven equal, and the covered ones are read only at
- * the stale leaves, whose readback compares them.
+ * value, so subsets of them are tried, largest first (the usual record had
+ * every one of them `NoEcho`), up to {@link MAX_STALE_REHASHES} re-hashes. A
+ * matching subset none of whose parameters the key reads outside its stale
+ * leaves is `proven`: the inputs it leaves uncovered are proven equal, and the
+ * covered ones are read only at the stale leaves, whose readback compares them.
  *
  * A parameter the key also reads outside its stale leaves (a live `NoEcho`
  * sibling's, where no readback compares it, and a lossy stale leaf such as
  * `Fn::Select` of an `Fn::Split` would hide its move) is never covered on the
- * hash's word: a match only with it covered leaves its value unseen. The
- * record's `NoEcho` value MACs of it, when `macVerdict` reads them, decide
- * (`confirmed` is `proven`, `changed` is `moved`); without them the key is
- * `unprovable`, and so is one with too many parameters to try every subset
- * that matched none. `moved` also stands for nothing to compare (no recorded
+ * hash's word: a match only with it covered leaves its value unseen, so the key
+ * is `unprovable`. (A value MAC never decides it: a parameter's MAC is recorded
+ * only while it is `NoEcho`, and a stale one is not `NoEcho` any more.)
+ *
+ * No subset matching is `moved`: a plain input moved, and the caller keeps the
+ * move, as the plan does. So is running out of the budget before any matched:
+ * failing toward a visible change (refused, or sent), never toward reading a
+ * real move unmoved. A key whose stale leaves read so many parameters, some of
+ * them plain, that the matching subset lies past the budget is then refused
+ * (create-only) or sent on every deploy: a known limit, out of any realistic
+ * template's reach. `moved` also stands for nothing to compare (no recorded
  * fingerprint, a stale leaf whose template node is not found or reads no
  * parameter, an input unknown today): the caller keeps its verdict.
  */
@@ -137,8 +145,6 @@ export async function staleLeafInputsVerdict(args: {
   /** The record's stale `NoEcho` coordinates (any key's). */
   staleCoordinates: readonly NoEchoCoordinate[];
   sources: MaskedInputSources;
-  /** The record's `NoEcho` value MACs of `parameters` for `key` against today's. */
-  macVerdict?: (key: string, parameters: readonly string[]) => Promise<StaleMacVerdict>;
 }): Promise<StaleLeafInputsVerdict> {
   const { record, key, templateProps, resolvedProps, sources } = args;
   const bound = maskedPropertyInputFingerprintsOf(record).get(key);
@@ -172,7 +178,6 @@ export async function staleLeafInputsVerdict(args: {
   const outside = new Set(
     noEchoParametersReadBy(withoutNodes(templateProps[key], staleNodes), readSources(read))
   );
-  const candidates = [...read].filter((name) => !outside.has(name));
   const resolved = new Map<unknown, ReturnType<MaskedInputSources['resolve']>>();
   const resolve: MaskedInputSources['resolve'] = (node) => {
     if (!resolved.has(node)) resolved.set(node, sources.resolve(node));
@@ -202,44 +207,45 @@ export async function staleLeafInputsVerdict(args: {
     if (now === undefined) return undefined;
     return splitInputFingerprint(now.fingerprint).input === recorded;
   };
-  // Proven: some subset of the candidates alone, the whole set first.
-  let exhaustive = candidates.length <= MAX_STALE_PARAMETERS;
-  for (const subset of subsetsOf(candidates)) {
+  // Proven: some subset of the parameters read only at the stale leaves, the
+  // whole set first. Then, with one read outside covered: a match leaves its
+  // value unseen, so unprovable. Every re-hash (a skipped subset too) counts
+  // against one budget; past it, moved.
+  let budget = MAX_STALE_REHASHES;
+  const candidates = [...read].filter((name) => !outside.has(name));
+  for (const subset of subsetsLargestFirst(candidates)) {
+    if (budget-- <= 0) return 'moved';
     const matched = await matches(new Set(subset));
     if (matched === undefined) return 'moved';
     if (matched) return 'proven';
   }
   if (outside.size > 0) {
-    // Matched only with a parameter read outside covered: its value is
-    // unseen there, so only its value MACs decide.
-    const all = [...read];
-    exhaustive &&= all.length <= MAX_STALE_PARAMETERS;
-    for (const subset of subsetsOf(all)) {
-      const covering = subset.filter((name) => outside.has(name));
-      if (covering.length === 0) continue;
+    for (const subset of subsetsLargestFirst([...read])) {
+      if (budget-- <= 0) return 'moved';
+      if (!subset.some((name) => outside.has(name))) continue;
       const matched = await matches(new Set(subset));
       if (matched === undefined) return 'moved';
-      if (!matched) continue;
-      const verdict = (await args.macVerdict?.(key, covering)) ?? 'none';
-      if (verdict === 'confirmed') return 'proven';
-      if (verdict === 'changed') return 'moved';
-      return 'unprovable';
+      if (matched) return 'unprovable';
     }
   }
-  // Every subset tried and none matched: something else moved. Short of
-  // trying them all, nothing is proven either way.
-  return exhaustive ? 'moved' : 'unprovable';
+  // No subset matched: a plain input moved.
+  return 'moved';
 }
 
-/** What a key's recorded `NoEcho` value MACs of some parameters say against today's. */
-export type StaleMacVerdict = 'confirmed' | 'changed' | 'none';
-
-/** Every subset of `names` largest first (the usual record had every one of them `NoEcho`), or only the whole set past the cap. */
-function subsetsOf(names: readonly string[]): string[][] {
-  if (names.length > MAX_STALE_PARAMETERS) return [[...names]];
-  return Array.from({ length: 2 ** names.length }, (_, mask) =>
-    names.filter((_name, index) => (mask & (1 << index)) !== 0)
-  ).sort((a, b) => b.length - a.length);
+/** Every subset of `names`, largest first (by index order within a size), generated lazily. */
+function* subsetsLargestFirst(names: readonly string[]): Generator<string[]> {
+  const n = names.length;
+  for (let size = n; size >= 0; size--) {
+    const at = Array.from({ length: size }, (_, i) => i);
+    for (;;) {
+      yield at.map((i) => names[i]!);
+      let i = size - 1;
+      while (i >= 0 && at[i] === n - size + i) i--;
+      if (i < 0) break;
+      at[i]!++;
+      for (let j = i + 1; j < size; j++) at[j] = at[j - 1]! + 1;
+    }
+  }
 }
 
 /** `value` with each of `nodes` (by identity) replaced by `null`. */

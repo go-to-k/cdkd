@@ -11,6 +11,7 @@ import {
   staleLeafInputsVerdict,
   type MaskedInputSources,
 } from '../../../src/deployment/masked-property-fingerprints.js';
+import { MAX_STALE_REHASHES } from '../../../src/deployment/masked-property-fingerprints/stale-noecho-cover.js';
 
 const KEY_SCHEMA = [
   { AttributeName: { Ref: 'A' }, KeyType: 'HASH' },
@@ -109,8 +110,7 @@ describe('staleLeafInputsVerdict (#7050 review)', () => {
     plain: readonly string[],
     recordedValues: Record<string, unknown>,
     todayValues: Record<string, unknown>,
-    resolvedHash: unknown,
-    macVerdict?: () => Promise<'confirmed' | 'changed' | 'none'>
+    resolvedHash: unknown
   ): Promise<string> {
     const declare = (noEcho: readonly string[]): MaskedInputSources => {
       const template = {
@@ -138,7 +138,6 @@ describe('staleLeafInputsVerdict (#7050 review)', () => {
       staleCoordinates: [['KeySchema', 0, 'AttributeName']],
       // Today only `B` is still NoEcho.
       sources: declare(noEchoThen.filter((name) => name !== 'A')),
-      ...(macVerdict !== undefined && { macVerdict }),
     });
   }
 
@@ -169,12 +168,6 @@ describe('staleLeafInputsVerdict (#7050 review)', () => {
     it('nothing moved: unprovable all the same (no value evidence for `A`), never a move', async () => {
       expect(await shaped(SHAPE, ['A'], [], { A: 'h,t-1' }, { A: 'h,t-1' }, 'h')).toBe('unprovable');
     });
-    it("the record's value MACs of `A` decide: confirmed is proven, changed is a move", async () => {
-      const then = { A: 'h,t-1' };
-      expect(await shaped(SHAPE, ['A'], [], then, then, 'h', async () => 'confirmed')).toBe('proven');
-      expect(await shaped(SHAPE, ['A'], [], then, then, 'h', async () => 'changed')).toBe('moved');
-      expect(await shaped(SHAPE, ['A'], [], then, then, 'h', async () => 'none')).toBe('unprovable');
-    });
     it('a plain parameter beside it moved: a move, whatever `A` was', async () => {
       const shape = [
         { AttributeName: { 'Fn::Join': [':', [{ Ref: 'User' }, { Ref: 'A' }]] }, KeyType: 'HASH' },
@@ -186,21 +179,23 @@ describe('staleLeafInputsVerdict (#7050 review)', () => {
     });
   });
 
-  describe('a stale leaf reading more parameters than the subset cap', () => {
-    // Seven parameters, all NoEcho when recorded; only `B` is still NoEcho.
-    const NAMES = ['A', 'C', 'D', 'E', 'F', 'G', 'H'];
-    const SHAPE = [
-      { AttributeName: { 'Fn::Join': [':', NAMES.map((name) => ({ Ref: name }))] }, KeyType: 'HASH' },
-      { AttributeName: { Ref: 'B' }, KeyType: 'RANGE' },
-    ];
-    const then = Object.fromEntries([...NAMES, 'B'].map((name) => [name, `${name.toLowerCase()}-1`]));
-    const resolvedHash = NAMES.map((name) => then[name]).join(':');
-    async function cap(todayValues: Record<string, unknown>, plain: readonly string[] = []): Promise<string> {
-      const noEchoThen = [...NAMES.filter((name) => !plain.includes(name)), 'B'];
+  describe('a stale leaf reading many parameters: subsets largest first, within the re-hash budget', () => {
+    // All NoEcho when recorded but `plain`; only `B` is still NoEcho.
+    async function many(
+      names: readonly string[],
+      plain: readonly string[],
+      moved: Record<string, unknown> = {}
+    ): Promise<string> {
+      const shape = [
+        { AttributeName: { 'Fn::Join': [':', names.map((name) => ({ Ref: name }))] }, KeyType: 'HASH' },
+        { AttributeName: { Ref: 'B' }, KeyType: 'RANGE' },
+      ];
+      const then = Object.fromEntries([...names, 'B'].map((name) => [name, `${name.toLowerCase()}-1`]));
+      const noEchoThen = [...names.filter((name) => !plain.includes(name)), 'B'];
       const declare = (noEcho: readonly string[], values: Record<string, unknown>): MaskedInputSources => {
         const template = {
           Parameters: Object.fromEntries(
-            [...NAMES, 'B'].map((name) => [name, { Type: 'String', ...(noEcho.includes(name) && { NoEcho: true }) }])
+            [...names, 'B'].map((name) => [name, { Type: 'String', ...(noEcho.includes(name) && { NoEcho: true }) }])
           ),
           Resources: {},
         };
@@ -210,25 +205,42 @@ describe('staleLeafInputsVerdict (#7050 review)', () => {
           resolve: () => Promise.reject(new Error('no input node here')),
         };
       };
-      const walked = await maskedInputWalk(SHAPE, declare(noEchoThen, then));
+      const walked = await maskedInputWalk(shape, declare(noEchoThen, then));
+      const today = { ...then, ...moved };
       return staleLeafInputsVerdict({
         record: {
-          maskedPropertyFingerprints: { KeySchema: maskedPropertyFingerprint(SHAPE) },
+          maskedPropertyFingerprints: { KeySchema: maskedPropertyFingerprint(shape) },
           maskedPropertyInputFingerprints: { KeySchema: walked!.fingerprint },
         },
         key: 'KeySchema',
-        templateProps: { KeySchema: SHAPE },
-        resolvedProps: { KeySchema: [{ AttributeName: resolvedHash, KeyType: 'HASH' }, { AttributeName: '***', KeyType: 'RANGE' }] },
+        templateProps: { KeySchema: shape },
+        resolvedProps: {
+          KeySchema: [
+            { AttributeName: names.map((name) => today[name]).join(':'), KeyType: 'HASH' },
+            { AttributeName: '***', KeyType: 'RANGE' },
+          ],
+        },
         staleCoordinates: [['KeySchema', 0, 'AttributeName']],
-        sources: declare(['B'], todayValues),
+        sources: declare(['B'], today),
       });
     }
-    it('all of them NoEcho then, nothing else moved: the whole set is tried first and proven', async () => {
-      expect(await cap(then)).toBe('proven');
-      expect(await cap({ ...then, A: 'a-2' })).toBe('proven');
+    const SEVEN = ['A', 'C', 'D', 'E', 'F', 'G', 'H'];
+    const TWELVE = [...SEVEN, 'I', 'J', 'K', 'L', 'M'];
+    it('seven, all NoEcho then: the whole set is tried first and proven, whatever the stale values', async () => {
+      expect(await many(SEVEN, [])).toBe('proven');
+      expect(await many(SEVEN, [], { A: 'a-2' })).toBe('proven');
     });
-    it('one of them plain then: no subset is enumerated past the cap, so unprovable, never a move', async () => {
-      expect(await cap(then, ['A'])).toBe('unprovable');
+    it('seven, one plain then: the subset without it is proven; that plain one moved is a move, never unprovable', async () => {
+      expect(await many(SEVEN, ['A'])).toBe('proven');
+      expect(await many(SEVEN, ['A'], { A: 'a-2' })).toBe('moved');
+    });
+    it('twelve, two plain then: the matching subset of ten is within the budget', async () => {
+      expect(MAX_STALE_REHASHES).toBe(1024);
+      expect(await many(TWELVE, ['A', 'C'])).toBe('proven');
+      expect(await many(TWELVE, ['A', 'C'], { C: 'c-2' })).toBe('moved');
+    });
+    it('twelve, five plain then: the matching subset of seven lies past the budget, so a move, never unprovable', async () => {
+      expect(await many(TWELVE, ['A', 'C', 'D', 'E', 'F'])).toBe('moved');
     });
   });
 });

@@ -361,6 +361,16 @@ export async function provisionUpdate(
       )
       .map((pc) => pc.path)
   );
+  // go-to-k/cdkd#7050 review: a stale NoEcho leaf's key whose other inputs
+  // cannot be proven unmoved reads unmoved. Only a create-only key is then
+  // never sent; an updatable one is sent when its readback differs.
+  for (const key of staleUnprovableKeys) {
+    engine.logger.warn(
+      parameterCreateOnlyPaths.has(key)
+        ? safeMsg`${logicalId}.${key} is recorded masked and reads a parameter whose NoEcho was removed, also outside the value it fed, so cdkd cannot prove the key unchanged and treats it as unchanged: a change to that parameter is not applied there. To apply one, deploy with --recreate-via-cc-api ${logicalId} or --recreate-via-sdk-provider ${logicalId}.`
+        : safeMsg`${logicalId}.${key} is recorded masked and reads a parameter whose NoEcho was removed, also outside the value it fed, so cdkd cannot prove the key unchanged from its record: the readback decides this key.`
+    );
+  }
   // go-to-k/cdkd#6146: never sent in place, so the save keeps each one's
   // previous NoEcho value MAC (a replacement's new record starts with none).
   // Nothing reads a create-only key's MAC today (no verdict for it); it is

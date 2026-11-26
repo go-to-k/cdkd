@@ -1977,23 +1977,27 @@ stack with no instance id.
   public `ssm` value moved, or whose passed-secret value MAC proves a
   move, is still a move. A key that holds another masked leaf is re-hashed
   with some of the parameters its stale leaves read kept as written, as the
-  record hashed the ones that were `NoEcho` then (the whole set first, then
-  each subset when there are at most six, since a plain parameter beside
-  them was hashed by its value). Equal to the recorded input fingerprint,
-  only the stale leaves moved and the readback decides them (the settle
-  re-stamps today's fingerprint, so the next deploy compares it). A
-  parameter the key also reads outside its stale leaves (a live `NoEcho`
-  sibling's, say) is never kept as written on the hash's word, since no
-  readback compares it there: a match only with it kept as written is
-  decided by the record's value MACs of it against today's (equal, proven;
-  different, a move), and without them the key is UNPROVABLE. So is one
-  with more than six such parameters that only some subset could match.
-  An unprovable key is treated as unchanged and warned of on every deploy,
+  record hashed the ones that were `NoEcho` then (every subset, largest
+  first, since a plain parameter beside them was hashed by its value).
+  Equal to the recorded input fingerprint, only the stale leaves moved and
+  the readback decides them (the settle re-stamps today's fingerprint, so
+  the next deploy compares it). A parameter the key also reads outside its
+  stale leaves (a live `NoEcho` sibling's, say) is never kept as written on
+  the hash's word, since no readback compares it there: a match only with
+  it kept as written makes the key UNPROVABLE (no value MAC decides it: a
+  parameter's MAC is recorded only while it is `NoEcho`). An unprovable key
+  is treated as unchanged from its record and warned of on every deploy,
   naming the resource and the key, never a value: it is never refused, its
   stale leaves stay marked, and its input fingerprint is never re-stamped,
-  so no stamp ever rests on that evidence and a change to such a parameter
-  is not applied there. When every subset was tried and none matched, it
-  is a move (its input fingerprint still covers that leaf's inputs). The plan needs no such
+  so no stamp ever rests on that evidence. A create-only key is then never
+  sent, so a change to such a parameter is not applied there (the warning
+  names the `--recreate-via-*` remedy); an updatable one is decided by its
+  readback. When no subset matched, it is a move (its input fingerprint
+  still covers that leaf's inputs), refused or sent as the plan reports it.
+  Known limit: the subset walk stops after 1024 re-hashes (every subset of
+  up to ten parameters) and then reads the key as a move, never unchanged,
+  so a key whose stale leaves read more parameters than that, some of them
+  plain, can be refused (create-only) or sent on every deploy. The plan needs no such
   drop: the stale leaf's key is planned from its masked record anyway. An
   updatable key is sent, as
   any planned key is, and its record settles. For a create-only key, a
