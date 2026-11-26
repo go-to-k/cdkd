@@ -271,6 +271,65 @@ describe('scheduleSupersededDeletes (#7073)', () => {
     expect(slotsOf(resources, rows, [['Vpc']])).toEqual([['eni-old', 'sg-old'], []]);
   });
 
+  it('never moves a row past its own lower bound to follow a row it depends on (both go after the levels)', () => {
+    // D depends on R and O on D. Old O names D (slot 1); old R names O, and
+    // its own bounds cross (after the levels). Following O would delete old R
+    // before D, which may still name it.
+    const resources = {
+      R: record('r-new', 'AWS::IAM::Role'),
+      D: record('d', 'AWS::IAM::Policy', ['R']),
+      O: record('o-new', 'AWS::IAM::Role', ['D']),
+    };
+    const rows = [
+      superseded('O', record('o-old', 'AWS::IAM::Role', ['D'])),
+      superseded('R', record('r-old', 'AWS::IAM::Role', ['O'])),
+    ];
+
+    expect(slotsOf(resources, rows, [['R'], ['D'], ['O']])).toEqual([[], [], [], ['r-old', 'o-old']]);
+  });
+
+  it('holds both rows after the levels when following would pass the lower bound', () => {
+    // Old X (lower bound: its current record's step 1) names Y; old Y names
+    // D (slot 0). Following Y would delete old X before D.
+    const resources = {
+      X: record('x-new', 'AWS::IAM::Role'),
+      D: record('d', 'AWS::IAM::Policy', ['X']),
+    };
+    const rows = [
+      superseded('X', record('x-old', 'AWS::IAM::Role', ['Y'])),
+      superseded('Y', record('y-old', 'AWS::IAM::Role', ['D'])),
+    ];
+
+    expect(slotsOf(resources, rows, [['X'], ['D']])).toEqual([[], [], ['x-old', 'y-old']]);
+  });
+
+  it('never goes before a record that names its logical id, with no current record of it', () => {
+    // D still names R (a failed deploy left it), which has no current record.
+    const resources = {
+      X: record('x', 'AWS::IAM::Role'),
+      D: record('d', 'AWS::IAM::Policy', ['R']),
+    };
+    const rows = [superseded('R', record('r-old', 'AWS::IAM::Role', ['X']))];
+
+    expect(slotsOf(resources, rows, [['X', 'D']])).toEqual([[], ['r-old']]);
+  });
+
+  it('keeps a row whose bounds cross after the levels, and the rows it depends on with it', () => {
+    // Old R's bounds cross (X before, D after it); old Q, which it names,
+    // could go before V, but R holds it: both after the levels.
+    const resources = {
+      V: record('v', 'AWS::IAM::Role'),
+      X: record('x', 'AWS::IAM::Role', ['V']),
+      D: record('d', 'AWS::IAM::Policy', ['R', 'V']),
+    };
+    const rows = [
+      superseded('R', record('r-old', 'AWS::IAM::Role', ['X', 'Q'])),
+      superseded('Q', record('q-old', 'AWS::IAM::Role', ['V'])),
+    ];
+
+    expect(slotsOf(resources, rows, [['V'], ['X', 'D']])).toEqual([[], [], ['r-old', 'q-old']]);
+  });
+
   it("schedules a custom resource's row only when its early attempt asked for a retry", () => {
     const resources = { Handler: record('handler', 'AWS::Lambda::Function') };
     const settled = superseded('A', record('a-old', 'Custom::Thing', ['Handler']));
