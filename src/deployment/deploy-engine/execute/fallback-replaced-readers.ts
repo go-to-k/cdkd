@@ -98,6 +98,13 @@ export async function enqueueReadersOfFallbackReplacement(
   // stretch: another completion running meanwhile (a second fallback, a lost
   // child) may have promoted a shared reader, which is then not added twice.
   const before = new Map([...readers].map(([id, change]) => [id, change.changeType]));
+  // A row already in the plan as an in-place UPDATE that these passes turn
+  // into a replacement is named too, so its `Replacing` line has a cause.
+  const replacingBefore = new Set(
+    [...readers]
+      .filter(([, change]) => (change.propertyChanges ?? []).some((pc) => pc.requiresReplacement))
+      .map(([id]) => id)
+  );
   // The in-place attribute pass reads the replaced row's own (in-place)
   // property changes as an in-place upstream; the replacement pass already
   // promoted every reader of it, so the pass sees only its readers.
@@ -117,9 +124,17 @@ export async function enqueueReadersOfFallbackReplacement(
 
   const promoted: string[] = [];
   for (const [id, change] of readers) {
-    if (before.get(id) !== 'NO_CHANGE' || change.changeType !== 'UPDATE') continue;
-    promoted.push(id);
+    if (change.changeType !== 'UPDATE') continue;
     const replacing = (change.propertyChanges ?? []).some((pc) => pc.requiresReplacement);
+    if (before.get(id) !== 'NO_CHANGE') {
+      if (replacing && !replacingBefore.has(id)) {
+        engine.logger.info(
+          safeMsg`  ${id} reads ${replacedId}, which the update-failure fallback replaced: replacing it instead of updating it in place (a create-only property holds the reference)`
+        );
+      }
+      continue;
+    }
+    promoted.push(id);
     engine.logger.info(
       replacing
         ? safeMsg`  ${id} reads ${replacedId}, which the update-failure fallback replaced: replacing it too (a create-only property holds the reference)`

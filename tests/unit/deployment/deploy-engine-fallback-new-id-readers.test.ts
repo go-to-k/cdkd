@@ -474,14 +474,63 @@ describe('DeployEngine - NO_CHANGE readers of a fallback replacement under a new
           ? Promise.reject(new Error('sib failed'))
           : Promise.resolve({ physicalId, wasReplaced: false })
     );
+    // The rollback's re-create of the old function gets its old name back, as
+    // a generated name's recorded generation does.
+    let fnCreates = 0;
+    sdk.create.mockImplementation((logicalId: string) => {
+      if (logicalId !== 'Fn') {
+        return Promise.resolve({ physicalId: `stack-${logicalId}-NEW`, attributes: {} });
+      }
+      const id = ++fnCreates === 1 ? NEW_ID : OLD_ID;
+      return Promise.resolve({ physicalId: id, attributes: { Arn: arnOf(id) } });
+    });
 
     await expect(makeEngine().deploy(STACK, t)).rejects.toThrow();
 
     const refUpdates = callsFor(sdk.update, 'RefParam');
     expect(refUpdates).toHaveLength(2);
     expect((refUpdates[0]![3] as Record<string, unknown>)['Value']).toBe(NEW_ID);
-    // The rollback's revert sends the recorded value back.
+    // The rollback's revert sends the recorded value back...
     expect((refUpdates[1]![3] as Record<string, unknown>)['Value']).toBe(OLD_ID);
+    // ...and the function is back under that id, the new one deleted: the
+    // reverted reader and the function agree.
+    expect(fnCreates).toBe(2);
+    expect(callsFor(sdk.delete, 'Fn').map((c) => c[1])).toEqual([OLD_ID, NEW_ID]);
+    expect(saved('Fn')?.physicalId).toBe(OLD_ID);
+    expect(saved('RefParam')?.properties?.['Value']).toBe(OLD_ID);
+  });
+
+  it('names the fallback when a reader planned in place becomes a replacement', async () => {
+    // `Planned` changes its own mutable `Value`, so the plan shows an in-place
+    // update; its create-only `Name` reads the function, so the fallback makes
+    // it a replacement.
+    const t = template('nodejs24.x');
+    t.Resources['Planned'] = {
+      Type: PARAM_TYPE,
+      Properties: {
+        Name: { 'Fn::Join': ['-', [{ Ref: 'Fn' }, 'planned']] },
+        Type: 'String',
+        Value: 'v2',
+      },
+    };
+    stateWith({
+      Planned: paramRecord(
+        `${OLD_ID}-planned`,
+        { Name: `${OLD_ID}-planned`, Type: 'String', Value: 'v1' },
+        ['Fn']
+      ),
+    });
+
+    await makeEngine({ forceStatefulRecreation: true }).deploy(STACK, t);
+
+    expect(callsFor(sdk.update, 'Planned')).toHaveLength(0);
+    expect((sentProps(sdk.create, 'Planned', 2) as Record<string, unknown>)['Name']).toBe(
+      `${NEW_ID}-planned`
+    );
+    const lines = (getLogger().info as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+    expect(lines.filter((l) => l.includes('Planned reads Fn'))).toEqual([
+      expect.stringContaining('replacing it instead of updating it in place'),
+    ]);
   });
 
   it('adds a reader two fallback replacements share once', async () => {
