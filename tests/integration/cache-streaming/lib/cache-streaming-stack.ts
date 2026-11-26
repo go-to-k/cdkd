@@ -34,6 +34,10 @@ import * as sns from 'aws-cdk-lib/aws-sns';
  * - CDKD_TEST_PAZREMOVE=true removes the single-az Memcached cluster's
  *   PreferredAvailabilityZones, and CDKD_TEST_AZMODEREMOVE=true then its
  *   AZMode; each replaces the cluster, as CloudFormation does (issue #5558)
+ * - CDKD_TEST_MCSCALE=true then brings the Memcached cluster back to a 2-node
+ *   single-az one with no zone list (in place), and CDKD_TEST_CROSSAZ=true moves
+ *   it to cross-az across both zones with the same node count, which replaces
+ *   the cluster, as CloudFormation does (issue #7045)
  */
 export class CacheStreamingStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -178,6 +182,13 @@ export class CacheStreamingStack extends cdk.Stack {
     // AZMode, is removed from the template (a cross-az one stays in place).
     const pazRemove = process.env.CDKD_TEST_PAZREMOVE === 'true';
     const azModeRemove = process.env.CDKD_TEST_AZMODEREMOVE === 'true';
+    // CDKD_TEST_MCSCALE / CDKD_TEST_CROSSAZ (issue #7045): real CloudFormation
+    // REPLACES a 2-node single-az cluster with no zone list when it moves to
+    // cross-az + [az0, az1] with the same node count (the new cluster spans
+    // both zones). MCSCALE sets up that previous template (2 nodes, single-az,
+    // no zone list) in place after the #5558 removals; CROSSAZ is the move.
+    const mcScale = process.env.CDKD_TEST_MCSCALE === 'true';
+    const crossAz = process.env.CDKD_TEST_CROSSAZ === 'true';
     const [az0, az1] = vpc.availabilityZones;
     const memcachedSubnetGroup = new elasticache.CfnSubnetGroup(this, 'MemcachedSubnetGroup', {
       description: 'Subnet group for the Memcached cluster',
@@ -187,10 +198,17 @@ export class CacheStreamingStack extends cdk.Stack {
     const memcached = new elasticache.CfnCacheCluster(this, 'MemcachedCluster', {
       cacheNodeType: 'cache.t3.micro',
       engine: 'memcached',
-      numCacheNodes: nodeRemoval || pazMove ? 1 : 2,
-      azMode: azModeRemove ? undefined : 'single-az',
-      preferredAvailabilityZones:
-        pazRemove || azModeRemove ? undefined : pazMove ? [az1] : nodeRemoval ? [az0] : [az0, az0],
+      numCacheNodes: crossAz || mcScale ? 2 : nodeRemoval || pazMove ? 1 : 2,
+      azMode: crossAz ? 'cross-az' : mcScale ? 'single-az' : azModeRemove ? undefined : 'single-az',
+      preferredAvailabilityZones: crossAz
+        ? [az0, az1]
+        : mcScale || pazRemove || azModeRemove
+          ? undefined
+          : pazMove
+            ? [az1]
+            : nodeRemoval
+              ? [az0]
+              : [az0, az0],
       vpcSecurityGroupIds: [redisSg.securityGroupId],
       cacheSubnetGroupName: memcachedSubnetGroup.ref,
     });

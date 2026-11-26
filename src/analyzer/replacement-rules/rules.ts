@@ -871,9 +871,9 @@ export function initializeRules(this: ReplacementRulesRegistry): void {
   // ElastiCache CacheCluster — a `PreferredAvailabilityZones` move to zones
   // the previous list does not name replaces the cluster (issue #5458), and
   // so does removing `AZMode` or `PreferredAvailabilityZones` from a
-  // `single-az` cluster left with no zone list (issue #5558; see the
-  // predicates). Every other
-  // property stays with the schema fallback.
+  // `single-az` cluster left with no zone list (issue #5558), and so does a
+  // zone list added on a `single-az` -> `cross-az` move that keeps the node
+  // count (issue #7045; see the predicates). Every other property stays with the schema fallback.
   this.rules.set('AWS::ElastiCache::CacheCluster', {
     replacementProperties: new Set(),
     conditionalReplacements: new Map<string, ConditionalReplacement>([
