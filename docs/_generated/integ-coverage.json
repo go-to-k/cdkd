@@ -10458,6 +10458,7 @@
         "sqs-fifo-unnamed",
         "ssm-typed-parameter-not-found",
         "stack-id-uuid",
+        "superseded-sg-destroy-order",
         "tags-propagation",
         "throttle-wide-dag",
         "type-change-replacement",
@@ -10674,6 +10675,10 @@
         ],
         "stack-id-uuid": [
           "l2"
+        ],
+        "superseded-sg-destroy-order": [
+          "l2",
+          "literal"
         ],
         "tags-propagation": [
           "l2"
