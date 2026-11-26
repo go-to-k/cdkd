@@ -91,10 +91,23 @@ export async function verifyRevertedStack(
   let unverified = 0;
   for (let attempt = 0; attempt <= delays.length && pending.length > 0; attempt++) {
     if (attempt > 0) await sleep(delays[attempt - 1]!);
-    let fresh: StackDriftReport;
+    // The re-read is the detection the run already printed, so its own
+    // per-resource lines (a read refused, a property not compared) would
+    // print again on each attempt. They are held back below `error` unless
+    // the run is `--verbose`; what the re-read means for each resource is the
+    // line this function logs, after the level is restored.
+    const level = logger.getLevel();
+    if (level !== 'debug') logger.setLevel('error');
+    let fresh: StackDriftReport | undefined;
+    let failure: unknown;
     try {
       fresh = await redetect(stackName, region);
     } catch (err) {
+      failure = err;
+    } finally {
+      logger.setLevel(level);
+    }
+    if (fresh === undefined) {
       // Not retried: the wait is for an eventually consistent READ VALUE, and
       // a re-read that throws (a refused state record, a stack read failure)
       // is reported per resource instead of hiding behind the waits. A single
@@ -102,7 +115,7 @@ export async function verifyRevertedStack(
       // compared, which lands in the warning arm below.
       for (const r of pending) {
         logger.warn(
-          safeMsg`  ? ${stackName}/${r.logicalId} (${r.resourceType}): reverted, but cdkd could not verify it: the re-read failed (${describeAwsFailure(err).detail}).`
+          safeMsg`  ? ${stackName}/${r.logicalId} (${r.resourceType}): reverted, but cdkd could not verify it: the re-read failed (${describeAwsFailure(failure).detail}).`
         );
       }
       return { notApplied: 0, unverified: unverified + pending.length };

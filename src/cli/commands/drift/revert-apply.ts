@@ -450,7 +450,11 @@ async function applyRevertUpdateInScope(args: ApplyRevertUpdateArgs): Promise<vo
     }
     // go-to-k/cdkd#7025 step 6: the paths the post-revert verification
     // re-reads. A key the provider reported narrowing is left out: its
-    // answer says what AWS applied there, and that is recorded, not ignored.
+    // answer says what AWS applied there (a value it kept on purpose, as an
+    // RDS cluster's withheld `EnableHttpEndpoint`, go-to-k/cdkd#5707), so it
+    // is not a value AWS ignored. The value is recorded only against an
+    // `observedProperties` baseline (see `runRevert`); without one, the next
+    // `cdkd drift` reports the key again, as before this check existed.
     tally.reverted.push({
       stackName: report.stackName,
       region: report.region,

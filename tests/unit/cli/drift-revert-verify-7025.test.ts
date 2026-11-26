@@ -12,14 +12,24 @@ import { renderLikeLogger } from '../../render-like-logger.js';
 const errorSpy = vi.hoisted(() => vi.fn());
 const warnSpy = vi.hoisted(() => vi.fn());
 const infoSpy = vi.hoisted(() => vi.fn());
+// A level the mocked logger honors, so the re-read's held-back lines are
+// observable: `warn` / `info` below `error` are dropped, as the real one does.
+const logLevel = vi.hoisted(() => ({ current: 'info' as string }));
 
 vi.mock('../../../src/utils/logger.js', () => ({
   reserveStdoutForPayload: vi.fn(),
   getLogger: () => ({
-    setLevel: vi.fn(),
+    setLevel: (level: string) => {
+      logLevel.current = level;
+    },
+    getLevel: () => logLevel.current,
     debug: vi.fn(),
-    info: infoSpy,
-    warn: warnSpy,
+    info: (...args: unknown[]) => {
+      if (logLevel.current !== 'error') infoSpy(...args);
+    },
+    warn: (...args: unknown[]) => {
+      if (logLevel.current !== 'error') warnSpy(...args);
+    },
     error: errorSpy,
     child: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
   }),
@@ -179,6 +189,7 @@ describe('cdkd drift --revert verifies each reverted resource (go-to-k/cdkd#7025
     warnSpy.mockReset();
     infoSpy.mockReset();
     lockEvents.length = 0;
+    logLevel.current = 'info';
     mockListStacks.mockResolvedValue([{ stackName: 'TestStack', region: 'us-east-1' }]);
     mockGetState.mockImplementation(async () => stateWith(record));
     exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
@@ -260,6 +271,61 @@ describe('cdkd drift --revert verifies each reverted resource (go-to-k/cdkd#7025
       `TestStack/Mapping (${TYPE}): reverted, but cdkd could not verify it: no provider could read it back.`
     );
     expect(text(infoSpy)).toContain('Revert summary: 1 reverted, 1 not verified.');
+  });
+
+  it('a re-read whose own read fails prints one could-not-verify line, not the detection warning again', async () => {
+    let call = 0;
+    const provider = {
+      readCurrentState: vi.fn(async () => {
+        call++;
+        if (call === 1) return { ...DRIFTED };
+        throw Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' });
+      }),
+      update: vi.fn(async () => ({ physicalId: 'esm-1', wasReplaced: false })),
+    };
+    mockRegistryGetProvider.mockReturnValue(provider);
+
+    await runRevert();
+
+    expect(exitSpy).not.toHaveBeenCalled();
+    const warnings = text(warnSpy);
+    expect(warnings).toContain(`TestStack/Mapping (${TYPE}): reverted, but cdkd could not verify it:`);
+    // The re-read's own read-failure line is held back; it would name the AWS error.
+    expect(warnings).not.toContain('Rate exceeded');
+    expect(logLevel.current).toBe('info');
+  });
+
+  it('a path segment spelling a secret-derived name prints masked (go-to-k/cdkd#3869)', async () => {
+    const USER_ID = 'team-secret-drift-user';
+    const meta = (v: string) => ({ ...RECORDED, Meta: { [USER_ID]: v } });
+    const provider = providerReading(meta('b'));
+    const userProvider = { readCurrentState: vi.fn(async () => undefined), update: vi.fn() };
+    mockRegistryGetProvider.mockImplementation((type) =>
+      type === 'AWS::IAM::User' ? userProvider : provider
+    );
+    mockGetState.mockImplementation(async () => ({
+      state: {
+        ...stateWith(record).state,
+        resources: {
+          User: {
+            physicalId: USER_ID,
+            resourceType: 'AWS::IAM::User',
+            properties: { UserName: '***' },
+          },
+          Mapping: { ...record, properties: meta('a'), observedProperties: meta('a') },
+        },
+      },
+      etag: '"etag-1"',
+    }));
+
+    await runRevert();
+
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    const line = text(errorSpy)
+      .split('\n')
+      .find((l) => l.includes('not applied by AWS —'));
+    expect(line).toContain('at Meta.***.');
+    expect(line).not.toContain(USER_ID);
   });
 
   it('a re-read that throws warns per resource without waiting', async () => {
