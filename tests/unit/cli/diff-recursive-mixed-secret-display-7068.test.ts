@@ -463,10 +463,16 @@ describe('taintedNamesOf (#7068)', () => {
       Resources: {
         Mixed: row({ X: { 'Fn::Join': ['', [{ Ref: 'Sep' }, '/', A]] } }),
         Whole: row({ W: B }),
+        Sub: row({ X: { 'Fn::Sub': '${Sep}/{{resolve:ssm-secure:/a}}' } }),
+        IfWhole: row({ W: { 'Fn::If': ['C', B, 'b'] } }),
         Reader: { Type: 'T', Properties: { V: { 'Fn::GetAtt': ['Mixed', 'Outputs.O'] } } },
       },
     };
-    expect([...taintedNamesOf(template as never, undefined)].sort()).toEqual(['Mixed', 'Reader']);
+    expect([...taintedNamesOf(template as never, undefined)].sort()).toEqual([
+      'Mixed',
+      'Reader',
+      'Sub',
+    ]);
   });
 });
 
