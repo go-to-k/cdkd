@@ -129,7 +129,8 @@ echo "==> Phase 4: destroy"
 CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force > "${LOG_DIR}/destroy.log" 2>&1 \
   || { cat "${LOG_DIR}/destroy.log" >&2; echo "FAIL: destroy failed" >&2; exit 1; }
 DESTROY=$(strip_ansi "${LOG_DIR}/destroy.log")
-# Sentinel: the plan header is printed at all.
+# The delete count leaves QueueHeld out; the kept-row regex below is what
+# proves it went to the kept list instead.
 grep -qF 'Resources to be deleted (1):' <<<"${DESTROY}" \
   || { echo "FAIL: the destroy plan does not count only QueueKeep as deleted" >&2; printf '%s\n' "${DESTROY}" >&2; exit 1; }
 grep -qF 'Resources kept in AWS by their DeletionPolicy (1):' <<<"${DESTROY}" \

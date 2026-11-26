@@ -325,6 +325,46 @@ describe('DeployEngine - Dry Run Mode', () => {
       expect(mockProvider.update).not.toHaveBeenCalled();
       expect(mockProvider.delete).not.toHaveBeenCalled();
     });
+
+    // go-to-k/cdkd#7005: a removal its recorded `DeletionPolicy` keeps is not
+    // a delete, as the real run's summary reports it.
+    it('does not count a removal the recorded DeletionPolicy keeps as deleted', async () => {
+      mockStateBackend.getState.mockResolvedValue({
+        state: {
+          version: 5,
+          stackName,
+          resources: {
+            MyBucket: {
+              physicalId: 'existing-physical-id',
+              resourceType: 'AWS::S3::Bucket',
+              properties: { BucketName: 'my-bucket' },
+              deletionPolicy: 'Retain',
+            },
+          },
+          outputs: {},
+          lastModified: Date.now(),
+        } satisfies StackState,
+        etag: 'etag-123',
+      });
+      mockDiffCalculator.calculateDiff.mockResolvedValue(
+        new Map<string, ResourceChange>([
+          [
+            'MyBucket',
+            {
+              logicalId: 'MyBucket',
+              changeType: 'DELETE',
+              resourceType: 'AWS::S3::Bucket',
+              currentProperties: { BucketName: 'my-bucket' },
+            },
+          ],
+        ])
+      );
+
+      const result = await createDryRunEngine().deploy(stackName, template);
+
+      expect(result.deleted).toBe(0);
+      expect(mockProvider.delete).not.toHaveBeenCalled();
+    });
   });
 
   describe('mixed CREATE + UPDATE + DELETE + NO_CHANGE scenario', () => {

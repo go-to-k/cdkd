@@ -53,7 +53,7 @@ Resources to be deleted (2):
 Resources kept in AWS by their DeletionPolicy (1):
   - Uploads (AWS::S3::Bucket), DeletionPolicy: Retain
 
-Are you sure you want to destroy stack MyStack and delete all 2 resources? (Y/n): y
+Are you sure you want to destroy stack MyStack and delete all 2 resources (1 kept in AWS by their DeletionPolicy)? (Y/n): y
   ✓ Handler (AWS::Lambda::Function) deleted
   ✓ Queue (AWS::SQS::Queue) deleted
   ⊘ Uploads (AWS::S3::Bucket) retained — DeletionPolicy: Retain

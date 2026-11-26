@@ -146,6 +146,36 @@ describe('cdkd destroy plan: retained records are listed apart (#7005)', () => {
     }
   });
 
+  it('names the kept records under --remove-protection and does not count their protection', async () => {
+    const protectedLogGroup = (
+      deletionPolicy?: ResourceState['deletionPolicy']
+    ): ResourceState => ({
+      physicalId: '/lg',
+      resourceType: 'AWS::Logs::LogGroup',
+      properties: { DeletionProtectionEnabled: true },
+      attributes: {},
+      dependencies: [],
+      ...(deletionPolicy !== undefined && { deletionPolicy }),
+    });
+    state.resources = { LgDel: protectedLogGroup('Delete'), LgRet: protectedLogGroup('Retain') };
+    const originalIsTTY = process.stdin.isTTY;
+    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+    readlineQuestion.mockReset().mockResolvedValue('n');
+    try {
+      await runDestroyForStack('TestStack', state, {
+        ...ctx(),
+        skipConfirmation: false,
+        removeProtection: true,
+      });
+      expect(String(readlineQuestion.mock.calls[0]![0])).toContain(
+        'About to destroy 1 resources from stack TestStack (1 kept in AWS by their DeletionPolicy), ' +
+          'REMOVING DELETION PROTECTION on 1 of them.'
+      );
+    } finally {
+      Object.defineProperty(process.stdin, 'isTTY', { value: originalIsTTY, configurable: true });
+    }
+  });
+
   it('prints no kept section when nothing is retained', async () => {
     state.resources = { QDel: res('Delete') };
     await runDestroyForStack('TestStack', state, ctx());
