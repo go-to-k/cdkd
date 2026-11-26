@@ -413,12 +413,6 @@ async function refuseInUseExports(
   }
 }
 
-/**
- * Whether every replacing row of `change` reads a whole stored
- * `{{resolve:...}}` token against a plain template string: the spelling an
- * older cdkd wrote for a template literal equal to a secret (go-to-k/cdkd#7037),
- * which the plan cannot tell from a real edit without the secret.
- */
 /** The warning naming `cdkd scrub` for the resources whose replacement may be a legacy spelling (#7037); logical ids and the stack name only. */
 export function legacySpellingHint(
   changes: ReadonlyMap<string, ResourceChange>,
@@ -432,6 +426,12 @@ export function legacySpellingHint(
   return safeMsg`${suspects.join(', ')}: the planned replacement reads a stored secret reference against a plain template value. If the template did not change that property, the record was written by an older cdkd: run \`cdkd scrub ${stackName}\` first, then deploy.`;
 }
 
+/**
+ * Whether every replacing row of `change` reads a whole stored
+ * `{{resolve:...}}` token against a plain template string: the spelling an
+ * older cdkd wrote for a template literal equal to a secret (go-to-k/cdkd#7037),
+ * which the plan cannot tell from a real edit without the secret.
+ */
 export function replacesOnlyOnLegacyReferenceSpelling(change: ResourceChange | undefined): boolean {
   const rows = (change?.propertyChanges ?? []).filter((pc) => pc.requiresReplacement);
   return (
