@@ -49,6 +49,10 @@ import { CASES_LIGHTSAIL } from './sdk-wire-cases-lightsail.js';
 import { CASES_CONNECT } from './sdk-wire-cases-connect.js';
 import { CASES_VPC_ENDPOINT } from './sdk-wire-cases-vpc-endpoint.js';
 import { CASES_NO_PROPERTIES } from './sdk-wire-cases-no-properties.js';
+import {
+  REVERT_PLACEHOLDER_ALLOWED,
+  REVERT_READBACK_EXEMPT,
+} from './sdk-wire-revert-readback-allowed.js';
 
 // Every client class a covered provider reaches, wrapped so each instance
 // (shared or provider-built) is captured. A `vi.mock` factory is hoisted, so
@@ -961,6 +965,27 @@ describe('SDK wire coverage ledger', () => {
       for (const type of t.provider().handledProperties?.keys() ?? []) {
         expect(cased.has(type), `${t.provider().constructor.name}: ${type}`).toBe(true);
       }
+    }
+  });
+});
+
+describe('the read-back revert check ledger (#7025)', () => {
+  // Every cased type runs the check inside `describeWireCases` unless it is
+  // exempt or handles no properties; a new exemption lowers this by hand.
+  const CHECKED_TYPES = 133;
+  const cased = new Set(ALL_CASES.filter((t) => !t.noProperties).map((t) => t.resourceType));
+
+  it('exempts only cased types, and checks the rest', () => {
+    for (const type of Object.keys(REVERT_READBACK_EXEMPT)) expect(cased.has(type), type).toBe(true);
+    const checked = [...cased].filter((type) => !(type in REVERT_READBACK_EXEMPT));
+    expect(checked.length).toBe(CHECKED_TYPES);
+  });
+
+  it('allow-lists placeholders only of checked types, each with a reason', () => {
+    for (const [key, why] of Object.entries(REVERT_PLACEHOLDER_ALLOWED)) {
+      const type = key.split('#')[0]!;
+      expect(cased.has(type) && !(type in REVERT_READBACK_EXEMPT), key).toBe(true);
+      expect(why.trim(), key).not.toBe('');
     }
   });
 });
