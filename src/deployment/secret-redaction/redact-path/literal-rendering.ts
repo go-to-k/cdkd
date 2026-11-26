@@ -3,6 +3,7 @@ import { type PathSourceRules, isPlainObject } from '../rules.js';
 import { dynamicReferenceSpans } from './reference-tokens.js';
 import { secretRerenderPairs } from './template-literal.js';
 import { takenIfBranchOf } from '../resolver-outcomes.js';
+import { physicalNameCopiesOf } from '../physical-name-copies.js';
 
 /**
  * One piece of a rendered source: template text, a whole reference token, or
@@ -64,9 +65,11 @@ export function positionByLiteralRendering(
   if (rules.sourceIsTemplate !== true || typeof bag !== 'string') return undefined;
   if (suspended > 0) return undefined;
   visits = 0;
+  walking = secrets;
   if (!isPlainObject(source)) return undefined;
   const plaintextOf = tokenPlaintexts(secrets);
   const recorded = [...secrets.keys()];
+  const copies = [...(physicalNameCopiesOf.get(secrets) ?? [])];
   const ifArgs = source['Fn::If'];
   if (Object.keys(source).length === 1 && Array.isArray(ifArgs)) {
     if (ifArgs.length !== 3) return undefined;
@@ -80,21 +83,21 @@ export function positionByLiteralRendering(
       const segments = renderSegments(branch, 1);
       return segments === undefined
         ? undefined
-        : placeAnchors(segments, plaintextOf, bag, scan, recorded);
+        : placeAnchors(segments, plaintextOf, bag, scan, recorded, copies);
     }
     const spellings = new Set<string>();
     for (const branch of [ifArgs[1], ifArgs[2]]) {
       if (isNoValue(branch)) continue;
       const segments = renderSegments(branch, 1);
       if (segments === undefined || segments.some((s) => 'gap' in s)) return undefined;
-      const spelled = placeAnchors(segments, plaintextOf, bag, scan, recorded);
+      const spelled = placeAnchors(segments, plaintextOf, bag, scan, recorded, copies);
       if (spelled !== undefined) spellings.add(spelled);
     }
     return spellings.size === 1 ? [...spellings][0] : undefined;
   }
   const segments = renderSegments(source, 0);
   if (segments === undefined) return undefined;
-  return placeAnchors(segments, plaintextOf, bag, scan, recorded);
+  return placeAnchors(segments, plaintextOf, bag, scan, recorded, copies);
 }
 
 /**
@@ -103,6 +106,7 @@ export function positionByLiteralRendering(
  * literals, numbers), else `undefined`: the value every walk keeps as written.
  */
 export function staticTemplateText(node: unknown): string | undefined {
+  walking = undefined;
   const segments = renderSegments(node, 0);
   if (segments === undefined) return undefined;
   let text = '';
@@ -112,6 +116,13 @@ export function staticTemplateText(node: unknown): string | undefined {
   }
   return text;
 }
+
+/**
+ * The pass map of the rendering in progress, for an `Fn::If` INSIDE an
+ * intrinsic (its taken branch is recorded per map). Set at each top-level
+ * call; the walk is synchronous.
+ */
+let walking: RecordedSecretValues | undefined;
 
 /** Nesting depth of {@link withoutLiteralRendering} scopes. */
 let suspended = 0;
@@ -147,7 +158,8 @@ function placeAnchors(
   plaintextOf: ReadonlyMap<string, string>,
   bag: string,
   scan: ValueScan,
-  plaintexts: readonly string[]
+  plaintexts: readonly string[],
+  physicalNameCopies: readonly string[]
 ): string | undefined {
   // [anchor, gap, anchor, ...]: consecutive known parts merged, consecutive
   // gaps merged, and a leading or trailing gap recorded as a flag.
@@ -221,19 +233,29 @@ function placeAnchors(
   // resolved to (a pseudo parameter included), so a secret in them is the
   // scan's.
   if (gaps.some((gap) => scan(gap) !== gap)) return undefined;
-  // ...nor one that STRADDLES a gap's edge (a secret ending inside the gap and
-  // continuing into an anchor), at any length: the gap's own scan cannot see
-  // it, and keeping the gap would persist the part of it there (#4986).
+  // ...nor one that the scan cannot see: a recorded plaintext of ANY length
+  // touching a gap, inside it (a 1-3 character secret under the scan's floor,
+  // #5056 / #5063) or STRADDLING its edge into an anchor (#4986). The one
+  // occurrence a gap may keep is inside a reader's copy of a secret-named
+  // physical id, which the walk keeps in plaintext by design (#4810).
+  const copyRanges: Array<readonly [number, number]> = [];
+  for (const copy of physicalNameCopies) {
+    if (copy === '') continue;
+    for (let at = bag.indexOf(copy); at !== -1; at = bag.indexOf(copy, at + 1)) {
+      copyRanges.push([at, at + copy.length]);
+    }
+  }
   for (const plaintext of plaintexts) {
     if (plaintext === '') continue;
     for (let at = bag.indexOf(plaintext); at !== -1; at = bag.indexOf(plaintext, at + 1)) {
       const end = at + plaintext.length;
-      // Wholly inside one gap is the scan's verdict above (a reader's copy of
-      // a secret-named id is kept there by design, #4810).
-      const straddles = gapRanges.some(
-        ([from, to]) => at < to && end > from && !(at >= from && end <= to)
+      const touchesGap = gapRanges.some(([from, to]) => at < to && end > from);
+      if (!touchesGap) continue;
+      const insideCopy = copyRanges.some(
+        ([from, to]) =>
+          at >= from && end <= to && gapRanges.some(([g0, g1]) => from >= g0 && to <= g1)
       );
-      if (straddles) return undefined;
+      if (!insideCopy) return undefined;
     }
   }
   return persisted;
@@ -341,6 +363,13 @@ function renderSegments(node: unknown, depth: number): Segment[] | undefined {
       return subSegments(args[0], variables, depth);
     }
     return GAP;
+  }
+  if (key === 'Fn::If') {
+    // The branch this pass took, where the resolver recorded it; else a gap.
+    const taken = walking === undefined ? undefined : takenIfBranchOf(walking, node);
+    if (taken === undefined || !Array.isArray(args) || args.length !== 3) return GAP;
+    const branch = taken ? args[1] : args[2];
+    return isNoValue(branch) ? GAP : renderSegments(branch, depth + 1);
   }
   if (key === 'Fn::Select') {
     if (!Array.isArray(args) || args.length !== 2) return GAP;

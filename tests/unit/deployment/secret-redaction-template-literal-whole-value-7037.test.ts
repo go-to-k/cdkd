@@ -6,6 +6,8 @@ import {
   scrubResourceRecord,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { recordTakenIfBranch } from '../../../src/deployment/secret-redaction/resolver-outcomes.js';
+import { positionByLiteralRendering } from '../../../src/deployment/secret-redaction/redact-path/literal-rendering.js';
 
 // go-to-k/cdkd#7037, the WHOLE-VALUE twin of #6303: an `rds.DatabaseInstance`
 // with `engine: postgres` and generated credentials has a secret whose
@@ -219,6 +221,70 @@ describe('template text beside a value-bearing part (generated, #7037)', () => {
         expect(walk(v, `${v}:${PW}`, src)).not.toContain(PW);
       });
     }
+  }
+});
+
+describe('a 1-3 character secret beside a gap (#5056 / #5063 shape, #7037)', () => {
+  const PIN_TOKEN = '{{resolve:secretsmanager:prod/db:SecretString:pin}}';
+  const shortSecrets = (): RecordedSecretValues => {
+    const s: RecordedSecretValues = new Map([['q7', PIN_TOKEN]]);
+    recordResolvedPair(s, PIN_TOKEN, 'q7');
+    return s;
+  };
+  const walk = (secrets: RecordedSecretValues, bag: string, src: unknown): unknown =>
+    (
+      redactForState(
+        { L: bag },
+        { provenance: 'template-derived', secrets, source: { L: src }, generation: 'same-generation' }
+      ) as Record<string, unknown>
+    )['L'];
+
+  it('a token whose plaintext also sits in a gap is never placed on the wrong copy', () => {
+    // Leftmost placement would put the token on the FIRST `x9` and keep the
+    // real one inside the second gap, under the scan's floor (security review).
+    const token = '{{resolve:secretsmanager:prod/db:SecretString:pin2}}';
+    const secrets: RecordedSecretValues = new Map([['x9', token]]);
+    recordResolvedPair(secrets, token, 'x9');
+    const src = {
+      'Fn::Join': ['', [{ 'Fn::GetAtt': ['A', 'Id'] }, token, { 'Fn::GetAtt': ['B', 'Id'] }]],
+    };
+    // The arm refuses (two placements); the older arms then answer as on main,
+    // where a sub-floor value between two attributes is the scan's residual.
+    const rules = { descendArrays: true, trustAnyExpression: false, sourceIsSameGeneration: false, sourceIsTemplate: true };
+    expect(positionByLiteralRendering('ax9x9b', src, secrets, rules, (t) => t)).toBeUndefined();
+  });
+
+  it('a secret straddling a gap and the text beside it is never kept in plaintext', () => {
+    // `hostpost` + `gres`: the gap scans clean, the anchor is template text,
+    // and together they spell the username (security review).
+    const secrets: RecordedSecretValues = new Map([['postgres', USERNAME]]);
+    recordResolvedPair(secrets, USERNAME, 'postgres');
+    const src = { 'Fn::Join': ['', [{ 'Fn::GetAtt': ['A', 'Id'] }, 'gres']] };
+    expect(walk(secrets, 'hostpostgres', src)).not.toContain('postgres');
+  });
+
+  it('a token directly beside a parameter gap is positioned', () => {
+    const src = { 'Fn::Join': ['', ['port:', { Ref: 'Stage' }, PIN_TOKEN]] };
+    expect(walk(shortSecrets(), 'port:prodq7', src)).toBe(`port:prod${PIN_TOKEN}`);
+  });
+
+  for (const [label, ifNode, wrap] of [
+    ['an Fn::Join', { 'Fn::If': ['C', PIN_TOKEN, 'z'] }, (n: unknown) => ({ 'Fn::Join': ['', ['port:', { Ref: 'Stage' }, n]] })],
+    ['an Fn::Sub variable', { 'Fn::If': ['C', PIN_TOKEN, 'z'] }, (n: unknown) => ({ 'Fn::Sub': ['port:${Stage}${P}', { P: n }] })],
+  ] as const) {
+    it(`an Fn::If inside ${label} is spelled as the branch the pass took`, () => {
+      const secrets = shortSecrets();
+      recordTakenIfBranch(secrets, ifNode, true);
+      expect(walk(secrets, 'port:prodq7', wrap(ifNode))).toBe(`port:prod${PIN_TOKEN}`);
+    });
+    it(`an Fn::If inside ${label} with no record: the arm refuses rather than keep \`q7\` in a gap`, () => {
+      // Under the scan's floor, so only the arm's own check sees it; the older
+      // arms then decide as on main.
+      const rules = { descendArrays: true, trustAnyExpression: false, sourceIsSameGeneration: false, sourceIsTemplate: true };
+      expect(
+        positionByLiteralRendering('port:prodq7', wrap(ifNode), shortSecrets(), rules, (t) => t)
+      ).toBeUndefined();
+    });
   }
 });
 
