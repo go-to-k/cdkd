@@ -14,12 +14,12 @@
       "arn-template": 59,
       "update-timestamp": 372,
       "creator": 26,
-      "owner-account": 40,
+      "owner-account": 30,
       "identifier-arn-member": 68,
       "update-marker": 111
     },
-    "ccByHand": 3,
-    "ccBaseline": 2077
+    "ccByHand": 4,
+    "ccBaseline": 2086
   },
   "sdk": [
     {
@@ -2618,6 +2618,15 @@
   ],
   "ccHand": [
     {
+      "type": "AWS::CodeStarConnections::SyncConfiguration",
+      "attribute": "OwnerId",
+      "verdict": "moved-by",
+      "properties": [
+        "RepositoryLinkId"
+      ],
+      "reason": "the owner of the repository the link points at"
+    },
+    {
       "type": "AWS::EC2::GatewayRouteTableAssociation",
       "attribute": "AssociationId",
       "verdict": "moved-by",
@@ -5014,6 +5023,7 @@
     "AWS::EC2::FpgaImage": [
       "DataRetentionSupport",
       "FpgaImageGlobalId",
+      "OwnerId",
       "Public",
       "State"
     ],
@@ -5042,6 +5052,7 @@
     "AWS::EC2::IPAMResourceDiscovery": [
       "IpamResourceDiscoveryRegion",
       "IsDefault",
+      "OwnerId",
       "State"
     ],
     "AWS::EC2::IPAMScope": [
@@ -5076,7 +5087,8 @@
       "VpcId"
     ],
     "AWS::EC2::PrefixList": [
-      "Arn"
+      "Arn",
+      "OwnerId"
     ],
     "AWS::EC2::SqlHaStandbyDetectedInstance": [
       "HaStatus",
@@ -5338,6 +5350,7 @@
       "LustreConfiguration.LogConfiguration",
       "LustreConfiguration.MountName",
       "NetworkInterfaceIds",
+      "OwnerId",
       "VpcId"
     ],
     "AWS::FSx::Snapshot": [
@@ -6442,6 +6455,7 @@
     ],
     "AWS::Outposts::Outpost": [
       "LifeCycleStatus",
+      "OwnerId",
       "SiteArn"
     ],
     "AWS::PCS::Cluster": [
@@ -6919,6 +6933,9 @@
     "AWS::Route53RecoveryReadiness::ReadinessCheck": [
       "ReadinessCheckArn"
     ],
+    "AWS::Route53Resolver::FirewallConfig": [
+      "OwnerId"
+    ],
     "AWS::Route53Resolver::FirewallDomainList": [
       "DomainCount",
       "ManagedOwnerName",
@@ -6926,6 +6943,7 @@
       "StatusMessage"
     ],
     "AWS::Route53Resolver::FirewallRuleGroup": [
+      "OwnerId",
       "RuleCount",
       "ShareStatus",
       "Status",
@@ -6968,6 +6986,7 @@
       "NetworkOrigin"
     ],
     "AWS::S3Files::FileSystem": [
+      "OwnerId",
       "Status",
       "StatusMessage",
       "SynchronizationConfiguration.LatestVersionNumber"
@@ -6975,6 +6994,7 @@
     "AWS::S3Files::MountTarget": [
       "AvailabilityZoneId",
       "NetworkInterfaceId",
+      "OwnerId",
       "Status",
       "StatusMessage",
       "VpcId"

@@ -13,7 +13,7 @@ Whether an in-place update moves each read-only `Fn::GetAtt` attribute (issue [#
 Source: `@aws-cdk/aws-service-spec` 0.1.235.
 
 - SDK-provider types: **131**, pairs classified by hand: **390** (moving: **66**)
-- Cloud Control types: **1584**, pairs: **5545** — by rule: `no-in-place-update` 1151, `creation-timestamp` 376, `own-identity` 812, `primary-identifier` 450, `arn-template` 59, `update-timestamp` 372, `creator` 26, `owner-account` 40, `identifier-arn-member` 68, `update-marker` 111; by hand: **3**; in the baseline: **2077**
+- Cloud Control types: **1584**, pairs: **5545** — by rule: `no-in-place-update` 1151, `creation-timestamp` 376, `own-identity` 812, `primary-identifier` 450, `arn-template` 59, `update-timestamp` 372, `creator` 26, `owner-account` 30, `identifier-arn-member` 68, `update-marker` 111; by hand: **4**; in the baseline: **2086**
 
 ## SDK-provider types (hand classification)
 
@@ -802,6 +802,7 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235.
 
 ## Cloud Control types classified by hand
 
+- `AWS::CodeStarConnections::SyncConfiguration` `OwnerId`: moved by `RepositoryLinkId` — the owner of the repository the link points at
 - `AWS::EC2::GatewayRouteTableAssociation` `AssociationId`: moved by `RouteTableId` — ReplaceRouteTableAssociation mints a new association id
 - `AWS::EC2::LaunchTemplate` `DefaultVersionNumber`: any-update — the new version becomes the default when the update sets it
 - `AWS::EC2::LaunchTemplate` `LatestVersionNumber`: any-update — a LaunchTemplateData edit mints the next version
@@ -1483,18 +1484,18 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::DocDBElastic::Cluster` | 1 |
 | `AWS::EC2::CapacityReservation` | 10 |
 | `AWS::EC2::FcaPolicy` | 2 |
-| `AWS::EC2::FpgaImage` | 4 |
+| `AWS::EC2::FpgaImage` | 5 |
 | `AWS::EC2::IPAM` | 6 |
 | `AWS::EC2::IPAMPool` | 6 |
 | `AWS::EC2::IPAMPrefixListResolver` | 1 |
 | `AWS::EC2::IPAMPrefixListResolverTarget` | 1 |
-| `AWS::EC2::IPAMResourceDiscovery` | 3 |
+| `AWS::EC2::IPAMResourceDiscovery` | 4 |
 | `AWS::EC2::IPAMScope` | 4 |
 | `AWS::EC2::InstanceEventWindow` | 1 |
 | `AWS::EC2::LocalGatewayRoute` | 2 |
 | `AWS::EC2::NetworkInsightsAnalysis` | 9 |
 | `AWS::EC2::NetworkInterface` | 5 |
-| `AWS::EC2::PrefixList` | 1 |
+| `AWS::EC2::PrefixList` | 2 |
 | `AWS::EC2::SqlHaStandbyDetectedInstance` | 2 |
 | `AWS::EC2::TransitGateway` | 1 |
 | `AWS::EC2::TransitGatewayMeteringPolicy` | 2 |
@@ -1543,7 +1544,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::FMS::ApplicationsList` | 1 |
 | `AWS::FMS::ProtocolsList` | 1 |
 | `AWS::FSx::DataRepositoryAssociation` | 1 |
-| `AWS::FSx::FileCache` | 7 |
+| `AWS::FSx::FileCache` | 8 |
 | `AWS::FSx::Snapshot` | 1 |
 | `AWS::FSx::StorageVirtualMachine` | 1 |
 | `AWS::FSx::Volume` | 2 |
@@ -1759,7 +1760,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Organizations::Organization` | 4 |
 | `AWS::Organizations::OrganizationalUnit` | 2 |
 | `AWS::Organizations::Policy` | 2 |
-| `AWS::Outposts::Outpost` | 2 |
+| `AWS::Outposts::Outpost` | 3 |
 | `AWS::PCS::Cluster` | 3 |
 | `AWS::PCS::ComputeNodeGroup` | 4 |
 | `AWS::PCS::Queue` | 2 |
@@ -1850,8 +1851,9 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Route53RecoveryControl::SafetyRule` | 2 |
 | `AWS::Route53RecoveryReadiness::Cell` | 1 |
 | `AWS::Route53RecoveryReadiness::ReadinessCheck` | 1 |
+| `AWS::Route53Resolver::FirewallConfig` | 1 |
 | `AWS::Route53Resolver::FirewallDomainList` | 4 |
-| `AWS::Route53Resolver::FirewallRuleGroup` | 4 |
+| `AWS::Route53Resolver::FirewallRuleGroup` | 5 |
 | `AWS::Route53Resolver::FirewallRuleGroupAssociation` | 4 |
 | `AWS::Route53Resolver::OutpostResolver` | 3 |
 | `AWS::Route53Resolver::ResolverEndpoint` | 3 |
@@ -1861,8 +1863,8 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::S3::MultiRegionAccessPointPolicy` | 2 |
 | `AWS::S3::StorageLens` | 1 |
 | `AWS::S3Express::AccessPoint` | 1 |
-| `AWS::S3Files::FileSystem` | 3 |
-| `AWS::S3Files::MountTarget` | 5 |
+| `AWS::S3Files::FileSystem` | 4 |
+| `AWS::S3Files::MountTarget` | 6 |
 | `AWS::S3ObjectLambda::AccessPoint` | 10 |
 | `AWS::S3Outposts::Endpoint` | 3 |
 | `AWS::S3Tables::TablePolicy` | 3 |

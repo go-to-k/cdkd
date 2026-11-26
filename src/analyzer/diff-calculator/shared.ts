@@ -208,6 +208,11 @@ export const IN_PLACE_UPDATE_ATTRS_MOVED_BY: Readonly<
   // and its zonal DNS name; private DNS, DNS options and the IP address type
   // add or drop DNS names. The update records the described values, or, after
   // a --no-wait modify, none, so a reader reads the endpoint live.
+  // go-to-k/cdkd#7007 (Cloud Control): the linked repository's owner; a
+  // RepositoryLinkId change re-points the sync configuration.
+  'AWS::CodeStarConnections::SyncConfiguration': Object.freeze({
+    OwnerId: new Set(['RepositoryLinkId']),
+  }),
   // go-to-k/cdkd#7007 (Cloud Control): an in-place RouteTableId change calls
   // ReplaceRouteTableAssociation, which answers a new association id.
   'AWS::EC2::GatewayRouteTableAssociation': Object.freeze({

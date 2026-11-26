@@ -250,6 +250,11 @@ export const SDK_IN_PLACE_ATTR_CLASSIFICATION: Readonly<
     PublicDnsName: anyUpdate('follows the public address (#5446)'),
     PrivateDnsName: anyUpdate('a PrivateDnsNameOptions change renames it (#5630)'),
   },
+  // Cloud Control: the repository owner of the linked repository; a
+  // RepositoryLinkId change (UpdateSyncConfiguration) re-points it.
+  'AWS::CodeStarConnections::SyncConfiguration': {
+    OwnerId: movedBy(['RepositoryLinkId'], 'the owner of the repository the link points at'),
+  },
   // Cloud Control: the shared.ts row of issue #985 (a LaunchTemplateData edit
   // mints version N+1), held here so the audit reads it as a hand verdict.
   'AWS::EC2::LaunchTemplate': {

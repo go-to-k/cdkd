@@ -154,8 +154,12 @@ export const MOVING_RULES: ReadonlySet<RuleName> = new Set(['update-timestamp', 
 
 /** Who or which request created the resource. */
 const CREATOR = /^(CreatedBy|Creator|CreatorRequestId)$/;
-/** The account that owns the resource. */
-const OWNER_ACCOUNT = /^((Owner|Owning)(AccountId|Account|Id)|AwsAccountId|ResourceOwner)$/;
+/**
+ * The account that owns the resource, by a name that says account. A bare
+ * `OwnerId` is not settled: it can name another owner (a CodeStar sync
+ * configuration's repository owner, which a `RepositoryLinkId` change moves).
+ */
+const OWNER_ACCOUNT = /^((Owner|Owning)(AccountId|Account)|AwsAccountId|ResourceOwner)$/;
 /** Who or where last wrote it, or a token every write replaces. */
 const LAST_WRITER = /^(LastModified(By|User|Region)|(Last)?UpdatedBy|ETag)$/;
 
@@ -232,10 +236,11 @@ const OWN_IDENTITY = /^(.*?)(Arn|ARN|Id|ID|Uuid|UUID)$/;
  *   (`${ResourceId}`, a writable name) settles nothing.
  * - `creator`: who or which request created it (`CreatedBy`,
  *   `CreatorRequestId`): a creation fact, like the creation time.
- * - `owner-account`: the owning account (`OwnerId`, `OwnerAccountId`,
+ * - `owner-account`: the owning account (`OwnerAccountId`, `OwnerAccount`,
  *   `AwsAccountId`, ...) on a type with no in-place `...Account...` /
  *   `...Owner...` property: an update never moves a resource between
- *   accounts. A bare `Owner` may be a principal and is not settled.
+ *   accounts. A bare `Owner` or `OwnerId` may name another owner and is not
+ *   settled.
  * - `identifier-arn-member`: an own id the type's fixed primary-identifier
  *   ARN embeds per its `arnTemplate` (`flow/${FlowId}` holds a Flow's `Id`).
  * - `update-marker` (MOVING): a version or revision (bar an `Initial...` one,
@@ -333,6 +338,9 @@ export function classifyByRule(input: TypeInput, attribute: string): RuleName | 
           typeName.toLowerCase().endsWith(attribute.slice(0, -s.length).toLowerCase())
       )
   );
+  // A versioned name reaches here only as an `Initial...` one, a
+  // primary-identifier member or a `...Version` type's number (the
+  // `update-marker` exclusions): kept out as a guard.
   if (!isArn && fixedOwnArn && embedded && !VERSIONED.test(attribute)) {
     return 'identifier-arn-member';
   }

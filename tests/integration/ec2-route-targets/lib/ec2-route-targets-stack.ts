@@ -85,9 +85,12 @@ export class Ec2RouteTargetsStack extends cdk.Stack {
     });
     // go-to-k/cdkd#7007: a reader of the prefix list's Version, which an
     // in-place entries edit moves.
+    // The integer is joined into a string: SSM takes no number, and cdkd
+    // sends a resolved scalar as is.
     new ssm.CfnParameter(this, 'PrefixListVersionReader', {
+      name: 'cdkd-route-targets-pl-version',
       type: 'String',
-      value: cdk.Token.asString(prefixList.getAtt('Version')),
+      value: cdk.Fn.join('', ['v', cdk.Token.asString(prefixList.getAtt('Version'))]),
     });
 
     const tgw = new ec2.CfnTransitGateway(this, 'Tgw', {

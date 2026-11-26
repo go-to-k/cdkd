@@ -86,6 +86,7 @@ STACK="CdkdEc2RouteTargetsExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 PL_NAME="cdkd-route-targets-pl"
+PL_VERSION_PARAM="cdkd-route-targets-pl-version"
 TGW_TAG="cdkd-route-targets-tgw"
 TGW_ATTACHMENT_TAG="cdkd-route-targets-tgw-attachment"
 VPC_TAG="cdkd-route-targets-vpc"
@@ -107,6 +108,7 @@ cleanup() {
 
   # Best-effort direct sweeps by deterministic tag/name, for the case where
   # state-based destroy could not run (state already gone, partial deploy).
+  aws ssm delete-parameter --region "${REGION}" --name "${PL_VERSION_PARAM}" >/dev/null 2>&1
   # TGW attachment first (blocks TGW + VPC deletion), then TGW, prefix list,
   # and the VPC family.
   local att_id
@@ -265,11 +267,12 @@ IGW_ID="$(aws ec2 describe-internet-gateways --region "${REGION}" \
   --query 'InternetGateways[0].InternetGatewayId' --output text)"
 echo "    rtb=${RTB_ID} pl=${PL_ID} tgw=${TGW_ID} igw=${IGW_ID}"
 # go-to-k/cdkd#7007: the SSM parameter reading the prefix list's Version.
+# It holds `v<Version>`: SSM takes no number, so the stack joins a prefix.
 pl_version_reader() {
-  local id
-  id="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.resources.PrefixListVersionReader.physicalId // empty')"
-  [ -n "${id}" ] || { echo "FAIL: no PrefixListVersionReader record" >&2; return 1; }
-  aws ssm get-parameter --region "${REGION}" --name "${id}" --query Parameter.Value --output text
+  local v
+  v="$(aws ssm get-parameter --region "${REGION}" --name "${PL_VERSION_PARAM}" \
+    --query Parameter.Value --output text)" || return 1
+  printf '%s' "${v#v}"
 }
 PL_VERSION_P1="$(aws ec2 describe-managed-prefix-lists --region "${REGION}" \
   --prefix-list-ids "${PL_ID}" --query 'PrefixLists[0].Version' --output text)"
@@ -626,6 +629,8 @@ if [ "${VPC_LEFT}" != "0" ]; then
   exit 1
 fi
 echo "    TGW attachment, TGW, prefix list, VPN gateway, and VPC all gone"
+assert_gone "SSM parameter ${PL_VERSION_PARAM} still exists after destroy" \
+  aws ssm get-parameter --region "${REGION}" --name "${PL_VERSION_PARAM}"
 
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"

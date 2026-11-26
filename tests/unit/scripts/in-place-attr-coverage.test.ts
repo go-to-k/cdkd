@@ -73,7 +73,7 @@ describe('the committed audit (#7001)', () => {
     expect(report.summary.ccByRule['arn-template']).toBeGreaterThan(50);
     expect(report.summary.ccByRule['update-timestamp']).toBeGreaterThan(350);
     expect(report.summary.ccByRule.creator).toBeGreaterThan(20);
-    expect(report.summary.ccByRule['owner-account']).toBeGreaterThan(30);
+    expect(report.summary.ccByRule['owner-account']).toBeGreaterThan(25);
     expect(report.summary.ccByRule['identifier-arn-member']).toBeGreaterThan(60);
     expect(report.summary.ccByRule['update-marker']).toBeGreaterThan(100);
     // A type the spec lacks is read from its schema fixture.
@@ -480,6 +480,19 @@ describe('the #7007 rules, on real spec inputs', () => {
     const reservation = real('AWS::EC2::CapacityReservation');
     expect(Object.keys(reservation.properties).some((p) => /Account|Owner/.test(p))).toBe(true);
     expect(classifyByRule(reservation, 'OwnerId')).toBeUndefined();
+    // A bare OwnerId can name another owner: a sync configuration's
+    // repository owner moves with its RepositoryLinkId (a hand verdict).
+    const sync = real('AWS::CodeStarConnections::SyncConfiguration');
+    expect(sync.properties.RepositoryLinkId).not.toBe('yes');
+    expect(classifyByRule(sync, 'OwnerId')).toBeUndefined();
+    expect(report.ccHand).toContainEqual(
+      expect.objectContaining({
+        type: 'AWS::CodeStarConnections::SyncConfiguration',
+        attribute: 'OwnerId',
+        verdict: 'moved-by',
+        properties: ['RepositoryLinkId'],
+      })
+    );
     // A bare `Owner` may be a principal, not an account.
     expect(classifyByRule({ type: 'AWS::X::Thing', attributes: ['Owner'], properties: { Config: undefined } }, 'Owner')).toBeUndefined();
   });
