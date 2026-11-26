@@ -74,9 +74,17 @@ cleanup() {
   aws neptune delete-db-cluster --region "${REGION}" --db-cluster-identifier "${CLUSTER_ID}" \
     --skip-final-snapshot >/dev/null 2>&1 || true
   # A re-run right after would collide with a cluster still `deleting`
-  # (bounded: a cleanup never blocks for long).
+  # (bounded: a cleanup never blocks for long). Only a cluster read as still
+  # there keeps polling; any other answer (gone, or an undetermined probe,
+  # reported once) ends the wait.
   for _ in $(seq 1 60); do
-    ( gone_probe aws neptune describe-db-clusters --region "${REGION}" --db-cluster-identifier "${CLUSTER_ID}" ) && break
+    probe_msg="$( ( gone_probe aws neptune describe-db-clusters --region "${REGION}" --db-cluster-identifier "${CLUSTER_ID}" ) 2>&1 )"
+    probe_rc=$?
+    [ "${probe_rc}" -eq 0 ] && break
+    if [ -n "${probe_msg}" ]; then
+      echo "${probe_msg}" >&2
+      break
+    fi
     sleep 10
   done
   aws ssm delete-parameter --region "${REGION}" --name "${PORT_PARAM}" >/dev/null 2>&1 || true

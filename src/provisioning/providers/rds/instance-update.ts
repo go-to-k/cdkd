@@ -775,7 +775,8 @@ export async function updateDBInstance(
     const moved = await withCertificateRotationInPlace(
       movedAttributeChanges(properties, previousProperties, backfillMembers, context),
       modified?.Engine ?? (properties['Engine'] as string | undefined),
-      modified?.EngineVersion ?? String((properties['EngineVersion'] as string | undefined) ?? ''),
+      modified?.EngineVersion ??
+        (properties['EngineVersion'] == null ? undefined : String(properties['EngineVersion'])),
       async (engine, engineVersion) =>
         (
           await this.getClient().send(
