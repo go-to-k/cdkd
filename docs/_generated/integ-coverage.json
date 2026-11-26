@@ -222,6 +222,7 @@
         "apigw-cloudwatch-role-redeploy",
         "apigw-gateway-response",
         "apigw-restapi-spec",
+        "apigw-stage-api-replacement",
         "apigw-stage-props",
         "apigw-stage-throttling",
         "apigw-vpclink-integration-target",
@@ -243,6 +244,10 @@
           "literal"
         ],
         "apigw-restapi-spec": [
+          "literal"
+        ],
+        "apigw-stage-api-replacement": [
+          "l1",
           "literal"
         ],
         "apigw-stage-props": [
@@ -272,6 +277,7 @@
         "apigw-cloudwatch-role-redeploy",
         "apigw-gateway-response",
         "apigw-restapi-spec",
+        "apigw-stage-api-replacement",
         "apigw-stage-props",
         "apigw-stage-throttling",
         "apigw-vpclink-integration-target",
@@ -295,6 +301,10 @@
           "literal"
         ],
         "apigw-restapi-spec": [
+          "literal"
+        ],
+        "apigw-stage-api-replacement": [
+          "l1",
           "literal"
         ],
         "apigw-stage-props": [
@@ -358,6 +368,7 @@
         "apigw-cloudwatch-role-redeploy",
         "apigw-gateway-response",
         "apigw-restapi-spec",
+        "apigw-stage-api-replacement",
         "apigw-stage-props",
         "apigw-stage-throttling",
         "apigw-vpclink-integration-target",
@@ -380,6 +391,10 @@
           "literal"
         ],
         "apigw-restapi-spec": [
+          "l1",
+          "literal"
+        ],
+        "apigw-stage-api-replacement": [
           "l1",
           "literal"
         ],
@@ -439,6 +454,7 @@
         "apigw-cloudwatch-role-redeploy",
         "apigw-gateway-response",
         "apigw-restapi-spec",
+        "apigw-stage-api-replacement",
         "apigw-stage-props",
         "apigw-stage-throttling",
         "apigw-vpclink-integration-target",
@@ -458,6 +474,10 @@
           "literal"
         ],
         "apigw-restapi-spec": [
+          "literal"
+        ],
+        "apigw-stage-api-replacement": [
+          "l1",
           "literal"
         ],
         "apigw-stage-props": [
@@ -480,6 +500,7 @@
       "resourceType": "AWS::ApiGatewayV2::Api",
       "integs": [
         "apigatewayv2-update-removal",
+        "apigw-stage-api-replacement",
         "cc-api-fallback",
         "cc-api-fallback-transitions",
         "cc-to-sdk-reroute-common-types-8",
@@ -499,6 +520,10 @@
       ],
       "signals": {
         "apigatewayv2-update-removal": [
+          "l1",
+          "literal"
+        ],
+        "apigw-stage-api-replacement": [
           "l1",
           "literal"
         ],
@@ -698,6 +723,7 @@
       "resourceType": "AWS::ApiGatewayV2::Stage",
       "integs": [
         "apigatewayv2-update-removal",
+        "apigw-stage-api-replacement",
         "cc-to-sdk-reroute-common-types-8",
         "drift-revert",
         "export",
@@ -715,6 +741,10 @@
       "signals": {
         "apigatewayv2-update-removal": [
           "l1"
+        ],
+        "apigw-stage-api-replacement": [
+          "l1",
+          "literal"
         ],
         "cc-to-sdk-reroute-common-types-8": [
           "l1",
