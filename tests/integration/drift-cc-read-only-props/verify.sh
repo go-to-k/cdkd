@@ -17,9 +17,10 @@
 #   4. `cdkd drift` exits 1, names Description on both, never UpdateTime.
 #   5. `cdkd drift --revert -y` exits 0; both live descriptions are back.
 #   6. `cdkd drift` exits 0 again.
-#   7. go-to-k/cdkd#7007: an in-place Description change moves the Tracker's
-#      UpdateTime; the SSM parameter reading it must hold the LIVE value (before
-#      the fix it kept the one recorded at create).
+#   7. go-to-k/cdkd#7007: after a sync deploy (Phase 5's revert left the
+#      reader stale), an in-place Description change moves the Tracker's
+#      UpdateTime; the SSM parameter reading it must hold the LIVE value
+#      (before the fix it stayed NO_CHANGE on the previous one).
 #   8. go-to-k/cdkd#7007: with a consumer stack importing the UpdateTime
 #      export, a tag-only edit is refused only if it moved UpdateTime (the
 #      guard judges the export after the update, as CloudFormation does).
@@ -230,15 +231,22 @@ sys.exit(0 if p(sys.argv[1])==p(sys.argv[2]) else 1)' "$1" "$2"
 }
 
 echo "==> Phase 7: an in-place Description change moves the UpdateTime reader (#7007)"
-READER_BEFORE="$(reader_value)"
-# Phase 5's revert already moved the live UpdateTime: the premise compares
-# against the value just before this deploy.
+# Phase 5's revert moved UpdateTime out of band, so the reader is stale
+# already and ANY deploy promotes it on its own value. Sync it first with an
+# unchanged template: the Description deploy below then starts from a reader
+# that equals the live (and recorded) UpdateTime, and only the fix promotes it.
+node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 LIVE_6="$(live_update_time)"
+READER_6="$(reader_value)"
+if ! same_instant "${READER_6}" "${LIVE_6}"; then
+  echo "FAIL: Phase 7 premise: the sync deploy left the reader at '${READER_6}', live is '${LIVE_6}'" >&2
+  exit 1
+fi
 CDKD_INTEG_TRACKER_DESCRIPTION=integ-7007 \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 LIVE_7="$(live_update_time)"
 READER_7="$(reader_value)"
-echo "    reader before '${READER_BEFORE}', after '${READER_7}', live '${LIVE_7}'"
+echo "    reader before '${READER_6}', after '${READER_7}', live '${LIVE_7}'"
 # Premise: the update moved UpdateTime, so a stale reader shows.
 if same_instant "${LIVE_6}" "${LIVE_7}"; then
   echo "FAIL: Phase 7 premise: the Description update did not move UpdateTime" >&2
