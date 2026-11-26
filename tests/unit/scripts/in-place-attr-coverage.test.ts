@@ -28,6 +28,7 @@ import {
 import {
   SDK_IN_PLACE_ATTR_CLASSIFICATION,
   type InPlaceAttrVerdict,
+  mergeDisjoint,
 } from '../../../scripts/in-place-attr-classification.ts';
 
 /**
@@ -77,7 +78,12 @@ describe('the committed audit (#7001)', () => {
     expect(report.summary.ccByRule['owner-account']).toBeGreaterThan(25);
     expect(report.summary.ccByRule['identifier-arn-member']).toBeGreaterThan(60);
     expect(report.summary.ccByRule['update-marker']).toBeGreaterThan(100);
-    // #7007: the measured rename probes are hand verdicts.
+    // #7007: the measured rename probes are hand verdicts, merged in without
+    // dropping a type both tables name.
+    const v: InPlaceAttrVerdict = { kind: 'never', reason: 'r' };
+    expect(() => mergeDisjoint({ 'AWS::X::Y': { A: v } }, { 'AWS::X::Y': { B: v } })).toThrow(
+      'classified twice: AWS::X::Y'
+    );
     expect(report.summary.ccByHand).toBeGreaterThan(30);
     expect(report.ccHand).toContainEqual(
       expect.objectContaining({ type: 'AWS::EC2::PrefixList', attribute: 'Arn', verdict: 'never' })

@@ -2764,8 +2764,11 @@
     {
       "type": "AWS::IAM::ServerCertificate",
       "attribute": "Arn",
-      "verdict": "never",
-      "reason": "measured (cdkd-probe-7007-s1): Path in place left it .../server-certificate/<old path>/<name>"
+      "verdict": "moved-by",
+      "properties": [
+        "Path"
+      ],
+      "reason": "the ARN embeds the path, which UpdateServerCertificate NewPath moves"
     },
     {
       "type": "AWS::IVSChat::LoggingConfiguration",
@@ -2831,7 +2834,7 @@
       "type": "AWS::Route53Resolver::ResolverRule",
       "attribute": "Arn",
       "verdict": "never",
-      "reason": "measured (cdkd-probe-7007-s1): Name in place left it resolver-rule/rslvr-rr-b961c68a7e1e43908"
+      "reason": "measured (cdkd-probe-7007-s1): Name only in place left it resolver-rule/rslvr-rr-b961c68a7e1e43908"
     },
     {
       "type": "AWS::WellArchitected::Workload",

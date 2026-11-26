@@ -85,13 +85,13 @@ const STEADY_STATUS = never(
  * go-to-k/cdkd#7007: own ARNs / ids of Cloud Control types with an in-place
  * name, MEASURED with throwaway CloudFormation stacks (us-east-1, 2026-11-27):
  * create, change every in-place name property, update, and compare the
- * physical id, `Ref` and the GetAtt before and after. Each update completed
- * in place (no replacement) and left the value as recorded here.
+ * physical id, `Ref` and the GetAtt before and after. Each update recorded
+ * here completed in place (no replacement) and left the value as recorded.
  */
 const renamed = (stack: string, change: string, value: string): InPlaceAttrVerdict =>
   never(`measured (${stack}): ${change} in place left it ${value}`);
 
-const RENAME_MEASURED: Readonly<Record<string, Readonly<Record<string, InPlaceAttrVerdict>>>> = {
+export const RENAME_MEASURED: Readonly<Record<string, Readonly<Record<string, InPlaceAttrVerdict>>>> = {
   'AWS::Chime::AppInstance': {
     AppInstanceArn: renamed('cdkd-probe-7007-s2c', 'Name', 'app-instance/2cf58ce3-...'),
   },
@@ -130,8 +130,11 @@ const RENAME_MEASURED: Readonly<Record<string, Readonly<Record<string, InPlaceAt
     Arn: renamed('cdkd-probe-7007-s2c', 'ClassName / OwnerName', '.../<db>/<create-only name>'),
   },
   'AWS::IAM::ServerCertificate': {
-    // The handler completes the update without applying the new Path.
-    Arn: renamed('cdkd-probe-7007-s1', 'Path', '.../server-certificate/<old path>/<name>'),
+    // Measured (cdkd-probe-7007-s1): the handler completes a Path update
+    // without applying it, so the ARN stayed. IAM's UpdateServerCertificate
+    // takes NewPath and the ARN embeds the path: a handler that applies it
+    // moves the ARN, so it is a move, not a fixed value.
+    Arn: movedBy(['Path'], 'the ARN embeds the path, which UpdateServerCertificate NewPath moves'),
   },
   'AWS::IVSChat::LoggingConfiguration': {
     Id: renamed('cdkd-probe-7007-s3c', 'Name', 'r2zbNTcYVRdc'),
@@ -147,10 +150,12 @@ const RENAME_MEASURED: Readonly<Record<string, Readonly<Record<string, InPlaceAt
   'AWS::Route53Resolver::FirewallRuleGroupAssociation': {
     Arn: renamed('cdkd-probe-7007-s3c', 'Name', '.../rslvr-frgassoc-ad8eaddd39cc403a'),
   },
-  // A DomainName change REPLACES the rule (measured: a new rslvr-rr- id);
-  // the in-place Name change keeps it.
+  // cdkd-probe-7007-s1: a Name + DomainName update REPLACED the rule
+  // (rslvr-rr-c051d710... -> rslvr-rr-b961c68a...); a second, Name-only update
+  // completed in place, renamed it (live name cdkd-probe-7007-rr-c) and kept
+  // rslvr-rr-b961c68a7e1e43908.
   'AWS::Route53Resolver::ResolverRule': {
-    Arn: renamed('cdkd-probe-7007-s1', 'Name', 'resolver-rule/rslvr-rr-b961c68a7e1e43908'),
+    Arn: renamed('cdkd-probe-7007-s1', 'Name only', 'resolver-rule/rslvr-rr-b961c68a7e1e43908'),
   },
   'AWS::WellArchitected::Workload': {
     WorkloadId: renamed('cdkd-probe-7007-s3c', 'WorkloadName', 'd407459bb0b58e882b630018989ed8fb'),
@@ -159,14 +164,23 @@ const RENAME_MEASURED: Readonly<Record<string, Readonly<Record<string, InPlaceAt
   'AWS::XRay::Group': {
     GroupARN: renamed('cdkd-probe-7007-s1', 'GroupName', 'group/<old name>/NIY2T2OJ...'),
   },
+  // UpdateSamplingRule names the rule by name or ARN and has no rename, so no
+  // name field (RuleName, SamplingRule / SamplingRuleUpdate.RuleName) moves it.
   'AWS::XRay::SamplingRule': {
     RuleARN: renamed('cdkd-probe-7007-s1', 'SamplingRule.RuleName', 'sampling-rule/<old name>'),
   },
 };
 
-export const SDK_IN_PLACE_ATTR_CLASSIFICATION: Readonly<
-  Record<string, Readonly<Record<string, InPlaceAttrVerdict>>>
-> = {
+type Classification = Readonly<Record<string, Readonly<Record<string, InPlaceAttrVerdict>>>>;
+
+/** `a` and `b` together; a type in both throws (a spread would drop one record). */
+export function mergeDisjoint(a: Classification, b: Classification): Classification {
+  const both = Object.keys(b).filter((type) => Object.hasOwn(a, type));
+  if (both.length > 0) throw new Error(`classified twice: ${both.join(', ')}`);
+  return { ...a, ...b };
+}
+
+const HAND_CLASSIFICATION: Classification = {
   'AWS::ApiGateway::Account': { Id: OWN_REF },
   'AWS::ApiGateway::Authorizer': { AuthorizerId: ID },
   'AWS::ApiGateway::Deployment': {
@@ -734,5 +748,9 @@ export const SDK_IN_PLACE_ATTR_CLASSIFICATION: Readonly<
     LabelNamespace: never('built from the create-only Name'),
     Capacity: movedBy(['Rules'], 'the capacity units the rules use'),
   },
-  ...RENAME_MEASURED,
 };
+
+export const SDK_IN_PLACE_ATTR_CLASSIFICATION: Classification = mergeDisjoint(
+  HAND_CLASSIFICATION,
+  RENAME_MEASURED
+);
