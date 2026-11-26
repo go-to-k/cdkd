@@ -45,6 +45,7 @@ import type { DiffCalculator } from '../../../analyzer/diff-calculator.js';
 import type { ExportIndexStore } from '../../../state/export-index-store.js';
 import type { StackOutputsByStack } from '../outputs-file.js';
 import type { DeployCommandOptions } from './types.js';
+import { type ConsumerCleanupHold, runHeldProducerCleanup } from './consumer-cleanup-hold.js';
 
 /**
  * What `deployCommand` hands each stack's deploy: the run's options, shared
@@ -79,6 +80,8 @@ export interface DeployStackContext {
   addCancelledStack: () => void;
   /** Every stack of this run, as `inRunStackKey` keys (go-to-k/cdkd#6088). */
   inRunStacks: ReadonlySet<string>;
+  /** go-to-k/cdkd#7012: producers' cleanups held for their in-run consumers. */
+  consumerHold?: ConsumerCleanupHold<StackInfo>;
 }
 
 /**
@@ -164,6 +167,9 @@ export async function deployStackInScope(
   // Tracks the terminal result for the recorder's index summary;
   // flipped to FAILED in the catch below.
   let runResult: DeploymentRunResult = 'SUCCEEDED';
+  // go-to-k/cdkd#7012: where this stack's engine holds its cleanup phase
+  // while a stack of the run importing its outputs has yet to deploy.
+  const consumerCleanupQueue = ctx.consumerHold?.queueFor(stackInfo);
 
   try {
     // Pre-flight migration check for --prefix-user-supplied-names.
@@ -434,6 +440,7 @@ export async function deployStackInScope(
       // go-to-k/cdkd#6871: merged into every taggable resource.
       ...(stackTags !== undefined && { stackTags }),
       inRunStacks: ctx.inRunStacks,
+      ...(consumerCleanupQueue !== undefined && { consumerCleanupQueue }),
     };
 
     const stackDeployEngine = new DeployEngine(
@@ -454,7 +461,7 @@ export async function deployStackInScope(
     // AWS::CloudFormation::Stack resources, this is a cheap no-op (the
     // provider is never invoked); when it does, the context lets the
     // provider build a child DeployEngine recursively.
-    const deployResult = await withNestedStackContext(
+    const deployed = await withNestedStackContext(
       {
         stateBackend: stackStateBackend,
         lockManager: stackLockManager,
@@ -487,6 +494,24 @@ export async function deployStackInScope(
       },
       () => stackDeployEngine.deploy(stackInfo.stackName, stackInfo.template)
     );
+    // go-to-k/cdkd#7012: deployed, so a producer holding its cleanup for this
+    // stack may delete; then this stack's own held cleanup, if any, before
+    // the summary that counts what it left.
+    ctx.consumerHold?.settle(stackInfo, true);
+    let deployResult = deployed;
+    if (ctx.consumerHold !== undefined && (consumerCleanupQueue?.size ?? 0) > 0) {
+      const held = await runHeldProducerCleanup(
+        ctx.consumerHold,
+        consumerCleanupQueue!,
+        stackInfo,
+        logger
+      );
+      deployResult = {
+        ...deployed,
+        updatePartial: deployed.updatePartial + held.updatePartial,
+        nestedUpdatePartial: (deployed.nestedUpdatePartial ?? 0) + held.nestedUpdatePartial,
+      };
+    }
 
     logger.info(`\n${bold('Deployment Summary:')}`);
     logger.info(`  Stack: ${bold(cyan(deployResult.stackName))}`);
@@ -696,6 +721,8 @@ export async function deployStackInScope(
     recordRunFailed(eventRecorder, stackInfo.stackName, deployError);
     throw deployError;
   } finally {
+    // go-to-k/cdkd#7012: a pass queued by a deploy that then failed never runs.
+    consumerCleanupQueue?.abandon('failed');
     // Best-effort final flush + index update, beside the lock's deferred
     // version purge. Neither throws, and both finish before the S3 client
     // they use is destroyed.

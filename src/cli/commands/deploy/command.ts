@@ -50,6 +50,7 @@ import {
   stackRegionResolver,
 } from '../../region-options.js';
 import { runStackBuffered } from '../../../utils/stack-context.js';
+import { ConsumerCleanupHold } from './consumer-cleanup-hold.js';
 import { withSkipPrefix } from '../../../provisioning/resource-name.js';
 import {
   resolveApp,
@@ -742,6 +743,19 @@ export async function deployCommand(
     // only its own key.
     const stackOutputs: StackOutputsByStack = {};
 
+    const consumerHold = options.dryRun
+      ? undefined
+      : ConsumerCleanupHold.build(targetStacks, (s) => inferredCrossStackDeps.get(s) ?? []);
+    // go-to-k/cdkd#7012: a producer's deploy still holding its cleanup for its
+    // consumers; its output is flushed, and its failure thrown, once it ends.
+    const heldStacks: Promise<StackRunOutcome>[] = [];
+    const flushStackRun = (outcome: StackRunOutcome): void => {
+      if (outcome.lines.length > 0) {
+        process.stdout.write(outcome.lines.join('\n') + '\n');
+      }
+      if (!outcome.ok) throw outcome.error;
+    };
+
     const runStack = async (stackInfo: (typeof targetStacks)[0]): Promise<void> => {
       // Wrap the entire per-stack deploy body in withSkipPrefix so every
       // `generateResourceName(name, { userSupplied: true })` call inside
@@ -820,6 +834,10 @@ export async function deployCommand(
           inRunStackKey(s.stackName, stackRegions.get(s) ?? deployStackRegion(s, baseRegion))
         )
       ),
+      // go-to-k/cdkd#7012: producers whose outputs a stack of this run imports
+      // (the inferred `Fn::ImportValue` / `Fn::GetStackOutput` edges; a
+      // manifest-only dependency imports no value). None under --dry-run.
+      ...(consumerHold !== undefined && { consumerHold }),
     };
 
     checkPinCcApiOptions(options, targetStacks, logger);
@@ -827,6 +845,7 @@ export async function deployCommand(
     runClock.lap('work graph build, recreate checks');
     // Execute work graph
     let workGraphCompleted = false;
+    let heldFailure: unknown;
     try {
       await workGraph.execute(
         {
@@ -847,16 +866,40 @@ export async function deployCommand(
 
             // Multi-stack run: buffer this stack's log lines and flush
             // them as one atomic block when the deploy finishes.
-            const outcome = await runStackBuffered(() => runStack(stackInfo));
-            if (outcome.lines.length > 0) {
-              process.stdout.write(outcome.lines.join('\n') + '\n');
+            const run = runStackBuffered(() => runStack(stackInfo)).then((outcome) => {
+              // Not deployed unless the deploy said so first (go-to-k/cdkd#7012).
+              consumerHold?.settle(stackInfo, false);
+              return outcome;
+            });
+            // go-to-k/cdkd#7012: a producer holding its cleanup completes its
+            // node once its deploy landed, so its consumers can start.
+            if (
+              consumerHold?.hasConsumers(stackInfo) === true &&
+              (await Promise.race([
+                run.then(() => false),
+                consumerHold.released(stackInfo).then(() => true),
+              ]))
+            ) {
+              heldStacks.push(run);
+              return;
             }
-            if (!outcome.ok) throw outcome.error;
+            flushStackRun(await run);
           }
         }
       );
       workGraphCompleted = true;
     } finally {
+      // go-to-k/cdkd#7012: a consumer that never ran did not deploy; then
+      // every held producer finishes, before the outputs file is written.
+      consumerHold?.settleRest();
+      for (const held of heldStacks) {
+        try {
+          flushStackRun(await held);
+        } catch (error) {
+          workGraphCompleted = false;
+          heldFailure ??= error;
+        }
+      }
       // go-to-k/cdkd#5819: written on failure too, carrying the stacks that did
       // deploy (the AWS CDK CLI's stated intent; its toolkit-lib writes in a
       // `finally`). Before the unaddressed check below, so an exit-2 run still
@@ -865,6 +908,7 @@ export async function deployCommand(
         writeStackOutputsFile(outputsFile, stackOutputs, { deployFailed: !workGraphCompleted });
       }
     }
+    if (heldFailure !== undefined) throw heldFailure;
 
     // Issue #1960: every stack deployed without a resource FAILING, but at
     // least one resource cdkd was responsible for went unaddressed. Exiting 0
@@ -908,3 +952,6 @@ export async function deployCommand(
     for (const line of renderPhaseTimings()) logger.info(line);
   }
 }
+
+/** One buffered stack deploy of a multi-stack run: its log lines and result. */
+type StackRunOutcome = Awaited<ReturnType<typeof runStackBuffered<void>>>;

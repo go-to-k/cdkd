@@ -6,6 +6,7 @@ import type { DestructiveChange } from '../../analyzer/destructive-changes.js';
 import type { ForeignHolding } from '../rollback-executor/journaled-orphans.js';
 import type { RecordedSecretValues } from '../secret-redaction.js';
 import type { ProducerRegionEvidence } from '../producer-regions-scope.js';
+import type { NestedCleanupQueue } from '../nested-cleanup-scope.js';
 import type { LockRecoveryContext } from '../../state/lock-contention-message.js';
 import type { ProducerLookup } from '../intrinsic-resolver/cdk-cross-account-ref.js';
 
@@ -166,6 +167,15 @@ export interface DeployEngineOptions {
    * still imports. Absent reads as a run of this stack alone.
    */
   inRunStacks?: ReadonlySet<string>;
+  /**
+   * go-to-k/cdkd#7012: set by `cdkd deploy` for a stack whose outputs a later
+   * stack of the same run imports. The engine queues its cleanup phase (the
+   * replaced resources' old copies, and the superseded entries carried in
+   * state) here instead of running it, and the CLI runs the queue once every
+   * such stack deployed, or abandons it, keeping the old copies, when one
+   * did not. Read by a ROOT engine only (no `parentStackInfo`).
+   */
+  consumerCleanupQueue?: NestedCleanupQueue;
   /**
    * When set, every state save during this deploy stamps the supplied
    * parent-stack identity onto `StackState.parentStack` /

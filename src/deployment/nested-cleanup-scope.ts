@@ -26,12 +26,20 @@ export interface QueuedNestedCleanup {
   /** The child stack, named on the root's cleanup line. */
   readonly stackName: string;
   /**
+   * go-to-k/cdkd#7012: a top-level producer's own pass, held for the stacks
+   * of the run that import its outputs, rather than a nested child's.
+   */
+  readonly producer?: true;
+  /**
    * Runs the child's cleanup pass and persists what it deleted. Never meant
    * to throw; a throw is reported and the next entry still runs.
    */
   readonly run: (context: NestedCleanupContext) => Promise<NestedCleanupOutcome>;
-  /** The root failed or was interrupted first: the pass never runs. */
-  readonly abandon: (why: 'failed' | 'interrupted') => void;
+  /**
+   * The root failed or was interrupted first, or (go-to-k/cdkd#7012) a stack
+   * importing the producer's outputs did not deploy: the pass never runs.
+   */
+  readonly abandon: (why: CleanupAbandonCause) => void;
   /**
    * The root succeeded but the pass could not run (or threw): warn per entry
    * left, and count each as a partial update, the exit-2 contract for a
@@ -39,6 +47,8 @@ export interface QueuedNestedCleanup {
    */
   readonly fail: () => NestedCleanupOutcome;
 }
+
+export type CleanupAbandonCause = 'failed' | 'interrupted' | 'consumer-failed';
 
 export interface NestedCleanupContext {
   /** The ROOT engine's interrupt flag, read live. */
@@ -66,6 +76,28 @@ export class NestedCleanupQueue {
     return true;
   }
 
+  /** How many passes wait in the queue. */
+  get size(): number {
+    return this.entries.length;
+  }
+
+  /**
+   * go-to-k/cdkd#7012: hand every queued pass, in order, to `other` (a
+   * producer's held queue) and close this one, as `runAll` would. Each runs
+   * later in the async context of this call, where `runAll` would have run it.
+   */
+  drainInto(other: NestedCleanupQueue): void {
+    this.open = false;
+    const inThisScope = AsyncLocalStorage.snapshot();
+    for (const entry of this.entries.splice(0)) {
+      const moved: QueuedNestedCleanup = {
+        ...entry,
+        run: (context) => inThisScope(() => entry.run(context)),
+      };
+      if (!other.enqueue(moved)) entry.abandon('failed');
+    }
+  }
+
   /**
    * The root's success: run every queued pass, in the order the children
    * finished (a grandchild before its parent child), one stack at a time,
@@ -77,32 +109,37 @@ export class NestedCleanupQueue {
   async runAll(
     context: NestedCleanupContext,
     logger: CleanupLogger
-  ): Promise<NestedCleanupOutcome> {
+  ): Promise<NestedCleanupOutcome & { readonly nestedUpdatePartial: number }> {
     this.open = false;
     let updatePartial = 0;
+    let nestedUpdatePartial = 0;
     for (let entry = this.entries.shift(); entry !== undefined; entry = this.entries.shift()) {
       if (context.interrupted()) {
         entry.abandon('interrupted');
         for (const rest of this.entries.splice(0)) rest.abandon('interrupted');
         break;
       }
+      const kind = entry.producer === true ? 'stack' : 'nested stack';
       logger.info(
-        safeMsg`Deleting the replaced resources of nested stack ${displayStackName(entry.stackName)}`
+        safeMsg`Deleting the replaced resources of ${kind} ${displayStackName(entry.stackName)}`
       );
+      let left: number;
       try {
-        updatePartial += (await entry.run(context)).updatePartial;
+        left = (await entry.run(context)).updatePartial;
       } catch (error) {
         logger.warn(
-          safeMsg`  ⚠ The cleanup of nested stack ${displayStackName(entry.stackName)} failed: ${asIsMessage(describeAwsFailure(error).summary)}. Its old resources were not deleted`
+          safeMsg`  ⚠ The cleanup of ${kind} ${displayStackName(entry.stackName)} failed: ${asIsMessage(describeAwsFailure(error).summary)}. Its old resources were not deleted`
         );
-        updatePartial += entry.fail().updatePartial;
+        left = entry.fail().updatePartial;
       }
+      updatePartial += left;
+      if (entry.producer !== true) nestedUpdatePartial += left;
     }
-    return { updatePartial };
+    return { updatePartial, nestedUpdatePartial };
   }
 
   /** The root failed or was interrupted: no queued pass runs. */
-  abandon(why: 'failed' | 'interrupted'): void {
+  abandon(why: CleanupAbandonCause): void {
     this.open = false;
     for (const entry of this.entries.splice(0)) entry.abandon(why);
   }
