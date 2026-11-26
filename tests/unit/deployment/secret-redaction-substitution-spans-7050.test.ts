@@ -105,7 +105,10 @@ describe('positionBySubstitutionSpans (#7050)', () => {
       substitutions: [{ token: PIN, value: 'q7', secret: true }],
       complete: true,
     });
-    expect(position('q7@x9', whole, secrets)).toBe(`${PIN}@${X9}`);
+    // Another secret's SUB-FLOOR text a gap merely equals stays (the whole-leaf
+    // scan never matched it; spelling a public value as that reference would
+    // be a perpetual plan diff): only the leaf's own token is written.
+    expect(position('q7@x9', whole, secrets)).toBe(`${PIN}@x9`);
     // The gap holds the own secret's text AND another 4+ character secret.
     const mixed = { 'Fn::Join': ['', [PIN, '@', { Ref: 'Other' }]] };
     recordIntrinsicLeafResolution(secrets, mixed, {
@@ -115,6 +118,18 @@ describe('positionBySubstitutionSpans (#7050)', () => {
       complete: true,
     });
     expect(position('q7@q7-rootpw', mixed, secrets)).toBe(`${PIN}@${PIN}-${LONG}`);
+  });
+
+  it("keeps a public value's own `***`, and masks only where the scan wrote one", () => {
+    const secrets = bag([[U, 'pg']]);
+    const source = { 'Fn::Join': ['', ['tt:', U, { Ref: 'P' }]] };
+    recordIntrinsicLeafResolution(secrets, source, {
+      input: `tt:${U}a***b`,
+      output: 'tt:pga***b',
+      substitutions: [{ token: U, value: 'pg', secret: true }],
+      complete: true,
+    });
+    expect(position('tt:pga***b', source, secrets)).toBe(`tt:${U}a***b`);
   });
 
   it('refuses a record whose replay does not reproduce its output', () => {
