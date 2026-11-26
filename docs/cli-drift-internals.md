@@ -246,7 +246,12 @@ remedy. The fifth is a revert AWS accepted without applying
 (go-to-k/cdkd#7025): after the updates, each stack with a reverted resource is
 re-detected through the same `runDriftForStack`, after its lock is released,
 and a resource whose re-read still differs on a path its revert sent (the
-same path, or one under or above it) is counted `not applied by AWS`. A
+same path, or one under or above it) is counted `not applied by AWS` when AWS
+also does not hold what the revert SENT there, compared through drift's
+comparator (tag and unordered lists sorted, the provider's canonicalizer on
+both sides). The second test is what keeps a template-only baseline passing:
+its revert keeps an AWS-authored value the template never declared (an
+untemplated tag), so state still differs from what AWS applied as sent. A
 differing path is re-read twice more, 5 s and 8 s apart, before it counts. A
 re-read that cannot compare the resource (not compared, no reader, deleted,
 or a thrown stack read) is a `not verified` warning, not a failure. A key the

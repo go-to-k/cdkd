@@ -17,6 +17,10 @@ import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import { type StackDriftReport, matchOutcome, type DriftOutcome } from './outcome.js';
 import { displayDriftPath, reportPath } from './report.js';
+import type { ResourceProvider } from '../../../types/resource.js';
+import { calculateResourceDrift } from '../../../analyzer/drift-calculator.js';
+import { canonicalizeIpProtocols } from '../../../analyzer/drift-protocol-normalize.js';
+import { verbatimEchoDriftKeys } from '../../../analyzer/drift-verbatim-paths.js';
 
 /** One resource a revert pass counted `reverted`, with the paths it sent. */
 export interface RevertedResource {
@@ -26,6 +30,58 @@ export interface RevertedResource {
   resourceType: string;
   /** The drifted `changes[].path` values this resource's revert targeted. */
   paths: readonly string[];
+  /**
+   * Of the paths a re-read reports, the ones where AWS does not hold what the
+   * revert SENT (see {@link sentDiffPaths}). Bound to the bag the update was
+   * handed, which holds resolved secrets: it is compared, never printed.
+   */
+  differsFromSent: (live: Record<string, unknown>) => readonly string[];
+}
+
+/**
+ * The paths under `paths`' top-level keys where `live` (a re-read) does not
+ * hold what `sent` (the bag handed to `provider.update`) holds, through the
+ * comparator drift uses: tag lists and id lists ordered, the provider's
+ * unordered paths sorted, its unreadable paths skipped, IP protocol spellings
+ * and its own canonicalizer applied to both sides.
+ *
+ * Why the SENT bag and not state (go-to-k/cdkd#7025): a revert on a
+ * template-only baseline keeps the AWS-authored values the template never
+ * declared (an untemplated tag beside the reverted ones), so state still
+ * differs from AWS after a revert that AWS applied exactly as sent.
+ */
+export function sentDiffPaths(
+  sent: Record<string, unknown>,
+  live: Record<string, unknown>,
+  paths: readonly string[],
+  provider: Pick<
+    ResourceProvider,
+    'canonicalizeDriftProperties' | 'getDriftUnorderedPaths' | 'getDriftUnknownPaths'
+  >,
+  resourceType: string,
+  recordedProperties: Record<string, unknown>
+): string[] {
+  const keys = new Set(paths.map((p) => p.split('.', 1)[0] ?? ''));
+  const sentTargets: Record<string, unknown> = {};
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(sent, key)) sentTargets[key] = sent[key];
+  }
+  const protocols = canonicalizeIpProtocols(sentTargets, live, resourceType);
+  const canonical = provider.canonicalizeDriftProperties
+    ? {
+        baseline: provider.canonicalizeDriftProperties(resourceType, protocols.baseline),
+        aws: provider.canonicalizeDriftProperties(resourceType, protocols.aws),
+      }
+    : protocols;
+  return calculateResourceDrift(canonical.baseline, canonical.aws, {
+    ignorePaths: provider.getDriftUnknownPaths?.(resourceType, recordedProperties) ?? [],
+    unionWalkObjects: true,
+    unorderedPaths: provider.getDriftUnorderedPaths?.(resourceType) ?? [],
+    unionWalkPaths: verbatimEchoDriftKeys(resourceType),
+    resourceType,
+  })
+    .map((change) => change.path)
+    .filter((path) => paths.some((target) => overlaps(path, target)));
 }
 
 /** Re-runs drift detection for one stack; supplied by the command. */
@@ -134,9 +190,15 @@ export async function verifyRevertedStack(
         continue;
       }
       if (outcome?.kind !== 'drifted') continue;
+      // Two answers must agree before a path fails: the re-detection still
+      // reports it against state, AND AWS does not hold what was sent there.
+      // Only the first's paths print: they are redacted as the outcome is
+      // built, where the raw bags the second compares are not.
+      const notAsSent = r.differsFromSent(outcome.awsProperties);
       const differing = outcome.changes
         .map((c) => c.path)
-        .filter((p) => r.paths.some((target) => overlaps(p, target)));
+        .filter((p) => r.paths.some((target) => overlaps(p, target)))
+        .filter((p) => notAsSent.some((q) => overlaps(p, q)));
       if (differing.length === 0) continue;
       next.push(r);
       stillDiffering.set(

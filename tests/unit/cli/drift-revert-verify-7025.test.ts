@@ -106,6 +106,7 @@ vi.mock('../../../src/provisioning/cloud-control-provider.js', () => ({
 }));
 
 import { createDriftCommand } from '../../../src/cli/commands/drift.js';
+import { sentDiffPaths } from '../../../src/cli/commands/drift/revert-verify.js';
 
 const TYPE = 'AWS::Lambda::EventSourceMapping';
 const RECORDED = { FunctionName: 'fn', BatchSize: 10, MaximumRetryAttempts: 2 };
@@ -362,6 +363,58 @@ describe('cdkd drift --revert verifies each reverted resource (go-to-k/cdkd#7025
     expect(text(errorSpy)).not.toContain('not applied by AWS');
   });
 
+  it('a template-only baseline whose revert keeps an untemplated tag passes when AWS holds what was sent', async () => {
+    // The `drift-revert` integ's step 6d shape: state records the TEMPLATE
+    // tags only, so after a revert that restored `Owner` and kept the
+    // AWS-authored `IntegInjected`, state still differs from AWS at `Tags`.
+    const bucket: ResourceState = {
+      physicalId: 'bucket-1',
+      resourceType: 'AWS::S3::Bucket',
+      properties: { BucketName: 'b', Tags: [{ Key: 'Owner', Value: 'cdkd-integ' }] },
+    };
+    const live = (owner: string) => ({
+      BucketName: 'b',
+      Tags: [
+        { Key: 'IntegInjected', Value: 'yes' },
+        { Key: 'Owner', Value: owner },
+      ],
+    });
+    let sent: Record<string, unknown> | undefined;
+    let call = 0;
+    const provider = {
+      readCurrentState: vi.fn(async () => {
+        call++;
+        if (call === 1) return live('DRIFTED-BY-INTEG');
+        // AWS answers in its own order: Owner first.
+        const tags = (live('cdkd-integ').Tags as unknown[]).slice().reverse();
+        return { BucketName: 'b', Tags: tags };
+      }),
+      update: vi.fn(async (_l: string, _p: string, _t: string, props: Record<string, unknown>) => {
+        sent = props;
+        return { physicalId: 'bucket-1', wasReplaced: false };
+      }),
+    };
+    mockRegistryGetProvider.mockReturnValue(provider);
+    mockGetState.mockImplementation(async () => ({
+      state: { ...stateWith(record).state, resources: { DriftBucket: bucket } },
+      etag: '"etag-1"',
+    }));
+
+    await runRevert();
+
+    // Premise: the revert kept the untemplated tag and restored Owner.
+    expect(sent?.['Tags']).toEqual(
+      expect.arrayContaining([
+        { Key: 'IntegInjected', Value: 'yes' },
+        { Key: 'Owner', Value: 'cdkd-integ' },
+      ])
+    );
+    // Not retried: the first re-read already holds what was sent.
+    expect(provider.readCurrentState).toHaveBeenCalledTimes(2);
+    expect(text(errorSpy)).not.toContain('not applied by AWS');
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
   it('--dry-run reverts nothing and re-reads nothing', async () => {
     const provider = providerReading(DRIFTED);
     mockRegistryGetProvider.mockReturnValue(provider);
@@ -402,5 +455,28 @@ describe('cdkd drift --revert verifies each reverted resource (go-to-k/cdkd#7025
     expect(errors).toContain('Revert completed with 1 resource error(s)');
     expect(errors).toContain('1 reverted resource(s) were not applied by AWS');
     expect(text(infoSpy)).toContain('Revert summary: 1 reverted, 1 not applied by AWS, 1 failed.');
+  });
+});
+
+describe('sentDiffPaths compares the sent bag with the re-read (go-to-k/cdkd#7025)', () => {
+  it("applies the provider's own canonicalizer to both sides", () => {
+    const provider = {
+      canonicalizeDriftProperties: (_t: string, p: Record<string, unknown>) => ({
+        ...p,
+        Mode: typeof p['Mode'] === 'string' ? p['Mode'].toLowerCase() : p['Mode'],
+      }),
+    };
+    expect(sentDiffPaths({ Mode: 'FAST' }, { Mode: 'fast' }, ['Mode'], provider, TYPE, {})).toEqual(
+      []
+    );
+    expect(sentDiffPaths({ Mode: 'FAST' }, { Mode: 'slow' }, ['Mode'], provider, TYPE, {})).toEqual(
+      ['Mode']
+    );
+  });
+
+  it('compares only under the targeted top-level keys', () => {
+    expect(
+      sentDiffPaths({ A: 1, B: 1 }, { A: 1, B: 2 }, ['A'], {}, TYPE, {})
+    ).toEqual([]);
   });
 });

@@ -43,6 +43,7 @@ import {
 } from './revert-payload.js';
 import type { ApplyRevertUpdateArgs } from './revert-outcome.js';
 import type { ResourceUpdateResult } from '../../../types/resource.js';
+import { sentDiffPaths } from './revert-verify.js';
 
 /**
  * The `provider.update` half of {@link revertDriftedOutcome}: send the revert
@@ -455,14 +456,24 @@ async function applyRevertUpdateInScope(args: ApplyRevertUpdateArgs): Promise<vo
     // is not a value AWS ignored. The value is recorded only against an
     // `observedProperties` baseline (see `runRevert`); without one, the next
     // `cdkd drift` reports the key again, as before this check existed.
+    const verifiedPaths = outcome.changes
+      .map((change) => change.path)
+      .filter((path) => !narrowedKeys.includes(path.split('.', 1)[0] ?? ''));
     tally.reverted.push({
       stackName: report.stackName,
       region: report.region,
       logicalId: outcome.logicalId,
       resourceType: outcome.resourceType,
-      paths: outcome.changes
-        .map((change) => change.path)
-        .filter((path) => !narrowedKeys.includes(path.split('.', 1)[0] ?? '')),
+      paths: verifiedPaths,
+      differsFromSent: (live) =>
+        sentDiffPaths(
+          newProperties,
+          live,
+          verifiedPaths,
+          provider,
+          outcome.resourceType,
+          stateResource.properties ?? {}
+        ),
     });
     recordReturnedIdentity(args, updateResult, 'reverted');
   } catch (err) {

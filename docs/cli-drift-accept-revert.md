@@ -88,7 +88,7 @@ the resource:
 | Count | Meaning |
 | --- | --- |
 | `reverted` | AWS accepted the update. |
-| `not applied by AWS` | AWS accepted the update, but the re-read still shows the drift on a property the revert sent. Also counted in `reverted`. |
+| `not applied by AWS` | AWS accepted the update, but the re-read still shows the drift on a property the revert sent, and AWS does not hold the value sent there. Also counted in `reverted`. |
 | `not verified` | The re-read could not compare the resource. Also counted in `reverted`; does not change the exit code. |
 | `failed` | The AWS update call failed. |
 | `update-not-supported` | The type cannot be updated in place. |
