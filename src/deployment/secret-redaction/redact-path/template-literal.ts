@@ -84,6 +84,12 @@ export function secretRerenderPairs(
  * only from a TEMPLATE source: a STATE source's plain leaf equal to a recorded
  * plaintext may be a secret an older cdkd persisted in plaintext, and copying
  * it onto this leaf would spread it into a second field.
+ *
+ * Accepted: whether a record's token becomes the literal says whether the
+ * secret equals that template text (one bit, and only for a token the template
+ * now spells as that literal). The next deploy persists the literal whatever
+ * the secret holds, so the bit lasts until then; a pre-#7037 record's token
+ * already said the same thing, since the old walk wrote it only on equality.
  */
 export function rerenderedSourceLiteral(
   bag: unknown,

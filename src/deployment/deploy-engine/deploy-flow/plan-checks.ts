@@ -1,4 +1,5 @@
 import { diffLogMasker } from '../masking.js';
+import { isSingleDynamicReferenceToken } from '../../secret-redaction.js';
 import {
   findUpdatePolicyReplacementRefusals,
   replacementCreateRoutesToCloudControl,
@@ -277,6 +278,20 @@ async function refuseInUseExportChanges(
     replaceFlag: engine.options.replace === true || engine.options.forceStatefulRecreation === true,
   });
   const deferred = deferrable ? found.filter((a) => a.reason === 'deferred') : [];
+  // go-to-k/cdkd#7037: a record an older cdkd wrote can spell a template
+  // literal as a secret's reference, so the plan sees a replacement the
+  // deploy would repair without sending. This check runs before that repair,
+  // so the remedy is named: `cdkd scrub` repairs the record without a deploy.
+  if (found.length > 0) {
+    const suspects = [...changes.keys()].filter(
+      (id) => replaces(id) && replacesOnlyOnLegacyReferenceSpelling(changes.get(id))
+    );
+    if (suspects.length > 0) {
+      engine.logger.warn(
+        safeMsg`${suspects.join(', ')}: the planned replacement reads a stored secret reference against a plain template value. If the template did not change that property, the record was written by an older cdkd: run \`cdkd scrub ${stackName}\` first, then deploy.`
+      );
+    }
+  }
   await refuseInUseExports(
     engine,
     stackName,
@@ -397,4 +412,24 @@ async function refuseInUseExports(
           : [],
     });
   }
+}
+
+/**
+ * Whether every replacing row of `change` reads a whole stored
+ * `{{resolve:...}}` token against a plain template string: the spelling an
+ * older cdkd wrote for a template literal equal to a secret (go-to-k/cdkd#7037),
+ * which the plan cannot tell from a real edit without the secret.
+ */
+export function replacesOnlyOnLegacyReferenceSpelling(change: ResourceChange | undefined): boolean {
+  const rows = (change?.propertyChanges ?? []).filter((pc) => pc.requiresReplacement);
+  return (
+    rows.length > 0 &&
+    rows.every(
+      (pc) =>
+        typeof pc.oldValue === 'string' &&
+        isSingleDynamicReferenceToken(pc.oldValue) &&
+        typeof pc.newValue === 'string' &&
+        !pc.newValue.includes('{{resolve:')
+    )
+  );
 }

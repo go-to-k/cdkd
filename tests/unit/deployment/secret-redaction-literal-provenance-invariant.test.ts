@@ -111,6 +111,10 @@ function literalPositions(
     },
     'Fn::If taking a literal branch': { Label: { 'Fn::If': ['IsOn', v, 'other'] } },
     'Fn::If with a NoValue branch': { Label: { 'Fn::If': ['IsOn', `${v}-x`, { Ref: 'AWS::NoValue' }] } },
+    'Fn::If taking its else branch': { Label: { 'Fn::If': ['IsOff', 'other', v] } },
+    'Fn::If taking its else branch beside NoValue': {
+      Label: { 'Fn::If': ['IsOff', { Ref: 'AWS::NoValue' }, `${v}-x`] },
+    },
   };
 }
 
@@ -244,7 +248,10 @@ describe('a template literal is never persisted as a secret reference (#6303, #7
     const password = `{{resolve:secretsmanager:${arn}:SecretString:password::}}`;
     const pin = `{{resolve:secretsmanager:${arn}:SecretString:pin::}}`;
     const template = {
-      Conditions: { IsOn: { 'Fn::Equals': ['a', 'a'] } },
+      Conditions: {
+        IsOn: { 'Fn::Equals': ['a', 'a'] },
+        IsOff: { 'Fn::Equals': ['a', 'b'] },
+      },
       Resources: {
         Queue: {
           Type: 'AWS::SQS::Queue',

@@ -71,6 +71,7 @@ vi.mock('p-limit', () => ({ default: vi.fn(() => <T>(fn: () => T) => fn()) }));
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import type { StackState } from '../../../src/types/state.js';
+import { replacesOnlyOnLegacyReferenceSpelling } from '../../../src/deployment/deploy-engine/deploy-flow/plan-checks.js';
 
 const USERNAME = '{{resolve:secretsmanager:db-secret:SecretString:username::}}';
 
@@ -206,11 +207,53 @@ describe('a record a pre-#7037 cdkd wrote, holding the username reference at Eng
     expect(run.persisted?.properties['BackupRetentionPeriod']).toBe(7);
   });
 
+  it('a key whose legacy leaf is repaired but whose other leaf moved keeps its replacement', async () => {
+    // `DBName` is create-only: the repaired `A` alone would drop the row, the
+    // edited `B` must keep it (and the stateful refusal with it).
+    const record = legacy();
+    record['Db']!.properties['DBName'] = { A: USERNAME, B: 1 };
+    const t = template('postgres', 1);
+    (t['Db'] as { Properties: Record<string, unknown> }).Properties['DBName'] = {
+      A: 'postgres',
+      B: 2,
+    };
+    const run = await deploy(record, t);
+    expect(run.calls).toEqual([]);
+    expect(String((run.thrown as { cause?: unknown } | undefined)?.cause)).toContain(
+      'requires replacement (immutable property changed: DBName)'
+    );
+  });
+
   it('a real Engine edit is still a stateful replacement the run refuses', async () => {
     const run = await deploy(legacy(), template('mysql', 7));
     expect(run.calls).toEqual([]);
     expect(String((run.thrown as { cause?: unknown } | undefined)?.cause)).toContain(
       'requires replacement (immutable property changed: Engine)'
     );
+  });
+});
+
+describe('the plan-time hint for a legacy spelling (#7037)', () => {
+  const row = (oldValue: unknown, newValue: unknown) => ({
+    logicalId: 'Db',
+    changeType: 'UPDATE' as const,
+    resourceType: 'AWS::RDS::DBInstance',
+    propertyChanges: [{ path: 'Engine', oldValue, newValue, requiresReplacement: true }],
+  });
+
+  it('names a stored whole token read against a plain template string', () => {
+    expect(replacesOnlyOnLegacyReferenceSpelling(row(USERNAME, 'postgres'))).toBe(true);
+  });
+
+  it('stays quiet for an ordinary edit, a reference on both sides, or no replacement', () => {
+    expect(replacesOnlyOnLegacyReferenceSpelling(row('postgres', 'mysql'))).toBe(false);
+    expect(replacesOnlyOnLegacyReferenceSpelling(row(USERNAME, USERNAME.replace('db', 'x')))).toBe(false);
+    expect(
+      replacesOnlyOnLegacyReferenceSpelling({
+        ...row(USERNAME, 'postgres'),
+        propertyChanges: [{ path: 'Engine', oldValue: USERNAME, newValue: 'postgres', requiresReplacement: false }],
+      })
+    ).toBe(false);
+    expect(replacesOnlyOnLegacyReferenceSpelling(undefined)).toBe(false);
   });
 });
