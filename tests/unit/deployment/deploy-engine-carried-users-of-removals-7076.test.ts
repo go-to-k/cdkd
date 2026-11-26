@@ -328,8 +328,9 @@ describe('carriedUsersOfRemovals (go-to-k/cdkd#7076)', () => {
   });
 
   it('reads a removed record by own key, so an inherited name is no current record', () => {
-    const withUser = { ...resources, User: record('user', 'AWS::EC2::Instance', ['constructor']) };
-    const rows = [kept('constructor', record('c-old', SG, ['Vpc']))];
+    // `__proto__` reads Object.prototype (an object) through a plain lookup.
+    const withUser = { ...resources, User: record('user', 'AWS::EC2::Instance', ['__proto__']) };
+    const rows = [kept('__proto__', record('p-old', SG, ['Vpc']))];
     expect(carriedUsersOfRemovals(rows, withUser, new Set(['Vpc', 'User']))).toEqual([]);
   });
 
