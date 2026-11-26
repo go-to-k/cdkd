@@ -1,6 +1,6 @@
 {
   "source": "https://schema.cloudformation.us-east-1.amazonaws.com/CloudformationSchema.zip",
-  "generatedAt": "2026-11-23",
+  "generatedAt": "2026-11-26",
   "primaryIdentifiers": {
     "AWS::ACMPCA::Certificate": ["Arn","CertificateAuthorityArn"],
     "AWS::ACMPCA::CertificateAuthority": ["Arn"],
@@ -761,6 +761,8 @@
     "AWS::ElasticBeanstalk::ConfigurationTemplate": ["ApplicationName","TemplateName"],
     "AWS::ElasticBeanstalk::Environment": ["EnvironmentName"],
     "AWS::ElasticLoadBalancing::LoadBalancer": ["LoadBalancerName"],
+    "AWS::ElasticLoadBalancingProxy::CertificateAssociation": ["Arn"],
+    "AWS::ElasticLoadBalancingProxy::Proxy": ["Arn"],
     "AWS::ElasticLoadBalancingV2::Listener": ["ListenerArn"],
     "AWS::ElasticLoadBalancingV2::ListenerRule": ["RuleArn"],
     "AWS::ElasticLoadBalancingV2::LoadBalancer": ["LoadBalancerArn"],

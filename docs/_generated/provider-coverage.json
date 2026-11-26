@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-11-25T04:34:10.825Z",
+  "generatedAt": "2026-11-26T14:14:07.677Z",
   "summary": {
     "tier1Count": 149,
-    "tier2Count": 1681,
+    "tier2Count": 1683,
     "tier3Count": 324,
-    "totalCount": 2154
+    "totalCount": 2156
   },
   "tier1": [
     "AWS::ApiGateway::Account",
@@ -848,6 +848,8 @@
     "AWS::ElasticBeanstalk::ConfigurationTemplate",
     "AWS::ElasticBeanstalk::Environment",
     "AWS::ElasticLoadBalancing::LoadBalancer",
+    "AWS::ElasticLoadBalancingProxy::CertificateAssociation",
+    "AWS::ElasticLoadBalancingProxy::Proxy",
     "AWS::ElasticLoadBalancingV2::ListenerRule",
     "AWS::ElasticLoadBalancingV2::TrustStore",
     "AWS::ElasticLoadBalancingV2::TrustStoreRevocation",
