@@ -24,6 +24,14 @@ import {
   route53ZoneReferenceChanged,
   ssmDocumentChangeReplaces,
 } from './predicates.js';
+import {
+  dbClusterGlobalClusterChangeReplaces,
+  dbInstanceAvailabilityZoneChangeReplaces,
+  dbInstancePerformanceInsightsKmsKeyChangeReplaces,
+  dbInstanceReplicaSourceChangeReplaces,
+  dbInstanceRestoreInputChangeReplaces,
+  dbInstanceUseLatestRestorableTimeChangeReplaces,
+} from './rds-immutability.js';
 
 /**
  * Initialize replacement rules for common AWS resource types.
@@ -641,19 +649,32 @@ export function initializeRules(this: ReplacementRulesRegistry): void {
   // RDS DBCluster / DBInstance `Engine` (issue #5467): not createOnly in the
   // CFn schema, but CloudFormation replaces a change its handlers call
   // immutable (measured, and transcribed from the handlers; see the
-  // predicates). Every other property keeps the schema createOnly fallback,
-  // since these rules name only `Engine`. Both types are stateful, so the
-  // replacement still needs `--force-stateful-recreation`.
+  // predicates). The same handlers' other immutability checks (#7044) are
+  // wired the same way; none of those keys is createOnly in the schema, so
+  // naming them drops no schema fallback. Every other property keeps the
+  // schema createOnly fallback. Both types are stateful, so the replacement
+  // still needs `--force-stateful-recreation`.
   this.rules.set('AWS::RDS::DBCluster', {
     replacementProperties: new Set(),
     conditionalReplacements: new Map<string, ConditionalReplacement>([
       ['Engine', dbClusterEngineChangeReplaces],
+      ['GlobalClusterIdentifier', dbClusterGlobalClusterChangeReplaces],
     ]),
   });
   this.rules.set('AWS::RDS::DBInstance', {
     replacementProperties: new Set(),
     conditionalReplacements: new Map<string, ConditionalReplacement>([
       ['Engine', dbInstanceEngineChangeReplaces],
+      ['AvailabilityZone', dbInstanceAvailabilityZoneChangeReplaces],
+      ['PerformanceInsightsKMSKeyId', dbInstancePerformanceInsightsKmsKeyChangeReplaces],
+      ['SourceDBInstanceIdentifier', dbInstanceReplicaSourceChangeReplaces],
+      ['SourceDBClusterIdentifier', dbInstanceReplicaSourceChangeReplaces],
+      ['DBSnapshotIdentifier', dbInstanceRestoreInputChangeReplaces],
+      ['DBClusterSnapshotIdentifier', dbInstanceRestoreInputChangeReplaces],
+      ['RestoreTime', dbInstanceRestoreInputChangeReplaces],
+      ['SourceDBInstanceAutomatedBackupsArn', dbInstanceRestoreInputChangeReplaces],
+      ['SourceDbiResourceId', dbInstanceRestoreInputChangeReplaces],
+      ['UseLatestRestorableTime', dbInstanceUseLatestRestorableTimeChangeReplaces],
     ]),
   });
 

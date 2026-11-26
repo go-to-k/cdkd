@@ -73,7 +73,7 @@ export type GlobalClusterUpdate =
   | { kind: 'drop' }
   | { kind: 'detach'; globalClusterId: string };
 
-export const GLOBAL_CLUSTER_CHANGE_REFUSED = `GlobalClusterIdentifier cannot be added or changed on an existing DB cluster unless the cluster is already a member of that global cluster (CloudFormation's update handler fails it as "Resource is immutable"). To join a different global cluster, replace the cluster, for example with a new DBClusterIdentifier`;
+export const GLOBAL_CLUSTER_CHANGE_REFUSED = `GlobalClusterIdentifier cannot be added or changed on an existing DB cluster unless the cluster is already a member of that global cluster (CloudFormation answers the same change with a new DB cluster; cdkd does not replace it from an in-place update). To join a different global cluster, replace the cluster, for example with a new DBClusterIdentifier`;
 
 /**
  * go-to-k/cdkd#5639: the faults a Data API call is refused with while the

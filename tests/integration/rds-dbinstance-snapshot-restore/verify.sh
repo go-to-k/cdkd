@@ -53,10 +53,11 @@
 #      and `PitrInstance` 2 -> 3: the same instances (DbiResourceId).
 #      `ClusterReplicaInstance` drops its source: promoted to a standalone
 #      instance, the same instance.
-#   5. A changed DBSnapshotIdentifier, then an added RestoreTime, is refused
-#      before any call ("Resource is immutable" under CloudFormation): each
-#      deploy fails naming the key, and the instance and its record are
-#      unchanged.
+#   5. A changed DBSnapshotIdentifier, then an added RestoreTime, is a
+#      replacement (CloudFormation replaces the instance, go-to-k/cdkd#7044):
+#      without --force-stateful-recreation each deploy is refused by the
+#      stateful guard naming the key, before any call, and the instance and
+#      its record are unchanged.
 #   6. Destroy: every instance, the cluster, the subnet group, the VPC, the
 #      state and the source's automated backups are gone; then the two manual
 #      snapshots (not cdkd's) are deleted.
@@ -118,10 +119,10 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 WARN_LINE="MasterUsername not applied: a restore from a snapshot takes them from the snapshot"
 # Sentinel: the line's opening, independent of its wording.
 WARN_SENTINEL="DBInstance SnapInstance: "
-REFUSAL_LINE="DBSnapshotIdentifier cannot be added or changed on an existing DB instance"
-# Sentinel: the engine's update-refusal opening, independent of cdkd's reason.
-REFUSAL_SENTINEL="cannot be updated in place"
-PITR_REFUSAL_LINE="RestoreTime cannot be added or changed on an existing DB instance"
+REFUSAL_LINE="SnapInstance (AWS::RDS::DBInstance) requires replacement (immutable property changed: DBSnapshotIdentifier)"
+# Sentinel: the stateful guard's wording, independent of the key it names.
+REFUSAL_SENTINEL="but it is a stateful resource"
+PITR_REFUSAL_LINE="PitrInstance (AWS::RDS::DBInstance) requires replacement (immutable property changed: RestoreTime)"
 
 # Best-effort delete of one DB instance, until it is gone. The delete is
 # re-sent each round: an instance still `creating`, `backing-up` or
@@ -571,7 +572,8 @@ assert_record "Phase 4" ClusterReplicaInstance properties.SourceDBClusterIdentif
 echo "    ClusterReplicaInstance promoted to a standalone instance (same DbiResourceId)"
 
 # --- Phase 5: a changed snapshot is refused ----------------------------------
-# No snapshot of this name needs to exist: the refusal comes before any call.
+# No snapshot of this name needs to exist: the stateful guard refuses the
+# replacement before any call (go-to-k/cdkd#7044).
 echo "==> Phase 5: a changed DBSnapshotIdentifier is refused"
 DEPLOY_LOG="$(mktemp)"
 set +e
@@ -695,4 +697,4 @@ assert_gone "manual cluster snapshot ${CLUSTER_SNAPSHOT_ID} still exists after i
 echo "    manual snapshots deleted"
 
 trap - EXIT INT TERM
-echo "[verify] PASS — RDS DB instance restores from a DB snapshot, a Multi-AZ DB cluster snapshot and to a point in time, and a read replica of a Multi-AZ DB cluster, on the SDK route with CloudFormation's follow-up ModifyDBInstance, updated in place (the replica promoted), a changed snapshot and an added RestoreTime refused, destroyed clean"
+echo "[verify] PASS — RDS DB instance restores from a DB snapshot, a Multi-AZ DB cluster snapshot and to a point in time, and a read replica of a Multi-AZ DB cluster, on the SDK route with CloudFormation's follow-up ModifyDBInstance, updated in place (the replica promoted), a changed snapshot and an added RestoreTime refused as stateful replacements, destroyed clean"

@@ -182,9 +182,12 @@ export async function updateDBInstance(
       ? ({ kind: 'unchanged', keys: [], removed: [] } as const)
       : replicaSourceChange(properties, previousProperties);
   // go-to-k/cdkd#5640: an added or changed restore snapshot or point-in-time
-  // key is refused before any change, as CloudFormation fails the update
-  // ("Resource is immutable"); a removed one changes nothing, and none is ever
-  // sent. On an instance restored to a point in time, `SourceDBInstanceIdentifier`
+  // key is refused before any change; a removed one changes nothing, and none
+  // is ever sent. CloudFormation's handler calls such a change immutable and
+  // REPLACES the instance (go-to-k/cdkd#7044), which `cdkd diff` now classifies
+  // too (`replacement-rules/rds-immutability.ts`), so a template change takes
+  // the stateful replacement guard and this refusal is reached only by a
+  // `drift --revert`, a rollback or a direct call. On an instance restored to a point in time, `SourceDBInstanceIdentifier`
   // names the restore's source, so a changed one is refused the same way
   // (`isSourceDBInstanceIdentifierMutable`), and so is an added or changed
   // `SourceDBClusterIdentifier`, which the restore never read
@@ -245,8 +248,9 @@ export async function updateDBInstance(
       logicalId,
       restoreMask(
         `${changedRestoreKeys.join(' and ')} cannot be added or changed on an existing DB instance — ` +
-          `an instance is restored ${how} only when it is created, and CloudFormation ` +
-          `refuses the same update ("Resource is immutable"). Removing it changes nothing. ` +
+          `an instance is restored ${how} only when it is created. CloudFormation answers ` +
+          `the same change with a new instance; cdkd does not replace it from an in-place ` +
+          `update. Removing it changes nothing. ` +
           `Nothing was applied to DB instance ${physicalId}. To keep the instance as it is, ` +
           (toPointInTime
             ? `declare the values the previous deploy declared (or none, if it declared none). `
@@ -288,8 +292,9 @@ export async function updateDBInstance(
       (message) => this.logger.warn(message)
     );
     // go-to-k/cdkd#5640: an added or changed source is refused before any
-    // change, as CloudFormation fails the update ("Resource is immutable"),
-    // unless the live instance already replicates the declared source (a
+    // change (CloudFormation replaces the instance, go-to-k/cdkd#7044, and the
+    // diff now classifies that replacement, so a template change rarely reaches
+    // here), unless the live instance already replicates the declared source (a
     // record that lacks it). A rollback replay or a `drift --revert` cannot
     // make an instance a replica again: it warns, leaves the source as it is
     // and records what the instance kept.
@@ -339,8 +344,9 @@ export async function updateDBInstance(
         logicalId,
         sourceMask(
           `${sourceKeys} cannot be added or changed on an existing DB instance — ` +
-            `an instance becomes a read replica only when it is created, and CloudFormation ` +
-            `refuses the same update ("Resource is immutable"). Removing it promotes the ` +
+            `an instance becomes a read replica only when it is created. CloudFormation ` +
+            `answers the same change with a new instance; cdkd does not replace it from an ` +
+            `in-place update. Removing it promotes the ` +
             `replica instead` +
             (sourceChange.removed.length > 0
               ? ` (here it replaces ${sourceChange.removed.join(' and ')}, so nothing is promoted)`
@@ -447,7 +453,8 @@ export async function updateDBInstance(
         logicalId,
         zoneMask(
           `AvailabilityZone cannot change on an existing DB instance — ModifyDBInstance has no ` +
-            `such member, and CloudFormation refuses the same update ("Resource is immutable"). ` +
+            `such member. CloudFormation answers the same change with a new instance; cdkd ` +
+            `does not replace it from an in-place update. ` +
             `Nothing was applied to DB instance ${physicalId}. ` +
             (liveZoneRead === 'not-found'
               ? `RDS reports no such DB instance: it was deleted outside cdkd, so the state ` +
