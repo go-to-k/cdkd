@@ -370,6 +370,7 @@ multi-asset	2026-11-04T06:01:56Z	PASS	95	verify.sh	rc 0, orph: 4 Lambda log grou
 multi-region-same-stack	2026-11-04T08:31:11Z	PASS	37	standard	standard flow, us-west-2 + us-east-1 arms, both state keys coexisted, destroy 0 errors each, orph clean both regions
 multi-resource	2026-11-25T15:18:54Z	PASS	117	standard	rc ok, orph clean
 multi-stack-deps	2026-11-25T15:18:54Z	PASS	121	standard	rc ok, orph clean
+neptune-cluster-port	2026-11-26T10:28:40Z	PASS	188	verify.sh	PR7036 10585d155 us-east-1 rc ok, orph clean
 neptune-fix-forward-orphan	2026-11-06T18:41:33Z	PASS	2306	verify.sh	#5899 neptune split head; own bucket; rc ok, orph clean
 neptune-restore	2026-11-06T18:03:07Z	PASS	1800	verify.sh	#5899 neptune split head; rc ok, orph clean
 nested-child-first-deploy-failure	2026-11-16T12:51:14Z	PASS	144	verify.sh	rc ok, orph clean (#6398)
@@ -410,7 +411,7 @@ rds-dbinstance-additional-storage-volumes	2026-11-12T04:20:11Z	PASS	2256	verify.
 rds-dbinstance-backfill	2026-11-09T06:52:36Z	PASS	4822	verify.sh	rc ok, orph clean; #5640 SourceRegion cross-region replica (us-west-2 source) sdk-routed
 rds-dbinstance-backup-replication	2026-11-10T17:39:18Z	PASS	1189	verify.sh	rc ok, destroy 0 errors, orph clean (us-west-2 replica swept; us-east-1 automated snapshots cleared)
 rds-dbinstance-charset-timezone	2026-11-11T02:19:27Z	PASS	1169	verify.sh	rc ok, orph clean; Oracle SE2 + SQL Server Express (#5640)
-rds-dbinstance-getatt-attributes	2026-11-26T09:10:06Z	PASS	551	verify.sh	PR7043 c465d131c us-east-1 rc ok, orph clean
+rds-dbinstance-getatt-attributes	2026-11-26T10:52:11Z	PASS	753	verify.sh	PR7036 10585d155 us-east-1 rc 0 ok, orph clean
 rds-dbinstance-processor-features	2026-11-09T14:21:43Z	PASS	1985	verify.sh	rc ok, destroy 0 errors, orph clean (db.m7i.4xlarge, 5 phases)
 rds-dbinstance-snapshot-restore	2026-11-13T06:47:48Z	PASS	3933	verify.sh	rc ok, orph clean (#5640 snapshot + PITR + cluster replica, PR #6176 merged head)
 rds-express-cluster	2026-11-20T19:36:46Z	PASS	1715	verify.sh	PR6691 run at 3d802a13c, same PR delta; rc ok, orph clean
