@@ -841,10 +841,13 @@ export async function updateDBInstance(
     // instance again, and a custom resource downstream waits before its
     // handler runs (go-to-k/cdkd#6940); a plain dependent does not.
     // A CA certificate rotated without a restart is never waited for, in
-    // either mode: until it reads the one sent it is left absent too, and a
-    // reference reads the instance live (the certificate still in use).
-    const unapplied = moved !== undefined ? unappliedMovedChanges(moved, described) : [];
-    if (noWait && moved !== undefined && blockingMovedChanges(moved, unapplied).length > 0) {
+    // either mode: the certificate the instance reports is the one in use, so
+    // it is recorded as read, as CloudFormation's GetAtt returns its live model.
+    const unapplied =
+      moved !== undefined
+        ? blockingMovedChanges(moved, unappliedMovedChanges(moved, described))
+        : [];
+    if (noWait && unapplied.length > 0 && moved !== undefined) {
       deferReadiness(logicalId, resourceType, physicalId, (signal) =>
         this.waitForInstanceState(
           logicalId,

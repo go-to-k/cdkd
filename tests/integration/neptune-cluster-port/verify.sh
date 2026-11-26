@@ -70,6 +70,8 @@ cleanup() {
   fi
   aws neptune delete-db-cluster --region "${REGION}" --db-cluster-identifier "${CLUSTER_ID}" \
     --skip-final-snapshot >/dev/null 2>&1 || true
+  # A re-run right after would collide with a cluster still `deleting`.
+  aws neptune wait db-cluster-deleted --region "${REGION}" --db-cluster-identifier "${CLUSTER_ID}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --region "${REGION}" --name "${PORT_PARAM}" >/dev/null 2>&1 || true
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
@@ -130,14 +132,6 @@ assert_port "phase 1" 8182
 
 echo "==> Phase 2: change DBPort to 8183 in place (issue #7006)"
 CDKD_TEST_DB_PORT=8183 node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
-# Premise: the port really moved, and on the same cluster. A replacement
-# records a fresh cluster and would pass the checks below without the fix.
-LIVE="$(live_cluster)"
-if [ "$(jq -r '.Port' <<<"${LIVE}")" = "8182" ]; then
-  echo "FAIL: premise: the live cluster port is still 8182 after the DBPort change" >&2
-  exit 1
-fi
-expect_eq "phase 2: DbClusterResourceId kept (no replacement)" "$(jq -r '.DbClusterResourceId' <<<"${LIVE}")" "${RESOURCE_ID}"
 # Compare the record with the port the cluster SETTLES on: wait until it is
 # out of `modifying` (bounded), so a record taken mid-change cannot match a
 # live read taken mid-change too. The elapsed time is the measurement #7006
@@ -153,6 +147,15 @@ if [ "${STATUS}" = "modifying" ]; then
   exit 1
 fi
 echo "    OK: cluster ${STATUS} $(( $(date +%s) - SETTLE_START ))s after the deploy returned"
+# Premise, read once the cluster settled: the port really moved, on the same
+# cluster. A replacement records a fresh cluster and would pass the checks
+# below without the fix.
+LIVE="$(live_cluster)"
+if [ "$(jq -r '.Port' <<<"${LIVE}")" = "8182" ]; then
+  echo "FAIL: premise: the live cluster port is still 8182 after the DBPort change" >&2
+  exit 1
+fi
+expect_eq "phase 2: DbClusterResourceId kept (no replacement)" "$(jq -r '.DbClusterResourceId' <<<"${LIVE}")" "${RESOURCE_ID}"
 assert_port "phase 2" 8183
 
 echo "==> Phase 3: destroy"

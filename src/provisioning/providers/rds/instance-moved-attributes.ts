@@ -24,9 +24,9 @@ export interface MovedAttributeChanges {
    * declares `CertificateRotationRestart: true`, as CloudFormation's
    * `isCaCertificateChangesApplied` counts it (`instanceHasPendingChanges`).
    * Without a restart, an engine that cannot rotate in place keeps the OLD
-   * certificate in use until the next reboot, so nothing waits for it: the
-   * certificate attributes are recorded only once they read the one sent,
-   * and are left absent otherwise, so a reader reads the instance live.
+   * certificate in use until the next reboot, so nothing waits for it, and
+   * the certificate the instance reports (the one in use) is recorded as
+   * read, as CloudFormation's GetAtt returns its live model.
    */
   readonly caRotationRestarts?: boolean;
   /** The Multi-AZ setting sent, when the template changed it. */
@@ -165,8 +165,7 @@ function sameCertificate(live: string | undefined, sent: string): boolean {
  * before RDS applied the change is the old one, so it is left ABSENT rather
  * than recorded stale. A reference to it in this deploy then waits for the
  * change (the deferred readiness `updateDBInstance` reports, under
- * `--no-wait`) or reads the instance live (a CA certificate rotated without
- * a restart); a later deploy re-reads it.
+ * `--no-wait`); a later deploy re-reads it.
  */
 export function withoutUnappliedMovedAttributes(
   attributes: Record<string, unknown>,

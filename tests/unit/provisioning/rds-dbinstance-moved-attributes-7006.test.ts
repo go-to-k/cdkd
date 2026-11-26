@@ -257,7 +257,7 @@ describe('RDS DBInstance attributes an in-place update moves late (go-to-k/cdkd#
       ['undeclared', undefined],
       ['false', false],
     ])(
-      'with CertificateRotationRestart %s, a certificate the instance has not switched to (until the next reboot) holds nothing, as in CloudFormation, and is left absent',
+      'with CertificateRotationRestart %s, a certificate the instance has not switched to (until the next reboot) holds nothing, and the certificate in use is recorded, as CloudFormation returns it',
       async (_label, restart) => {
         // The identifier never switches: an engine that cannot rotate in place.
         arm([{ PendingModifiedValues: { CACertificateIdentifier: NEW_CERT.CAIdentifier } }]);
@@ -266,8 +266,8 @@ describe('RDS DBInstance attributes an in-place update moves late (go-to-k/cdkd#
           previous
         );
         expect(describes()).toBe(1);
-        expect(result.attributes).not.toHaveProperty('CertificateDetails.CAIdentifier');
-        expect(result.attributes).not.toHaveProperty('CertificateDetails.ValidTill');
+        expect(result.attributes?.['CertificateDetails.CAIdentifier']).toBe(OLD_CERT.CAIdentifier);
+        expect(result.attributes?.['CertificateDetails.ValidTill']).toBe('2027-01-01T00:00:00Z');
       }
     );
 
@@ -279,7 +279,7 @@ describe('RDS DBInstance attributes an in-place update moves late (go-to-k/cdkd#
         previous
       );
       expect(result.attributes?.['Endpoint.Port']).toBe('3307');
-      expect(result.attributes).not.toHaveProperty('CertificateDetails.CAIdentifier');
+      expect(result.attributes?.['CertificateDetails.CAIdentifier']).toBe(OLD_CERT.CAIdentifier);
       expect(describes()).toBe(3);
     });
 
@@ -288,7 +288,7 @@ describe('RDS DBInstance attributes an in-place update moves late (go-to-k/cdkd#
       arm([{ PendingModifiedValues: { CACertificateIdentifier: NEW_CERT.CAIdentifier } }]);
       const bound = scope();
       const result = await withDeferredReadinessScope(bound, () => update(changed, previous));
-      expect(result.attributes).not.toHaveProperty('CertificateDetails.CAIdentifier');
+      expect(result.attributes?.['CertificateDetails.CAIdentifier']).toBe(OLD_CERT.CAIdentifier);
       expect(bound.deferred.size).toBe(0);
     });
 
@@ -422,7 +422,12 @@ describe('RDS DBInstance attributes an in-place update moves late (go-to-k/cdkd#
       const bound = scope();
       const result = await withDeferredReadinessScope(bound, () =>
         update(
-          { ...BASE, MultiAZ: true, CACertificateIdentifier: NEW_CERT.CAIdentifier },
+          {
+            ...BASE,
+            MultiAZ: true,
+            CACertificateIdentifier: NEW_CERT.CAIdentifier,
+            CertificateRotationRestart: true,
+          },
           { ...BASE, MultiAZ: false, CACertificateIdentifier: OLD_CERT.CAIdentifier }
         )
       );
