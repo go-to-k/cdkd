@@ -62,16 +62,36 @@ export type BindingFingerprinter = InputFingerprinter & {
   ): Promise<{ parameters: readonly string[]; fingerprint: string | undefined } | undefined>;
   /** go-to-k/cdkd#7050: {@link passedSecretVerdictOf} for `key` of `record`. */
   passedSecretVerdict(key: string, record: unknown): Promise<PassedSecretVerdict>;
+  /**
+   * go-to-k/cdkd#7050 review: today's passed-secret member of `key` (its
+   * MACs bound to its proven input fingerprint); `undefined` when unproven or
+   * with no MAC this run.
+   */
+  passedSecretMember(
+    key: string
+  ): Promise<{ fingerprint: string; macs: Record<string, string> } | undefined>;
 };
 
 /**
  * What a masked key's passed-secret value MACs say (go-to-k/cdkd#7050):
  * `'n/a'` when it reads no parameter a parent passed as `secret` (the
  * fingerprints alone decide), else whether the record's MACs, bound to
- * today's proven input fingerprint, equal today's. `'none'` (no MAC, an old
- * record, an unproven walk, no KMS) proves nothing either way.
+ * today's proven input fingerprint, equal today's. `'none'` (an unproven
+ * walk, no MAC source) proves nothing either way. {@link UnverifiedPassedSecret}
+ * (no member, no MAC this run, an unusable member) proves nothing either, but
+ * is never a move by itself (go-to-k/cdkd#7050 review): a move of a stateful
+ * create-only key would be refused on every deploy, since only a send stamps.
  */
-export type PassedSecretVerdict = 'n/a' | 'confirmed' | 'changed' | 'none';
+export type PassedSecretVerdict = 'n/a' | 'confirmed' | 'changed' | 'none' | UnverifiedPassedSecret;
+
+/** The {@link PassedSecretVerdict}s that read as unmoved while the input fingerprint is. */
+export type UnverifiedPassedSecret = 'absent' | 'unavailable' | 'unusable';
+
+export function isUnverifiedPassedSecret(
+  verdict: PassedSecretVerdict
+): verdict is UnverifiedPassedSecret {
+  return verdict === 'absent' || verdict === 'unavailable' || verdict === 'unusable';
+}
 
 export function inputFingerprinter(
   templateProps: Record<string, unknown>,
@@ -138,6 +158,13 @@ export function inputFingerprinter(
       return sources.passedSecretMacs
         .verdict({ record, key, parameters: bound.parameters, fingerprint: bound.fingerprint })
         .catch(() => 'none' as const);
+    },
+    passedSecretMember: async (key: string) => {
+      const bound = await passedSecretBinding(key);
+      if (bound?.fingerprint === undefined || sources.passedSecretMacs === undefined) return;
+      return sources.passedSecretMacs
+        .member(bound.parameters, bound.fingerprint)
+        .catch(() => undefined);
     },
   });
 }
@@ -354,7 +381,9 @@ export function boundReferenceFingerprints(
  * property reads as unmoved. A property with NO bound input fingerprint (a
  * record #4451 wrote, or one an older cdkd rewrote since) is reported to
  * `onRebaseline` with today's input fingerprint, which the deploy stamps
- * without sending.
+ * without sending. A key reading a parent-passed secret with no usable MAC
+ * ({@link UnverifiedPassedSecret}) and a bound input fingerprint equal to
+ * today's is unmoved and reported to `onUnverified`.
  */
 export async function movedMaskedProperties(
   record: Pick<ResourceState, 'properties'> & {
@@ -364,7 +393,8 @@ export async function movedMaskedProperties(
   },
   templateProps: Record<string, unknown>,
   fingerprinter?: InputFingerprinter,
-  onRebaseline?: (key: string, fingerprint: string) => void
+  onRebaseline?: (key: string, fingerprint: string) => void,
+  onUnverified?: (key: string, verdict: UnverifiedPassedSecret) => void
 ): Promise<string[]> {
   const recorded = maskedPropertyFingerprintsOf(record);
   if (recorded.size === 0) return [];
@@ -390,6 +420,21 @@ export async function movedMaskedProperties(
       continue;
     }
     const bound = inputs.get(key);
+    // go-to-k/cdkd#7050 review: no usable MAC, and the recorded input
+    // fingerprint equal to today's: unmoved, reported to `onUnverified` (the
+    // plan warns, and backfills an `'absent'` member). Anything else moved.
+    if (isUnverifiedPassedSecret(passed)) {
+      const now = bound === undefined ? undefined : await fingerprinter(key);
+      if (
+        now === undefined ||
+        splitInputFingerprint(now).input !== splitInputFingerprint(bound!).input
+      ) {
+        moved.push(key);
+      } else {
+        onUnverified?.(key, passed);
+      }
+      continue;
+    }
     if (bound === undefined && onRebaseline === undefined) continue;
     const now = await fingerprinter(key);
     if (now === undefined) continue;

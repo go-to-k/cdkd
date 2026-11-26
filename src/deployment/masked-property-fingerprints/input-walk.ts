@@ -86,14 +86,24 @@ export interface PassedSecretMacSources {
   /**
    * Whether the MACs the record holds for `key` (bound to `fingerprint`, the
    * key's input fingerprint proven over `parameters`) equal today's:
-   * `'none'` for anything missing, malformed or under another key.
+   * `'absent'` when the record holds no member for `key`, `'unavailable'`
+   * with no MAC this run, `'unusable'` for one malformed, bound elsewhere or
+   * under another key.
    */
   verdict(args: {
     record: unknown;
     key: string;
     parameters: readonly string[];
     fingerprint: string;
-  }): Promise<'confirmed' | 'changed' | 'none'>;
+  }): Promise<'confirmed' | 'changed' | 'absent' | 'unavailable' | 'unusable'>;
+  /**
+   * The member a save would stamp for `parameters` bound to `fingerprint`
+   * (go-to-k/cdkd#7050 review's backfill); `undefined` with no MAC this run.
+   */
+  member(
+    parameters: readonly string[],
+    fingerprint: string
+  ): Promise<{ fingerprint: string; macs: Record<string, string> } | undefined>;
 }
 
 /** A nested stack's template, and the loader for the nested stacks IT declares. */

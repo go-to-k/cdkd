@@ -149,7 +149,7 @@ export function noEchoMacInputBindingsOf(record: unknown): Map<string, string> {
  * the record holds masked, beside the same save's input fingerprint. Like
  * {@link NOECHO_MAC_INPUT_BINDING}, an OBJECT no parameter name can spell: an
  * older cdkd never reads it and drops it from an entry it rebuilds, which the
- * next deploy reads as no MAC (the key is sent, never compared equal).
+ * next deploy reads as no MAC (backfilled while its input fingerprint holds).
  */
 export const PASSED_SECRET_MACS = 'cdkd:passed';
 
@@ -182,21 +182,93 @@ export function passedSecretMacsOf(
 }
 
 /**
- * go-to-k/cdkd#7050: the verdict of `key`'s passed-secret MACs: `'none'`
- * unless the record holds a member for it bound to `fingerprint` (today's
- * input fingerprint, proven over `parameters`), naming exactly `parameters`,
- * under the key of today's MACs; then whether every MAC is equal.
+ * The member a save leaves for a key whose passed-secret MACs it drops (a
+ * failed update, a record written with no template): it reads as malformed,
+ * so the key never reads as a record that never had one (and is never
+ * backfilled, go-to-k/cdkd#7050 review).
  */
+export const DROPPED_PASSED_SECRET_MACS: Readonly<{ fingerprint: string }> = Object.freeze({
+  fingerprint: 'cdkd:dropped',
+});
+
+/** The record's raw {@link PASSED_SECRET_MACS} member of `key`, whatever its shape (`undefined`: none). */
+export function rawPassedSecretMember(record: unknown, key: string): unknown {
+  if (!isPlainRecord(record)) return undefined;
+  const field = (record as { noEchoValueMacs?: unknown }).noEchoValueMacs;
+  if (!isPlainRecord(field) || !Object.hasOwn(field, key)) return undefined;
+  const entry = field[key];
+  // An entry of any other shape is malformed: a member it may have held is unreadable.
+  if (!isPlainRecord(entry)) return DROPPED_PASSED_SECRET_MACS;
+  return Object.hasOwn(entry, PASSED_SECRET_MACS) ? entry[PASSED_SECRET_MACS] : undefined;
+}
+
+/**
+ * go-to-k/cdkd#7050: what `key`'s passed-secret MACs say. `'absent'`: the
+ * record holds no member for it (a record written before they existed, or
+ * with no MAC key), whatever this run's MACs. `'unavailable'`: a member, and
+ * no MAC this run for a parameter it reads. `'unusable'`: a member not bound
+ * to `fingerprint` (today's input fingerprint, proven over `parameters`), not
+ * naming exactly `parameters`, malformed or under another key. Else whether
+ * every MAC is equal.
+ */
+export type PassedSecretMacVerdict =
+  | 'confirmed'
+  | 'changed'
+  | 'absent'
+  | 'unavailable'
+  | 'unusable';
+
 export function passedSecretMacVerdict(
   record: unknown,
   key: string,
   parameters: readonly string[],
   fingerprint: string,
   current: ReadonlyMap<string, NoEchoMac> | undefined
-): NoEchoMacVerdict {
+): PassedSecretMacVerdict {
+  if (rawPassedSecretMember(record, key) === undefined) return 'absent';
+  if (current === undefined || parameters.some((parameter) => !current.has(parameter))) {
+    return 'unavailable';
+  }
   const member = passedSecretMacsOf(record).get(key);
-  if (member === undefined || member.fingerprint !== fingerprint) return 'none';
-  return noEchoMacVerdict(member.macs, parameters, current);
+  if (member === undefined || member.fingerprint !== fingerprint) return 'unusable';
+  const verdict = noEchoMacVerdict(member.macs, parameters, current);
+  return verdict === 'none' ? 'unusable' : verdict;
+}
+
+/**
+ * go-to-k/cdkd#7050 review: `record` with each of `members` (the plan's
+ * backfill of a key whose record held no passed-secret member) written into
+ * its `noEchoValueMacs` entry, beside the entry's other members. Only for a
+ * key still holding none, and only bound to the input fingerprint the record
+ * holds for it. A new record object; `record` is not touched.
+ */
+export function withPassedSecretBackfill(
+  record: ResourceState,
+  members: Readonly<Record<string, PassedSecretMacsMember>>
+): ResourceState {
+  const inputs = maskedPropertyInputFingerprintsOf(record);
+  const field = isPlainRecord(record.noEchoValueMacs) ? record.noEchoValueMacs : {};
+  const next: Array<[string, unknown]> = Object.entries(field);
+  let changed = false;
+  for (const [key, member] of Object.entries(members)) {
+    if (rawPassedSecretMember(record, key) !== undefined) continue;
+    if (inputs.get(key) !== member.fingerprint) continue;
+    const at = next.findIndex(([k]) => k === key);
+    const entry = at >= 0 && isPlainRecord(next[at]![1]) ? next[at]![1] : {};
+    const stamped: [string, unknown] = [
+      key,
+      {
+        ...entry,
+        [PASSED_SECRET_MACS]: { fingerprint: member.fingerprint, macs: { ...member.macs } },
+      },
+    ];
+    if (at >= 0) next[at] = stamped;
+    else next.push(stamped);
+    changed = true;
+  }
+  return changed
+    ? ({ ...record, noEchoValueMacs: Object.fromEntries(next) } as ResourceState)
+    : record;
 }
 
 /**
@@ -218,6 +290,10 @@ export function passedSecretMacSources(
       }).sort(),
     verdict: async ({ record, key, parameters: read, fingerprint }) =>
       passedSecretMacVerdict(record, key, read, fingerprint, await macs()),
+    member: async (read, fingerprint) => {
+      const made = noEchoValueMacsFor(read, await macs());
+      return made === undefined ? undefined : { fingerprint, macs: made };
+    },
   };
 }
 
@@ -583,11 +659,25 @@ export function withNoEchoValueMacs(
   passedSecrets?: ReadonlyMap<string, PassedSecretMacsMember>
 ): ResourceState {
   if (!isWrittenFromDeployedTemplate(writtenBag)) return persisted;
+  // go-to-k/cdkd#7050 review: a key whose record held a passed-secret member
+  // never reads as one that held none (the backfill fires once per record):
+  // with no new member, the save carries the previous one, or a dropped one.
+  const droppedPassed = (field: unknown): Array<[string, Record<string, unknown>]> =>
+    isPlainRecord(field)
+      ? Object.keys(field)
+          .filter((key) => rawPassedSecretMember(persisted, key) !== undefined)
+          .map((key) => [key, { [PASSED_SECRET_MACS]: { ...DROPPED_PASSED_SECRET_MACS } }])
+      : [];
   if (templateProps === undefined) {
     // Written, with no template to read: nothing vouches for a carried entry.
     if (persisted.noEchoValueMacs === undefined) return persisted;
     const { noEchoValueMacs: _dropped, ...without } = persisted;
-    return without as ResourceState;
+    const tombstones = droppedPassed(_dropped);
+    return (
+      tombstones.length > 0
+        ? { ...without, noEchoValueMacs: Object.fromEntries(tombstones) }
+        : without
+    ) as ResourceState;
   }
   const previous = noEchoValueMacsOf(persisted);
   // Read only when a kept entry or a binding needs them.
@@ -603,10 +693,17 @@ export function withNoEchoValueMacs(
     // only for a key it records masked, its inputs hashed from no secret).
     const passed = passedSecrets?.get(key);
     if (passed !== undefined) stamped ??= maskedPropertyInputFingerprintsOf(persisted);
+    // With no new member, the previous one (still what AWS was last sent
+    // with, or unusable: never read as absent, go-to-k/cdkd#7050 review).
+    const previousPassed = rawPassedSecretMember(persisted, key);
+    const carriedPassed: Entry =
+      previousPassed === undefined
+        ? {}
+        : { [PASSED_SECRET_MACS]: previousPassed as PassedSecretMacsMember };
     const passedMember: Entry =
       passed !== undefined && passed.fingerprint === stamped?.get(key)
         ? { [PASSED_SECRET_MACS]: { fingerprint: passed.fingerprint, macs: { ...passed.macs } } }
-        : {};
+        : carriedPassed;
     const parameters = noEchoMacParametersOf(templateProps[key], sources);
     if (parameters.length === 0) {
       if (Object.keys(passedMember).length > 0) entries.push([key, passedMember]);
@@ -614,11 +711,19 @@ export function withNoEchoValueMacs(
     }
     if (kept?.has(key) === true) {
       // Unsent: today's passed-secret MACs describe nothing AWS holds, so the
-      // key carries none, and the next deploy sends it (go-to-k/cdkd#7050).
+      // key carries its previous member, as its `NoEcho` MACs (go-to-k/cdkd#7050).
       const before = previous.get(key);
       if (before !== undefined) {
         previousBindings ??= noEchoMacInputBindingsOf(persisted);
-        entries.push([key, withBinding(Object.fromEntries(before), previousBindings.get(key))]);
+        entries.push([
+          key,
+          {
+            ...withBinding(Object.fromEntries(before), previousBindings.get(key)),
+            ...carriedPassed,
+          },
+        ]);
+      } else if (Object.keys(carriedPassed).length > 0) {
+        entries.push([key, carriedPassed]);
       }
       continue;
     }

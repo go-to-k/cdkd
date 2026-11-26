@@ -83,6 +83,7 @@ export {
   maskedPropertyFingerprintsOf,
   maskedPropertyInputFingerprintsOf,
   movedMaskedProperties,
+  isUnverifiedPassedSecret,
   withRebaselinedFingerprints,
   isWrittenFromDeployedTemplate,
   markWrittenFromDeployedTemplate,
@@ -92,6 +93,7 @@ export {
 export type {
   BindingFingerprinter,
   InputFingerprinter,
+  UnverifiedPassedSecret,
 } from './masked-property-fingerprints/records.js';
 export {
   maskedPropertyReferenceFingerprintsOf,

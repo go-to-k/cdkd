@@ -21,6 +21,7 @@ import {
   publicReferencesMoved,
   type MaskedInputSources,
   type PublicReferenceOf,
+  type UnverifiedPassedSecret,
 } from '../../deployment/masked-property-fingerprints.js';
 import { carriesSecretMask } from '../../deployment/secret-redaction.js';
 import type { MaskerFn } from '../../provisioning/masked-retry-logger.js';
@@ -31,7 +32,11 @@ import { unsettledPropertiesOf } from '../../state/unsettled-properties.js';
 import type { ReadProvenanceSources } from '../read-provenance-promotion.js';
 import { DiffCalculator } from '../diff-calculator.js';
 import { markLegacyHandleHeals } from './legacy-handle-heal.js';
-import { maskUnmovedRedactionMasks } from './redaction-masks.js';
+import {
+  maskUnmovedRedactionMasks,
+  reportUnverifiedPassedSecrets,
+  type PassedSecretBackfill,
+} from './redaction-masks.js';
 import {
   type IntrinsicResolveFn,
   type CanonicalizePropertiesFn,
@@ -117,6 +122,12 @@ export async function calculateDiff(
   maskedInputs?: {
     sources: MaskedInputSources;
     rebaselined?: Map<string, Record<string, string>>;
+    /**
+     * go-to-k/cdkd#7050 review: the passed-secret members the deploy stamps
+     * on a record that held none for a key the plan read unmoved (logical
+     * id -> property -> member). Only the deploy passes it.
+     */
+    passedSecretBackfills?: Map<string, Record<string, PassedSecretBackfill>>;
     /**
      * go-to-k/cdkd#7050: what the diff pass proved of each plain
      * `{{resolve:ssm:...}}` reference (`publicReferencesOf` over its bag).
@@ -498,15 +509,27 @@ export async function calculateDiff(
       // behind that text moved.
       const reported = new Set(propertyChanges.map((pc) => pc.path));
       const rebaselined: Array<[string, string]> = [];
+      // go-to-k/cdkd#7050 review: a key with no usable passed-secret MAC and
+      // unmoved inputs: warned of, and backfilled when it never held one.
+      const unverified: Array<[string, UnverifiedPassedSecret]> = [];
       const moved = await movedMaskedProperties(
         currentResource,
         rawDesiredProps,
         maskedFingerprinter,
-        maskedInputs?.rebaselined && ((key, fingerprint) => rebaselined.push([key, fingerprint]))
+        maskedInputs?.rebaselined && ((key, fingerprint) => rebaselined.push([key, fingerprint])),
+        (key, verdict) => unverified.push([key, verdict])
       );
       if (rebaselined.length > 0) {
         maskedInputs!.rebaselined!.set(logicalId, Object.fromEntries(rebaselined));
       }
+      await reportUnverifiedPassedSecrets({
+        logicalId,
+        record: currentResource,
+        unverified,
+        fingerprinter: maskedFingerprinter || undefined,
+        backfills: maskedInputs?.passedSecretBackfills,
+        warn: (message) => this.logger.warn(message),
+      });
       // go-to-k/cdkd#7050: a masked key whose public `ssm` value moved, or
       // cannot be told unmoved; a secret's value is not compared.
       if (maskedInputs !== undefined) {

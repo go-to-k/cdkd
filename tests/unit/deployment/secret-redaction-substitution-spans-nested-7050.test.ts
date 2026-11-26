@@ -314,6 +314,10 @@ vi.mock('@aws-sdk/client-kms', async (importOriginal) => {
 });
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
+import {
+  maskedPropertyFingerprint,
+  movedMaskedProperties,
+} from '../../../src/deployment/masked-property-fingerprints.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
 interface Run { calls: string[]; persisted: StackState['resources'][string] | undefined; thrown: unknown; diff: Map<string, ResourceChange> | undefined; sent?: Array<{ props: unknown; previous: unknown }>; }
 class CapturingDiffCalculator extends DiffCalculator {
@@ -331,7 +335,8 @@ class CapturingDiffCalculator extends DiffCalculator {
 async function deploy(
   resources: StackState['resources'],
   templateResources: Record<string, unknown>,
-  opts: Record<string, unknown> = { dryRun: false }
+  opts: Record<string, unknown> = { dryRun: false },
+  declared: Record<string, unknown> = { X: { Type: 'String' } }
 ): Promise<Run> {
   const state = {
     version: 11,
@@ -391,7 +396,7 @@ async function deploy(
     'us-east-1'
   );
   let thrown: unknown;
-  await engine.deploy('s', { Parameters: { X: { Type: 'String' } }, Resources: templateResources } as never).catch((e: unknown) => {
+  await engine.deploy('s', { Parameters: declared, Resources: templateResources } as never).catch((e: unknown) => {
     thrown = e;
   });
   const saved = saveState.mock.calls
@@ -503,33 +508,200 @@ describe('a masked child read with no passed-secret MAC proof is a visible chang
     expect(member?.macs['X']).toMatch(/^kms-hmac-sha256:arn:aws:kms:[^:]+:\d+:key\/[0-9a-f-]+:[A-Za-z0-9+/]+=*$/);
   });
 
-  for (const [label, edit] of [
-    ['an older record with no MAC', (r: Record<string, unknown>) => void delete r['noEchoValueMacs']],
+  type Member = { fingerprint: string; macs: Record<string, string> };
+  const passedOf = (record: unknown): unknown =>
+    ((record as { noEchoValueMacs?: Record<string, Record<string, unknown>> } | undefined)?.noEchoValueMacs?.[
+      'DBName'
+    ] ?? {})['cdkd:passed'];
+  /** The warnings naming `Db` and `DBName` since the last clear, and every log line as text. */
+  const warnings = () => {
+    const lines = logSpies.warn.mock.calls.map((call) => String(call[0]));
+    logSpies.warn.mockClear();
+    return lines.filter((line) => line.includes('Db') && line.includes('DBName'));
+  };
+  const logged = () => JSON.stringify(Object.values(logSpies).map((spy) => spy.mock.calls));
+  const oldRecord = (record: StackState['resources'][string]) => {
+    const copy = structuredClone(record) as unknown as Record<string, unknown>;
+    delete copy['noEchoValueMacs'];
+    return copy as never;
+  };
+
+  // #7050 review (B1): a record written before the passed-secret MACs has
+  // none. Its masked key is compared by its input fingerprint this once, the
+  // MAC is stamped by the same deploy, and it is compared from then on.
+  it('an older record with no MAC: unmoved once with a warning, the MAC stamped, then compared', async () => {
+    kms.fail = false;
+    const opts = await masked();
+    const created = await deploy({}, tpl, opts);
+    const stamped = passedOf(created.persisted) as Member;
+    expect(stamped.fingerprint).toBe(created.persisted?.maskedPropertyInputFingerprints?.['DBName']);
+    logSpies.warn.mockClear();
+    const same = await deploy({ Db: oldRecord(created.persisted!) }, tpl, opts);
+    expect(same.thrown).toBeUndefined();
+    expect(same.diff?.get('Db')?.changeType).toBe('NO_CHANGE');
+    expect(same.calls).toEqual([]);
+    // The same deploy's save stamps the MAC: the one a create would have.
+    expect(passedOf(same.persisted)).toEqual(stamped);
+    const warned = warnings();
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toMatch(/not compared on this deploy/);
+    expect(warned[0]).toMatch(/fingerprinted from now on/);
+    expect(logged()).not.toContain(opts.parameters.X);
+    // The next deploy compares the stamped MAC: no change, no warning.
+    const next = await deploy({ Db: structuredClone(same.persisted!) }, tpl, opts);
+    expect(next.thrown).toBeUndefined();
+    expect(next.diff?.get('Db')?.changeType).toBe('NO_CHANGE');
+    expect(warnings()).toEqual([]);
+    // And a value that moved after the stamp is planned: the backfill never fires again.
+    const moved = await deploy({ Db: structuredClone(same.persisted!) }, tpl, {
+      ...opts,
+      parameters: { X: `moved-${opts.parameters.X}` },
+    });
+    expect((moved.diff?.get('Db')?.propertyChanges ?? []).map((pc) => pc.path)).toContain('DBName');
+    expect(moved.calls.length > 0 || moved.thrown !== undefined).toBe(true);
+    expect(warnings()).toEqual([]);
+  });
+
+  it('an older record with no MAC whose other input moved plans the change', async () => {
+    kms.fail = false;
+    const opts = await masked();
+    const joined = {
+      Db: { Type: 'AWS::RDS::DBInstance', Properties: { Engine: 'mysql', DBName: { 'Fn::Join': ['-', [{ Ref: 'X' }, { Ref: 'Y' }]] }, BackupRetentionPeriod: 1 } },
+    };
+    const declared = { X: { Type: 'String' }, Y: { Type: 'String' } };
+    const created = await deploy({}, joined, { ...opts, parameters: { ...opts.parameters, Y: 'one' } }, declared);
+    expect(created.thrown).toBeUndefined();
+    expect(created.persisted?.maskedPropertyInputFingerprints?.['DBName']).toBeDefined();
+    logSpies.warn.mockClear();
+    const moved = await deploy({ Db: oldRecord(created.persisted!) }, joined, { ...opts, parameters: { ...opts.parameters, Y: 'two' } }, declared);
+    expect((moved.diff?.get('Db')?.propertyChanges ?? []).map((pc) => pc.path)).toContain('DBName');
+    expect(moved.calls.length > 0 || moved.thrown !== undefined).toBe(true);
+    expect(warnings()).toEqual([]);
+  });
+
+  it('an older record with no MAC and no KMS: never refused, warned on every deploy, never stamped', async () => {
+    kms.fail = false;
+    const opts = await masked();
+    const created = await deploy({}, tpl, opts);
+    let record = oldRecord(created.persisted!);
+    logSpies.warn.mockClear();
+    try {
+      kms.fail = true;
+      for (const round of [1, 2]) {
+        const same = await deploy({ Db: structuredClone(record) }, tpl, opts);
+        expect(same.thrown, `round ${round}`).toBeUndefined();
+        expect(same.diff?.get('Db')?.changeType).toBe('NO_CHANGE');
+        expect(same.calls).toEqual([]);
+        expect(passedOf(same.persisted)).toBeUndefined();
+        const warned = warnings();
+        expect(warned).toHaveLength(1);
+        expect(warned[0]).toMatch(/cannot be compared without the NoEcho value MAC key/);
+        if (same.persisted !== undefined) record = same.persisted as never;
+      }
+    } finally {
+      kms.fail = false;
+    }
+    expect(logged()).not.toContain(opts.parameters.X);
+  });
+
+  it('a record whose MAC an update with no KMS rewrote keeps it: the next deploy compares it, never backfills', async () => {
+    kms.fail = false;
+    const opts = await masked();
+    const created = await deploy({}, tpl, opts);
+    const stamped = passedOf(created.persisted);
+    expect(stamped).toBeDefined();
+    const bumped = { Db: { ...tpl.Db, Properties: { ...tpl.Db.Properties, BackupRetentionPeriod: 7 } } };
+    let updated: Run;
+    try {
+      kms.fail = true;
+      updated = await deploy({ Db: structuredClone(created.persisted!) }, bumped, opts);
+    } finally {
+      kms.fail = false;
+    }
+    expect(updated.thrown).toBeUndefined();
+    expect(updated.calls).toEqual(['update:Db']);
+    expect(passedOf(updated.persisted)).toEqual(stamped);
+    logSpies.warn.mockClear();
+    const next = await deploy({ Db: structuredClone(updated.persisted!) }, bumped, opts);
+    expect(next.diff?.get('Db')?.changeType).toBe('NO_CHANGE');
+    expect(warnings()).toEqual([]);
+  });
+
+  // A member that exists but proves nothing (malformed, under another key, no
+  // KMS this run) is never backfilled; nor is it a move: a move of a stateful
+  // create-only key is refused, and only a send would stamp a new one.
+  for (const [label, edit, pattern] of [
     ['a malformed MAC member', (r: Record<string, unknown>) => {
       (r['noEchoValueMacs'] as Record<string, Record<string, unknown>>)['DBName']!['cdkd:passed'] = { fingerprint: 'x', macs: 'y' };
-    }],
+    }, /unusable/],
     ['a MAC under another key', (r: Record<string, unknown>) => {
       const member = (r['noEchoValueMacs'] as Record<string, Record<string, { macs: Record<string, string> }>>)['DBName']!['cdkd:passed']!;
       member.macs['X'] = member.macs['X']!.replace(/key\/[0-9a-f-]+:/, 'key/99999999-0000-0000-0000-000000000000:');
-    }],
+    }, /unusable/],
+    ['a dropped MAC member', (r: Record<string, unknown>) => {
+      (r['noEchoValueMacs'] as Record<string, Record<string, unknown>>)['DBName']!['cdkd:passed'] = { fingerprint: 'cdkd:dropped' };
+    }, /unusable/],
     ['no KMS this run', () => {
       kms.fail = true;
-    }],
+    }, /cannot be compared without the NoEcho value MAC key/],
   ] as const) {
-    it(`${label}: an unchanged redeploy plans the change and the deploy does not skip it`, async () => {
+    it(`${label}: never refused nor backfilled, warned on every deploy`, async () => {
       kms.fail = false;
       const opts = await masked();
       const created = await deploy({}, tpl, opts);
-      expect(created.persisted?.noEchoValueMacs).toBeDefined();
       const record = structuredClone(created.persisted!) as unknown as Record<string, unknown>;
       edit(record);
-      const same = await deploy({ Db: record as never }, tpl, opts);
-      kms.fail = false;
-      expect(same.diff?.get('Db')?.changeType).not.toBe('NO_CHANGE');
-      expect((same.diff?.get('Db')?.propertyChanges ?? []).map((pc) => pc.path)).toContain('DBName');
-      // The engine acts on it (sends, or refuses the replacement out loud).
-      expect(same.calls.length > 0 || same.thrown !== undefined).toBe(true);
-      expect(JSON.stringify(same.diff?.get('Db'))).not.toContain(opts.parameters.X);
+      const before = structuredClone(passedOf(record));
+      logSpies.warn.mockClear();
+      try {
+        for (const round of [1, 2]) {
+          const same = await deploy({ Db: structuredClone(record) as never }, tpl, opts);
+          expect(same.thrown, `round ${round}`).toBeUndefined();
+          expect(same.diff?.get('Db')?.changeType).toBe('NO_CHANGE');
+          expect(same.calls).toEqual([]);
+          if (same.persisted !== undefined) expect(passedOf(same.persisted)).toEqual(before);
+          const warned = warnings();
+          expect(warned).toHaveLength(1);
+          expect(warned[0]).toMatch(pattern);
+        }
+      } finally {
+        kms.fail = false;
+      }
+      expect(logged()).not.toContain(opts.parameters.X);
+    });
+  }
+});
+
+// #7050 review: the engine reads the same verdicts through
+// `movedMaskedProperties`, with no plan beside it. No usable passed-secret MAC
+// is unmoved only while the recorded input fingerprint equals today's.
+describe('movedMaskedProperties: a passed-secret key with no usable MAC (#7050 review)', () => {
+  const props = { Value: { Ref: 'P' } };
+  const TEXT = maskedPropertyFingerprint(props.Value);
+  const input = (half: string) => `inputs-sha256:${half}+${TEXT}`;
+  const record = (recorded?: string) => ({
+    properties: { Value: '***' },
+    maskedPropertyFingerprints: { Value: TEXT },
+    ...(recorded !== undefined && { maskedPropertyInputFingerprints: { Value: recorded } }),
+  });
+  const fingerprinter = (now: string | undefined, verdict: string) =>
+    Object.assign(async () => now, { passedSecretVerdict: async () => verdict });
+
+  for (const verdict of ['absent', 'unavailable', 'unusable'] as const) {
+    it(`${verdict}: unmoved and reported with equal inputs, moved otherwise`, async () => {
+      const reported: Array<[string, string]> = [];
+      const onUnverified = (key: string, v: string) => void reported.push([key, v]);
+      expect(await movedMaskedProperties(record(input('aa')), props, fingerprinter(input('aa'), verdict), undefined, onUnverified)).toEqual([]);
+      expect(reported).toEqual([['Value', verdict]]);
+      expect(await movedMaskedProperties(record(input('aa')), props, fingerprinter(input('bb'), verdict), undefined, onUnverified)).toEqual(['Value']);
+      expect(await movedMaskedProperties(record(), props, fingerprinter(input('aa'), verdict), undefined, onUnverified)).toEqual(['Value']);
+      expect(await movedMaskedProperties(record(input('aa')), props, fingerprinter(undefined, verdict), undefined, onUnverified)).toEqual(['Value']);
+      expect(reported).toHaveLength(1);
+    });
+  }
+  for (const verdict of ['changed', 'none'] as const) {
+    it(`${verdict}: moved even with equal inputs`, async () => {
+      expect(await movedMaskedProperties(record(input('aa')), props, fingerprinter(input('aa'), verdict))).toEqual(['Value']);
     });
   }
 });

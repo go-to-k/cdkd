@@ -18,6 +18,7 @@ import type { MaskerFn } from '../provisioning/masked-retry-logger.js';
 import type { LockRecoveryContext } from '../state/lock-contention-message.js';
 import type { ReadProvenanceSources } from './read-provenance-promotion.js';
 import { calculateDiff } from './diff-calculator/calculate-diff.js';
+import type { PassedSecretBackfill } from './diff-calculator/redaction-masks.js';
 import {
   promoteReadProvenanceDependents,
   loadSyntheticCreateOnlyPaths,
@@ -92,6 +93,7 @@ export class DiffCalculator {
     maskedInputs?: {
       sources: MaskedInputSources;
       rebaselined?: Map<string, Record<string, string>>;
+      passedSecretBackfills?: Map<string, Record<string, PassedSecretBackfill>>;
       publicReferences?: PublicReferenceOf;
     },
     refusalRecovery?: LockRecoveryContext,

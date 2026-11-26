@@ -1939,9 +1939,22 @@ stack with no instance id.
   fingerprints alone hash the same whatever its value. The deploy's plan and
   its update path (`movedMaskedProperties`) count the key unchanged only
   when the binding equals today's and every MAC equals today's. A differing
-  MAC is a move. No MAC (absent, malformed, under another key, no KMS this
-  run, an older binary's rebuild that dropped it) is a move too: the key is
-  sent, never compared equal. The entry may hold no `NoEcho` MAC at all. An
+  MAC is a move. With no usable MAC, the key's recorded input fingerprint
+  decides: if it differs from today's, the key is a move. If it is equal,
+  the key is unchanged and the plan warns, naming the resource and the key,
+  never a value. A move would never settle there: a stateful create-only key
+  (RDS `DBName`) is refused, and only a sent value gets a MAC. A record
+  holding no member for the key (written before #7050, with no KMS, or by
+  an older binary's rebuild that dropped it) is backfilled: the same deploy
+  stamps today's member, and the key is compared from then on. With no KMS
+  this run nothing is stamped, and the warning repeats on every deploy. A
+  member that exists but proves nothing (malformed, under another key,
+  bound to another input fingerprint, or no KMS this run) is never
+  backfilled. It warns on every deploy until the key is sent again. A save
+  with no new member carries the previous one. A failed update, or a written
+  record with no template, leaves `{ "fingerprint": "cdkd:dropped" }`. So a
+  key that once held a member never reads as one that never had one, and the
+  backfill fires at most once per record. The entry may hold no `NoEcho` MAC at all. An
   older binary never reads the object member. `cdkd diff` holds no MACs for
   it and compares such a key as before. An entry holding only this member
   still sets `noEchoValueMacs`, so a save of such a nested child writes

@@ -9,11 +9,15 @@ import {
   splitInputFingerprint,
 } from '../../deployment/masked-property-fingerprints/core.js';
 import {
+  isUnverifiedPassedSecret,
   maskedPropertyFingerprintsOf,
   maskedPropertyInputFingerprintsOf,
   passedSecretVerdictOf,
+  type BindingFingerprinter,
   type InputFingerprinter,
+  type UnverifiedPassedSecret,
 } from '../../deployment/masked-property-fingerprints/records.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import {
   publicReferencesMoved,
   type PublicReferenceOf,
@@ -104,15 +108,17 @@ export async function maskUnmovedRedactionMasks(
     // fingerprints prove nothing then, so the key is compared as is. A
     // parameter the parent passed as `secret` is proven by its value MACs
     // instead (bound to today's inputs, every other one resolved and hashed);
-    // `movedMaskedProperties` reports the key moved on anything less.
+    // `movedMaskedProperties` reports the key moved on anything less, except
+    // no usable MAC at all, which it reads unmoved and warns of (#7050 review).
     let concrete = false;
     try {
       concrete = (await fingerprinter.concrete?.(key)) === true;
     } catch {
       concrete = false;
     }
-    if (!concrete && (await passedSecretVerdictOf(fingerprinter, key, record)) !== 'confirmed') {
-      continue;
+    if (!concrete) {
+      const verdict = await passedSecretVerdictOf(fingerprinter, key, record);
+      if (verdict !== 'confirmed' && !isUnverifiedPassedSecret(verdict)) continue;
     }
     if (
       await publicReferencesMoved(record, key, rawDesired[key], publicReferences, fingerprinter)
@@ -150,4 +156,52 @@ function maskedWhere(recorded: unknown, desired: unknown): unknown {
     return out;
   }
   return desired;
+}
+
+/** A passed-secret member the plan backfills (go-to-k/cdkd#7050 review). */
+export type PassedSecretBackfill = { fingerprint: string; macs: Record<string, string> };
+
+/**
+ * go-to-k/cdkd#7050 review: the plan's side of the keys `movedMaskedProperties`
+ * read unmoved with no usable passed-secret MAC (`unverified`). Each is
+ * warned of, naming the resource and the key, never a value. A key whose
+ * record never held a member (`'absent'`) gets today's member in `backfills`
+ * (logical id -> key -> member), which the deploy stamps on the record (the
+ * #4451 `rebaselined` precedent), when the run has its MACs and it binds to
+ * the input fingerprint the record holds; it is then compared from the next
+ * deploy on. Short of that, the key is unmoved on every deploy, and said so.
+ */
+export async function reportUnverifiedPassedSecrets(args: {
+  logicalId: string;
+  record: ResourceState;
+  unverified: ReadonlyArray<readonly [string, UnverifiedPassedSecret]>;
+  fingerprinter: Partial<BindingFingerprinter> | undefined;
+  backfills: Map<string, Record<string, PassedSecretBackfill>> | undefined;
+  warn: (message: string) => void;
+}): Promise<void> {
+  const { logicalId, record, unverified, fingerprinter, backfills, warn } = args;
+  if (unverified.length === 0) return;
+  const inputs = maskedPropertyInputFingerprintsOf(record);
+  const stamped: Array<[string, PassedSecretBackfill]> = [];
+  for (const [key, verdict] of unverified) {
+    let member: PassedSecretBackfill | undefined;
+    if (verdict === 'absent' && backfills !== undefined) {
+      member = await fingerprinter?.passedSecretMember?.(key).catch(() => undefined);
+    }
+    if (member !== undefined && member.fingerprint === inputs.get(key)) {
+      stamped.push([key, member]);
+      warn(
+        safeMsg`${logicalId}: ${key} reads a parameter the parent stack passed as a secret, and its record holds no value fingerprint for it (written before cdkd recorded one), so its value was not compared on this deploy and it is treated as unchanged. It is fingerprinted from now on.`
+      );
+    } else if (verdict === 'unusable') {
+      warn(
+        safeMsg`${logicalId}: ${key} reads a parameter the parent stack passed as a secret, and the value fingerprint its record holds is unusable (malformed, or made under another MAC key), so its value cannot be compared and it is treated as unchanged on every deploy until the property is sent again. No replacement is planned over it.`
+      );
+    } else {
+      warn(
+        safeMsg`${logicalId}: ${key} reads a parameter the parent stack passed as a secret, and its value cannot be compared without the NoEcho value MAC key (kms:GenerateMac on alias/cdkd-noecho-mac), so it is treated as unchanged on every deploy until a value fingerprint can be recorded. No replacement is planned over it.`
+      );
+    }
+  }
+  if (stamped.length > 0) backfills!.set(logicalId, Object.fromEntries(stamped));
 }

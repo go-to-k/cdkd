@@ -9,8 +9,11 @@ import type { ResourceState } from '../../types/state.js';
 import { noEchoParametersReadBy, type NoEchoPositionSources } from '../secret-redaction.js';
 import type { BindingFingerprinter } from '../masked-property-fingerprints.js';
 import {
+  DROPPED_PASSED_SECRET_MACS,
   noEchoMacParametersOf,
   noEchoValueMacsFor,
+  PASSED_SECRET_MACS,
+  rawPassedSecretMember,
   type PassedSecretMacsMember,
 } from '../noecho-value-macs.js';
 import { noEchoPositionSources } from './noecho.js';
@@ -206,7 +209,17 @@ export function dropFailedUpdateMacs(
     const record = Object.hasOwn(resources, logicalId) ? resources[logicalId] : undefined;
     const macs = record?.noEchoValueMacs;
     if (record === undefined || macs === undefined) continue;
-    const left = Object.fromEntries(Object.entries(macs).filter(([key]) => !sent.has(key)));
+    // A dropped passed-secret member stays as one (go-to-k/cdkd#7050 review):
+    // the key must never read as a record that never had one.
+    const left = Object.fromEntries(
+      Object.entries(macs).flatMap(([key, entry]) =>
+        !sent.has(key)
+          ? [[key, entry]]
+          : rawPassedSecretMember(record, key) !== undefined
+            ? [[key, { [PASSED_SECRET_MACS]: { ...DROPPED_PASSED_SECRET_MACS } }]]
+            : []
+      )
+    );
     const { noEchoValueMacs: _dropped, ...rest } = record;
     resources[logicalId] = (
       Object.keys(left).length > 0 ? { ...rest, noEchoValueMacs: left } : rest

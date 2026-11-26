@@ -36,6 +36,7 @@ import {
   backfillMaskedPropertyFingerprints,
   withRebaselinedFingerprints,
 } from '../masked-property-fingerprints.js';
+import { withPassedSecretBackfill } from '../noecho-value-macs.js';
 import { withProducerRegions } from '../producer-regions-scope.js';
 import {
   noteDeployStateRecord,
@@ -596,6 +597,13 @@ export async function doDeployWithPrefetch(
       const record = currentState.resources[logicalId];
       if (record === undefined) continue;
       currentState.resources[logicalId] = withRebaselinedFingerprints(record, fingerprints);
+      maskedFingerprintsBackfilled = true;
+    }
+    // go-to-k/cdkd#7050 review: and the passed-secret MACs the plan backfilled.
+    for (const [logicalId, members] of maskedInputs?.passedSecretBackfills ?? []) {
+      const record = currentState.resources[logicalId];
+      if (record === undefined) continue;
+      currentState.resources[logicalId] = withPassedSecretBackfill(record, members);
       maskedFingerprintsBackfilled = true;
     }
 
