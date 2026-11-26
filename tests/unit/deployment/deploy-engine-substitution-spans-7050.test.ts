@@ -8,6 +8,7 @@
  */
 import { describe, it, expect, vi } from 'vite-plus/test';
 import { getLogger } from '../../../src/utils/logger.js';
+import { renderChangeLines } from '../../../src/cli/commands/diff-recursive/render.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
@@ -242,6 +243,11 @@ describe('a secret beside a value-bearing part never leaks or reads as a change 
           )
         );
       expect(lines.filter(spelled)).toEqual([]);
+      // Nor the diff display of either redeploy.
+      const display: string[] = [];
+      for (const plan of [same.diff, next.diff]) renderChangeLines(plan!, (line) => display.push(line));
+      expect(display.length).toBeGreaterThan(0);
+      expect(display.filter(spelled)).toEqual([]);
     });
   }
 });
