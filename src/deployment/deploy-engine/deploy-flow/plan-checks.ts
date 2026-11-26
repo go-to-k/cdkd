@@ -282,24 +282,23 @@ async function refuseInUseExportChanges(
   // literal as a secret's reference, so the plan sees a replacement the
   // deploy would repair without sending. This check runs before that repair,
   // so the remedy is named: `cdkd scrub` repairs the record without a deploy.
-  if (found.length > 0) {
-    const suspects = [...changes.keys()].filter(
-      (id) => replaces(id) && replacesOnlyOnLegacyReferenceSpelling(changes.get(id))
+  // Only when the check refuses: a deploy it lets through reaches the repair.
+  try {
+    await refuseInUseExports(
+      engine,
+      stackName,
+      found
+        .filter((a) => a.reason !== 'deferred' || !deferrable)
+        .map((a) =>
+          a.reason === 'deferred' ? { exportName: a.exportName, reason: 'changed' } : a
+        ),
+      { ssmNameHeals, effectiveTemplate }
     );
-    if (suspects.length > 0) {
-      engine.logger.warn(
-        safeMsg`${suspects.join(', ')}: the planned replacement reads a stored secret reference against a plain template value. If the template did not change that property, the record was written by an older cdkd: run \`cdkd scrub ${stackName}\` first, then deploy.`
-      );
-    }
+  } catch (error) {
+    const hint = legacySpellingHint(changes, replaces, stackName);
+    if (error instanceof ExportInUseError && hint !== undefined) engine.logger.warn(hint);
+    throw error;
   }
-  await refuseInUseExports(
-    engine,
-    stackName,
-    found
-      .filter((a) => a.reason !== 'deferred' || !deferrable)
-      .map((a) => (a.reason === 'deferred' ? { exportName: a.exportName, reason: 'changed' } : a)),
-    { ssmNameHeals, effectiveTemplate }
-  );
   return deferred;
 }
 
@@ -420,6 +419,19 @@ async function refuseInUseExports(
  * older cdkd wrote for a template literal equal to a secret (go-to-k/cdkd#7037),
  * which the plan cannot tell from a real edit without the secret.
  */
+/** The warning naming `cdkd scrub` for the resources whose replacement may be a legacy spelling (#7037); logical ids and the stack name only. */
+export function legacySpellingHint(
+  changes: ReadonlyMap<string, ResourceChange>,
+  replaces: (logicalId: string) => boolean,
+  stackName: string
+): string | undefined {
+  const suspects = [...changes.keys()].filter(
+    (id) => replaces(id) && replacesOnlyOnLegacyReferenceSpelling(changes.get(id))
+  );
+  if (suspects.length === 0) return undefined;
+  return safeMsg`${suspects.join(', ')}: the planned replacement reads a stored secret reference against a plain template value. If the template did not change that property, the record was written by an older cdkd: run \`cdkd scrub ${stackName}\` first, then deploy.`;
+}
+
 export function replacesOnlyOnLegacyReferenceSpelling(change: ResourceChange | undefined): boolean {
   const rows = (change?.propertyChanges ?? []).filter((pc) => pc.requiresReplacement);
   return (

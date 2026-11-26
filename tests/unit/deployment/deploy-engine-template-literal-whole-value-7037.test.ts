@@ -71,7 +71,10 @@ vi.mock('p-limit', () => ({ default: vi.fn(() => <T>(fn: () => T) => fn()) }));
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import type { StackState } from '../../../src/types/state.js';
-import { replacesOnlyOnLegacyReferenceSpelling } from '../../../src/deployment/deploy-engine/deploy-flow/plan-checks.js';
+import {
+  legacySpellingHint,
+  replacesOnlyOnLegacyReferenceSpelling,
+} from '../../../src/deployment/deploy-engine/deploy-flow/plan-checks.js';
 
 const USERNAME = '{{resolve:secretsmanager:db-secret:SecretString:username::}}';
 
@@ -255,5 +258,19 @@ describe('the plan-time hint for a legacy spelling (#7037)', () => {
       })
     ).toBe(false);
     expect(replacesOnlyOnLegacyReferenceSpelling(undefined)).toBe(false);
+  });
+
+  it('the warning names the resource and `cdkd scrub <stack>`, and no value', () => {
+    const changes = new Map([['Db', row(USERNAME, 'postgres')]]);
+    const hint = legacySpellingHint(changes, () => true, 'MyStack');
+    expect(hint).toContain('Db:');
+    expect(hint).toContain('`cdkd scrub MyStack`');
+    expect(hint).not.toContain('postgres');
+    expect(hint).not.toContain('{{resolve:');
+    // A resource the plan does not replace, or an ordinary edit, names nothing.
+    expect(legacySpellingHint(changes, () => false, 'MyStack')).toBeUndefined();
+    expect(
+      legacySpellingHint(new Map([['Db', row('postgres', 'mysql')]]), () => true, 'MyStack')
+    ).toBeUndefined();
   });
 });
