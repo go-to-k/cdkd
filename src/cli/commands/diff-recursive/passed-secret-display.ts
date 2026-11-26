@@ -76,40 +76,42 @@ function holdsMixedDynamicReference(value: unknown): boolean {
   return false;
 }
 
-/**
- * Does a TEMPLATE value compose a dynamic reference with other text: a
- * literal string mixing one (an `Fn::Sub` body too), or an `Fn::Join` whose
- * list holds one beside another element? A whole token, behind an `Fn::If`
- * or not, passes the reference through as it is. Read before any resolution,
- * so a bare `{{resolve:ssm:` counts whatever its parameter's type: a
- * `SecureString` (or a lookup that fails) cannot be told from a public
- * `String` here, and a reader of the row's outputs masked over a public one
- * is the safe side of that.
- */
-function templateMixesDynamicReference(value: unknown): boolean {
+/** Does any string under `value` hold a `{{resolve:` token? */
+function holdsDynamicReference(value: unknown): boolean {
   const pending: unknown[] = [value];
   const seen = new Set<object>();
   while (pending.length > 0) {
     const next = pending.pop();
-    if (typeof next === 'string') {
-      if (mixesDynamicReference(next)) return true;
-      continue;
-    }
+    if (typeof next === 'string' && next.includes('{{resolve:')) return true;
     if (next === null || typeof next !== 'object' || seen.has(next)) continue;
     seen.add(next);
-    const join = isRecord(next) ? next['Fn::Join'] : undefined;
-    if (Array.isArray(join) && Array.isArray(join[1])) {
-      const parts = join[1] as unknown[];
-      if (
-        parts.length > 1 &&
-        parts.some((part) => typeof part === 'string' && part.includes('{{resolve:'))
-      ) {
-        return true;
-      }
-    }
     pending.push(...Object.values(next as Record<string, unknown>));
   }
   return false;
+}
+
+/**
+ * Can a TEMPLATE value resolve to a dynamic reference composed with other
+ * text? Decided WITHOUT modelling the intrinsics, so no composition shape is
+ * missed: a literal string mixing one, and ANY intrinsic holding one anywhere
+ * beneath it. The one exception is an `Fn::If`, which yields one branch as it
+ * is, so it is judged branch by branch (a whole token in a branch passes the
+ * reference through). Read before any resolution, so a bare
+ * `{{resolve:ssm:` counts whatever its parameter's type: a `SecureString` (or
+ * a lookup that fails) cannot be told from a public `String` here, and a
+ * reader of the row's outputs masked over a public one is the safe side.
+ */
+function templateMixesDynamicReference(value: unknown, depth = 0): boolean {
+  if (typeof value === 'string') return mixesDynamicReference(value);
+  if (!isRecord(value) || depth > 64) return holdsDynamicReference(value);
+  const branches = value['Fn::If'];
+  if (isIntrinsic(value) && Array.isArray(branches) && branches.length === 3) {
+    return (
+      templateMixesDynamicReference(branches[1], depth + 1) ||
+      templateMixesDynamicReference(branches[2], depth + 1)
+    );
+  }
+  return holdsDynamicReference(value);
 }
 
 /** Each entry of a nested row's `Parameters` / `Tags` (a `{Key, Value}` list or a map). */

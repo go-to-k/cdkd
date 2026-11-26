@@ -465,13 +465,26 @@ describe('taintedNamesOf (#7068)', () => {
         Whole: row({ W: B }),
         Sub: row({ X: { 'Fn::Sub': '${Sep}/{{resolve:ssm-secure:/a}}' } }),
         IfWhole: row({ W: { 'Fn::If': ['C', B, 'b'] } }),
+        // Compositions the walk must not need to model (#7068 review).
+        JoinIf: row({ X: { 'Fn::Join': ['', [{ Ref: 'Sep' }, { 'Fn::If': ['C', A, 'x'] }]] } }),
+        SubVars: row({ X: { 'Fn::Sub': ['${Sep}/${P}', { P: A }] } }),
+        JoinSelect: row({ X: { 'Fn::Join': ['/', [{ Ref: 'Sep' }, { 'Fn::Select': [0, [A]] }]] } }),
+        SelectJoin: row({
+          X: { 'Fn::Select': [0, [{ 'Fn::Join': ['', [{ Ref: 'Sep' }, '/', A]] }, 'z']] },
+        }),
+        IfMixed: row({ X: { 'Fn::If': ['C', { 'Fn::Join': ['', [{ Ref: 'Sep' }, A]] }, B] } }),
         Reader: { Type: 'T', Properties: { V: { 'Fn::GetAtt': ['Mixed', 'Outputs.O'] } } },
       },
     };
     expect([...taintedNamesOf(template as never, undefined)].sort()).toEqual([
+      'IfMixed',
+      'JoinIf',
+      'JoinSelect',
       'Mixed',
       'Reader',
+      'SelectJoin',
       'Sub',
+      'SubVars',
     ]);
   });
 });
