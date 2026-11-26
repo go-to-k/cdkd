@@ -93,9 +93,10 @@ export const UNFRAMED_SPELLING: unique symbol = Symbol('cdkd.nested-parameter.un
  * - `masked`: the parent persisted the row value as `***` (two references
  *   share its secret text): every child read of the parameter is masked;
  * - `sub-floor`: the value holds a recorded secret's text under the value
- *   scan's floor: a bare `{Ref}` read takes the parent's certified spelling or
- *   is masked, and any other read (an `Fn::Select` / `Fn::Split`, a join) is
- *   masked, since no search can find that text again.
+ *   scan's floor: a read is placed only by a certified arm (a bare `{Ref}` by
+ *   the parent's certified spelling, an `Fn::Select` / `Fn::Split` by the
+ *   exact re-read of those bindings) and is masked otherwise, never searched
+ *   for, since no search can find that text again.
  */
 export const attributionRefusedParameters = new WeakMap<
   RecordedSecretValues,
