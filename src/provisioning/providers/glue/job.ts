@@ -44,6 +44,7 @@ import {
   buildGlueResourceArn,
   coerceNumber,
   asRecord,
+  withoutReadbackPlaceholders,
 } from './shared.js';
 
 /** {@link GlueProvider}'s `wrapMaskedError` (issue #4244). */
@@ -170,7 +171,16 @@ export async function jobUpdate(
     const command = properties['Command'] as Record<string, unknown> | undefined;
     const update: JobUpdate = {
       ...(command !== undefined && { Command: buildJobCommand(command) }),
-      ...buildJobCommonFields(properties),
+      ...buildJobCommonFields(
+        withoutCapacityEchoes(
+          withoutReadbackPlaceholders(
+            properties,
+            JOB_READBACK_PLACEHOLDERS,
+            context?.desiredFromAwsReadback
+          ),
+          context?.desiredFromAwsReadback
+        )
+      ),
       // Role is required at create but mutable on update; include only when defined
       ...(properties['Role'] !== undefined && { Role: properties['Role'] as string }),
     };
@@ -267,6 +277,55 @@ export async function jobGetAttribute(
     return physicalId;
   }
   return undefined;
+}
+
+/**
+ * What {@link jobReadCurrentState} emits for a member `GetJob` does not return
+ * (go-to-k/cdkd#7028). `MaxRetries: 0` and `JobRunQueuingEnabled: false` are
+ * left out: both are values AWS accepts and holds. A test pins this table to
+ * the read-back.
+ */
+export const JOB_READBACK_PLACEHOLDERS: Readonly<Record<string, unknown>> = {
+  Description: '',
+  LogUri: '',
+  DefaultArguments: {},
+  NonOverridableArguments: {},
+  Connections: { Connections: [] },
+  Timeout: 0,
+  NotificationProperty: { NotifyDelayAfter: 0 },
+  GlueVersion: '',
+  NumberOfWorkers: 0,
+  WorkerType: '',
+  MaxCapacity: 0,
+  AllocatedCapacity: 0,
+  SecurityConfiguration: '',
+  ExecutionClass: '',
+  JobMode: '',
+  MaintenanceWindow: '',
+  SourceControlDetails: {},
+};
+
+/**
+ * go-to-k/cdkd#7028: `GetJob` reports a job's capacity three ways at once:
+ * `WorkerType` + `NumberOfWorkers`, and the `MaxCapacity` / deprecated
+ * `AllocatedCapacity` AWS computes from them. `UpdateJob` takes one spelling
+ * only (measured: `Please set only Allocated Capacity or Max Capacity`), so a
+ * read-back desired bag keeps the worker spelling when it holds one, else
+ * `MaxCapacity`, and drops the echoes. A template's bag is sent as declared.
+ */
+function withoutCapacityEchoes(
+  properties: Record<string, unknown>,
+  desiredFromAwsReadback: boolean | undefined
+): Record<string, unknown> {
+  if (desiredFromAwsReadback !== true) return properties;
+  const workers =
+    properties['WorkerType'] !== undefined && properties['NumberOfWorkers'] !== undefined;
+  const echoes = workers ? ['MaxCapacity', 'AllocatedCapacity'] : ['AllocatedCapacity'];
+  if (!workers && properties['MaxCapacity'] === undefined) return properties;
+  if (!echoes.some((key) => Object.hasOwn(properties, key))) return properties;
+  const out = { ...properties };
+  for (const key of echoes) delete out[key];
+  return out;
 }
 
 /**
