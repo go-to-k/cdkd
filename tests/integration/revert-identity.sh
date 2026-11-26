@@ -116,6 +116,8 @@ _revert_identity_probe() {
       cls=unique; val="$(_revert_identity_aws iam get-group --group-name "${pid}" --query 'Group.GroupId')" || rc=$? ;;
     AWS::Events::EventBus)
       cls=unique; val="$(_revert_identity_aws events describe-event-bus --region "${region}" --name "${pid}" --query 'CreationTime')" || rc=$? ;;
+    AWS::KinesisFirehose::DeliveryStream)
+      cls=unique; val="$(_revert_identity_aws firehose describe-delivery-stream --region "${region}" --delivery-stream-name "${pid}" --query 'DeliveryStreamDescription.CreateTimestamp')" || rc=$? ;;
     AWS::IAM::ManagedPolicy)
       cls=unique; val="$(_revert_identity_aws iam get-policy --policy-arn "${pid}" --query 'Policy.PolicyId')" || rc=$? ;;
     AWS::DynamoDB::Table)

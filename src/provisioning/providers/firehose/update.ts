@@ -19,6 +19,7 @@ import type { ResourceUpdateResult, UpdateContext } from '../../../types/resourc
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import { holdsSecretDerivedEntry } from '../../iam-policy-targets.js';
 import { safeMsg } from '../../../utils/display-safe.js';
+import { withEmptyBlocksAsNone } from './s3-destination.js';
 import {
   ENCRYPTION_KEY,
   readEncryptionInput,
@@ -516,7 +517,11 @@ export async function applyExtendedS3DestinationUpdate(
       DeliveryStreamName: physicalId,
       CurrentDeliveryStreamVersionId: currentVersionId,
       DestinationId: destinationId,
-      ExtendedS3DestinationUpdate: this.mapExtendedS3ConfigToUpdate(nextConfig),
+      ExtendedS3DestinationUpdate: withEmptyBlocksAsNone(
+        this.mapExtendedS3ConfigToUpdate(nextConfig),
+        nextConfig,
+        currentDestination?.ExtendedS3DestinationDescription
+      ),
     })
   );
 }
