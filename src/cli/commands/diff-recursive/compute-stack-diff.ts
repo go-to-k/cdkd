@@ -60,11 +60,10 @@ import { crossStackOutputProvenanceSource } from '../../../deployment/read-prove
 import { logger } from './logger.js';
 import { warnLegacySpelling } from '../../../deployment/deploy-engine/deploy-flow/plan-checks.js';
 import {
-  healSlashedSsmParameterNames,
-  slashedSsmNameHealNote,
-  slashedSsmNameHealPendingNote,
-  slashedSsmNameHealAdoptedNote,
-} from '../../../deployment/ssm-slashed-name-heal.js';
+  noteAdoptedSsmNameHeals,
+  previewSsmNameHeal,
+  previewZonelessDbInstanceHeal,
+} from './preview-record-heals.js';
 import type { StackDiffResult, ComputeStackDiffOptions } from './types.js';
 import {
   nestedStackTypeChangeReason,
@@ -130,6 +129,7 @@ export async function computeStackDiff(
     inheritedSecretTokens,
     inheritedDerivedNames,
     attributeHealer: unboundAttributeHealer,
+    readLiveDbInstanceZone,
     parentUnresolvedParameters,
     inheritedNoEchoParameters,
     inheritedNoEchoParametersAnyVerdict,
@@ -137,21 +137,8 @@ export async function computeStackDiff(
     crossStackPreview,
     recordCrossStackPreview,
   } = options;
-  // go-to-k/cdkd#6274: the deploy re-spells a pre-#6272 generated SSM
-  // parameter name `/<name>` as `<name>` before its diff; so does the preview,
-  // so each dependent holding the old Ref shows the update the deploy makes.
-  // A nested child whose row the deploy leaves alone runs no engine, so it is
-  // only named, not healed.
-  const healSsmNames = (state: StackState): StackState => {
-    const healed = healSlashedSsmParameterNames(state, template, stackName);
-    if (healed.heals.length === 0) return state;
-    for (const heal of healed.heals) {
-      if (ssmNameHeal === 'apply') logger.info(slashedSsmNameHealNote(heal));
-      else logger.info(slashedSsmNameHealPendingNote(heal, stackName));
-    }
-    return ssmNameHeal === 'apply' ? { ...state, resources: healed.resources } : state;
-  };
-  const currentState: StackState = healSsmNames(loadedState);
+  // go-to-k/cdkd#6274: the deploy's SSM parameter name heal, before its diff.
+  const currentState = previewSsmNameHeal(loadedState, template, stackName, ssmNameHeal);
   // go-to-k/cdkd#3869: every heal of this node binds the healed record's
   // printing bag, judged over the records the diff reads at that moment
   // (`healResources`, which takes the adopted records once they are spliced).
@@ -444,16 +431,14 @@ export async function computeStackDiff(
     },
   });
   const { adoptedOrphans, adoptedRecords, deployRefusals, unreadableOrphans } = orphanSplice;
-  const { stateForDiff } = orphanSplice;
-  // An adopted record never saw the heal above; the deploy heals it after its
-  // adoption. Only named here: this preview's resolver reads the records as
-  // loaded, before the splice, so no dependent row could show the change.
-  if (Object.keys(adoptedRecords ?? {}).length > 0) {
-    const adopted = { ...currentState, resources: adoptedRecords };
-    for (const heal of healSlashedSsmParameterNames(adopted, template, stackName).heals) {
-      logger.info(slashedSsmNameHealAdoptedNote(heal));
-    }
-  }
+  // go-to-k/cdkd#7057: the deploy's zone heal, before the diff it changes.
+  const stateForDiff = await previewZonelessDbInstanceHeal(
+    orphanSplice.stateForDiff,
+    effectiveTemplate,
+    resolveFn,
+    readLiveDbInstanceZone
+  );
+  noteAdoptedSsmNameHeals(currentState, adoptedRecords, template, stackName);
   let { blocking } = orphanSplice;
 
   // go-to-k/cdkd#4543: the deploy's input fingerprint, recomputed from this

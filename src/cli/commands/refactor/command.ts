@@ -29,6 +29,7 @@ import {
 } from '../../../assets/asset-redirect.js';
 import { createLegacyAssetParameterBinder } from '../../../assets/legacy-synthesizer-assets.js';
 import { setAwsClients, AwsClients } from '../../../utils/aws-clients.js';
+import { readDbInstanceAvailabilityZone } from '../../../provisioning/providers/rds/live-zone.js';
 import { applyRoleArnIfSet } from '../../../utils/role-arn.js';
 import {
   exportInferredRegionForSdk,
@@ -324,6 +325,8 @@ export async function refactorCommand(stacks: string[], options: RefactorOptions
             ...(stackInfo.account && { consumerAccount: stackInfo.account }),
             noEchoMacCache,
             macWriteOnlyLookups,
+            // go-to-k/cdkd#7057: the deploy's zone read, in the stack's region.
+            readLiveDbInstanceZone: (id) => readDbInstanceAvailabilityZone(id, stackRegion),
             refusalRecovery: recovery,
             inheritSecretBearingTemplate: false,
             previewMaskedInputs: true,

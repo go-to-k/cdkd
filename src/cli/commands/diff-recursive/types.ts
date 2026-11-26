@@ -11,6 +11,7 @@ import type { OutputChange } from '../../../analyzer/outputs-diff.js';
 import type { RecordedSecretValues } from '../../../deployment/secret-redaction.js';
 import type { StateNamingSecrets } from '../../../deployment/secret-name-needles.js';
 import type { StaleAttributeHealer } from '../../../deployment/stale-attribute-heal.js';
+import type { LiveDbInstanceZoneReader } from '../../../deployment/zoneless-db-instance-heal.js';
 import type { DestructiveChange } from '../../../analyzer/destructive-changes.js';
 import type { SecurityDiff } from '../../../analyzer/security-diff.js';
 import type { LockRecoveryContext } from '../../../state/lock-contention-message.js';
@@ -446,6 +447,12 @@ export interface ComputeStackDiffOptions {
    * record and resolves it. Omitted, no provider read is issued.
    */
   attributeHealer?: StaleAttributeHealer;
+  /**
+   * go-to-k/cdkd#7057: reads a DB instance's zone in this node's region, for
+   * a record holding no `AvailabilityZone` where the template declares one
+   * (the deploy's heal). Omitted, no such read is issued.
+   */
+  readLiveDbInstanceZone?: LiveDbInstanceZoneReader;
   /**
    * Input parameters the parent row names but whose value could not be
    * resolved for this diff (go-to-k/cdkd#4479). This node binds its own

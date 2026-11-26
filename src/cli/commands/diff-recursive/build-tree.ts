@@ -31,6 +31,7 @@ import { secretNamedRecordNeedles } from '../../../deployment/secret-name-needle
 import { withPrintingSecrets } from '../../../deployment/resource-secrets-scope.js';
 import type { S3StateBackend } from '../../../state/s3-state-backend.js';
 import type { StaleAttributeHealer } from '../../../deployment/stale-attribute-heal.js';
+import type { LiveDbInstanceZoneReader } from '../../../deployment/zoneless-db-instance-heal.js';
 import {
   rewriteTemplateAssetReferences,
   type AssetRedirectMap,
@@ -99,6 +100,8 @@ export async function buildDiffTree(args: {
    * `computeStackDiff`'s `attributeHealer`.
    */
   attributeHealerFor?: (stackName: string, region: string) => StaleAttributeHealer;
+  /** go-to-k/cdkd#7057: `computeStackDiff`'s `readLiveDbInstanceZone`, per node region. */
+  liveDbInstanceZoneReaderFor?: (region: string) => LiveDbInstanceZoneReader;
   template: CloudFormationTemplate;
   nestedTemplates: Record<string, string>;
   recursive: boolean;
@@ -275,6 +278,7 @@ export async function buildDiffTree(args: {
     consumerAccount,
     previewOrphanAdoption,
     attributeHealerFor,
+    liveDbInstanceZoneReaderFor,
     ancestorTemplatePaths,
     isNestedChild,
     ssmNameHeal,
@@ -380,6 +384,9 @@ export async function buildDiffTree(args: {
         ...(inheritedReferenceProvenance && { inheritedReferenceProvenance }),
         ...(inheritedSecretTokens && { inheritedSecretTokens }),
         ...(attributeHealer && { attributeHealer }),
+        ...(liveDbInstanceZoneReaderFor && {
+          readLiveDbInstanceZone: liveDbInstanceZoneReaderFor(region),
+        }),
         ...(refusalRecovery && { refusalRecovery }),
         // A live template of its own, so this node decides for itself; the
         // inherited flag only matters for the DELETED children below.
@@ -661,6 +668,7 @@ export async function buildDiffTree(args: {
         ...(crossStackPreview && { crossStackPreview }),
         ...(previewOrphanAdoption && { previewOrphanAdoption }),
         ...(attributeHealerFor && { attributeHealerFor }),
+        ...(liveDbInstanceZoneReaderFor && { liveDbInstanceZoneReaderFor }),
         ancestorTemplatePaths: childAncestorTemplatePaths,
         isNestedChild: true,
         // go-to-k/cdkd#6274: only a row the deploy provisions runs the

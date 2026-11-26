@@ -586,7 +586,7 @@ export async function doDeployWithPrefetch(
       effectiveTemplate,
       currentState
     );
-    const { diffResolverContext, maskedInputs, changes, expectedChildTags } =
+    const { diffResolverContext, maskedInputs, changes, expectedChildTags, zonelessRecordsHealed } =
       await calculateDeployDiff(engine, {
         stackName,
         currentState,
@@ -597,9 +597,8 @@ export async function doDeployWithPrefetch(
         forcedNestedChildRuns: nestedCheck?.forcedRows,
       });
     clock.lap('diff');
-    // The diff was the prefetch's only consumer: withdraw what it did not
-    // need, so it stops spending the account's DescribeType quota that the
-    // deploy's own (write-only) lookups draw on.
+    // The diff was the prefetch's only consumer: withdraw what it did not need, so it
+    // stops spending the account's DescribeType quota the deploy's write-only lookups use.
     createOnlyPrefetch.cancel();
     // The re-baselined records, before anything provisions: an UPDATE row then
     // compares its provisioning-time inputs with today's, and the no-change
@@ -705,6 +704,7 @@ export async function doDeployWithPrefetch(
         orphansChanged,
         terminationProtectionChanged: terminationProtectionChanged || signalReceiverChanged,
         ssmNamesHealed: ssmNameHeals.length > 0,
+        zonelessRecordsHealed,
         nestedSsmNamesMarked: marksNestedCheck,
         resolveStackInstanceId,
         startProvenanceCapture,
