@@ -1981,6 +1981,16 @@ CloudFormation does.
   cross-stack read, and the branch an evaluated condition selects. So a new
   parameter value, a replaced resource's new name and a flipped condition
   are sent too.
+- `maskedPropertyReferenceFingerprints` (`refs-sha256:`, then the text hash
+  after a `+`, issue #7050) is written for a property whose template spells a
+  plain `{{resolve:ssm:...}}` reference. It hashes each such reference with
+  the PUBLIC (`String` / `StringList`) value it resolved to, so a changed
+  public parameter is sent: CloudFormation documents the skip of a value
+  change only for Secrets Manager and `ssm-secure`. A `SecureString` read
+  through `ssm` enters as a marker, and `secretsmanager` / `ssm-secure`
+  references are left out. A value that cannot be told (no proof of its
+  type, a reference an intrinsic assembles) or a record without the entry
+  plans the property as changed.
 
 Secrets stay in their template form and never reach the hash, decided by
 where an input comes from, never by comparing its value with a secret it did
@@ -2565,6 +2575,7 @@ interface ResourceState {
   acceptedCreateOnlyDrops?: string[] // optional, no bump: create-only properties the SDK route was told to drop, so never sent
   maskedPropertyFingerprints?: Record<string, string> // optional, no bump: per property `properties` holds as `***`, a hash of its template text (issue #4451)
   maskedPropertyInputFingerprints?: Record<string, string> // optional, no bump: per such property, a hash of its template value with its non-secret inputs resolved, bound to the text hash (issue #4543)
+  maskedPropertyReferenceFingerprints?: Record<string, string> // optional, no bump: per such property spelling a plain `ssm` reference, a hash of each with its public value, bound to the text hash (issue #7050)
   noEchoValueMacs?: Record<string, Record<string, string | { fingerprint: string; macs?: Record<string, string> }>> // v17+, written only with a MAC: per property reading a NoEcho parameter, per parameter, a KMS HMAC of the value last sent (issue #6146); `cdkd:inputs` binds it to the input fingerprint it was sent with (no bump, issue #6209); `cdkd:passed` holds the MACs of passed-secret nested-child parameters a masked key reads (no bump, issue #7050)
   secretNamedAttributes?: string[] // optional, no bump: on a nested-stack row, the `Outputs.<Key>` attributes holding a child resource's name taken from a secret; keys only, read only to mask log lines (issue #3869)
   nameGeneration?: number                      // v13+, id stacks only: the generation its generated name was derived at; absent = 0

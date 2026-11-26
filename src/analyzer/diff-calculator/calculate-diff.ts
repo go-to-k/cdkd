@@ -16,9 +16,13 @@ import {
 } from '../../state/malformed-resources-bag.js';
 import {
   inputFingerprinter,
+  maskedPropertyFingerprintsOf,
   movedMaskedProperties,
+  publicReferencesMoved,
   type MaskedInputSources,
+  type PublicReferenceOf,
 } from '../../deployment/masked-property-fingerprints.js';
+import { carriesSecretMask } from '../../deployment/secret-redaction.js';
 import type { MaskerFn } from '../../provisioning/masked-retry-logger.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import type { LockRecoveryContext } from '../../state/lock-contention-message.js';
@@ -113,6 +117,12 @@ export async function calculateDiff(
   maskedInputs?: {
     sources: MaskedInputSources;
     rebaselined?: Map<string, Record<string, string>>;
+    /**
+     * go-to-k/cdkd#7050: what the diff pass proved of each plain
+     * `{{resolve:ssm:...}}` reference (`publicReferencesOf` over its bag).
+     * Absent, a masked key spelling one reads as moved.
+     */
+    publicReferences?: PublicReferenceOf;
   },
   /**
    * The run's account flags (go-to-k/cdkd#4159), carried on the two
@@ -465,7 +475,8 @@ export async function calculateDiff(
         rawDesiredProps,
         currentCompared,
         noEchoCompared?.desired ?? desiredPropsForCompare,
-        maskedInputs && inputFingerprinter(rawDesiredProps, maskedInputs.sources)
+        maskedInputs && inputFingerprinter(rawDesiredProps, maskedInputs.sources),
+        maskedInputs?.publicReferences
       );
       const propertyChanges = await this.compareProperties(
         desiredResource.Type,
@@ -492,6 +503,26 @@ export async function calculateDiff(
       );
       if (rebaselined.length > 0) {
         maskedInputs!.rebaselined!.set(logicalId, Object.fromEntries(rebaselined));
+      }
+      // go-to-k/cdkd#7050: a masked key whose public `ssm` value moved, or
+      // cannot be told unmoved; a secret's value is not compared.
+      if (maskedInputs !== undefined) {
+        const recordedProps = (currentResource.properties ?? {}) as Record<string, unknown>;
+        for (const key of maskedPropertyFingerprintsOf(currentResource).keys()) {
+          if (moved.includes(key) || !Object.hasOwn(rawDesiredProps, key)) continue;
+          if (!Object.hasOwn(recordedProps, key) || !carriesSecretMask(recordedProps[key]))
+            continue;
+          if (
+            publicReferencesMoved(
+              currentResource,
+              key,
+              rawDesiredProps[key],
+              maskedInputs.publicReferences
+            )
+          ) {
+            moved.push(key);
+          }
+        }
       }
       for (const key of moved) {
         if (reported.has(key)) continue;

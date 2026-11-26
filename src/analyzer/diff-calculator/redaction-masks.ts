@@ -14,6 +14,10 @@ import {
   passedSecretVerdictOf,
   type InputFingerprinter,
 } from '../../deployment/masked-property-fingerprints/records.js';
+import {
+  publicReferencesMoved,
+  type PublicReferenceOf,
+} from '../../deployment/masked-property-fingerprints/public-references.js';
 import type { ResourceState } from '../../types/state.js';
 
 /**
@@ -40,7 +44,11 @@ import type { ResourceState } from '../../types/state.js';
  * - every input other than `{{resolve:...}}` text was resolved and hashed,
  *   or, where the key reads a parameter a nested child's parent passed as
  *   `secret`, the record's keyed MACs of those values equal today's
- *   (`cdkd:passed`, bound to the same proven input fingerprint).
+ *   (`cdkd:passed`, bound to the same proven input fingerprint);
+ * - every plain `{{resolve:ssm:...}}` reference the template value spells
+ *   resolved to the public value the record hashed (`publicReferences`;
+ *   absent, unknown or unrecorded reads as moved). A secret's value is not
+ *   compared, as in CloudFormation.
  * Only the positions holding the mask are masked on the desired side; every
  * other leaf of the key is compared as before.
  */
@@ -49,7 +57,10 @@ export async function maskUnmovedRedactionMasks(
   rawDesired: Record<string, unknown>,
   current: Record<string, unknown>,
   desired: Record<string, unknown>,
-  fingerprinter: (InputFingerprinter & { concrete?: (key: string) => Promise<boolean> }) | undefined
+  fingerprinter:
+    | (InputFingerprinter & { concrete?: (key: string) => Promise<boolean> })
+    | undefined,
+  publicReferences?: PublicReferenceOf
 ): Promise<Record<string, unknown>> {
   if (fingerprinter === undefined) return desired;
   const fingerprints = maskedPropertyFingerprintsOf(record);
@@ -103,6 +114,7 @@ export async function maskUnmovedRedactionMasks(
     if (!concrete && (await passedSecretVerdictOf(fingerprinter, key, record)) !== 'confirmed') {
       continue;
     }
+    if (publicReferencesMoved(record, key, rawDesired[key], publicReferences)) continue;
     (out ??= { ...desired })[key] = maskedWhere(current[key], desired[key]);
   }
   return out ?? desired;

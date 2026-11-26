@@ -409,6 +409,8 @@ export function markWrittenFromDeployedTemplate<T extends object>(bag: T): T {
  * fingerprint. `inputFingerprints` are the input fingerprints the deploy
  * computed when it resolved the resource (go-to-k/cdkd#4543); each is stamped
  * only while bound to the text fingerprint stamped beside it.
+ * `referenceFingerprints` (go-to-k/cdkd#7050): the public `ssm` reference
+ * fingerprints (`public-references.ts`), stamped, carried and refused alike.
  */
 export function withMaskedPropertyFingerprints(
   scrubbed: ResourceState,
@@ -416,7 +418,8 @@ export function withMaskedPropertyFingerprints(
   templateProps: Record<string, unknown> | undefined,
   secrets?: RecordedSecretValues,
   noEchoParameterValues?: RecordedSecretValues,
-  inputFingerprints?: Readonly<Record<string, string>>
+  inputFingerprints?: Readonly<Record<string, string>>,
+  referenceFingerprints?: Readonly<Record<string, string>>
 ): ResourceState {
   if (templateProps === undefined) return scrubbed;
   const corpora = [secrets, noEchoParameterValues].filter(
@@ -429,13 +432,16 @@ export function withMaskedPropertyFingerprints(
   const {
     maskedPropertyFingerprints: previous,
     maskedPropertyInputFingerprints: previousInputs,
+    maskedPropertyReferenceFingerprints: previousReferences,
     ...rest
   } = scrubbed;
   let fingerprints: Record<string, string> | undefined;
   let inputs: Record<string, string> | undefined;
+  let references: Record<string, string> | undefined;
   if (written) {
     fingerprints = maskedPropertyFingerprintsFor(scrubbed.properties, templateProps);
     inputs = boundInputFingerprints(fingerprints, inputFingerprints);
+    references = boundInputFingerprints(fingerprints, referenceFingerprints);
   } else {
     // Carried as it was, except that this save may hold the needles a
     // backfill or an earlier save could not see.
@@ -444,6 +450,9 @@ export function withMaskedPropertyFingerprints(
     fingerprints = { ...(previous as Record<string, string>) };
     inputs = isPlainObject(previousInputs)
       ? { ...(previousInputs as Record<string, string>) }
+      : undefined;
+    references = isPlainObject(previousReferences)
+      ? { ...(previousReferences as Record<string, string>) }
       : undefined;
   }
   if (fingerprints !== undefined && corpora.length > 0) {
@@ -464,12 +473,17 @@ export function withMaskedPropertyFingerprints(
         const kept = Object.entries(inputs).filter(([key]) => !refused.includes(key));
         inputs = kept.length > 0 ? Object.fromEntries(kept) : undefined;
       }
+      if (references !== undefined) {
+        const kept = Object.entries(references).filter(([key]) => !refused.includes(key));
+        references = kept.length > 0 ? Object.fromEntries(kept) : undefined;
+      }
     }
   }
   if (
     !written &&
     JSON.stringify(fingerprints) === JSON.stringify(previous) &&
-    JSON.stringify(inputs) === JSON.stringify(previousInputs)
+    JSON.stringify(inputs) === JSON.stringify(previousInputs) &&
+    JSON.stringify(references) === JSON.stringify(previousReferences)
   ) {
     return scrubbed;
   }
@@ -477,6 +491,7 @@ export function withMaskedPropertyFingerprints(
     ...rest,
     ...(fingerprints !== undefined && { maskedPropertyFingerprints: fingerprints }),
     ...(inputs !== undefined && { maskedPropertyInputFingerprints: inputs }),
+    ...(references !== undefined && { maskedPropertyReferenceFingerprints: references }),
   };
 }
 

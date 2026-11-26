@@ -20,8 +20,12 @@ import {
   classifyPassedParameters,
   inputFingerprinter,
   maskedInputFingerprintsFor,
+  maskedPropertyFingerprintsOf,
+  maskedReferenceFingerprintsFor,
   movedMaskedProperties,
   possiblyMaskedKeys,
+  publicReferencesMoved,
+  publicReferencesOf,
   recordPassedParameterClasses,
 } from '../../masked-property-fingerprints.js';
 import {
@@ -396,19 +400,36 @@ export async function resolveUpdateInputs(
   const movedMasked = new Set(
     await movedMaskedProperties(currentResource, desiredProps, fingerprints)
   );
+  const corpora = [
+    updateSecrets,
+    engine.secretsRun.fingerprintNoEchoValues,
+    engine.options.inheritedSecrets,
+  ];
+  const publicReferences = publicReferencesOf(updateSecrets, corpora);
+  // go-to-k/cdkd#7050: a masked key whose public `ssm` value moved (or cannot
+  // be told unmoved) is sent, as CloudFormation would; a secret's is not.
+  if (fingerprints !== undefined) {
+    for (const key of maskedPropertyFingerprintsOf(currentResource).keys()) {
+      if (movedMasked.has(key) || !Object.hasOwn(desiredProps, key)) continue;
+      const recorded = currentResource.properties as Record<string, unknown> | undefined;
+      if (recorded === undefined || recorded === null || !Object.hasOwn(recorded, key)) continue;
+      if (!carriesSecretMask(recorded[key])) continue;
+      if (publicReferencesMoved(currentResource, key, desiredProps[key], publicReferences)) {
+        movedMasked.add(key);
+      }
+    }
+  }
   // What the save stamps if this deploy writes the record: the input
   // fingerprint of each property it may record as the mask.
   if (fingerprints !== undefined) {
+    const keys = possiblyMaskedKeys(resolvedProps, corpora);
     engine.secretsRun.perResourceInputFingerprints.set(
       logicalId,
-      await maskedInputFingerprintsFor(
-        possiblyMaskedKeys(resolvedProps, [
-          updateSecrets,
-          engine.secretsRun.fingerprintNoEchoValues,
-          engine.options.inheritedSecrets,
-        ]),
-        fingerprints
-      )
+      await maskedInputFingerprintsFor(keys, fingerprints)
+    );
+    engine.secretsRun.perResourceReferenceFingerprints.set(
+      logicalId,
+      maskedReferenceFingerprintsFor(keys, desiredProps, publicReferences)
     );
   }
   // go-to-k/cdkd#6209: today's fully resolved input fingerprints of the keys

@@ -69,7 +69,9 @@ import {
   classifyPassedParameters,
   inputFingerprinter,
   maskedInputFingerprintsFor,
+  maskedReferenceFingerprintsFor,
   possiblyMaskedKeys,
+  publicReferencesOf,
   recordPassedParameterClasses,
 } from '../masked-property-fingerprints.js';
 import {
@@ -187,15 +189,23 @@ export async function provisionCreate(
     fingerprintSources &&
     inputFingerprinter(desiredProps, fingerprintSources, (key) => macCover.get(key));
   if (fingerprinter !== undefined) {
+    const corpora = [
+      context.recordedSecretValues,
+      engine.secretsRun.fingerprintNoEchoValues,
+      engine.options.inheritedSecrets,
+    ];
+    const keys = possiblyMaskedKeys(resolvedProps, corpora);
     engine.secretsRun.perResourceInputFingerprints.set(
       logicalId,
-      await maskedInputFingerprintsFor(
-        possiblyMaskedKeys(resolvedProps, [
-          context.recordedSecretValues,
-          engine.secretsRun.fingerprintNoEchoValues,
-          engine.options.inheritedSecrets,
-        ]),
-        fingerprinter
+      await maskedInputFingerprintsFor(keys, fingerprinter)
+    );
+    // go-to-k/cdkd#7050: and each key's public `ssm` values, hashed.
+    engine.secretsRun.perResourceReferenceFingerprints.set(
+      logicalId,
+      maskedReferenceFingerprintsFor(
+        keys,
+        desiredProps,
+        publicReferencesOf(context.recordedSecretValues, corpora)
       )
     );
   }

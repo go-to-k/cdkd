@@ -352,6 +352,7 @@ record it. [`cdkd export`](cli-export.md) rebuilds a template from
 A record can also carry bookkeeping fields that no command asks you to read or
 edit: `noEchoLeaves`, `noEchoAttributeNames`, `noEchoExactEchoLeaves`,
 `maskedPropertyFingerprints`, `maskedPropertyInputFingerprints`,
+`maskedPropertyReferenceFingerprints`,
 `acceptedCreateOnlyDrops`, `observedBaselineRefusalReason`,
 `referenceProvenance`, `secretNamedAttributes`, and the stack's `conditionVerdicts` and
 `outputReferenceProvenance`. The contributor page

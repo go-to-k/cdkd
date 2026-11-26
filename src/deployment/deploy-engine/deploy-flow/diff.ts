@@ -7,6 +7,7 @@ import { recreateTargetIdsFor } from '../../recreate-target-promotion.js';
 import { crossStackOutputProvenanceSource } from '../../read-provenance-sources.js';
 import type { CrossStackRead } from '../../intrinsic-resolver/context.js';
 import { buildResolverContext, maskedInputSources } from '../resolver-context.js';
+import { publicReferencesOf } from '../../masked-property-fingerprints.js';
 import type { DeployEngine } from '../../deploy-engine.js';
 import type { StackState } from '../../../types/state.js';
 import type { CloudFormationTemplate } from '../../../types/resource.js';
@@ -100,6 +101,8 @@ export async function calculateDeployDiff(
   const maskedInputs = maskedInputSourcesForDiff && {
     sources: maskedInputSourcesForDiff,
     rebaselined: new Map<string, Record<string, string>>(),
+    // go-to-k/cdkd#7050: the public `ssm` values this diff pass resolved.
+    publicReferences: publicReferencesOf(diffResolverContext.recordedSecretValues),
   };
   clock.lap('journal, parameters, conditions, DAG build');
   const changes = await engine.diffCalculator.calculateDiff(

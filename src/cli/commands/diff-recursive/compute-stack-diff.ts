@@ -46,7 +46,10 @@ import {
 } from '../../../deployment/secret-name-needles.js';
 import type { MaskerFn } from '../../../provisioning/masked-retry-logger.js';
 import type { S3StateBackend } from '../../../state/s3-state-backend.js';
-import { parameterInputsFor } from '../../../deployment/masked-property-fingerprints.js';
+import {
+  parameterInputsFor,
+  publicReferencesOf,
+} from '../../../deployment/masked-property-fingerprints.js';
 import { diffSecurity } from '../../../analyzer/security-diff.js';
 import { childTemplateLoader } from '../../../deployment/nested-output-templates.js';
 import { findNestedStackTypeChanges } from '../../../deployment/type-change-guard.js';
@@ -504,6 +507,8 @@ export async function computeStackDiff(
           return { value, secrets };
         },
       },
+      // go-to-k/cdkd#7050: the public `ssm` values this preview resolved.
+      publicReferences: publicReferencesOf(diffSecrets),
     };
   }
   const changes = await diffCalculator.calculateDiff(

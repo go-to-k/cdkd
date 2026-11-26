@@ -472,6 +472,18 @@ export interface ResourceState {
   maskedPropertyInputFingerprints?: Record<string, string> | undefined;
 
   /**
+   * go-to-k/cdkd#7050: per masked property whose template value spells a
+   * plain `{{resolve:ssm:...}}` reference, `refs-sha256:<hex>+sha256:<hex>`:
+   * a hash of each such token with its PROVEN public value (a `SecureString`
+   * one as a marker, never its value; `secretsmanager` / `ssm-secure` left
+   * out), bound to the text fingerprint. Optional, no schema bump. A moved
+   * public value, or no bound entry, moves the property. Read through
+   * `maskedPropertyReferenceFingerprintsOf`
+   * (`masked-property-fingerprints/public-references.ts`).
+   */
+  maskedPropertyReferenceFingerprints?: Record<string, string> | undefined;
+
+  /**
    * go-to-k/cdkd#6146: per top-level property that reads a `NoEcho` parameter,
    * per such parameter, `kms-hmac-sha256:<keyArn>:<base64>`: a KMS
    * `GenerateMac` (`HMAC_SHA_256`) of the value the property was last SENT,

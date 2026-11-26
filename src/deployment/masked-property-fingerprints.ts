@@ -93,3 +93,11 @@ export type {
   BindingFingerprinter,
   InputFingerprinter,
 } from './masked-property-fingerprints/records.js';
+export {
+  maskedPropertyReferenceFingerprintsOf,
+  maskedReferenceFingerprintsFor,
+  publicReferenceFingerprint,
+  publicReferencesMoved,
+  publicReferencesOf,
+} from './masked-property-fingerprints/public-references.js';
+export type { PublicReferenceOf } from './masked-property-fingerprints/public-references.js';
