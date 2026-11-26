@@ -6,7 +6,7 @@ import {
   type IntrinsicLeafResolution,
   type RecordedSecretValues,
 } from '../pairs.js';
-import { MIN_NEEDLE_LENGTH, type PathSourceRules, isPlainObject } from '../rules.js';
+import { type PathSourceRules, isPlainObject } from '../rules.js';
 import { physicalNameCopiesOf } from '../physical-name-copies.js';
 import { dynamicReferenceSpans } from './reference-tokens.js';
 import {
@@ -226,15 +226,15 @@ function redactGap(
   // Then the value scan, for every other recorded secret (4+ characters, or
   // one the gap equals whole): its answer is taken, as the scan's is for any
   // value. A mask-only value in the gap masks the leaf whole, never inline.
-  // Not a gap that merely EQUALS another secret's sub-floor text: the scan of
-  // the whole leaf never matched it there (no substring arm under the floor),
-  // and spelling a public value as that reference is a perpetual plan diff.
-  if (text.length < MIN_NEEDLE_LENGTH && secrets.has(text) && !own.has(text)) return { text };
+  // A gap EQUAL to another secret's text takes it at any length, as a whole
+  // leaf reading the same value does (`{Ref: P}`): never its plaintext. The
+  // cost, where the value only coincides with the secret, is a redaction
+  // artifact the plan diff shows, never an exposure.
   const scanned = scan(text);
   if (typeof scanned !== 'string') return 'mask';
-  // A mask the scan WROTE (a mask-only value) masks the leaf whole; a `***`
-  // the value already held is its own text.
-  if (countOf(scanned, SECRET_MASK) > countOf(text, SECRET_MASK)) return 'mask';
+  // A mask the scan wrote (a mask-only value) masks the leaf whole; a `***`
+  // the value already held, unchanged, is its own text.
+  if (scanned !== text && scanned.includes(SECRET_MASK)) return 'mask';
   return { text: scanned };
 }
 
@@ -266,11 +266,4 @@ function exposedAt(text: string, plaintext: string, copies: readonly string[]): 
     at = text.indexOf(plaintext, end);
   }
   return out;
-}
-
-function countOf(text: string, needle: string): number {
-  let count = 0;
-  for (let at = text.indexOf(needle); at !== -1; at = text.indexOf(needle, at + needle.length))
-    count++;
-  return count;
 }

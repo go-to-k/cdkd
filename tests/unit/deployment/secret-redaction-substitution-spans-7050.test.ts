@@ -105,10 +105,9 @@ describe('positionBySubstitutionSpans (#7050)', () => {
       substitutions: [{ token: PIN, value: 'q7', secret: true }],
       complete: true,
     });
-    // Another secret's SUB-FLOOR text a gap merely equals stays (the whole-leaf
-    // scan never matched it; spelling a public value as that reference would
-    // be a perpetual plan diff): only the leaf's own token is written.
-    expect(position('q7@x9', whole, secrets)).toBe(`${PIN}@x9`);
+    // A gap EQUAL to another secret's text takes that reference at any length,
+    // as a whole leaf reading the same value would: never its plaintext.
+    expect(position('q7@x9', whole, secrets)).toBe(`${PIN}@${X9}`);
     // The gap holds the own secret's text AND another 4+ character secret.
     const mixed = { 'Fn::Join': ['', [PIN, '@', { Ref: 'Other' }]] };
     recordIntrinsicLeafResolution(secrets, mixed, {
