@@ -7,6 +7,7 @@ import type { LambdaEventSourceMappingProvider } from '../lambda-eventsource-pro
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import { assertRegionMatch, type DeleteContext } from '../../region-check.js';
+import { isInterruptedWaitError, startInterruptWatch } from '../../interrupt-watch.js';
 
 /**
  * States a mapping passes through on its own; Lambda refuses a delete with
@@ -51,21 +52,40 @@ async function deleteWhenSettled(
     } catch (error) {
       if (!isInUse(error)) throw error;
       // A vanished mapping is deleted: ResourceNotFoundException reaches the
-      // caller's catch.
-      const read = await this.lambdaClient.send(
-        new GetEventSourceMappingCommand({ UUID: physicalId })
-      );
-      if (!TRANSITIONAL_STATES.has(read.State ?? '') || Date.now() >= deadline) throw error;
+      // caller's catch. Any other failed read reports the refusal itself.
+      let state: string | undefined;
+      try {
+        state = (
+          await this.lambdaClient.send(new GetEventSourceMappingCommand({ UUID: physicalId }))
+        ).State;
+      } catch (readError) {
+        if (readError instanceof ResourceNotFoundException) throw readError;
+        throw error;
+      }
+      if (!TRANSITIONAL_STATES.has(state ?? '') || Date.now() >= deadline) throw error;
     }
     this.logger.debug(
       safeMsg`Event source mapping ${logicalId} is still settling; waiting before retrying the delete`
     );
-    for (;;) {
-      await new Promise((resolve) => setTimeout(resolve, IN_USE_POLL_INTERVAL_MS));
-      const current = await this.lambdaClient.send(
-        new GetEventSourceMappingCommand({ UUID: physicalId })
-      );
-      if (!TRANSITIONAL_STATES.has(current.State ?? '') || Date.now() >= deadline) break;
+    const watch = startInterruptWatch(`event source mapping ${logicalId} delete wait`);
+    try {
+      for (;;) {
+        await new Promise((resolve) => setTimeout(resolve, IN_USE_POLL_INTERVAL_MS));
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        let current;
+        try {
+          current = await this.lambdaClient.send(
+            new GetEventSourceMappingCommand({ UUID: physicalId })
+          );
+        } catch (readError) {
+          if (readError instanceof ResourceNotFoundException) throw readError;
+          // An unreadable poll: let the delete itself answer.
+          break;
+        }
+        if (!TRANSITIONAL_STATES.has(current.State ?? '') || Date.now() >= deadline) break;
+      }
+    } finally {
+      watch.dispose();
     }
   }
 }
@@ -112,6 +132,8 @@ export async function deleteImpl(
       this.logger.debug(`Event source mapping ${physicalId} does not exist, skipping deletion`);
       return;
     }
+    // Ctrl-C during the settle wait: an interruption, never a resource failure.
+    if (isInterruptedWaitError(error)) throw error;
     const cause = error instanceof Error ? error : undefined;
     throw this.wrapMaskedError(
       this.operationSinks(context?.maskSecrets, properties ?? {}),

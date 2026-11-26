@@ -40,6 +40,11 @@ import {
   IN_USE_POLL_INTERVAL_MS,
   IN_USE_SETTLE_BUDGET_MS,
 } from '../../../src/provisioning/providers/lambda-eventsource/delete.js';
+import {
+  disarmInterruptWatchForTests,
+  interruptWatchTestSeam,
+  isInterruptedWaitError,
+} from '../../../src/provisioning/interrupt-watch.js';
 
 const UUID = 'abcdef12-3456-7890-abcd-ef1234567890';
 const TYPE = 'AWS::Lambda::EventSourceMapping';
@@ -147,6 +152,24 @@ describe('LambdaEventSourceMappingProvider.delete — a mapping still settling',
     await settled;
   });
 
+  it('reports the refusal, not the read error, when the mapping cannot be read', async () => {
+    let gets = 0;
+    mockSend.mockImplementation((cmd: unknown) => {
+      if (cmd instanceof GetEventSourceMappingCommand) {
+        gets++;
+        if (gets === 1) return Promise.resolve({ UUID, State: 'Creating' });
+        return Promise.reject(Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' }));
+      }
+      if (cmd instanceof DeleteEventSourceMappingCommand) return Promise.reject(inUse());
+      return Promise.resolve({});
+    });
+
+    await expect(
+      provider.delete('L', UUID, TYPE, undefined, { expectedRegion: 'us-east-1' })
+    ).rejects.toThrow(/ResourceInUseException|in use/);
+    expect(sentOf(DeleteEventSourceMappingCommand)).toBe(1);
+  });
+
   it('does not wait on any other delete failure', async () => {
     mockSend.mockImplementation((cmd: unknown) => {
       if (cmd instanceof GetEventSourceMappingCommand) {
@@ -163,5 +186,43 @@ describe('LambdaEventSourceMappingProvider.delete — a mapping still settling',
     ).rejects.toThrow(/Failed to delete event source mapping L/);
     expect(sentOf(DeleteEventSourceMappingCommand)).toBe(1);
     expect(sentOf(GetEventSourceMappingCommand)).toBe(1);
+  });
+
+  describe('Ctrl-C during the wait', () => {
+    beforeEach(() => {
+      disarmInterruptWatchForTests();
+      interruptWatchTestSeam.commandOwnsInterrupts = () => true;
+      interruptWatchTestSeam.forceQuit = () => {};
+    });
+    afterEach(() => {
+      disarmInterruptWatchForTests();
+      delete interruptWatchTestSeam.commandOwnsInterrupts;
+      delete interruptWatchTestSeam.forceQuit;
+    });
+
+    it('ends the wait as an interruption, not a resource failure, and sends no further delete', async () => {
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof GetEventSourceMappingCommand) {
+          return Promise.resolve({ UUID, State: 'Creating' });
+        }
+        if (cmd instanceof DeleteEventSourceMappingCommand) return Promise.reject(inUse());
+        return Promise.resolve({});
+      });
+      const before = new Set(process.listeners('SIGINT'));
+
+      const done = provider.delete('L', UUID, TYPE, undefined, { expectedRegion: 'us-east-1' });
+      const settled = done.then(
+        () => undefined,
+        (e: unknown) => e
+      );
+      await vi.advanceTimersByTimeAsync(1);
+      for (const listener of process.listeners('SIGINT')) {
+        if (!before.has(listener)) (listener as unknown as () => void)();
+      }
+      await vi.advanceTimersByTimeAsync(IN_USE_POLL_INTERVAL_MS);
+
+      expect(isInterruptedWaitError(await settled)).toBe(true);
+      expect(sentOf(DeleteEventSourceMappingCommand)).toBe(1);
+    });
   });
 });
