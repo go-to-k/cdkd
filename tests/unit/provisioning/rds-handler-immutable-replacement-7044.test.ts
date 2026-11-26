@@ -105,14 +105,15 @@ describe('RDS handler immutability predicates (go-to-k/cdkd#7044)', () => {
     expect(p('us-east-1a', undefined, bags({ MultiAZ: true }, {}))).toBe(true);
   });
 
-  it('AvailabilityZone: what the bags cannot tell keeps the previous verdict (no replacement)', () => {
+  it('AvailabilityZone: an unresolved zone differs (go-to-k/cdkd#7052); an unknown MultiAZ keeps the previous verdict', () => {
     const p = dbInstanceAvailabilityZoneChangeReplaces;
-    expect(p('us-east-1a', UNRESOLVED, bags({}, {}))).toBe(false);
-    expect(p(UNRESOLVED, 'us-east-1a', bags({}, {}))).toBe(false);
+    expect(p('us-east-1a', UNRESOLVED, bags({}, {}))).toBe(true);
+    expect(p(UNRESOLVED, 'us-east-1a', bags({}, {}))).toBe(true);
+    expect(p(UNRESOLVED, { 'Fn::GetAtt': ['NewKey', 'Arn'] }, bags({}, {}))).toBe(false);
     expect(p('us-east-1a', undefined, bags({}, { MultiAZ: { Ref: 'P' } }))).toBe(false);
     expect(p('us-east-1a', undefined)).toBe(false);
-    // The promoted-dependent probe: the handler sees equal models.
-    expect(p(undefined, undefined, bags({}, {}))).toBe(false);
+    // The promoted-dependent probe: the value moves once it resolves (a ceiling).
+    expect(p(undefined, undefined, bags({}, {}))).toBe(true);
   });
 
   it('isPerformanceInsightsKMSKeyIdMutable: replaces only when a non-empty previous key differs', () => {
@@ -123,8 +124,12 @@ describe('RDS handler immutability predicates (go-to-k/cdkd#7044)', () => {
     expect(p(KEY_A, KEY_A)).toBe(false);
     expect(p(undefined, KEY_B)).toBe(false);
     expect(p('', KEY_B)).toBe(false);
-    expect(p(KEY_A, UNRESOLVED)).toBe(false);
-    expect(p(undefined, undefined)).toBe(false);
+    // go-to-k/cdkd#7052: an unresolved key differs from a non-empty previous one,
+    // and the probe is a ceiling; setting a first unresolved key stays in place.
+    expect(p(KEY_A, UNRESOLVED)).toBe(true);
+    expect(p(undefined, UNRESOLVED)).toBe(false);
+    expect(p(UNRESOLVED, UNRESOLVED)).toBe(false);
+    expect(p(undefined, undefined)).toBe(true);
   });
 
   it('isSourceDB{Instance,Cluster}IdentifierMutable: any change replaces except a promotion', () => {
@@ -136,7 +141,10 @@ describe('RDS handler immutability predicates (go-to-k/cdkd#7044)', () => {
     expect(p('source-db', '')).toBe(false);
     // Not a promotion (the previous source is empty), and not equal.
     expect(p('', undefined)).toBe(true);
-    expect(p('source-db', { Ref: 'Source' })).toBe(false);
+    // go-to-k/cdkd#7052: an unresolved source differs; the probe is a ceiling.
+    expect(p('source-db', { Ref: 'Source' })).toBe(true);
+    expect(p({ Ref: 'Source' }, undefined)).toBe(false);
+    expect(p(undefined, undefined)).toBe(true);
   });
 
   it('the restore inputs: adding or changing replaces, removing does not', () => {
@@ -146,7 +154,10 @@ describe('RDS handler immutability predicates (go-to-k/cdkd#7044)', () => {
     expect(p('snap-a', 'snap-a')).toBe(false);
     expect(p('snap-a', undefined)).toBe(false);
     expect(p('snap-a', '')).toBe(false);
-    expect(p('snap-a', { Ref: 'Snap' })).toBe(false);
+    // go-to-k/cdkd#7052: an unresolved input differs; the probe is a ceiling.
+    expect(p('snap-a', { Ref: 'Snap' })).toBe(true);
+    expect(p({ Ref: 'Snap' }, { Ref: 'Snap' })).toBe(false);
+    expect(p(undefined, undefined)).toBe(true);
   });
 
   it('isUseLatestRestorableTimeMutable: replaces only a change to true', () => {
@@ -158,7 +169,10 @@ describe('RDS handler immutability predicates (go-to-k/cdkd#7044)', () => {
     expect(p(true, false)).toBe(false);
     expect(p(true, undefined)).toBe(false);
     expect(p(undefined, false)).toBe(false);
+    // An unresolved Boolean may be either value: the previous verdict. The
+    // probe is a ceiling (go-to-k/cdkd#7052).
     expect(p(undefined, { Ref: 'P' })).toBe(false);
+    expect(p(undefined, undefined)).toBe(true);
   });
 
   it('isGlobalClusterMutable: adding or changing replaces, removing a non-empty one does not', () => {
@@ -169,7 +183,10 @@ describe('RDS handler immutability predicates (go-to-k/cdkd#7044)', () => {
     expect(p('global-a', undefined)).toBe(false);
     expect(p('global-a', '')).toBe(false);
     expect(p('', undefined)).toBe(true);
-    expect(p(undefined, { Ref: 'Global' })).toBe(false);
+    // go-to-k/cdkd#7052: an unresolved global cluster differs; the probe is a ceiling.
+    expect(p(undefined, { Ref: 'Global' })).toBe(true);
+    expect(p({ Ref: 'Global' }, undefined)).toBe(false);
+    expect(p(undefined, undefined)).toBe(true);
   });
 
   it('the registry wires each property', () => {

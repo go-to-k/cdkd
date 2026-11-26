@@ -15,21 +15,76 @@
  *
  * Each predicate is the handler's check negated, never broader. `Objects.equal`
  * is exact, `isNullOrEmpty` treats an absent value and `""` alike, and
- * `BooleanUtils.isTrue` is only `true`. A value the diff could not resolve (an
- * intrinsic object, or any non-string where the handler reads a string) cannot
- * be judged from the two bags, so it keeps cdkd's previous verdict: no
- * replacement. So does the diff's promoted-dependent probe (no value on either
- * side): the handler sees equal models there. Both are go-to-k/cdkd#7052.
+ * `BooleanUtils.isTrue` is only `true`.
+ *
+ * A string field the diff could not resolve (an intrinsic object, typically a
+ * `Ref` / `Fn::GetAtt` of a resource this deploy creates, or any non-string
+ * where the handler reads a string) is judged as the handler will see it once
+ * resolved (go-to-k/cdkd#7052): a non-empty value that differs from every
+ * other value but the same unresolved one. A new resource's id or ARN cannot
+ * equal the previous string, and the diff calls such a pair changed too
+ * (`valuesEqual`). So does the diff's promoted-dependent probe (`undefined`,
+ * `undefined`): the field references a resource being replaced, so both sides
+ * are non-empty and the value WILL move once it resolves. That answer is a
+ * ceiling the engine lowers when the resolved value turns out unmoved, and
+ * re-judges with the resolved values when it moved
+ * (`eventInvokeConfigFunctionChanged` answers the probe the same way).
+ *
+ * A `Boolean` field the diff could not resolve stays undecidable: it may
+ * resolve to either value, so it keeps cdkd's previous verdict (no
+ * replacement), except for the probe, which is a ceiling.
  */
 import type { ReplacementSiblings } from './types.js';
 
-/** A value the handler's check cannot be run on from the template bags. */
+/**
+ * A string field the diff could not resolve: non-empty once resolved, and
+ * equal only to the same unresolved value.
+ */
+const UNRESOLVED = Symbol('unresolved');
+
+/** A `Boolean` field the diff could not resolve. */
 const UNDECIDABLE = Symbol('undecidable');
 
 /** A Java `String` model field: absent is `null`. */
-function javaString(value: unknown): string | null | typeof UNDECIDABLE {
+type JavaString = string | null | typeof UNRESOLVED;
+
+/** Both sides of a string field, and whether the handler's `Objects.equal` holds. */
+interface StringChange {
+  readonly before: JavaString;
+  readonly after: JavaString;
+  readonly equal: boolean;
+}
+
+/** `JSON.stringify` with object keys sorted, so two spellings of one intrinsic compare equal. */
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(value, (_key, node: unknown) => {
+    if (node === null || typeof node !== 'object' || Array.isArray(node)) return node;
+    const sorted = Object.create(null) as Record<string, unknown>;
+    for (const key of Object.keys(node).sort()) {
+      sorted[key] = (node as Record<string, unknown>)[key];
+    }
+    return sorted;
+  });
+}
+
+function javaString(value: unknown): JavaString {
   if (value === undefined || value === null) return null;
-  return typeof value === 'string' ? value : UNDECIDABLE;
+  return typeof value === 'string' ? value : UNRESOLVED;
+}
+
+/** The two sides of a string field, the promoted-dependent probe included. */
+function stringChange(oldValue: unknown, newValue: unknown): StringChange {
+  if (oldValue === undefined && newValue === undefined) {
+    // The probe: a reference to a resource being replaced, on both sides.
+    return { before: UNRESOLVED, after: UNRESOLVED, equal: false };
+  }
+  const before = javaString(oldValue);
+  const after = javaString(newValue);
+  const equal =
+    before === UNRESOLVED && after === UNRESOLVED
+      ? canonicalJson(oldValue) === canonicalJson(newValue)
+      : before === after;
+  return { before, after, equal };
 }
 
 /** A Java `Boolean` model field; the model accepts the `"true"` / `"false"` spellings. */
@@ -40,7 +95,8 @@ function javaBoolean(value: unknown): boolean | null | typeof UNDECIDABLE {
   return UNDECIDABLE;
 }
 
-const isNullOrEmpty = (value: string | null): boolean => value === null || value === '';
+/** An unresolved value is non-empty once resolved. */
+const isNullOrEmpty = (value: JavaString): boolean => value === null || value === '';
 
 /**
  * `Objects.equal(previous, desired) || isNullOrEmpty(desired)`, negated: the
@@ -52,20 +108,20 @@ export function dbInstanceRestoreInputChangeReplaces(
   oldValue: unknown,
   newValue: unknown
 ): boolean {
-  const before = javaString(oldValue);
-  const after = javaString(newValue);
-  if (before === UNDECIDABLE || after === UNDECIDABLE) return false;
-  return before !== after && !isNullOrEmpty(after);
+  const { after, equal } = stringChange(oldValue, newValue);
+  return !equal && !isNullOrEmpty(after);
 }
 
 /**
  * `isUseLatestRestorableTimeMutable`, negated: replaces when the desired value
- * is `true` and the previous one is not.
+ * is `true` and the previous one is not. An unresolved side keeps the previous
+ * verdict; the promoted-dependent probe answers `true` (a ceiling).
  */
 export function dbInstanceUseLatestRestorableTimeChangeReplaces(
   oldValue: unknown,
   newValue: unknown
 ): boolean {
+  if (oldValue === undefined && newValue === undefined) return true;
   const before = javaBoolean(oldValue);
   const after = javaBoolean(newValue);
   if (before === UNDECIDABLE || after === UNDECIDABLE) return false;
@@ -81,10 +137,8 @@ export function dbInstanceReplicaSourceChangeReplaces(
   oldValue: unknown,
   newValue: unknown
 ): boolean {
-  const before = javaString(oldValue);
-  const after = javaString(newValue);
-  if (before === UNDECIDABLE || after === UNDECIDABLE) return false;
-  if (before === after) return false;
+  const { before, after, equal } = stringChange(oldValue, newValue);
+  if (equal) return false;
   const promotion = !isNullOrEmpty(before) && isNullOrEmpty(after);
   return !promotion;
 }
@@ -98,10 +152,8 @@ export function dbInstancePerformanceInsightsKmsKeyChangeReplaces(
   oldValue: unknown,
   newValue: unknown
 ): boolean {
-  const before = javaString(oldValue);
-  const after = javaString(newValue);
-  if (before === UNDECIDABLE || after === UNDECIDABLE) return false;
-  return !isNullOrEmpty(before) && before !== after;
+  const { before, equal } = stringChange(oldValue, newValue);
+  return !isNullOrEmpty(before) && !equal;
 }
 
 /**
@@ -115,10 +167,8 @@ export function dbInstanceAvailabilityZoneChangeReplaces(
   newValue: unknown,
   siblings?: ReplacementSiblings
 ): boolean {
-  const before = javaString(oldValue);
-  const after = javaString(newValue);
-  if (before === UNDECIDABLE || after === UNDECIDABLE) return false;
-  if (before === after) return false;
+  const { after, equal } = stringChange(oldValue, newValue);
+  if (equal) return false;
   if (isNullOrEmpty(after)) {
     if (siblings === undefined) return false;
     const multiAz = javaBoolean(siblings.newProperties['MultiAZ']);
@@ -136,9 +186,7 @@ export function dbClusterGlobalClusterChangeReplaces(
   oldValue: unknown,
   newValue: unknown
 ): boolean {
-  const before = javaString(oldValue);
-  const after = javaString(newValue);
-  if (before === UNDECIDABLE || after === UNDECIDABLE) return false;
+  const { before, after, equal } = stringChange(oldValue, newValue);
   if (!isNullOrEmpty(before) && isNullOrEmpty(after)) return false;
-  return before !== after;
+  return !equal;
 }
