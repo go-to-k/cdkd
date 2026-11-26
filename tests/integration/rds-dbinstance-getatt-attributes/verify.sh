@@ -23,7 +23,7 @@
 # deploys a NEW port reader without touching the instance: the record
 # contradicts itself, so the reader re-reads the instance and must get the
 # live 5434, and the save heals the record. Phase 5 adds another reader and
-# asserts no re-read (the bound). Then destroys clean.
+# asserts the healed record is not re-read. Then destroys clean.
 # Runtime: ~27 min (an RDS instance create, two reboots, a delete).
 
 set -euo pipefail
@@ -245,13 +245,13 @@ STAMP="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - |
   jq -r '[.resources[] | select(.resourceType == "AWS::RDS::DBInstance") | .attributesReadAfterApply // empty] | first // empty')"
 expect_eq "phase 4: attributesReadAfterApply on a reconciled record" "${STAMP}" ""
 
-echo "==> Phase 5: another new port reader re-reads nothing (the bound, issue #7015)"
+echo "==> Phase 5: the healed record is not re-read for another new port reader (issue #7015)"
 BOUND_LOG="$(mktemp)"
 CDKD_TEST_DB_PORT=5434 CDKD_TEST_DB_CA=rds-ca-rsa4096-g1 CDKD_TEST_NEW_PORT_READERS=2 \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --verbose >"${BOUND_LOG}" 2>&1 ||
   { tail -50 "${BOUND_LOG}"; echo "FAIL: #7015: phase 5 deploy failed" >&2; exit 1; }
 if grep -E "${REREAD_LINE}" "${BOUND_LOG}"; then
-  echo "FAIL: #7015: phase 5 re-read the healed DB instance record again" >&2
+  echo "FAIL: #7015: phase 5 re-read the healed DB instance record" >&2
   exit 1
 fi
 rm -f "${BOUND_LOG}"

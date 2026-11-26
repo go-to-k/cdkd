@@ -45,9 +45,14 @@ describe('pending moved attribute keys (#7015)', () => {
       'Endpoint.Port',
       'ListenerEndpoint.Port',
     ]);
-    expect(
-      pendingMovedAttributeKeys({ PendingModifiedValues: { CACertificateIdentifier: 'rds-ca-ecc384-g1' } })
-    ).toEqual(['CertificateDetails.CAIdentifier', 'CertificateDetails.ValidTill']);
+    const caPending = { PendingModifiedValues: { CACertificateIdentifier: 'rds-ca-ecc384-g1' } };
+    expect(pendingMovedAttributeKeys(caPending, { CertificateRotationRestart: true })).toEqual([
+      'CertificateDetails.CAIdentifier',
+      'CertificateDetails.ValidTill',
+    ]);
+    // Without a restart the certificate in use is the answer, however long
+    // the pending value waits for a maintenance reboot.
+    expect(pendingMovedAttributeKeys(caPending)).toEqual([]);
     expect(pendingMovedAttributeKeys({ PendingModifiedValues: { MultiAZ: false } })).toEqual([
       'SecondaryAvailabilityZone',
     ]);

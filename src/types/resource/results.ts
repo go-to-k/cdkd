@@ -459,7 +459,8 @@ export interface ResourceImportResult {
    * pending will move (an RDS port under `PendingModifiedValues`): their value
    * is the live one now, not the one the resource settles at. Read by the
    * stale-attribute heal only, which serves it but neither records nor stamps
-   * over it; never part of a state record. Absent: none pending.
+   * over it; never part of a state record. Absent: none pending. While a key
+   * stays pending, each deploy that reads it re-reads the resource.
    */
   pendingAttributeKeys?: readonly string[];
 }

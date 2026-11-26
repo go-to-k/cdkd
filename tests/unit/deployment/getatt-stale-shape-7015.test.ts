@@ -413,6 +413,21 @@ describe('a modification AWS still lists as pending (#7015)', () => {
     expect(saved).not.toHaveProperty('attributesReadAfterApply');
   });
 
+  it('a read after the --no-wait readiness wait records no pending key either (#6940 branch)', async () => {
+    const created = record({ Port: '5433' }, { Arn: ATTRS.Arn });
+    // Empty baseline: the record was written by this deploy.
+    const { healer } = deployHealer(
+      { ...created, physicalId: 'other' },
+      { ...ATTRS, 'Endpoint.Port': '5432' },
+      undefined,
+      ['Endpoint.Port', 'ListenerEndpoint.Port']
+    );
+    await healer.readAfterReadiness('Db', created, 'App');
+    const saved = healer.withHealedAttributes('Db', created);
+    expect(saved.attributes?.['Endpoint.Address']).toBe(ATTRS['Endpoint.Address']);
+    expect(saved.attributes).not.toHaveProperty('Endpoint.Port');
+  });
+
   it('a pending key the read no longer reports is no proof of absence either', async () => {
     const stale = record({ MultiAZ: false }, { ...ATTRS, SecondaryAvailabilityZone: 'us-east-1b' });
     const { healer, asResolverHealer } = deployHealer(stale, { ...ATTRS }, undefined, [

@@ -633,7 +633,7 @@ export async function importDBInstance(
       // when a `Fn::GetAtt` misses. `definedAttributes` keeps an unassigned
       // endpoint ABSENT, so a still-`creating` instance heals nothing.
       const described = resp.DBInstances?.[0];
-      const pendingAttributeKeys = pendingMovedAttributeKeys(described);
+      const pendingAttributeKeys = pendingMovedAttributeKeys(described, input.properties ?? {});
       return {
         physicalId: explicit,
         // A read, not an operation: the instance's own `available` status
