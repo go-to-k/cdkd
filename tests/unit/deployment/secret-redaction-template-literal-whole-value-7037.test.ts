@@ -8,7 +8,10 @@ import {
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
 import { recordTakenIfBranch } from '../../../src/deployment/secret-redaction/resolver-outcomes.js';
-import { positionByLiteralRendering } from '../../../src/deployment/secret-redaction/redact-path/literal-rendering.js';
+import {
+  positionByLiteralRendering,
+  staticTemplateText,
+} from '../../../src/deployment/secret-redaction/redact-path/literal-rendering.js';
 
 // go-to-k/cdkd#7037, the WHOLE-VALUE twin of #6303: an `rds.DatabaseInstance`
 // with `engine: postgres` and generated credentials has a secret whose
@@ -280,6 +283,24 @@ describe('a 1-3 character secret beside a gap (#5056 / #5063 shape, #7037)', () 
     expect(positionByLiteralRendering('q-postgres:postgres', { 'Fn::Join': [':', [{ Ref: 'Queue' }, USERNAME]] }, inside, rules, (t) => t)).toBe(
       `q-postgres:${USERNAME}`
     );
+  });
+
+  it('staticTemplateText called from inside a rendering leaves that rendering intact', () => {
+    // A scan that itself asks for a node's static text must not clear the
+    // pass map the outer rendering reads its `Fn::If` branches from.
+    const secrets = shortSecrets();
+    const ifNode = { 'Fn::If': ['C', PIN_TOKEN, 'z'] };
+    recordTakenIfBranch(secrets, ifNode, true);
+    const rules = { descendArrays: true, trustAnyExpression: false, sourceIsSameGeneration: false, sourceIsTemplate: true };
+    const src = { 'Fn::Join': ['', ['port:', { Ref: 'Stage' }, ifNode]] };
+    const reentrant = (text: string): unknown => {
+      expect(staticTemplateText({ 'Fn::If': ['C', 'a', 'b'] })).toBeUndefined();
+      return text;
+    };
+    expect(positionByLiteralRendering('port:prodq7', src, secrets, rules, reentrant)).toBe(
+      `port:prod${PIN_TOKEN}`
+    );
+    expect(staticTemplateText({ 'Fn::Join': ['', ['post', 'gres']] })).toBe('postgres');
   });
 
   it('a token directly beside a parameter gap is positioned', () => {

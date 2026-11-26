@@ -120,8 +120,18 @@ function renderLeaf(
  * literals, numbers), else `undefined`: the value every walk keeps as written.
  */
 export function staticTemplateText(node: unknown): string | undefined {
+  // No pass map: an `Fn::If` is a gap here. Saved and restored, so a call from
+  // inside a rendering in progress leaves that rendering's map in place.
+  const outer = walking;
+  const outerVisits = visits;
   walking = undefined;
-  const segments = renderSegments(node, 0);
+  let segments: Segment[] | undefined;
+  try {
+    segments = renderSegments(node, 0);
+  } finally {
+    walking = outer;
+    visits = outerVisits;
+  }
   if (segments === undefined) return undefined;
   let text = '';
   for (const segment of segments) {

@@ -1,5 +1,6 @@
 import { diffLogMasker } from '../masking.js';
 import { isSingleDynamicReferenceToken } from '../../secret-redaction.js';
+import { pasteableCommand, proseQuoted } from '../../../utils/pasteable-command.js';
 import {
   findUpdatePolicyReplacementRefusals,
   replacementCreateRoutesToCloudControl,
@@ -446,7 +447,10 @@ export function legacySpellingHint(
       replaces(id) && replacesOnlyOnLegacyReferenceSpelling(changes.get(id)) && scrubRepairs(id)
   );
   if (suspects.length === 0) return undefined;
-  return safeMsg`${suspects.join(', ')}: the planned replacement reads a stored secret reference against a plain template value. If the template did not change that property, the record was written by an older cdkd: run \`cdkd scrub ${stackName}\` first, then deploy.`;
+  // Built, never spelled: the run's flags (`--aws-emulator`, `--profile`, ...)
+  // ride along, and the stack name is shell-quoted behind the exactness gate.
+  const scrub = pasteableCommand('cdkd scrub', [{ value: stackName, hole: 'stack' }]).command;
+  return safeMsg`${suspects.join(', ')}: the planned replacement reads a stored secret reference against a plain template value. If the template did not change that property, the record was written by an older cdkd: run ${proseQuoted(scrub, '`')} first, then deploy.`;
 }
 
 /**
