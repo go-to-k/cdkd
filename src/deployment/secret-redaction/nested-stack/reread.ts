@@ -613,10 +613,15 @@ export function positionByParameterReread(
   });
   let answer: unknown;
   if (!unrecorded) {
+    // The leaf the re-read resolves to, or (go-to-k/cdkd#7050) the answer it
+    // already persisted: the save's choke point re-redacts this walk's own
+    // output, and a parameter the parent marked `sub-floor` masks a read no
+    // certified arm places, so a refusal here masked a placement the first
+    // walk had proven.
     if (
       recorded === undefined ||
       recorded === REREAD_NO_VALUE ||
-      !deepEqualJsonValue(recorded.resolved, bag)
+      (!deepEqualJsonValue(recorded.resolved, bag) && !deepEqualJsonValue(recorded.redacted, bag))
     ) {
       return undefined;
     }
