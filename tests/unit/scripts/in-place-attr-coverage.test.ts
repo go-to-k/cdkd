@@ -77,14 +77,15 @@ describe('the committed audit (#7001)', () => {
     expect(report.summary.ccByRule.creator).toBeGreaterThan(20);
     expect(report.summary.ccByRule['owner-account']).toBeGreaterThan(25);
     expect(report.summary.ccByRule['identifier-arn-member']).toBeGreaterThan(60);
-    expect(report.summary.ccByRule['update-marker']).toBeGreaterThan(100);
+    expect(report.summary.ccByRule['update-marker']).toBeGreaterThan(130);
+    expect(report.summary.ccByRule['parent-fixed']).toBeGreaterThan(0);
     // #7007: the measured rename probes are hand verdicts, merged in without
     // dropping a type both tables name.
     const v: InPlaceAttrVerdict = { kind: 'never', reason: 'r' };
     expect(() => mergeDisjoint({ 'AWS::X::Y': { A: v } }, { 'AWS::X::Y': { B: v } })).toThrow(
       'classified twice: AWS::X::Y'
     );
-    expect(report.summary.ccByHand).toBeGreaterThan(30);
+    expect(report.summary.ccByHand).toBeGreaterThan(70);
     expect(report.ccHand).toContainEqual(
       expect.objectContaining({ type: 'AWS::EC2::PrefixList', attribute: 'Arn', verdict: 'never' })
     );
@@ -157,16 +158,22 @@ describe('the hand verdicts equal the shared.ts tables (#7001)', () => {
     expect(overlap).toEqual([]);
   });
 
-  it('no Cloud Control hand verdict overrides a pair a rule settles, bar a moving one over a moving rule (#7007)', () => {
+  it('no Cloud Control hand never overrides a moving rule, nor a hand verdict a never rule it agrees with (#7007)', () => {
     expect(report.ccHand.length).toBeGreaterThan(0);
     for (const r of report.ccHand) {
       const t = inputs.types.find((x) => x.type === r.type)!;
       const rule = classifyByRule(t, r.attribute);
       const where = `${r.type}.${r.attribute}: ${rule} under a ${r.verdict} hand verdict`;
-      expect(rule === undefined || (MOVING_RULES.has(rule) && r.verdict !== 'never'), where).toBe(
-        true
-      );
+      // A hand never silencing a moving rule hides a move; a hand never over
+      // a never rule is dead. A hand move over a never rule corrects a rule
+      // reading the stale spec (the DataSync locations).
+      if (r.verdict === 'never') expect(rule, where).toBeUndefined();
     }
+    const s3 = report.ccHand.find((r) => r.type === 'AWS::DataSync::LocationS3');
+    expect(classifyByRule(inputs.types.find((x) => x.type === s3!.type)!, 'LocationUri')).toBe(
+      'no-in-place-update'
+    );
+    expect(s3?.verdict).toBe('moved-by');
   });
 
   it('every Cloud Control pair a moving rule settles is an IN_PLACE_UPDATE_DERIVED_ATTRS row (#7007)', () => {
@@ -581,6 +588,47 @@ describe('the #7007 rules, on real spec inputs', () => {
     }
   });
 
+  it('a dotted member follows its settled parent attribute (#7007)', () => {
+    // The member is part of the parent's value.
+    const store = real('AWS::HealthLake::FHIRDatastore');
+    expect(classifyByRule(store, 'CreatedAt')).toBe('creation-timestamp');
+    expect(classifyByRule(store, 'CreatedAt.Seconds')).toBe('parent-fixed');
+    const theme = real('AWS::QuickSight::Theme');
+    expect(classifyByRule(theme, 'Version')).toBe('update-marker');
+    expect(classifyByRule(theme, 'Version.Arn')).toBe('update-marker');
+    // A member update time is moving even under a never parent.
+    const contact = real('AWS::NotificationsContacts::EmailContact');
+    expect(classifyByRule(contact, 'EmailContact')).toBe('no-in-place-update');
+    expect(classifyByRule(contact, 'EmailContact.UpdateTime')).toBe('update-marker');
+    // A member of an unsettled parent, or of a property, is not settled.
+    const synthetic: TypeInput = {
+      type: 'AWS::X::Thing',
+      attributes: ['Endpoint', 'Endpoint.Address', 'Config.Id'],
+      properties: { Config: undefined },
+    };
+    expect(classifyByRule(synthetic, 'Endpoint.Address')).toBeUndefined();
+    expect(classifyByRule(synthetic, 'Config.Id')).toBeUndefined();
+    expect(MOVING_RULES.has('parent-fixed')).toBe(false);
+  });
+
+  it('the reasoned hand verdicts include the DataSync URI moves (#7007)', () => {
+    for (const [type, props] of [
+      ['AWS::DataSync::LocationNFS', ['Subdirectory', 'ServerHostname']],
+      ['AWS::DataSync::LocationFSxWindows', ['Subdirectory']],
+      ['AWS::DataSync::LocationS3', ['Subdirectory']],
+      ['AWS::DataSync::LocationFSxONTAP', ['Subdirectory', 'Protocol']],
+      ['AWS::DataSync::LocationObjectStorage', ['Subdirectory', 'ServerHostname']],
+      ['AWS::DataSync::LocationHDFS', ['Subdirectory', 'NameNodes']],
+    ] as const) {
+      expect(report.ccHand, type).toContainEqual(
+        expect.objectContaining({ type, attribute: 'LocationUri', verdict: 'moved-by', properties: [...props] })
+      );
+    }
+    expect(report.ccHand).toContainEqual(
+      expect.objectContaining({ type: 'AWS::Lightsail::Instance', attribute: 'InstanceArn', verdict: 'never' })
+    );
+  });
+
   it('update-timestamp settles a real last-update time as moving', () => {
     const rule = real('AWS::AccessAnalyzer::ArchiveRule');
     expect(classifyByRule(rule, 'UpdatedAt')).toBe('update-timestamp');
@@ -625,6 +673,25 @@ describe('buildReport findings (#7001)', () => {
     );
     expect(f.unclassifiedCc).toEqual(['AWS::C::Cc.Phase']);
     expect(f.staleBaseline).toEqual(['AWS::C::Cc.Arn', 'AWS::C::Removed.X']);
+  });
+
+  it('settles no member of a parent the hand classification calls moving (#7007)', () => {
+    const t: TypeInput = {
+      type: 'AWS::C::Stamped',
+      attributes: ['CreatedAt', 'CreatedAt.Seconds'],
+      properties: { Config: undefined },
+    };
+    const run = (verdict: InPlaceAttrVerdict) =>
+      buildReport({
+        types: [t],
+        registered: new Set(),
+        classification: { 'AWS::C::Stamped': { CreatedAt: verdict } },
+        baseline: {},
+        specVersion: 'test',
+      }).findings.unclassifiedCc;
+    expect(classifyByRule(t, 'CreatedAt.Seconds')).toBe('parent-fixed');
+    expect(run({ kind: 'any-update', reason: 'r' })).toEqual(['AWS::C::Stamped.CreatedAt.Seconds']);
+    expect(run(never('r'))).toEqual([]);
   });
 
   it('looks a dotted attribute up by its nearest Family.* key', () => {

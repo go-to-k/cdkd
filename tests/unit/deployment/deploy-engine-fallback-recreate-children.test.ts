@@ -398,7 +398,7 @@ describe('DeployEngine - children of a fallback same-id re-create (go-to-k/cdkd#
     expect(callsFor(sdk.delete, 'Perm')).toHaveLength(0);
   });
 
-  it('dispatches no child when the fallback re-create lands under a NEW physical id', async () => {
+  it('replaces no lost child under a NEW physical id: its readers move to the new resource instead (go-to-k/cdkd#7081)', async () => {
     sdk.create.mockImplementation((logicalId: string) =>
       Promise.resolve({ physicalId: logicalId === 'Fn' ? 'my-fn-2' : `${logicalId}-new`, attributes: {} })
     );
@@ -406,10 +406,15 @@ describe('DeployEngine - children of a fallback same-id re-create (go-to-k/cdkd#
     await makeEngine().deploy(STACK, changedTemplate());
 
     expect(saved('Fn')?.physicalId).toBe('my-fn-2');
-    // Not dispatched at all: the permission stays the NO_CHANGE row it was.
-    for (const fn of [sdk.create, sdk.update, sdk.delete]) {
-      expect(callsFor(fn, 'Perm')).toHaveLength(0);
-    }
+    // Not a lost child (nothing was re-created under its parent's id), but a
+    // reader whose create-only `FunctionName` names the new function: replaced.
+    const created = callsFor(sdk.create, 'Perm');
+    expect(created).toHaveLength(1);
+    expect((created[0]![2] as Record<string, unknown>)['FunctionName']).toBe('my-fn-2');
+    expect(callsFor(sdk.delete, 'Perm').map((c) => c[1])).toEqual([PERMISSION_ID]);
+    // The parameter's mutable `Value` is updated in place.
+    expect(callsFor(sdk.update, 'Param')).toHaveLength(1);
+    expect(saved('Param')?.properties?.['Value']).toBe('my-fn-2');
   });
 
   it("is seen as WRITTEN by the failed-deploy path (go-to-k/cdkd#4443), so its record is kept, not forgotten", async () => {

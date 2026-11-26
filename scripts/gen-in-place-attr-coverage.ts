@@ -147,7 +147,8 @@ export type RuleName =
   | 'creator'
   | 'owner-account'
   | 'identifier-arn-member'
-  | 'update-marker';
+  | 'update-marker'
+  | 'parent-fixed';
 
 /** Rules whose verdict is `any-update`; every other rule's is `never`. */
 export const MOVING_RULES: ReadonlySet<RuleName> = new Set(['update-timestamp', 'update-marker']);
@@ -186,11 +187,18 @@ const IDENTITY_SHAPED = /(Arn|ARN|Id|ID|Identifier|Uuid|UUID)$/;
 const PSEUDO_PLACEHOLDERS: ReadonlySet<string> = new Set(['Partition', 'Region', 'Account']);
 
 /**
- * Pairs no rule settles because a live probe of them is pending (go-to-k/cdkd#7007:
- * an outside contributor's VpcLink rename probe holds this pair's verdict).
+ * Pairs no rule settles (go-to-k/cdkd#7007): a live probe of them is pending
+ * (an outside contributor's VpcLink rename probe), or the rule would read a
+ * create-only property the live registry makes in place.
  */
 export const RULE_HELD_OUT: ReadonlySet<string> = new Set([
   'AWS::ApiGatewayV2::VpcLink.VpcLinkId',
+  // The pinned spec calls every ONTAP property but Tags create-only, so
+  // no-in-place-update would settle these; the live registry makes Protocol
+  // in place, and whether an SMB password change re-mints the managed secret
+  // is not documented.
+  'AWS::DataSync::LocationFSxONTAP.Protocol.SMB.ManagedSecretConfig',
+  'AWS::DataSync::LocationFSxONTAP.Protocol.SMB.CmkSecretConfig.SecretArn',
 ]);
 
 /**
@@ -259,6 +267,10 @@ const OWN_IDENTITY = /^(.*?)(Arn|ARN|Id|ID|Uuid|UUID)$/;
  *   which is its identity, a `...Snapshot`'s source version, and the
  *   service-side versions in {@link NOT_UPDATE_MARKERS}), the last writer (`LastModifiedBy`, `UpdatedBy`,
  *   `LastModifiedRegion`) or an `ETag`: each update may restamp it.
+ * - `parent-fixed` / `update-marker` for a dotted member of a settled parent
+ *   attribute: the member is part of the parent's value, so it never moves
+ *   when the parent never does, and may move whenever the parent may (a
+ *   member update time is moving either way).
  * - `update-timestamp` (MOVING): an undotted last-update time. Whether a
  *   Cloud Control update, a tag edit included, stamps it is the handler's
  *   choice, so any in-place update may move it.
@@ -269,7 +281,18 @@ export function classifyByRule(input: TypeInput, attribute: string): RuleName | 
     ([name, replaces]) => name !== 'Tags' && replaces !== 'yes'
   );
   if (writable.length === 0 && !UPDATE_TIMESTAMP.test(attribute)) return 'no-in-place-update';
-  if (attribute.includes('.')) return undefined;
+  if (attribute.includes('.')) {
+    // A member is part of its parent attribute's value: it moves when the
+    // parent may, and never moves when the parent never does (bar a member
+    // update time, which a tag edit may stamp).
+    const parent = attribute.slice(0, attribute.indexOf('.'));
+    if (!input.attributes.includes(parent)) return undefined;
+    const parentRule = classifyByRule(input, parent);
+    if (parentRule === undefined) return undefined;
+    const leaf = attribute.slice(attribute.lastIndexOf('.') + 1);
+    if (MOVING_RULES.has(parentRule) || UPDATE_TIME.test(leaf)) return 'update-marker';
+    return 'parent-fixed';
+  }
   // After `no-in-place-update` on purpose: a tag-only type's update time is
   // moving too, since a tag edit may stamp it.
   if (UPDATE_TIME.test(attribute)) return 'update-timestamp';
@@ -467,6 +490,7 @@ export function buildReport(input: BuildInput): { report: Report; findings: Find
     'owner-account': 0,
     'identifier-arn-member': 0,
     'update-marker': 0,
+    'parent-fixed': 0,
   };
   let ccTypes = 0;
   let ccPairs = 0;
@@ -515,7 +539,13 @@ export function buildReport(input: BuildInput): { report: Report; findings: Find
         ccHand.push(hand);
         continue;
       }
-      const rule = classifyByRule(t, attribute);
+      let rule = classifyByRule(t, attribute);
+      // A member's `parent-fixed` reads its parent's RULE; a parent the hand
+      // classification calls moving moves the member too, so nothing settles it.
+      if (rule === 'parent-fixed') {
+        const parent = handRow(t.type, byAttr, attribute.slice(0, attribute.indexOf('.')));
+        if (parent !== undefined && parent.verdict !== 'never') rule = undefined;
+      }
       if (rule !== undefined) {
         ccByRule[rule]++;
         if (MOVING_RULES.has(rule)) (ccMoving[t.type] ??= []).push(attribute);

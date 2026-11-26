@@ -40,6 +40,7 @@ import {
   replacementOrphanOpFor,
 } from './helpers.js';
 import type { DeployRun } from './run.js';
+import { enqueueReadersOfFallbackReplacement } from './fallback-replaced-readers.js';
 import type { CloudFormationTemplate } from '../../../types/resource.js';
 import { journaledUpdatePolicy } from '../update-policy.js';
 import { withoutVersionAttestation } from '../../reference-provenance-record.js';
@@ -506,6 +507,9 @@ export async function provisionCreateUpdateNode(
   saveStateAfterResource(logicalId);
   if (engine.replacementRun.recreatedUnderSameId.has(logicalId))
     enqueueLostChildren(createUpdateExecutor);
+  // go-to-k/cdkd#7081: before this node completes, so no reader has started.
+  if (engine.replacementRun.fallbackReplacedElsewhere.has(logicalId))
+    await enqueueReadersOfFallbackReplacement(run, createUpdateExecutor, logicalId);
   // go-to-k/cdkd#6705: a create (or replacement) the signal receiver armed
   // completes only on its CreationPolicy signals, so its dependents wait, as
   // CloudFormation's do. It runs AFTER the operation is journaled completed:

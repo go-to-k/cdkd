@@ -7,7 +7,7 @@
     "ccTypes": 1584,
     "ccPairs": 5545,
     "ccByRule": {
-      "no-in-place-update": 1151,
+      "no-in-place-update": 1144,
       "creation-timestamp": 376,
       "own-identity": 812,
       "primary-identifier": 450,
@@ -16,10 +16,11 @@
       "creator": 26,
       "owner-account": 30,
       "identifier-arn-member": 68,
-      "update-marker": 106
+      "update-marker": 142,
+      "parent-fixed": 2
     },
-    "ccByHand": 37,
-    "ccBaseline": 2058
+    "ccByHand": 84,
+    "ccBaseline": 1980
   },
   "sdk": [
     {
@@ -2618,6 +2619,42 @@
   ],
   "ccHand": [
     {
+      "type": "AWS::APS::Workspace",
+      "attribute": "PrometheusEndpoint",
+      "verdict": "never",
+      "reason": "`aps-workspaces.<region>.../workspaces/<id>/`"
+    },
+    {
+      "type": "AWS::Amplify::Branch",
+      "attribute": "Arn",
+      "verdict": "never",
+      "reason": "`apps/<app>/branches/<create-only BranchName>`; PullRequestEnvironmentName is a backend"
+    },
+    {
+      "type": "AWS::Amplify::Webhook",
+      "attribute": "WebhookUrl",
+      "verdict": "never",
+      "reason": "built from the webhook id and its creation token"
+    },
+    {
+      "type": "AWS::AppSync::Api",
+      "attribute": "Dns",
+      "verdict": "never",
+      "reason": "the api id hosts, fixed for the api life"
+    },
+    {
+      "type": "AWS::AppSync::DomainName",
+      "attribute": "AppSyncDomainName",
+      "verdict": "never",
+      "reason": "the CloudFront host for the create-only DomainName"
+    },
+    {
+      "type": "AWS::Chatbot::MicrosoftTeamsChannelConfiguration",
+      "attribute": "Arn",
+      "verdict": "never",
+      "reason": "built from the create-only ConfigurationName; TeamsChannelName labels the channel"
+    },
+    {
       "type": "AWS::Chime::AppInstance",
       "attribute": "AppInstanceArn",
       "verdict": "never",
@@ -2666,6 +2703,12 @@
       "reason": "measured (cdkd-probe-7007-s2c): Name in place left it collaboration/84408462-..."
     },
     {
+      "type": "AWS::CloudFront::StreamingDistribution",
+      "attribute": "DomainName",
+      "verdict": "never",
+      "reason": "the `d....cloudfront.net` host assigned at create"
+    },
+    {
       "type": "AWS::CodeStarConnections::SyncConfiguration",
       "attribute": "OwnerId",
       "verdict": "moved-by",
@@ -2699,6 +2742,110 @@
       "reason": "the newest landing zone version AWS offers, a service catalog"
     },
     {
+      "type": "AWS::DataSync::LocationAzureBlob",
+      "attribute": "LocationUri",
+      "verdict": "moved-by",
+      "properties": [
+        "Subdirectory"
+      ],
+      "reason": "the container URL and subdirectory"
+    },
+    {
+      "type": "AWS::DataSync::LocationEFS",
+      "attribute": "LocationUri",
+      "verdict": "moved-by",
+      "properties": [
+        "Subdirectory"
+      ],
+      "reason": "`efs://<region>.<file system>/<subdirectory>/`"
+    },
+    {
+      "type": "AWS::DataSync::LocationFSxLustre",
+      "attribute": "LocationUri",
+      "verdict": "moved-by",
+      "properties": [
+        "Subdirectory"
+      ],
+      "reason": "`fsxl://<region>.<file system>/<subdirectory>/`"
+    },
+    {
+      "type": "AWS::DataSync::LocationFSxONTAP",
+      "attribute": "LocationUri",
+      "verdict": "moved-by",
+      "properties": [
+        "Subdirectory",
+        "Protocol"
+      ],
+      "reason": "the storage VM, protocol and subdirectory"
+    },
+    {
+      "type": "AWS::DataSync::LocationFSxOpenZFS",
+      "attribute": "LocationUri",
+      "verdict": "moved-by",
+      "properties": [
+        "Subdirectory"
+      ],
+      "reason": "`fsxz://<region>.<file system>/<subdirectory>/`"
+    },
+    {
+      "type": "AWS::DataSync::LocationFSxWindows",
+      "attribute": "LocationUri",
+      "verdict": "moved-by",
+      "properties": [
+        "Subdirectory"
+      ],
+      "reason": "`fsxw://<file system>/<subdirectory>/`"
+    },
+    {
+      "type": "AWS::DataSync::LocationHDFS",
+      "attribute": "LocationUri",
+      "verdict": "moved-by",
+      "properties": [
+        "Subdirectory",
+        "NameNodes"
+      ],
+      "reason": "`hdfs://<name node>:<port>/<subdirectory>/`"
+    },
+    {
+      "type": "AWS::DataSync::LocationNFS",
+      "attribute": "LocationUri",
+      "verdict": "moved-by",
+      "properties": [
+        "Subdirectory",
+        "ServerHostname"
+      ],
+      "reason": "`nfs://<host>/<subdirectory>/`"
+    },
+    {
+      "type": "AWS::DataSync::LocationObjectStorage",
+      "attribute": "LocationUri",
+      "verdict": "moved-by",
+      "properties": [
+        "Subdirectory",
+        "ServerHostname"
+      ],
+      "reason": "`object-storage://<host>/<bucket>/<subdirectory>/`"
+    },
+    {
+      "type": "AWS::DataSync::LocationS3",
+      "attribute": "LocationUri",
+      "verdict": "moved-by",
+      "properties": [
+        "Subdirectory"
+      ],
+      "reason": "`s3://<bucket>/<subdirectory>/`"
+    },
+    {
+      "type": "AWS::DataSync::LocationSMB",
+      "attribute": "LocationUri",
+      "verdict": "moved-by",
+      "properties": [
+        "Subdirectory",
+        "ServerHostname"
+      ],
+      "reason": "`smb://<host>/<subdirectory>/`"
+    },
+    {
       "type": "AWS::DataSync::Task",
       "attribute": "TaskArn",
       "verdict": "never",
@@ -2715,6 +2862,15 @@
       "attribute": "BudgetId",
       "verdict": "never",
       "reason": "measured (cdkd-probe-7007-s3c): DisplayName in place left it budget-4a2b9e7f..."
+    },
+    {
+      "type": "AWS::Deadline::Monitor",
+      "attribute": "Url",
+      "verdict": "moved-by",
+      "properties": [
+        "Subdomain"
+      ],
+      "reason": "the monitor subdomain host"
     },
     {
       "type": "AWS::Deadline::Queue",
@@ -2756,10 +2912,40 @@
       "reason": "measured (cdkd-probe-7007-s1): PrefixListName in place left it prefix-list/pl-0d520b78fc4478f52"
     },
     {
+      "type": "AWS::ElastiCache::ServerlessCache",
+      "attribute": "ARN",
+      "verdict": "never",
+      "reason": "`serverlesscache:<create-only name>`; FinalSnapshotName names the final snapshot"
+    },
+    {
+      "type": "AWS::Events::Endpoint",
+      "attribute": "EndpointUrl",
+      "verdict": "never",
+      "reason": "`<endpoint id>.endpoint.events.amazonaws.com`"
+    },
+    {
+      "type": "AWS::FMS::ApplicationsList",
+      "attribute": "ListId",
+      "verdict": "never",
+      "reason": "PutAppsList updates the list its ListId names; the name is a field"
+    },
+    {
+      "type": "AWS::FMS::ProtocolsList",
+      "attribute": "ListId",
+      "verdict": "never",
+      "reason": "PutProtocolsList updates the list its ListId names; the name is a field"
+    },
+    {
       "type": "AWS::Glue::UserDefinedFunction",
       "attribute": "Arn",
       "verdict": "never",
       "reason": "measured (cdkd-probe-7007-s2c): ClassName / OwnerName in place left it .../<db>/<create-only name>"
+    },
+    {
+      "type": "AWS::HealthLake::FHIRDatastore",
+      "attribute": "DatastoreEndpoint",
+      "verdict": "never",
+      "reason": "built from the datastore id"
     },
     {
       "type": "AWS::IAM::ServerCertificate",
@@ -2780,6 +2966,18 @@
       "reason": "measured (cdkd-probe-7007-s1): Name in place left it 8NJl1byAY7iO"
     },
     {
+      "type": "AWS::IoTFleetHub::Application",
+      "attribute": "ApplicationUrl",
+      "verdict": "never",
+      "reason": "built from the application id; UpdateApplication takes name and description only"
+    },
+    {
+      "type": "AWS::IoTWireless::WirelessDeviceImportTask",
+      "attribute": "Arn",
+      "verdict": "never",
+      "reason": "`ImportTask/<id>`; DestinationName names a destination"
+    },
+    {
       "type": "AWS::KinesisVideo::Stream",
       "attribute": "Arn",
       "verdict": "never",
@@ -2798,6 +2996,72 @@
       "reason": "measured (cdkd-probe-7007-s3c): BotAliasName in place left it bot-alias/8ACWASRH4S/7ETHCRHKIG"
     },
     {
+      "type": "AWS::Lightsail::Distribution",
+      "attribute": "DistributionArn",
+      "verdict": "never",
+      "reason": "`Distribution/<uuid>`; CertificateName attaches a certificate"
+    },
+    {
+      "type": "AWS::Lightsail::Instance",
+      "attribute": "InstanceArn",
+      "verdict": "never",
+      "reason": "`Instance/<uuid>`; KeyPairName names a key pair"
+    },
+    {
+      "type": "AWS::Lightsail::LoadBalancer",
+      "attribute": "LoadBalancerArn",
+      "verdict": "never",
+      "reason": "`LoadBalancer/<uuid>`; TlsPolicyName names a TLS policy"
+    },
+    {
+      "type": "AWS::MediaConnect::FlowOutput",
+      "attribute": "OutputArn",
+      "verdict": "never",
+      "reason": "`output:<id>:<create-only Name>`; NdiProgramName is an NDI setting"
+    },
+    {
+      "type": "AWS::MediaConnect::FlowSource",
+      "attribute": "SourceArn",
+      "verdict": "never",
+      "reason": "`source:<id>:<create-only Name>`; VpcInterfaceName names an interface"
+    },
+    {
+      "type": "AWS::MediaLive::CloudWatchAlarmTemplate",
+      "attribute": "Arn",
+      "verdict": "never",
+      "reason": "`cloudwatch-alarm-template:<id>`; UpdateCloudWatchAlarmTemplate keeps the id"
+    },
+    {
+      "type": "AWS::MediaLive::CloudWatchAlarmTemplate",
+      "attribute": "Id",
+      "verdict": "never",
+      "reason": "the minted id; UpdateCloudWatchAlarmTemplate names the template by it"
+    },
+    {
+      "type": "AWS::MediaPackage::OriginEndpoint",
+      "attribute": "Arn",
+      "verdict": "never",
+      "reason": "`origin_endpoints/<create-only Id>`; ManifestName names the manifest"
+    },
+    {
+      "type": "AWS::MediaPackageV2::Channel",
+      "attribute": "IngestEndpoints",
+      "verdict": "never",
+      "reason": "assigned per channel at create; InputType is create-only"
+    },
+    {
+      "type": "AWS::MediaTailor::PlaybackConfiguration",
+      "attribute": "PlaybackConfigurationArn",
+      "verdict": "never",
+      "reason": "built from the create-only Name; TranscodeProfileName names a profile"
+    },
+    {
+      "type": "AWS::MemoryDB::Cluster",
+      "attribute": "ARN",
+      "verdict": "never",
+      "reason": "`cluster/<create-only ClusterName>`; the in-place names are a parameter group, ACL and snapshot"
+    },
+    {
       "type": "AWS::ODB::CloudExadataInfrastructure",
       "attribute": "DbServerVersion",
       "verdict": "never",
@@ -2808,6 +3072,36 @@
       "attribute": "StorageServerVersion",
       "verdict": "never",
       "reason": "the storage server software level, moved by Oracle maintenance"
+    },
+    {
+      "type": "AWS::OpenSearchServerless::Collection",
+      "attribute": "CollectionEndpoint",
+      "verdict": "never",
+      "reason": "`<collection id>.<region>.aoss.amazonaws.com`"
+    },
+    {
+      "type": "AWS::OpenSearchServerless::Collection",
+      "attribute": "DashboardEndpoint",
+      "verdict": "never",
+      "reason": "built from the collection id"
+    },
+    {
+      "type": "AWS::OpenSearchServerless::Collection",
+      "attribute": "FipsEndpoints",
+      "verdict": "never",
+      "reason": "built from the collection id"
+    },
+    {
+      "type": "AWS::PCS::Cluster",
+      "attribute": "Endpoints",
+      "verdict": "never",
+      "reason": "the cluster networking is create-only"
+    },
+    {
+      "type": "AWS::RDS::DBShardGroup",
+      "attribute": "Endpoint",
+      "verdict": "never",
+      "reason": "built from the create-only identifier; PubliclyAccessible is create-only"
     },
     {
       "type": "AWS::Redshift::Snapshot",
@@ -2822,6 +3116,12 @@
       "reason": "the source engine version, captured when the snapshot was taken"
     },
     {
+      "type": "AWS::Route53RecoveryReadiness::ReadinessCheck",
+      "attribute": "ReadinessCheckArn",
+      "verdict": "never",
+      "reason": "built from the create-only ReadinessCheckName; ResourceSetName names a set"
+    },
+    {
       "type": "AWS::Route53Resolver::FirewallRuleGroupAssociation",
       "attribute": "Arn",
       "verdict": "never",
@@ -2832,6 +3132,30 @@
       "attribute": "Arn",
       "verdict": "never",
       "reason": "measured (cdkd-probe-7007-s1): Name only in place left it resolver-rule/rslvr-rr-b961c68a7e1e43908"
+    },
+    {
+      "type": "AWS::SageMaker::Space",
+      "attribute": "SpaceArn",
+      "verdict": "never",
+      "reason": "`space/<create-only domain>/<create-only SpaceName>`; SpaceDisplayName is a label"
+    },
+    {
+      "type": "AWS::SageMaker::Space",
+      "attribute": "Url",
+      "verdict": "never",
+      "reason": "built from the create-only domain and space name"
+    },
+    {
+      "type": "AWS::StorageGateway::NFSFileShare",
+      "attribute": "FileShareId",
+      "verdict": "never",
+      "reason": "the share id; UpdateNFSFileShare takes FileShareARN and FileShareName"
+    },
+    {
+      "type": "AWS::StorageGateway::SMBFileShare",
+      "attribute": "FileShareId",
+      "verdict": "never",
+      "reason": "the share id; UpdateSMBFileShare takes FileShareARN and FileShareName"
     },
     {
       "type": "AWS::WellArchitected::Workload",
@@ -3534,7 +3858,11 @@
       "UpdatedBy"
     ],
     "AWS::ImageBuilder::Image": [
-      "LatestVersion"
+      "LatestVersion",
+      "LatestVersion.Arn",
+      "LatestVersion.Major",
+      "LatestVersion.Minor",
+      "LatestVersion.Patch"
     ],
     "AWS::InspectorV2::CodeSecurityIntegration": [
       "LastUpdatedAt"
@@ -3772,6 +4100,9 @@
       "UpdatedAt",
       "Version"
     ],
+    "AWS::NotificationsContacts::EmailContact": [
+      "EmailContact.UpdateTime"
+    ],
     "AWS::ObservabilityAdmin::DatasetIntegration": [
       "UpdatedAt"
     ],
@@ -3845,7 +4176,17 @@
     ],
     "AWS::QuickSight::Dashboard": [
       "LastUpdatedTime",
-      "Version"
+      "Version",
+      "Version.Arn",
+      "Version.CreatedTime",
+      "Version.DataSetArns",
+      "Version.Description",
+      "Version.Errors",
+      "Version.Sheets",
+      "Version.SourceEntityArn",
+      "Version.Status",
+      "Version.ThemeArn",
+      "Version.VersionNumber"
     ],
     "AWS::QuickSight::DataSet": [
       "LastUpdatedTime"
@@ -3873,11 +4214,32 @@
     ],
     "AWS::QuickSight::Template": [
       "LastUpdatedTime",
-      "Version"
+      "Version",
+      "Version.CreatedTime",
+      "Version.DataSetConfigurations",
+      "Version.Description",
+      "Version.Errors",
+      "Version.Sheets",
+      "Version.SourceEntityArn",
+      "Version.Status",
+      "Version.ThemeArn",
+      "Version.VersionNumber"
     ],
     "AWS::QuickSight::Theme": [
       "LastUpdatedTime",
-      "Version"
+      "Version",
+      "Version.Arn",
+      "Version.BaseThemeId",
+      "Version.Configuration",
+      "Version.Configuration.DataColorPalette",
+      "Version.Configuration.Sheet",
+      "Version.Configuration.Typography",
+      "Version.Configuration.UIColorPalette",
+      "Version.CreatedTime",
+      "Version.Description",
+      "Version.Errors",
+      "Version.Status",
+      "Version.VersionNumber"
     ],
     "AWS::QuickSight::VPCConnection": [
       "LastUpdatedTime"
@@ -4154,9 +4516,6 @@
     "AWS::APS::Scraper": [
       "RoleArn"
     ],
-    "AWS::APS::Workspace": [
-      "PrometheusEndpoint"
-    ],
     "AWS::ARCRegionSwitch::Plan": [
       "HealthChecksForPlan",
       "Owner",
@@ -4194,18 +4553,12 @@
       "AppName",
       "DefaultDomain"
     ],
-    "AWS::Amplify::Branch": [
-      "Arn"
-    ],
     "AWS::Amplify::Domain": [
       "Certificate",
       "CertificateRecord",
       "DomainStatus",
       "StatusReason",
       "UpdateStatus"
-    ],
-    "AWS::Amplify::Webhook": [
-      "WebhookUrl"
     ],
     "AWS::ApiGateway::DomainName": [
       "DistributionDomainName",
@@ -4288,12 +4641,10 @@
       "StreamingUrl"
     ],
     "AWS::AppSync::Api": [
-      "Dns",
       "Dns.Http",
       "Dns.Realtime"
     ],
     "AWS::AppSync::DomainName": [
-      "AppSyncDomainName",
       "HostedZoneId"
     ],
     "AWS::AppSync::DomainNameApiAssociation": [
@@ -4627,9 +4978,6 @@
     "AWS::CertificateManager::AcmeEndpoint": [
       "EndpointUrl"
     ],
-    "AWS::Chatbot::MicrosoftTeamsChannelConfiguration": [
-      "Arn"
-    ],
     "AWS::Chime::AppInstanceBot": [
       "AppInstanceBotArn"
     ],
@@ -4730,9 +5078,6 @@
     ],
     "AWS::CloudFront::KeyValueStore": [
       "Status"
-    ],
-    "AWS::CloudFront::StreamingDistribution": [
-      "DomainName"
     ],
     "AWS::CloudFront::TrustStore": [
       "NumberOfCaCertificates",
@@ -5009,30 +5354,26 @@
     ],
     "AWS::DataSync::LocationAzureBlob": [
       "CmkSecretConfig.SecretArn",
-      "LocationUri",
       "ManagedSecretConfig"
+    ],
+    "AWS::DataSync::LocationFSxONTAP": [
+      "Protocol.SMB.CmkSecretConfig.SecretArn",
+      "Protocol.SMB.ManagedSecretConfig"
     ],
     "AWS::DataSync::LocationFSxWindows": [
       "CmkSecretConfig.SecretArn",
-      "LocationUri",
       "ManagedSecretConfig"
     ],
     "AWS::DataSync::LocationHDFS": [
       "CmkSecretConfig.SecretArn",
-      "LocationUri",
       "ManagedSecretConfig"
-    ],
-    "AWS::DataSync::LocationNFS": [
-      "LocationUri"
     ],
     "AWS::DataSync::LocationObjectStorage": [
       "CmkSecretConfig.SecretArn",
-      "LocationUri",
       "ManagedSecretConfig"
     ],
     "AWS::DataSync::LocationSMB": [
       "CmkSecretConfig.SecretArn",
-      "LocationUri",
       "ManagedSecretConfig"
     ],
     "AWS::DataSync::Task": [
@@ -5119,8 +5460,7 @@
       "CurrentCount"
     ],
     "AWS::Deadline::Monitor": [
-      "IdentityCenterApplicationArn",
-      "Url"
+      "IdentityCenterApplicationArn"
     ],
     "AWS::Deadline::QueueEnvironment": [
       "Name"
@@ -5430,7 +5770,6 @@
       "ReaderEndPoint.Port"
     ],
     "AWS::ElastiCache::ServerlessCache": [
-      "ARN",
       "Endpoint.Address",
       "Endpoint.Port",
       "ReaderEndpoint.Address",
@@ -5484,7 +5823,6 @@
       "SecretArn"
     ],
     "AWS::Events::Endpoint": [
-      "EndpointUrl",
       "State",
       "StateReason"
     ],
@@ -5500,12 +5838,6 @@
     ],
     "AWS::Evidently::Segment": [
       "Arn"
-    ],
-    "AWS::FMS::ApplicationsList": [
-      "ListId"
-    ],
-    "AWS::FMS::ProtocolsList": [
-      "ListId"
     ],
     "AWS::FSx::DataRepositoryAssociation": [
       "ResourceARN"
@@ -5666,9 +5998,6 @@
       "Status"
     ],
     "AWS::HealthLake::FHIRDatastore": [
-      "CreatedAt.Nanos",
-      "CreatedAt.Seconds",
-      "DatastoreEndpoint",
       "DatastoreStatus"
     ],
     "AWS::IAM::ServiceLinkedRole": [
@@ -5698,10 +6027,6 @@
     "AWS::ImageBuilder::Image": [
       "ImageId",
       "ImageUri",
-      "LatestVersion.Arn",
-      "LatestVersion.Major",
-      "LatestVersion.Minor",
-      "LatestVersion.Patch",
       "Name"
     ],
     "AWS::ImageBuilder::ImagePipeline": [
@@ -5781,7 +6106,6 @@
       "ApplicationId",
       "ApplicationLastUpdateDate",
       "ApplicationState",
-      "ApplicationUrl",
       "ErrorMessage",
       "SsoClientId"
     ],
@@ -5848,7 +6172,6 @@
       "ThingName"
     ],
     "AWS::IoTWireless::WirelessDeviceImportTask": [
-      "Arn",
       "FailedImportedDevicesCount",
       "InitializedImportedDevicesCount",
       "OnboardedImportedDevicesCount",
@@ -5940,7 +6263,6 @@
     ],
     "AWS::Lightsail::Distribution": [
       "AbleToUpdateBundle",
-      "DistributionArn",
       "Status"
     ],
     "AWS::Lightsail::Domain": [
@@ -5951,7 +6273,6 @@
     "AWS::Lightsail::Instance": [
       "Hardware.CpuCount",
       "Hardware.RamSizeInGb",
-      "InstanceArn",
       "Ipv6Addresses",
       "IsStaticIp",
       "Location.AvailabilityZone",
@@ -5965,9 +6286,6 @@
       "State.Name",
       "SupportCode",
       "UserName"
-    ],
-    "AWS::Lightsail::LoadBalancer": [
-      "LoadBalancerArn"
     ],
     "AWS::Lightsail::LoadBalancerTlsCertificate": [
       "Status"
@@ -6071,15 +6389,11 @@
     "AWS::MediaConnect::FlowMediaStream": [
       "Fmt"
     ],
-    "AWS::MediaConnect::FlowOutput": [
-      "OutputArn"
-    ],
     "AWS::MediaConnect::FlowSource": [
       "IngestIp",
       "RtmpPushDetails",
       "RtmpPushDetails.ApplicationName",
       "RtmpPushDetails.StreamName",
-      "SourceArn",
       "SourceIngestPort"
     ],
     "AWS::MediaConnect::FlowVpcInterface": [
@@ -6135,9 +6449,7 @@
       "State"
     ],
     "AWS::MediaLive::CloudWatchAlarmTemplate": [
-      "Arn",
-      "GroupId",
-      "Id"
+      "GroupId"
     ],
     "AWS::MediaLive::Cluster": [
       "ChannelIds",
@@ -6200,7 +6512,6 @@
       "Status"
     ],
     "AWS::MediaPackage::OriginEndpoint": [
-      "Arn",
       "Url"
     ],
     "AWS::MediaPackage::PackagingGroup": [
@@ -6208,8 +6519,7 @@
     ],
     "AWS::MediaPackageV2::Channel": [
       "AttachedMultiviewChannels",
-      "IngestEndpointUrls",
-      "IngestEndpoints"
+      "IngestEndpointUrls"
     ],
     "AWS::MediaPackageV2::ChannelGroup": [
       "EgressDomain"
@@ -6226,7 +6536,6 @@
     "AWS::MediaTailor::PlaybackConfiguration": [
       "DashConfiguration.ManifestEndpointPrefix",
       "HlsConfiguration.ManifestEndpointPrefix",
-      "PlaybackConfigurationArn",
       "PlaybackEndpointPrefix",
       "SessionInitializationEndpointPrefix"
     ],
@@ -6239,7 +6548,6 @@
       "Status"
     ],
     "AWS::MemoryDB::Cluster": [
-      "ARN",
       "ClusterEndpoint.Address",
       "ClusterEndpoint.Port",
       "ParameterGroupStatus",
@@ -6411,9 +6719,6 @@
     "AWS::Notifications::NotificationConfiguration": [
       "Status"
     ],
-    "AWS::NotificationsContacts::EmailContact": [
-      "EmailContact.UpdateTime"
-    ],
     "AWS::ODB::CloudAutonomousVmCluster": [
       "AutonomousDataStoragePercentage",
       "AvailableAutonomousDataStorageSizeInTBs",
@@ -6542,9 +6847,6 @@
       "Status"
     ],
     "AWS::OpenSearchServerless::Collection": [
-      "CollectionEndpoint",
-      "DashboardEndpoint",
-      "FipsEndpoints",
       "KmsKeyArn"
     ],
     "AWS::OpenSearchServerless::SecurityConfig": [
@@ -6609,7 +6911,6 @@
       "SiteArn"
     ],
     "AWS::PCS::Cluster": [
-      "Endpoints",
       "ErrorInfo",
       "Status"
     ],
@@ -6736,17 +7037,7 @@
     ],
     "AWS::QuickSight::Dashboard": [
       "Arn",
-      "LastPublishedTime",
-      "Version.Arn",
-      "Version.CreatedTime",
-      "Version.DataSetArns",
-      "Version.Description",
-      "Version.Errors",
-      "Version.Sheets",
-      "Version.SourceEntityArn",
-      "Version.Status",
-      "Version.ThemeArn",
-      "Version.VersionNumber"
+      "LastPublishedTime"
     ],
     "AWS::QuickSight::DataSet": [
       "Arn",
@@ -6780,32 +7071,11 @@
       "Arn"
     ],
     "AWS::QuickSight::Template": [
-      "Arn",
-      "Version.CreatedTime",
-      "Version.DataSetConfigurations",
-      "Version.Description",
-      "Version.Errors",
-      "Version.Sheets",
-      "Version.SourceEntityArn",
-      "Version.Status",
-      "Version.ThemeArn",
-      "Version.VersionNumber"
+      "Arn"
     ],
     "AWS::QuickSight::Theme": [
       "Arn",
-      "Type",
-      "Version.Arn",
-      "Version.BaseThemeId",
-      "Version.Configuration",
-      "Version.Configuration.DataColorPalette",
-      "Version.Configuration.Sheet",
-      "Version.Configuration.Typography",
-      "Version.Configuration.UIColorPalette",
-      "Version.CreatedTime",
-      "Version.Description",
-      "Version.Errors",
-      "Version.Status",
-      "Version.VersionNumber"
+      "Type"
     ],
     "AWS::QuickSight::Topic": [
       "Arn"
@@ -6839,8 +7109,7 @@
       "Status"
     ],
     "AWS::RDS::DBShardGroup": [
-      "DBShardGroupResourceId",
-      "Endpoint"
+      "DBShardGroupResourceId"
     ],
     "AWS::RDS::GlobalCluster": [
       "GlobalEndpoint"
@@ -7080,9 +7349,6 @@
     "AWS::Route53RecoveryReadiness::Cell": [
       "ParentReadinessScopes"
     ],
-    "AWS::Route53RecoveryReadiness::ReadinessCheck": [
-      "ReadinessCheckArn"
-    ],
     "AWS::Route53Resolver::FirewallConfig": [
       "OwnerId"
     ],
@@ -7319,10 +7585,6 @@
     "AWS::SageMaker::Project": [
       "ProjectStatus"
     ],
-    "AWS::SageMaker::Space": [
-      "SpaceArn",
-      "Url"
-    ],
     "AWS::SageMaker::TrialComponent": [
       "LineageGroupArn"
     ],
@@ -7432,12 +7694,10 @@
       "ApplicationTagValue"
     ],
     "AWS::StorageGateway::NFSFileShare": [
-      "FileShareId",
       "FileShareStatus",
       "Path"
     ],
     "AWS::StorageGateway::SMBFileShare": [
-      "FileShareId",
       "FileShareStatus",
       "Path"
     ],

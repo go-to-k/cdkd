@@ -63,7 +63,11 @@ instead.
 ### What a replacement costs
 
 - **A new physical ID.** Stacks that consume the resource need a redeploy.
-  `--replace` neither prompts nor lists those stacks.
+  `--replace` neither prompts nor lists those stacks. Resources in the same
+  stack that read it follow it in the same deploy, as they do for a
+  replacement the diff plans: one whose referencing property can change is
+  updated, and one whose referencing property is create-only is replaced
+  too (a stateful one only with `--force-stateful-recreation`).
 - **Data loss on a stateful type.** cdkd refuses unless you also pass
   `--force-stateful-recreation`, and that flag covers every replacement in the
   run. See

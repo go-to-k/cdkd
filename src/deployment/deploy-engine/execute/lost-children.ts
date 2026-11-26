@@ -23,7 +23,7 @@ import type { DeployRun } from './run.js';
 // keeps its id: the name-addressed children the fallback reaches today,
 // a log group's streams and filters).
 export function enqueueLostChildren(run: DeployRun, executor: DagExecutor<ResourceChange>): void {
-  const { engine, changes, deleteChanges, template, newResources, conditions, progress, dag } = run;
+  const { engine, changes, deleteChanges, template, newResources, conditions, progress } = run;
   const lostIds = noChangeChildrenOfRecreatedParents({
     changes,
     skip: deleteChanges,
@@ -44,13 +44,27 @@ export function enqueueLostChildren(run: DeployRun, executor: DagExecutor<Resour
     );
   }
   if (progress) progress.total += lostIds.length;
+  addPromotedNodes(run, executor, lostIds);
+}
+
+/**
+ * Add `ids` -- rows the diff left `NO_CHANGE`, now promoted -- to the RUNNING
+ * executor, each waiting for its nearest member dependencies, and make every
+ * pending node that reads one wait for it in turn.
+ */
+export function addPromotedNodes(
+  run: DeployRun,
+  executor: DagExecutor<ResourceChange>,
+  ids: readonly string[]
+): void {
+  const { engine, changes, dag } = run;
   // A NO_CHANGE dep is walked through to the executor's nodes behind it
-  // (#6244), for a lost child's own deps and for a pending reader of one.
-  const lost = new Set(lostIds);
+  // (#6244), for a promoted row's own deps and for a pending reader of one.
+  const lost = new Set(ids);
   const isMember = (id: string): boolean => executor.has(id) || lost.has(id);
   const dependenciesOf = (id: string): string[] => engine.dagBuilder.getDirectDependencies(dag, id);
-  const lostDeps = nearestMemberDependencies(lostIds, dependenciesOf, isMember);
-  for (const id of lostIds) {
+  const lostDeps = nearestMemberDependencies(ids, dependenciesOf, isMember);
+  for (const id of ids) {
     executor.add({
       id,
       dependencies: lostDeps.get(id)!,

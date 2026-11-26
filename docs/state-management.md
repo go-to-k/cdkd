@@ -293,7 +293,10 @@ Four of these fields change what a command does:
   listener still pointed at, and the old physical id of a custom resource whose
   update answered a new one, from the update until the deploy's `Delete` of it. Every later `cdkd deploy` retries the delete once
   its own changes are done and drops the entry when it succeeds, and
-  `cdkd destroy` deletes the resource after the stack's own resources. While
+  `cdkd destroy` deletes the resource in dependency order with the stack's own
+  resources: before the resources its record depends on, such as an old
+  security group before its VPC, and after the stack's own resources when it
+  depends on none of them (a custom resource's old id goes first). While
   the delete keeps failing, the entry stays and each attempt warns. For an S3
   bucket, the entry also records the old bucket's creation time
   (`identity`). Before deleting by name, the deploy or destroy checks who
