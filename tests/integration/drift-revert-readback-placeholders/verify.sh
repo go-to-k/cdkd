@@ -98,6 +98,11 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/rollback-journal.json" >/dev/null 2>&1
   fi
   sweep_stack_lambda_log_groups "${STACK}" "${REGION}"
+  # Phase 7 turns the API's logging on: AppSync may create its log group.
+  case "${API_ID:-}" in
+    [a-z0-9]????*) aws logs delete-log-group --region "${REGION}" \
+      --log-group-name "/aws/appsync/apis/${API_ID}" >/dev/null 2>&1 ;;
+  esac
   set -eu
 }
 
@@ -248,9 +253,16 @@ aws glue update-job --region "${REGION}" --job-name "${JOB}" --job-update "$(jq 
 echo "==> Phase 8: cdkd drift reports both, and --revert takes them back off"
 run_drift
 expect_drift_rc 1 "Phase 8 (drift)"
+# A `+ <path>` change line under each resource's block, and both blocks.
+for id in "${API_ID_LID} (AWS::AppSync::GraphQLApi)" "${JOB_LID} (AWS::Glue::Job)"; do
+  if ! grep -qF "${id}" "${DRIFT_LOG}"; then
+    echo "FAIL: Phase 8: no drift block for ${id} — the report wording drifted" >&2
+    exit 1
+  fi
+done
 for path in "LogConfig" "ExecutionClass"; do
-  if ! grep -qF "${path}" "${DRIFT_LOG}"; then
-    echo "FAIL: Phase 8: the drift report names no ${path} change" >&2
+  if ! grep -qE "^ +\+ ${path}[.:]" "${DRIFT_LOG}"; then
+    echo "FAIL: Phase 8: the drift report has no '+ ${path}' change line" >&2
     exit 1
   fi
 done
