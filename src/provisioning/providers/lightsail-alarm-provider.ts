@@ -409,6 +409,13 @@ export class LightsailAlarmProvider implements ResourceProvider {
   ): Promise<Record<string, unknown>> {
     try {
       const alarm = await this.getAlarm(alarmName, logicalId);
+      if (alarm === undefined) {
+        this.logger.debug(
+          mask(
+            safeMsg`GetAlarms listed no Lightsail alarm ${alarmName} right after the ${operation}; no attributes read`
+          )
+        );
+      }
       return definedAttributes({ AlarmArn: alarm?.arn, State: alarm?.state });
     } catch (error) {
       this.logger.warn(
