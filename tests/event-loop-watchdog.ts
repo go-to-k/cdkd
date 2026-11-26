@@ -138,8 +138,12 @@ export function installEventLoopWatchdog(): void {
   if (state === null || state === undefined) return;
 
   beforeEach((context) => {
-    // At most 4 UTF-8 bytes per code unit, so the cut never splits a character.
-    const bytes = new TextEncoder().encode(context.task.fullName.slice(0, LABEL_BYTES / 4));
+    // At most 4 UTF-8 bytes per code point, so a cut by code points always
+    // fits and never splits a character.
+    const name = Array.from(context.task.fullName)
+      .slice(0, LABEL_BYTES / 4)
+      .join('');
+    const bytes = new TextEncoder().encode(name);
     state.label.set(bytes);
     Atomics.store(state.slots, LABEL_LENGTH, bytes.length);
     beat(state);
