@@ -2,8 +2,8 @@ import {
   SECRET_MASK,
   carriesSecretMask,
   dynamicReferenceTokens,
+  isStaleNoEchoLeaf,
   noEchoLeavesOf,
-  valueAtCoordinate,
 } from '../../deployment/secret-redaction.js';
 import {
   REFUSED_FINGERPRINT,
@@ -296,6 +296,7 @@ export function holdsStaleNoEchoLeafAt(
   desired: Record<string, unknown>
 ): boolean {
   return (noEchoLeavesOf(record) ?? []).some(
-    (coordinate) => coordinate[0] === key && valueAtCoordinate(desired, coordinate) !== SECRET_MASK
+    (coordinate) =>
+      coordinate[0] === key && isStaleNoEchoLeaf(record.properties, desired, coordinate)
   );
 }

@@ -6,7 +6,7 @@
  * updated in place, never refused as a stateful replacement). Every saved
  * state is scanned whole for any secret's plaintext outside a reference.
  */
-import { describe, it, expect, vi } from 'vite-plus/test';
+import { describe, it, expect, vi, afterEach } from 'vite-plus/test';
 import { getLogger } from '../../../src/utils/logger.js';
 import { renderChangeLines } from '../../../src/cli/commands/diff-recursive/render.js';
 
@@ -29,9 +29,9 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
       config: { region: () => Promise.resolve('us-east-1') },
     },
     ssm: {
-      send: vi.fn().mockResolvedValue({
-        Parameter: { Value: 'unused', Type: 'String', Version: 1 },
-      }),
+      send: vi.fn(async () => ({
+        Parameter: { Value: PUBLIC_SSM.value, Type: 'String', Version: PUBLIC_SSM.version },
+      })),
       config: { region: () => Promise.resolve('us-east-1') },
     },
   }),
@@ -63,7 +63,9 @@ vi.mock('@aws-sdk/client-ssm', async (importOriginal) => {
     readonly config = { region: () => Promise.resolve('us-east-1') };
     constructor(_config?: unknown) {}
     async send(): Promise<unknown> {
-      return { Parameter: { Value: 'unused', Type: 'String', Version: 1 } };
+      return {
+        Parameter: { Value: PUBLIC_SSM.value, Type: 'String', Version: PUBLIC_SSM.version },
+      };
     }
     destroy(): void {}
   }
@@ -76,6 +78,8 @@ import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
 
 const READBACK: { dbName?: string } = {};
+// The value a public `{{resolve:ssm:/pub}}` reads.
+const PUBLIC_SSM = { value: 'pub-v1', version: 1 };
 const USERNAME = '{{resolve:secretsmanager:db-secret:SecretString:username::}}';
 
 interface Run {
@@ -180,15 +184,20 @@ async function deploy(
 const OTHER = '{{resolve:secretsmanager:db-secret:SecretString:other::}}';
 const LONG = '{{resolve:secretsmanager:db-secret:SecretString:long::}}';
 const SUFFIX: { v: string; noEcho?: boolean } = { v: 'x9' };
-const tpl = (dbName: unknown, backup: number): Record<string, unknown> => ({
+const tpl = (
+  dbName: unknown,
+  backup: number,
+  extra: Record<string, unknown> = {}
+): Record<string, unknown> => ({
   Db: {
     Type: 'AWS::RDS::DBInstance',
     Properties: {
       Engine: 'mysql',
       MasterUsername: USERNAME,
       MasterUserPassword: OTHER,
-      DBName: dbName,
+      ...(dbName !== undefined && { DBName: dbName }),
       BackupRetentionPeriod: backup,
+      ...extra,
     },
   },
 });
@@ -343,6 +352,9 @@ describe('a NoEcho leaf whose NoEcho is removed is decided by the readback (#705
     [false, false, 'none'],
     [false, false, 'today'],
     [false, true, 'old'],
+    [false, true, 'none'],
+    [false, true, 'today'],
+    [false, false, 'old'],
   ] as Array<[boolean, boolean, Readback]>) {
     const label = `${older ? 'an older record (no input fingerprint)' : 'a fingerprinted record'}, value ${changed ? 'changed' : 'unchanged'}, AWS reporting ${readback === 'none' ? 'nothing' : readback === 'today' ? "today's value" : 'the old value'}`;
     it(label, async () => {
@@ -365,7 +377,8 @@ describe('a NoEcho leaf whose NoEcho is removed is decided by the readback (#705
           const plan = r.diff?.get('Db');
           expect(r.calls).toEqual([]);
           if (r.persisted !== undefined) expect(exposes(r.persisted)).toBeUndefined();
-          if (readback === 'today') {
+          // An unchanged value read back as the old one is today's value too.
+          if (readback === 'today' || (readback === 'old' && !changed)) {
             // AWS holds today's value: settled on #1, unmarked, then NO_CHANGE.
             expect(r.thrown).toBeUndefined();
             if (run === 1) {
@@ -403,4 +416,81 @@ describe('a NoEcho leaf whose NoEcho is removed is decided by the readback (#705
       }
     });
   }
+});
+
+// #7050 review (round 2): what the stale-leaf rule must NOT swallow. Only the
+// input fingerprint's non-proof is dropped; a template edit, a moved public
+// `ssm` value and an updatable key each keep their own path.
+describe('a stale NoEcho leaf drops only its input-fingerprint non-proof (#7050 review)', () => {
+  const joined = (delimiter: string, parts: unknown[] = [USERNAME, { Ref: 'Suffix' }]): unknown => ({
+    'Fn::Join': [delimiter, parts],
+  });
+  /** Deploy with `Suffix` NoEcho, then drop its NoEcho: the record to start from. */
+  async function staleRecord(template: Record<string, unknown>): Promise<Record<string, unknown>> {
+    SUFFIX.v = 'noecho-old-value';
+    SUFFIX.noEcho = true;
+    const created = await deploy({}, template);
+    expect(created.thrown).toBeUndefined();
+    SUFFIX.noEcho = false;
+    return structuredClone(created.persisted!) as unknown as Record<string, unknown>;
+  }
+  /** Every message on the thrown error's `cause` chain. */
+  const refusal = (thrown: unknown): string => {
+    const messages: string[] = [];
+    for (let e = thrown as { message?: unknown; cause?: unknown } | undefined; e; e = e.cause as never)
+      messages.push(String(e.message));
+    return messages.join(' | ');
+  };
+  afterEach(() => {
+    SUFFIX.v = 'x9';
+    SUFFIX.noEcho = false;
+    READBACK.dbName = undefined;
+    PUBLIC_SSM.value = 'pub-v1';
+    PUBLIC_SSM.version = 1;
+  });
+
+  it('an UPDATABLE key holding a stale leaf is sent once, then settles', async () => {
+    const template = tpl(undefined, 1, { PreferredMaintenanceWindow: joined('_') });
+    const record = await staleRecord(template);
+    expect((record['properties'] as Record<string, unknown>)['PreferredMaintenanceWindow']).toBe('***');
+    SUFFIX.v = 'noecho-new-value';
+    const first = await deploy({ Db: record as never }, template);
+    expect(first.thrown).toBeUndefined();
+    expect((first.diff?.get('Db')?.propertyChanges ?? []).map((pc) => pc.path)).toEqual([
+      'PreferredMaintenanceWindow',
+    ]);
+    expect(first.calls).toEqual(['update:Db']);
+    const sent = first.sent![0]!.props as Record<string, unknown>;
+    expect(sent['PreferredMaintenanceWindow']).toBe('pg_noecho-new-value');
+    expect(exposes(first.persisted)).toBeUndefined();
+    const second = await deploy({ Db: structuredClone(first.persisted!) }, template);
+    expect(second.thrown).toBeUndefined();
+    expect(second.diff?.get('Db')?.changeType).toBe('NO_CHANGE');
+    expect(second.calls).toEqual([]);
+  });
+
+  it('a TEXT change on a create-only stateful key beside a stale leaf is refused, as on base', async () => {
+    const record = await staleRecord(tpl(joined('_'), 1));
+    // AWS reports the old value: without the text change this would warn
+    // "not applied"; the template edit itself must still read as a change.
+    READBACK.dbName = 'pg_noecho-old-value';
+    const edited = await deploy({ Db: record as never }, tpl(joined('-'), 1));
+    expect((edited.diff?.get('Db')?.propertyChanges ?? []).map((pc) => pc.path)).toEqual(['DBName']);
+    expect(edited.calls).toEqual([]);
+    expect(refusal(edited.thrown)).toMatch(/force-stateful-recreation/);
+  });
+
+  it('a stale leaf beside a masked leaf whose public ssm value moved is planned and refused, never skipped', async () => {
+    const dbName = joined('_', [USERNAME, '{{resolve:ssm:/pub}}', { Ref: 'Suffix' }]);
+    const record = await staleRecord(tpl(dbName, 1));
+    expect((record['properties'] as Record<string, unknown>)['DBName']).toBe('***');
+    // AWS reports the old value; the public value moved in this deploy.
+    READBACK.dbName = 'pg_pub-v1_noecho-old-value';
+    PUBLIC_SSM.value = 'pub-v2';
+    PUBLIC_SSM.version = 2;
+    const moved = await deploy({ Db: record as never }, tpl(dbName, 1));
+    expect((moved.diff?.get('Db')?.propertyChanges ?? []).map((pc) => pc.path)).toEqual(['DBName']);
+    expect(moved.calls).toEqual([]);
+    expect(refusal(moved.thrown)).toMatch(/force-stateful-recreation/);
+  });
 });

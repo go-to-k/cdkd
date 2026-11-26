@@ -1967,11 +1967,15 @@ stack with no instance id.
   `NoEcho` leaf is decided by the engine's readback alone: its input
   fingerprint is never re-baselined (stamped unsent, it would read a later
   deploy unchanged), and a recorded one that differs is no move (it hashed
-  the `NoEcho` input as written). A readback holding today's value settles
-  the leaf and unmarks it; one holding another value, which the provider
-  reports exactly, is a change (a stateful create-only key is refused);
-  with no usable readback the deploy warns on every run that the value is
-  not applied, and the plan keeps showing it. A key the `NoEcho`
+  the `NoEcho` input as written). Only that non-proof is dropped: a key
+  whose text fingerprint moved (the template itself was edited), or whose
+  public `ssm` value moved, is still a move. An updatable key is sent, as
+  any planned key is, and its record settles. For a create-only key, a
+  readback holding today's value settles the leaf and unmarks it; one
+  holding another value, which the provider reports exactly, is a change
+  (a stateful key is refused); with no usable readback the deploy warns on
+  every run that the value is not applied, and the plan keeps showing it.
+  A key the `NoEcho`
   comparison already masked (its value MAC proved it) is not warned of. An unsent key carries its previous member. A
   sent key with no new member (no KMS this run) carries it only while it is
   bound to the input fingerprint the same save stamps. Otherwise the key

@@ -10,6 +10,7 @@ import { keyOrderFreeJson } from '../../deploy-value-equality.js';
 import {
   canonicalCoordinates,
   carriesSecretMask,
+  isStaleNoEchoLeaf,
   noEchoCoordinatesOf,
   noEchoLeavesOf,
   recordNestedStackParameterExpressions,
@@ -20,6 +21,7 @@ import {
   classifyPassedParameters,
   inputFingerprinter,
   maskedInputFingerprintsFor,
+  maskedPropertyFingerprint,
   maskedPropertyFingerprintsOf,
   maskedReferenceFingerprintsFor,
   movedMaskedProperties,
@@ -39,7 +41,6 @@ import {
   noEchoMacInputBindingsFor,
   passedSecretMacEntriesFor,
 } from '../noecho-macs.js';
-import { isWhollyMask } from './helpers.js';
 import { aliasPolicySecretGuard, resolveAliasUpdatePolicy } from '../update-policy.js';
 
 /**
@@ -357,9 +358,7 @@ export async function resolveUpdateInputs(
   const staleCoordinates = (noEchoLeavesOf(currentResource) ?? []).filter((coordinate) => {
     if (noEchoCoordinates.some((known) => keyOrderFreeJson(known) === keyOrderFreeJson(coordinate)))
       return false;
-    if (!isWhollyMask(valueAtCoordinate(currentProps, coordinate))) return false;
-    const resolved = valueAtCoordinate(resolvedProps, coordinate);
-    return resolved !== undefined && !carriesSecretMask(resolved);
+    return isStaleNoEchoLeaf(currentProps, resolvedProps, coordinate);
   });
   const comparisonCoordinates = canonicalCoordinates([...noEchoCoordinates, ...staleCoordinates]);
   if (parameterCoordinates.length > 0) {
@@ -406,10 +405,25 @@ export async function resolveUpdateInputs(
     engine.options.inheritedSecrets,
   ];
   const publicReferences = publicReferencesOf(updateSecrets, corpora);
+  // go-to-k/cdkd#7050 review: a STALE `NoEcho` leaf's input fingerprint was
+  // hashed with the `NoEcho` input kept as written and is hashed with its value
+  // today, so it differs whatever the value: no proof of a move. Only that
+  // non-proof is dropped, and the readback below decides the leaf, as it does
+  // for a record with no fingerprint. A key whose TEXT fingerprint moved (the
+  // template itself changed) stays moved, and the public `ssm` check below
+  // runs after this, so a moved public value moves the key again.
+  const recordedText = maskedPropertyFingerprintsOf(currentResource);
+  for (const coordinate of staleCoordinates) {
+    const key = coordinate[0];
+    if (typeof key !== 'string' || !Object.hasOwn(desiredProps, key)) continue;
+    if (maskedPropertyFingerprint(desiredProps[key]) === recordedText.get(key)) {
+      movedMasked.delete(key);
+    }
+  }
   // go-to-k/cdkd#7050: a masked key whose public `ssm` value moved (or cannot
   // be told unmoved) is sent, as CloudFormation would; a secret's is not.
   if (fingerprints !== undefined) {
-    for (const key of maskedPropertyFingerprintsOf(currentResource).keys()) {
+    for (const key of recordedText.keys()) {
       if (movedMasked.has(key) || !Object.hasOwn(desiredProps, key)) continue;
       const recorded = currentResource.properties as Record<string, unknown> | undefined;
       if (recorded === undefined || recorded === null || !Object.hasOwn(recorded, key)) continue;
@@ -426,13 +440,6 @@ export async function resolveUpdateInputs(
         movedMasked.add(key);
       }
     }
-  }
-  // go-to-k/cdkd#7050 review: a STALE `NoEcho` leaf's input fingerprint was
-  // hashed with the `NoEcho` input kept as written and is hashed with its value
-  // today, so it differs whatever the value: no proof of a move. The readback
-  // below decides the leaf, as it does for a record with no fingerprint.
-  for (const coordinate of staleCoordinates) {
-    if (typeof coordinate[0] === 'string') movedMasked.delete(coordinate[0]);
   }
   // What the save stamps if this deploy writes the record: the input
   // fingerprint of each property it may record as the mask.

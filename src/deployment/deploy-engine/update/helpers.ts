@@ -16,19 +16,7 @@ import {
   type RecordedSecretValues,
 } from '../../secret-redaction.js';
 
-/**
- * Is `value` the mask at every leaf (a scalar `***`, or a list / object of
- * nothing but masks, as `maskWholeValue` writes a list parameter)?
- */
-export function isWhollyMask(value: unknown): boolean {
-  if (value === SECRET_MASK) return true;
-  if (Array.isArray(value)) return value.length > 0 && value.every(isWhollyMask);
-  if (value !== null && typeof value === 'object') {
-    const children = Object.values(value as Record<string, unknown>);
-    return children.length > 0 && children.every(isWhollyMask);
-  }
-  return false;
-}
+export { isWhollyMask } from '../../secret-redaction.js';
 
 /** A copy of `bag` with the leaf at `coordinate` set to `value` (containers copied on the path). */
 export function setAtCoordinate(

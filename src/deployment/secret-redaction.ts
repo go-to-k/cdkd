@@ -214,6 +214,8 @@ export {
   passedNoEchoParametersOf,
   canonicalCoordinates,
   noEchoLeavesOf,
+  isStaleNoEchoLeaf,
+  isWhollyMask,
   isMarkedCoordinate,
   witnessNormalize,
   noEchoComparison,
