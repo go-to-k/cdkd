@@ -121,7 +121,7 @@ custom-resource-resolved-secret	2026-11-05T04:09:30Z	PASS	341	verify.sh	rc ok on
 custom-resource-service-token-change	2026-11-06T16:04:59Z	PASS	135	verify.sh	post-hoc on main after #5879 split; rc ok, orph clean
 data-analytics	2026-11-06T17:24:03Z	PASS	128	verify.sh	#5896 firehose split head; rc ok, orph clean
 data-pipeline	2026-11-04T05:45:58Z	PASS	65	standard	1104 sweep b5; 7 del 0 err, 0 orph
-datasync-location-role	2026-11-20T16:10:37Z	PASS	135	verify.sh	rc ok, orph clean (phase 2b #6676)
+datasync-location-role	2026-11-26T19:07:50Z	PASS	180	verify.sh	PR7078 78ab2e630 us-east-1 rc ok, orph clean
 deep-getatt-chains	2026-11-10T16:08:27Z	PASS	75	verify.sh	rc ok, orph clean
 deletion-ordering-complex	2026-11-19T05:16:25Z	PASS	225	verify.sh	rc ok, orph clean; #6596 IGW detach budget
 deletion-policy-retain	2026-11-07T16:15:27Z	PASS	33	verify.sh	#6022 destroy split head; rc ok, orph clean

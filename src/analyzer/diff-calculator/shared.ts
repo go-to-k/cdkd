@@ -215,6 +215,31 @@ export const IN_PLACE_UPDATE_ATTRS_MOVED_BY: Readonly<
     RepositoryName: new Set(['RepositoryLinkId']),
     ProviderType: new Set(['RepositoryLinkId']),
   }),
+  // go-to-k/cdkd#7007 (Cloud Control): a DataSync location URI carries its
+  // host and subdirectory (an HDFS name node), which UpdateLocation*
+  // rewrites; a Deadline monitor URL carries the subdomain UpdateMonitor takes.
+  'AWS::DataSync::LocationFSxWindows': Object.freeze({ LocationUri: new Set(['Subdirectory']) }),
+  'AWS::DataSync::LocationS3': Object.freeze({ LocationUri: new Set(['Subdirectory']) }),
+  'AWS::DataSync::LocationEFS': Object.freeze({ LocationUri: new Set(['Subdirectory']) }),
+  'AWS::DataSync::LocationFSxLustre': Object.freeze({ LocationUri: new Set(['Subdirectory']) }),
+  'AWS::DataSync::LocationFSxOpenZFS': Object.freeze({ LocationUri: new Set(['Subdirectory']) }),
+  'AWS::DataSync::LocationFSxONTAP': Object.freeze({
+    LocationUri: new Set(['Subdirectory', 'Protocol']),
+  }),
+  'AWS::DataSync::LocationNFS': Object.freeze({
+    LocationUri: new Set(['Subdirectory', 'ServerHostname']),
+  }),
+  'AWS::DataSync::LocationSMB': Object.freeze({
+    LocationUri: new Set(['Subdirectory', 'ServerHostname']),
+  }),
+  'AWS::DataSync::LocationHDFS': Object.freeze({
+    LocationUri: new Set(['Subdirectory', 'NameNodes']),
+  }),
+  'AWS::DataSync::LocationObjectStorage': Object.freeze({
+    LocationUri: new Set(['Subdirectory', 'ServerHostname']),
+  }),
+  'AWS::DataSync::LocationAzureBlob': Object.freeze({ LocationUri: new Set(['Subdirectory']) }),
+  'AWS::Deadline::Monitor': Object.freeze({ Url: new Set(['Subdomain']) }),
   // go-to-k/cdkd#7007 (Cloud Control): an in-place RouteTableId change calls
   // ReplaceRouteTableAssociation, which answers a new association id.
   'AWS::EC2::GatewayRouteTableAssociation': Object.freeze({
