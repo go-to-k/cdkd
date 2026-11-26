@@ -123,3 +123,40 @@ export function recordedSgRuleId(
   const recorded = attributes?.['Id'];
   return typeof recorded === 'string' && SG_RULE_ID_PATTERN.test(recorded) ? recorded : undefined;
 }
+
+/**
+ * go-to-k/cdkd#7071: the members that say where a standalone ingress rule
+ * admits traffic FROM. Every one is create-only, and none is in the rule's
+ * physical id (`<GroupId>|<IpProtocol>|<FromPort>|<ToPort>`).
+ */
+const INGRESS_SOURCE_KEYS = [
+  'CidrIp',
+  'CidrIpv6',
+  'SourcePrefixListId',
+  'SourceSecurityGroupId',
+] as const;
+
+/**
+ * The source of a standalone `AWS::EC2::SecurityGroupIngress` as EC2 keys the
+ * rule, for telling two rules under one physical id apart (go-to-k/cdkd#7071):
+ * the one source member the bag declares and its value, a CIDR canonicalized
+ * as EC2 stores it ({@link sgCidrKey}). `undefined` when the bag cannot be
+ * read that way: no source or more than one, a value that is not a string (an
+ * unresolved intrinsic), or a `SourceSecurityGroupName`, which names a group
+ * another rule may name by id. `SourceSecurityGroupOwnerId` only qualifies a
+ * group id, which AWS mints unique, so it is not part of the key.
+ */
+export function ingressRuleSourceKey(
+  properties: Readonly<Record<string, unknown>> | undefined
+): string | undefined {
+  if (properties === undefined || properties['SourceSecurityGroupName'] !== undefined) {
+    return undefined;
+  }
+  const present = INGRESS_SOURCE_KEYS.filter((key) => properties[key] !== undefined);
+  if (present.length !== 1) return undefined;
+  const key = present[0]!;
+  const value = properties[key];
+  if (typeof value !== 'string' || value === '') return undefined;
+  const keyed = key === 'CidrIp' || key === 'CidrIpv6' ? sgCidrKey(value) : value;
+  return typeof keyed === 'string' ? `${key}=${keyed}` : undefined;
+}

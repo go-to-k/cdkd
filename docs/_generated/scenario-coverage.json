@@ -3260,6 +3260,11 @@
       ]
     },
     {
+      "name": "sg-ingress-source-replacement",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "sg-rule-description-update",
       "annotated": false,
       "scenarios": []
@@ -4599,6 +4604,7 @@
     "select-out-of-bounds",
     "servicediscovery",
     "servicediscovery-http-namespace-update",
+    "sg-ingress-source-replacement",
     "sg-rule-description-update",
     "shared-stackname-multi-region",
     "sns-event-source",

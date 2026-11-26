@@ -2000,6 +2000,7 @@
         "rollback-failure-injection",
         "rollback-replay-effective-props",
         "sg-circular-dependency",
+        "sg-ingress-source-replacement",
         "sg-rule-description-update",
         "stack-copy-create-tokens",
         "tags-propagation",
@@ -2295,6 +2296,9 @@
         "sg-circular-dependency": [
           "l2"
         ],
+        "sg-ingress-source-replacement": [
+          "l2"
+        ],
         "sg-rule-description-update": [
           "l2"
         ],
@@ -2410,6 +2414,7 @@
         "replace-snapshot-failed-rollback",
         "rollback-failure-injection",
         "sg-circular-dependency",
+        "sg-ingress-source-replacement",
         "sg-rule-description-update",
         "stack-copy-create-tokens",
         "vpc-lambda",
@@ -2686,6 +2691,9 @@
         "sg-circular-dependency": [
           "l2"
         ],
+        "sg-ingress-source-replacement": [
+          "l2"
+        ],
         "sg-rule-description-update": [
           "l2"
         ],
@@ -2843,6 +2851,7 @@
         "rollback-failure-injection",
         "rollback-replay-effective-props",
         "sg-circular-dependency",
+        "sg-ingress-source-replacement",
         "sg-rule-description-update",
         "stack-copy-create-tokens",
         "vpc-lambda",
@@ -3131,6 +3140,9 @@
         "sg-circular-dependency": [
           "l2"
         ],
+        "sg-ingress-source-replacement": [
+          "l2"
+        ],
         "sg-rule-description-update": [
           "l2"
         ],
@@ -3247,6 +3259,7 @@
         "rollback-failure-injection",
         "rollback-replay-effective-props",
         "sg-circular-dependency",
+        "sg-ingress-source-replacement",
         "sg-rule-description-update",
         "stack-copy-create-tokens",
         "tags-propagation",
@@ -3539,6 +3552,9 @@
         "sg-circular-dependency": [
           "l2"
         ],
+        "sg-ingress-source-replacement": [
+          "l2"
+        ],
         "sg-rule-description-update": [
           "l2"
         ],
@@ -3622,6 +3638,7 @@
         "rollback-failure-injection",
         "rollback-replay-effective-props",
         "sg-circular-dependency",
+        "sg-ingress-source-replacement",
         "sg-rule-description-update",
         "stack-copy-create-tokens",
         "tags-propagation",
@@ -3817,6 +3834,10 @@
           "l2",
           "literal"
         ],
+        "sg-ingress-source-replacement": [
+          "l1",
+          "literal"
+        ],
         "sg-rule-description-update": [
           "l2",
           "literal"
@@ -3850,6 +3871,7 @@
         "export",
         "rollback-replay-effective-props",
         "sg-circular-dependency",
+        "sg-ingress-source-replacement",
         "sg-rule-description-update"
       ],
       "signals": {
@@ -3872,6 +3894,10 @@
           "l1"
         ],
         "sg-circular-dependency": [
+          "l1",
+          "literal"
+        ],
+        "sg-ingress-source-replacement": [
           "l1",
           "literal"
         ],
@@ -3988,6 +4014,7 @@
         "replacement-rename-onto-holder",
         "rollback-failure-injection",
         "sg-circular-dependency",
+        "sg-ingress-source-replacement",
         "sg-rule-description-update",
         "stack-copy-create-tokens",
         "subnet-mappublicip-removal",
@@ -4322,6 +4349,9 @@
         "sg-circular-dependency": [
           "l2"
         ],
+        "sg-ingress-source-replacement": [
+          "l2"
+        ],
         "sg-rule-description-update": [
           "l2"
         ],
@@ -4452,6 +4482,7 @@
         "replace-snapshot-failed-rollback",
         "rollback-failure-injection",
         "sg-circular-dependency",
+        "sg-ingress-source-replacement",
         "sg-rule-description-update",
         "stack-copy-create-tokens",
         "vpc-lambda",
@@ -4730,6 +4761,9 @@
         "sg-circular-dependency": [
           "l2"
         ],
+        "sg-ingress-source-replacement": [
+          "l2"
+        ],
         "sg-rule-description-update": [
           "l2"
         ],
@@ -4865,6 +4899,7 @@
         "rollback-replay-effective-props",
         "servicediscovery",
         "sg-circular-dependency",
+        "sg-ingress-source-replacement",
         "sg-rule-description-update",
         "stack-copy-create-tokens",
         "subnet-mappublicip-removal",
@@ -5236,6 +5271,10 @@
           "l2",
           "literal"
         ],
+        "sg-ingress-source-replacement": [
+          "l2",
+          "literal"
+        ],
         "sg-rule-description-update": [
           "l2",
           "literal"
@@ -5377,6 +5416,7 @@
         "rollback-failure-injection",
         "rollback-replay-effective-props",
         "sg-circular-dependency",
+        "sg-ingress-source-replacement",
         "sg-rule-description-update",
         "stack-copy-create-tokens",
         "vpc-lambda",
@@ -5668,6 +5708,9 @@
           "l1"
         ],
         "sg-circular-dependency": [
+          "l2"
+        ],
+        "sg-ingress-source-replacement": [
           "l2"
         ],
         "sg-rule-description-update": [
@@ -10729,6 +10772,7 @@
         "schema-v11-to-v12-migration",
         "secret-derived-immutable-names",
         "secrets-dynamic-ref",
+        "sg-ingress-source-replacement",
         "sns-inline-subscription",
         "sns-sqs-event",
         "sns-subscription-filter",
@@ -11068,6 +11112,10 @@
         ],
         "secrets-dynamic-ref": [
           "l1"
+        ],
+        "sg-ingress-source-replacement": [
+          "l1",
+          "literal"
         ],
         "sns-inline-subscription": [
           "l1"

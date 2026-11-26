@@ -155,3 +155,88 @@ describe('equalIdNamesDifferentResources: AWS::Lambda::Permission (go-to-k/cdkd#
     ).toBe(false);
   });
 });
+
+/**
+ * go-to-k/cdkd#7071: a standalone ingress rule's id is
+ * `<GroupId>|<IpProtocol>|<FromPort>|<ToPort>`, with no source, so a source
+ * change creates a new rule under the old id. Two readable sources that differ
+ * (after EC2's own CIDR canonicalization) are two rules; every doubt keeps the
+ * same-resource reading.
+ */
+describe('equalIdNamesDifferentResources: AWS::EC2::SecurityGroupIngress (go-to-k/cdkd#7071)', () => {
+  const ID = 'sg-0dst|tcp|443|443';
+  const check = (oldSource: Record<string, unknown>, newSource: Record<string, unknown>): boolean =>
+    equalIdNamesDifferentResources({
+      resourceType: 'AWS::EC2::SecurityGroupIngress',
+      physicalId: ID,
+      oldProperties: { GroupId: 'sg-0dst', IpProtocol: 'tcp', FromPort: 443, ToPort: 443, ...oldSource },
+      newProperties: { GroupId: 'sg-0dst', IpProtocol: 'tcp', FromPort: 443, ToPort: 443, ...newSource },
+    });
+
+  it.each([
+    ['two CIDRs', { CidrIp: '10.0.0.0/16' }, { CidrIp: '0.0.0.0/0' }],
+    ['two IPv6 CIDRs', { CidrIpv6: '2001:db8::/32' }, { CidrIpv6: '::/0' }],
+    ['two source groups', { SourceSecurityGroupId: 'sg-0old' }, { SourceSecurityGroupId: 'sg-0new' }],
+    ['two prefix lists', { SourcePrefixListId: 'pl-0a' }, { SourcePrefixListId: 'pl-0b' }],
+    ['a CIDR moved to a source group', { CidrIp: '10.0.0.0/16' }, { SourceSecurityGroupId: 'sg-0new' }],
+    ['an IPv4 CIDR moved to IPv6', { CidrIp: '0.0.0.0/0' }, { CidrIpv6: '::/0' }],
+  ])('is true for %s', (_n, oldSource, newSource) => {
+    expect(check(oldSource, newSource)).toBe(true);
+    expect(check(newSource, oldSource)).toBe(true);
+  });
+
+  it.each([
+    ['the same CIDR', { CidrIp: '10.0.0.0/16' }, { CidrIp: '10.0.0.0/16' }],
+    // EC2 stores 10.0.0.5/16 as 10.0.0.0/16 and refuses the second as a duplicate.
+    ['two spellings of one network', { CidrIp: '10.0.0.5/16' }, { CidrIp: '10.0.0.0/16' }],
+    ['two spellings of one IPv6 network', { CidrIpv6: '2001:DB8:0:0:0:0:0:0/32' }, { CidrIpv6: '2001:db8::/32' }],
+    ['the same source group', { SourceSecurityGroupId: 'sg-0a' }, { SourceSecurityGroupId: 'sg-0a' }],
+    // The owner only qualifies a group id AWS mints unique.
+    [
+      'one group with and without its owner',
+      { SourceSecurityGroupId: 'sg-0a' },
+      { SourceSecurityGroupId: 'sg-0a', SourceSecurityGroupOwnerId: '123456789012' },
+    ],
+    // A name can denote the group another rule names by id.
+    ['a group named by SourceSecurityGroupName', { SourceSecurityGroupName: 'web' }, { SourceSecurityGroupId: 'sg-0a' }],
+    // The name beside an id still keeps it: the two can denote one group.
+    [
+      'a SourceSecurityGroupName beside a source key',
+      { SourceSecurityGroupName: 'web', SourceSecurityGroupId: 'sg-0a' },
+      { SourceSecurityGroupId: 'sg-0b' },
+    ],
+    ['an unresolved intrinsic', { SourceSecurityGroupId: { 'Fn::GetAtt': ['Sg', 'GroupId'] } }, { SourceSecurityGroupId: 'sg-0a' }],
+    ['a redaction mask', { CidrIp: SECRET_MASK }, { CidrIp: '0.0.0.0/0' }],
+    ['a value that holds a mask', { SourceSecurityGroupId: `sg-${SECRET_MASK}` }, { SourceSecurityGroupId: 'sg-0a' }],
+    ['no source at all', {}, { CidrIp: '0.0.0.0/0' }],
+    ['two sources in one bag', { CidrIp: '10.0.0.0/16', SourcePrefixListId: 'pl-0a' }, { CidrIp: '0.0.0.0/0' }],
+    ['an empty source', { CidrIp: '' }, { CidrIp: '0.0.0.0/0' }],
+  ])('is false for %s', (_n, oldSource, newSource) => {
+    expect(check(oldSource, newSource)).toBe(false);
+    expect(check(newSource, oldSource)).toBe(false);
+  });
+
+  it('is false for an absent bag', () => {
+    expect(
+      equalIdNamesDifferentResources({
+        resourceType: 'AWS::EC2::SecurityGroupIngress',
+        physicalId: ID,
+        oldProperties: undefined,
+        newProperties: { CidrIp: '0.0.0.0/0' },
+      })
+    ).toBe(false);
+  });
+
+  it('makes equalIdNamesSameResource read the equal id as two rules', () => {
+    expect(
+      equalIdNamesSameResource({
+        oldType: 'AWS::EC2::SecurityGroupIngress',
+        newType: 'AWS::EC2::SecurityGroupIngress',
+        createLayer: 'sdk',
+        oldProperties: { CidrIp: '10.0.0.0/16' },
+        newProperties: { CidrIp: '0.0.0.0/0' },
+        physicalId: ID,
+      })
+    ).toBe(false);
+  });
+});

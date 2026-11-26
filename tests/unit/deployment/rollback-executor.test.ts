@@ -3286,6 +3286,64 @@ describe('rollback of a Glue replacement that kept the id (issue #3892)', () => 
   });
 });
 
+// go-to-k/cdkd#7071: a standalone ingress rule's id holds no source, so a
+// source change keeps the id. Rolled back, the new rule must be revoked by its
+// own record (its sgr- id), never adopted as "the live new resource" — that
+// left it authorized and recorded nowhere. The CONTROL keeps the in-place revert.
+describe('rollback of a SecurityGroupIngress source change that kept the id (go-to-k/cdkd#7071)', () => {
+  const TYPE = 'AWS::EC2::SecurityGroupIngress';
+  const ID = 'sg-0dst|tcp|443|443';
+  const base = { GroupId: 'sg-0dst', IpProtocol: 'tcp', FromPort: 443, ToPort: 443 };
+  const OLD = { ...base, CidrIp: '198.51.100.0/24' };
+  const NEW = { ...base, CidrIp: '192.0.2.0/24' };
+
+  function op(oldProps: Record<string, unknown>, newProps: Record<string, unknown>): CompletedOperation {
+    return {
+      logicalId: 'B',
+      changeType: 'UPDATE',
+      resourceType: TYPE,
+      physicalId: ID,
+      properties: newProps,
+      previousState: res({
+        resourceType: TYPE,
+        physicalId: ID,
+        properties: oldProps,
+        attributes: { Id: 'sgr-0old' },
+      }),
+    };
+  }
+
+  it('classifies it as a replacement, not an in-place revert', () => {
+    const state = { B: res({ resourceType: TYPE, physicalId: ID, properties: NEW }) };
+    expect(classifyRollbackOp(op(OLD, NEW), state, new Set())).toBe('reverse-replacement');
+  });
+
+  it('CONTROL: a description-only change is still an in-place revert', () => {
+    const described = { ...OLD, Description: 'v2' };
+    const state = { B: res({ resourceType: TYPE, physicalId: ID, properties: described }) };
+    expect(classifyRollbackOp(op(OLD, described), state, new Set())).toBe('revert');
+  });
+
+  it('revokes the new rule by its own record after re-creating the old one', async () => {
+    const create = vi.fn().mockResolvedValue({ physicalId: ID, attributes: { Id: 'sgr-0again' } });
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeCtx({ create, delete: del });
+    const state: Record<string, ResourceState> = {
+      B: res({ resourceType: TYPE, physicalId: ID, properties: NEW, attributes: { Id: 'sgr-0new' } }),
+    };
+
+    const result = await replayRollback([op(OLD, NEW)], state, 'S', ctx);
+
+    expect(result.failures).toBe(0);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(del).toHaveBeenCalledTimes(1);
+    expect(del.mock.calls[0]![1]).toBe(ID);
+    expect(del.mock.calls[0]![3]).toEqual(NEW);
+    expect(del.mock.calls[0]![4]).toMatchObject({ recordedAttributes: { Id: 'sgr-0new' } });
+    expect(state.B).toMatchObject({ physicalId: ID, properties: OLD, attributes: { Id: 'sgr-0again' } });
+  });
+});
+
 describe('rollback revert arms apply removalDefaults (issue #1160)', () => {
   // Both arms hand two STATE records to `update()`, so a key the record being
   // reverted FROM carries and the record being restored omits is a removal.

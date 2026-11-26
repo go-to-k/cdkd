@@ -262,8 +262,10 @@ in place is reverted in place even when it changed the physical id, as an SQS
 `QueuePolicy` update does when its first queue changes and an SNS `TopicPolicy`
 update does when its topics change. A journal written by an older cdkd does not
 record the provider's answer, so there a changed physical id still reads as a
-replacement. A `Type` change, and a Glue table whose recorded database differs
-under an equal id, stay replacements whatever the provider answered.
+replacement. A `Type` change, and an equal id that names two resources (a Glue
+table whose recorded database differs, a Lambda permission on another function,
+a security group ingress rule from another source), stay replacements whatever
+the provider answered.
 
 On the create-first order, cdkd deletes the new resource first only when it
 can show that the new resource holds the name the re-create collided on:

@@ -153,7 +153,7 @@ drift-revert-nested-write-only	2026-11-23T12:11:05Z	PASS	289	verify.sh	PR6876 82
 drift-revert-readback-placeholders	2026-11-26T07:18:30Z	PASS	295	verify.sh	rc ok, orph clean; #7025 step 6 post-revert verification
 drift-revert-vpc	2026-11-25T15:18:54Z	PASS	502	verify.sh	rc ok, orph clean
 drift-rotation-schedule-revert	2026-11-20T11:50:48Z	PASS	138	verify.sh	PR6652 be63cc056, us-west-2; rc 0, revert-identity kept identity x1, orph clean
-drift-sg-sibling-rules	2026-11-23T11:12:57Z	PASS	536	verify.sh	rc 0, 0 orphans; #6875 sg cidr identity
+drift-sg-sibling-rules	2026-11-26T18:43:17Z	PASS	617	verify.sh	PR7075 run at 430bf0ba0, rc ok, orph clean
 drift-sns-sibling-subscription	2026-11-20T20:41:06Z	PASS	260	verify.sh	rc ok, orph clean (#6711)
 drift-verbatim-readback	2026-11-23T11:19:14Z	PASS	1725	verify.sh	rc ok, orph clean (#6857 6852 normalization audit)
 dsql	2026-11-04T06:43:31Z	PASS	180	verify.sh	rc ok, orph clean, own state bucket; no leaked log groups
@@ -515,7 +515,8 @@ servicediscovery-http-namespace-update	2026-11-17T06:22:39Z	PASS	145	verify.sh	r
 servicediscovery-namespaces	2026-11-17T05:50:34Z	PASS	145	verify.sh	rc ok, destroy 0 errors, orph clean; at 148f393bc (#6484)
 ses-identity	2026-11-04T05:36:33Z	PASS	196	verify.sh	batch 4; all 3 phases clean, 0 err 0 orph
 sg-circular-dependency	2026-11-04T21:40:26Z	PASS	376	verify.sh	us-east-1; own temp state bucket; rc ok, orph clean
-sg-rule-description-update	2026-11-20T14:43:27Z	PASS	162	verify.sh	PR6678 39a4f11cd, phases 4+4b OK; rc ok, orph clean
+sg-ingress-source-replacement	2026-11-26T18:43:17Z	PASS	161	verify.sh	PR7075 run at 430bf0ba0, rc ok, orph clean
+sg-rule-description-update	2026-11-26T18:43:17Z	PASS	235	verify.sh	PR7075 run at 430bf0ba0, rc ok, orph clean
 shared-stackname-multi-region	2026-11-05T07:40:12Z	PASS	105	verify.sh	rc ok, us-east-1+us-west-2, orph clean both regions (own temp state bucket)
 sns-event-source	2026-11-04T08:15:09Z	PASS	65	verify.sh	rc ok, orph clean
 sns-inline-subscription	2026-11-06T22:03:55Z	PASS	63	verify.sh	#5923 sns-topic split head; rc ok, orph clean
@@ -552,7 +553,7 @@ type-change-replacement	2026-11-21T12:40:02Z	PASS	225	verify.sh	rc ok, orph clea
 unrecognized-key-autoroute	2026-11-03T14:15:44Z	PASS	90	verify.sh	rc ok, orph clean; #5695 sdkUnwired rename
 update-deleted-outside	2026-11-11T11:02:54Z	PASS	139	verify.sh	rc ok, orph clean
 update-policy-mutations	2026-11-04T08:15:09Z	PASS	70	verify.sh	rc ok, orph clean
-update-replace	2026-11-20T11:15:59Z	PASS	85	verify.sh	rc ok, orph clean, us-east-1, head 8560ca15c
+update-replace	2026-11-26T18:43:17Z	PASS	115	verify.sh	PR7075 run at 430bf0ba0, rc ok, orph clean
 vpc-lambda	2026-11-10T16:15:04Z	PASS	339	standard	deploy+destroy rc 0, orph clean
 vpc-lambda-cr-race	2026-11-10T16:21:52Z	PASS	375	standard	deploy+destroy rc 0, orph clean
 vpc-lookup	2026-11-05T10:15:28Z	PASS	25	standard	deploy+destroy rc 0, AlwaysMissingLookup=latest, orph clean (#5811 round 3)
