@@ -181,7 +181,8 @@ describe('replacement verdict evidence (go-to-k/cdkd#7024, #7038)', () => {
   // (measured on #7038). Deliberately one-sided: a wrong `update` verdict hides
   // a replacement from the diff, and the deploy's in-place call succeeds or
   // fails loudly; it destroys something only where a provider re-creates
-  // inside `update()`, which #6656's planners and gate cover. A wrong
+  // inside `update()`, which the provider-replacement planners (#6509) and
+  // #6656's gate cover. A wrong
   // `replace` always deletes the resource. The docs-only `update` rows are
   // measured on #7048.
   it('a verdict that can replace never rests on the documentation alone', () => {
