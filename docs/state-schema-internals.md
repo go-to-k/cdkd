@@ -607,6 +607,11 @@ only where the template spells a `{{resolve:...}}` reference, so such a value
 is stored as AWS returned it, by design; see
 [`cdkd import`'s note on it](import.md#a-value-your-template-never-references-is-recorded-as-aws-holds-it)
 and [Values that are stored in the clear](state-management-secrets.md#values-that-are-stored-in-the-clear).
+A readback list element no template element resolved to that contains the
+text of a 1-3 character secret the template's references consumed is
+stored as `***` (fail closed: `upgrade` holding the secret `pg` cannot be
+told apart from `pgabc`), so `cdkd drift` reports such a resource's baseline
+as uncertified on every run.
 
 **v2 → v3 upgrade is automatic on the next `cdkd deploy`.** When the
 deploy engine loads state and finds resources without
@@ -1970,8 +1975,13 @@ stack with no instance id.
   the `NoEcho` input as written). Only that non-proof is dropped: a key
   whose text fingerprint moved (the template itself was edited), or whose
   public `ssm` value moved, or whose passed-secret value MAC proves a
-  move, or that holds any other masked leaf (its input fingerprint still
-  covers that leaf's inputs), is still a move. An updatable key is sent, as
+  move, is still a move. A key that holds another masked leaf is re-hashed
+  with the stale leaf's parameters kept as written, as the record hashed
+  them: equal to the recorded input fingerprint, only the stale leaf moved
+  and the readback decides it (the settle re-stamps today's fingerprint, so
+  the next deploy compares it); different, it is a move (its input
+  fingerprint still covers that leaf's inputs). The plan drops the same
+  keys. An updatable key is sent, as
   any planned key is, and its record settles. For a create-only key, a
   readback holding today's value settles the leaf and unmarks it; one
   holding another value, which the provider reports exactly, is a change

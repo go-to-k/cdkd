@@ -78,6 +78,8 @@ import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
 
 const READBACK: { dbName?: string; props?: Record<string, unknown> } = {};
+// Parameters a test declares beside `Suffix` and `Plain`.
+const EXTRA_PARAMETERS: Record<string, unknown> = {};
 // The value a public `{{resolve:ssm:/pub}}` reads.
 const PUBLIC_SSM = { value: 'pub-v1', version: 1 };
 const USERNAME = '{{resolve:secretsmanager:db-secret:SecretString:username::}}';
@@ -171,7 +173,7 @@ async function deploy(
     'us-east-1'
   );
   let thrown: unknown;
-  await engine.deploy('s', { Parameters: { Suffix: { Type: 'String', Default: SUFFIX.v, ...(SUFFIX.noEcho === true && { NoEcho: true }) }, Plain: { Type: 'String', Default: PLAIN.v } }, Resources: templateResources } as never).catch((e: unknown) => {
+  await engine.deploy('s', { Parameters: { Suffix: { Type: 'String', Default: SUFFIX.v, ...(SUFFIX.noEcho === true && { NoEcho: true }) }, Plain: { Type: 'String', Default: PLAIN.v }, ...EXTRA_PARAMETERS }, Resources: templateResources } as never).catch((e: unknown) => {
     thrown = e;
   });
   const saved = saveState.mock.calls
@@ -609,9 +611,158 @@ describe('a readback list element holding a 1-3 character secret is positioned o
     expect(exposes(up.all)).toBeUndefined();
   });
 
+  it('an unpaired readback element holding a Date keeps the Date, never rebuilt into `{}` (#2869)', async () => {
+    const groups = ['sg-1', joined('text')];
+    const created = await deploy({}, tpl(undefined, 1, { VPCSecurityGroups: groups }));
+    expect(created.thrown).toBeUndefined();
+    const when = new Date(0);
+    READBACK.props = { VPCSecurityGroups: ['sg-1', 'pg_text', 'upgrade', { When: when }], BackupRetentionPeriod: 2 };
+    const up = await deploy({ Db: structuredClone(created.persisted!) }, tpl(undefined, 2, { VPCSecurityGroups: groups }));
+    expect(up.thrown).toBeUndefined();
+    const observed = up.persisted?.observedProperties?.['VPCSecurityGroups'] as unknown[];
+    expect(observed[3]).toEqual({ When: when });
+    expect((observed[3] as Record<string, unknown>)['When']).toBeInstanceOf(Date);
+    // Fail closed (docs/state-schema-internals.md): an element no source
+    // element resolved to that holds a 1-3 character secret's text is masked,
+    // since `upgrade` cannot be told apart from `pgabc`.
+    expect(observed[2]).toBe('***');
+    expect(exposes(up.all)).toBeUndefined();
+  });
+
   it('a readback element no source element resolved to is masked', async () => {
     const up = await updated(['sg-1', joined('text')], ['sg-1', 'pg_other']);
     expect(up.persisted?.observedProperties?.['VPCSecurityGroups']).toEqual(['sg-1', '***']);
     expect(exposes(up.all)).toBeUndefined();
   });
+});
+
+// #7050 review: a create-only key of a stateful type holding a STALE `NoEcho`
+// leaf (its parameter's `NoEcho` removed) beside another masked leaf. The
+// key-wide input fingerprint moved only because the stale parameter is hashed
+// as its value today and was hashed as written; re-hashed with it covered as
+// written it is the recorded one, so the readback decides the stale leaf and
+// the settle re-stamps the fingerprint. Never refused on an unchanged
+// template, never a hidden change behind the sibling.
+describe('a stale NoEcho leaf beside another masked leaf of a create-only key settles (#7050 review)', () => {
+  const BEE = 'bee-secret-value';
+  const table = (sibling: unknown): Record<string, unknown> => ({
+    Db: {
+      Type: 'AWS::DynamoDB::Table',
+      Properties: {
+        BillingMode: 'PAY_PER_REQUEST',
+        KeySchema: [
+          { AttributeName: { Ref: 'Suffix' }, KeyType: 'HASH' },
+          { AttributeName: sibling, KeyType: 'RANGE' },
+        ],
+      },
+    },
+  });
+  const keySchema = (hash: unknown, range: unknown): unknown => [
+    { AttributeName: hash, KeyType: 'HASH' },
+    { AttributeName: range, KeyType: 'RANGE' },
+  ];
+  const refusal = (thrown: unknown): string => {
+    const messages: string[] = [];
+    for (let e = thrown as { message?: unknown; cause?: unknown } | undefined; e; e = e.cause as never)
+      messages.push(String(e.message));
+    return messages.join(' | ');
+  };
+  afterEach(() => {
+    SUFFIX.v = 'x9';
+    SUFFIX.noEcho = false;
+    READBACK.props = undefined;
+    PLAIN.v = 'db-secret';
+    delete EXTRA_PARAMETERS['Bee'];
+  });
+  /** Deploy with `Suffix` NoEcho, then drop its NoEcho: the record to start from. */
+  async function staleTable(sibling: unknown): Promise<Record<string, unknown>> {
+    // A 1-3 character `Plain` beside the secret: the leaf is recorded wholly masked.
+    PLAIN.v = 'pg';
+    EXTRA_PARAMETERS['Bee'] = { Type: 'String', NoEcho: true, Default: BEE };
+    SUFFIX.v = 'noecho-old-value';
+    SUFFIX.noEcho = true;
+    const created = await deploy({}, table(sibling));
+    expect(created.thrown).toBeUndefined();
+    SUFFIX.noEcho = false;
+    const record = structuredClone(created.persisted!) as unknown as Record<string, unknown>;
+    expect((record['properties'] as Record<string, unknown>)['KeySchema']).toEqual(keySchema('***', '***'));
+    expect(record['maskedPropertyInputFingerprints']).toHaveProperty('KeySchema');
+    return record;
+  }
+  const SIBLINGS = [
+    ['repro D: the sibling is a NoEcho parameter', { Ref: 'Bee' }, BEE],
+    ['repro B: the sibling is a wholly masked secret leaf', { 'Fn::Join': ['_', [USERNAME, { Ref: 'Plain' }]] }, 'pg_pg'],
+  ] as const;
+
+  for (const [label, sibling, live] of SIBLINGS) {
+    it(`${label}: three deploys, never refused, settled on the first`, async () => {
+      let record = await staleTable(sibling);
+      const recordedInput = (record['maskedPropertyInputFingerprints'] as Record<string, string>)['KeySchema'];
+      READBACK.props = { KeySchema: keySchema('noecho-old-value', live) };
+      // Each run's rows other than a live `NoEcho` leaf's promotion (a
+      // create-only path fed by the NoEcho `Bee`, which the readback settles
+      // on every deploy, never a replacement on its word).
+      const settledRows: unknown[][] = [];
+      for (const run of [1, 2, 3]) {
+        const r = await deploy({ Db: record as never }, table(sibling));
+        expect(r.thrown, `run ${run}: ${refusal(r.thrown)}`).toBeUndefined();
+        expect(r.calls).toEqual([]);
+        settledRows.push(
+          (r.diff?.get('Db')?.propertyChanges ?? [])
+            .filter((pc) => pc.noEchoPromoted !== true)
+            .map((pc) => pc.path)
+        );
+        if (r.persisted !== undefined) {
+          expect(exposes(r.all)).toBeUndefined();
+          expect(JSON.stringify(r.all)).not.toContain(BEE);
+          record = structuredClone(r.persisted) as unknown as Record<string, unknown>;
+        }
+      }
+      expect(settledRows).toEqual([['KeySchema'], [], []]);
+      // Settled: the stale leaf holds its value, unmarked, the sibling stays
+      // masked, and the input fingerprint is re-stamped to today's.
+      expect((record['properties'] as Record<string, unknown>)['KeySchema']).toEqual(
+        keySchema('noecho-old-value', '***')
+      );
+      expect(JSON.stringify(record['noEchoLeaves'] ?? [])).not.toContain('"KeySchema",0');
+      expect((record['maskedPropertyInputFingerprints'] as Record<string, string>)['KeySchema']).not.toBe(
+        recordedInput
+      );
+    });
+  }
+
+  it("repro B: the sibling's non-secret input (Plain) really moved: planned and refused, never skipped", async () => {
+    const [, sibling] = SIBLINGS[1];
+    const record = await staleTable(sibling);
+    PLAIN.v = 'apgb';
+    READBACK.props = { KeySchema: keySchema('noecho-old-value', 'pg_apgb') };
+    for (const run of [1, 2]) {
+      const moved = await deploy({ Db: structuredClone(record) as never }, table(sibling));
+      const rows = moved.diff?.get('Db')?.propertyChanges ?? [];
+      expect(rows.map((pc) => [pc.path, pc.requiresReplacement]), `run ${run}`).toEqual([['KeySchema', true]]);
+      expect(moved.calls).toEqual([]);
+      expect(refusal(moved.thrown)).toMatch(/force-stateful-recreation/);
+    }
+  });
+
+  for (const [label, sibling, live] of SIBLINGS) {
+    it(`${label}: the stale value changed, AWS reporting the old one: planned and warned on every deploy, never refused nor re-stamped`, async () => {
+      const log = getLogger() as unknown as Record<string, ReturnType<typeof vi.fn>>;
+      let record = await staleTable(sibling);
+      const recordedInput = (record['maskedPropertyInputFingerprints'] as Record<string, string>)['KeySchema'];
+      SUFFIX.v = 'noecho-new-value';
+      READBACK.props = { KeySchema: keySchema('noecho-old-value', live) };
+      for (const run of [1, 2, 3]) {
+        log['warn']!.mockClear();
+        const r = await deploy({ Db: record as never }, table(sibling));
+        expect(r.thrown, `run ${run}: ${refusal(r.thrown)}`).toBeUndefined();
+        expect(r.calls).toEqual([]);
+        expect((r.diff?.get('Db')?.propertyChanges ?? []).map((pc) => pc.path)).toEqual(['KeySchema']);
+        const warned = log['warn']!.mock.calls.map((c) => String(c[0]));
+        expect(warned.filter((w) => w.includes('Db.KeySchema') && w.includes('not applied'))).toHaveLength(1);
+        if (r.persisted !== undefined) record = structuredClone(r.persisted) as unknown as Record<string, unknown>;
+        expect((record['maskedPropertyInputFingerprints'] as Record<string, string>)['KeySchema']).toBe(recordedInput);
+      }
+    });
+  }
 });

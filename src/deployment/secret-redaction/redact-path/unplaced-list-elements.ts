@@ -2,6 +2,7 @@ import { SECRET_MASK, resolvedPlaintextOf, type RecordedSecretValues } from '../
 import { type PathSourceRules, isPlainObject } from '../rules.js';
 import { referencesConsumedBy } from '../consumed-references.js';
 import { physicalNameCopiesOf } from '../physical-name-copies.js';
+import { hasPlainPrototype } from './json-equality.js';
 import {
   TAINTED_WITHOUT_SPAN,
   exposedAt,
@@ -77,7 +78,9 @@ export function placeUnpairedListElements(
   const maskExposed = (value: unknown): unknown => {
     if (typeof value === 'string') return exposes(value) ? SECRET_MASK : value;
     if (Array.isArray(value)) return value.map(maskExposed);
-    if (isPlainObject(value)) {
+    // A `Date` (or any non-plain object) the scan returned is kept as is,
+    // never rebuilt into `{}` (go-to-k/cdkd#2869).
+    if (isPlainObject(value) && hasPlainPrototype(value)) {
       const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
       for (const [k, v] of Object.entries(value)) out[k] = maskExposed(v);
       return out;

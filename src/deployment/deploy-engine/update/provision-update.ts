@@ -32,6 +32,7 @@ import {
   liveHoldsFreshLeaves,
 } from '../../deploy-value-equality.js';
 import { noEchoLeavesOf, valueAtCoordinate } from '../../secret-redaction.js';
+import { withRebaselinedFingerprints } from '../../masked-property-fingerprints.js';
 import { withRefreshedReadVersions } from '../read-provenance-moved.js';
 import { approveLateReplacement } from '../../deployment-approval.js';
 import { findDestructiveChanges } from '../../../analyzer/destructive-changes.js';
@@ -82,6 +83,7 @@ export async function provisionUpdate(
     lostChild,
     lostWithParent,
     staleCoordinates,
+    staleUnmovedKeys,
     desiredProps,
     noEchoSources,
     parameterCoordinates,
@@ -710,11 +712,23 @@ export async function provisionUpdate(
           !staleHeld.some((stale) => keyOrderFreeJson(stale) === keyOrderFreeJson(coordinate))
       );
       const { noEchoLeaves: _dropped, ...rest } = currentResource;
-      stateResources[logicalId] = {
-        ...rest,
-        properties,
-        ...(remaining.length > 0 && { noEchoLeaves: remaining.map((c) => [...c]) }),
-      };
+      // go-to-k/cdkd#7050 review: a key whose other inputs were proven
+      // unmoved (`staleUnmovedKeys`) takes today's input fingerprint, which
+      // now hashes the settled leaf as the value AWS holds.
+      const today = engine.secretsRun.perResourceInputFingerprints.get(logicalId) ?? {};
+      const restamped = Object.fromEntries(
+        [...staleUnmovedKeys]
+          .filter((key) => parameterHeldKeys.has(key) && Object.hasOwn(today, key))
+          .map((key) => [key, today[key]!])
+      );
+      stateResources[logicalId] = withRebaselinedFingerprints(
+        {
+          ...rest,
+          properties,
+          ...(remaining.length > 0 && { noEchoLeaves: remaining.map((c) => [...c]) }),
+        },
+        restamped
+      );
     }
     // go-to-k/cdkd#4852: as on the first skip, an equal-value version move
     // refreshes the read versions, so the next diff does not promote again.

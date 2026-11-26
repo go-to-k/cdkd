@@ -21,15 +21,14 @@ import {
   classifyPassedParameters,
   inputFingerprinter,
   maskedInputFingerprintsFor,
-  maskedPropertyFingerprint,
   maskedPropertyFingerprintsOf,
   maskedReferenceFingerprintsFor,
   movedMaskedProperties,
-  passedSecretVerdictOf,
   possiblyMaskedKeys,
   publicReferencesMoved,
   publicReferencesOf,
   recordPassedParameterClasses,
+  staleNoEchoNonProofs,
 } from '../../masked-property-fingerprints.js';
 import {
   buildResolverContext,
@@ -415,17 +414,25 @@ export async function resolveUpdateInputs(
   // runs after this, so a moved public value moves the key again. A key whose
   // passed-secret MAC proves a move stays moved, and so does one holding any
   // masked leaf that is not a stale `NoEcho` leaf: its input fingerprint
-  // still proves that leaf's inputs (go-to-k/cdkd#4543).
+  // still proves that leaf's inputs (go-to-k/cdkd#4543), unless the key's
+  // inputs re-hashed with the stale leaves' parameters kept as written (as the
+  // record hashed them) equal the recorded ones: then only the stale leaves
+  // moved, and the readback decides them. Such a key is in `staleUnmovedKeys`:
+  // the skip that settles its stale leaves re-stamps its input fingerprint,
+  // else it would read moved again on every later deploy (only a send stamps).
+  // The plan drops the same keys through the same helper.
   const recordedText = maskedPropertyFingerprintsOf(currentResource);
-  const recordedProps = (currentResource.properties ?? {}) as Record<string, unknown>;
-  for (const key of new Set(staleCoordinates.map((coordinate) => coordinate[0]))) {
-    if (typeof key !== 'string' || !movedMasked.has(key) || !Object.hasOwn(desiredProps, key))
-      continue;
-    if (maskedPropertyFingerprint(desiredProps[key]) !== recordedText.get(key)) continue;
-    if ((await passedSecretVerdictOf(fingerprints, key, currentResource)) === 'changed') continue;
-    if (!everyMaskedLeafIsStale(recordedProps[key], [key], staleCoordinates)) continue;
-    movedMasked.delete(key);
-  }
+  const staleNonProofs = await staleNoEchoNonProofs({
+    record: currentResource,
+    templateProps: desiredProps,
+    resolvedProps,
+    staleCoordinates,
+    moved: movedMasked,
+    fingerprinter: fingerprints,
+    sources: fingerprintSources,
+  });
+  for (const key of staleNonProofs.unmoved) movedMasked.delete(key);
+  const staleUnmovedKeys = staleNonProofs.proven;
   // go-to-k/cdkd#7050: a masked key whose public `ssm` value moved (or cannot
   // be told unmoved) is sent, as CloudFormation would; a secret's is not.
   if (fingerprints !== undefined) {
@@ -515,28 +522,9 @@ export async function resolveUpdateInputs(
     staleCoordinates,
     comparisonCoordinates,
     movedMasked,
+    staleUnmovedKeys,
   };
 }
 
 /** What {@link resolveUpdateInputs} hands the later phases. */
 export type ResolvedUpdateInputs = Awaited<ReturnType<typeof resolveUpdateInputs>>;
-
-/**
- * go-to-k/cdkd#7050 review: is every leaf of `node` (the record's value at
- * `path`) that carries the mask at or under one of `stale`?
- */
-function everyMaskedLeafIsStale(
-  node: unknown,
-  path: readonly (string | number)[],
-  stale: readonly (readonly (string | number)[])[]
-): boolean {
-  if (stale.some((coordinate) => keyOrderFreeJson(coordinate) === keyOrderFreeJson(path)))
-    return true;
-  if (Array.isArray(node))
-    return node.every((item, index) => everyMaskedLeafIsStale(item, [...path, index], stale));
-  if (node !== null && typeof node === 'object')
-    return Object.entries(node).every(([child, value]) =>
-      everyMaskedLeafIsStale(value, [...path, child], stale)
-    );
-  return !carriesSecretMask(node);
-}
