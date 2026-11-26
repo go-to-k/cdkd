@@ -37,6 +37,7 @@ import {
   ResourceNotFoundException,
 } from '@aws-sdk/client-firehose';
 import { FirehoseProvider } from '../../../../src/provisioning/providers/firehose-provider.js';
+import { attributesAfterUpdate } from '../../../../src/deployment/recorded-identity-attributes.js';
 import {
   ProvisioningError,
   ResourceUpdateNotSupportedError,
@@ -436,6 +437,31 @@ describe('FirehoseProvider', () => {
     // clearAllMocks keeps a mockResolvedValue default; later blocks expect none.
     afterEach(() => {
       mockSend.mockReset();
+    });
+
+    it('keeps the Arn create recorded when the update read-back names no ARN (#7009)', async () => {
+      const type = 'AWS::KinesisFirehose::DeliveryStream';
+      const props = {
+        DeliveryStreamName: 'test-stream',
+        S3DestinationConfiguration: {
+          BucketARN: 'arn:aws:s3:::bucket',
+          RoleARN: 'arn:aws:iam::111:role/firehose-role',
+          Prefix: 'a/',
+        },
+      };
+      mockSend.mockResolvedValue({ DeliveryStreamARN: STREAM_ARN, ...describeAnswer });
+      const created = await provider.create('MyDeliveryStream', type, props);
+      expect(Object.keys(created.attributes ?? {})).toEqual(['Arn']);
+      const { DeliveryStreamARN: _arn, ...withoutArn } = describeAnswer.DeliveryStreamDescription;
+      mockSend.mockResolvedValue({ DeliveryStreamDescription: withoutArn });
+      const updated = await provider.update(
+        'MyDeliveryStream',
+        created.physicalId,
+        type,
+        { ...props, S3DestinationConfiguration: { ...props.S3DestinationConfiguration, Prefix: 'b/' } },
+        props
+      );
+      expect(attributesAfterUpdate(type, created.attributes, updated)).toEqual(created.attributes);
     });
 
     // go-to-k/cdkd#5439: CloudFormation updates the legacy shape in place

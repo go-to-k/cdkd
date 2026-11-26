@@ -20,11 +20,11 @@ For every SDK-backed resource type (whose CFn schema is cached under `tests/fixt
 
 ## Read-only attributes cdkd refuses (CloudFormation parity gaps)
 
-**2** read-only attribute(s) of SDK-backed types that no provider records and no resolver arm builds: `Fn::GetAtt` of one fails the deploy with a clear error, where CloudFormation would answer a value (go-to-k/cdkd#6242). Closing a row means recording the value AWS returns, or adding a resolver arm that builds or reads it. Names are top-level: a recorded dotted member of an object-valued one (`Endpoint.Address`) is still served. The list is coarse (a name a resolver arm spells for any type counts as handled), so it can omit some.
+**1** read-only attribute(s) of SDK-backed types that no provider records and no resolver arm builds: `Fn::GetAtt` of one fails the deploy with a clear error, where CloudFormation would answer a value (go-to-k/cdkd#6242). Closing a row means recording the value AWS returns, or adding a resolver arm that builds or reads it. Names are top-level: a recorded dotted member of an object-valued one (`Endpoint.Address`) is still served. The list is coarse (a name a resolver arm spells for any type counts as handled), so it can omit some.
 
 | Resource type | Refused attributes |
 | --- | --- |
-| `AWS::BedrockAgentCore::Runtime` | `FailureReason`, `LastUpdatedAt` |
+| `AWS::BedrockAgentCore::Runtime` | `FailureReason` |
 
 ## Latent gaps
 

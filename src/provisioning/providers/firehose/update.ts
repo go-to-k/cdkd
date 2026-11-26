@@ -413,9 +413,9 @@ export async function applyUpdate(
   return {
     physicalId,
     wasReplaced: false,
-    attributes: {
-      ...(desc?.DeliveryStreamARN !== undefined && { Arn: desc.DeliveryStreamARN }),
-    },
+    // No `attributes` without the ARN: the map REPLACES the record, so `{}`
+    // would erase the recorded `Arn` (go-to-k/cdkd#7009).
+    ...(desc?.DeliveryStreamARN !== undefined && { attributes: { Arn: desc.DeliveryStreamARN } }),
     ...(encryptionSkipped && {
       effectiveProperties: this.withRecordedEncryption(
         properties,

@@ -30,6 +30,7 @@ import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import { PROPERTY_COVERAGE_BY_TYPE } from '../../../src/provisioning/property-coverage.generated.js';
+import { attributesAfterUpdate } from '../../../src/deployment/recorded-identity-attributes.js';
 
 /**
  * Issue #2762 backfill: `AWS::EC2::VPCGatewayAttachment.VpnGatewayId`. The SDK
@@ -97,7 +98,7 @@ describe('EC2Provider VPCGatewayAttachment with a VPN gateway (issue #2762)', ()
         .mockResolvedValueOnce(vgwState('attached'));
       await expect(
         makeProvider().create('Attach', TYPE, { VpcId: VPC, VpnGatewayId: VGW })
-      ).resolves.toEqual({ physicalId: `${VGW}|${VPC}`, attributes: {} });
+      ).resolves.toEqual({ physicalId: `${VGW}|${VPC}`, attributes: { AttachmentType: 'VGW' } });
 
       const [attach, ...polls] = mockSend.mock.calls.map((c) => c[0]);
       expect(attach).toBeInstanceOf(AttachVpnGatewayCommand);
@@ -138,7 +139,7 @@ describe('EC2Provider VPCGatewayAttachment with a VPN gateway (issue #2762)', ()
       mockSend.mockResolvedValueOnce({});
       await expect(
         makeProvider().create('Attach', TYPE, { VpcId: VPC, InternetGatewayId: IGW })
-      ).resolves.toEqual({ physicalId: `${IGW}|${VPC}`, attributes: {} });
+      ).resolves.toEqual({ physicalId: `${IGW}|${VPC}`, attributes: { AttachmentType: 'IGW' } });
       expect(mockSend).toHaveBeenCalledTimes(1);
       expect(mockSend.mock.calls[0]![0]).toBeInstanceOf(AttachInternetGatewayCommand);
     });
@@ -627,6 +628,7 @@ describe('EC2Provider VPCGatewayAttachment with a VPN gateway (issue #2762)', ()
       await expect(update(`${VGW}|${VPC}`, { VpnGatewayId: VGW2 })).resolves.toEqual({
         physicalId: `${VGW2}|${VPC}`,
         wasReplaced: false,
+        attributes: { AttachmentType: 'VGW' },
       });
       expect(mutations()).toEqual(['DetachVpnGatewayCommand', 'AttachVpnGatewayCommand']);
       expect([...fake.attachments.keys()]).toEqual([VGW2]);
@@ -638,6 +640,7 @@ describe('EC2Provider VPCGatewayAttachment with a VPN gateway (issue #2762)', ()
       await expect(update(`${IGW}|${VPC}`, { VpnGatewayId: VGW })).resolves.toEqual({
         physicalId: `${VGW}|${VPC}`,
         wasReplaced: false,
+        attributes: { AttachmentType: 'VGW' },
       });
       expect(mutations()).toEqual(['AttachVpnGatewayCommand', 'DetachInternetGatewayCommand']);
     });
@@ -648,8 +651,24 @@ describe('EC2Provider VPCGatewayAttachment with a VPN gateway (issue #2762)', ()
       await expect(update(`${VGW}|${VPC}`, { InternetGatewayId: IGW })).resolves.toEqual({
         physicalId: `${IGW}|${VPC}`,
         wasReplaced: false,
+        attributes: { AttachmentType: 'IGW' },
       });
       expect(mutations()).toEqual(['AttachInternetGatewayCommand', 'DetachVpnGatewayCommand']);
+    });
+
+    it('records the AttachmentType CloudFormation answers, and a swap moves it (#7009)', async () => {
+      const fake: Fake = { attachments: new Map() };
+      mockSend.mockImplementation(fakeEc2(fake));
+      const created = await makeProvider().create('Attach', TYPE, {
+        VpcId: VPC,
+        InternetGatewayId: IGW,
+      });
+      expect(created.attributes).toEqual({ AttachmentType: 'IGW' });
+      const swapped = await update(created.physicalId, { VpnGatewayId: VGW });
+      const afterSwap = attributesAfterUpdate(TYPE, created.attributes, swapped);
+      expect(afterSwap).toEqual({ AttachmentType: 'VGW' });
+      const kept = await update(swapped.physicalId, { VpnGatewayId: VGW });
+      expect(attributesAfterUpdate(TYPE, afterSwap, kept)).toEqual({ AttachmentType: 'VGW' });
     });
 
     it('an unchanged gateway sends no attach or detach', async () => {
@@ -657,6 +676,7 @@ describe('EC2Provider VPCGatewayAttachment with a VPN gateway (issue #2762)', ()
       await expect(update(`${VGW}|${VPC}`, { VpnGatewayId: VGW })).resolves.toEqual({
         physicalId: `${VGW}|${VPC}`,
         wasReplaced: false,
+        attributes: { AttachmentType: 'VGW' },
       });
       expect(mutations()).toEqual([]);
     });
@@ -706,6 +726,7 @@ describe('EC2Provider VPCGatewayAttachment with a VPN gateway (issue #2762)', ()
       await expect(update(`${VGW}|${VPC}`, { VpnGatewayId: VGW })).resolves.toEqual({
         physicalId: `${VGW}|${VPC}`,
         wasReplaced: false,
+        attributes: { AttachmentType: 'VGW' },
       });
       expect(mutations()).toEqual(['AttachVpnGatewayCommand']);
     });
@@ -718,6 +739,7 @@ describe('EC2Provider VPCGatewayAttachment with a VPN gateway (issue #2762)', ()
       await expect(update(`${VGW}|${VPC}`, { VpnGatewayId: VGW2 })).resolves.toEqual({
         physicalId: `${VGW2}|${VPC}`,
         wasReplaced: false,
+        attributes: { AttachmentType: 'VGW' },
       });
       expect(mutations()).toEqual([]);
     });
@@ -730,6 +752,7 @@ describe('EC2Provider VPCGatewayAttachment with a VPN gateway (issue #2762)', ()
       ).resolves.toEqual({
         physicalId: `${VGW2}|${VPC}`,
         wasReplaced: false,
+        attributes: { AttachmentType: 'VGW' },
       });
       const detach = mockSend.mock.calls
         .map((c) => c[0])
@@ -744,6 +767,7 @@ describe('EC2Provider VPCGatewayAttachment with a VPN gateway (issue #2762)', ()
       await expect(update(`VPN|${VPC}`, { VpnGatewayId: VGW2 })).resolves.toEqual({
         physicalId: `${VGW2}|${VPC}`,
         wasReplaced: false,
+        attributes: { AttachmentType: 'VGW' },
       });
       expect(mutations()).toEqual(['AttachVpnGatewayCommand']);
     });

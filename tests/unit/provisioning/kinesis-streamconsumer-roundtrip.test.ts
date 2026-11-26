@@ -46,6 +46,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { KinesisStreamConsumerProvider } from '../../../src/provisioning/providers/kinesis-streamconsumer-provider.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
+import { attributesAfterUpdate } from '../../../src/deployment/recorded-identity-attributes.js';
 
 const STREAM_ARN = 'arn:aws:kinesis:us-east-1:123456789012:stream/mystream';
 const CONSUMER_NAME = 'myconsumer';
@@ -446,5 +447,66 @@ describe('KinesisStreamConsumerProvider', () => {
       // No SDK call should fire.
       expect(mockSend).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('KinesisStreamConsumerProvider update keeps the recorded attributes (issue #7009)', () => {
+  it('leaves every attribute create recorded when the post-update read fails', async () => {
+    vi.clearAllMocks();
+    const provider = new KinesisStreamConsumerProvider();
+    const description = {
+      ConsumerName: CONSUMER_NAME,
+      ConsumerARN: CONSUMER_ARN,
+      ConsumerStatus: 'ACTIVE',
+      ConsumerCreationTimestamp: new Date('2026-01-01T00:00:00Z'),
+      StreamARN: STREAM_ARN,
+    };
+    mockSend
+      .mockResolvedValueOnce({ Consumer: { ...description, ConsumerStatus: 'CREATING' } })
+      .mockResolvedValueOnce({ ConsumerDescription: description });
+    const type = 'AWS::Kinesis::StreamConsumer';
+    const props = { ConsumerName: CONSUMER_NAME, StreamARN: STREAM_ARN };
+    const created = await provider.create('LogicalId', type, props);
+    expect(Object.keys(created.attributes ?? {}).length).toBeGreaterThan(0);
+    mockSend
+      .mockResolvedValueOnce({}) // TagResource
+      .mockRejectedValueOnce(Object.assign(new Error('throttled'), { name: 'LimitExceededException' }));
+    const updated = await provider.update(
+      'LogicalId',
+      created.physicalId,
+      type,
+      { ...props, Tags: [{ Key: 'Env', Value: 'prod' }] },
+      { ...props, Tags: [] }
+    );
+    expect(attributesAfterUpdate(type, created.attributes, updated)).toEqual(created.attributes);
+  });
+
+  it('leaves every attribute create recorded when the post-update read carries no ConsumerDescription', async () => {
+    vi.clearAllMocks();
+    const provider = new KinesisStreamConsumerProvider();
+    const description = {
+      ConsumerName: CONSUMER_NAME,
+      ConsumerARN: CONSUMER_ARN,
+      ConsumerStatus: 'ACTIVE',
+      ConsumerCreationTimestamp: new Date('2026-01-01T00:00:00Z'),
+      StreamARN: STREAM_ARN,
+    };
+    mockSend
+      .mockResolvedValueOnce({ Consumer: { ...description, ConsumerStatus: 'CREATING' } })
+      .mockResolvedValueOnce({ ConsumerDescription: description });
+    const type = 'AWS::Kinesis::StreamConsumer';
+    const props = { ConsumerName: CONSUMER_NAME, StreamARN: STREAM_ARN };
+    const created = await provider.create('LogicalId', type, props);
+    mockSend
+      .mockResolvedValueOnce({}) // TagResource
+      .mockResolvedValueOnce({}); // DescribeStreamConsumer, no ConsumerDescription
+    const updated = await provider.update(
+      'LogicalId',
+      created.physicalId,
+      type,
+      { ...props, Tags: [{ Key: 'Env', Value: 'prod' }] },
+      { ...props, Tags: [] }
+    );
+    expect(attributesAfterUpdate(type, created.attributes, updated)).toEqual(created.attributes);
   });
 });

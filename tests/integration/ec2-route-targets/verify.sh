@@ -228,6 +228,14 @@ fi
 echo "==> Pre-run cleanup"
 cleanup
 
+# go-to-k/cdkd#7009: the stack's `<Key>` output and the named record's
+# `AttachmentType` attribute, as "<output> <attribute>".
+attachment_type_of() {
+  node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
+    --region "${REGION}" --json 2>/dev/null \
+    | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s).state;const r=j.resources;const k=Object.keys(r).find(x=>x.startsWith(process.argv[1]));const a=(k&&r[k].attributes)||{};process.stdout.write(`${(j.outputs||{})[process.argv[2]]??"<absent>"} ${a.AttachmentType??"<absent>"}`)})' "$1" "$2"
+}
+
 # --- Phase 1: deploy baseline (pl-route -> IGW, cidr-route -> TGW) ----------
 echo "==> Phase 1: deploy (prefix-list route -> IGW, CIDR route -> TGW)"
 env -u CDKD_TEST_UPDATE -u CDKD_TEST_ODB_PROBE node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -331,6 +339,13 @@ if [ "${VGW_ROUTE_TARGET}" != "${VGW_ID}" ]; then
   exit 1
 fi
 echo "    VPN gateway attached and routed (10.210.0.0/16 -> ${VGW_ID})"
+IGW_ATT_TYPE="$(attachment_type_of IgwAttachment IgwAttachmentType)"
+VGW_ATT_TYPE="$(attachment_type_of VgwAttachment VgwAttachmentType)"
+if [ "${IGW_ATT_TYPE}" != "IGW IGW" ] || [ "${VGW_ATT_TYPE}" != "VGW VGW" ]; then
+  echo "FAIL: AttachmentType (output attribute) expected 'IGW IGW' / 'VGW VGW', got '${IGW_ATT_TYPE}' / '${VGW_ATT_TYPE}' (issue #7009)" >&2
+  exit 1
+fi
+echo "    AttachmentType resolves as CloudFormation answers it (IGW / VGW)"
 
 # The prefix-list route's state record must be keyed on the pl- destination.
 PL_PHYSICAL_ID="$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
@@ -527,6 +542,11 @@ if [ "${VGW2_STATE}" != "attached" ] || [ "${VGW1_LIVE}" != "0" ]; then
   exit 1
 fi
 echo "    VPN gateway attachment swapped in place (${VGW_ID} -> ${VGW2_ID})"
+VGW_ATT_TYPE_P2="$(attachment_type_of VgwAttachment VgwAttachmentType)"
+if [ "${VGW_ATT_TYPE_P2}" != "VGW VGW" ]; then
+  echo "FAIL: after the in-place swap, AttachmentType (output attribute) expected 'VGW VGW', got '${VGW_ATT_TYPE_P2}' (issue #7009)" >&2
+  exit 1
+fi
 
 echo "==> Phase 2: drift read-back (expect no drift)"
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}"

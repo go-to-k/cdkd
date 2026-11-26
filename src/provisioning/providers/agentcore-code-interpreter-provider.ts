@@ -146,7 +146,10 @@ export class AgentCoreCodeInterpreterProvider implements ResourceProvider {
 
   /**
    * Every property on this type is read-only, so there is nothing to
-   * update — keep the existing physical id.
+   * update — keep the existing physical id. No `attributes` either: an
+   * in-place result's map REPLACES the record, so `{}` would erase the
+   * `CodeInterpreterArn` / `CodeInterpreterId` / `Status` create recorded
+   * (go-to-k/cdkd#7009).
    *
    * go-to-k/cdkd#2613: `context` is accepted but no region guard runs. This
    * method sends nothing, so a client in another region than the state record
@@ -161,7 +164,7 @@ export class AgentCoreCodeInterpreterProvider implements ResourceProvider {
     _context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`No-op update for default code interpreter ${logicalId}`);
-    return { physicalId, wasReplaced: false, attributes: {} };
+    return { physicalId, wasReplaced: false };
   }
 
   /**

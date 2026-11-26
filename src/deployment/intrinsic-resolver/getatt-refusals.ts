@@ -248,9 +248,12 @@ export function isPhysicalIdIdentifier(
  * Types whose cdkd physical id is not their CloudFormation `primaryIdentifier`:
  * `AWS::CodeCommit::Repository` records the repository NAME
  * (`codecommit-repository/create.ts`), while its identifier is `RepositoryId`.
+ * `AWS::EC2::VPCGatewayAttachment` records `<gatewayId>|<vpcId>`, while its
+ * identifier's `AttachmentType` is `IGW` / `VGW` (go-to-k/cdkd#7009).
  */
 const IDENTIFIER_NOT_PHYSICAL_ID_TYPES: ReadonlySet<string> = new Set([
   'AWS::CodeCommit::Repository',
+  'AWS::EC2::VPCGatewayAttachment',
 ]);
 
 /**

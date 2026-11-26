@@ -30,6 +30,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
 
 import { EventBridgeBusProvider } from '../../../../src/provisioning/providers/eventbridge-bus-provider.js';
 import { UpdateEventBusCommand } from '@aws-sdk/client-eventbridge';
+import { attributesAfterUpdate } from '../../../../src/deployment/recorded-identity-attributes.js';
 
 describe('EventBridgeBusProvider import', () => {
   let provider: EventBridgeBusProvider;
@@ -58,7 +59,11 @@ describe('EventBridgeBusProvider import', () => {
 
     const result = await provider.import(makeInput({ knownPhysicalId: 'target' }));
 
-    expect(result).toEqual({ physicalId: 'target', attributes: {} });
+    // #7009: the set create records, so the stale-attribute heal restores it.
+    expect(result).toEqual({
+      physicalId: 'target',
+      attributes: { Arn: 'arn:aws:events:us-east-1:123456789012:event-bus/target', Name: 'target' },
+    });
   });
 
   it('explicit override: returns null when DescribeEventBus throws ResourceNotFoundException', async () => {
@@ -118,5 +123,42 @@ describe('EventBridgeBusProvider update region guard (issue #2613)', () => {
     expect(region).not.toHaveBeenCalled();
     expect(mockSend).toHaveBeenCalledTimes(1);
     expect(mockSend.mock.calls[0]![0]).toBeInstanceOf(UpdateEventBusCommand);
+  });
+});
+
+describe('EventBridgeBusProvider update keeps the recorded attributes (issue #7009)', () => {
+  it('leaves the Arn and Name create recorded on the record after an in-place update', async () => {
+    vi.clearAllMocks();
+    const provider = new EventBridgeBusProvider();
+    mockSend.mockResolvedValue({ EventBusArn: 'arn:aws:events:us-east-1:123456789012:event-bus/my-bus' });
+    const type = 'AWS::Events::EventBus';
+    const created = await provider.create('MyBus', type, { Name: 'my-bus' });
+    expect(Object.keys(created.attributes ?? {}).sort()).toEqual(['Arn', 'Name']);
+    const updated = await provider.update(
+      'MyBus',
+      created.physicalId,
+      type,
+      { Name: 'my-bus', Description: 'new' },
+      { Name: 'my-bus' }
+    );
+    expect(attributesAfterUpdate(type, created.attributes, updated)).toEqual(created.attributes);
+  });
+
+  it('import (the stale-attribute heal read) records the same set create does', async () => {
+    vi.clearAllMocks();
+    const provider = new EventBridgeBusProvider();
+    const arn = 'arn:aws:events:us-east-1:123456789012:event-bus/my-bus';
+    mockSend.mockResolvedValue({ EventBusArn: arn, Arn: arn, Name: 'my-bus' });
+    const type = 'AWS::Events::EventBus';
+    const created = await provider.create('MyBus', type, { Name: 'my-bus' });
+    const imported = await provider.import({
+      logicalId: 'MyBus',
+      resourceType: type,
+      stackName: 'S',
+      region: 'us-east-1',
+      properties: { Name: 'my-bus' },
+      knownPhysicalId: 'my-bus',
+    });
+    expect(imported?.attributes).toEqual(created.attributes);
   });
 });

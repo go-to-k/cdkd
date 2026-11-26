@@ -22,6 +22,19 @@ export const EC2_VPC_GATEWAY_ATTACHMENT_ID_FORMAT: CompositeIdFormat = {
  */
 export const VPN_GATEWAY_ATTACHMENT_WAIT_MS = 10 * 60 * 1000;
 
+/**
+ * The attribute map recorded for a VPCGatewayAttachment of `kind`:
+ * CloudFormation's read-only `AttachmentType`, `IGW` or `VGW` (both read
+ * from a CFn stack's `Fn::GetAtt [Att, AttachmentType]` output,
+ * go-to-k/cdkd#7009). It is the whole set, so create, update and import all
+ * record it: an in-place update's map REPLACES the record. Unrecorded, the
+ * resolver served the composite physical id, the name being in the type's
+ * primary identifier.
+ */
+export function vpcGatewayAttachmentAttributes(kind: 'igw' | 'vgw'): Record<string, unknown> {
+  return { AttachmentType: kind === 'igw' ? 'IGW' : 'VGW' };
+}
+
 /** `DetachVpnGateway`'s answer for an attachment that is not `attached` right now. */
 export const VPN_DETACH_IN_PROGRESS_ERRORS: ReadonlySet<string> = new Set(['IncorrectState']);
 
