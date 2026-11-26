@@ -62,6 +62,7 @@ import {
   ANY_TAG_KEY,
   TAG_KEYS_TAINTED,
   maskPassedSecretChanges,
+  maskPassedSecretReasons,
   mixedSecretTagKeys,
   securityDiffWithPassedSecretWithheld,
   taintedNamesOf,
@@ -85,6 +86,8 @@ const DB_NAME_SHAPES: Record<string, unknown> = {
   RefReaderDb: { Ref: 'Named' },
   GetAttReaderDb: { 'Fn::GetAtt': ['Named', 'Value'] },
 };
+
+const FUNCTION_ARN = 'arn:aws:lambda:us-east-1:123456789012:function:';
 
 function policy(resource: unknown): Record<string, unknown> {
   return {
@@ -117,6 +120,14 @@ function childTemplate(): Record<string, unknown> {
       PolicyName: 'p',
       Roles: ['r'],
       PolicyDocument: policy({ 'Fn::Sub': 'arn:aws:s3:::${X}' }),
+    },
+  };
+  // A custom resource whose handler ARN is built from `X`: the deploy refuses
+  // the changed token, and that refusal names the desired token.
+  resources['Cr'] = {
+    Type: 'Custom::Thing',
+    Properties: {
+      ServiceToken: { 'Fn::Join': ['', [`${FUNCTION_ARN}h-`, PIECE]] },
     },
   };
   resources['Grand'] = {
@@ -218,6 +229,7 @@ function states(old: string): Record<string, StackState> {
     Roles: ['r'],
     PolicyDocument: policy(`arn:aws:s3:::${old}`),
   });
+  child['Cr'] = record('Custom::Thing', { ServiceToken: `${FUNCTION_ARN}h-old` });
   child['Grand'] = record('AWS::CloudFormation::Stack', {
     TemplateURL: 'https://s3.amazonaws.com/b/grand.json',
     Parameters: { Y: old },
@@ -376,6 +388,8 @@ describe('cdkd diff: a nested row parameter mixing a secret reference (#7068)', 
             { Key: 'pp', Value: '***' },
           ])
         );
+        // The ServiceToken refusal still blocks, naming no token built from X.
+        expect(child.blocking.some((reason) => reason.startsWith('Cr: ServiceToken changes to ***, away'))).toBe(true);
         // The child's IAM change is still reported, its table withheld.
         expect(tables).toContain(SECURITY_TABLE_WITHHELD);
         // The replacement line is still logged, masked.
@@ -663,5 +677,60 @@ describe('securityDiffWithPassedSecretWithheld (#7068 review)', () => {
       new Set([...tainted, 'Pol'])
     );
     expect(await shown()).toEqual({ broadening: true, rendered: SECURITY_TABLE_WITHHELD });
+  });
+});
+
+describe('maskPassedSecretReasons (#7068 review)', () => {
+  const template = {
+    Resources: {
+      Cr: { Type: 'Custom::Thing', Properties: { ServiceToken: { Ref: 'X' } } },
+      Plain: { Type: 'Custom::Thing', Properties: { ServiceToken: 'arn:plain' } },
+    },
+  };
+  const token = (id: string, desired: string) =>
+    `${id}: ServiceToken changes to ${desired}, away from the handler its record names. cdkd deploy refuses.`;
+
+  it('masks the desired token of a tainted ServiceToken only', () => {
+    const shown = maskPassedSecretReasons(
+      [token('Cr', 'arn:h-Q7'), token('Plain', 'arn:plain2')],
+      template as never,
+      new Set(['X', 'Cr']),
+      undefined
+    );
+    expect(shown).toEqual([token('Cr', '***'), token('Plain', 'arn:plain2')]);
+  });
+
+  it('masks a tainted orphan record physical id, never an untainted one', () => {
+    const orphans = [
+      { logicalId: 'Cr', orphanedAt: 0, state: { resourceType: 'Custom::Thing', physicalId: 'name-Q7' } },
+      { logicalId: 'Plain', orphanedAt: 0, state: { resourceType: 'Custom::Thing', physicalId: 'plain-id' } },
+    ];
+    const shown = maskPassedSecretReasons(
+      ['Cr (Custom::Thing) is still in AWS as name-Q7 from an', 'Plain is still in AWS as plain-id'],
+      template as never,
+      new Set(['X', 'Cr']),
+      orphans
+    );
+    expect(shown).toEqual(['Cr (Custom::Thing) is still in AWS as *** from an', 'Plain is still in AWS as plain-id']);
+  });
+});
+
+describe('a fully masked change keeps saying it is one (#7068 review)', () => {
+  it('labels sides the mask made alike', () => {
+    const changes = new Map([
+      [
+        'R',
+        {
+          logicalId: 'R',
+          changeType: 'UPDATE' as const,
+          resourceType: 'T',
+          propertyChanges: [{ path: 'V', oldValue: 'a', newValue: 'b', requiresReplacement: false }],
+        },
+      ],
+    ]);
+    const template = { Resources: { R: { Type: 'T', Properties: { V: { Ref: 'X' } } } } };
+    const pc = maskPassedSecretChanges(changes, template as never, new Set(['X'])).get('R')
+      ?.propertyChanges?.[0];
+    expect(pc).toMatchObject({ oldValue: '***', newValue: '***', maskedExpressionChanged: true });
   });
 });

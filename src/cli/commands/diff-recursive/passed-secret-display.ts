@@ -12,6 +12,8 @@ import {
   type RecordedSecretValues,
 } from '../../../deployment/secret-redaction.js';
 import { NESTED_STACK_RESOURCE_TYPE } from '../retire-cfn-stack.js';
+import { displayIdent, displaySafe } from '../../../utils/display-safe.js';
+import { displayPhysicalId } from '../../../provisioning/secret-physical-id.js';
 
 /**
  * go-to-k/cdkd#7068: what `cdkd diff` must not print about a nested-stack
@@ -288,6 +290,18 @@ function maskTagProperty(change: PropertyChange, keys: ReadonlySet<string>): Pro
   return changed ? next : change;
 }
 
+/**
+ * `shown` labelled `maskedExpressionChanged` when the mask made its two sides
+ * read alike while the real ones differ: `*** -> ***` reads as no change, so
+ * the renderer's `[masked input or expression changed]` note says it is one.
+ * Display only: the copy is never read by a decision.
+ */
+function labelledWhenMaskedAlike(real: PropertyChange, shown: PropertyChange): PropertyChange {
+  const alike = (change: PropertyChange): boolean =>
+    JSON.stringify(change.oldValue) === JSON.stringify(change.newValue);
+  return alike(shown) && !alike(real) ? { ...shown, maskedExpressionChanged: true } : shown;
+}
+
 /** `change` with every side it carries shown as the mask. */
 function maskedSides(change: PropertyChange): PropertyChange {
   const masked: PropertyChange = { ...change };
@@ -404,8 +418,9 @@ export function maskPassedSecretChanges(
                 SIDES.some((side) => holdsMixedDynamicReference(propertyChange[side])))
             ? maskedSides(propertyChange)
             : maskTagProperty(propertyChange, tagKeys);
-      if (next !== propertyChange) changed = true;
-      return next;
+      if (next === propertyChange) return next;
+      changed = true;
+      return labelledWhenMaskedAlike(propertyChange, next);
     });
     if (changed && propertyChanges !== undefined) {
       anyChanged = true;
@@ -571,3 +586,56 @@ export function securityDiffWithPassedSecretWithheld(
 export const SECURITY_TABLE_WITHHELD =
   'IAM / security-group changes found; their table is withheld because this stack ' +
   'reads a parameter passed with a secret dynamic reference (go-to-k/cdkd#7068).';
+
+/**
+ * A node's `blocking` reasons under go-to-k/cdkd#7068. Two of them print a
+ * VALUE, not just an id or a key: the ServiceToken refusal names the desired
+ * token, and an orphan-adoption refusal names the orphan's recorded physical
+ * id. Each is masked when its resource is tainted and, for the token, when
+ * the template's `ServiceToken` reads a tainted name; every other reason names
+ * ids, types, keys and counts only and is kept as it is. Display only: the
+ * count of reasons (exit 3) is unchanged.
+ */
+export function maskPassedSecretReasons(
+  reasons: string[],
+  template: CloudFormationTemplate,
+  tainted: ReadonlySet<string>,
+  orphans: unknown
+): string[] {
+  if (tainted.size === 0 || reasons.length === 0) return reasons;
+  const resources = recordOf(template.Resources as unknown);
+  const tokenPrefixes: string[] = [];
+  for (const logicalId of tainted) {
+    if (!Object.hasOwn(resources, logicalId)) continue;
+    const properties = recordOf(recordOf(resources[logicalId])['Properties']);
+    if (readsTainted(properties['ServiceToken'], tainted)) {
+      tokenPrefixes.push(`${displayIdent(logicalId)}: ServiceToken changes to `);
+    }
+  }
+  const shownIds: string[] = [];
+  for (const orphan of Array.isArray(orphans) ? (orphans as unknown[]) : []) {
+    const entry = recordOf(orphan);
+    const record = recordOf(entry['state']);
+    if (typeof entry['logicalId'] !== 'string' || !tainted.has(entry['logicalId'])) continue;
+    if (typeof record['physicalId'] !== 'string' || record['physicalId'] === '') continue;
+    shownIds.push(
+      displaySafe(String(displayPhysicalId(record['resourceType'], record['physicalId'])))
+    );
+  }
+  let changed = false;
+  const shown = reasons.map((reason) => {
+    let next = reason;
+    const prefix = tokenPrefixes.find((candidate) => next.startsWith(candidate));
+    const end = next.indexOf(SERVICE_TOKEN_REASON_TAIL);
+    if (prefix !== undefined && end > prefix.length) {
+      next = `${prefix}${SECRET_MASK}${next.slice(end)}`;
+    }
+    for (const id of shownIds) next = next.split(id).join(SECRET_MASK);
+    if (next !== reason) changed = true;
+    return next;
+  });
+  return changed ? shown : reasons;
+}
+
+/** Where the ServiceToken refusal's desired token ends (`custom-resource-service-token.ts`). */
+const SERVICE_TOKEN_REASON_TAIL = ', away from the handler its record names.';

@@ -63,6 +63,7 @@ import {
   calculatorMaskingPassedSecretLines,
   maskPassedSecretChanges,
   maskPassedSecretOutputs,
+  maskPassedSecretReasons,
   mixedSecretRowKeys,
   mixedSecretTagKeys,
   recordedValuesOf,
@@ -494,7 +495,13 @@ export async function buildDiffTree(args: {
     ccApiRoutes,
     outputChanges: maskPassedSecretOutputs(outputChanges, template, passedSecretNames),
     adoptedOrphans,
-    blocking: isNestedChild ? blocking : [...deployRefusals, ...adoptedDeployRefusals, ...blocking],
+    // go-to-k/cdkd#7068: a reason naming a value of a tainted resource, masked.
+    blocking: maskPassedSecretReasons(
+      isNestedChild ? blocking : [...deployRefusals, ...adoptedDeployRefusals, ...blocking],
+      template,
+      passedSecretNames,
+      state.orphans
+    ),
     // The load's dropped entries and containers, and the orphan records the
     // adoption preview could not read — each in its own field, so the report
     // says WHICH container is broken without a stand-in string an entry key
