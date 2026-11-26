@@ -5,6 +5,7 @@ import {
 } from '@aws-sdk/client-lambda';
 import type { LambdaEventSourceMappingProvider } from '../lambda-eventsource-provider.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
+import { safeMsg } from '../../../utils/display-safe.js';
 import { assertRegionMatch, type DeleteContext } from '../../region-check.js';
 
 /**
@@ -57,7 +58,7 @@ async function deleteWhenSettled(
       if (!TRANSITIONAL_STATES.has(read.State ?? '') || Date.now() >= deadline) throw error;
     }
     this.logger.debug(
-      `Event source mapping ${logicalId} is still settling; waiting before retrying the delete`
+      safeMsg`Event source mapping ${logicalId} is still settling; waiting before retrying the delete`
     );
     for (;;) {
       await new Promise((resolve) => setTimeout(resolve, IN_USE_POLL_INTERVAL_MS));
