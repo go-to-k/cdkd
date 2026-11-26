@@ -146,11 +146,11 @@ docdb-restore	2026-11-07T12:33:20Z	PASS	678	verify.sh	#6004 final-snapshot split
 docker-image-asset	2026-11-23T10:52:49Z	PASS	128	verify.sh	rc ok, orph clean (#6857 6852 normalization audit)
 drift-cc-read-only-props	2026-11-23T12:11:05Z	PASS	119	verify.sh	PR6876 828e1c821 us-east-1 rc ok, orph clean (duration not timed; see logs)
 drift-ecs-capacity-association	2026-11-22T02:46:37Z	PASS	175	verify.sh	rc ok, orph clean, sha 3116c9288 (#6813 sub-read errors)
-drift-revert	2026-11-25T15:18:54Z	PASS	754	verify.sh	rc ok, orph clean
+drift-revert	2026-11-26T07:18:30Z	PASS	856	verify.sh	rc ok, orph clean; #7025 step 6 post-revert verification
 drift-revert-arrays	2026-11-23T08:26:12Z	PASS	267	verify.sh	PR6859 11e38d61f us-east-1 rc ok, orph clean
-drift-revert-firehose	2026-11-26T03:04:56Z	PASS	330	verify.sh	rc ok, orph clean; #7019 revert of ExtendedS3 + legacy S3 streams, processor disable
+drift-revert-firehose	2026-11-26T07:18:30Z	PASS	365	verify.sh	rc ok, orph clean; #7025 step 6 post-revert verification
 drift-revert-nested-write-only	2026-11-23T12:11:05Z	PASS	289	verify.sh	PR6876 828e1c821 us-east-1 rc ok, orph clean (duration not timed; see logs)
-drift-revert-readback-placeholders	2026-11-26T06:00:54Z	PASS	240	verify.sh	rc ok, orph clean; #7027-#7029 revert past placeholders, job FLEX set-to-unset
+drift-revert-readback-placeholders	2026-11-26T07:18:30Z	PASS	295	verify.sh	rc ok, orph clean; #7025 step 6 post-revert verification
 drift-revert-vpc	2026-11-25T15:18:54Z	PASS	502	verify.sh	rc ok, orph clean
 drift-rotation-schedule-revert	2026-11-20T11:50:48Z	PASS	138	verify.sh	PR6652 be63cc056, us-west-2; rc 0, revert-identity kept identity x1, orph clean
 drift-sg-sibling-rules	2026-11-23T11:12:57Z	PASS	536	verify.sh	rc 0, 0 orphans; #6875 sg cidr identity

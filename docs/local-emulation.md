@@ -475,18 +475,20 @@ the emulator in the first place takes the same flag on `bootstrap` and
 A handler that misses the endpoint fails with a credential error rather than
 reaching real AWS, because the container holds no real credentials.
 
-AWS Emulator answers SQS calls with real-shaped queue URLs
+AWS Emulator before 1.0.580 answers SQS calls with real-shaped queue URLs
 (`https://sqs.<region>.amazonaws.com/<account>/<queue>`), and the AWS SDK for
 JavaScript v3 sends each SQS request to its queue URL's host, which would
-leave the emulator. A sidecar in each workload rewrites the queue URLs in the
+leave the emulator; 1.0.580 and later answer with a URL on the emulator
+itself. A sidecar in each workload rewrites real-shaped queue URLs in the
 emulator's answers to its own loopback address, so the next call stays local.
-It runs with an `https` emulator URL whose run wrote `ca.pem`, and always in
-[mixed mode](#aws-emulator-mixed-mode); a container's own
-`AWS_ENDPOINT_URL_SQS` wins.
+It always runs in [mixed mode](#aws-emulator-mixed-mode), and otherwise with
+an `https` emulator URL whose run wrote `ca.pem`, unless one read-only
+`ListQueues` at startup returns a local queue URL (with no queue in the
+region yet, it runs); a container's own `AWS_ENDPOINT_URL_SQS` wins.
 
 | Case | What to do |
 | --- | --- |
-| The host network, a plain `http` URL, or no run `ca.pem` | No sidecar runs; pass `useQueueUrlAsEndpoint: false` to the `SQSClient`. |
+| The host network, a plain `http` URL, or no run `ca.pem` | No sidecar runs; with an emulator before 1.0.580, pass `useQueueUrlAsEndpoint: false` to the `SQSClient`. |
 | A container env value that is exactly a real queue URL (`--from-state`, `--from-cfn-stack`, `--env-vars`) | Rewritten to the same queue on the container's SQS endpoint, so the call lands in the emulator. |
 | Any other real queue URL (read at run time from SSM Parameter Store, Secrets Manager or the event, or inside a larger value) | Fails closed: the container's `/etc/hosts` maps the real SQS host names (`sqs.<region>.amazonaws.com`, `<region>.queue.amazonaws.com`, `queue.amazonaws.com`) to `127.0.0.1`, so the connection is refused before a signed request leaves the machine. The hosts of every Region of the `aws`, `aws-cn` and `aws-us-gov` partitions are blocked, plus the container's `AWS_REGION` / `AWS_DEFAULT_REGION` and any Region a queue URL in its env names. |
 

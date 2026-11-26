@@ -40,6 +40,11 @@ import { DriftSecretResolvers } from './secret-resolution.js';
 import { maskMarkedNoEchoBaseline } from './redaction.js';
 import { revertDriftedOutcome } from './revert-outcome.js';
 import { revertWriteOnlyResendNames } from './revert-write-only.js';
+import {
+  type RevertRedetect,
+  type RevertedResource,
+  verifyRevertedStack,
+} from './revert-verify.js';
 import { tryGetTopLevelWriteOnlyProperties } from '../../../provisioning/write-only-properties.js';
 import {
   humanTextSink,
@@ -89,7 +94,10 @@ export async function runRevert(
     json?: boolean;
     concurrency?: number;
     profile?: string | undefined;
-  }
+  },
+  // go-to-k/cdkd#7025 step 6: re-runs the command's own detection on a stack,
+  // so the verification compares with the same pipeline `cdkd drift` does.
+  redetect: RevertRedetect
 ): Promise<false | void> {
   const logger = getLogger();
   // Issue #2230: see the note in `runAccept`.
@@ -178,6 +186,7 @@ export async function runRevert(
     // re-resolve never reached `provider.update` at all, and telling the user to
     // look at an update that did not happen sends them to the wrong place.
     totalUnresolvable: 0,
+    reverted: [],
   };
   // go-to-k/cdkd#6824: stacks whose write-ahead state save failed. Counted
   // apart from `totalFailed` (an AWS update failure): no update ran on them.
@@ -514,8 +523,31 @@ export async function runRevert(
     });
   }
 
+  // go-to-k/cdkd#7025 step 6: AWS can accept an update without applying a
+  // value it was sent, so each stack with a reverted resource is re-read,
+  // after its lock is released, and compared again. Read-only.
+  let totalNotApplied = 0;
+  let totalUnverified = 0;
+  for (const report of reports) {
+    const reverted = tally.reverted.filter(
+      (r) => r.stackName === report.stackName && r.region === report.region
+    );
+    if (reverted.length === 0) continue;
+    const verified = await verifyRevertedStack(
+      report.stackName,
+      report.region,
+      reverted,
+      redetect,
+      logger
+    );
+    totalNotApplied += verified.notApplied;
+    totalUnverified += verified.unverified;
+  }
+
   const { totalFailed, totalUnsupported, totalSucceeded, totalUnresolvable } = tally;
   const summaryParts = [`${totalSucceeded} reverted`];
+  if (totalNotApplied > 0) summaryParts.push(`${totalNotApplied} not applied by AWS`);
+  if (totalUnverified > 0) summaryParts.push(`${totalUnverified} not verified`);
   if (totalUnsupported > 0) summaryParts.push(`${totalUnsupported} update-not-supported`);
   if (totalUnresolvable > 0) summaryParts.push(`${totalUnresolvable} reference-unresolvable`);
   if (totalFailed > 0) summaryParts.push(`${totalFailed} failed`);
@@ -523,6 +555,16 @@ export async function runRevert(
     summaryParts.push(`${writeAheadFailedStacks.length} stack(s) not reverted`);
   }
   logger.info(`\nRevert summary: ${summaryParts.join(', ')}.`);
+
+  // Appended to whichever error below ends the run, so one error names every
+  // cause; thrown on its own when it is the only one.
+  const notAppliedSentence =
+    totalNotApplied > 0
+      ? `${totalNotApplied} reverted resource(s) were not applied by AWS: the update was accepted, ` +
+        `but a re-read still shows the drift on the paths named above. Re-running --revert sends ` +
+        `the same update; this is usually a cdkd provider sending a value the service ignores, ` +
+        `so please report it.`
+      : '';
 
   if (writeAheadFailedStacks.length > 0) {
     throw new PartialFailureError(
@@ -532,7 +574,8 @@ export async function runRevert(
         `once state writes succeed.` +
         (totalFailed + totalUnsupported + totalUnresolvable > 0
           ? ` Other stacks also reported ${totalFailed + totalUnsupported + totalUnresolvable} resource error(s) above.`
-          : '')
+          : '') +
+        (notAppliedSentence ? ` ${notAppliedSentence}` : '')
     );
   }
 
@@ -588,7 +631,15 @@ export async function runRevert(
         // verbatim gets the quotes stripped rather than passed. The arity is
         // unchanged; only the bracket kind differs from `--help`.
         `Re-run ${pasteableCommand('cdkd drift', [{ hole: 'stacks...' }]).command} to see the remaining drift, then ` +
-        `${pasteableCommand('cdkd drift', [{ hole: 'stacks...' }, { literal: '--revert' }]).command} to retry.`
+        `${pasteableCommand('cdkd drift', [{ hole: 'stacks...' }, { literal: '--revert' }]).command} to retry.` +
+        (notAppliedSentence ? ` ${notAppliedSentence}` : '')
+    );
+  }
+
+  if (totalNotApplied > 0) {
+    throw new PartialFailureError(
+      `${notAppliedSentence} Re-run ${pasteableCommand('cdkd drift', [{ hole: 'stacks...' }]).command} ` +
+        `to see what still differs.`
     );
   }
 }
@@ -599,6 +650,11 @@ export interface RevertTally {
   totalUnsupported: number;
   totalSucceeded: number;
   totalUnresolvable: number;
+  /**
+   * go-to-k/cdkd#7025 step 6: every resource counted in `totalSucceeded`, with
+   * the drifted paths its revert sent, for the post-revert verification.
+   */
+  reverted: RevertedResource[];
 }
 
 /** What one drifted resource's revert reads from {@link runRevert}'s scope. */
