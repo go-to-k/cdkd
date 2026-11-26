@@ -1177,7 +1177,7 @@ if [ -z "${LEGACY_DB_RESOURCE_ID}" ] || [ "${LEGACY_DB_RESOURCE_ID}" = "None" ];
   exit 1
 fi
 LEGACY_STATE_FILE="$(mktemp)"
-aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null |
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - |
   jq '([.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBInstance" and (.key | test("^BackfillInstance"))) | .key] | first) as $k
       | .resources[$k].properties |= del(.AvailabilityZone)
       | .resources[$k].observedProperties |= (if . == null then null else del(.AvailabilityZone) end)' \
@@ -1187,7 +1187,7 @@ if [ "${LEGACY_LEFT}" != "0" ] || [ "$(jq -r '.resources | length' "${LEGACY_STA
   echo "FAIL: phase 2c-az-legacy premise: the doctored record still holds ${LEGACY_LEFT} zone value(s), or the state lost its resources" >&2
   exit 1
 fi
-aws s3 cp "${LEGACY_STATE_FILE}" "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null
+aws s3 cp "${LEGACY_STATE_FILE}" "s3://${STATE_BUCKET}/${STATE_KEY}" --content-type application/json >/dev/null
 rm -f "${LEGACY_STATE_FILE}"
 set +e
 LEGACY_DIFF_OUT=$(CDKD_TEST_UPDATE=true CDKD_TEST_PARAM_GROUP=b CDKD_TEST_LOGS_REMOVED=true \
