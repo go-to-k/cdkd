@@ -19,7 +19,7 @@
  * intrinsic object, or any non-string where the handler reads a string) cannot
  * be judged from the two bags, so it keeps cdkd's previous verdict: no
  * replacement. So does the diff's promoted-dependent probe (no value on either
- * side): the handler sees equal models there.
+ * side): the handler sees equal models there. Both are go-to-k/cdkd#7052.
  */
 import type { ReplacementSiblings } from './types.js';
 
