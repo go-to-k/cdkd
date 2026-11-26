@@ -118,6 +118,8 @@ function childTemplate(): Record<string, unknown> {
     Outputs: {
       Piece: { Value: PIECE },
       Whole: { Value: { Ref: 'X' }, Export: { Name: 'exported-whole' } },
+      // A sub-floor piece exported: its alias row carries the value too.
+      PieceExport: { Value: PIECE, Export: { Name: 'exported-piece' } },
       // An export NAME built from `X`: its alias row's name is withheld.
       NameOut: { Value: 'v', Export: { Name: { 'Fn::Select': [0, { 'Fn::Split': ['/', { Ref: 'X' }] }] } } },
     },
