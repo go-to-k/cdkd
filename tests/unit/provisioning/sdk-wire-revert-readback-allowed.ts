@@ -141,7 +141,7 @@ export const REVERT_PLACEHOLDER_ALLOWED: Record<string, string> = {
   'AWS::CodeBuild::Project#SecondarySourceVersions': 'UNMEASURED: `[]` on UpdateProject, expected to clear',
   'AWS::CodeBuild::Project#SecondarySources': 'UNMEASURED: `[]` on UpdateProject, expected to clear',
   'AWS::CodeBuild::Project#Tags': 'UNMEASURED: `tags: []` on UpdateProject beside the tag diff, expected to keep none',
-  'AWS::CodeBuild::Project#VpcConfig': 'measured: a CodeBuild project revert after an unrelated drift, with no VPC, succeeded (bug hunt r1939484)',
+  'AWS::CodeBuild::Project#VpcConfig': 'measured: a CodeBuild project revert after an unrelated drift succeeded (bug hunt r1939484)',
   'AWS::Cognito::UserPool#AccountRecoverySetting': REVERT_OK('user pool'),
   'AWS::Cognito::UserPool#AdminCreateUserConfig': REVERT_OK('user pool'),
   'AWS::Cognito::UserPool#AutoVerifiedAttributes': REVERT_OK('user pool'),
@@ -152,7 +152,7 @@ export const REVERT_PLACEHOLDER_ALLOWED: Record<string, string> = {
   'AWS::Cognito::UserPool#UserAttributeUpdateSettings': REVERT_OK('user pool'),
   'AWS::Cognito::UserPool#UserPoolTags': REVERT_OK('user pool'),
   'AWS::Cognito::UserPool#VerificationMessageTemplate': REVERT_OK('user pool'),
-  'AWS::ECS::Service#CapacityProviderStrategy': 'measured: `UpdateService` with `capacityProviderStrategy: []` on a service with no launch type is accepted and keeps the cluster default strategy (#7025)',
+  'AWS::ECS::Service#CapacityProviderStrategy': 'measured: `UpdateService` with `capacityProviderStrategy: []` on a service with no launch type is accepted and keeps the cluster default strategy (#7025, issuecomment-7186461160)',
   'AWS::ECS::Service#PlacementConstraints': REVERT_OK('ECS service'),
 
   'AWS::ElasticLoadBalancingV2::LoadBalancer#Subnets':
