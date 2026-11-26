@@ -50,9 +50,13 @@ import { CASES_CONNECT } from './sdk-wire-cases-connect.js';
 import { CASES_VPC_ENDPOINT } from './sdk-wire-cases-vpc-endpoint.js';
 import { CASES_NO_PROPERTIES } from './sdk-wire-cases-no-properties.js';
 import {
+  REVERT_DECLARED_SKIPPED,
+  REVERT_FAILED_READBACKS,
+  REVERT_NO_PLACEHOLDERS,
   REVERT_PLACEHOLDER_ALLOWED,
   REVERT_READBACK_EXEMPT,
 } from './sdk-wire-revert-readback-allowed.js';
+import { READBACK_ARMS } from './sdk-wire-revert-readback-arms.js';
 
 // Every client class a covered provider reaches, wrapped so each instance
 // (shared or provider-built) is captured. A `vi.mock` factory is hoisted, so
@@ -979,6 +983,17 @@ describe('the read-back revert check ledger (#7025)', () => {
     for (const type of Object.keys(REVERT_READBACK_EXEMPT)) expect(cased.has(type), type).toBe(true);
     const checked = [...cased].filter((type) => !(type in REVERT_READBACK_EXEMPT));
     expect(checked.length).toBe(CHECKED_TYPES);
+  });
+
+  it('arms only cased types, and lists only checked ones', () => {
+    // An exempt type may keep its arm: what it reads back is the exemption's evidence.
+    for (const type of Object.keys(READBACK_ARMS)) expect(cased.has(type), type).toBe(true);
+    const lists = { REVERT_NO_PLACEHOLDERS, REVERT_FAILED_READBACKS, REVERT_DECLARED_SKIPPED };
+    for (const [name, list] of Object.entries(lists)) {
+      for (const type of Object.keys(list).map((k) => k.split('#')[0]!)) {
+        expect(cased.has(type) && !(type in REVERT_READBACK_EXEMPT), `${name}: ${type}`).toBe(true);
+      }
+    }
   });
 
   it('allow-lists placeholders only of checked types, each with a reason', () => {

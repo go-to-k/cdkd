@@ -17,6 +17,9 @@ import {
   type TypeCase,
 } from './sdk-wire-harness.js';
 import {
+  REVERT_DECLARED_SKIPPED,
+  REVERT_FAILED_READBACKS,
+  REVERT_NO_PLACEHOLDERS,
   REVERT_PLACEHOLDER_ALLOWED,
   REVERT_READBACK_EXEMPT,
 } from './sdk-wire-revert-readback-allowed.js';
@@ -78,7 +81,10 @@ export interface RevertReadbackResult {
   /** Why no revert could be checked; undefined when one was. */
   unchecked?: string;
   readbacks: number;
+  /** The distinct placeholder paths some revert probed. */
   placeholders: number;
+  /** Per read-back no revert of which succeeded, while another one did: why. */
+  failedReadbacks: string[];
   hits: Hit[];
 }
 
@@ -113,9 +119,8 @@ function wireDelta(a: Outcome, b: Outcome): { lines: string[]; sentEmpty: boolea
 
 /**
  * The reverts to try: the read-back with one scalar member changed (a drift
- * put back), top-level members first, then nested ones; then, when none
- * reverts, a top-level member set to the case's declared value. Each with
- * the path it changed.
+ * put back), shallowest first; then each top-level member set to the case's
+ * declared value. Each with the path it changed.
  */
 function revertedMember(
   t: TypeCase,
@@ -144,7 +149,11 @@ function revertedMember(
   for (const [key, value] of Object.entries(declared)) {
     if (touchesCreateOnly(t.createOnly, [key], declared)) continue;
     if (JSON.stringify(readback[key]) === JSON.stringify(value)) continue;
-    out.push({ desired: { ...structuredClone(readback), [key]: structuredClone(value) }, changed: [key] });
+    if (`${t.resourceType}#${key}` in REVERT_DECLARED_SKIPPED) continue;
+    out.push({
+      desired: { ...structuredClone(readback), [key]: structuredClone(value) },
+      changed: [key],
+    });
   }
   return out;
 }
@@ -227,8 +236,9 @@ function valueAtPath(bag: Bag, path: Path): unknown {
 }
 
 /**
- * Revert one changed member of `rb` and compare that wire with the same
- * revert without each placeholder, into `hits`; why not, when no revert of
+ * Revert each changed member of `rb` in turn and compare each wire with the
+ * same revert without each placeholder, into `hits` (`probed` collects the
+ * placeholder paths a successful revert probed); why not, when no revert of
  * `rb` succeeds.
  */
 async function checkOne(
@@ -236,7 +246,7 @@ async function checkOne(
   rb: Readback,
   handled: ReadonlySet<string>,
   hits: Map<string, Hit>,
-  result: RevertReadbackResult
+  probed: Set<string>
 ): Promise<string | undefined> {
   const p = t.provider();
   const context = { ...t.updateContext, desiredFromAwsReadback: true };
@@ -246,7 +256,14 @@ async function checkOne(
   };
   const placeholderPaths = paths(rb.bag).filter((path) => isPlaceholder(valueAtPath(rb.bag, path)));
   const reasons: string[] = [];
+  const probedOn = new Set<string>();
+  let reverted = false;
+  // One successful revert per top-level member: a member set whole to the
+  // template's value (which may start a slow transition, such as a Firehose
+  // destination's) only when no scalar under it reverted.
+  const revertedTops = new Set<unknown>();
   for (const { desired, changed } of revertedMember(t, rb.bag, handled)) {
+    if (revertedTops.has(changed[0])) continue;
     const changedKey = changed.join('.');
     const base = await record(update(desired, rb.bag));
     const again = await record(update(desired, rb.bag));
@@ -254,10 +271,14 @@ async function checkOne(
       reasons.push(`revert of ${changedKey} is not deterministic`);
       continue;
     }
-    // A placeholder under a member set whole is part of that change.
+    // A placeholder under a member set whole is part of that change; one
+    // already probed on a revert making the same calls says nothing new.
+    const calls = base.threw ? 'threw' : base.wire.split('\n').map((l) => l.slice(0, l.indexOf(','))).join(' ');
     const probes = placeholderPaths.filter(
-      (path) => !changed.every((seg, i) => path[i] === seg)
+      (path) =>
+        !changed.every((seg, i) => path[i] === seg) && !probedOn.has(`${calls} ${path.join('.')}`)
     );
+    for (const path of probes) probedOn.add(`${calls} ${path.join('.')}`);
     const outcomes: [Path, Outcome][] = [];
     for (const path of probes) {
       outcomes.push([
@@ -269,9 +290,11 @@ async function checkOne(
       reasons.push(`revert of ${changedKey} throws: ${base.message.slice(0, 160)}`);
       continue;
     }
-    result.placeholders += probes.length;
+    reverted = true;
+    revertedTops.add(changed[0]);
     for (const [path, o] of outcomes) {
       const key = `${t.resourceType}#${path.join('.')}`;
+      probed.add(key);
       if (hits.has(key)) continue;
       if (base.threw && !o.threw) {
         hits.set(key, { key, kind: 'throws', detail: base.message });
@@ -280,12 +303,12 @@ async function checkOne(
         hits.set(key, {
           key,
           kind: sentEmpty ? 'sent' : 'changed',
-          detail: lines.slice(0, 6).join('; ') || '(wire differs outside the inputs)',
+          detail: `revert of ${changedKey}: ${lines.slice(0, 6).join('; ') || '(wire differs outside the inputs)'}`,
         });
       }
     }
-    return undefined;
   }
+  if (reverted) return undefined;
   return `${rb.shape}: ${reasons.join('; ') || 'no updatable member to revert'}`;
 }
 
@@ -296,24 +319,34 @@ export async function checkRevertReadback(t: TypeCase): Promise<RevertReadbackRe
 
 async function runCheck(t: TypeCase): Promise<RevertReadbackResult> {
   const p = t.provider();
-  const result: RevertReadbackResult = { readbacks: 0, placeholders: 0, hits: [] };
+  const result: RevertReadbackResult = {
+    readbacks: 0,
+    placeholders: 0,
+    failedReadbacks: [],
+    hits: [],
+  };
   if (t.noProperties) return { ...result, unchecked: 'handles no properties' };
   if (typeof p.readCurrentState !== 'function') {
     return { ...result, unchecked: 'no readCurrentState' };
   }
   const handled = new Set(p.handledProperties?.get(t.resourceType) ?? []);
   const hits = new Map<string, Hit>();
+  const probed = new Set<string>();
   const reasons: string[] = [];
+  const failed: string[] = [];
   let reverted = 0;
   try {
     for (const shapes of [MINIMAL_SHAPES, FALLBACK_SHAPES]) {
       const readbacks = await readbacksOf(t, shapes, reasons);
       result.readbacks += readbacks.length;
       for (const rb of readbacks) {
-        setFakeShape(rb.shape);
-        const why = await checkOne(t, rb, handled, hits, result);
+        // The update's own reads (a status a wait polls, the live value it
+        // diffs against) answer `shallow` after a `bare` read: a bare answer
+        // reports no status, so every wait would run to its timeout.
+        setFakeShape(rb.shape === 'bare' ? 'shallow' : rb.shape);
+        const why = await checkOne(t, rb, handled, hits, probed);
         if (why === undefined) reverted++;
-        else reasons.push(why);
+        else failed.push(why);
       }
       if (reverted > 0) break;
     }
@@ -321,13 +354,11 @@ async function runCheck(t: TypeCase): Promise<RevertReadbackResult> {
     setFakeShape('full');
   }
   result.hits = [...hits.values()];
-  if (reverted === 0) {
-    const why = reasons.join(' | ');
-    return { ...result, unchecked: why };
-  }
+  result.placeholders = probed.size;
+  if (reverted === 0) return { ...result, unchecked: [...reasons, ...failed].join(' | ') };
+  result.failedReadbacks = failed;
   return result;
 }
-
 
 /** Whether an allow-list reason does not record a measured AWS behavior. */
 export const isUnmeasured = (why: string): boolean => !why.startsWith('measured:');
@@ -338,7 +369,7 @@ export function describeRevertReadback(t: TypeCase): void {
   if (exempt !== undefined) {
     it('is exempt from the read-back revert check for a reason that still holds (#7025)', async () => {
       const r = await checkRevertReadback(t);
-      expect(r.unchecked, `stale exemption: ${exempt}`).toBeDefined();
+      expect(r.unchecked, `stale exemption: ${exempt.why}`).toMatch(exempt.says);
     });
     return;
   }
@@ -351,6 +382,20 @@ export function describeRevertReadback(t: TypeCase): void {
   it('reverts its own read-back without sending a placeholder back (#7025)', async () => {
     const r = await checkRevertReadback(t);
     expect(r.unchecked, 'no revert of the read-back could be checked').toBeUndefined();
+    // It saw its input: a placeholder was probed, unless none is listed.
+    const none = REVERT_NO_PLACEHOLDERS[t.resourceType];
+    if (none === undefined) {
+      expect(r.placeholders, 'no placeholder probed; list it in REVERT_NO_PLACEHOLDERS').toBeGreaterThan(0);
+    } else {
+      expect(r.placeholders, `stale REVERT_NO_PLACEHOLDERS entry: ${none}`).toBe(0);
+    }
+    // Every read-back shape reverted, or the one that does not is listed.
+    const failed = REVERT_FAILED_READBACKS[t.resourceType];
+    if (failed === undefined) {
+      expect(r.failedReadbacks, 'a read-back no revert of which succeeds').toEqual([]);
+    } else {
+      expect(r.failedReadbacks.join(' | '), failed.why).toMatch(failed.says);
+    }
     const refused = r.hits.filter((h) => !(h.key in REVERT_PLACEHOLDER_ALLOWED));
     expect(
       refused.map((h) => `${h.key} [${h.kind}] ${h.detail}`),
@@ -361,5 +406,5 @@ export function describeRevertReadback(t: TypeCase): void {
       allowed.map(([k]) => k).filter((k) => !hit.has(k)),
       'stale allow-list entries'
     ).toEqual([]);
-  });
+  }, 60_000);
 }
