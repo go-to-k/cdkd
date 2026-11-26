@@ -4,6 +4,7 @@ import {
   recordResolvedPair,
   keepTemplateLiteralLeaves,
   scrubResourceRecord,
+  recordPhysicalNameCopy,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
 import { recordTakenIfBranch } from '../../../src/deployment/secret-redaction/resolver-outcomes.js';
@@ -261,6 +262,24 @@ describe('a 1-3 character secret beside a gap (#5056 / #5063 shape, #7037)', () 
     recordResolvedPair(secrets, USERNAME, 'postgres');
     const src = { 'Fn::Join': ['', [{ 'Fn::GetAtt': ['A', 'Id'] }, 'gres']] };
     expect(walk(secrets, 'hostpostgres', src)).not.toContain('postgres');
+  });
+
+  it("a reader's id copy is a gap's exemption only while it lies inside that gap", () => {
+    // A copy spanning the gap AND the token beside it would let the gap keep
+    // the username's plaintext (security review).
+    const secrets: RecordedSecretValues = new Map([['postgres', USERNAME]]);
+    recordResolvedPair(secrets, USERNAME, 'postgres');
+    recordPhysicalNameCopy(secrets, 'q-postgrespostgres');
+    const rules = { descendArrays: true, trustAnyExpression: false, sourceIsSameGeneration: false, sourceIsTemplate: true };
+    const src = { 'Fn::Join': ['', [{ Ref: 'Queue' }, USERNAME]] };
+    expect(positionByLiteralRendering('q-postgrespostgres', src, secrets, rules, (t) => t)).toBeUndefined();
+    // ...while a copy wholly inside the gap is kept there, as #4810 keeps it.
+    const inside: RecordedSecretValues = new Map([['postgres', USERNAME]]);
+    recordResolvedPair(inside, USERNAME, 'postgres');
+    recordPhysicalNameCopy(inside, 'q-postgres');
+    expect(positionByLiteralRendering('q-postgres:postgres', { 'Fn::Join': [':', [{ Ref: 'Queue' }, USERNAME]] }, inside, rules, (t) => t)).toBe(
+      `q-postgres:${USERNAME}`
+    );
   });
 
   it('a token directly beside a parameter gap is positioned', () => {
