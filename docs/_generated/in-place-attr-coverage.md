@@ -13,7 +13,7 @@ Whether an in-place update moves each read-only `Fn::GetAtt` attribute (issue [#
 Source: `@aws-cdk/aws-service-spec` 0.1.235.
 
 - SDK-provider types: **131**, pairs classified by hand: **390** (moving: **66**)
-- Cloud Control types: **1584**, pairs: **5545** — by rule: `no-in-place-update` 1151, `creation-timestamp` 376, `own-identity` 812, `primary-identifier` 450, `arn-template` 59, `update-timestamp` 372, `creator` 26, `owner-account` 30, `identifier-arn-member` 68, `update-marker` 106; by hand: **11**; in the baseline: **2084**
+- Cloud Control types: **1584**, pairs: **5545** — by rule: `no-in-place-update` 1151, `creation-timestamp` 376, `own-identity` 812, `primary-identifier` 450, `arn-template` 59, `update-timestamp` 372, `creator` 26, `owner-account` 30, `identifier-arn-member` 68, `update-marker` 106; by hand: **37**; in the baseline: **2058**
 
 ## SDK-provider types (hand classification)
 
@@ -802,17 +802,43 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235.
 
 ## Cloud Control types classified by hand
 
+- `AWS::Chime::AppInstance` `AppInstanceArn`: never — measured (cdkd-probe-7007-s2c): Name in place left it app-instance/2cf58ce3-...
+- `AWS::Chime::AppInstanceUser` `AppInstanceUserArn`: never — measured (cdkd-probe-7007-s2c): Name in place left it .../user/cdkd-probe-7007-user
+- `AWS::Chime::Channel` `Arn`: never — measured (cdkd-probe-7007-s3c): Name in place left it .../channel/fdc1ec1c-...
+- `AWS::Chime::ChannelFlow` `Arn`: never — measured (cdkd-probe-7007-s4b): Name in place left it .../channel-flow/1109d9cb...
+- `AWS::Chime::ChannelFlow` `ChannelFlowId`: never — measured (cdkd-probe-7007-s4b): Name in place left it 1109d9cb...
+- `AWS::Chime::VoiceConnector` `VoiceConnectorArn`: never — measured (cdkd-probe-7007-s4b): Name in place left it vc/dv56tpxjyzqla7zpqp6swq
+- `AWS::Chime::VoiceConnector` `VoiceConnectorId`: never — measured (cdkd-probe-7007-s4b): Name in place left it dv56tpxjyzqla7zpqp6swq
+- `AWS::CleanRooms::Collaboration` `Arn`: never — measured (cdkd-probe-7007-s2c): Name in place left it collaboration/84408462-...
 - `AWS::CodeStarConnections::SyncConfiguration` `OwnerId`: moved by `RepositoryLinkId` — the owner of the repository the link points at
 - `AWS::CodeStarConnections::SyncConfiguration` `ProviderType`: moved by `RepositoryLinkId` — the provider of the repository the link points at
 - `AWS::CodeStarConnections::SyncConfiguration` `RepositoryName`: moved by `RepositoryLinkId` — the name of the repository the link points at
 - `AWS::ControlTower::LandingZone` `LatestAvailableVersion`: never — the newest landing zone version AWS offers, a service catalog
+- `AWS::DataSync::Task` `TaskArn`: never — measured (cdkd-probe-7007-s4b): Name in place left it task/task-0be708b518a40c674
+- `AWS::Deadline::Budget` `Arn`: never — measured (cdkd-probe-7007-s3c): DisplayName in place left it .../budget/budget-4a2b9e7f...
+- `AWS::Deadline::Budget` `BudgetId`: never — measured (cdkd-probe-7007-s3c): DisplayName in place left it budget-4a2b9e7f...
+- `AWS::Deadline::Queue` `Arn`: never — measured (cdkd-probe-7007-s2c): DisplayName in place left it .../queue/queue-f632d873...
+- `AWS::Deadline::Queue` `QueueId`: never — measured (cdkd-probe-7007-s2c): DisplayName in place left it queue-f632d873...
 - `AWS::EC2::GatewayRouteTableAssociation` `AssociationId`: moved by `RouteTableId` — ReplaceRouteTableAssociation mints a new association id
 - `AWS::EC2::LaunchTemplate` `DefaultVersionNumber`: any-update — the new version becomes the default when the update sets it
 - `AWS::EC2::LaunchTemplate` `LatestVersionNumber`: any-update — a LaunchTemplateData edit mints the next version
+- `AWS::EC2::PrefixList` `Arn`: never — measured (cdkd-probe-7007-s1): PrefixListName in place left it prefix-list/pl-0d520b78fc4478f52
+- `AWS::Glue::UserDefinedFunction` `Arn`: never — measured (cdkd-probe-7007-s2c): ClassName / OwnerName in place left it .../<db>/<create-only name>
+- `AWS::IAM::ServerCertificate` `Arn`: never — measured (cdkd-probe-7007-s1): Path in place left it server-certificate/cdkd-probe-7007-a/cdkd-probe-7007-cert
+- `AWS::IVSChat::LoggingConfiguration` `Id`: never — measured (cdkd-probe-7007-s3c): Name in place left it r2zbNTcYVRdc
+- `AWS::IVSChat::Room` `Id`: never — measured (cdkd-probe-7007-s1): Name in place left it 8NJl1byAY7iO
+- `AWS::KinesisVideo::Stream` `Arn`: never — measured (cdkd-probe-7007-s1): DeviceName in place left it stream/<create-only name>/1795710281819
+- `AWS::Lex::Bot` `Arn`: never — measured (cdkd-probe-7007-s3c): Name in place left it bot/8ACWASRH4S
+- `AWS::Lex::BotAlias` `Arn`: never — measured (cdkd-probe-7007-s3c): BotAliasName in place left it bot-alias/8ACWASRH4S/7ETHCRHKIG
 - `AWS::ODB::CloudExadataInfrastructure` `DbServerVersion`: never — the database server software level, moved by Oracle maintenance
 - `AWS::ODB::CloudExadataInfrastructure` `StorageServerVersion`: never — the storage server software level, moved by Oracle maintenance
 - `AWS::Redshift::Snapshot` `ClusterVersion`: never — the source cluster version, captured when the snapshot was taken
 - `AWS::Redshift::Snapshot` `EngineFullVersion`: never — the source engine version, captured when the snapshot was taken
+- `AWS::Route53Resolver::FirewallRuleGroupAssociation` `Arn`: never — measured (cdkd-probe-7007-s3c): Name in place left it .../rslvr-frgassoc-ad8eaddd39cc403a
+- `AWS::Route53Resolver::ResolverRule` `Arn`: never — measured (cdkd-probe-7007-s1): Name only in place left it resolver-rule/rslvr-rr-b961c68a7e1e43908
+- `AWS::WellArchitected::Workload` `WorkloadId`: never — measured (cdkd-probe-7007-s3c): WorkloadName in place left it d407459bb0b58e882b630018989ed8fb
+- `AWS::XRay::Group` `GroupARN`: never — measured (cdkd-probe-7007-s1): GroupName in place left it group/<old name>/NIY2T2OJ...
+- `AWS::XRay::SamplingRule` `RuleARN`: never — measured (cdkd-probe-7007-s1): SamplingRule.RuleName in place left it sampling-rule/<old name>
 
 ## Cloud Control pairs a moving rule settles
 
@@ -1350,16 +1376,13 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Cases::Template` | 2 |
 | `AWS::CertificateManager::AcmeEndpoint` | 1 |
 | `AWS::Chatbot::MicrosoftTeamsChannelConfiguration` | 1 |
-| `AWS::Chime::AppInstance` | 1 |
 | `AWS::Chime::AppInstanceBot` | 1 |
-| `AWS::Chime::AppInstanceUser` | 1 |
-| `AWS::Chime::Channel` | 3 |
-| `AWS::Chime::ChannelFlow` | 3 |
+| `AWS::Chime::Channel` | 2 |
+| `AWS::Chime::ChannelFlow` | 1 |
 | `AWS::Chime::MediaPipelineKinesisVideoStreamPool` | 1 |
 | `AWS::Chime::SipMediaApplication` | 2 |
-| `AWS::Chime::VoiceConnector` | 3 |
+| `AWS::Chime::VoiceConnector` | 1 |
 | `AWS::CleanRooms::AnalysisTemplate` | 4 |
-| `AWS::CleanRooms::Collaboration` | 1 |
 | `AWS::CleanRooms::ConfiguredTable` | 1 |
 | `AWS::CleanRooms::IdMappingTable` | 4 |
 | `AWS::CleanRooms::IdNamespaceAssociation` | 5 |
@@ -1453,7 +1476,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::DataSync::LocationNFS` | 1 |
 | `AWS::DataSync::LocationObjectStorage` | 3 |
 | `AWS::DataSync::LocationSMB` | 3 |
-| `AWS::DataSync::Task` | 4 |
+| `AWS::DataSync::Task` | 3 |
 | `AWS::DataZone::Connection` | 5 |
 | `AWS::DataZone::DataSource` | 7 |
 | `AWS::DataZone::Domain` | 4 |
@@ -1467,11 +1490,10 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::DataZone::ProjectProfile` | 3 |
 | `AWS::DataZone::SubscriptionTarget` | 1 |
 | `AWS::DataZone::UserProfile` | 2 |
-| `AWS::Deadline::Budget` | 3 |
+| `AWS::Deadline::Budget` | 1 |
 | `AWS::Deadline::Fleet` | 6 |
 | `AWS::Deadline::Limit` | 1 |
 | `AWS::Deadline::Monitor` | 2 |
-| `AWS::Deadline::Queue` | 2 |
 | `AWS::Deadline::QueueEnvironment` | 1 |
 | `AWS::DevOpsAgent::AgentSpace` | 8 |
 | `AWS::DevOpsAgent::Asset` | 1 |
@@ -1498,7 +1520,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::EC2::LocalGatewayRoute` | 2 |
 | `AWS::EC2::NetworkInsightsAnalysis` | 9 |
 | `AWS::EC2::NetworkInterface` | 5 |
-| `AWS::EC2::PrefixList` | 2 |
+| `AWS::EC2::PrefixList` | 1 |
 | `AWS::EC2::SqlHaStandbyDetectedInstance` | 2 |
 | `AWS::EC2::TransitGateway` | 1 |
 | `AWS::EC2::TransitGatewayMeteringPolicy` | 2 |
@@ -1566,7 +1588,6 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Glue::Integration` | 1 |
 | `AWS::Glue::Partition` | 1 |
 | `AWS::Glue::Schema` | 1 |
-| `AWS::Glue::UserDefinedFunction` | 1 |
 | `AWS::Grafana::Workspace` | 4 |
 | `AWS::Greengrass::ConnectorDefinition` | 1 |
 | `AWS::Greengrass::CoreDefinition` | 1 |
@@ -1584,14 +1605,12 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::GuardDuty::ThreatEntitySet` | 2 |
 | `AWS::GuardDuty::TrustedEntitySet` | 2 |
 | `AWS::HealthLake::FHIRDatastore` | 4 |
-| `AWS::IAM::ServerCertificate` | 1 |
 | `AWS::IAM::ServiceLinkedRole` | 1 |
 | `AWS::IAM::VirtualMFADevice` | 1 |
 | `AWS::IVS::Channel` | 2 |
 | `AWS::IVS::IngestConfiguration` | 3 |
 | `AWS::IVS::Stage` | 1 |
-| `AWS::IVSChat::LoggingConfiguration` | 2 |
-| `AWS::IVSChat::Room` | 1 |
+| `AWS::IVSChat::LoggingConfiguration` | 1 |
 | `AWS::IdentityStore::User` | 1 |
 | `AWS::ImageBuilder::Image` | 7 |
 | `AWS::ImageBuilder::ImagePipeline` | 1 |
@@ -1632,15 +1651,13 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Kendra::Thesaurus` | 2 |
 | `AWS::KendraRanking::ExecutionPlan` | 1 |
 | `AWS::Kinesis::Channel` | 2 |
-| `AWS::KinesisVideo::Stream` | 1 |
 | `AWS::Lambda::CapacityProvider` | 1 |
 | `AWS::Lambda::Runtime` | 1 |
 | `AWS::Lambda::RuntimeAlias` | 2 |
 | `AWS::Lambda::RuntimeVersion` | 4 |
 | `AWS::Lambda::Version` | 1 |
 | `AWS::LaunchWizard::Deployment` | 3 |
-| `AWS::Lex::Bot` | 1 |
-| `AWS::Lex::BotAlias` | 2 |
+| `AWS::Lex::BotAlias` | 1 |
 | `AWS::Lex::BotVersion` | 1 |
 | `AWS::LicenseManager::LicenseConfiguration` | 1 |
 | `AWS::LicenseManager::ReportGenerator` | 2 |
@@ -1857,10 +1874,9 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Route53Resolver::FirewallConfig` | 1 |
 | `AWS::Route53Resolver::FirewallDomainList` | 4 |
 | `AWS::Route53Resolver::FirewallRuleGroup` | 5 |
-| `AWS::Route53Resolver::FirewallRuleGroupAssociation` | 4 |
+| `AWS::Route53Resolver::FirewallRuleGroupAssociation` | 3 |
 | `AWS::Route53Resolver::OutpostResolver` | 3 |
 | `AWS::Route53Resolver::ResolverEndpoint` | 3 |
-| `AWS::Route53Resolver::ResolverRule` | 1 |
 | `AWS::S3::AccessGrant` | 1 |
 | `AWS::S3::AccessPoint` | 2 |
 | `AWS::S3::MultiRegionAccessPointPolicy` | 2 |
@@ -1963,7 +1979,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::WellArchitected::AgentOrganizationalProfile` | 1 |
 | `AWS::WellArchitected::Profile` | 1 |
 | `AWS::WellArchitected::ReviewTemplate` | 2 |
-| `AWS::WellArchitected::Workload` | 2 |
+| `AWS::WellArchitected::Workload` | 1 |
 | `AWS::Wickr::Network` | 2 |
 | `AWS::Wisdom::AIAgent` | 1 |
 | `AWS::Wisdom::AIGuardrail` | 1 |
@@ -1984,5 +2000,3 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::WorkSpacesWeb::TrustStore` | 1 |
 | `AWS::WorkSpacesWeb::UserAccessLoggingSettings` | 1 |
 | `AWS::WorkSpacesWeb::UserSettings` | 4 |
-| `AWS::XRay::Group` | 1 |
-| `AWS::XRay::SamplingRule` | 1 |
