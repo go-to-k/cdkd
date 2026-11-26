@@ -32,6 +32,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+/** A one-key `Ref` / `Fn::*` object: an intrinsic, not a bag of keys. */
+function isIntrinsic(value: Record<string, unknown>): boolean {
+  const keys = Object.keys(value);
+  return keys.length === 1 && (keys[0] === 'Ref' || keys[0]!.startsWith('Fn::'));
+}
+
 /** `value` when it is a plain object, else an empty record. */
 function recordOf(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
@@ -167,8 +173,7 @@ function maskRowParameters(
   // A `Parameters` that is itself an intrinsic over a tainted name, or a side
   // that is no plain object and holds a mixed value: every side whole.
   if (
-    (templateValue !== undefined &&
-      !isRecord(templateValue) &&
+    ((!isRecord(templateValue) || isIntrinsic(templateValue)) &&
       readsTainted(templateValue, tainted)) ||
     present.some((side) => !isRecord(change[side]) && holdsMixedDynamicReference(change[side]))
   ) {

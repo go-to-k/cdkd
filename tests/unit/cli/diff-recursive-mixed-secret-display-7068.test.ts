@@ -49,7 +49,10 @@ import {
 import { getLogger } from '../../../src/utils/logger.js';
 import { MIN_NEEDLE_LENGTH } from '../../../src/deployment/secret-redaction.js';
 import type { DiffTreeNode } from '../../../src/cli/commands/diff-recursive/types.js';
-import { SECURITY_TABLE_WITHHELD } from '../../../src/cli/commands/diff-recursive/passed-secret-display.js';
+import {
+  SECURITY_TABLE_WITHHELD,
+  maskPassedSecretChanges,
+} from '../../../src/cli/commands/diff-recursive/passed-secret-display.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 
 const A = '{{resolve:ssm-secure:/app/a}}';
@@ -328,4 +331,45 @@ describe('cdkd diff: a nested row parameter mixing a secret reference (#7068)', 
     });
     }
   }
+});
+
+describe('maskPassedSecretChanges: a nested row Parameters side that is no plain object (#7068)', () => {
+  const row = (oldValue: unknown, newValue: unknown) =>
+    new Map([
+      [
+        'Child',
+        {
+          logicalId: 'Child',
+          changeType: 'UPDATE' as const,
+          resourceType: 'AWS::CloudFormation::Stack',
+          propertyChanges: [{ path: 'Parameters', oldValue, newValue, requiresReplacement: false }],
+        },
+      ],
+    ]);
+  const shown = (changes: ReturnType<typeof row>, template: unknown, tainted: string[]) =>
+    maskPassedSecretChanges(changes, template as never, new Set(tainted)).get('Child')
+      ?.propertyChanges?.[0];
+
+  it('masks every side whole when one side is a string holding a mixed value', () => {
+    const pc = shown(row(`Q7/${A}`, { X: 'plain' }), { Resources: {} }, []);
+    expect([pc?.oldValue, pc?.newValue]).toEqual(['***', '***']);
+  });
+
+  it('masks every side whole when the template Parameters is an intrinsic reading a tainted name', () => {
+    const template = {
+      Resources: {
+        Child: {
+          Type: 'AWS::CloudFormation::Stack',
+          Properties: { Parameters: { 'Fn::If': ['C', { Y: { Ref: 'X' } }, { Y: 'b' }] } },
+        },
+      },
+    };
+    const pc = shown(row({ Y: 'old' }, { Y: 'Q7' }), template, ['X']);
+    expect([pc?.oldValue, pc?.newValue]).toEqual(['***', '***']);
+  });
+
+  it('leaves a row that holds and reads nothing of the kind as it is', () => {
+    const changes = row({ X: 'a' }, { X: 'b', W: B });
+    expect(maskPassedSecretChanges(changes, { Resources: {} } as never, new Set())).toBe(changes);
+  });
 });
