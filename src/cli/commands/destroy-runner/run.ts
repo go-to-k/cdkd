@@ -19,7 +19,7 @@ import {
   loadProviderClasses,
   registerAllProviders,
 } from '../../../provisioning/register-providers.js';
-import type { StackState } from '../../../types/state.js';
+import { shouldRetainResource, type StackState } from '../../../types/state.js';
 import { refuseMalformedOutputsForDestroy } from '../../../state/malformed-resources-bag.js';
 import { StackHasActiveImportsError } from '../../../utils/error-handler.js';
 import {
@@ -302,8 +302,13 @@ async function destroyStackInRegion(
     }
   }
 
-  logger.info(`\nResources to be deleted (${resourceCount}):`);
-  for (const [logicalId, resource] of Object.entries(state.resources)) {
+  // go-to-k/cdkd#7005: a record whose `DeletionPolicy` keeps it is not deleted
+  // (`deleteResource`'s retain arm, the same predicate), so it is listed apart.
+  const entries = Object.entries(state.resources);
+  const toDelete = entries.filter(([, r]) => !shouldRetainResource(r.deletionPolicy));
+  const toKeep = entries.filter(([, r]) => shouldRetainResource(r.deletionPolicy));
+  logger.info(`\nResources to be deleted (${toDelete.length}):`);
+  for (const [logicalId, resource] of toDelete) {
     // Sanitized for the reason the orphan listing below it is, and this half
     // matters MORE: these resources really are deleted once the operator answers
     // y (go-to-k/cdkd#3641 security review). Both values come from a state
@@ -312,6 +317,15 @@ async function destroyStackInRegion(
     // the very banner the y/N answers, while an ESC run in a `resourceType`
     // redraws the lines above it.
     logger.info(`  - ${displaySafe(logicalId)} (${displaySafe(resource.resourceType)})`);
+  }
+  if (toKeep.length > 0) {
+    logger.info(`\nResources kept in AWS by their DeletionPolicy (${toKeep.length}):`);
+    for (const [logicalId, resource] of toKeep) {
+      logger.info(
+        `  - ${displaySafe(logicalId)} (${displaySafe(resource.resourceType)}), ` +
+          `DeletionPolicy: ${displaySafe(resource.deletionPolicy)}`
+      );
+    }
   }
   // go-to-k/cdkd#5111: deleted after the resources above.
   if (supersededCount > 0) {
@@ -391,7 +405,8 @@ async function destroyStackInRegion(
     journaledOrphans,
     ctx,
     stackName,
-    resourceCount,
+    // go-to-k/cdkd#7005: the question counts what it deletes, as the plan does.
+    resourceCount: toDelete.length,
     protectedCount,
     result,
   });

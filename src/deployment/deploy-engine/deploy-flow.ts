@@ -28,7 +28,7 @@ import {
   type StackState,
   importableOutputKeys,
 } from '../../types/state.js';
-import { green, red, yellow } from '../../utils/colors.js';
+import { plannedChangeCounts, plannedChangesLine } from './deploy-flow/change-summary.js';
 import { asIsMessage, displayStackName, safeMsg } from '../../utils/display-safe.js';
 import { getLiveRenderer } from '../../utils/live-renderer.js';
 import type { DeployResult } from './options.js';
@@ -714,21 +714,20 @@ export async function doDeployWithPrefetch(
     }
 
     // Log changes summary
-    const createChanges = engine.diffCalculator.filterByType(changes, 'CREATE');
-    const updateChanges = engine.diffCalculator.filterByType(changes, 'UPDATE');
-    const deleteChanges = engine.diffCalculator.filterByType(changes, 'DELETE');
-
-    engine.logger.info(
-      safeMsg`Changes: ${green(createChanges.length)} to create, ${yellow(updateChanges.length)} to update, ${red(deleteChanges.length)} to delete`
+    const planned = plannedChangeCounts(
+      changes.values(),
+      currentState.resources,
+      effectiveTemplate
     );
+    engine.logger.info(plannedChangesLine(planned));
 
     if (engine.options.dryRun) {
       engine.logger.info('Dry run mode - skipping actual deployment');
       return {
         stackName,
-        created: createChanges.length,
-        updated: updateChanges.length,
-        deleted: deleteChanges.length,
+        created: planned.create,
+        updated: planned.update,
+        deleted: planned.delete,
         // A dry run issues no provider call, so nothing can be skipped.
         deleteSkipped: 0,
         updatePartial: 0,
@@ -755,7 +754,7 @@ export async function doDeployWithPrefetch(
     });
 
     // Progress counter for tracking overall deployment progress
-    const totalOperations = createChanges.length + updateChanges.length + deleteChanges.length;
+    const totalOperations = planned.create + planned.update + planned.delete + planned.orphan;
     const progress = { current: 0, total: totalOperations };
 
     // go-to-k/cdkd#6705: arm the receiver for this deploy's signalling creates.
