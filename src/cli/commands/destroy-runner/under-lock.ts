@@ -43,9 +43,9 @@ import {
   supersededHeldByOtherTypeWarning,
   supersededHolderOf,
   supersededResourcesOf,
-  supersededDependentsFirst,
   withoutSuperseded,
 } from '../../../deployment/superseded-resources.js';
+import { scheduleSupersededDeletes } from './superseded-schedule.js';
 import {
   createUnionSecretMasker,
   unionOfSecretBags,
@@ -612,7 +612,7 @@ export async function destroyStackUnderLock({
           // A not-yet-updated resource of a failed deploy may still use the
           // old id; nothing printed carries the failure's text.
           logger.info(
-            safeMsg`  ${logicalId}'s superseded ${resourceType} (${shownId}) was not deleted yet; retrying after the stack's own resources`
+            safeMsg`  ${logicalId}'s superseded ${resourceType} (${shownId}) was not deleted yet; retrying it in dependency order`
           );
           return true;
         }
@@ -641,20 +641,26 @@ export async function destroyStackUnderLock({
       });
     };
 
-    // go-to-k/cdkd#6117: a custom resource's old physical id is deleted
-    // BEFORE the stack's own resources: its Delete runs through the handler
-    // (the ServiceToken function, a provider framework), which those take
-    // down. After a failed deploy a resource not yet updated may still name
-    // the old id, so one that is not deleted here is sent again after them.
+    // go-to-k/cdkd#6117: a custom resource's old id goes BEFORE the stack's
+    // own resources, which take its handler down; one not deleted here (a
+    // not-yet-updated resource may still name it) is sent again below.
     const retryLate = new Set<SupersededResourceRecord>();
     for (const entry of supersededResourcesOf(state)) {
       if (lock.interrupted) break;
       if (!isCustomResourceType(entry.state.resourceType)) continue;
       if (await deleteSupersededRow(entry, true)) retryLate.add(entry);
     }
+    // go-to-k/cdkd#7073: the rest in dependency order with the levels.
+    const slots = scheduleSupersededDeletes(state, executionLevels, retryLate);
+    const deleteSupersededSlot = async (step: number): Promise<void> => {
+      for (const entry of slots[step] ?? []) {
+        if (!lock.interrupted) await deleteSupersededRow(entry);
+      }
+    };
 
     // Process levels in reverse order for deletion.
     for (let levelIndex = executionLevels.length - 1; levelIndex >= 0; levelIndex--) {
+      await deleteSupersededSlot(executionLevels.length - 1 - levelIndex);
       // Graceful SIGINT (issue #816): once draining, do not start a new
       // deletion level. Any level already in flight finished via its own
       // `Promise.all` below; remaining levels are left untouched and their
@@ -666,13 +672,11 @@ export async function destroyStackUnderLock({
 
       const level = executionLevels[levelIndex];
       if (!level) continue;
-
       logger.debug(
         `Deletion level ${executionLevels.length - levelIndex}/${executionLevels.length} (${level.length} resources)`
       );
 
       const stackRegion = state.region ?? ctx.baseRegion;
-
       // go-to-k/cdkd#3869: each resource's delete runs under a PRINTING bag of
       // its own name spellings and those of each secret-named sibling its
       // record holds, so its provider's delete lines, a deleted reader's
@@ -687,13 +691,8 @@ export async function destroyStackUnderLock({
       await Promise.all(deletePromises);
     }
 
-    // AFTER the stack's own resources (a custom resource's old id went above),
-    // dependents first: a replaced profile before its role (go-to-k/cdkd#6770).
-    for (const entry of supersededDependentsFirst(supersededResourcesOf(state))) {
-      if (lock.interrupted) break;
-      if (isCustomResourceType(entry.state.resourceType) && !retryLate.has(entry)) continue;
-      await deleteSupersededRow(entry);
-    }
+    // The rows naming no remaining resource, AFTER the stack's own resources.
+    await deleteSupersededSlot(executionLevels.length);
 
     // A superseded row cdkd cannot read is carried, never acted on, and may
     // name a live resource: a skip, so the state that holds it is kept.
