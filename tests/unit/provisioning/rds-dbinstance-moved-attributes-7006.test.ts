@@ -271,6 +271,27 @@ describe('RDS DBInstance attributes an in-place update moves late (go-to-k/cdkd#
       }
     );
 
+    it('without a restart, beside a port change, waits for the port only', async () => {
+      // The certificate never switches; the port moves on the second read.
+      arm([PORT_PENDING, PORT_MOVED]);
+      const result = await update(
+        { ...changed, Port: '3307' },
+        previous
+      );
+      expect(result.attributes?.['Endpoint.Port']).toBe('3307');
+      expect(result.attributes).not.toHaveProperty('CertificateDetails.CAIdentifier');
+      expect(describes()).toBe(3);
+    });
+
+    it('without a restart, under --no-wait, hands the deploy no wait for the certificate', async () => {
+      process.env['CDKD_NO_WAIT'] = 'true';
+      arm([{ PendingModifiedValues: { CACertificateIdentifier: NEW_CERT.CAIdentifier } }]);
+      const bound = scope();
+      const result = await withDeferredReadinessScope(bound, () => update(changed, previous));
+      expect(result.attributes).not.toHaveProperty('CertificateDetails.CAIdentifier');
+      expect(bound.deferred.size).toBe(0);
+    });
+
     it('without a restart, records a certificate the instance already switched to', async () => {
       arm([
         {
