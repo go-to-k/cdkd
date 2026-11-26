@@ -77,7 +77,7 @@ import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
 
-const READBACK: { dbName?: string } = {};
+const READBACK: { dbName?: string; props?: Record<string, unknown> } = {};
 // The value a public `{{resolve:ssm:/pub}}` reads.
 const PUBLIC_SSM = { value: 'pub-v1', version: 1 };
 const USERNAME = '{{resolve:secretsmanager:db-secret:SecretString:username::}}';
@@ -134,7 +134,9 @@ async function deploy(
     getAttribute: vi.fn(),
     // What AWS reports back for `DBName` (`undefined`: nothing readable).
     readCurrentState: vi.fn(async () =>
-      READBACK.dbName === undefined ? undefined : { DBName: READBACK.dbName }
+      READBACK.dbName === undefined && READBACK.props === undefined
+        ? undefined
+        : { ...(READBACK.dbName !== undefined && { DBName: READBACK.dbName }), ...READBACK.props }
     ),
   };
   const saveState = vi.fn().mockResolvedValue('etag');
@@ -169,7 +171,7 @@ async function deploy(
     'us-east-1'
   );
   let thrown: unknown;
-  await engine.deploy('s', { Parameters: { Suffix: { Type: 'String', Default: SUFFIX.v, ...(SUFFIX.noEcho === true && { NoEcho: true }) } }, Resources: templateResources } as never).catch((e: unknown) => {
+  await engine.deploy('s', { Parameters: { Suffix: { Type: 'String', Default: SUFFIX.v, ...(SUFFIX.noEcho === true && { NoEcho: true }) }, Plain: { Type: 'String', Default: PLAIN.v } }, Resources: templateResources } as never).catch((e: unknown) => {
     thrown = e;
   });
   const saved = saveState.mock.calls
@@ -184,6 +186,8 @@ async function deploy(
 const OTHER = '{{resolve:secretsmanager:db-secret:SecretString:other::}}';
 const LONG = '{{resolve:secretsmanager:db-secret:SecretString:long::}}';
 const SUFFIX: { v: string; noEcho?: boolean } = { v: 'x9' };
+// A plain parameter, never NoEcho: a non-secret input of a masked leaf.
+const PLAIN = { v: 'db-secret' };
 const tpl = (
   dbName: unknown,
   backup: number,
@@ -445,6 +449,8 @@ describe('a stale NoEcho leaf drops only its input-fingerprint non-proof (#7050 
     SUFFIX.v = 'x9';
     SUFFIX.noEcho = false;
     READBACK.dbName = undefined;
+    READBACK.props = undefined;
+    PLAIN.v = 'db-secret';
     PUBLIC_SSM.value = 'pub-v1';
     PUBLIC_SSM.version = 1;
   });
@@ -492,5 +498,51 @@ describe('a stale NoEcho leaf drops only its input-fingerprint non-proof (#7050 
     expect((moved.diff?.get('Db')?.propertyChanges ?? []).map((pc) => pc.path)).toEqual(['DBName']);
     expect(moved.calls).toEqual([]);
     expect(refusal(moved.thrown)).toMatch(/force-stateful-recreation/);
+  });
+
+  it('a stale leaf beside a masked leaf whose plain input moved (#4543) is planned and sent, never skipped', async () => {
+    // Leaf 0 is the stale NoEcho leaf; leaf 1 joins a secret with the plain
+    // `Plain` parameter, recorded wholly masked: only its input fingerprint
+    // shows `Plain` moved.
+    PLAIN.v = 'pg';
+    const groups = [{ Ref: 'Suffix' }, { 'Fn::Join': ['_', [USERNAME, { Ref: 'Plain' }]] }];
+    const template = tpl(undefined, 1, { VPCSecurityGroups: groups });
+    const record = await staleRecord(template);
+    expect((record['properties'] as Record<string, unknown>)['VPCSecurityGroups']).toEqual(['***', '***']);
+    expect(record['noEchoLeaves']).toEqual([['VPCSecurityGroups', 0]]);
+    // AWS holds today's value at both leaves: the stale leaf alone reads
+    // back `held`, yet leaf 1's input moved since the record was written.
+    PLAIN.v = 'apgb';
+    READBACK.props = { VPCSecurityGroups: ['noecho-old-value', 'pg_apgb'] };
+    const moved = await deploy({ Db: record as never }, template);
+    expect(moved.thrown).toBeUndefined();
+    expect((moved.diff?.get('Db')?.propertyChanges ?? []).map((pc) => pc.path)).toEqual(['VPCSecurityGroups']);
+    expect(moved.calls).toEqual(['update:Db']);
+    expect((moved.sent![0]!.props as Record<string, unknown>)['VPCSecurityGroups']).toEqual([
+      'noecho-old-value',
+      'pg_apgb',
+    ]);
+    expect(exposes(moved.persisted?.properties)).toBeUndefined();
+  });
+
+  it('the plan reads "stale" through the shared predicate: a NoEcho leaf not wholly the mask is re-baselined', async () => {
+    // An older record (no input fingerprint) naming a whole key as a NoEcho
+    // leaf whose value it holds only partly masked. Not a stale leaf, so the
+    // plan re-baselines it as any older record's key, and the next deploy
+    // compares it (a mask-only test would read it stale and never stamp it).
+    SUFFIX.v = 'pg';
+    const template = tpl(undefined, 1, { VPCSecurityGroups: ['a', joined('_')] });
+    const created = await deploy({}, template);
+    expect(created.thrown).toBeUndefined();
+    const record = structuredClone(created.persisted!) as unknown as Record<string, unknown>;
+    expect((record['properties'] as Record<string, unknown>)['VPCSecurityGroups']).toEqual(['a', '***']);
+    const baseline = created.persisted?.maskedPropertyInputFingerprints?.['VPCSecurityGroups'];
+    expect(baseline).toBeDefined();
+    delete record['maskedPropertyInputFingerprints'];
+    record['noEchoLeaves'] = [['VPCSecurityGroups']];
+    const run = await deploy({ Db: record as never }, template);
+    expect(run.thrown).toBeUndefined();
+    expect(run.calls).toEqual([]);
+    expect(run.persisted?.maskedPropertyInputFingerprints?.['VPCSecurityGroups']).toBe(baseline);
   });
 });

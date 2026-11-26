@@ -25,6 +25,7 @@ import {
   maskedPropertyFingerprintsOf,
   maskedReferenceFingerprintsFor,
   movedMaskedProperties,
+  passedSecretVerdictOf,
   possiblyMaskedKeys,
   publicReferencesMoved,
   publicReferencesOf,
@@ -411,14 +412,19 @@ export async function resolveUpdateInputs(
   // non-proof is dropped, and the readback below decides the leaf, as it does
   // for a record with no fingerprint. A key whose TEXT fingerprint moved (the
   // template itself changed) stays moved, and the public `ssm` check below
-  // runs after this, so a moved public value moves the key again.
+  // runs after this, so a moved public value moves the key again. A key whose
+  // passed-secret MAC proves a move stays moved, and so does one holding any
+  // masked leaf that is not a stale `NoEcho` leaf: its input fingerprint
+  // still proves that leaf's inputs (go-to-k/cdkd#4543).
   const recordedText = maskedPropertyFingerprintsOf(currentResource);
-  for (const coordinate of staleCoordinates) {
-    const key = coordinate[0];
-    if (typeof key !== 'string' || !Object.hasOwn(desiredProps, key)) continue;
-    if (maskedPropertyFingerprint(desiredProps[key]) === recordedText.get(key)) {
-      movedMasked.delete(key);
-    }
+  const recordedProps = (currentResource.properties ?? {}) as Record<string, unknown>;
+  for (const key of new Set(staleCoordinates.map((coordinate) => coordinate[0]))) {
+    if (typeof key !== 'string' || !movedMasked.has(key) || !Object.hasOwn(desiredProps, key))
+      continue;
+    if (maskedPropertyFingerprint(desiredProps[key]) !== recordedText.get(key)) continue;
+    if ((await passedSecretVerdictOf(fingerprints, key, currentResource)) === 'changed') continue;
+    if (!everyMaskedLeafIsStale(recordedProps[key], [key], staleCoordinates)) continue;
+    movedMasked.delete(key);
   }
   // go-to-k/cdkd#7050: a masked key whose public `ssm` value moved (or cannot
   // be told unmoved) is sent, as CloudFormation would; a secret's is not.
@@ -514,3 +520,23 @@ export async function resolveUpdateInputs(
 
 /** What {@link resolveUpdateInputs} hands the later phases. */
 export type ResolvedUpdateInputs = Awaited<ReturnType<typeof resolveUpdateInputs>>;
+
+/**
+ * go-to-k/cdkd#7050 review: is every leaf of `node` (the record's value at
+ * `path`) that carries the mask at or under one of `stale`?
+ */
+function everyMaskedLeafIsStale(
+  node: unknown,
+  path: readonly (string | number)[],
+  stale: readonly (readonly (string | number)[])[]
+): boolean {
+  if (stale.some((coordinate) => keyOrderFreeJson(coordinate) === keyOrderFreeJson(path)))
+    return true;
+  if (Array.isArray(node))
+    return node.every((item, index) => everyMaskedLeafIsStale(item, [...path, index], stale));
+  if (node !== null && typeof node === 'object')
+    return Object.entries(node).every(([child, value]) =>
+      everyMaskedLeafIsStale(value, [...path, child], stale)
+    );
+  return !carriesSecretMask(node);
+}

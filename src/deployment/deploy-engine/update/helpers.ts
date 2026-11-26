@@ -16,8 +16,6 @@ import {
   type RecordedSecretValues,
 } from '../../secret-redaction.js';
 
-export { isWhollyMask } from '../../secret-redaction.js';
-
 /** A copy of `bag` with the leaf at `coordinate` set to `value` (containers copied on the path). */
 export function setAtCoordinate(
   bag: Record<string, unknown>,

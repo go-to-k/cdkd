@@ -83,6 +83,7 @@ export {
   maskedPropertyFingerprintsOf,
   maskedPropertyInputFingerprintsOf,
   movedMaskedProperties,
+  passedSecretVerdictOf,
   isUnverifiedPassedSecret,
   withRebaselinedFingerprints,
   isWrittenFromDeployedTemplate,

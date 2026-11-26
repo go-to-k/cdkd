@@ -106,7 +106,7 @@ beforeEach(() => {
  * (`Sep`, whose text `W`'s reference also resolves to) with a reference, so
  * the parent masks it and the child's read of it is masked whole.
  */
-async function parentRow(): Promise<{ bag: RecordedSecretValues; value: string }> {
+async function parentRow(sep = SECRET): Promise<{ bag: RecordedSecretValues; value: string }> {
   const bag: RecordedSecretValues = new Map();
   const source = {
     TemplateURL: 'https://s3.amazonaws.com/bucket/child.json',
@@ -118,7 +118,7 @@ async function parentRow(): Promise<{ bag: RecordedSecretValues; value: string }
   const context = {
     template: { Parameters: { Sep: { Type: 'String' } }, Resources: {} } as CloudFormationTemplate,
     resources: {},
-    parameters: { Sep: SECRET },
+    parameters: { Sep: sep },
     conditions: {},
     recordedSecretValues: bag,
   };
@@ -356,6 +356,59 @@ describe(`a masked key beside an unproven input, X passed as ${passed} (#7050 re
     const run = await deploy({ Db: structuredClone(created.persisted!) }, edited, opts);
     expect((run.diff?.get('Db')?.propertyChanges ?? []).map((pc) => pc.path)).toContain('DBName');
     expectRefusedOver(run, 'DBName');
+  });
+});
+
+// #7050 review: a key the record names a stale `NoEcho` leaf under (its
+// `NoEcho` source gone) whose passed-secret value MAC PROVES a move. Only the
+// input fingerprint's non-proof is dropped for a stale leaf; the MAC's proof
+// stands, so a create-only key on a stateful type is refused, never warned
+// "not applied" on every deploy.
+describe('a stale NoEcho leaf whose passed-secret MAC proves a move is refused (#7050 review)', () => {
+  const tpl = {
+    Db: {
+      Type: 'AWS::RDS::DBInstance',
+      Properties: {
+        Engine: 'mysql',
+        DBName: { 'Fn::Join': ['-', [{ Ref: 'X' }, { Ref: 'Z' }]] },
+        BackupRetentionPeriod: 1,
+      },
+    },
+  };
+  const options = async (sep: string) => {
+    const { bag, value } = await parentRow(sep);
+    return {
+      value,
+      opts: {
+        dryRun: false,
+        parameters: { X: value, Y: 'unused', Z: 'admin' },
+        inheritedSecrets: bag,
+        parentStackInfo: { parentStack: 'Parent', parentLogicalId: 'Child', parentRegion: 'us-east-1' },
+        passedParameterClasses: new Map([
+          ['X', 'secret'],
+          ['Z', 'clean'],
+        ]),
+      },
+    };
+  };
+
+  it('planned and refused', async () => {
+    const before = await options(SECRET);
+    const created = await deploy({}, tpl, before.opts);
+    expect(created.thrown).toBeUndefined();
+    const record = structuredClone(created.persisted!) as unknown as Record<string, unknown>;
+    expect((record['properties'] as Record<string, unknown>)['DBName']).toBe('***');
+    expect(JSON.stringify(record['noEchoValueMacs'])).toContain('cdkd:passed');
+    // A record naming the key a NoEcho leaf no NoEcho source serves today.
+    record['noEchoLeaves'] = [['DBName']];
+    const after = await options('r8');
+    const run = await deploy({ Db: record as never }, tpl, after.opts);
+    expect((run.diff?.get('Db')?.propertyChanges ?? []).map((pc) => pc.path)).toEqual(['DBName']);
+    expectRefusedOver(run, 'DBName');
+    for (const value of [before.value, after.value]) {
+      expect(JSON.stringify(run.diff?.get('Db'))).not.toContain(value);
+      expect(logged()).not.toContain(value);
+    }
   });
 });
 

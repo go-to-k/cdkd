@@ -1969,7 +1969,9 @@ stack with no instance id.
   deploy unchanged), and a recorded one that differs is no move (it hashed
   the `NoEcho` input as written). Only that non-proof is dropped: a key
   whose text fingerprint moved (the template itself was edited), or whose
-  public `ssm` value moved, is still a move. An updatable key is sent, as
+  public `ssm` value moved, or whose passed-secret value MAC proves a
+  move, or that holds any other masked leaf (its input fingerprint still
+  covers that leaf's inputs), is still a move. An updatable key is sent, as
   any planned key is, and its record settles. For a create-only key, a
   readback holding today's value settles the leaf and unmarks it; one
   holding another value, which the provider reports exactly, is a change
