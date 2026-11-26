@@ -175,6 +175,7 @@ flag in this group, except `--skip-final-snapshot`, which is on
 | Flag | Default | Description |
 | --- | --- | --- |
 | `--replace` | `false` | Replace a resource whose in-place update AWS rejects. |
+| `--replace-resource <logicalId>` | | Plan one resource's update as a replacement, for a property AWS will not update in place. |
 | `--force-stateful-recreation` | `false` | Confirm a data-losing replacement of a stateful resource. |
 | `--recreate-via-cc-api <logicalId>`, `--recreate-via-sdk-provider <logicalId>` | | Destroy and recreate one resource on the other provisioning route. |
 | `--pin-cc-api <logicalId>` | | Keep one resource on the Cloud Control route. |

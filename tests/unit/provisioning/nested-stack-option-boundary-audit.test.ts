@@ -66,6 +66,7 @@ const AUDITED_MEMBERS = [
   // --- names a stack, or a resource in one (the audit's subject) -------------
   'recreateTargets', // self-scoped: matched only while deploying its `stackName`
   'pinCcApi', // self-scoped: same shape and same reason as recreateTargets (#2719)
+  'replaceResources', // self-scoped: same shape and same reason as pinCcApi (#7079)
   'onCurrentStateLoaded', // self-scoped: the prefix gate returns early on a mismatch
   'onFirstDeployLeftNoRecord', // self-scoped: the registry release returns early on a mismatch (#4705)
   'parentStackInfo', // overwritten by the spread site, must describe THIS child

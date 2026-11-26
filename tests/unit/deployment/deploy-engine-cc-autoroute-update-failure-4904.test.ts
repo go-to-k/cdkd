@@ -187,6 +187,28 @@ describe('auto-routed SDK-to-Cloud Control update failure (#4904)', () => {
     expect(extractDeploymentEventError(thrown).name).toBe('AccessDeniedException');
   });
 
+  // go-to-k/cdkd#7079: a Cloud Control NotUpdatable answer (AWS-authored, so
+  // wrapped) carries both remedies, the route's first.
+  it('wraps a NotUpdatable answer with the route remedy and the --replace-resource one', async () => {
+    updateError = awsSdkError(
+      'Resource is not updatable with parameters provided (account 123456789012)',
+      'NotUpdatableException'
+    );
+
+    const thrown = (await runUpdate(makeEngine(AUTO_ROUTED), 'sdk')) as Error;
+
+    expect(thrown.cause).toBe(updateError);
+    expect(hasRedactedCause(thrown)).toBe(true);
+    const recorded = extractDeploymentEventError(thrown).message;
+    expect(recorded.startsWith('NotUpdatableException.')).toBe(true);
+    const route = recorded.indexOf('--prefer-sdk-route AWS::SNS::Topic:ArchivePolicy');
+    const replace = recorded.indexOf('--replace-resource MyTopic');
+    expect(route).toBeGreaterThan(0);
+    expect(replace).toBeGreaterThan(route);
+    expect(recorded).toContain('https://github.com/go-to-k/cdkd/issues/new?');
+    expect(recorded).not.toContain('123456789012');
+  });
+
   it('keeps the remedy in the recorded message for a credential resolution failure', async () => {
     updateError = Object.assign(new Error('Could not load credentials from profile arn:aws:iam::123456789012:role/x'), {
       name: 'CredentialsProviderError',

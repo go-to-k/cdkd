@@ -2823,6 +2823,11 @@
       "scenarios": []
     },
     {
+      "name": "replace-resource-flag",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "replace-snapshot-failed-rollback",
       "annotated": false,
       "scenarios": []
@@ -4578,6 +4583,7 @@
     "remove-protection-journaled-orphan",
     "rename-refactor",
     "replace-predelete-snapshot-failed-rollback",
+    "replace-resource-flag",
     "replace-snapshot-failed-rollback",
     "replace-squatter-refusal",
     "replaced-delete-failed-rollback",
