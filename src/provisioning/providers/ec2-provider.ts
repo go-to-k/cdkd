@@ -45,6 +45,7 @@ import { instanceApplyMethods } from './ec2/instance-apply.js';
 import { instanceLifecycleMethods } from './ec2/instance-lifecycle.js';
 import { instanceBuildMethods } from './ec2/instance-build.js';
 import { instanceSsmMethods } from './ec2/instance-ssm.js';
+import { instanceEbsOptimizedMethods } from './ec2/instance-ebs-optimized.js';
 import { networkAclMethods } from './ec2/network-acl.js';
 import { tagsErrorsMethods } from './ec2/tags-errors.js';
 import { driftMethods } from './ec2/drift.js';
@@ -103,6 +104,7 @@ type EC2ProviderMixins = typeof orphansMethods &
   typeof instanceLifecycleMethods &
   typeof instanceBuildMethods &
   typeof instanceSsmMethods &
+  typeof instanceEbsOptimizedMethods &
   typeof networkAclMethods &
   typeof tagsErrorsMethods &
   typeof driftMethods &
@@ -821,6 +823,7 @@ for (const methods of [
   instanceLifecycleMethods,
   instanceBuildMethods,
   instanceSsmMethods,
+  instanceEbsOptimizedMethods,
   networkAclMethods,
   tagsErrorsMethods,
   driftMethods,
