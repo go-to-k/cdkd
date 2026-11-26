@@ -274,6 +274,13 @@ pl_version_reader() {
     --query Parameter.Value --output text)" || return 1
   printf '%s' "${v#v}"
 }
+for v in "${RTB_ID}" "${PL_ID}" "${TGW_ID}" "${IGW_ID}"; do
+  if [ -z "${v}" ] || [ "${v}" = "None" ]; then
+    echo "FAIL: a Phase 1 resource lookup came back empty" >&2
+    exit 1
+  fi
+done
+# After the empty check: an empty PL_ID would make the read below fail silently.
 PL_VERSION_P1="$(aws ec2 describe-managed-prefix-lists --region "${REGION}" \
   --prefix-list-ids "${PL_ID}" --query 'PrefixLists[0].Version' --output text)"
 PL_READER_P1="$(pl_version_reader)"
@@ -282,12 +289,6 @@ if [ "${PL_READER_P1}" != "${PL_VERSION_P1}" ]; then
   echo "FAIL: premise: the Version reader holds '${PL_READER_P1}', the live Version is '${PL_VERSION_P1}'" >&2
   exit 1
 fi
-for v in "${RTB_ID}" "${PL_ID}" "${TGW_ID}" "${IGW_ID}"; do
-  if [ -z "${v}" ] || [ "${v}" = "None" ]; then
-    echo "FAIL: a Phase 1 resource lookup came back empty" >&2
-    exit 1
-  fi
-done
 
 # Bounded re-read: DescribeRouteTables is eventually consistent right after
 # CreateRoute, so one read can miss a route the deploy just created. Both

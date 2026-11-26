@@ -212,6 +212,8 @@ export const IN_PLACE_UPDATE_ATTRS_MOVED_BY: Readonly<
   // RepositoryLinkId change re-points the sync configuration.
   'AWS::CodeStarConnections::SyncConfiguration': Object.freeze({
     OwnerId: new Set(['RepositoryLinkId']),
+    RepositoryName: new Set(['RepositoryLinkId']),
+    ProviderType: new Set(['RepositoryLinkId']),
   }),
   // go-to-k/cdkd#7007 (Cloud Control): an in-place RouteTableId change calls
   // ReplaceRouteTableAssociation, which answers a new association id.

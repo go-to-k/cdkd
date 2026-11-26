@@ -13,7 +13,7 @@ Whether an in-place update moves each read-only `Fn::GetAtt` attribute (issue [#
 Source: `@aws-cdk/aws-service-spec` 0.1.235.
 
 - SDK-provider types: **131**, pairs classified by hand: **390** (moving: **66**)
-- Cloud Control types: **1584**, pairs: **5545** — by rule: `no-in-place-update` 1151, `creation-timestamp` 376, `own-identity` 812, `primary-identifier` 450, `arn-template` 59, `update-timestamp` 372, `creator` 26, `owner-account` 30, `identifier-arn-member` 68, `update-marker` 111; by hand: **4**; in the baseline: **2086**
+- Cloud Control types: **1584**, pairs: **5545** — by rule: `no-in-place-update` 1151, `creation-timestamp` 376, `own-identity` 812, `primary-identifier` 450, `arn-template` 59, `update-timestamp` 372, `creator` 26, `owner-account` 30, `identifier-arn-member` 68, `update-marker` 105; by hand: **12**; in the baseline: **2084**
 
 ## SDK-provider types (hand classification)
 
@@ -803,9 +803,17 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235.
 ## Cloud Control types classified by hand
 
 - `AWS::CodeStarConnections::SyncConfiguration` `OwnerId`: moved by `RepositoryLinkId` — the owner of the repository the link points at
+- `AWS::CodeStarConnections::SyncConfiguration` `ProviderType`: moved by `RepositoryLinkId` — the provider of the repository the link points at
+- `AWS::CodeStarConnections::SyncConfiguration` `RepositoryName`: moved by `RepositoryLinkId` — the name of the repository the link points at
+- `AWS::ControlTower::LandingZone` `LatestAvailableVersion`: never — the newest landing zone version AWS offers, a service catalog
 - `AWS::EC2::GatewayRouteTableAssociation` `AssociationId`: moved by `RouteTableId` — ReplaceRouteTableAssociation mints a new association id
 - `AWS::EC2::LaunchTemplate` `DefaultVersionNumber`: any-update — the new version becomes the default when the update sets it
 - `AWS::EC2::LaunchTemplate` `LatestVersionNumber`: any-update — a LaunchTemplateData edit mints the next version
+- `AWS::ODB::CloudExadataInfrastructure` `DbServerVersion`: never — the database server software level, moved by Oracle maintenance
+- `AWS::ODB::CloudExadataInfrastructure` `StorageServerVersion`: never — the storage server software level, moved by Oracle maintenance
+- `AWS::Redshift::Snapshot` `ClusterVersion`: never — the source cluster version, captured when the snapshot was taken
+- `AWS::Redshift::Snapshot` `EngineFullVersion`: never — the source engine version, captured when the snapshot was taken
+- `AWS::SageMaker::PartnerApp` `CurrentVersionEolDate`: never — the end-of-life date AWS sets for the app version
 
 ## Cloud Control pairs a moving rule settles
 
@@ -950,7 +958,6 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::Connect::SecurityProfile` | `LastModifiedRegion`, `LastModifiedTime` |
 | `AWS::Connect::TestCase` | `LastModifiedRegion`, `LastModifiedTime` |
 | `AWS::Connect::Vocabulary` | `LastModifiedTime` |
-| `AWS::ControlTower::LandingZone` | `LatestAvailableVersion` |
 | `AWS::CustomerProfiles::CalculatedAttributeDefinition` | `LastUpdatedAt` |
 | `AWS::CustomerProfiles::Domain` | `LastUpdatedAt` |
 | `AWS::CustomerProfiles::DomainObjectType` | `LastUpdatedAt` |
@@ -1103,7 +1110,6 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::NetworkSecurityManager::Rule` | `UpdatedAt`, `Version` |
 | `AWS::NetworkSecurityManager::Scope` | `UpdatedAt`, `Version` |
 | `AWS::NetworkSecurityManager::Template` | `UpdatedAt`, `Version` |
-| `AWS::ODB::CloudExadataInfrastructure` | `DbServerVersion`, `StorageServerVersion` |
 | `AWS::ObservabilityAdmin::DatasetIntegration` | `UpdatedAt` |
 | `AWS::Omics::AnnotationStore` | `UpdateTime` |
 | `AWS::Omics::SequenceStore` | `UpdateTime` |
@@ -1150,7 +1156,6 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::RTBFabric::OutboundExternalLink` | `UpdatedTimestamp` |
 | `AWS::RTBFabric::RequesterGateway` | `UpdatedTimestamp` |
 | `AWS::RTBFabric::ResponderGateway` | `UpdatedTimestamp` |
-| `AWS::Redshift::Snapshot` | `ClusterVersion`, `EngineFullVersion` |
 | `AWS::ResilienceHubV2::Policy` | `UpdatedAt` |
 | `AWS::ResilienceHubV2::Service` | `UpdatedAt` |
 | `AWS::ResilienceHubV2::ServiceFunction` | `UpdatedAt` |
@@ -1191,7 +1196,6 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::SageMaker::MlflowApp` | `LastModifiedTime`, `MlflowVersion` |
 | `AWS::SageMaker::ModelCard` | `LastModifiedTime`, `ModelCardVersion` |
 | `AWS::SageMaker::MonitoringSchedule` | `LastModifiedTime` |
-| `AWS::SageMaker::PartnerApp` | `CurrentVersionEolDate` |
 | `AWS::SageMaker::ProcessingJob` | `LastModifiedTime` |
 | `AWS::SageMaker::TrialComponent` | `LastModifiedTime` |
 | `AWS::Scheduler::ScheduleGroup` | `LastModificationDate` |
@@ -1397,7 +1401,6 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::CodePipeline::Pipeline` | 1 |
 | `AWS::CodePipeline::Webhook` | 1 |
 | `AWS::CodeStarConnections::RepositoryLink` | 1 |
-| `AWS::CodeStarConnections::SyncConfiguration` | 2 |
 | `AWS::Cognito::IdentityPool` | 1 |
 | `AWS::Cognito::UserPoolClient` | 2 |
 | `AWS::Cognito::UserPoolDomain` | 1 |

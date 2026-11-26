@@ -10,6 +10,7 @@ import {
 import { ReplacementRulesRegistry } from '../../../src/analyzer/replacement-rules.js';
 import {
   MOVING_RULES,
+  NOT_UPDATE_MARKERS,
   OUT_JSON,
   OUT_MD,
   OUT_SRC,
@@ -493,6 +494,17 @@ describe('the #7007 rules, on real spec inputs', () => {
         properties: ['RepositoryLinkId'],
       })
     );
+    // ...and so do the repository's name and provider.
+    for (const attribute of ['RepositoryName', 'ProviderType']) {
+      expect(report.ccHand, attribute).toContainEqual(
+        expect.objectContaining({
+          type: 'AWS::CodeStarConnections::SyncConfiguration',
+          attribute,
+          verdict: 'moved-by',
+          properties: ['RepositoryLinkId'],
+        })
+      );
+    }
     // A bare `Owner` may be a principal, not an account.
     expect(classifyByRule({ type: 'AWS::X::Thing', attributes: ['Owner'], properties: { Config: undefined } }, 'Owner')).toBeUndefined();
   });
@@ -533,6 +545,17 @@ describe('the #7007 rules, on real spec inputs', () => {
     expect(plan.primaryIdentifier).toContain('ScalingPlanVersion');
     expect(classifyByRule(plan, 'ScalingPlanVersion')).toBeUndefined();
     expect(classifyByRule(real('AWS::Glue::Schema'), 'InitialSchemaVersionId')).toBeUndefined();
+    // A snapshot's source version, and a service-side catalog or software
+    // level, are not written by an update: hand verdicts, not markers.
+    expect(classifyByRule(real('AWS::Redshift::Snapshot'), 'ClusterVersion')).toBeUndefined();
+    for (const pair of NOT_UPDATE_MARKERS) {
+      const i = pair.lastIndexOf('.');
+      expect(classifyByRule(real(pair.slice(0, i)), pair.slice(i + 1)), pair).toBeUndefined();
+      expect(
+        report.ccHand.some((r) => `${r.type}.${r.attribute}` === pair && r.verdict === 'never'),
+        pair
+      ).toBe(true);
+    }
     // A version resource's own number is its identity, not a counter.
     expect(classifyByRule(real('AWS::Lambda::Version'), 'Version')).toBeUndefined();
     expect(MOVING_RULES.has('update-marker')).toBe(true);

@@ -16,10 +16,10 @@
       "creator": 26,
       "owner-account": 30,
       "identifier-arn-member": 68,
-      "update-marker": 111
+      "update-marker": 105
     },
-    "ccByHand": 4,
-    "ccBaseline": 2086
+    "ccByHand": 12,
+    "ccBaseline": 2084
   },
   "sdk": [
     {
@@ -2627,6 +2627,30 @@
       "reason": "the owner of the repository the link points at"
     },
     {
+      "type": "AWS::CodeStarConnections::SyncConfiguration",
+      "attribute": "ProviderType",
+      "verdict": "moved-by",
+      "properties": [
+        "RepositoryLinkId"
+      ],
+      "reason": "the provider of the repository the link points at"
+    },
+    {
+      "type": "AWS::CodeStarConnections::SyncConfiguration",
+      "attribute": "RepositoryName",
+      "verdict": "moved-by",
+      "properties": [
+        "RepositoryLinkId"
+      ],
+      "reason": "the name of the repository the link points at"
+    },
+    {
+      "type": "AWS::ControlTower::LandingZone",
+      "attribute": "LatestAvailableVersion",
+      "verdict": "never",
+      "reason": "the newest landing zone version AWS offers, a service catalog"
+    },
+    {
       "type": "AWS::EC2::GatewayRouteTableAssociation",
       "attribute": "AssociationId",
       "verdict": "moved-by",
@@ -2646,6 +2670,36 @@
       "attribute": "LatestVersionNumber",
       "verdict": "any-update",
       "reason": "a LaunchTemplateData edit mints the next version"
+    },
+    {
+      "type": "AWS::ODB::CloudExadataInfrastructure",
+      "attribute": "DbServerVersion",
+      "verdict": "never",
+      "reason": "the database server software level, moved by Oracle maintenance"
+    },
+    {
+      "type": "AWS::ODB::CloudExadataInfrastructure",
+      "attribute": "StorageServerVersion",
+      "verdict": "never",
+      "reason": "the storage server software level, moved by Oracle maintenance"
+    },
+    {
+      "type": "AWS::Redshift::Snapshot",
+      "attribute": "ClusterVersion",
+      "verdict": "never",
+      "reason": "the source cluster version, captured when the snapshot was taken"
+    },
+    {
+      "type": "AWS::Redshift::Snapshot",
+      "attribute": "EngineFullVersion",
+      "verdict": "never",
+      "reason": "the source engine version, captured when the snapshot was taken"
+    },
+    {
+      "type": "AWS::SageMaker::PartnerApp",
+      "attribute": "CurrentVersionEolDate",
+      "verdict": "never",
+      "reason": "the end-of-life date AWS sets for the app version"
     }
   ],
   "ccMoving": {
@@ -3092,9 +3146,6 @@
     ],
     "AWS::Connect::Vocabulary": [
       "LastModifiedTime"
-    ],
-    "AWS::ControlTower::LandingZone": [
-      "LatestAvailableVersion"
     ],
     "AWS::CustomerProfiles::CalculatedAttributeDefinition": [
       "LastUpdatedAt"
@@ -3571,10 +3622,6 @@
       "UpdatedAt",
       "Version"
     ],
-    "AWS::ODB::CloudExadataInfrastructure": [
-      "DbServerVersion",
-      "StorageServerVersion"
-    ],
     "AWS::ObservabilityAdmin::DatasetIntegration": [
       "UpdatedAt"
     ],
@@ -3719,10 +3766,6 @@
     "AWS::RTBFabric::ResponderGateway": [
       "UpdatedTimestamp"
     ],
-    "AWS::Redshift::Snapshot": [
-      "ClusterVersion",
-      "EngineFullVersion"
-    ],
     "AWS::ResilienceHubV2::Policy": [
       "UpdatedAt"
     ],
@@ -3850,9 +3893,6 @@
     ],
     "AWS::SageMaker::MonitoringSchedule": [
       "LastModifiedTime"
-    ],
-    "AWS::SageMaker::PartnerApp": [
-      "CurrentVersionEolDate"
     ],
     "AWS::SageMaker::ProcessingJob": [
       "LastModifiedTime"
@@ -4644,10 +4684,6 @@
     ],
     "AWS::CodeStarConnections::RepositoryLink": [
       "ProviderType"
-    ],
-    "AWS::CodeStarConnections::SyncConfiguration": [
-      "ProviderType",
-      "RepositoryName"
     ],
     "AWS::Cognito::IdentityPool": [
       "Name"

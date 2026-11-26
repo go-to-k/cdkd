@@ -254,6 +254,24 @@ export const SDK_IN_PLACE_ATTR_CLASSIFICATION: Readonly<
   // RepositoryLinkId change (UpdateSyncConfiguration) re-points it.
   'AWS::CodeStarConnections::SyncConfiguration': {
     OwnerId: movedBy(['RepositoryLinkId'], 'the owner of the repository the link points at'),
+    RepositoryName: movedBy(['RepositoryLinkId'], 'the name of the repository the link points at'),
+    ProviderType: movedBy(['RepositoryLinkId'], 'the provider of the repository the link points at'),
+  },
+  // Cloud Control (go-to-k/cdkd#7007): versions no update of the resource
+  // writes, kept out of the update-marker rule (NOT_UPDATE_MARKERS).
+  'AWS::ControlTower::LandingZone': {
+    LatestAvailableVersion: never('the newest landing zone version AWS offers, a service catalog'),
+  },
+  'AWS::ODB::CloudExadataInfrastructure': {
+    DbServerVersion: never('the database server software level, moved by Oracle maintenance'),
+    StorageServerVersion: never('the storage server software level, moved by Oracle maintenance'),
+  },
+  'AWS::Redshift::Snapshot': {
+    ClusterVersion: never('the source cluster version, captured when the snapshot was taken'),
+    EngineFullVersion: never('the source engine version, captured when the snapshot was taken'),
+  },
+  'AWS::SageMaker::PartnerApp': {
+    CurrentVersionEolDate: never('the end-of-life date AWS sets for the app version'),
   },
   // Cloud Control: the shared.ts row of issue #985 (a LaunchTemplateData edit
   // mints version N+1), held here so the audit reads it as a hand verdict.

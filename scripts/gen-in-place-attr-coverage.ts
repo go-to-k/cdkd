@@ -160,6 +160,18 @@ const CREATOR = /^(CreatedBy|Creator|CreatorRequestId)$/;
  * configuration's repository owner, which a `RepositoryLinkId` change moves).
  */
 const OWNER_ACCOUNT = /^((Owner|Owning)(AccountId|Account)|AwsAccountId|ResourceOwner)$/;
+/**
+ * Version attributes that describe something an update of the resource does
+ * not write: a service-side catalog or software level (moved by the service,
+ * never by the template), or a snapshot's source. They are not
+ * `update-marker`s; each takes a hand verdict.
+ */
+export const NOT_UPDATE_MARKERS: ReadonlySet<string> = new Set([
+  'AWS::ControlTower::LandingZone.LatestAvailableVersion',
+  'AWS::ODB::CloudExadataInfrastructure.DbServerVersion',
+  'AWS::ODB::CloudExadataInfrastructure.StorageServerVersion',
+  'AWS::SageMaker::PartnerApp.CurrentVersionEolDate',
+]);
 /** Who or where last wrote it, or a token every write replaces. */
 const LAST_WRITER = /^(LastModified(By|User|Region)|(Last)?UpdatedBy|ETag)$/;
 
@@ -244,8 +256,9 @@ const OWN_IDENTITY = /^(.*?)(Arn|ARN|Id|ID|Uuid|UUID)$/;
  * - `identifier-arn-member`: an own id the type's fixed primary-identifier
  *   ARN embeds per its `arnTemplate` (`flow/${FlowId}` holds a Flow's `Id`).
  * - `update-marker` (MOVING): a version or revision (bar an `Initial...` one,
- *   a primary-identifier member, and the number of a `...Version` resource,
- *   which is its identity), the last writer (`LastModifiedBy`, `UpdatedBy`,
+ *   a primary-identifier member, the number of a `...Version` resource,
+ *   which is its identity, a `...Snapshot`'s source version, and the
+ *   service-side versions in {@link NOT_UPDATE_MARKERS}), the last writer (`LastModifiedBy`, `UpdatedBy`,
  *   `LastModifiedRegion`) or an `ETag`: each update may restamp it.
  * - `update-timestamp` (MOVING): an undotted last-update time. Whether a
  *   Cloud Control update, a tag edit included, stamps it is the handler's
@@ -270,6 +283,9 @@ export function classifyByRule(input: TypeInput, attribute: string): RuleName | 
     (VERSIONED.test(attribute) &&
       !attribute.startsWith('Initial') &&
       !typeName.endsWith('Version') &&
+      // A snapshot's versions are its source's, captured at creation.
+      !typeName.endsWith('Snapshot') &&
+      !NOT_UPDATE_MARKERS.has(`${input.type}.${attribute}`) &&
       !primaryIdentifier.includes(attribute))
   ) {
     return 'update-marker';
