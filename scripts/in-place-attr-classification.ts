@@ -86,8 +86,7 @@ const STEADY_STATUS = never(
  * name, MEASURED with throwaway CloudFormation stacks (us-east-1, 2026-11-27):
  * create, change every in-place name property, update, and compare the
  * physical id, `Ref` and the GetAtt before and after. Each update recorded
- * here completed in place (no replacement) and left the value as recorded;
- * the IAM server certificate's ARN is a move all the same (see its entry).
+ * here completed in place (no replacement) and left the value as recorded.
  */
 const renamed = (stack: string, change: string, value: string): InPlaceAttrVerdict =>
   never(`measured (${stack}): ${change} in place left it ${value}`);
@@ -131,11 +130,14 @@ export const RENAME_MEASURED: Readonly<Record<string, Readonly<Record<string, In
     Arn: renamed('cdkd-probe-7007-s2c', 'ClassName / OwnerName', '.../<db>/<create-only name>'),
   },
   'AWS::IAM::ServerCertificate': {
-    // Measured (cdkd-probe-7007-s1): the handler completes a Path update
-    // without applying it, so the ARN stayed. IAM's UpdateServerCertificate
-    // takes NewPath and the ARN embeds the path: a handler that applies it
-    // moves the ARN, so it is a move, not a fixed value.
-    Arn: movedBy(['Path'], 'the ARN embeds the path, which UpdateServerCertificate NewPath moves'),
+    // The handler completes a Path update without applying it: its update
+    // permissions are tag / list / get only (no iam:UpdateServerCertificate),
+    // and cdkd routes the type through Cloud Control, so the ARN stays.
+    Arn: renamed(
+      'cdkd-probe-7007-s1',
+      'Path',
+      'server-certificate/cdkd-probe-7007-a/cdkd-probe-7007-cert'
+    ),
   },
   'AWS::IVSChat::LoggingConfiguration': {
     Id: renamed('cdkd-probe-7007-s3c', 'Name', 'r2zbNTcYVRdc'),
@@ -151,6 +153,8 @@ export const RENAME_MEASURED: Readonly<Record<string, Readonly<Record<string, In
   'AWS::Route53Resolver::FirewallRuleGroupAssociation': {
     Arn: renamed('cdkd-probe-7007-s3c', 'Name', '.../rslvr-frgassoc-ad8eaddd39cc403a'),
   },
+  // A DomainName change cannot be applied in place (a Cloud Control update
+  // fails NotUpdatable; go-to-k/cdkd#7070), so only Name is an in-place rename.
   // cdkd-probe-7007-s1: a Name + DomainName update REPLACED the rule
   // (rslvr-rr-c051d710... -> rslvr-rr-b961c68a...); a second, Name-only update
   // completed in place, renamed it (live name cdkd-probe-7007-rr-c) and kept

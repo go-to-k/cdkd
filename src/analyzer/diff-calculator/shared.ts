@@ -215,9 +215,6 @@ export const IN_PLACE_UPDATE_ATTRS_MOVED_BY: Readonly<
     RepositoryName: new Set(['RepositoryLinkId']),
     ProviderType: new Set(['RepositoryLinkId']),
   }),
-  // go-to-k/cdkd#7007 (Cloud Control): the ARN embeds the path, which IAM's
-  // UpdateServerCertificate (NewPath) moves.
-  'AWS::IAM::ServerCertificate': Object.freeze({ Arn: new Set(['Path']) }),
   // go-to-k/cdkd#7007 (Cloud Control): an in-place RouteTableId change calls
   // ReplaceRouteTableAssociation, which answers a new association id.
   'AWS::EC2::GatewayRouteTableAssociation': Object.freeze({

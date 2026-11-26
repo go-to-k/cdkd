@@ -2764,11 +2764,8 @@
     {
       "type": "AWS::IAM::ServerCertificate",
       "attribute": "Arn",
-      "verdict": "moved-by",
-      "properties": [
-        "Path"
-      ],
-      "reason": "the ARN embeds the path, which UpdateServerCertificate NewPath moves"
+      "verdict": "never",
+      "reason": "measured (cdkd-probe-7007-s1): Path in place left it server-certificate/cdkd-probe-7007-a/cdkd-probe-7007-cert"
     },
     {
       "type": "AWS::IVSChat::LoggingConfiguration",

@@ -473,3 +473,42 @@ describe('an export of a Cloud Control update time is judged after the update (#
     expect(await guard(row, 'UPDATE', false)).toEqual([{ exportName: EXPORT, reason: 'changed' }]);
   });
 });
+
+describe('a server certificate Path change moves no ARN (#7007)', () => {
+  // The Cloud Control handler cannot apply a Path (no
+  // iam:UpdateServerCertificate; measured: the ARN stayed), so an imported
+  // Arn export is not refused, as CloudFormation accepts the deploy.
+  it('does not refuse an imported Arn export on a Path-only change', async () => {
+    const EXPORT = 'Producer:CertArn';
+    const found = await findAffectedExports({
+      template: {
+        Resources: { Cert: { Type: 'AWS::IAM::ServerCertificate', Properties: {} } },
+        Outputs: {
+          CertArn: { Value: { 'Fn::GetAtt': ['Cert', 'Arn'] }, Export: { Name: EXPORT } },
+        },
+      },
+      conditions: {},
+      changes: new Map([
+        [
+          'Cert',
+          {
+            logicalId: 'Cert',
+            resourceType: 'AWS::IAM::ServerCertificate',
+            changeType: 'UPDATE',
+            propertyChanges: [
+              { path: 'Path', oldValue: '/a/', newValue: '/b/', requiresReplacement: false },
+            ],
+          },
+        ],
+      ]),
+      currentState: {
+        version: STATE_SCHEMA_VERSION_CURRENT,
+        outputs: { CertArn: 'recorded-value', [EXPORT]: 'recorded-value' },
+        exportNames: [EXPORT],
+      } as unknown as StackState,
+      resolve: () => Promise.resolve('recorded-value'),
+      replaces: () => false,
+    });
+    expect(found).toEqual([]);
+  });
+});

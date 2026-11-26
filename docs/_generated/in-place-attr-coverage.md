@@ -824,7 +824,7 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235.
 - `AWS::EC2::LaunchTemplate` `LatestVersionNumber`: any-update — a LaunchTemplateData edit mints the next version
 - `AWS::EC2::PrefixList` `Arn`: never — measured (cdkd-probe-7007-s1): PrefixListName in place left it prefix-list/pl-0d520b78fc4478f52
 - `AWS::Glue::UserDefinedFunction` `Arn`: never — measured (cdkd-probe-7007-s2c): ClassName / OwnerName in place left it .../<db>/<create-only name>
-- `AWS::IAM::ServerCertificate` `Arn`: moved by `Path` — the ARN embeds the path, which UpdateServerCertificate NewPath moves
+- `AWS::IAM::ServerCertificate` `Arn`: never — measured (cdkd-probe-7007-s1): Path in place left it server-certificate/cdkd-probe-7007-a/cdkd-probe-7007-cert
 - `AWS::IVSChat::LoggingConfiguration` `Id`: never — measured (cdkd-probe-7007-s3c): Name in place left it r2zbNTcYVRdc
 - `AWS::IVSChat::Room` `Id`: never — measured (cdkd-probe-7007-s1): Name in place left it 8NJl1byAY7iO
 - `AWS::KinesisVideo::Stream` `Arn`: never — measured (cdkd-probe-7007-s1): DeviceName in place left it stream/<create-only name>/1795710281819
