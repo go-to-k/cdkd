@@ -140,6 +140,13 @@ const STALE_SHAPE_TYPES: Readonly<Record<string, StaleShapeType>> = {
 
 /** `SECRET_MASK`, spelled here so this module stays a leaf (no redaction import ring). */
 const MASK = '***';
+/**
+ * A recorded `{{resolve:...}}` expression is no value: properties and
+ * attributes are scrubbed by different rules and may spell one secret with two
+ * expressions, which would read as a contradiction and hand the heal's
+ * plaintext to the reader and the record (#7015 security review).
+ */
+const DYNAMIC_REFERENCE = '{{resolve:';
 
 function bagOf(value: unknown): Readonly<Record<string, unknown>> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -149,7 +156,8 @@ function bagOf(value: unknown): Readonly<Record<string, unknown>> {
 
 /**
  * The inputs, or `undefined` when one is unusable: a masked or structured value
- * (an unresolved intrinsic in a hand-edited record) cannot be compared.
+ * (an unresolved intrinsic in a hand-edited record) or a `{{resolve:...}}`
+ * expression cannot be compared.
  */
 function inputsOf(
   shape: StaleShapeType,
@@ -169,7 +177,7 @@ function inputsOf(
       value === undefined ||
       typeof value === 'boolean' ||
       (typeof value === 'number' && Number.isFinite(value)) ||
-      (typeof value === 'string' && !value.includes(MASK))
+      (typeof value === 'string' && !value.includes(MASK) && !value.includes(DYNAMIC_REFERENCE))
   );
   return usable ? values : undefined;
 }

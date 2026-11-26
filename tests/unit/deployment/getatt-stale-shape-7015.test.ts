@@ -316,6 +316,21 @@ describe('the bound: one re-read per record shape (#7015)', () => {
     expect(saved).not.toHaveProperty('attributesReadAfterApply');
   });
 
+  it('a recorded {{resolve:...}} expression on either side never reads, serves or stamps', async () => {
+    const stale = record(
+      { Port: '{{resolve:secretsmanager:s:SecretString:port}}' },
+      { ...ATTRS, 'Endpoint.Port': '{{resolve:ssm-secure:/db/port}}' }
+    );
+    expect(staleShapeAttributeNames(stale).size).toBe(0);
+    expect(staleShapeFingerprint(stale)).toBeUndefined();
+    const { healer, provider } = deployHealer(stale, { ...ATTRS });
+    await healer.heal('Db', stale, 'App');
+    expect(provider.import).toHaveBeenCalledTimes(1);
+    const saved = healer.withHealedAttributes('Db', stale);
+    expect(saved.attributes?.['Endpoint.Port']).toBe('{{resolve:ssm-secure:/db/port}}');
+    expect(saved).not.toHaveProperty('attributesReadAfterApply');
+  });
+
   it('never stamps a hash over an input the run secrets would mask', async () => {
     const stale = record({ CACertificateIdentifier: 'rds-ca-ecc384-g1' });
     const secrets: RecordedSecretValues = new Map();
