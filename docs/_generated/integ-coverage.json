@@ -7857,6 +7857,7 @@
         "lambda-microvm-image",
         "loggroup-kms-associate",
         "propagation-races-2",
+        "rds-dbinstance-backfill",
         "s3-directory-bucket",
         "s3-replication-and-filter",
         "s3-vectors"
@@ -7927,6 +7928,9 @@
         ],
         "propagation-races-2": [
           "l1"
+        ],
+        "rds-dbinstance-backfill": [
+          "l2"
         ],
         "s3-directory-bucket": [
           "l2"
