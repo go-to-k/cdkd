@@ -133,11 +133,20 @@ describe('cdkd scrub of a pre-#6303 record (#6303)', () => {
     expect(param?.observedProperties?.['Description'] ?? LITERAL).toBe(LITERAL);
   });
 
-  it('a literal EQUAL to the secret is still stored as the reference, in both bags', async () => {
+  it('a literal EQUAL to the secret is kept, in both bags (#7037)', async () => {
     const { saved } = await scrub('postgres', 'postgres');
+    const param = saved?.resources['Param'];
+    expect(param?.properties['Description'] ?? 'postgres').toBe('postgres');
+    expect(param?.observedProperties?.['Description'] ?? 'postgres').toBe('postgres');
+  });
+
+  it('a pre-#7037 record holding the reference for that literal takes the literal (#7037)', async () => {
+    const { saved } = await scrub(REF, 'postgres');
+    expect(saved).toBeDefined();
     const param = saved!.resources['Param']!;
-    expect(param.properties['Description']).toBe(REF);
-    expect(param.observedProperties?.['Description']).toBe(REF);
+    expect(param.properties['Description']).toBe('postgres');
+    expect(param.observedProperties?.['Description']).toBe('postgres');
+    expect(param.properties['Value']).toBe(REF);
   });
 
   it('a template edited since the deploy does not license the repair', async () => {

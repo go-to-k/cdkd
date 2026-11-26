@@ -15,17 +15,18 @@ import { hasPlainPrototype } from './json-equality.js';
  * found inside it is a COINCIDENCE — the generated username `postgres` inside
  * `Engine: aurora-postgresql` — and the value scan rewrote it into
  * `aurora-{{resolve:...}}ql`, which the next deploy read as a create-only
- * change and planned to REPLACE the cluster. Keeping it discloses nothing: the
- * text is in the synthesized template.
+ * change and planned to REPLACE the cluster. So is one EQUAL to it
+ * (go-to-k/cdkd#7037): `Engine: postgres` beside that username was persisted
+ * as the username's reference. Keeping it discloses nothing: the text is in
+ * the synthesized template, while the reference told a state reader that the
+ * username IS that text.
  *
- * Two refusals keep the scan where it still protects something:
- *
- * - **A STATE source** ({@link PathSourceRules.sourceIsTemplate} unset). Its
- *   plain leaf may be a plaintext an older cdkd persisted, which the scan
- *   repairs in the copy it writes (the derived-needle arm's pinned shapes).
- * - **A leaf EQUAL to a recorded plaintext.** The whole-value arm re-spells it
- *   as before, so a record a STATE walk keeps healing and this walk agree,
- *   rather than trading the two spellings run after run.
+ * One refusal keeps the scan where it still protects something: **a STATE
+ * source** ({@link PathSourceRules.sourceIsTemplate} unset). Its plain leaf may
+ * be a plaintext an older cdkd persisted, which the scan repairs in the copy it
+ * writes (the derived-needle arm's pinned shapes). A STATE walk therefore still
+ * spells such a literal as the reference; the next template walk, and the
+ * deploy's comparison (`compare-record.ts`), render it back.
  *
  * `!isDynamicReferenceString(source)` cannot be reached false today: a source
  * holding `{{resolve:` takes `redactByPath`'s reference arms first. It stays as
@@ -36,15 +37,13 @@ import { hasPlainPrototype } from './json-equality.js';
 export function isSourcePlainLiteral(
   bag: unknown,
   source: unknown,
-  secrets: RecordedSecretValues,
   rules: PathSourceRules
 ): bag is string {
   return (
     rules.sourceIsTemplate === true &&
     typeof bag === 'string' &&
     bag === source &&
-    !isDynamicReferenceString(source) &&
-    !secrets.has(bag)
+    !isDynamicReferenceString(source)
   );
 }
 
@@ -80,17 +79,21 @@ export function secretRerenderPairs(
  * is left to the walk. It proves the spelling, not the deployed GENERATION: a
  * secret rotated since that deploy, with the template now hard-coding the NEW
  * value, also renders equal — and a pre-fix walk answered that case with no
- * send as well. A literal EQUAL to a recorded plaintext is refused, as
- * {@link isSourcePlainLiteral} refuses it.
+ * send as well. A literal EQUAL to a recorded plaintext is what the
+ * pre-go-to-k/cdkd#7037 walk spelled as one whole token, and takes it too, but
+ * only from a TEMPLATE source: a STATE source's plain leaf equal to a recorded
+ * plaintext may be a secret an older cdkd persisted in plaintext, and copying
+ * it onto this leaf would spread it into a second field.
  */
 export function rerenderedSourceLiteral(
   bag: unknown,
   source: unknown,
-  secrets: RecordedSecretValues
+  secrets: RecordedSecretValues,
+  rules: PathSourceRules
 ): string | undefined {
   if (typeof bag !== 'string' || typeof source !== 'string') return undefined;
   if (!isDynamicReferenceString(bag) || isDynamicReferenceString(source)) return undefined;
-  if (secrets.has(source)) return undefined;
+  if (rules.sourceIsTemplate !== true && secrets.has(source)) return undefined;
   let rendered = bag;
   for (const [expression, plaintext] of secretRerenderPairs(secrets)) {
     rendered = rendered.split(expression).join(plaintext);
@@ -102,9 +105,11 @@ export function rerenderedSourceLiteral(
  * `redacted` with every leaf put back where the RAW leaf is the template's own
  * plain literal (go-to-k/cdkd#6303), for a walk whose source is not the
  * template: `cdkd scrub`'s `observedProperties` walk, sourced from the record
- * it repositioned. The same refusals as {@link isSourcePlainLiteral}: a leaf
- * equal to a recorded plaintext, and one the walk masked whole (a containment
- * needle inside it), stay as redacted. The `{{resolve:` test is an equivalent
+ * it repositioned. `template` is the template, so a leaf EQUAL to a recorded
+ * plaintext is put back too, and so is a raw leaf that
+ * {@link rerenderedSourceLiteral} renders to the template literal
+ * (go-to-k/cdkd#7037); the result is always the template's own text. One the
+ * walk masked whole (a containment needle inside it) stays as redacted. The `{{resolve:` test is an equivalent
  * mutant (a template leaf holding one is answered by the reference arms) kept
  * as the stated precondition. Positions pair by key, and by index for an array of equal length;
  * a mismatch keeps the redacted leaf. Returns `redacted` by identity when
@@ -117,12 +122,12 @@ export function keepTemplateLiteralLeaves(
   secrets: RecordedSecretValues
 ): unknown {
   if (typeof raw === 'string') {
-    return raw === template &&
-      !isDynamicReferenceString(raw) &&
-      !secrets.has(raw) &&
-      redacted !== SECRET_MASK
-      ? raw
-      : redacted;
+    if (redacted === SECRET_MASK) return redacted;
+    if (raw === template && !isDynamicReferenceString(raw)) return raw;
+    // The leaf a pre-fix walk wrote for that literal, rendering back to it
+    // exactly (go-to-k/cdkd#7037: the whole-token `{{resolve:...}}` an
+    // `Engine: postgres` beside the username `postgres` was persisted as).
+    return rerenderedSourceLiteral(raw, template, secrets, TEMPLATE_SOURCE) ?? redacted;
   }
   if (Array.isArray(raw)) {
     if (!Array.isArray(template) || !Array.isArray(redacted)) return redacted;
@@ -148,6 +153,14 @@ export function keepTemplateLiteralLeaves(
   }
   return out ?? redacted;
 }
+
+/** What {@link keepTemplateLiteralLeaves} tells {@link rerenderedSourceLiteral}: its source is the template. */
+const TEMPLATE_SOURCE: PathSourceRules = {
+  descendArrays: false,
+  trustAnyExpression: false,
+  sourceIsSameGeneration: false,
+  sourceIsTemplate: true,
+};
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return isPlainObject(value) && hasPlainPrototype(value);

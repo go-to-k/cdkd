@@ -214,11 +214,12 @@ export function redactByPath(
   // The source's own PLAIN literal (go-to-k/cdkd#6303): a recorded plaintext
   // inside it is a coincidence, never a substitution, so the value scan below
   // must not splice an expression into it. See {@link isSourcePlainLiteral}.
-  if (isSourcePlainLiteral(bag, source, secrets, rules)) return bag;
+  // A literal EQUAL to a recorded plaintext too (go-to-k/cdkd#7037).
+  if (isSourcePlainLiteral(bag, source, rules)) return bag;
   // ...and the spelling that scan persisted for one before the fix, which
   // `cdkd scrub` meets in a record it re-positions. See
   // {@link rerenderedSourceLiteral}.
-  const rerendered = rerenderedSourceLiteral(bag, source, secrets);
+  const rerendered = rerenderedSourceLiteral(bag, source, secrets, rules);
   if (rerendered !== undefined) return rerendered;
   if ((typeof bag === 'string' || Array.isArray(bag)) && isPlainObject(source)) {
     // A nested-stack child leaf spelled `{Ref: <Param>}` that this resource's
