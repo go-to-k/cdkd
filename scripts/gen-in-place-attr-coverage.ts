@@ -30,8 +30,11 @@
  *     `never`, `moved-by <properties>`, `any-update` or `prefix`. A moving
  *     verdict must match its shared.ts row; `in-place-attr-coverage.test.ts`
  *     holds that parity (this script cannot import `src/`).
- *   - Cloud-Control-only types are classified by RULE ({@link classifyByRule}),
- *     each rule claiming only `never moves in place`. A pair no rule settles is
+ *   - Cloud-Control-only types are classified by RULE ({@link classifyByRule}).
+ *     A rule claims `never moves in place`, or, for a MOVING rule
+ *     ({@link MOVING_RULES}), `any in-place update may move it`: those pairs are
+ *     written to OUT_SRC, which shared.ts merges into
+ *     `IN_PLACE_UPDATE_DERIVED_ATTRS`. A pair no rule settles is
  *     in the committed baseline (`ccBaseline` in the generated JSON), which the
  *     writer only SHRINKS: it drops entries a rule now settles or the database
  *     no longer has, and never adds one.
@@ -57,6 +60,11 @@ const __filename = fileURLToPath(import.meta.url);
 const repoRoot = resolve(dirname(__filename), '..');
 export const OUT_JSON = resolve(repoRoot, 'docs/_generated/in-place-attr-coverage.json');
 export const OUT_MD = resolve(repoRoot, 'docs/_generated/in-place-attr-coverage.md');
+/** The MOVING rules' rows, merged into shared.ts `IN_PLACE_UPDATE_DERIVED_ATTRS`. */
+export const OUT_SRC = resolve(
+  repoRoot,
+  'src/analyzer/diff-calculator/in-place-cc-derived-attrs.generated.ts'
+);
 const REGISTER_PROVIDERS = resolve(repoRoot, 'src/provisioning/register-providers.ts');
 const FIXTURE_DIR = resolve(repoRoot, 'tests/fixtures/cfn-schemas');
 
@@ -76,6 +84,10 @@ export interface TypeInput {
   readonly attributes: readonly string[];
   /** Top-level property name -> the spec's `causesReplacement` (`yes` / `maybe` / absent). */
   readonly properties: Readonly<Record<string, string | undefined>>;
+  /** The CFn schema's `primaryIdentifier` members (property or attribute names). */
+  readonly primaryIdentifier?: readonly string[];
+  /** The spec's `arnTemplate` (the service's documented ARN format), if any. */
+  readonly arnTemplate?: string;
 }
 
 export function typeInputFromSpec(resource: SpecResource): TypeInput | undefined {
@@ -90,7 +102,18 @@ export function typeInputFromSpec(resource: SpecResource): TypeInput | undefined
   const attributes = Object.keys((resource.attributes ?? {}) as object)
     .filter((a) => !Object.hasOwn(properties, a))
     .sort();
-  return { type, attributes, properties };
+  const rawPid = (resource as { primaryIdentifier?: unknown }).primaryIdentifier;
+  const primaryIdentifier = Array.isArray(rawPid)
+    ? rawPid.filter((p): p is string => typeof p === 'string')
+    : [];
+  const rawTemplate = (resource as { arnTemplate?: unknown }).arnTemplate;
+  return {
+    type,
+    attributes,
+    properties,
+    primaryIdentifier,
+    ...(typeof rawTemplate === 'string' && { arnTemplate: rawTemplate }),
+  };
 }
 
 /** A type the database lacks: its fixture's read-only properties. */
@@ -107,14 +130,40 @@ function typeInputFromFixture(type: string): TypeInput | undefined {
 }
 
 // ---------------------------------------------------------------------------
-// Cloud Control rules. Each one claims ONLY "never moves in place".
+// Cloud Control rules. Each claims "never moves in place", bar the MOVING
+// rules, which claim "any in-place update may move it" and are emitted as
+// shared.ts rows (`IN_PLACE_UPDATE_DERIVED_ATTRS`) through OUT_SRC.
 // ---------------------------------------------------------------------------
 
-export type RuleName = 'no-in-place-update' | 'creation-timestamp' | 'own-identity';
+export type RuleName =
+  | 'no-in-place-update'
+  | 'creation-timestamp'
+  | 'own-identity'
+  | 'primary-identifier'
+  | 'arn-template'
+  | 'update-timestamp';
+
+/** Rules whose verdict is `any-update`; every other rule's is `never`. */
+export const MOVING_RULES: ReadonlySet<RuleName> = new Set(['update-timestamp']);
 
 const CREATION_TIMESTAMP = /^(Create|Created|Creation)(At|Time|Date|Timestamp|DateTime|On)?$/;
 const UPDATE_TIMESTAMP = /Update|Modif/;
+/** An undotted last-update time: `UpdatedAt`, `LastModifiedTime`, `LastUpdated`. */
+const UPDATE_TIME =
+  /^(Last)?(Update|Updated|Modified|Modification)(At|Time|Date|DateTime|Timestamp|TimeStamp|On|TimeSeconds)?$/;
 const VERSIONED = /Version|Revision/;
+/** An identity-shaped name: what a service mints or the ARN it builds. */
+const IDENTITY_SHAPED = /(Arn|ARN|Id|ID|Identifier|Uuid|UUID)$/;
+/** ARN template placeholders filled by the stack's environment. */
+const PSEUDO_PLACEHOLDERS: ReadonlySet<string> = new Set(['Partition', 'Region', 'Account']);
+
+/**
+ * Pairs no rule settles because a live probe of them is pending (go-to-k/cdkd#7007:
+ * an outside contributor's VpcLink rename probe holds this pair's verdict).
+ */
+export const RULE_HELD_OUT: ReadonlySet<string> = new Set([
+  'AWS::ApiGatewayV2::VpcLink.VpcLinkId',
+]);
 
 /**
  * Cloud Control types whose in-place update registers a new revision that
@@ -148,25 +197,59 @@ const OWN_IDENTITY = /^(.*?)(Arn|ARN|Id|ID|Uuid|UUID)$/;
  *   mints (`AWS::GameLift::ContainerGroupDefinition` `.../<name>:<version>`).
  *   A type whose ARN carries a revision no attribute or property names is
  *   listed by hand in {@link REVISIONED_ARN_TYPES}.
+ * - `primary-identifier`: an identity-shaped (`...Arn` / `...Id` /
+ *   `...Identifier` / `...Uuid`) member of the CFn `primaryIdentifier`. The
+ *   resource type handler contract: "The primaryIdentifier returned in every
+ *   progress event must match the primaryIdentifier passed into the request"
+ *   of an update. A member of another shape can be derived from writable
+ *   input despite the contract (`AWS::EC2::VPCGatewayAttachment`
+ *   `AttachmentType`, which an internet / VPN gateway swap moves).
+ * - `arn-template`: the type's own `Arn`, on an unversioned type (as for
+ *   `own-identity`), whose documented `arnTemplate` is built only from the
+ *   environment and from values fixed for the resource's life: a
+ *   primary-identifier member or a create-only property, named as-is or as
+ *   `<TypeName><Id|Name|Identifier>` for the bare member (`fleet/${FleetName}`
+ *   over a create-only `Name`). A placeholder naming anything else
+ *   (`${ResourceId}`, a writable name) settles nothing.
+ * - `update-timestamp` (MOVING): an undotted last-update time. Whether a
+ *   Cloud Control update, a tag edit included, stamps it is the handler's
+ *   choice, so any in-place update may move it.
  */
 export function classifyByRule(input: TypeInput, attribute: string): RuleName | undefined {
+  if (RULE_HELD_OUT.has(`${input.type}.${attribute}`)) return undefined;
   const writable = Object.entries(input.properties).filter(
     ([name, replaces]) => name !== 'Tags' && replaces !== 'yes'
   );
   if (writable.length === 0 && !UPDATE_TIMESTAMP.test(attribute)) return 'no-in-place-update';
   if (attribute.includes('.')) return undefined;
+  if (UPDATE_TIME.test(attribute)) return 'update-timestamp';
   if (CREATION_TIMESTAMP.test(attribute)) return 'creation-timestamp';
+  const primaryIdentifier = input.primaryIdentifier ?? [];
+  const isPrimaryIdentifier =
+    IDENTITY_SHAPED.test(attribute) && primaryIdentifier.includes(attribute);
   const m = OWN_IDENTITY.exec(attribute);
-  if (m === null) return undefined;
-  const typeName = input.type.split('::')[2]!.toLowerCase();
-  const prefix = m[1]!.toLowerCase();
-  if (prefix !== '' && !typeName.endsWith(prefix)) return undefined;
-  const mutableName = writable.some(([name]) => name.endsWith('Name') || name === 'Path');
+  const typeName = input.type.split('::')[2]!;
+  const prefix = m?.[1]!.toLowerCase();
+  const own = prefix !== undefined && (prefix === '' || typeName.toLowerCase().endsWith(prefix));
+  if (!own) return isPrimaryIdentifier ? 'primary-identifier' : undefined;
   const versioned =
     REVISIONED_ARN_TYPES.has(input.type) ||
     input.attributes.some((a) => VERSIONED.test(a)) ||
     writable.some(([name]) => VERSIONED.test(name));
-  return mutableName || versioned ? undefined : 'own-identity';
+  const mutableName = writable.some(([name]) => name.endsWith('Name') || name === 'Path');
+  if (!versioned && !mutableName) return 'own-identity';
+  if (isPrimaryIdentifier) return 'primary-identifier';
+  if (versioned || !/(Arn|ARN)$/.test(attribute) || input.arnTemplate === undefined) {
+    return undefined;
+  }
+  const fixed = (name: string): boolean =>
+    primaryIdentifier.includes(name) || input.properties[name] === 'yes';
+  const placeholderFixed = (ph: string): boolean =>
+    PSEUDO_PLACEHOLDERS.has(ph) ||
+    fixed(ph) ||
+    ['Id', 'Name', 'Identifier'].some((s) => ph === `${typeName}${s}` && fixed(s));
+  const placeholders = [...input.arnTemplate.matchAll(/\$\{([^}]*)\}/g)].map((x) => x[1]!);
+  return placeholders.every(placeholderFixed) ? 'arn-template' : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -212,6 +295,8 @@ export interface Report {
     readonly ccBaseline: number;
   };
   readonly sdk: readonly SdkRow[];
+  /** Cloud Control pairs a MOVING rule settles (`any-update`): type -> attributes. */
+  readonly ccMoving: Readonly<Record<string, readonly string[]>>;
   /** Cloud Control pairs no rule settles, frozen: type -> attributes. */
   readonly ccBaseline: Readonly<Record<string, readonly string[]>>;
 }
@@ -244,10 +329,14 @@ export function buildReport(input: BuildInput): { report: Report; findings: Find
   };
   const sdk: SdkRow[] = [];
   const ccBaseline: Record<string, string[]> = {};
+  const ccMoving: Record<string, string[]> = {};
   const ccByRule: Record<RuleName, number> = {
     'no-in-place-update': 0,
     'creation-timestamp': 0,
     'own-identity': 0,
+    'primary-identifier': 0,
+    'arn-template': 0,
+    'update-timestamp': 0,
   };
   let ccTypes = 0;
   let ccPairs = 0;
@@ -287,6 +376,7 @@ export function buildReport(input: BuildInput): { report: Report; findings: Find
       const rule = classifyByRule(t, attribute);
       if (rule !== undefined) {
         ccByRule[rule]++;
+        if (MOVING_RULES.has(rule)) (ccMoving[t.type] ??= []).push(attribute);
         continue;
       }
       unsettledCc.add(`${t.type}\0${attribute}`);
@@ -325,6 +415,7 @@ export function buildReport(input: BuildInput): { report: Report; findings: Find
       ccBaseline: baselineCount,
     },
     sdk,
+    ccMoving,
     ccBaseline,
   };
   return { report, findings };
@@ -376,6 +467,19 @@ export function renderMarkdown(report: Report): string {
   }
   lines.push(
     '',
+    '## Cloud Control pairs a moving rule settles',
+    '',
+    'Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes ' +
+      'its reader), emitted to `src/analyzer/diff-calculator/in-place-cc-derived-attrs.generated.ts`.',
+    '',
+    '| Type | Attributes |',
+    '| --- | --- |'
+  );
+  for (const [type, attrs] of Object.entries(report.ccMoving)) {
+    lines.push(`| \`${type}\` | ${attrs.map((a) => `\`${a}\``).join(', ')} |`);
+  }
+  lines.push(
+    '',
     '## Cloud Control baseline',
     '',
     'Pairs no rule settles, per type (the list is in the JSON). Shrinking it is ' +
@@ -388,6 +492,32 @@ export function renderMarkdown(report: Report): string {
     lines.push(`| \`${type}\` | ${attrs.length} |`);
   }
   lines.push('');
+  return lines.join('\n');
+}
+
+/** The MOVING rules' rows as a `src/` module (formatted as `vp fmt` leaves it). */
+export function renderSrc(report: Report): string {
+  const lines = [
+    '/**',
+    ' * AUTO-GENERATED by scripts/gen-in-place-attr-coverage.ts — DO NOT EDIT BY HAND.',
+    ' * Regenerate: `vp run gen:in-place-attr-coverage`.',
+    ' *',
+    ' * Cloud Control (type, attribute) pairs a MOVING rule of the in-place',
+    ' * attribute audit settles (go-to-k/cdkd#7007): any in-place update may move',
+    ' * them, so `IN_PLACE_UPDATE_DERIVED_ATTRS` in `shared.ts` merges them in.',
+    ' */',
+    '',
+    'export const CC_IN_PLACE_UPDATE_DERIVED_ATTRS: Readonly<Record<string, readonly string[]>> = {',
+  ];
+  for (const [type, attrs] of Object.entries(report.ccMoving)) {
+    const one = `  '${type}': [${attrs.map((a) => `'${a}'`).join(', ')}],`;
+    if (one.length <= 100) {
+      lines.push(one);
+      continue;
+    }
+    lines.push(`  '${type}': [`, ...attrs.map((a) => `    '${a}',`), '  ],');
+  }
+  lines.push('};', '');
   return lines.join('\n');
 }
 
@@ -449,10 +579,12 @@ function main(): void {
   });
   const json = renderJson(report);
   const md = renderMarkdown(report);
+  const src = renderSrc(report);
   if (!process.argv.includes('--check')) {
     mkdirSync(dirname(OUT_JSON), { recursive: true });
     atomicWrite(OUT_JSON, json);
     atomicWrite(OUT_MD, md);
+    atomicWrite(OUT_SRC, src);
   }
   const problems: string[] = [];
   const section = (head: string, items: readonly string[]): void => {
@@ -481,10 +613,14 @@ function main(): void {
       !existsSync(OUT_JSON) ||
       readFileSync(OUT_JSON, 'utf8') !== json ||
       !existsSync(OUT_MD) ||
-      readFileSync(OUT_MD, 'utf8') !== md;
+      readFileSync(OUT_MD, 'utf8') !== md ||
+      !existsSync(OUT_SRC) ||
+      readFileSync(OUT_SRC, 'utf8') !== src;
     if (stale) {
       problems.push(
-        'docs/_generated/in-place-attr-coverage.{json,md} are stale — run `vp run gen:in-place-attr-coverage` and commit.'
+        'docs/_generated/in-place-attr-coverage.{json,md} or ' +
+          'src/analyzer/diff-calculator/in-place-cc-derived-attrs.generated.ts are stale — ' +
+          'run `vp run gen:in-place-attr-coverage` and commit.'
       );
     }
   }

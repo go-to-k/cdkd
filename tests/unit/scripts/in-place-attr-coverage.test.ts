@@ -7,14 +7,19 @@ import {
 } from '../../../src/analyzer/diff-calculator/shared.js';
 import { ReplacementRulesRegistry } from '../../../src/analyzer/replacement-rules.js';
 import {
+  MOVING_RULES,
   OUT_JSON,
   OUT_MD,
+  OUT_SRC,
+  RULE_HELD_OUT,
   buildReport,
   classificationKeyFor,
   classifyByRule,
   loadInputs,
   renderJson,
   renderMarkdown,
+  renderSrc,
+  type RuleName,
   type TypeInput,
 } from '../../../scripts/gen-in-place-attr-coverage.ts';
 import {
@@ -49,6 +54,7 @@ describe('the committed audit (#7001)', () => {
     });
     expect(readFileSync(OUT_JSON, 'utf8')).toBe(renderJson(report));
     expect(readFileSync(OUT_MD, 'utf8')).toBe(renderMarkdown(report));
+    expect(readFileSync(OUT_SRC, 'utf8')).toBe(renderSrc(report));
   });
 
   it('sees its input: a floor per population and per rule', () => {
@@ -60,6 +66,10 @@ describe('the committed audit (#7001)', () => {
     expect(report.summary.ccByRule['creation-timestamp']).toBeGreaterThan(300);
     expect(report.summary.ccBaseline).toBeGreaterThan(0);
     expect(report.summary.ccByRule['own-identity']).toBeGreaterThan(800);
+    // Literals from the #7007 measurement.
+    expect(report.summary.ccByRule['primary-identifier']).toBeGreaterThan(500);
+    expect(report.summary.ccByRule['arn-template']).toBeGreaterThan(50);
+    expect(report.summary.ccByRule['update-timestamp']).toBeGreaterThan(350);
     // A type the spec lacks is read from its schema fixture.
     expect(report.sdk.some((r) => r.type === 'AWS::BedrockAgentCore::Browser')).toBe(true);
   });
@@ -107,13 +117,65 @@ describe('the hand verdicts equal the shared.ts tables (#7001)', () => {
           // A Cloud Control row must name a real pair that no rule calls `never`.
           const t = inputs.types.find((x) => x.type === type);
           expect(t?.attributes, `${type} ${attr}`).toContain(attr);
-          expect(classifyByRule(t!, attr), `${type} ${attr}`).toBeUndefined();
+          const rule = classifyByRule(t!, attr);
+          expect(rule === undefined || MOVING_RULES.has(rule), `${type} ${attr}: ${rule}`).toBe(true);
         }
       }
     }
     for (const type of Object.keys(IN_PLACE_UPDATE_DERIVED_ATTR_PREFIXES)) {
       expect(report.sdk.some((r) => r.type === type && r.verdict === 'prefix'), type).toBe(true);
     }
+  });
+
+  it('every Cloud Control pair a moving rule settles is an IN_PLACE_UPDATE_DERIVED_ATTRS row (#7007)', () => {
+    const pairs = Object.entries(report.ccMoving).flatMap(([type, attrs]) =>
+      attrs.map((a) => [type, a] as const)
+    );
+    expect(pairs.length).toBeGreaterThan(350);
+    for (const [type, attr] of pairs) {
+      expect(IN_PLACE_UPDATE_DERIVED_ATTRS[type]?.has(attr), `${type} ${attr}`).toBe(true);
+    }
+  });
+});
+
+/**
+ * go-to-k/cdkd#7007: the hand verdicts of the SDK-provider types are ground
+ * truth the rules never read. A `never` rule run over those types must settle
+ * no pair a hand verdict calls moving.
+ */
+function neverRuleOverMoving(
+  classify: (t: TypeInput, a: string) => RuleName | undefined
+): { conflicts: string[]; checked: number } {
+  const conflicts: string[] = [];
+  let checked = 0;
+  for (const r of report.sdk) {
+    if (r.verdict === 'never') continue;
+    const t = inputs.types.find((x) => x.type === r.type);
+    if (t === undefined || !t.attributes.includes(r.attribute)) continue;
+    checked++;
+    const rule = classify(t, r.attribute);
+    if (rule !== undefined && !MOVING_RULES.has(rule)) {
+      conflicts.push(`${r.type}.${r.attribute} (${r.verdict}) settled by ${rule}`);
+    }
+  }
+  return { conflicts, checked };
+}
+
+describe('the never rules agree with the hand verdicts (#7007)', () => {
+  it('no never rule settles an attribute a hand verdict calls moving', () => {
+    const { conflicts, checked } = neverRuleOverMoving(classifyByRule);
+    expect(checked, 'moving SDK pairs the spec carries').toBeGreaterThan(40);
+    expect(conflicts).toEqual([]);
+  });
+
+  it('the check sees a rule that settles a moving attribute (it is not vacuous)', () => {
+    // AWS::EC2::VPCGatewayAttachment's AttachmentType is a primary-identifier
+    // member an internet / VPN gateway swap moves.
+    const unshaped = (t: TypeInput, a: string): RuleName | undefined =>
+      (t.primaryIdentifier ?? []).includes(a) ? 'primary-identifier' : classifyByRule(t, a);
+    expect(neverRuleOverMoving(unshaped).conflicts).toContain(
+      'AWS::EC2::VPCGatewayAttachment.AttachmentType (moved-by) settled by primary-identifier'
+    );
   });
 });
 
@@ -180,8 +242,11 @@ describe('classifyByRule (#7001)', () => {
   it('settles every pair of a type whose only in-place property is Tags, bar an update timestamp', () => {
     const t = input('AWS::X::Thing', { Name: 'yes', Config: 'yes', Tags: undefined });
     expect(classifyByRule(t, 'Status')).toBe('no-in-place-update');
-    // A tag edit may stamp it.
+    // A tag edit may stamp it: moving, never `no-in-place-update`.
     for (const a of ['UpdatedAt', 'LastModifiedTime', 'LastUpdatedDateTime', 'UpdateTime', 'LastModificationDate']) {
+      expect(classifyByRule(t, a), a).toBe('update-timestamp');
+    }
+    for (const a of ['LastModifiedBy', 'UpdateStatus']) {
       expect(classifyByRule(t, a), a).toBeUndefined();
     }
   });
@@ -193,8 +258,11 @@ describe('classifyByRule (#7001)', () => {
     }
     // A nested object an update re-creates (an MSK configuration's latest
     // revision) carries its own creation time.
-    for (const a of ['UpdatedAt', 'LastModifiedTime', 'CreatedBy', 'LatestRevision.CreationTime']) {
+    for (const a of ['CreatedBy', 'LatestRevision.CreationTime']) {
       expect(classifyByRule(t, a), a).toBeUndefined();
+    }
+    for (const a of ['UpdatedAt', 'LastModifiedTime']) {
+      expect(classifyByRule(t, a), a).toBe('update-timestamp');
     }
   });
 
@@ -236,6 +304,80 @@ describe('classifyByRule (#7001)', () => {
     expect(classifyByRule(input('AWS::X::Repository', { Name: 'yes', Config: 'maybe' }), 'Arn')).toBe(
       'own-identity'
     );
+  });
+});
+
+describe('the #7007 rules, on real spec inputs', () => {
+  const real = (type: string): TypeInput => {
+    const t = inputs.types.find((x) => x.type === type);
+    expect(t, type).toBeDefined();
+    return t!;
+  };
+
+  it('primary-identifier settles an identity-shaped primary-identifier member only', () => {
+    // AgentName is in place, so own-identity cannot settle AgentId.
+    const agent = real('AWS::Bedrock::Agent');
+    expect(agent.primaryIdentifier).toEqual(['AgentId']);
+    expect(classifyByRule(agent, 'AgentId')).toBe('primary-identifier');
+    expect(classifyByRule(agent, 'AgentArn')).toBeUndefined();
+    // A composite identifier: each identity-shaped member.
+    const alias = real('AWS::Bedrock::AgentAlias');
+    expect(classifyByRule(alias, 'AgentAliasId')).toBe('primary-identifier');
+    // A member of another shape is derived from writable input.
+    const attachment = real('AWS::EC2::VPCGatewayAttachment');
+    expect(attachment.primaryIdentifier).toContain('AttachmentType');
+    expect(classifyByRule(attachment, 'AttachmentType')).toBeUndefined();
+  });
+
+  it('holds out a pair whose live probe is pending', () => {
+    const link = real('AWS::ApiGatewayV2::VpcLink');
+    expect(link.primaryIdentifier).toEqual(['VpcLinkId']);
+    expect(RULE_HELD_OUT.has('AWS::ApiGatewayV2::VpcLink.VpcLinkId')).toBe(true);
+    expect(classifyByRule(link, 'VpcLinkId')).toBeUndefined();
+  });
+
+  it('arn-template settles an ARN built only from fixed values', () => {
+    // fleet/${FleetName} over the create-only primary identifier Name.
+    expect(classifyByRule(real('AWS::AppStream::Fleet'), 'Arn')).toBe('arn-template');
+    // knowledge-base/${KnowledgeBaseId}, the primary identifier.
+    expect(classifyByRule(real('AWS::Bedrock::KnowledgeBase'), 'KnowledgeBaseArn')).toBe(
+      'arn-template'
+    );
+    // bot:${BotName} names the in-place Name: not settled.
+    expect(classifyByRule(real('AWS::Lex::Bot'), 'Arn')).toBeUndefined();
+    // ${ResourceId} names no property or identifier.
+    expect(classifyByRule(real('AWS::QuickSight::DataSet'), 'Arn')).toBeUndefined();
+    // A versioned type: the ARN can carry the version an update mints.
+    expect(
+      classifyByRule(real('AWS::GameLift::ContainerGroupDefinition'), 'ContainerGroupDefinitionArn')
+    ).toBeUndefined();
+  });
+
+  it('arn-template reads every placeholder (synthetic)', () => {
+    const t = (arnTemplate: string): TypeInput => ({
+      type: 'AWS::X::Widget',
+      attributes: ['Arn'],
+      properties: { Name: undefined, Kind: 'yes' },
+      primaryIdentifier: ['WidgetId'],
+      arnTemplate,
+    });
+    const env = 'arn:${Partition}:x:${Region}:${Account}:';
+    for (const ok of ['widget/${WidgetId}', 'widget/${Kind}/${WidgetId}']) {
+      expect(classifyByRule(t(env + ok), 'Arn'), ok).toBe('arn-template');
+    }
+    for (const bad of ['widget/${WidgetName}', 'widget/${WidgetId}/${Name}', 'widget/${Other}']) {
+      expect(classifyByRule(t(env + bad), 'Arn'), bad).toBeUndefined();
+    }
+    const { arnTemplate: _, ...none } = t(env);
+    expect(classifyByRule(none, 'Arn')).toBeUndefined();
+  });
+
+  it('update-timestamp settles a real last-update time as moving', () => {
+    const rule = real('AWS::AccessAnalyzer::ArchiveRule');
+    expect(classifyByRule(rule, 'UpdatedAt')).toBe('update-timestamp');
+    expect(MOVING_RULES.has('update-timestamp')).toBe(true);
+    expect(MOVING_RULES.has('primary-identifier')).toBe(false);
+    expect(MOVING_RULES.has('arn-template')).toBe(false);
   });
 });
 

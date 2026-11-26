@@ -44,7 +44,7 @@ interface SdkRow {
 
 const REPORT = JSON.parse(
   readFileSync(join(process.cwd(), 'docs/_generated/in-place-attr-coverage.json'), 'utf8')
-) as { sdk: SdkRow[] };
+) as { sdk: SdkRow[]; ccMoving: Record<string, string[]> };
 
 /** A property no type declares: an edit that moves nothing a row names. */
 const UNRELATED = 'UnrelatedSetting7001';
@@ -71,6 +71,10 @@ const SAMPLES: Readonly<Record<string, readonly [unknown, unknown]>> = {
 
 const movedBy = REPORT.sdk.filter((r) => r.verdict === 'moved-by');
 const anyUpdate = REPORT.sdk.filter((r) => r.verdict === 'any-update');
+/** go-to-k/cdkd#7007: the Cloud Control pairs a moving rule settles. */
+const ccAnyUpdate: SdkRow[] = Object.entries(REPORT.ccMoving).flatMap(([type, attrs]) =>
+  attrs.map((attribute) => ({ type, attribute, verdict: 'any-update' as const }))
+);
 
 /** One (row, property) case per property a `moved-by` row names. */
 const movedByCases = movedBy.flatMap((r) =>
@@ -155,6 +159,8 @@ describe('a reader of an attribute the audit classifies as moving follows it (#7
     // the time of #7001 holds 60 moved-by and 5 any-update pairs.
     expect(movedBy.length).toBeGreaterThanOrEqual(60);
     expect(anyUpdate.length).toBeGreaterThanOrEqual(5);
+    // ...and #7007's update-timestamp rule settles over 350 Cloud Control pairs.
+    expect(ccAnyUpdate.length).toBeGreaterThan(350);
   });
 
   it.each(movedByCases)('%s promotes the reader', async (_name, row, prop) => {
@@ -181,7 +187,7 @@ describe('a reader of an attribute the audit classifies as moving follows it (#7
     }
   );
 
-  it.each(anyUpdate.map((r) => [`${r.type} ${r.attribute}`, r] as const))(
+  it.each([...anyUpdate, ...ccAnyUpdate].map((r) => [`${r.type} ${r.attribute}`, r] as const))(
     '%s: any in-place edit promotes the reader',
     async (_name, row) => {
       const changes = await diffReader(

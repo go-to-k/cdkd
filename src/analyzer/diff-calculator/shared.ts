@@ -3,6 +3,7 @@ import type { ReplacementSiblings } from '../replacement-rules.js';
 import { isIntrinsicShaped } from '../../provisioning/create-only-properties.js';
 import { SECRET_MASK } from '../../deployment/secret-redaction.js';
 import { maskDeep, type MaskerFn } from '../../provisioning/masked-retry-logger.js';
+import { CC_IN_PLACE_UPDATE_DERIVED_ATTRS } from './in-place-cc-derived-attrs.generated.js';
 
 /**
  * A type's CFn-schema create-only keys as the promotion passes read them
@@ -94,8 +95,11 @@ export type CanonicalizePropertiesFn = (
  * list, not "every read-only attr") so unrelated computed attributes that do
  * NOT track in-place edits (e.g. a Lambda `Arn`) never trigger spurious
  * dependent promotion.
+ *
+ * go-to-k/cdkd#7007: the Cloud Control rows a moving rule of the in-place
+ * attribute audit settles (an update timestamp) are generated and merged in.
  */
-export const IN_PLACE_UPDATE_DERIVED_ATTRS: Readonly<Record<string, ReadonlySet<string>>> =
+const HAND_IN_PLACE_UPDATE_DERIVED_ATTRS: Readonly<Record<string, ReadonlySet<string>>> =
   Object.freeze({
     'AWS::EC2::LaunchTemplate': new Set(['LatestVersionNumber', 'DefaultVersionNumber']),
     // Issue #5446: an InstanceType / UserData update stops and starts the
@@ -113,6 +117,24 @@ export const IN_PLACE_UPDATE_DERIVED_ATTRS: Readonly<Record<string, ReadonlySet<
     // promotion. The update records the version UpdateAgentRuntime answers.
     'AWS::BedrockAgentCore::Runtime': new Set(['AgentRuntimeVersion', 'LastUpdatedAt']),
   });
+
+export const IN_PLACE_UPDATE_DERIVED_ATTRS: Readonly<Record<string, ReadonlySet<string>>> =
+  Object.freeze(
+    Object.fromEntries(
+      [
+        ...new Set([
+          ...Object.keys(HAND_IN_PLACE_UPDATE_DERIVED_ATTRS),
+          ...Object.keys(CC_IN_PLACE_UPDATE_DERIVED_ATTRS),
+        ]),
+      ].map((type) => [
+        type,
+        new Set([
+          ...(HAND_IN_PLACE_UPDATE_DERIVED_ATTRS[type] ?? []),
+          ...(CC_IN_PLACE_UPDATE_DERIVED_ATTRS[type] ?? []),
+        ]),
+      ])
+    )
+  );
 
 /** What rebuilds a MicroVM image: the provider's `BUILD_AFFECTING_CFN_KEYS`. */
 const MICROVM_IMAGE_BUILD_KEYS = new Set([
