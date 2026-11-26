@@ -44,6 +44,8 @@ export function scheduleSupersededDeletes(
   const rows = supersededResourcesOf(state).filter(
     (row) => !isCustomResourceType(row.state.resourceType) || retryLate.has(row)
   );
+  // No row, no work: an ordinary destroy pays nothing for this.
+  if (rows.length === 0) return [];
   const { resources } = state;
   const last = executionLevels.length;
   // The deletion step of each stack resource: the walk runs the levels in reverse.
