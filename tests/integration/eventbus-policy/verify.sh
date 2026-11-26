@@ -235,6 +235,18 @@ for token in '"Sid":"cdkd-integ-buspolicy-stmt"' '"Action":"events:PutEvents"' '
   fi
 done
 echo "    full statement retained WITH the added Condition"
+# go-to-k/cdkd#7009: the Description update is in place, and its result used to
+# carry `attributes: {}`, which erased the Bus record's Arn / Name.
+BUS_ARN_LIVE="$(aws events describe-event-bus --name "${BUS_NAME}" --region "${REGION}" \
+  --query 'Arn' --output text)"
+BUS_ATTRS_P3="$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --json 2>/dev/null \
+  | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const r=JSON.parse(s).state.resources;const k=Object.keys(r).find(x=>x.startsWith("Bus")&&!x.startsWith("BusPolicy")&&r[x].resourceType==="AWS::Events::EventBus");const a=(k&&r[k].attributes)||{};process.stdout.write(`${a.Arn??"<absent>"} ${a.Name??"<absent>"}`)})')"
+if [ "${BUS_ATTRS_P3}" != "${BUS_ARN_LIVE} ${BUS_NAME}" ]; then
+  echo "FAIL: after the in-place bus update the record's Arn / Name expected '${BUS_ARN_LIVE} ${BUS_NAME}', got '${BUS_ATTRS_P3}' (issue #7009)" >&2
+  exit 1
+fi
+echo "    bus record keeps its Arn / Name across the in-place update"
 
 # --- Phase 3a: drift on the sibling-written bus policy (issue #6323) -------
 # Phase 3 updated the bus (Description) and the BusPolicy statement together,

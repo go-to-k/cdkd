@@ -394,8 +394,10 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
       maskSecrets
     );
 
-    // Re-fetch attributes for the result.
-    let attrs: Record<string, unknown> = {};
+    // Re-fetch attributes for the result. Left undefined when the read fails:
+    // a returned map REPLACES the record, so `{}` would erase every attribute
+    // create recorded (go-to-k/cdkd#7009).
+    let attrs: Record<string, unknown> | undefined;
     try {
       const resp = await this.getClient().send(
         new DescribeStreamConsumerCommand({ ConsumerARN: physicalId })
@@ -425,7 +427,7 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
     return {
       physicalId,
       wasReplaced: false,
-      attributes: attrs,
+      ...(attrs !== undefined && { attributes: attrs }),
     };
   }
 

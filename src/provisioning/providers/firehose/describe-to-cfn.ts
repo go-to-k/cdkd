@@ -137,6 +137,50 @@ export function mapExtendedS3DescriptionToCfn(
 }
 
 /**
+ * go-to-k/cdkd#7019: the AWS-side members a DISABLED ExtendedS3 block reports
+ * once the block has ever been written, which mean what the never-set block's
+ * `{}` placeholder means (measured): `UpdateDestination` with
+ * `ProcessingConfiguration: { Enabled: false }` reads back with
+ * `Processors: []`, and `DynamicPartitioningConfiguration` gains
+ * `RetryOptions.DurationInSeconds: 300`. AWS cannot delete a block, so without
+ * this a stream whose processing was switched off out of band, or by
+ * `drift --revert`, reports drift that no revert clears.
+ */
+const DISABLED_BLOCK_FILLS: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {
+  ProcessingConfiguration: { Processors: [] },
+  DataFormatConversionConfiguration: {},
+  DynamicPartitioningConfiguration: { RetryOptions: { DurationInSeconds: 300 } },
+};
+
+/**
+ * The drift comparison's view of `ExtendedS3DestinationConfiguration`, applied
+ * to BOTH sides: a block holding `Enabled: false` and nothing but AWS's fills
+ * ({@link DISABLED_BLOCK_FILLS}) is the `{}` placeholder. Any other member, a
+ * schema configuration kept while disabled included, keeps the block as it is.
+ * Returns the input by identity when nothing applies.
+ */
+export function canonicalizeDisabledExtendedS3Blocks(
+  properties: Record<string, unknown>
+): Record<string, unknown> {
+  const dest = properties['ExtendedS3DestinationConfiguration'];
+  if (!isPlainRecord(dest)) return properties;
+  let out: Record<string, unknown> | undefined;
+  for (const [key, fills] of Object.entries(DISABLED_BLOCK_FILLS)) {
+    const block = dest[key];
+    if (!isPlainRecord(block) || block['Enabled'] !== false) continue;
+    const onlyFills = Object.entries(block).every(
+      ([member, value]) =>
+        member === 'Enabled' ||
+        (Object.hasOwn(fills, member) && JSON.stringify(value) === JSON.stringify(fills[member]))
+    );
+    if (!onlyFills) continue;
+    out ??= { ...dest };
+    out[key] = {};
+  }
+  return out ? { ...properties, ExtendedS3DestinationConfiguration: out } : properties;
+}
+
+/**
  * Map a non-S3 destination description (Elasticsearch /
  * Amazonopensearchservice / AmazonOpenSearchServerless / Splunk) to
  * its CFn `*Configuration` shape.

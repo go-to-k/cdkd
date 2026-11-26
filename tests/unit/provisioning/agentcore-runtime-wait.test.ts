@@ -44,6 +44,7 @@ import {
 } from '../../../src/provisioning/providers/agentcore-runtime/wait.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import { attributesAfterUpdate } from '../../../src/deployment/recorded-identity-attributes.js';
 import {
   InterruptedWaitError,
   isInterruptedWaitError,
@@ -416,5 +417,82 @@ describe('AgentCoreRuntimeProvider status waits (go-to-k/cdkd#6490)', () => {
         'DeleteAgentRuntimeCommand',
       ]);
     });
+  });
+});
+
+describe('AgentCoreRuntimeProvider records LastUpdatedAt from the READY read (go-to-k/cdkd#7009)', () => {
+  // Measured: CreateAgentRuntime answers no lastUpdatedAt; UpdateAgentRuntime
+  // answers one that moves again by the time GetAgentRuntime reads READY.
+  const CREATED = new Date('2026-11-26T01:07:02.146Z');
+  const READY_AFTER_CREATE = new Date('2026-11-26T01:07:10.272Z');
+  const UPDATE_ANSWER = new Date('2026-11-26T01:07:20.456Z');
+  const READY_AFTER_UPDATE = new Date('2026-11-26T01:07:24.437Z');
+  let readyAt = READY_AFTER_CREATE;
+
+  beforeEach(() => {
+    mockSend.mockReset();
+    readyAt = READY_AFTER_CREATE;
+    mockSend.mockImplementation(async (cmd: object) => {
+      switch (cmd.constructor.name) {
+        case 'CreateAgentRuntimeCommand':
+          return { agentRuntimeId: ID, agentRuntimeArn: ARN, status: 'CREATING', createdAt: CREATED };
+        case 'UpdateAgentRuntimeCommand':
+          readyAt = READY_AFTER_UPDATE;
+          return {
+            agentRuntimeId: ID,
+            agentRuntimeArn: ARN,
+            status: 'UPDATING',
+            createdAt: CREATED,
+            lastUpdatedAt: UPDATE_ANSWER,
+          };
+        case 'GetAgentRuntimeCommand':
+          return { agentRuntimeId: ID, agentRuntimeArn: ARN, status: 'READY', createdAt: CREATED, lastUpdatedAt: readyAt };
+        default:
+          throw new Error(`unexpected command ${cmd.constructor.name}`);
+      }
+    });
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('create records the READY read, and an in-place update moves it to its own READY read', async () => {
+    const provider = new AgentCoreRuntimeProvider();
+    const created = await provider.create('Rt', TYPE, PROPS);
+    expect(created.attributes?.['LastUpdatedAt']).toBe(READY_AFTER_CREATE.toISOString());
+    const updated = await provider.update('Rt', created.physicalId, TYPE, UPDATE_PROPS, PROPS);
+    const recorded = attributesAfterUpdate(TYPE, created.attributes, updated);
+    expect(Object.keys(recorded ?? {}).sort()).toEqual(Object.keys(created.attributes ?? {}).sort());
+    expect(recorded?.['LastUpdatedAt']).toBe(READY_AFTER_UPDATE.toISOString());
+    expect(recorded?.['CreatedAt']).toBe(CREATED.toISOString());
+  });
+
+  it('under --no-wait an update records no LastUpdatedAt: its own answer moves by READY', async () => {
+    const provider = new AgentCoreRuntimeProvider();
+    const created = await provider.create('Rt', TYPE, PROPS);
+    expect(created.attributes?.['LastUpdatedAt']).toBe(READY_AFTER_CREATE.toISOString());
+    vi.stubEnv('CDKD_NO_WAIT', 'true');
+    const updated = await provider.update('Rt', created.physicalId, TYPE, UPDATE_PROPS, PROPS);
+    const recorded = attributesAfterUpdate(TYPE, created.attributes, updated);
+    // The create-recorded value predates this update: dropped, not kept. The
+    // deferred readiness re-read fills the key the record lacks (#6940).
+    expect(recorded).not.toHaveProperty('LastUpdatedAt');
+    expect(recorded?.['CreatedAt']).toBe(CREATED.toISOString());
+  });
+
+  it('import records LastUpdatedAt, the same key set as a READY create', async () => {
+    const provider = new AgentCoreRuntimeProvider();
+    const created = await provider.create('Rt', TYPE, PROPS);
+    const imported = await provider.import({
+      logicalId: 'Rt',
+      resourceType: TYPE,
+      stackName: 'S',
+      region: 'us-east-1',
+      properties: PROPS,
+      knownPhysicalId: ID,
+    });
+    expect(imported?.attributes?.['LastUpdatedAt']).toBe(READY_AFTER_CREATE.toISOString());
+    const createdKeys = Object.keys(created.attributes ?? {}).filter((k) => k !== 'AgentRuntimeName');
+    expect(Object.keys(imported?.attributes ?? {})).toEqual(expect.arrayContaining(createdKeys));
   });
 });

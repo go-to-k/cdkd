@@ -51,6 +51,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
 });
 
 import { EventBridgeArchiveProvider } from '../../../../src/provisioning/providers/eventbridge-archive-provider.js';
+import { attributesAfterUpdate } from '../../../../src/deployment/recorded-identity-attributes.js';
 import { withStackScope, stackInstanceNameSuffix } from '../../../../src/provisioning/resource-name.js';
 import { applyDefaultNameForFallback } from '../../../../src/provisioning/resource-name.js';
 import { RESOURCE_NOT_FOUND } from '../../../../src/types/resource.js';
@@ -682,5 +683,31 @@ describe('EventBridgeArchiveProvider', () => {
       await expect(provider.import(input({ cdkPath: 'MyStack/Arch' }))).resolves.toBeNull();
       expect(mockSend).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('EventBridgeArchiveProvider no-change update keeps the recorded attributes (issue #7009)', () => {
+  it('leaves the Arn create recorded on the record when nothing changed', async () => {
+    mockSend.mockReset();
+    const provider = new EventBridgeArchiveProvider();
+    mockSend.mockResolvedValueOnce({ ArchiveArn: ARN('arch'), State: 'ENABLED' });
+    const props = { ArchiveName: 'arch', SourceArn: BUS_ARN, Description: 'd' };
+    const created = await provider.create('Arch', TYPE, props);
+    expect(created.attributes).toEqual({ Arn: ARN('arch') });
+    const updated = await provider.update('Arch', created.physicalId, TYPE, props, props);
+    expect(sentOf(UpdateArchiveCommand)).toHaveLength(0);
+    expect(attributesAfterUpdate(TYPE, created.attributes, updated)).toEqual(created.attributes);
+  });
+
+  it('leaves the Arn create recorded when a changed update answers no ArchiveArn', async () => {
+    mockSend.mockReset();
+    const provider = new EventBridgeArchiveProvider();
+    mockSend.mockResolvedValueOnce({ ArchiveArn: ARN('arch'), State: 'ENABLED' });
+    const props = { ArchiveName: 'arch', SourceArn: BUS_ARN, Description: 'd' };
+    const created = await provider.create('Arch', TYPE, props);
+    mockSend.mockResolvedValueOnce({ State: 'ENABLED' }); // UpdateArchive, no ArchiveArn
+    const updated = await provider.update('Arch', created.physicalId, TYPE, { ...props, Description: 'e' }, props);
+    expect(sentOf(UpdateArchiveCommand)).toHaveLength(1);
+    expect(attributesAfterUpdate(TYPE, created.attributes, updated)).toEqual(created.attributes);
   });
 });

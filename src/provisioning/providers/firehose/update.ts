@@ -19,6 +19,7 @@ import type { ResourceUpdateResult, UpdateContext } from '../../../types/resourc
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import { holdsSecretDerivedEntry } from '../../iam-policy-targets.js';
 import { safeMsg } from '../../../utils/display-safe.js';
+import { withEmptyBlocksAsNone } from './s3-destination.js';
 import {
   ENCRYPTION_KEY,
   readEncryptionInput,
@@ -413,9 +414,9 @@ export async function applyUpdate(
   return {
     physicalId,
     wasReplaced: false,
-    attributes: {
-      ...(desc?.DeliveryStreamARN !== undefined && { Arn: desc.DeliveryStreamARN }),
-    },
+    // No `attributes` without the ARN: the map REPLACES the record, so `{}`
+    // would erase the recorded `Arn` (go-to-k/cdkd#7009).
+    ...(desc?.DeliveryStreamARN !== undefined && { attributes: { Arn: desc.DeliveryStreamARN } }),
     ...(encryptionSkipped && {
       effectiveProperties: this.withRecordedEncryption(
         properties,
@@ -516,7 +517,11 @@ export async function applyExtendedS3DestinationUpdate(
       DeliveryStreamName: physicalId,
       CurrentDeliveryStreamVersionId: currentVersionId,
       DestinationId: destinationId,
-      ExtendedS3DestinationUpdate: this.mapExtendedS3ConfigToUpdate(nextConfig),
+      ExtendedS3DestinationUpdate: withEmptyBlocksAsNone(
+        this.mapExtendedS3ConfigToUpdate(nextConfig),
+        nextConfig,
+        currentDestination?.ExtendedS3DestinationDescription
+      ),
     })
   );
 }
