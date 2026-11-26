@@ -23,15 +23,17 @@
  * resolved (go-to-k/cdkd#7052): a non-empty value that differs from every
  * other value but the same unresolved one. A new resource's id or ARN cannot
  * equal the previous string, and the diff calls such a pair changed too
- * (`valuesEqual`). A value that resolves to the recorded one anyway (an
- * attribute of a new resource, or a new export, holding the same key ARN) is a
- * known RESIDUAL: that row is no ceiling, so the replacement stands, and the
- * stateful guard refuses it without `--force-stateful-recreation`. So does the diff's promoted-dependent probe (`undefined`,
+ * (`valuesEqual`). So does the diff's promoted-dependent probe (`undefined`,
  * `undefined`): the field references a resource being replaced, so both sides
  * are non-empty and the value WILL move once it resolves. That answer is a
  * ceiling the engine lowers when the resolved value turns out unmoved, and
  * re-judges with the resolved values when it moved
  * (`eventInvokeConfigFunctionChanged` answers the probe the same way).
+ *
+ * A known RESIDUAL: an unresolved value that resolves to the recorded one
+ * anyway (an attribute of a new resource, or a new export, holding the same
+ * key ARN). That row is no ceiling, so the replacement stands, and the
+ * stateful guard refuses it without `--force-stateful-recreation`.
  *
  * A `Boolean` field the diff could not resolve stays undecidable: it may
  * resolve to either value, so it keeps cdkd's previous verdict (no

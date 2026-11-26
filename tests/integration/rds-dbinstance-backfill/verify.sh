@@ -1093,7 +1093,7 @@ PI_DIFF_TXT=$(printf '%s' "${PI_DIFF_OUT}" | sed $'s/\033\[[0-9;]*m//g')
 # Sentinels: the new key named in the diff and the property row itself,
 # independent of its replacement note.
 if ! grep -qE "PiKeyB[A-Za-z0-9]*" <<<"${PI_DIFF_TXT}" || ! grep -q -- "- PerformanceInsightsKMSKeyId:" <<<"${PI_DIFF_TXT}"; then
-  echo "FAIL: phase 2c-pi: cdkd diff printed no PiKeyB create or no PerformanceInsightsKMSKeyId change" >&2
+  echo "FAIL: phase 2c-pi: cdkd diff named no PiKeyB or printed no PerformanceInsightsKMSKeyId change" >&2
   echo "${PI_DIFF_TXT}" >&2
   exit 1
 fi
