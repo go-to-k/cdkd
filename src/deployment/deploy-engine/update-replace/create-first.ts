@@ -30,6 +30,7 @@ import { withCurrentResourceSecrets, withPrintingSecrets } from '../../resource-
 import { getStackRecords } from '../../stack-records-scope.js';
 import { deleteSkipReason } from '../../delete-outcome.js';
 import { recordedIdsNameDifferentResources } from '../../type-change-guard.js';
+import type { ResourceCreateResult, ResourceProvider } from '../../../types/resource.js';
 import { isNameCollisionErrorFrom, markNonRetryable } from '../../retryable-errors.js';
 import {
   createSecretMasker,
@@ -491,6 +492,11 @@ export async function replaceCreateFirst(
         'NAMED_REPLACEMENT_IDEMPOTENT_CREATE'
       );
     }
+    // go-to-k/cdkd#7084: under --replace no refusal carries the note, so a
+    // rule left in place is named here.
+    if (createdAnotherNote !== '' && !createdAnotherNote.includes('deleted again')) {
+      engine.logger.warn(`  ⚠ ${displaySafe(logicalId)}:${createdAnotherNote}`);
+    }
     // --replace opt-in: same delete-first fallback as the
     // collision path — the "created" resource is the old one, so
     // deleting the old physical id releases the name, and the
@@ -611,16 +617,14 @@ async function retireCreatedAnother(
     logicalId: string;
     resourceType: string;
     currentResource: { attributes?: Record<string, unknown> | undefined };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- shape varies by ResourceProvider impl
-    createResult: any;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the arm's provider
-    replaceProvider: any;
+    createResult: ResourceCreateResult;
+    replaceProvider: ResourceProvider;
     replaceProps: Record<string, unknown>;
     updateSecrets: Parameters<typeof withPrintingSecrets>[0];
   }
 ): Promise<string> {
   const { logicalId, resourceType, currentResource, createResult } = input;
-  const createdAttributes = createResult?.attributes as Record<string, unknown> | undefined;
+  const createdAttributes = createResult.attributes;
   if (
     !recordedIdsNameDifferentResources(resourceType, currentResource.attributes, createdAttributes)
   ) {
@@ -659,6 +663,12 @@ async function retireCreatedAnother(
       return leftNote(`its delete was not confirmed (${asIsMessage(skipped)})`);
     return ' The resource this create made under the same id was deleted again.';
   } catch (error) {
+    engine.logger.debug(
+      maskSecretsInText(
+        `retiring ${logicalId}'s created resource failed: ${String(error)}`,
+        input.updateSecrets
+      )
+    );
     const detail = maskSecretsInText(describeAwsFailure(error).summary, input.updateSecrets);
     return leftNote(`its delete failed (${asIsMessage(detail)})`);
   }
