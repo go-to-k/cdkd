@@ -9,6 +9,11 @@ import { safeMsg } from '../../../utils/display-safe.js';
 import { CdkdError } from '../../../utils/error-handler.js';
 import { promoteRecreateTargets, recreateTargetIdsFor } from '../../recreate-target-promotion.js';
 import { refuseStatefulReplacedReaders } from '../../recreate-target-readers.js';
+import {
+  planReplaceResourceTargets,
+  refuseStatefulReplaceResourceTargets,
+  replaceResourceIdsFor,
+} from '../../replace-resource-targets.js';
 import { markNonRetryable } from '../../retryable-errors.js';
 import {
   findNestedStackTypeChanges,
@@ -61,6 +66,36 @@ export async function refuseUnsafePlan(
     diffResolverContext: ResolverContext;
   }
 ): Promise<{ deferredExports: AffectedExport[] }> {
+  // go-to-k/cdkd#7079: FIRST, so every check below, the summary and
+  // `--require-approval` see each `--replace-resource` target as the
+  // replacement it now is.
+  const replaceResourceIds = replaceResourceIdsFor(engine.options.replaceResources, stackName);
+  if (replaceResourceIds !== undefined) {
+    const { replaced, unreplaced } = planReplaceResourceTargets(changes, replaceResourceIds);
+    for (const { logicalId, changeType } of unreplaced) {
+      engine.logger.warn(
+        changeType === undefined
+          ? safeMsg`--replace-resource ${logicalId}: not replaced, stack ${stackName} has no such resource.`
+          : safeMsg`--replace-resource ${logicalId}: not replaced, this deploy will ${changeType.toLowerCase()} it instead.`
+      );
+    }
+    refuseStatefulReplaceResourceTargets({
+      targetIds: replaced,
+      state: currentState,
+      template: effectiveTemplate,
+      forceStatefulRecreation: engine.options.forceStatefulRecreation === true,
+    });
+    // Its readers a create-only property makes replaced too, as a recreate
+    // target's are (go-to-k/cdkd#4383).
+    await refuseStatefulReplacedReaders({
+      template: effectiveTemplate,
+      state: currentState,
+      targetIds: replaced,
+      conditions,
+      forceStatefulRecreation: engine.options.forceStatefulRecreation === true,
+      targetFlag: '--replace-resource',
+    });
+  }
   // Issue #2668: refuse a Type change into or out of
   // `AWS::CloudFormation::Stack` before anything is provisioned. Every
   // other Type change is replaced normally — the old half routes on the

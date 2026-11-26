@@ -6,6 +6,7 @@ import { freshNoEchoParametersWithDeclared, noEchoDiffComparison } from '../noec
 import { diffLogMasker, redactParametersForDiff } from '../masking.js';
 import { makeCanonicalizePropertiesFn } from '../../../provisioning/canonicalize-properties.js';
 import { recreateTargetIdsFor } from '../../recreate-target-promotion.js';
+import { replaceResourceIdsFor } from '../../replace-resource-targets.js';
 import { crossStackOutputProvenanceSource } from '../../read-provenance-sources.js';
 import type { CrossStackRead } from '../../intrinsic-resolver/context.js';
 import { buildResolverContext, maskedInputSources } from '../resolver-context.js';
@@ -176,7 +177,13 @@ export async function calculateDeployDiff(
     // its same-stack readers are promoted as for a property-driven
     // replacement, before anything below counts the changes. This stack's
     // targets only, never a nested child's or another stack's.
-    recreateTargetIdsFor(engine.options.recreateTargets, stackName),
+    // go-to-k/cdkd#7079: a `--replace-resource` target too: the plan checks
+    // turn its UPDATE row into a replacement, so its readers are promoted
+    // here exactly as a planned replacement's are.
+    forcedReplacementIds(
+      recreateTargetIdsFor(engine.options.recreateTargets, stackName),
+      replaceResourceIdsFor(engine.options.replaceResources, stackName)
+    ),
     // go-to-k/cdkd#4543: a masked property's resolved inputs, so a changed
     // parameter or flipped condition behind unchanged template text diffs.
     // A layout-1 fingerprint whose text still matches is re-baselined to
@@ -231,4 +238,14 @@ export async function calculateDeployDiff(
     expectedChildTags,
     zonelessRecordsHealed: zonelessRecordsHealed.length > 0,
   };
+}
+
+/** The union of two optional id sets; `undefined` when both are. */
+export function forcedReplacementIds(
+  a: ReadonlySet<string> | undefined,
+  b: ReadonlySet<string> | undefined
+): ReadonlySet<string> | undefined {
+  if (a === undefined) return b;
+  if (b === undefined) return a;
+  return new Set([...a, ...b]);
 }

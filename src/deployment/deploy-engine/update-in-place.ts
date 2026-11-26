@@ -4,7 +4,6 @@ import { clearCreatedReport } from '../../provisioning/created-resource-sink.js'
 import { buildObservedCaptureSiblings } from './observed-capture.js';
 import {
   noteSecretNamedRecord,
-  printingSecretsFor,
   registerNoEchoAttributes,
   stackSecretNameMasker,
 } from './masking.js';
@@ -35,7 +34,6 @@ import {
 } from '../unsettled-convergence.js';
 import { withUnchangedSecretPrincipalLists } from '../../provisioning/iam-policy-targets.js';
 import { withRecreatedAttachmentsDropped } from '../child-of-recreated-parent.js';
-import { isInterruptedWaitError } from '../../provisioning/interrupt-watch.js';
 import { sdkAddressedRecord } from '../../provisioning/provider-registry.js';
 import { ccIdentifierFromSdkRecord } from '../../provisioning/cc-identifier-from-sdk.js';
 import { sdkMigrationNotice } from './update-in-place/sdk-migration-notice.js';
@@ -45,7 +43,6 @@ import {
   removalWarning,
   withoutInjectedRemovals,
 } from '../../provisioning/update-removal.js';
-import { isWaitAbandonedError } from '../../provisioning/wait-abandoned.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import { type ResourceState, hasUnverifiableParameterRefusal } from '../../types/state.js';
 import { recordedTypedPayloadLeavesOf } from '../../provisioning/custom-resource-payload-types.js';
@@ -56,19 +53,14 @@ import { acceptedCreateOnlyDropsField, secretNamedAttributesField } from './reco
 import { cachedCreateOnlyPropertyPaths } from '../../provisioning/create-only-properties.js';
 import { hasPassProvenance } from '../secret-redaction/reference-provenance.js';
 import { referenceProvenanceOf } from '../reference-provenance-record.js';
-import { describeAwsFailure } from '../../utils/aws-failure-text.js';
-import { asIsMessage, displaySafe, safeMsg } from '../../utils/display-safe.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { CdkdError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { formatResourceLine } from '../../utils/resource-line.js';
 import { withCurrentResourceSecrets } from '../resource-secrets-scope.js';
 import { attributesAfterUpdate } from '../recorded-identity-attributes.js';
 import { differingIdentityWarning } from '../../provisioning/recorded-identity.js';
-import {
-  isUpdateUnsupportedError,
-  markNonRetryable,
-  markRedactedCause,
-} from '../retryable-errors.js';
-import { createSecretMasker, maskSecretsInText, unionOfSecretBags } from '../secret-redaction.js';
+import { isUpdateUnsupportedError, markNonRetryable } from '../retryable-errors.js';
+import { createSecretMasker } from '../secret-redaction.js';
 import { updatePartialMessage, updatePartialReason } from '../update-outcome.js';
 import type { LiveRenderer } from '../../utils/live-renderer.js';
 import type { RecordedSecretValues } from '../secret-redaction.js';
@@ -78,6 +70,11 @@ import { carriedNoEchoMacs, noEchoUpdateContext, noEchoPositionSources } from '.
 import { deleteOldIdAfterDeploy } from './replacement/cleanup-old-id.js';
 import { keyOrderFreeJson } from '../deploy-value-equality.js';
 import { replaceFallbackFor } from './update-in-place/replace-fallback.js';
+import {
+  isNotUpdatableError,
+  notUpdatableRemedy,
+  withUpdateFailureRemedy,
+} from './update-in-place/update-failure-remedy.js';
 import { writeOnlySecretsForUpdate } from './update-in-place/write-only-secret-skip.js';
 
 /** A branch of `provisionUpdate` (`update/provision-update.ts`), split out of it (#4350). */
@@ -646,49 +643,31 @@ export async function updateInPlace(
       // go-to-k/cdkd#4904: this deploy moved an SDK-recorded resource to
       // Cloud Control, which addresses it by the SDK provider's physical id.
       // Name that move and both ways through; the cause stays conditional.
-      if (
-        currentResource.provisionedBy !== 'cc-api' &&
-        updateDecision.ccRouteReason !== undefined &&
-        updateError instanceof Error &&
-        !isInterruptedWaitError(updateError) &&
-        !isWaitAbandonedError(updateError)
-      ) {
-        const remedy = ccAutoRouteUpdateFailureRemedy(
-          logicalId,
-          resourceType,
-          updateDecision.ccRouteReason.properties,
-          engine.options.parentStackInfo !== undefined,
-          currentResource.physicalId !== recordedResource.physicalId
-        );
-        // go-to-k/cdkd#2319: appended to AWS's own error, the remedy would be
-        // dropped with AWS's text when the event recorder reduces that error
-        // to its class. Such an error is wrapped instead: the class plus the
-        // remedy in the persisted message, AWS's text in `debug` (masked) and
-        // on the `cause`, which every downstream mark reader walks.
-        const updateFailure = describeAwsFailure(updateError);
-        if (updateFailure.redacted) {
-          const shownSecrets = unionOfSecretBags([
-            updateSecrets,
-            printingSecretsFor(engine.secretsRun, logicalId),
-          ]);
-          engine.logger.debug(
-            safeMsg`${maskSecretsInText(logicalId, shownSecrets)}: the update failed: ${asIsMessage(
-              maskSecretsInText(updateFailure.detail, shownSecrets)
-            )}`
-          );
-          const wrapped = new Error(`${displaySafe(updateFailure.summary)}${remedy}`, {
-            cause: updateError,
-          });
-          // The AWS class stays the recorded `error.name`, as when the error
-          // itself was thrown -- except `CredentialsProviderError`, a name
-          // `isAwsAuthoredFailure` reads as AWS-authored on its own, so the
-          // recorder would reduce the wrap too and drop the remedy.
-          if (updateError.name !== 'CredentialsProviderError') wrapped.name = updateError.name;
-          throw markRedactedCause(wrapped);
-        }
-        updateError.message += remedy;
-      }
-      throw updateError;
+      const ccRouteRemedy =
+        currentResource.provisionedBy !== 'cc-api' && updateDecision.ccRouteReason !== undefined
+          ? ccAutoRouteUpdateFailureRemedy(
+              logicalId,
+              resourceType,
+              updateDecision.ccRouteReason.properties,
+              engine.options.parentStackInfo !== undefined,
+              currentResource.physicalId !== recordedResource.physicalId
+            )
+          : '';
+      // go-to-k/cdkd#7079: a NotUpdatable answer names the property and the
+      // plan-time `--replace-resource` way out.
+      const notUpdatable = isNotUpdatableError(updateError, logicalId)
+        ? notUpdatableRemedy({
+            logicalId,
+            resourceType,
+            stackName,
+            changedProperties,
+            record: currentResource,
+            updateReplacePolicy,
+            nestedChild: engine.options.parentStackInfo !== undefined,
+          })
+        : '';
+      const remedy = ccRouteRemedy + notUpdatable;
+      throw withUpdateFailureRemedy(engine, updateError, logicalId, remedy, updateSecrets);
     }
   }
 

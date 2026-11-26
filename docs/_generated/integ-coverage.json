@@ -10314,6 +10314,7 @@
         "composite-stack",
         "drift-sns-sibling-subscription",
         "noecho-named-producer",
+        "replace-resource-flag",
         "replaced-queue-topic-failed-rollback",
         "secret-derived-immutable-names",
         "sns-event-source",
@@ -10331,6 +10332,10 @@
           "literal"
         ],
         "noecho-named-producer": [
+          "l1",
+          "literal"
+        ],
+        "replace-resource-flag": [
           "l1",
           "literal"
         ],
@@ -10402,6 +10407,7 @@
         "refactor-command",
         "refactor-lambda-version",
         "refactor-move",
+        "replace-resource-flag",
         "replaced-queue-topic-failed-rollback",
         "replacement-fanout",
         "replacement-rename-onto-holder",
@@ -10562,6 +10568,10 @@
         ],
         "refactor-move": [
           "l2"
+        ],
+        "replace-resource-flag": [
+          "l1",
+          "literal"
         ],
         "replaced-queue-topic-failed-rollback": [
           "l2",
@@ -10783,6 +10793,7 @@
         "removal-delete-failure-kept",
         "rename-refactor",
         "replace-predelete-snapshot-failed-rollback",
+        "replace-resource-flag",
         "replace-snapshot-failed-rollback",
         "replaced-queue-topic-failed-rollback",
         "replacement-rename-onto-holder",
@@ -11055,6 +11066,10 @@
           "literal"
         ],
         "replace-predelete-snapshot-failed-rollback": [
+          "l1",
+          "literal"
+        ],
+        "replace-resource-flag": [
           "l1",
           "literal"
         ],
@@ -11336,6 +11351,7 @@
         "refactor-move",
         "remove-protection-journaled-orphan",
         "rename-refactor",
+        "replace-resource-flag",
         "replaced-queue-topic-failed-rollback",
         "replacement-fanout",
         "replacement-immutable-name",
@@ -11727,6 +11743,10 @@
         ],
         "rename-refactor": [
           "l2",
+          "literal"
+        ],
+        "replace-resource-flag": [
+          "l1",
           "literal"
         ],
         "replaced-queue-topic-failed-rollback": [

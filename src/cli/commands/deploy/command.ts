@@ -80,6 +80,7 @@ import { prepareStateInfra, fetchCallerIdentity } from './prep.js';
 import { addStacksToWorkGraph, dryRunPredictsAutoCreatedStorage } from './work-graph.js';
 import { deployStackInScope, type DeployStackContext } from './stack-deploy.js';
 import { checkPinCcApiOptions } from './pin-cc-api-checks.js';
+import { checkReplaceResourceOptions } from './replace-resource-checks.js';
 import { confirmAutoAssetStorageCreate, createDeploySigintHandler } from './helpers.js';
 
 /**
@@ -841,6 +842,7 @@ export async function deployCommand(
     };
 
     checkPinCcApiOptions(options, targetStacks, logger);
+    checkReplaceResourceOptions(options, targetStacks);
 
     runClock.lap('work graph build, recreate checks');
     // Execute work graph

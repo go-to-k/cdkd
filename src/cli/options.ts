@@ -11,6 +11,7 @@ import {
   recreateViaCcApiOption,
   pinCcApiOption,
   recreateViaSdkProviderOption,
+  replaceResourceOption,
 } from './options/provisioning-route.js';
 
 export {
@@ -34,6 +35,8 @@ export {
   parsePinCcApiToken,
   pinCcApiOption,
   recreateViaSdkProviderOption,
+  parseReplaceResourceToken,
+  replaceResourceOption,
 } from './options/provisioning-route.js';
 export {
   parseAssumeRoleToken,
@@ -670,6 +673,7 @@ export const deployOptions = [
   pinCcApiOption,
   forceStatefulRecreationOption,
   replaceOption,
+  replaceResourceOption,
   useCdkBootstrapAssetsOption,
   strictGetattOption,
   noCfnFallbackOption,
