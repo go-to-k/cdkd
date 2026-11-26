@@ -664,12 +664,15 @@ describe('a producer holds its cleanup phase for its in-run consumers (go-to-k/c
   });
 
   /** A producer record carrying `entries`, deployed with no change. */
-  const noChangeState = (entries: SupersededResourceRecord[]): StackState =>
+  const noChangeState = (
+    entries: SupersededResourceRecord[],
+    resources: Record<string, ResourceState> = {}
+  ): StackState =>
     ({
       version: 12,
       stackName: PRODUCER,
       region: 'us-east-1',
-      resources: {},
+      resources,
       outputs: {},
       supersededResources: entries,
       lastModified: 0,
@@ -704,6 +707,40 @@ describe('a producer holds its cleanup phase for its in-run consumers (go-to-k/c
     await queue.runAll({ interrupted: () => false }, { info: vi.fn(), warn: vi.fn() });
 
     expect(deletesOf('kept-old')).toBe(0);
+  });
+
+  // A value the old copy shares with a live record of the producer (a VPC
+  // id) names nothing old: a consumer spelling only it has moved off.
+  const SHARED = 'vpc-shared-00000001';
+  const markedSharing = (physicalId: string): SupersededResourceRecord => {
+    const entry = marked(physicalId);
+    entry.state.attributes = { VpcId: SHARED };
+    return entry;
+  };
+  const liveSharing = (): ResourceState => {
+    const live = record('live-new', REVISION, { FunctionName: 'live-new' });
+    live.attributes = { VpcId: SHARED };
+    return live;
+  };
+
+  it('the cleanup phase passes the live records: a value one shares holds nothing', async () => {
+    live.add('kept-old');
+    store.set('Consumer', consumerNaming(SHARED));
+    await deployStack(makeEngine('R'), PRODUCER, 'R', {
+      superseded: [markedSharing('kept-old')],
+      extraRecords: { Live: liveSharing() },
+    });
+    expect(deletesOf('kept-old')).toBe(1);
+  });
+
+  it('a no-change deploy passes the live records: a value one shares holds nothing', async () => {
+    live.add('kept-old');
+    store.set('Consumer', consumerNaming(SHARED));
+    await noChangeDeploy(
+      makeEngine('R'),
+      noChangeState([markedSharing('kept-old')], { Live: liveSharing() })
+    );
+    expect(deletesOf('kept-old')).toBe(1);
   });
 
   async function noChangeDeploy(engine: DeployEngine, currentState: StackState): Promise<void> {
