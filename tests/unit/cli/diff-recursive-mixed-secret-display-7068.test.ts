@@ -55,7 +55,9 @@ import { MIN_NEEDLE_LENGTH } from '../../../src/deployment/secret-redaction.js';
 import type { DiffTreeNode } from '../../../src/cli/commands/diff-recursive/types.js';
 import {
   SECURITY_TABLE_WITHHELD,
+  ANY_TAG_KEY,
   maskPassedSecretChanges,
+  mixedSecretTagKeys,
   taintedNamesOf,
 } from '../../../src/cli/commands/diff-recursive/passed-secret-display.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
@@ -147,7 +149,7 @@ const GRAND_TEMPLATE = {
 const PUBLIC = 'https://{{resolve:ssm:/pub/host}}/x';
 
 const PARENT_TEMPLATE = {
-  Parameters: { Sep: { Type: 'String' } },
+  Parameters: { Sep: { Type: 'String' }, TagParam: { Type: 'String' } },
   Resources: {
     Child: {
       Type: 'AWS::CloudFormation::Stack',
@@ -156,7 +158,11 @@ const PARENT_TEMPLATE = {
         TemplateURL: 'https://s3.amazonaws.com/b/child.json',
         Parameters: { X: { 'Fn::Join': ['', [{ Ref: 'Sep' }, '/', A]] }, W: B, Url: PUBLIC },
         // A stack tag mixing the reference, handed to the whole subtree.
-        Tags: [{ Key: 'pt', Value: { 'Fn::Join': ['', [{ Ref: 'Sep' }, '#', A]] } }],
+        Tags: [
+          { Key: 'pt', Value: { 'Fn::Join': ['', [{ Ref: 'Sep' }, '#', A]] } },
+          // Mixed only once resolved: the template spells no reference.
+          { Key: 'pp', Value: { Ref: 'TagParam' } },
+        ],
       },
     },
     // A reader of the row's output: the child holding the plaintext answers it.
@@ -217,7 +223,10 @@ function states(old: string): Record<string, StackState> {
         ...record('AWS::CloudFormation::Stack', {
           TemplateURL: 'https://s3.amazonaws.com/b/child.json',
           Parameters: { X: old, W: B, Url: 'https://old.example.com/x' },
-          Tags: [{ Key: 'pt', Value: old }],
+          Tags: [
+            { Key: 'pt', Value: old },
+            { Key: 'pp', Value: old },
+          ],
         }),
         attributes: { 'Outputs.Piece': old },
       },
@@ -264,7 +273,7 @@ async function diff(sep: string, old: string, recursive: boolean): Promise<DiffT
     displayName: 'Parent',
     region: 'us-east-1',
     template: structuredClone(PARENT_TEMPLATE),
-    parameters: { Sep: sep },
+    parameters: { Sep: sep, TagParam: `${sep}%${A}` },
     nestedTemplates: { Child: join(dir, 'child.json') },
     recursive,
     stateBackend: {
@@ -358,6 +367,7 @@ describe('cdkd diff: a nested row parameter mixing a secret reference (#7068)', 
           expect.arrayContaining([
             { Key: 'pt', Value: '***' },
             { Key: 't', Value: '***' },
+            { Key: 'pp', Value: '***' },
           ])
         );
         // The child's IAM change is still reported, its table withheld.
@@ -451,5 +461,18 @@ describe('taintedNamesOf (#7068)', () => {
       },
     };
     expect([...taintedNamesOf(template as never, undefined)].sort()).toEqual(['Mixed', 'Reader']);
+  });
+});
+
+describe('mixedSecretTagKeys (#7068)', () => {
+  it('hands on every inherited key, whatever the row spells', () => {
+    expect([...mixedSecretTagKeys({ Tags: [] }, { a: 'plain' }, new Set(), new Set(['up']))]).toEqual([
+      'up',
+    ]);
+  });
+
+  it('stands for every key when a tainted tag spells no literal key', () => {
+    const row = { Tags: [{ Key: { Ref: 'K' }, Value: { Ref: 'X' } }] };
+    expect([...mixedSecretTagKeys(row, undefined, new Set(['X']), undefined)]).toEqual([ANY_TAG_KEY]);
   });
 });
