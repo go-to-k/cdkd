@@ -278,7 +278,7 @@ export class LightsailAlarmProvider implements ResourceProvider {
     }
     return {
       physicalId: alarmName,
-      attributes: await this.readAttributesAfterWrite(alarmName, logicalId, mask),
+      attributes: await this.readAttributesAfterWrite(alarmName, logicalId, mask, 'create'),
     };
   }
 
@@ -324,10 +324,14 @@ export class LightsailAlarmProvider implements ResourceProvider {
           )
       );
     }
+    // An empty read (failed, or no alarm listed) is no `attributes`: the map
+    // REPLACES the record, so `{}` would erase the recorded AlarmArn / State
+    // (go-to-k/cdkd#7009).
+    const attributes = await this.readAttributesAfterWrite(physicalId, logicalId, mask, 'update');
     return {
       physicalId,
       wasReplaced: false,
-      attributes: await this.readAttributesAfterWrite(physicalId, logicalId, mask),
+      ...(Object.keys(attributes).length > 0 && { attributes }),
     };
   }
 
@@ -389,22 +393,36 @@ export class LightsailAlarmProvider implements ResourceProvider {
   /**
    * `AlarmArn` and `State` after a write, read with `GetAlarms`. The alarm
    * exists by now, so a failed read does not fail the create or update: it
-   * warns and returns no attributes, which the `Fn::GetAtt`-miss heal reads
-   * back through {@link import} when a template asks for one. Failing here
-   * would leave a live alarm with no state record.
+   * warns and returns no attributes. After a create the record then holds
+   * none, which the `Fn::GetAtt`-miss heal reads back through {@link import}
+   * when a template asks for one. After an update `update()` returns no
+   * `attributes`, so the record keeps the last read's (go-to-k/cdkd#7009):
+   * the `AlarmArn` is the alarm's and does not move, and `State` is the
+   * snapshot that read took. Failing here would leave a live alarm with no
+   * state record.
    */
   private async readAttributesAfterWrite(
     alarmName: string,
     logicalId: string,
-    mask: MaskerFn
+    mask: MaskerFn,
+    operation: 'create' | 'update'
   ): Promise<Record<string, unknown>> {
     try {
       const alarm = await this.getAlarm(alarmName, logicalId);
+      if (alarm === undefined) {
+        this.logger.debug(
+          mask(
+            safeMsg`GetAlarms listed no Lightsail alarm ${alarmName} right after the ${operation}; no attributes read`
+          )
+        );
+      }
       return definedAttributes({ AlarmArn: alarm?.arn, State: alarm?.state });
     } catch (error) {
       this.logger.warn(
         mask(
-          safeMsg`Could not read Lightsail alarm ${alarmName} back after writing it (${describeAwsFailure(error).summary}); its AlarmArn and State are read again when needed`
+          operation === 'create'
+            ? safeMsg`Could not read Lightsail alarm ${alarmName} back after creating it (${describeAwsFailure(error).summary}); its AlarmArn and State are read again when needed`
+            : safeMsg`Could not read Lightsail alarm ${alarmName} back after updating it (${describeAwsFailure(error).summary}); the recorded AlarmArn and State are kept, State as of the last read`
         )
       );
       return {};

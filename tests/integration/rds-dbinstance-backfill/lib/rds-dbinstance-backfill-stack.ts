@@ -250,13 +250,17 @@ export class RdsDbInstanceBackfillStack extends cdk.Stack {
       // to Cloud Control (the provisionedBy=sdk guard catches it).
       dbParameterGroupName: (useParamGroupB ? paramGroupB : paramGroupA).ref,
       ...(logsRemoved ? {} : { enableCloudwatchLogsExports: logExports }),
-      // go-to-k/cdkd#5640, unchanged in every phase: both ride CreateDBInstance
-      // only (DBName is create-only; CloudFormation refuses a changed zone).
-      // Before #5640 either one routed the instance to Cloud Control (the
-      // provisionedBy=sdk guard catches it). The zone is the subnet group's
-      // SECOND subnet's, read back from the state record by verify.sh.
+      // go-to-k/cdkd#5640: both ride CreateDBInstance only (DBName is
+      // create-only). Before #5640 either one routed the instance to Cloud
+      // Control (the provisionedBy=sdk guard catches it). The zone is the
+      // subnet group's SECOND subnet's, read back from the state record by
+      // verify.sh. go-to-k/cdkd#7044: CDKD_TEST_AZ_MOVED=true moves it to the
+      // FIRST subnet's, a change CloudFormation answers with a new instance;
+      // verify.sh asserts the diff's replacement and the stateful refusal, so
+      // no deploy ever applies it.
       dbName: 'cdkdbackfill',
-      availabilityZone: vpc.isolatedSubnets[1]!.availabilityZone,
+      availabilityZone: vpc.isolatedSubnets[process.env.CDKD_TEST_AZ_MOVED === 'true' ? 0 : 1]!
+        .availabilityZone,
       // go-to-k/cdkd#5640, unchanged in every phase: before #5640 either one
       // routed the instance to Cloud Control (the provisionedBy=sdk guard
       // catches it). EngineLifecycleSupport is not AWS's default, so verify.sh

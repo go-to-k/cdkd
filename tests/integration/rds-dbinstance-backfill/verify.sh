@@ -113,6 +113,14 @@
 # the observed baseline holds both, and that `cdkd drift` finds the instance
 # unchanged.
 #
+# go-to-k/cdkd#7044 (a moved AvailabilityZone replaces, as CloudFormation
+# does): phase 2c-az moves the zone (CDKD_TEST_AZ_MOVED=true). `cdkd diff` must
+# mark the instance's AvailabilityZone `[requires replacement]` (a pre-fix cdkd
+# showed an update) and `--fail-on=destructive` must exit 1, and the deploy,
+# without --force-stateful-recreation, must be refused by the stateful guard
+# naming AvailabilityZone, leaving the instance (DbiResourceId, zone) and its
+# record unchanged. No later phase sets the variable.
+#
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
 #   AWS_REGION   — defaults to us-east-1
@@ -961,6 +969,80 @@ assert_log_exports '' 'a removed EnableCloudwatchLogsExports disables what the p
 # go-to-k/cdkd#5640: phase 2 asserted the export role live; the removal detaches it.
 assert_instance_field "${ROLES_JQ}" '' 'a removed AssociatedRoles detaches the recorded role (go-to-k/cdkd#5640)' 'phase 2c'
 assert_instance_field '(.DBParameterGroups[0].DBParameterGroupName // "null") | ascii_downcase' "${PG_B_LOWER}" 'the retained parameter group' 'phase 2c'
+
+# --- Phase 2c-az: a moved AvailabilityZone is a replacement (go-to-k/cdkd#7044) --
+# CloudFormation's RDS handler calls a changed zone immutable and REPLACES the
+# instance (measured on go-to-k/cdkd#7038). Only the zone changes here (the
+# phase-2c variables are kept); the instance is stateful, so the deploy is
+# refused before any call without --force-stateful-recreation.
+echo "==> Phase 2c-az: CDKD_TEST_AZ_MOVED=true (AvailabilityZone moved): the diff shows a replacement and the deploy refuses it (go-to-k/cdkd#7044)"
+AZ_DB_RESOURCE_ID=$(echo "${INSTANCE}" | jq -r '.DbiResourceId // ""')
+AZ_BEFORE=$(echo "${INSTANCE}" | jq -r '.AvailabilityZone // ""')
+if [ -z "${AZ_DB_RESOURCE_ID}" ] || [ "${AZ_BEFORE}" != "${EXPECTED_AZ}" ]; then
+  echo "FAIL: phase 2c-az premise: DbiResourceId '${AZ_DB_RESOURCE_ID}', zone '${AZ_BEFORE}' (want ${EXPECTED_AZ})" >&2
+  exit 1
+fi
+set +e
+AZ_DIFF_OUT=$(CDKD_TEST_UPDATE=true CDKD_TEST_PARAM_GROUP=b CDKD_TEST_LOGS_REMOVED=true CDKD_TEST_AZ_MOVED=true \
+  node "${LOCAL_DIST}" diff "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+  --fail-on=destructive </dev/null 2>&1)
+AZ_DIFF_RC=$?
+set -e
+AZ_DIFF_TXT=$(printf '%s' "${AZ_DIFF_OUT}" | sed $'s/\033\[[0-9;]*m//g')
+# Sentinel: the property row itself, independent of its replacement note.
+if ! grep -q -- "- AvailabilityZone:" <<<"${AZ_DIFF_TXT}"; then
+  echo "FAIL: phase 2c-az: cdkd diff printed no AvailabilityZone change" >&2
+  echo "${AZ_DIFF_TXT}" >&2
+  exit 1
+fi
+if ! grep -q -- "- AvailabilityZone: \[requires replacement\]" <<<"${AZ_DIFF_TXT}"; then
+  echo "FAIL: phase 2c-az: cdkd diff did not mark the AvailabilityZone change as a replacement (go-to-k/cdkd#7044)" >&2
+  echo "${AZ_DIFF_TXT}" >&2
+  exit 1
+fi
+if [ "${AZ_DIFF_RC}" -ne 1 ] || ! grep -qE "BackfillInstance[A-Za-z0-9]* will be replaced" <<<"${AZ_DIFF_TXT}"; then
+  echo "FAIL: phase 2c-az: diff --fail-on=destructive exited ${AZ_DIFF_RC}; expected 1 naming the instance's replacement" >&2
+  echo "${AZ_DIFF_TXT}" >&2
+  exit 1
+fi
+echo "    OK: phase 2c-az: cdkd diff marks AvailabilityZone [requires replacement] and --fail-on=destructive exits 1"
+AZ_DEPLOY_LOG="$(mktemp)"
+set +e
+CDKD_TEST_UPDATE=true CDKD_TEST_PARAM_GROUP=b CDKD_TEST_LOGS_REMOVED=true CDKD_TEST_AZ_MOVED=true \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes \
+  >"${AZ_DEPLOY_LOG}" 2>&1
+AZ_DEPLOY_RC=$?
+set -e
+if [ "${AZ_DEPLOY_RC}" -eq 0 ]; then
+  echo "FAIL: phase 2c-az: the deploy moving AvailabilityZone exited 0; the replacement of the stateful instance must be refused without --force-stateful-recreation" >&2
+  tail -n 60 "${AZ_DEPLOY_LOG}" >&2
+  exit 1
+fi
+if ! grep -qE "BackfillInstance[A-Za-z0-9]* \(AWS::RDS::DBInstance\) requires replacement \(immutable property changed: AvailabilityZone\)" "${AZ_DEPLOY_LOG}"; then
+  # Sentinel: the stateful guard in other words means the needle drifted.
+  if grep -qF "but it is a stateful resource" "${AZ_DEPLOY_LOG}"; then
+    echo "FAIL: phase 2c-az: a stateful refusal fired, but not in the wording this fixture parses (naming AvailabilityZone) — update the needle" >&2
+  else
+    echo "FAIL: phase 2c-az: the deploy failed (rc=${AZ_DEPLOY_RC}) without the stateful replacement refusal naming AvailabilityZone" >&2
+  fi
+  tail -n 60 "${AZ_DEPLOY_LOG}" >&2
+  exit 1
+fi
+rm -f "${AZ_DEPLOY_LOG}"
+INSTANCE=$(aws rds describe-db-instances \
+  --db-instance-identifier "${DB_INSTANCE_ID}" \
+  --region "${REGION}" \
+  --query 'DBInstances[0]' --output json)
+assert_instance_field '.DbiResourceId' "${AZ_DB_RESOURCE_ID}" 'the refused zone move left the same instance (go-to-k/cdkd#7044)' 'phase 2c-az'
+assert_instance_field '.AvailabilityZone' "${EXPECTED_AZ}" 'the refused zone move left the zone as it was (go-to-k/cdkd#7044)' 'phase 2c-az'
+assert_instance_field '.DBInstanceStatus' 'available' 'the refusal sent nothing' 'phase 2c-az'
+AZ_RECORDED=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null |
+  jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBInstance" and (.key | test("^BackfillInstance"))) | .value.properties.AvailabilityZone // empty] | first // ""')
+if [ "${AZ_RECORDED}" != "${EXPECTED_AZ}" ]; then
+  echo "FAIL: phase 2c-az: the record's AvailabilityZone is '${AZ_RECORDED}', want ${EXPECTED_AZ} unchanged (go-to-k/cdkd#7044)" >&2
+  exit 1
+fi
+echo "    OK: phase 2c-az: refused before any call; the instance, its zone and its record are unchanged (go-to-k/cdkd#7044)"
 
 # --- Phase 2d: two read replicas (go-to-k/cdkd#5640) --------------------------
 # SourceDBInstanceIdentifier, named by ARN as CDK's DatabaseInstanceReadReplica

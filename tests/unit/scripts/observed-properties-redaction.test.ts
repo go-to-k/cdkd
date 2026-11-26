@@ -562,7 +562,8 @@ declare function read(): unknown;`)
       carryRedactionMarks: () => carryRedactionMarks(markSameGenerationBag({ Auth: PLAIN }), { A: 'kept' }),
       maskReadbackAtCoordinates: () => maskReadbackAtCoordinates({ A: 'kept' }, { Auth: PLAIN, A: '***' }, [['A']]),
       keepTemplateLiteralLeaves: () =>
-        keepTemplateLiteralLeaves({ Auth: EXPR }, { Auth: PLAIN }, { Auth: PLAIN }, secrets()),
+        // The template spells the reference: the readback's plaintext stays out.
+        keepTemplateLiteralLeaves({ Auth: EXPR }, { Auth: PLAIN }, { Auth: EXPR }, secrets()),
     };
 
     it('covers every CARRIERS entry', () => {

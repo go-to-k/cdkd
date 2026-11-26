@@ -4,6 +4,7 @@ import type { ResourceProvider, UpdateContext } from '../../../src/types/resourc
 import { MEMBER_RENAMES, type TypeRenames } from './sdk-wire-member-renames.js';
 import { CALL_ROOTS, type CommandRoot } from './sdk-wire-call-roots.js';
 import { SDK_UNMODELLED_NESTED_PATHS } from '../../../src/provisioning/sdk-unmodelled-nested-paths.js';
+import { describeRevertReadback } from './sdk-wire-revert-readback.js';
 
 /**
  * The differential wire harness behind `sdk-wire-coverage.test.ts` (#3723).
@@ -49,6 +50,10 @@ let overrides: Record<string, OutputOverride> = {};
 export function setOutputOverrides(next: Record<string, OutputOverride> | undefined): void {
   overrides = next ?? {};
 }
+/** Merge `extra` over the overrides in force (a command it names answers `extra`'s). */
+export function addOutputOverrides(extra: Record<string, OutputOverride>): void {
+  overrides = { ...overrides, ...extra };
+}
 
 // A read delivers no property, so it is left out of the comparison: otherwise
 // an update that lists subscriptions but never unsubscribes one still differs
@@ -92,6 +97,19 @@ function unwrap(ref: SchemaRef): unknown {
  */
 const CONTINUATION = /^Next|Token$|Marker$/;
 
+/**
+ * How much of an operation's output the fake answers: every member (`full`,
+ * the default), the output and the structures directly under it with nothing
+ * nested below them (`shallow`), or only what an override answers (`bare`).
+ * The read-back check (`sdk-wire-revert-readback.ts`) reads a live resource
+ * with its optional blocks unset through the latter two.
+ */
+export type FakeShape = 'full' | 'shallow' | 'bare';
+let fakeShape: FakeShape = 'full';
+export function setFakeShape(next: FakeShape): void {
+  fakeShape = next;
+}
+
 /** A string answer: an ARN or URL where the member is named for one, else a marker. */
 function fakeString(member: string): string {
   if (/Arn$|ARN$/.test(member)) return `arn:aws:svc:${REGION}:${ACCOUNT}:fake-${member}`;
@@ -127,6 +145,9 @@ export function fakeValue(
   if (sc[0] === 4) return undefined; // a union: no member chosen
   if (sc[0] === 3 || sc[0] === -3) {
     if (seen.has(sc)) return undefined;
+    // A `shallow` answer stops at the resource's own description: a block it
+    // nests is reported unset, as AWS reports a block nobody configured.
+    if (fakeShape === 'shallow' && seen.size >= 2) return undefined;
     const inner = new Set(seen).add(sc);
     const names = sc[4] as string[];
     const refs = sc[5] as SchemaRef[];
@@ -153,7 +174,10 @@ function fakeOutput(context: SmithyContext, input: Record<string, unknown>): unk
   if (!Array.isArray(op) || op[0] !== 9) {
     throw new Error(`no operation schema on ${context.commandName ?? '?'}`);
   }
-  const generated = (fakeValue(op[5]) ?? {}) as Record<string, unknown>;
+  const generated = (fakeShape === 'bare' ? {} : (fakeValue(op[5]) ?? {})) as Record<
+    string,
+    unknown
+  >;
   const override = overrides[context.commandName ?? ''];
   return { ...generated, ...(override ? override(input) : {}), $metadata: {} };
 }
@@ -396,7 +420,7 @@ function varied(
 type Location = (string | number)[];
 
 /** Every leaf of a JSON value, by location. */
-function flattenJson(value: unknown, prefix: Location, out: Map<string, unknown>): void {
+export function flattenJson(value: unknown, prefix: Location, out: Map<string, unknown>): void {
   // An empty container is a leaf: `{}` is a value (S3's EventBridge switch).
   if (Array.isArray(value) && value.length > 0) {
     value.forEach((v, i) => flattenJson(v, [...prefix, i], out));
@@ -733,6 +757,11 @@ export type Outcome = { threw: false; wire: string } | { threw: true; message: s
  * wire: '' }`), and the wire is what they pin.
  */
 const inputsOf = new WeakMap<Outcome, string[]>();
+
+/** A recorded run's command inputs, `[command, input]` JSON lines (none if it threw). */
+export function inputsOfOutcome(outcome: Outcome): readonly string[] {
+  return inputsOf.get(outcome) ?? [];
+}
 
 export async function record(run: () => Promise<unknown>): Promise<Outcome> {
   wire.length = 0;
@@ -1374,6 +1403,8 @@ export function describeWireCases(cases: TypeCase[]): void {
       if (bagsProbed < t.bags.length) ctx.skip();
       expect([...repeatedSeen].sort()).toEqual(Object.keys(callRoots.repeated ?? {}).sort());
     });
+
+    describeRevertReadback(t);
 
     it('uses every accepted rename', (ctx) => {
       // A filtered run (`-t`) probes only some bags; their usage says nothing.

@@ -60,6 +60,7 @@ import {
 } from '../../../src/provisioning/providers/ec2-provider.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 import { isRefusedBeforeApplying } from '../../../src/deployment/prior-attempt-scope.js';
+import { attributesAfterUpdate } from '../../../src/deployment/recorded-identity-attributes.js';
 
 function sent<T>(ctor: new (...a: never[]) => T): Array<Record<string, unknown>> {
   return mockSend.mock.calls
@@ -155,25 +156,35 @@ describe('AWS::EC2::VPC backfill (#5633)', () => {
     expect(mockSend).not.toHaveBeenCalled();
   });
 
-  it('keeps an IPAM VPC CidrBlock attribute across an in-place update', async () => {
+  it('keeps every attribute create recorded across an in-place update, an IPAM CidrBlock and the defaults included (#7009)', async () => {
     const provider = new EC2Provider();
-    const props = { Ipv4IpamPoolId: 'ipam-pool-1', EnableDnsHostnames: true };
+    const props = { Ipv4IpamPoolId: 'ipam-pool-1', Ipv4NetmaskLength: '28', EnableDnsHostnames: true };
+    const created = await provider.create('Vpc', 'AWS::EC2::VPC', props);
+    expect(created.attributes).toMatchObject({
+      VpcId: 'vpc-new',
+      CidrBlock: '10.240.0.0/28',
+      DefaultSecurityGroup: 'sg-default',
+    });
     const result = await provider.update('Vpc', 'vpc-new', 'AWS::EC2::VPC', props, {
       ...props,
       EnableDnsHostnames: false,
     });
-    expect(result.attributes).toEqual({ VpcId: 'vpc-new', CidrBlock: '10.240.0.0/28' });
+    expect(attributesAfterUpdate('AWS::EC2::VPC', created.attributes, result)).toEqual(
+      created.attributes
+    );
   });
 
-  it('a declared CidrBlock costs the update no read', async () => {
+  it('an in-place update costs no VPC read, declared CidrBlock or IPAM', async () => {
     const provider = new EC2Provider();
-    await provider.update(
-      'Vpc',
-      'vpc-new',
-      'AWS::EC2::VPC',
-      { CidrBlock: '10.0.0.0/16', EnableDnsHostnames: true },
-      { CidrBlock: '10.0.0.0/16' }
-    );
+    for (const props of [{ CidrBlock: '10.0.0.0/16' }, { Ipv4IpamPoolId: 'ipam-pool-1' }]) {
+      await provider.update(
+        'Vpc',
+        'vpc-new',
+        'AWS::EC2::VPC',
+        { ...props, EnableDnsHostnames: true },
+        props
+      );
+    }
     expect(sent(DescribeVpcsCommand)).toHaveLength(0);
   });
 
@@ -378,20 +389,6 @@ describe('AWS::EC2::VPC backfill (#5633): review round 1', () => {
       physicalId: 'vpc-new',
       attributes: { VpcId: 'vpc-new', CidrBlock: '10.240.0.0/28' },
     });
-  });
-
-  it('reads an IPAM VPC CIDR before the first change it sends', async () => {
-    const provider = new EC2Provider();
-    const props = { Ipv4IpamPoolId: 'ipam-pool-1', EnableDnsHostnames: true };
-    await provider.update('Vpc', 'vpc-new', 'AWS::EC2::VPC', props, {
-      ...props,
-      EnableDnsHostnames: false,
-    });
-    const names = mockSend.mock.calls.map((c) => (c[0] as object).constructor.name);
-    expect(names.indexOf('DescribeVpcsCommand')).toBeGreaterThanOrEqual(0);
-    expect(names.indexOf('DescribeVpcsCommand')).toBeLessThan(
-      names.indexOf(ModifyVpcAttributeCommand.name)
-    );
   });
 
   it('reports only the pool\'s own untagged VPCs as orphans of an IPAM CreateVpc', async () => {

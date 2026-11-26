@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
 import { stackInstanceIdCarriedFrom } from '../../types/state/helpers.js';
 import type { DeployEngine } from '../deploy-engine.js';
@@ -8,6 +9,7 @@ import { asIsMessage, displayStackName, safeMsg } from '../../utils/display-safe
 import {
   type NestedCleanupContext,
   type NestedCleanupOutcome,
+  type NestedCleanupQueue,
   getNestedCleanupQueue,
 } from '../nested-cleanup-scope.js';
 import {
@@ -22,6 +24,7 @@ import {
 } from './replacement.js';
 import { recordedDependencies } from './dependencies.js';
 import { retryCarriedSupersededResources } from './superseded-retry.js';
+import { carriedNotHeldByConsumers, markHeldForConsumers } from './consumer-held-superseded.js';
 import { isConditionFailure } from '../../state/s3-state-backend/shared.js';
 
 /**
@@ -60,8 +63,10 @@ export async function runCleanupPhase(
   } finally {
     restampReplacedVerdicts(engine, completedOperations);
   }
-  // go-to-k/cdkd#5111: an earlier deploy's, after this deploy's own.
-  await retryCarriedSupersededResources(engine, host, carried, resources, {
+  // go-to-k/cdkd#5111: an earlier deploy's, after this deploy's own; one a
+  // consumer still names stays (go-to-k/cdkd#7017).
+  const sendable = await carriedNotHeldByConsumers(engine, stackName, carried, resources);
+  await retryCarriedSupersededResources(engine, host, sendable, resources, {
     waitInUse: releasedSomething,
   });
 }
@@ -118,12 +123,56 @@ export function restampReplacedVerdicts(
 }
 
 /**
+ * The cleanup hand-offs of a deploy whose creates, updates and outputs all
+ * landed; answers whether this engine's own pass was queued (the caller runs
+ * it otherwise).
+ *
+ * go-to-k/cdkd#6398: the ROOT runs its descendants' queued passes first, in
+ * the order they finished, then its own: a child's old resource goes before
+ * the parent's old resource it used (an old instance before the old subnet a
+ * parameter handed it), dependents first as within a stack. A nested child's
+ * own pass waits for the ROOT deploy's success instead.
+ *
+ * go-to-k/cdkd#7012: a root given a `consumerCleanupQueue` (a producer whose
+ * outputs a later stack of the same `cdkd deploy` run imports) hands both to
+ * that queue, children first, and the CLI runs it once every such stack
+ * deployed. Deleting now would leave a consumer that fails and rolls back
+ * naming a deleted resource. CloudFormation never gets here (it refuses to
+ * update an export while another stack imports it); cdkd lets the run change
+ * it (go-to-k/cdkd#6088), so it keeps the old copy until the consumers are
+ * done. A deploy with nothing to delete queues nothing and pays nothing.
+ */
+export async function runOrQueueCleanups(
+  engine: DeployEngine,
+  stackName: string,
+  host: Pick<StackState, 'supersededResources'>,
+  nestedCleanups: NestedCleanupQueue | undefined,
+  actualCounts: { updatePartial: number; nestedUpdatePartial: number },
+  pass: Parameters<typeof queueNestedCleanup>[3]
+): Promise<boolean> {
+  const held =
+    engine.options.parentStackInfo === undefined ? engine.options.consumerCleanupQueue : undefined;
+  if (nestedCleanups !== undefined && held !== undefined && nestedCleanups.size > 0) {
+    nestedCleanups.drainInto(held);
+  } else if (nestedCleanups !== undefined) {
+    const { updatePartial, nestedUpdatePartial } = await nestedCleanups.runAll(
+      { interrupted: () => engine.interrupted },
+      engine.logger
+    );
+    actualCounts.updatePartial += updatePartial;
+    actualCounts.nestedUpdatePartial += nestedUpdatePartial;
+  }
+  return queueNestedCleanup(engine, stackName, host, pass);
+}
+
+/**
  * go-to-k/cdkd#6398: a NESTED child engine's cleanup phase waits for the
  * ROOT deploy's success, as CloudFormation runs a nested stack's cleanup at
  * the end of the whole stack tree's update. Queues `pass` on the root's
  * queue and answers `true`; `false` (the caller runs the pass itself) for a
- * root engine, with no root engine on the stack, or once the root drained or
- * abandoned its queue.
+ * root engine (one with a `consumerCleanupQueue` queues into it instead,
+ * go-to-k/cdkd#7012), with no root engine on the stack, or once the root
+ * drained or abandoned its queue.
  *
  * The child's state was already saved with every superseded entry still
  * listed, and its journal segment with each deferred op's `'deferred'`
@@ -143,7 +192,9 @@ export function queueNestedCleanup(
     counts: { updated: number; updatePartial: number }
   ) => Promise<void>
 ): boolean {
-  if (engine.options.parentStackInfo === undefined) return false;
+  const nested = engine.options.parentStackInfo !== undefined;
+  // go-to-k/cdkd#7012: a ROOT engine queues only into its producer hold.
+  if (!nested && engine.options.consumerCleanupQueue === undefined) return false;
   // Nothing to delete: no queue entry, so a deploy whose children replaced
   // nothing pays no lock round-trip or state read per child at the root.
   if (
@@ -152,11 +203,23 @@ export function queueNestedCleanup(
   ) {
     return false;
   }
-  const queue = getNestedCleanupQueue();
+  const queue = nested ? getNestedCleanupQueue() : engine.options.consumerCleanupQueue;
   if (queue === undefined) return false;
+  // go-to-k/cdkd#7012: a producer's pass runs after its deploy returned, in
+  // the async context its own cleanup phase would have run in (the stack's
+  // name scope, AWS clients and producer regions). A child's runs in the
+  // root's, as before.
+  const inDeployScope = nested ? undefined : AsyncLocalStorage.snapshot();
+  // go-to-k/cdkd#7017: the producer's entries say they wait for consumers,
+  // so a later deploy of it alone keeps one a consumer still names.
+  if (!nested) markHeldForConsumers(host);
+  const runPass = (context: NestedCleanupContext): Promise<NestedCleanupOutcome> =>
+    runQueuedNestedCleanup(engine, stackName, host, pass, context);
   return queue.enqueue({
     stackName,
-    run: (context) => runQueuedNestedCleanup(engine, stackName, host, pass, context),
+    ...(!nested && { producer: true as const }),
+    run: (context) =>
+      inDeployScope === undefined ? runPass(context) : inDeployScope(() => runPass(context)),
     abandon: (why) =>
       warnUnretriedReplacedDeletes(engine.replacementRun, engine.replacementDeps(), why),
     fail: () => passCouldNotRun(engine),
@@ -192,6 +255,8 @@ async function runQueuedNestedCleanup(
 ): Promise<NestedCleanupOutcome> {
   const region = engine.stackRegion;
   const display = displayStackName(stackName);
+  // go-to-k/cdkd#7012: a held producer's pass runs this too, as a top-level stack.
+  const kind = engine.options.parentStackInfo === undefined ? 'stack' : 'nested stack';
   // The child's own SIGINT handler went with its deploy: the root's flag
   // seeds it, and a Ctrl-C during the pass stops it as it would the root's.
   const onSigint = (): void => {
@@ -206,7 +271,7 @@ async function runQueuedNestedCleanup(
       await engine.lockManager.acquireLockWithRetry(stackName, region, undefined, 'deploy');
     } catch (error) {
       engine.logger.warn(
-        safeMsg`  ⚠ Could not lock nested stack ${display} to delete its replaced resources: ${asIsMessage(describeAwsFailure(error).summary)}`
+        safeMsg`  ⚠ Could not lock ${kind} ${display} to delete its replaced resources: ${asIsMessage(describeAwsFailure(error).summary)}`
       );
       return passCouldNotRun(engine);
     }
@@ -216,13 +281,13 @@ async function runQueuedNestedCleanup(
         fresh = await engine.stateBackend.getState(stackName, region);
       } catch (error) {
         engine.logger.warn(
-          safeMsg`  ⚠ Could not read the state of nested stack ${display} to delete its replaced resources: ${asIsMessage(describeAwsFailure(error).summary)}`
+          safeMsg`  ⚠ Could not read the state of ${kind} ${display} to delete its replaced resources: ${asIsMessage(describeAwsFailure(error).summary)}`
         );
         return passCouldNotRun(engine);
       }
       if (fresh === null || fresh === undefined) {
         engine.logger.warn(
-          safeMsg`  ⚠ Nested stack ${display} has no state record any more: its replaced resources were not deleted`
+          safeMsg`  ⚠ The ${kind} ${display} has no state record any more: its replaced resources were not deleted`
         );
         return passCouldNotRun(engine);
       }
@@ -237,7 +302,7 @@ async function runQueuedNestedCleanup(
         if (recorded !== undefined && !stillOwed(recorded)) {
           run.deferredReplacedDeletes?.delete(logicalId);
           engine.logger.debug(
-            safeMsg`Old ${logicalId} of nested stack ${display} is no longer awaiting its delete; not deleting it`
+            safeMsg`Old ${logicalId} of ${kind} ${display} is no longer awaiting its delete; not deleting it`
           );
         } else if (
           recorded === undefined &&
@@ -259,7 +324,7 @@ async function runQueuedNestedCleanup(
           // hold it, as the top-level cleanup pass never asks.
           run.deferredReplacedDeletes?.delete(logicalId);
           engine.logger.warn(
-            safeMsg`  ⚠ Old ${logicalId} of nested stack ${display} (${displayPhysicalId(entry.resourceType, entry.physicalId)}) was not deleted: a record of that stack names its physical id again, and cdkd never deletes an id a record names`
+            safeMsg`  ⚠ Old ${logicalId} of ${kind} ${display} (${displayPhysicalId(entry.resourceType, entry.physicalId)}) was not deleted: a record of that stack names its physical id again, and cdkd never deletes an id a record names`
           );
         }
       }
@@ -284,7 +349,7 @@ async function runQueuedNestedCleanup(
         await engine.lockManager.releaseLock(stackName, region);
       } catch (error) {
         engine.logger.warn(
-          safeMsg`Failed to release the lock of nested stack ${display}: ${asIsMessage(describeAwsFailure(error).detail)}`
+          safeMsg`Failed to release the lock of ${kind} ${display}: ${asIsMessage(describeAwsFailure(error).detail)}`
         );
       }
     }
@@ -377,7 +442,7 @@ async function persistDropped(
         )
         .join(', ');
       engine.logger.warn(
-        safeMsg`  ⚠ Could not record in the state of nested stack ${displayStackName(stackName)} (region ${region}) that these replaced resources were deleted: ${ids}: ${asIsMessage(describeAwsFailure(failure).summary)}. They stay listed there, and its next deploy sends their deletes again`
+        safeMsg`  ⚠ Could not record in the state of ${engine.options.parentStackInfo === undefined ? 'stack' : 'nested stack'} ${displayStackName(stackName)} (region ${region}) that these replaced resources were deleted: ${ids}: ${asIsMessage(describeAwsFailure(failure).summary)}. They stay listed there, and its next deploy sends their deletes again`
       );
       return dropped.length;
     }

@@ -14,8 +14,8 @@ For every SDK provider type and every top-level property its `handledProperties`
 
 - SDK provider types: **149**
 - Handled properties classified: **1585**
-- Read on the update path: **1153**
-- Replacement: **411**
+- Read on the update path: **1154**
+- Replacement: **410**
 - Allow-listed (does NOT block CI): **21**
 - Handled names outside the schema's writable properties (not classified): **13**
 - **Gaps (blocks CI): 0**
@@ -95,7 +95,7 @@ For every SDK provider type and every top-level property its `handledProperties`
 | `AWS::DynamoDB::GlobalTable` | `DynamoDBGlobalTableProvider` | AttributeDefinitions, BillingMode, GlobalSecondaryIndexes, KeySchema, LocalSecondaryIndexes, ReadOnDemandThroughputSettings, ReadProvisionedThroughputSettings, Replicas, SSESpecification, StreamSpecification, TableType, TimeToLiveSpecification, VectorIndexes, WarmThroughput, WriteOnDemandThroughputSettings, WriteProvisionedThroughputSettings | TableName |
 | `AWS::DynamoDB::Table` | `DynamoDBTableProvider` | AttributeDefinitions, BillingMode, ContributorInsightsSpecification, DeletionProtectionEnabled, GlobalSecondaryIndexes, KinesisStreamSpecification, LocalSecondaryIndexes, OnDemandThroughput, PointInTimeRecoverySpecification, ProvisionedThroughput, ResourcePolicy, SSESpecification, StreamSpecification, TableClass, Tags, TimeToLiveSpecification, VectorIndexes, WarmThroughput | KeySchema, TableName |
 | `AWS::EC2::EIP` | `EC2Provider` | InstanceId, Tags | NetworkBorderGroup |
-| `AWS::EC2::Instance` | `EC2Provider` | Affinity, BlockDeviceMappings, CreditSpecification, DisableApiTermination, HostId, IamInstanceProfile, InstanceInitiatedShutdownBehavior, InstanceType, KernelId, MetadataOptions, Monitoring, PrivateDnsNameOptions, RamdiskId, SecurityGroupIds, SourceDestCheck, SsmAssociations, Tags, Tenancy, UserData, Volumes | AvailabilityZone, CpuOptions, EbsOptimized, EnclaveOptions, HibernationOptions, HostResourceGroupArn, ImageId, Ipv6AddressCount, Ipv6Addresses, KeyName, LaunchTemplate, LicenseSpecifications, NetworkInterfaces, PlacementGroupName, PrivateIpAddress, SecurityGroups, SubnetId |
+| `AWS::EC2::Instance` | `EC2Provider` | Affinity, BlockDeviceMappings, CreditSpecification, DisableApiTermination, EbsOptimized, HostId, IamInstanceProfile, InstanceInitiatedShutdownBehavior, InstanceType, KernelId, MetadataOptions, Monitoring, PrivateDnsNameOptions, RamdiskId, SecurityGroupIds, SourceDestCheck, SsmAssociations, Tags, Tenancy, UserData, Volumes | AvailabilityZone, CpuOptions, EnclaveOptions, HibernationOptions, HostResourceGroupArn, ImageId, Ipv6AddressCount, Ipv6Addresses, KeyName, LaunchTemplate, LicenseSpecifications, NetworkInterfaces, PlacementGroupName, PrivateIpAddress, SecurityGroups, SubnetId |
 | `AWS::EC2::InternetGateway` | `EC2Provider` | Tags |  |
 | `AWS::EC2::NatGateway` | `EC2Provider` | AvailabilityZoneAddresses, SecondaryAllocationIds, SecondaryPrivateIpAddressCount, SecondaryPrivateIpAddresses, Tags | AllocationId, AvailabilityMode, ConnectivityType, PrivateIpAddress, SubnetId, VpcId |
 | `AWS::EC2::NetworkAcl` | `EC2Provider` | Tags | VpcId |

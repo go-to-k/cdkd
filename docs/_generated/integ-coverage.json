@@ -823,6 +823,7 @@
       "integs": [
         "appsync",
         "cc-to-sdk-reroute-common-types-8",
+        "drift-revert-readback-placeholders",
         "getatt-appsync-s3express-s3tables",
         "getatt-cloudtrail-appsync",
         "import-migrate-appsync",
@@ -836,6 +837,9 @@
         "cc-to-sdk-reroute-common-types-8": [
           "l1",
           "literal"
+        ],
+        "drift-revert-readback-placeholders": [
+          "l1"
         ],
         "getatt-appsync-s3express-s3tables": [
           "l1",
@@ -862,10 +866,14 @@
       "resourceType": "AWS::AppSync::GraphQLSchema",
       "integs": [
         "appsync",
+        "drift-revert-readback-placeholders",
         "import-migrate-appsync"
       ],
       "signals": {
         "appsync": [
+          "l1"
+        ],
+        "drift-revert-readback-placeholders": [
           "l1"
         ],
         "import-migrate-appsync": [
@@ -1966,6 +1974,7 @@
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "neptune-cluster-port",
         "neptune-fix-forward-orphan",
         "neptune-restore",
         "nlb-quic-server-id",
@@ -2208,6 +2217,9 @@
         "multi-stack-deps": [
           "l2"
         ],
+        "neptune-cluster-port": [
+          "l2"
+        ],
         "neptune-fix-forward-orphan": [
           "l2"
         ],
@@ -2374,6 +2386,7 @@
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "neptune-cluster-port",
         "neptune-fix-forward-orphan",
         "neptune-restore",
         "nlb-quic-server-id",
@@ -2600,6 +2613,9 @@
         "multi-stack-deps": [
           "l2"
         ],
+        "neptune-cluster-port": [
+          "l2"
+        ],
         "neptune-fix-forward-orphan": [
           "l2"
         ],
@@ -2802,6 +2818,7 @@
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "neptune-cluster-port",
         "neptune-fix-forward-orphan",
         "neptune-restore",
         "nlb-quic-server-id",
@@ -3039,6 +3056,9 @@
         "multi-stack-deps": [
           "l2"
         ],
+        "neptune-cluster-port": [
+          "l2"
+        ],
         "neptune-fix-forward-orphan": [
           "l2"
         ],
@@ -3202,6 +3222,7 @@
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "neptune-cluster-port",
         "neptune-fix-forward-orphan",
         "neptune-restore",
         "nlb-quic-server-id",
@@ -3441,6 +3462,9 @@
           "literal"
         ],
         "multi-stack-deps": [
+          "l2"
+        ],
+        "neptune-cluster-port": [
           "l2"
         ],
         "neptune-fix-forward-orphan": [
@@ -3935,6 +3959,7 @@
         "list-parameters",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "neptune-cluster-port",
         "neptune-fix-forward-orphan",
         "neptune-restore",
         "nlb-quic-server-id",
@@ -4206,6 +4231,9 @@
         "multi-stack-deps": [
           "l2"
         ],
+        "neptune-cluster-port": [
+          "l2"
+        ],
         "neptune-fix-forward-orphan": [
           "l2"
         ],
@@ -4400,6 +4428,7 @@
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "neptune-cluster-port",
         "neptune-fix-forward-orphan",
         "neptune-restore",
         "nlb-quic-server-id",
@@ -4629,6 +4658,9 @@
         "multi-stack-deps": [
           "l2"
         ],
+        "neptune-cluster-port": [
+          "l2"
+        ],
         "neptune-fix-forward-orphan": [
           "l2"
         ],
@@ -4801,6 +4833,7 @@
         "list-parameters",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "neptune-cluster-port",
         "neptune-fix-forward-orphan",
         "neptune-restore",
         "nlb-quic-server-id",
@@ -5101,6 +5134,9 @@
         "multi-stack-deps": [
           "l2"
         ],
+        "neptune-cluster-port": [
+          "l2"
+        ],
         "neptune-fix-forward-orphan": [
           "l2"
         ],
@@ -5315,6 +5351,7 @@
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
+        "neptune-cluster-port",
         "neptune-fix-forward-orphan",
         "neptune-restore",
         "nlb-quic-server-id",
@@ -5552,6 +5589,9 @@
           "literal"
         ],
         "multi-stack-deps": [
+          "l2"
+        ],
+        "neptune-cluster-port": [
           "l2"
         ],
         "neptune-fix-forward-orphan": [
@@ -6636,12 +6676,16 @@
       "resourceType": "AWS::Glue::Job",
       "integs": [
         "cc-to-sdk-reroute-common-types-3",
+        "drift-revert-readback-placeholders",
         "glue-update-hardening"
       ],
       "signals": {
         "cc-to-sdk-reroute-common-types-3": [
           "l1",
           "literal"
+        ],
+        "drift-revert-readback-placeholders": [
+          "l1"
         ],
         "glue-update-hardening": [
           "l1"
@@ -6689,9 +6733,13 @@
     {
       "resourceType": "AWS::Glue::Trigger",
       "integs": [
+        "drift-revert-readback-placeholders",
         "glue-update-hardening"
       ],
       "signals": {
+        "drift-revert-readback-placeholders": [
+          "l1"
+        ],
         "glue-update-hardening": [
           "l1"
         ]
@@ -6943,6 +6991,7 @@
         "asset-migration",
         "cdk-cross-account-lookup-role",
         "codebuild-webhook",
+        "cross-stack-replace-consumer-rollback",
         "drift-verbatim-readback",
         "export",
         "generated-name-lifecycle",
@@ -6967,6 +7016,9 @@
         ],
         "codebuild-webhook": [
           "l2"
+        ],
+        "cross-stack-replace-consumer-rollback": [
+          "literal"
         ],
         "drift-verbatim-readback": [
           "l1",
@@ -7045,6 +7097,7 @@
         "cross-backend-same-stack",
         "cross-backend-same-stack-migration",
         "cross-stack-export-in-use",
+        "cross-stack-replace-consumer-rollback",
         "custom-resource-payload-types",
         "datasync-location-role",
         "deep-getatt-chains",
@@ -7053,6 +7106,8 @@
         "dlm-lifecycle-policy",
         "docdb-neptune",
         "drift-revert",
+        "drift-revert-firehose",
+        "drift-revert-readback-placeholders",
         "drift-verbatim-readback",
         "ec2-instance",
         "ec2-instance-fanout",
@@ -7248,6 +7303,10 @@
         "cross-stack-export-in-use": [
           "l1"
         ],
+        "cross-stack-replace-consumer-rollback": [
+          "l2",
+          "literal"
+        ],
         "custom-resource-payload-types": [
           "l2"
         ],
@@ -7271,6 +7330,12 @@
           "l2"
         ],
         "drift-revert": [
+          "l2"
+        ],
+        "drift-revert-firehose": [
+          "l2"
+        ],
+        "drift-revert-readback-placeholders": [
           "l2"
         ],
         "drift-verbatim-readback": [
@@ -7968,6 +8033,7 @@
       "resourceType": "AWS::KinesisFirehose::DeliveryStream",
       "integs": [
         "cloudwatch-metric-stream-default-name",
+        "drift-revert-firehose",
         "firehose-iceberg-destination",
         "firehose-msk-source",
         "log-pipeline",
@@ -7976,6 +8042,9 @@
       "signals": {
         "cloudwatch-metric-stream-default-name": [
           "literal"
+        ],
+        "drift-revert-firehose": [
+          "l1"
         ],
         "firehose-iceberg-destination": [
           "l1",
@@ -8018,6 +8087,7 @@
       "resourceType": "AWS::Lambda::EventSourceMapping",
       "integs": [
         "cc-to-sdk-reroute-common-types",
+        "cross-stack-replace-consumer-rollback",
         "dynamodb-stream-filter",
         "dynamodb-streams",
         "eventsourcemapping-race",
@@ -8030,6 +8100,9 @@
       "signals": {
         "cc-to-sdk-reroute-common-types": [
           "l1",
+          "literal"
+        ],
+        "cross-stack-replace-consumer-rollback": [
           "literal"
         ],
         "dynamodb-stream-filter": [
@@ -8085,6 +8158,7 @@
         "composite-stack",
         "connect-instance",
         "cross-stack-export-in-use",
+        "cross-stack-replace-consumer-rollback",
         "custom-resource-getatt-data",
         "custom-resource-masked-service-token",
         "custom-resource-noecho-nested",
@@ -8098,6 +8172,7 @@
         "deploy-force-quit-rollback",
         "destroy-interrupt",
         "docker-image-asset",
+        "drift-revert-firehose",
         "drift-rotation-schedule-revert",
         "dynamodb-stream-filter",
         "dynamodb-streams",
@@ -8105,6 +8180,7 @@
         "ecr",
         "efs-lambda",
         "elasticache-snapshot-arns",
+        "esm-replacement-rollback",
         "event-driven",
         "eventbridge",
         "eventbridge-scheduler",
@@ -8285,6 +8361,10 @@
         "cross-stack-export-in-use": [
           "l2"
         ],
+        "cross-stack-replace-consumer-rollback": [
+          "l2",
+          "literal"
+        ],
         "custom-resource-getatt-data": [
           "l2"
         ],
@@ -8330,6 +8410,9 @@
           "l2",
           "literal"
         ],
+        "drift-revert-firehose": [
+          "l2"
+        ],
         "drift-rotation-schedule-revert": [
           "l2"
         ],
@@ -8349,6 +8432,9 @@
           "l2"
         ],
         "elasticache-snapshot-arns": [
+          "l2"
+        ],
+        "esm-replacement-rollback": [
           "l2"
         ],
         "event-driven": [
@@ -9016,6 +9102,7 @@
         "cross-region-concurrent-stacks",
         "custom-resource-payload-types",
         "drift-revert",
+        "drift-revert-firehose",
         "drift-rotation-schedule-revert",
         "ec2-vpc",
         "ecs-fargate",
@@ -9100,6 +9187,9 @@
         ],
         "drift-revert": [
           "l1"
+        ],
+        "drift-revert-firehose": [
+          "l2"
         ],
         "drift-rotation-schedule-revert": [
           "l2"
@@ -9228,6 +9318,7 @@
       "integs": [
         "cc-final-snapshot-handlers",
         "docdb-neptune",
+        "neptune-cluster-port",
         "neptune-fix-forward-orphan",
         "neptune-restore"
       ],
@@ -9238,6 +9329,10 @@
         ],
         "docdb-neptune": [
           "l1"
+        ],
+        "neptune-cluster-port": [
+          "l1",
+          "literal"
         ],
         "neptune-fix-forward-orphan": [
           "l1"
@@ -9272,6 +9367,7 @@
       "integs": [
         "cc-final-snapshot-handlers",
         "docdb-neptune",
+        "neptune-cluster-port",
         "neptune-fix-forward-orphan",
         "neptune-restore"
       ],
@@ -9281,6 +9377,10 @@
         ],
         "docdb-neptune": [
           "l1"
+        ],
+        "neptune-cluster-port": [
+          "l1",
+          "literal"
         ],
         "neptune-fix-forward-orphan": [
           "l1"
@@ -9631,6 +9731,8 @@
         "diff-intrinsic-target-change",
         "drift-revert",
         "drift-revert-arrays",
+        "drift-revert-firehose",
+        "drift-revert-readback-placeholders",
         "drift-verbatim-readback",
         "event-driven",
         "export",
@@ -9768,6 +9870,12 @@
           "l2"
         ],
         "drift-revert-arrays": [
+          "l2"
+        ],
+        "drift-revert-firehose": [
+          "l2"
+        ],
+        "drift-revert-readback-placeholders": [
           "l2"
         ],
         "drift-verbatim-readback": [
@@ -10539,6 +10647,7 @@
         "cross-backend-same-stack-migration",
         "cross-region-concurrent-stacks",
         "cross-stack-export-in-use",
+        "cross-stack-replace-consumer-rollback",
         "cross-stack-secret-import",
         "data-pipeline",
         "depends-on-flip",
@@ -10549,6 +10658,7 @@
         "drift-verbatim-readback",
         "dynamodb-globaltable",
         "dynamodb-stream-filter",
+        "esm-replacement-rollback",
         "event-driven",
         "eventbridge",
         "eventbridge-input-transformer",
@@ -10692,6 +10802,11 @@
         "cross-stack-export-in-use": [
           "l2"
         ],
+        "cross-stack-replace-consumer-rollback": [
+          "l1",
+          "l2",
+          "literal"
+        ],
         "cross-stack-secret-import": [
           "l1"
         ],
@@ -10722,6 +10837,10 @@
           "l1"
         ],
         "dynamodb-stream-filter": [
+          "l2"
+        ],
+        "esm-replacement-rollback": [
+          "l1",
           "l2"
         ],
         "event-driven": [
@@ -11031,6 +11150,7 @@
         "cc-api-lookup",
         "cc-to-sdk-reroute-common-types",
         "cdk-cross-account-lookup-role",
+        "codecommit",
         "composite-stack",
         "conditions-and-if",
         "conditions-update-2",
@@ -11096,6 +11216,7 @@
         "macro-expansion",
         "microservices",
         "multi-region-same-stack",
+        "neptune-cluster-port",
         "nested-child-first-deploy-failure",
         "nested-stack",
         "nested-stack-3level",
@@ -11110,6 +11231,7 @@
         "outputs-only-export",
         "perf-cross-backend-check",
         "profile-region-default",
+        "rds-dbinstance-getatt-attributes",
         "rds-full-stack",
         "recreate-nested-logical-id-collision",
         "recreate-target-readers",
@@ -11180,6 +11302,9 @@
         "cdk-cross-account-lookup-role": [
           "l1",
           "literal"
+        ],
+        "codecommit": [
+          "l2"
         ],
         "composite-stack": [
           "l2",
@@ -11407,6 +11532,10 @@
         "multi-region-same-stack": [
           "l2"
         ],
+        "neptune-cluster-port": [
+          "l2",
+          "literal"
+        ],
         "nested-child-first-deploy-failure": [
           "l2"
         ],
@@ -11455,6 +11584,10 @@
           "literal"
         ],
         "profile-region-default": [
+          "l2",
+          "literal"
+        ],
+        "rds-dbinstance-getatt-attributes": [
           "l2",
           "literal"
         ],

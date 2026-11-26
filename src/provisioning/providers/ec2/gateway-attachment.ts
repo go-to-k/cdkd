@@ -28,6 +28,7 @@ import {
   EC2_VPC_GATEWAY_ATTACHMENT_ID_FORMAT,
   VPN_DETACH_IN_PROGRESS_ERRORS,
   VPN_GATEWAY_ATTACHMENT_WAIT_MS,
+  vpcGatewayAttachmentAttributes,
 } from './network-support.js';
 import type { EC2Provider } from '../ec2-provider.js';
 
@@ -125,7 +126,7 @@ export async function createVpcGatewayAttachment(
 
     return {
       physicalId,
-      attributes: {},
+      attributes: vpcGatewayAttachmentAttributes(kind),
     };
   } catch (error) {
     const cause = error instanceof Error ? error : undefined;
@@ -605,7 +606,11 @@ export async function updateVpcGatewayAttachment(
       // swap lands here, and AWS may hold no gateway. The attach skips one
       // AWS already reports attached.
       await this.attachVpcGateway(desired.kind, desired.gatewayId, vpcId, logicalId);
-      return { physicalId: newPhysicalId, wasReplaced: false };
+      return {
+        physicalId: newPhysicalId,
+        wasReplaced: false,
+        attributes: vpcGatewayAttachmentAttributes(desired.kind),
+      };
     }
     const detachOld = async (): Promise<void> => {
       if (oldGatewayId === undefined) return;
@@ -658,7 +663,12 @@ export async function updateVpcGatewayAttachment(
     this.logger.debug(
       safeMsg`Swapped VPCGatewayAttachment ${logicalId} in place: ${physicalId} -> ${newPhysicalId}`
     );
-    return { physicalId: newPhysicalId, wasReplaced: false };
+    // An IGW <-> VGW swap moves `AttachmentType`.
+    return {
+      physicalId: newPhysicalId,
+      wasReplaced: false,
+      attributes: vpcGatewayAttachmentAttributes(desired.kind),
+    };
   } catch (error) {
     if (error instanceof ProvisioningError) throw error;
     const cause = error instanceof Error ? error : undefined;

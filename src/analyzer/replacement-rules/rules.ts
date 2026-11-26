@@ -24,9 +24,23 @@ import {
   route53ZoneReferenceChanged,
   ssmDocumentChangeReplaces,
 } from './predicates.js';
+import {
+  dbClusterGlobalClusterChangeReplaces,
+  dbInstanceAvailabilityZoneChangeReplaces,
+  dbInstancePerformanceInsightsKmsKeyChangeReplaces,
+  dbInstanceReplicaSourceChangeReplaces,
+  dbInstanceRestoreInputChangeReplaces,
+  dbInstanceUseLatestRestorableTimeChangeReplaces,
+} from './rds-immutability.js';
 
 /**
- * Initialize replacement rules for common AWS resource types
+ * Initialize replacement rules for common AWS resource types.
+ *
+ * Every entry here wins over the registry schema, so a wrong one either
+ * deletes a resource CloudFormation keeps (go-to-k/cdkd#7023) or hides a
+ * replacement from `cdkd diff`. A `conditionalReplacements` predicate, and an
+ * entry the committed schema fixture or `@aws-cdk/aws-service-spec` disagrees
+ * with, needs its evidence in `./evidence.ts` (go-to-k/cdkd#7038).
  */
 export function initializeRules(this: ReplacementRulesRegistry): void {
   // S3 Bucket
@@ -635,19 +649,32 @@ export function initializeRules(this: ReplacementRulesRegistry): void {
   // RDS DBCluster / DBInstance `Engine` (issue #5467): not createOnly in the
   // CFn schema, but CloudFormation replaces a change its handlers call
   // immutable (measured, and transcribed from the handlers; see the
-  // predicates). Every other property keeps the schema createOnly fallback,
-  // since these rules name only `Engine`. Both types are stateful, so the
-  // replacement still needs `--force-stateful-recreation`.
+  // predicates). The same handlers' other immutability checks (#7044) are
+  // wired the same way; none of those keys is createOnly in the schema, so
+  // naming them drops no schema fallback. Every other property keeps the
+  // schema createOnly fallback. Both types are stateful, so the replacement
+  // still needs `--force-stateful-recreation`.
   this.rules.set('AWS::RDS::DBCluster', {
     replacementProperties: new Set(),
     conditionalReplacements: new Map<string, ConditionalReplacement>([
       ['Engine', dbClusterEngineChangeReplaces],
+      ['GlobalClusterIdentifier', dbClusterGlobalClusterChangeReplaces],
     ]),
   });
   this.rules.set('AWS::RDS::DBInstance', {
     replacementProperties: new Set(),
     conditionalReplacements: new Map<string, ConditionalReplacement>([
       ['Engine', dbInstanceEngineChangeReplaces],
+      ['AvailabilityZone', dbInstanceAvailabilityZoneChangeReplaces],
+      ['PerformanceInsightsKMSKeyId', dbInstancePerformanceInsightsKmsKeyChangeReplaces],
+      ['SourceDBInstanceIdentifier', dbInstanceReplicaSourceChangeReplaces],
+      ['SourceDBClusterIdentifier', dbInstanceReplicaSourceChangeReplaces],
+      ['DBSnapshotIdentifier', dbInstanceRestoreInputChangeReplaces],
+      ['DBClusterSnapshotIdentifier', dbInstanceRestoreInputChangeReplaces],
+      ['RestoreTime', dbInstanceRestoreInputChangeReplaces],
+      ['SourceDBInstanceAutomatedBackupsArn', dbInstanceRestoreInputChangeReplaces],
+      ['SourceDbiResourceId', dbInstanceRestoreInputChangeReplaces],
+      ['UseLatestRestorableTime', dbInstanceUseLatestRestorableTimeChangeReplaces],
     ]),
   });
 
@@ -677,16 +704,14 @@ export function initializeRules(this: ReplacementRulesRegistry): void {
     updateableProperties: new Set(['MapPublicIpOnLaunch', 'EnableDns64', 'Ipv6CidrBlock', 'Tags']),
   });
 
-  // EC2 Instance — EbsOptimized can only be changed on a STOPPED instance
-  // (a running instance returns IncorrectInstanceState). `updateInstance`
-  // stops an instance only for an InstanceType / UserData change (issue
-  // #5446, measured) or a PrivateDnsNameOptions.HostnameType change
-  // (go-to-k/cdkd#5630, measured), and an EbsOptimized change was not measured against
-  // CloudFormation, so it stays routed to replacement
-  // (the create path sets it on the new instance). The other four #609
-  // security-backfill props (DisableApiTermination / Monitoring /
-  // MetadataOptions / CreditSpecification) ARE mutable in-place on a running
-  // instance and are handled by EC2Provider.updateInstanceSecurityProps.
+  // EC2 Instance — EbsOptimized is NOT here (go-to-k/cdkd#7023): EC2 changes
+  // it only on a STOPPED instance, and CloudFormation applies it in place with
+  // a stop and a start (measured), so `updateInstance` takes it in the same
+  // stop -> modify -> start window as InstanceType. Listing it here replaced
+  // the instance, deleting its root volume. The four #609 security-backfill
+  // props (DisableApiTermination / Monitoring / MetadataOptions /
+  // CreditSpecification) are mutable in-place on a running instance and are
+  // handled by EC2Provider.updateInstanceSecurityProps.
   //
   // AvailabilityZone / ImageId / SubnetId / KeyName are immutable: the CFn
   // registry schema lists all four under `createOnlyProperties`, so the
@@ -699,7 +724,6 @@ export function initializeRules(this: ReplacementRulesRegistry): void {
   // ignores it: state records the new value while AWS keeps the old one.
   this.rules.set('AWS::EC2::Instance', {
     replacementProperties: new Set([
-      'EbsOptimized',
       'AvailabilityZone',
       'ImageId',
       'SubnetId',
@@ -723,6 +747,10 @@ export function initializeRules(this: ReplacementRulesRegistry): void {
       // classify it as a replacement.
       'SecurityGroups',
     ]),
+    // go-to-k/cdkd#7023: a stop-modify-start in `updateInstance`, as
+    // CloudFormation does; pinned so no schema answer turns it into a
+    // replacement again.
+    updateableProperties: new Set(['EbsOptimized']),
     // Issue #5446: InstanceType / UserData (a stop-modify-start),
     // IamInstanceProfile and, with a SubnetId, SecurityGroupIds update in
     // place in `updateInstance`; see the two predicates for what replaces.
@@ -777,10 +805,12 @@ export function initializeRules(this: ReplacementRulesRegistry): void {
   // in `STATEFUL_TYPES` — the deploy engine's property-driven replacement
   // path requires `--force-stateful-recreation` to confirm it.
   // ACM Certificate — ACM has no call that changes a certificate's
-  // validation method, and CloudFormation documents `ValidationMethod` as
-  // "Update requires: Replacement", but the registry schema leaves it out of
+  // validation method, so a new certificate is the only way to apply a
+  // `ValidationMethod` change. The registry schema leaves it out of
   // `createOnlyProperties` (its other immutable fields are there and reach
-  // the schema fallback). Without this rule the diff called the change an
+  // the schema fallback), and the CloudFormation reference now says "No
+  // interruption" (read 2026-11-26, go-to-k/cdkd#7038; not measurable here:
+  // it needs a validatable domain). Without this rule the diff called the change an
   // update and the provider replaced the certificate inside `update()`,
   // deleting the old one before its readers moved to the new ARN
   // (go-to-k/cdkd#6513). Only the gap is listed, so the schema still

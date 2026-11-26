@@ -171,7 +171,7 @@ const DELEGATORS: ReadonlyArray<readonly [string, Module, string, number]> = [
   ['waitForClusterAvailable', 'waits', 'waitForClusterAvailable', 5],
   ['waitForClusterDeleted', 'waits', 'waitForClusterDeleted', 3],
   ['rebootForPendingParameterGroup', 'waits', 'rebootForPendingParameterGroup', 4],
-  ['waitForInstanceState', 'waits', 'waitForInstanceState', 4],
+  ['waitForInstanceState', 'waits', 'waitForInstanceState', 5],
   ['waitForInstanceAvailable', 'waits', 'waitForInstanceAvailable', 5],
   ['waitForInstanceDeleted', 'waits', 'waitForInstanceDeleted', 3],
   ['import', 'dispatch', 'importImpl', 1],

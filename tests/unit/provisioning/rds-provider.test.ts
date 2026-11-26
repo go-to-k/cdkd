@@ -617,10 +617,12 @@ describe('RDSProvider', () => {
 
     describe('update', () => {
       it('forwards 5 mutable #609 props to ModifyDBInstance (with CFn Port → SDK DBPortNumber flip)', async () => {
-        // updateDBInstance does 2 sends: ModifyDBInstance + final describe.
-        // (No waitForInstanceAvailable polling on the update path.)
+        // updateDBInstance does 3 sends: ModifyDBInstance, the changed
+        // port's wait (go-to-k/cdkd#7006), here reading it applied, and the
+        // final describe.
         mockSend.mockResolvedValueOnce({});
-        mockSend.mockResolvedValueOnce({ DBInstances: [{}] });
+        mockSend.mockResolvedValueOnce({ DBInstances: [{ Endpoint: { Port: 5433 } }] });
+        mockSend.mockResolvedValueOnce({ DBInstances: [{ Endpoint: { Port: 5433 } }] });
 
         await provider.update(
           'MyInstance',

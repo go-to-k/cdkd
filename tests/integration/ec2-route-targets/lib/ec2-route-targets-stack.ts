@@ -156,5 +156,9 @@ export class Ec2RouteTargetsStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'RouteTableId', { value: routeTable.ref });
     new cdk.CfnOutput(this, 'PrefixListId', { value: prefixList.attrPrefixListId });
     new cdk.CfnOutput(this, 'TransitGatewayId', { value: tgw.ref });
+    // go-to-k/cdkd#7009: CloudFormation answers `IGW` / `VGW` (measured); cdkd used to
+    // serve the composite physical id. The swap phase re-reads it in the same deploy.
+    new cdk.CfnOutput(this, 'IgwAttachmentType', { value: igwAttachment.attrAttachmentType });
+    new cdk.CfnOutput(this, 'VgwAttachmentType', { value: vgwAttachment.attrAttachmentType });
   }
 }

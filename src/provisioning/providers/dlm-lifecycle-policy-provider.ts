@@ -697,9 +697,10 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
       return {
         physicalId,
         wasReplaced: false,
-        // Omit Arn when the read-back lacked PolicyArn so a previously-good
-        // cached attribute is not clobbered with an empty string.
-        attributes: arn ? { Arn: arn } : {},
+        // No `attributes` when the read-back lacked PolicyArn: the map
+        // REPLACES the record, so `{}` would erase the recorded `Arn`
+        // (go-to-k/cdkd#7009).
+        ...(arn ? { attributes: { Arn: arn } } : {}),
       };
     } catch (error) {
       if (error instanceof ResourceUpdateNotSupportedError) throw error;

@@ -298,20 +298,23 @@ export async function rebootForPendingParameterGroup(
  * status (`isTerminalDbWaitStatus`) fails at once. The budget is the
  * resource's own deadline (`--resource-timeout`), so a settle that rides a
  * long modification (a storage optimization, a major upgrade) waits as long
- * as the deploy allows; 30 minutes when no deadline is in scope.
+ * as the deploy allows; 30 minutes when no deadline is in scope. `signal`
+ * stops the poll of a wait `--no-wait` deferred (go-to-k/cdkd#6940).
  */
 export async function waitForInstanceState(
   this: RDSProvider,
   logicalId: string,
   dbInstanceIdentifier: string,
   done: (instance: DBInstance) => boolean,
-  change: string
+  change: string,
+  signal?: AbortSignal
 ): Promise<DBInstance> {
   const remaining = enclosingDeadlineRemainingMs();
   const maxWaitMs = Number.isFinite(remaining) ? remaining : 1_800_000;
   const startTime = Date.now();
   let delay = 5_000;
   while (Date.now() - startTime < maxWaitMs) {
+    throwIfReadinessAborted(signal);
     const instance = await this.describeDBInstance(dbInstanceIdentifier);
     if (instance === undefined) {
       throw new Error(
@@ -327,7 +330,7 @@ export async function waitForInstanceState(
     this.logger.debug(
       safeMsg`DBInstance ${logicalId} waiting for its ${change} (status ${instance.DBInstanceStatus ?? 'unknown'})`
     );
-    await this.sleep(delay);
+    await abortableSleep((ms) => this.sleep(ms), delay, signal);
     delay = Math.min(delay * 2, 10_000);
   }
   throw new Error(safeMsg`Timed out waiting for DBInstance ${logicalId}'s ${change}`);

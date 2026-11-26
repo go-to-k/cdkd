@@ -521,7 +521,9 @@ describe('RDS DBInstance read replica of a Multi-AZ DB cluster (go-to-k/cdkd#564
         /^.*SourceDBClusterIdentifier cannot be added or changed on an existing DB instance/
       );
       expect((error as Error).message).not.toMatch(/SourceDBInstanceIdentifier cannot/);
-      expect((error as Error).message).toMatch(/"Resource is immutable"/);
+      // go-to-k/cdkd#7044: CloudFormation replaces the instance; the text says so.
+      expect((error as Error).message).toMatch(/CloudFormation answers the same change with a new instance/);
+      expect((error as Error).message).not.toMatch(/refuses the same update/);
       expect((error as Error).message.includes('here it replaces SourceDBInstanceIdentifier')).toBe(
         _ === 'switched from an instance source'
       );

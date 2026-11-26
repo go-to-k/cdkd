@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::EMR::Cluster",
-  "generatedAt": "2026-11-05",
+  "generatedAt": "2026-11-26",
   "properties": [
     "AdditionalInfo",
     "Applications",
@@ -136,6 +136,11 @@
   ],
   "primaryIdentifier": [
     "Id"
+  ],
+  "conditionalCreateOnlyPropertyPaths": [
+    [
+      "Instances"
+    ]
   ],
   "nestedProperties": {
     "Applications": [

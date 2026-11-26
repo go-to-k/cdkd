@@ -951,6 +951,11 @@
       ]
     },
     {
+      "name": "cross-stack-replace-consumer-rollback",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "cross-stack-secret-import",
       "annotated": true,
       "scenarios": [
@@ -1179,7 +1184,17 @@
       ]
     },
     {
+      "name": "drift-revert-firehose",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "drift-revert-nested-write-only",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "drift-revert-readback-placeholders",
       "annotated": false,
       "scenarios": []
     },
@@ -1443,6 +1458,11 @@
     {
       "name": "emr-instance-fleets",
       "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "esm-replacement-rollback",
+      "annotated": false,
       "scenarios": []
     },
     {
@@ -2428,6 +2448,11 @@
       "scenarios": [
         "multi-stack-getstackoutput"
       ]
+    },
+    {
+      "name": "neptune-cluster-port",
+      "annotated": false,
+      "scenarios": []
     },
     {
       "name": "neptune-fix-forward-orphan",
@@ -4342,6 +4367,7 @@
     "cross-backend-same-stack-migration",
     "cross-region-concurrent-stacks",
     "cross-stack-export-in-use",
+    "cross-stack-replace-consumer-rollback",
     "custom-resource-noecho-nested",
     "custom-resource-payload-types",
     "custom-resource-physid-replace",
@@ -4358,7 +4384,9 @@
     "docdb-restore",
     "drift-cc-read-only-props",
     "drift-ecs-capacity-association",
+    "drift-revert-firehose",
     "drift-revert-nested-write-only",
+    "drift-revert-readback-placeholders",
     "drift-rotation-schedule-revert",
     "drift-sg-sibling-rules",
     "drift-sns-sibling-subscription",
@@ -4392,6 +4420,7 @@
     "efs-immutable-replacement",
     "elasticache-snapshot-arns",
     "elbv2-same-name-replacement",
+    "esm-replacement-rollback",
     "eventbridge-api-destination",
     "eventbridge-input-transformer",
     "eventbridge-pipes",
@@ -4479,6 +4508,7 @@
     "logs-delivery",
     "logs-loggroup-fix-forward-orphan",
     "lost-child-after-failed-deploy",
+    "neptune-cluster-port",
     "neptune-fix-forward-orphan",
     "neptune-restore",
     "nested-child-first-deploy-failure",

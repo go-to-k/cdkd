@@ -17,6 +17,7 @@ import { definedAttributes } from '../../attribute-map.js';
 import type { ResourceImportResult } from '../../../types/resource.js';
 import { describedInstanceAttributes } from './instance-support.js';
 import { natGatewayAttributes } from './nat-support.js';
+import { vpcGatewayAttachmentAttributes } from './network-support.js';
 import { SG_RULE_ID_PATTERN } from './sg-support.js';
 import type { EC2Provider } from '../ec2-provider.js';
 
@@ -301,7 +302,9 @@ export async function verifyExplicit(
         }
         return {
           physicalId: packCompositeId(resourceType, logicalId, attachmentSegments),
-          attributes: {},
+          // Also the stale-attribute heal's read for a record written before
+          // go-to-k/cdkd#7009 recorded `AttachmentType`.
+          attributes: vpcGatewayAttachmentAttributes(isVpn ? 'vgw' : 'igw'),
         };
       }
       case 'AWS::EC2::NetworkAclEntry': {

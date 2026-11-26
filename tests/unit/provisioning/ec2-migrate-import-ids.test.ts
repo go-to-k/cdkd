@@ -96,7 +96,7 @@ describe('EC2Provider import() of CloudFormation-created VPC plumbing (issue #36
         VpcId: VPC,
         InternetGatewayId: IGW,
       })
-    ).resolves.toStrictEqual({ physicalId: `${IGW}|${VPC}`, attributes: {} });
+    ).resolves.toStrictEqual({ physicalId: `${IGW}|${VPC}`, attributes: { AttachmentType: 'IGW' } });
     const call = mockSend.mock.calls[0]![0] as DescribeInternetGatewaysCommand;
     expect(call.input).toEqual({ InternetGatewayIds: [IGW] });
   });
@@ -109,7 +109,7 @@ describe('EC2Provider import() of CloudFormation-created VPC plumbing (issue #36
     });
     await expect(
       importAs('AWS::EC2::VPCGatewayAttachment', `${VPC}|IGW`)
-    ).resolves.toStrictEqual({ physicalId: `${IGW}|${VPC}`, attributes: {} });
+    ).resolves.toStrictEqual({ physicalId: `${IGW}|${VPC}`, attributes: { AttachmentType: 'IGW' } });
     const call = mockSend.mock.calls[0]![0] as DescribeInternetGatewaysCommand;
     expect(call.input).toEqual({ Filters: [{ Name: 'attachment.vpc-id', Values: [VPC] }] });
   });
@@ -122,7 +122,7 @@ describe('EC2Provider import() of CloudFormation-created VPC plumbing (issue #36
     });
     await expect(
       importAs('AWS::EC2::VPCGatewayAttachment', `${IGW}|${VPC}`)
-    ).resolves.toStrictEqual({ physicalId: `${IGW}|${VPC}`, attributes: {} });
+    ).resolves.toStrictEqual({ physicalId: `${IGW}|${VPC}`, attributes: { AttachmentType: 'IGW' } });
   });
 
   // Issue #2762: the SDK provider now attaches / detaches VPN gateways too,
@@ -135,7 +135,7 @@ describe('EC2Provider import() of CloudFormation-created VPC plumbing (issue #36
     });
     await expect(
       importAs('AWS::EC2::VPCGatewayAttachment', `VGW|${VPC}`, { VpcId: VPC, VpnGatewayId: VGW })
-    ).resolves.toStrictEqual({ physicalId: `${VGW}|${VPC}`, attributes: {} });
+    ).resolves.toStrictEqual({ physicalId: `${VGW}|${VPC}`, attributes: { AttachmentType: 'VGW' } });
     const call = mockSend.mock.calls[0]![0] as DescribeVpnGatewaysCommand;
     expect(call).toBeInstanceOf(DescribeVpnGatewaysCommand);
     expect(call.input).toEqual({ VpnGatewayIds: [VGW] });
@@ -149,7 +149,7 @@ describe('EC2Provider import() of CloudFormation-created VPC plumbing (issue #36
     });
     await expect(
       importAs('AWS::EC2::VPCGatewayAttachment', `${VPC}|VGW`)
-    ).resolves.toStrictEqual({ physicalId: `${VGW}|${VPC}`, attributes: {} });
+    ).resolves.toStrictEqual({ physicalId: `${VGW}|${VPC}`, attributes: { AttachmentType: 'VGW' } });
     const call = mockSend.mock.calls[0]![0] as DescribeVpnGatewaysCommand;
     expect(call).toBeInstanceOf(DescribeVpnGatewaysCommand);
     expect(call.input).toEqual({ Filters: [{ Name: 'attachment.vpc-id', Values: [VPC] }] });

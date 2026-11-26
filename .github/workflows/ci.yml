@@ -199,6 +199,10 @@ jobs:
       # is never compared, so `cdkd drift` reports no drift for it.
       - run: vp run audit:drift-readback-coverage:check
 
+      # go-to-k/cdkd#7001 — a read-only attribute an in-place update moves but
+      # no shared.ts row names leaves its readers on the old value.
+      - run: vp run audit:in-place-attr-coverage:check
+
       # go-to-k/cdkd#6676 — a Cloud Control type measured as refusing a read-model
       # value needs a registered per-type fix or a recorded exemption.
       - run: vp run gen:cc-update-measurements:check

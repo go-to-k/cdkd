@@ -483,7 +483,9 @@ export class EventBridgeArchiveProvider implements ResourceProvider {
       const kmsChanged = properties['KmsKeyIdentifier'] !== previousProperties['KmsKeyIdentifier'];
 
       if (!descChanged && !patternChanged && !retentionChanged && !kmsChanged) {
-        return { physicalId, wasReplaced: false, attributes: {} };
+        // No `attributes`: the map REPLACES the record, and `{}` would erase
+        // the recorded `Arn` (go-to-k/cdkd#7009).
+        return { physicalId, wasReplaced: false };
       }
 
       this.logger.debug(mask(`Updating EventBridge archive ${logicalId}: ${physicalId}`));
@@ -502,7 +504,9 @@ export class EventBridgeArchiveProvider implements ResourceProvider {
       if (!SETTLED_STATES.has(response.State ?? 'ENABLED')) {
         arn = (await this.waitForSettled(physicalId, logicalId, 'update', mask)) ?? arn;
       }
-      return { physicalId, wasReplaced: false, attributes: definedAttributes({ Arn: arn }) };
+      // No `attributes` without an ARN: `{}` would erase the recorded `Arn`
+      // (go-to-k/cdkd#7009).
+      return { physicalId, wasReplaced: false, ...(arn ? { attributes: { Arn: arn } } : {}) };
     } catch (error) {
       if (error instanceof CdkdError || isInterruptedWaitError(error)) throw error;
       const cause = error instanceof Error ? error : undefined;

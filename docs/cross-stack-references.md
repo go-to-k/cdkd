@@ -160,6 +160,19 @@ deploy in one step. If the consumer's own deploy then fails, it keeps the old
 value until you deploy it again. Otherwise, remove the `Fn::ImportValue` from
 the consumer and deploy it first, as for a refused destroy.
 
+When the producer replaces a resource (a renamed queue an export names), it
+keeps the old copy until every stack of the run that imports its outputs has
+deployed, and deletes it then. This holds every old copy the producer's deploy
+would delete, not only the ones an export names. If one of those stacks
+fails, is cancelled or never runs, its rollback (or its unchanged state) may
+still name an old copy, so cdkd keeps them, says so in one line, and records
+them in the producer's state. A later deploy deletes a kept copy only once no
+stack importing the producer's outputs names it in its records any more: a
+deploy of the producer alone keeps it, and says which stack still uses it,
+while the consumer stays rolled back. The next deploy of both stacks deletes
+it. Checking costs that deploy one read of every stack's state, made only
+while such a copy is kept.
+
 `cdkd diff ProducerStack ConsumerStack` previews the same run: the consumer
 reads the export as the producer's deploy will publish it, shown as
 `(known after deploy)` when it comes from a resource the producer creates or

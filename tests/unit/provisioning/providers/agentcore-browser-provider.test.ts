@@ -35,6 +35,7 @@ import {
   AgentCoreBrowserProvider,
   DEFAULT_BROWSER_ID,
 } from '../../../../src/provisioning/providers/agentcore-browser-provider.js';
+import { attributesAfterUpdate } from '../../../../src/deployment/recorded-identity-attributes.js';
 
 const DEFAULT_ARN = 'arn:aws:bedrock-agentcore:us-east-1:aws:browser/aws.browser.v1';
 
@@ -205,8 +206,41 @@ describe('AgentCoreBrowserProvider update with a recorded region (issue #2613)',
     const result = await provider.update('MyBrowser', DEFAULT_ARN, 'AWS::BedrockAgentCore::Browser', {}, {}, {
       expectedRegion: 'us-west-2',
     });
-    expect(result).toEqual({ physicalId: DEFAULT_ARN, wasReplaced: false, attributes: {} });
+    expect(result).toEqual({ physicalId: DEFAULT_ARN, wasReplaced: false });
     expect(region).not.toHaveBeenCalled();
     expect(mockSend).not.toHaveBeenCalled();
+  });
+});
+
+describe('AgentCoreBrowserProvider update keeps the recorded attributes (issue #7009)', () => {
+  it('leaves every attribute create recorded on the record after an in-place update', async () => {
+    vi.clearAllMocks();
+    const provider = new AgentCoreBrowserProvider();
+    mockSend.mockResolvedValueOnce({
+      browserId: DEFAULT_BROWSER_ID,
+      browserArn: DEFAULT_ARN,
+      name: 'AgentCore Browser Tool',
+      status: 'READY',
+    });
+    const created = await provider.create('MyBrowser', 'AWS::BedrockAgentCore::Browser', {});
+    const updated = await provider.update(
+      'MyBrowser',
+      created.physicalId,
+      'AWS::BedrockAgentCore::Browser',
+      {},
+      {}
+    );
+    const recorded = attributesAfterUpdate(
+      'AWS::BedrockAgentCore::Browser',
+      created.attributes,
+      updated
+    );
+    expect(Object.keys(created.attributes ?? {}).sort()).toEqual([
+      'BrowserArn',
+      'BrowserId',
+      'Name',
+      'Status',
+    ]);
+    expect(recorded).toEqual(created.attributes);
   });
 });

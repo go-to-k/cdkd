@@ -1,4 +1,6 @@
 import { diffLogMasker } from '../masking.js';
+import { isSingleDynamicReferenceToken } from '../../secret-redaction.js';
+import { pasteableCommand, proseQuoted } from '../../../utils/pasteable-command.js';
 import {
   findUpdatePolicyReplacementRefusals,
   replacementCreateRoutesToCloudControl,
@@ -277,14 +279,27 @@ async function refuseInUseExportChanges(
     replaceFlag: engine.options.replace === true || engine.options.forceStatefulRecreation === true,
   });
   const deferred = deferrable ? found.filter((a) => a.reason === 'deferred') : [];
-  await refuseInUseExports(
-    engine,
-    stackName,
-    found
-      .filter((a) => a.reason !== 'deferred' || !deferrable)
-      .map((a) => (a.reason === 'deferred' ? { exportName: a.exportName, reason: 'changed' } : a)),
-    { ssmNameHeals, effectiveTemplate }
-  );
+  // go-to-k/cdkd#7037: a record an older cdkd wrote can spell a template
+  // literal as a secret's reference, so the plan sees a replacement the
+  // deploy would repair without sending. This check runs before that repair,
+  // so the remedy is named: `cdkd scrub` repairs the record without a deploy.
+  // Only when the check refuses: a deploy it lets through reaches the repair.
+  try {
+    await refuseInUseExports(
+      engine,
+      stackName,
+      found
+        .filter((a) => a.reason !== 'deferred' || !deferrable)
+        .map((a) =>
+          a.reason === 'deferred' ? { exportName: a.exportName, reason: 'changed' } : a
+        ),
+      { ssmNameHeals, effectiveTemplate }
+    );
+  } catch (error) {
+    const hint = legacySpellingHint(changes, replaces, stackName, effectiveTemplate);
+    if (error instanceof ExportInUseError && hint !== undefined) engine.logger.warn(hint);
+    throw error;
+  }
   return deferred;
 }
 
@@ -397,4 +412,71 @@ async function refuseInUseExports(
           : [],
     });
   }
+}
+
+/**
+ * `cdkd diff`'s twin of the plan-time warning (go-to-k/cdkd#7037): the diff
+ * holds no plaintext, so a replacement an older cdkd's spelling raises is
+ * shown, and this names the remedy beside it.
+ */
+export function warnLegacySpelling(
+  changes: ReadonlyMap<string, ResourceChange>,
+  template: CloudFormationTemplate,
+  stackName: string,
+  log: { warn: (message: string) => void }
+): void {
+  const hint = legacySpellingHint(changes, () => true, stackName, template);
+  if (hint !== undefined) log.warn(hint);
+}
+
+/** The warning naming `cdkd scrub` for the resources whose replacement may be a legacy spelling (#7037); logical ids and the stack name only. */
+export function legacySpellingHint(
+  changes: ReadonlyMap<string, ResourceChange>,
+  replaces: (logicalId: string) => boolean,
+  stackName: string,
+  template: CloudFormationTemplate
+): string | undefined {
+  // Only where `cdkd scrub` repairs it: scrub renders a stored reference back
+  // to a PLAIN template string, and nothing else.
+  const scrubRepairs = (id: string): boolean =>
+    (changes.get(id)?.propertyChanges ?? [])
+      .filter(isReplacingRow)
+      .every((pc) => typeof template.Resources?.[id]?.Properties?.[pc.path] === 'string');
+  const suspects = [...changes.keys()].filter(
+    (id) =>
+      replaces(id) && replacesOnlyOnLegacyReferenceSpelling(changes.get(id)) && scrubRepairs(id)
+  );
+  if (suspects.length === 0) return undefined;
+  // Built, never spelled: the run's flags (`--aws-emulator`, `--profile`, ...)
+  // ride along, and the stack name is shell-quoted behind the exactness gate.
+  const scrub = pasteableCommand('cdkd scrub', [{ value: stackName, hole: 'stack' }]).command;
+  return safeMsg`${suspects.join(', ')}: the planned replacement reads a stored secret reference against a plain template value. If the template did not change that property, the record was written by an older cdkd: run ${proseQuoted(scrub, '`')} first, then deploy.`;
+}
+
+/**
+ * Whether every replacing row of `change` reads a whole stored
+ * `{{resolve:...}}` token against a plain template string: the spelling an
+ * older cdkd wrote for a template literal equal to a secret (go-to-k/cdkd#7037),
+ * which the plan cannot tell from a real edit without the secret.
+ */
+export function replacesOnlyOnLegacyReferenceSpelling(change: ResourceChange | undefined): boolean {
+  const rows = (change?.propertyChanges ?? []).filter(isReplacingRow);
+  return (
+    rows.length > 0 &&
+    rows.every(
+      (pc) =>
+        typeof pc.oldValue === 'string' &&
+        isSingleDynamicReferenceToken(pc.oldValue) &&
+        typeof pc.newValue === 'string' &&
+        !pc.newValue.includes('{{resolve:')
+    )
+  );
+}
+
+/** A replacing row as the plan's `replaces()` counts it: an in-place propagation's ceiling is no verdict. */
+function isReplacingRow(pc: {
+  requiresReplacement: boolean;
+  inPlacePropagated?: boolean;
+}): boolean {
+  return pc.requiresReplacement && pc.inPlacePropagated !== true;
 }

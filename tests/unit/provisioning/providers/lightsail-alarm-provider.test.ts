@@ -15,6 +15,7 @@ import {
 import { isMarkedNotGone } from '../../../../src/provisioning/not-gone.js';
 import { RESOURCE_NOT_FOUND } from '../../../../src/types/resource.js';
 import { isMarkedNonRetryable } from '../../../../src/deployment/retryable-errors.js';
+import { attributesAfterUpdate } from '../../../../src/deployment/recorded-identity-attributes.js';
 
 /** go-to-k/cdkd#6830: the Lightsail alarm SDK provider. */
 
@@ -143,6 +144,44 @@ describe('LightsailAlarmProvider', () => {
       physicalId: 'my-alarm',
       attributes: {},
     });
+  });
+
+  it('keeps the attributes create recorded when the update read-back fails (#7009)', async () => {
+    const { provider, send } = setup();
+    provider.throttleDelaysMs = [];
+    send.mockResolvedValueOnce({}).mockResolvedValueOnce({ alarms: [ALARM] });
+    const type = 'AWS::Lightsail::Alarm';
+    const created = await provider.create('Alarm', type, PROPS);
+    expect(Object.keys(created.attributes ?? {}).sort()).toEqual(['AlarmArn', 'State']);
+    send.mockResolvedValueOnce({}).mockRejectedValueOnce(throttle());
+    const warn = vi.spyOn((provider as unknown as { logger: { warn: (m: string) => void } }).logger, 'warn');
+    const updated = await provider.update('Alarm', created.physicalId, type, { ...PROPS, Threshold: 95 }, PROPS);
+    expect(attributesAfterUpdate(type, created.attributes, updated)).toEqual(created.attributes);
+    // The update's own text: nothing re-reads a record this deploy rewrote.
+    expect(String(warn.mock.calls[0]?.[0])).toMatch(/after updating it .*the recorded AlarmArn and State are kept/);
+    expect(String(warn.mock.calls[0]?.[0])).not.toMatch(/read again when needed/);
+  });
+
+  it('keeps the attributes create recorded when the update read-back lists no alarm (#7009)', async () => {
+    const { provider, send } = setup();
+    send.mockResolvedValueOnce({}).mockResolvedValueOnce({ alarms: [ALARM] });
+    const type = 'AWS::Lightsail::Alarm';
+    const created = await provider.create('Alarm', type, PROPS);
+    send.mockResolvedValueOnce({}).mockResolvedValueOnce({ alarms: [] });
+    const updated = await provider.update('Alarm', created.physicalId, type, { ...PROPS, Threshold: 95 }, PROPS);
+    expect(attributesAfterUpdate(type, created.attributes, updated)).toEqual(created.attributes);
+  });
+
+  it('drops a recorded State the update read-back no longer reports, keeping AlarmArn (#7009)', async () => {
+    const { provider, send } = setup();
+    send.mockResolvedValueOnce({}).mockResolvedValueOnce({ alarms: [ALARM] });
+    const type = 'AWS::Lightsail::Alarm';
+    const created = await provider.create('Alarm', type, PROPS);
+    const { state: _state, ...noState } = ALARM;
+    send.mockResolvedValueOnce({}).mockResolvedValueOnce({ alarms: [noState] });
+    const updated = await provider.update('Alarm', created.physicalId, type, { ...PROPS, Threshold: 95 }, PROPS);
+    // A State from before the Threshold change is not vouched for: dropped, not kept.
+    expect(attributesAfterUpdate(type, created.attributes, updated)).toEqual({ AlarmArn: ALARM.arn });
   });
 
   it('refuses an unreadable NotificationEnabled before any call', async () => {

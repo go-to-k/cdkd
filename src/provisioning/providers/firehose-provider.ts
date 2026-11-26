@@ -88,6 +88,7 @@ import {
   getDriftUnknownPaths,
   importImpl,
 } from './firehose/read-state.js';
+import { canonicalizeDisabledExtendedS3Blocks } from './firehose/describe-to-cfn.js';
 
 /**
  * SDK Provider for AWS Kinesis Firehose resources
@@ -471,6 +472,13 @@ export class FirehoseProvider implements ResourceProvider {
 
   getDriftUnknownPaths(): string[] {
     return getDriftUnknownPaths.call(this);
+  }
+
+  canonicalizeDriftProperties(
+    _resourceType: string,
+    properties: Record<string, unknown>
+  ): Record<string, unknown> {
+    return canonicalizeDisabledExtendedS3Blocks(properties);
   }
 
   import(input: ResourceImportInput): Promise<ResourceImportResult | null> {

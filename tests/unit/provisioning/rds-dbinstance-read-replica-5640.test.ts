@@ -642,7 +642,9 @@ describe('RDS DBInstance read replica (go-to-k/cdkd#5640)', () => {
       expect((error as Error).message).toMatch(
         /SourceDBInstanceIdentifier cannot be added or changed on an existing DB instance/
       );
-      expect((error as Error).message).toMatch(/"Resource is immutable"/);
+      // go-to-k/cdkd#7044: CloudFormation replaces the instance; the text says so.
+      expect((error as Error).message).toMatch(/CloudFormation answers the same change with a new instance/);
+      expect((error as Error).message).not.toMatch(/refuses the same update/);
       expect(sent('ModifyDBInstanceCommand')).toEqual([]);
       expect(sent('PromoteReadReplicaCommand')).toEqual([]);
     });

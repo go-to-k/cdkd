@@ -1829,6 +1829,15 @@ if [ "${P1H_SHUTDOWN}" != "stop" ]; then
   exit 1
 fi
 echo "    OK: #5630 InstanceInitiatedShutdownBehavior changed terminate -> stop in place on ${INSTANCE_ID}"
+# go-to-k/cdkd#7023: the same deploy turns EbsOptimized true -> false. Before
+# the fix cdkd replaced the instance for it (the instance id check above fails
+# then); CloudFormation stops and starts the same instance.
+P1H_EBS=$(echo "${P1H_INSTANCE}" | jq -r 'if has("EbsOptimized") then (.EbsOptimized | tostring) else "<absent>" end')
+if [ "${P1H_EBS}" != "false" ]; then
+  echo "FAIL: issue #7023 -- EbsOptimized of ${INSTANCE_ID} is '${P1H_EBS}' after the Phase 1h update, expected false" >&2
+  exit 1
+fi
+echo "    OK: #7023 EbsOptimized changed true -> false in place on ${INSTANCE_ID}"
 # Issue #5630 (second slice): Phase 1h's template no longer declares
 # SourceDestCheck; CloudFormation sets a removed one back to true in place
 # (measured, us-east-1), and the instance id check above proves it was in place.

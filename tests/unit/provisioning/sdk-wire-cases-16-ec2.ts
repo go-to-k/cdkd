@@ -479,6 +479,10 @@ const INSTANCE_CASE: TypeCase = tc(
             why: `CloudFormation fails an update that removes InstanceInitiatedShutdownBehavior ("No attributes specified", measured, go-to-k/cdkd#5630), so update() refuses it before any call (planInstanceMemberUpdates)`,
             says: /InstanceInitiatedShutdownBehavior was removed from the template, and CloudFormation fails that update/,
           },
+          'update-remove:EbsOptimized': {
+            why: 'CloudFormation fails an update that removes EbsOptimized ("No attributes specified", measured, go-to-k/cdkd#7023), so update() refuses it before any call (planInstanceEbsOptimized)',
+            says: /EbsOptimized was removed from the template, and CloudFormation fails that update/,
+          },
         },
         expectedSilent: {
           'update-remove:MetadataOptions': INSTANCE_KEPT('MetadataOptions'),
@@ -658,12 +662,10 @@ const INSTANCE_CASE: TypeCase = tc(
         }),
     }
   );
-// An EbsOptimized change is a replacement (replacement-rules/rules.ts:620-642: it
-// is accepted only on a STOPPED instance), so the update probes skip it, as
-// the engine's replacement would.
-// A Tenancy change is a replacement too (replacement-rules.ts; CloudFormation
-// measured, go-to-k/cdkd#5630).
-INSTANCE_CASE.createOnly = new Set([...INSTANCE_CASE.createOnly, 'EbsOptimized', 'Tenancy']);
+// A Tenancy change is a replacement (replacement-rules.ts; CloudFormation
+// measured, go-to-k/cdkd#5630), so the update probes skip it, as the engine's
+// replacement would. EbsOptimized is updated in place (go-to-k/cdkd#7023).
+INSTANCE_CASE.createOnly = new Set([...INSTANCE_CASE.createOnly, 'Tenancy']);
 
 export const CASES_16_EC2: TypeCase[] = [
   tc(

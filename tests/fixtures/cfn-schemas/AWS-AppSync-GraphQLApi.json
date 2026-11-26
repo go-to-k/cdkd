@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::AppSync::GraphQLApi",
-  "generatedAt": "2026-09-23",
+  "generatedAt": "2026-11-26",
   "properties": [
     "AdditionalAuthenticationProviders",
     "ApiId",
@@ -41,6 +41,52 @@
   "createOnlyPropertyPaths": [],
   "primaryIdentifier": [
     "Arn"
+  ],
+  "conditionalCreateOnlyPropertyPaths": [
+    [
+      "LambdaAuthorizerConfig",
+      "AuthorizerResultTtlInSeconds"
+    ],
+    [
+      "LambdaAuthorizerConfig",
+      "AuthorizerUri"
+    ],
+    [
+      "LambdaAuthorizerConfig",
+      "IdentityValidationExpression"
+    ],
+    [
+      "OpenIDConnectConfig",
+      "AuthTTL"
+    ],
+    [
+      "OpenIDConnectConfig",
+      "ClientId"
+    ],
+    [
+      "OpenIDConnectConfig",
+      "IatTTL"
+    ],
+    [
+      "OpenIDConnectConfig",
+      "Issuer"
+    ],
+    [
+      "UserPoolConfig",
+      "AppIdClientRegex"
+    ],
+    [
+      "UserPoolConfig",
+      "AwsRegion"
+    ],
+    [
+      "UserPoolConfig",
+      "DefaultAction"
+    ],
+    [
+      "UserPoolConfig",
+      "UserPoolId"
+    ]
   ],
   "nestedProperties": {
     "AdditionalAuthenticationProviders": [

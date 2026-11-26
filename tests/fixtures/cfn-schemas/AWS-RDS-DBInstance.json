@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::RDS::DBInstance",
-  "generatedAt": "2026-09-23",
+  "generatedAt": "2026-11-26",
   "properties": [
     "AdditionalStorageVolumes",
     "AllocatedStorage",
@@ -186,6 +186,56 @@
   ],
   "primaryIdentifier": [
     "DBInstanceIdentifier"
+  ],
+  "conditionalCreateOnlyPropertyPaths": [
+    [
+      "AutoMinorVersionUpgrade"
+    ],
+    [
+      "AvailabilityZone"
+    ],
+    [
+      "BackupRetentionPeriod"
+    ],
+    [
+      "DBClusterSnapshotIdentifier"
+    ],
+    [
+      "DBParameterGroupName"
+    ],
+    [
+      "DBSnapshotIdentifier"
+    ],
+    [
+      "Engine"
+    ],
+    [
+      "MultiAZ"
+    ],
+    [
+      "PerformanceInsightsKMSKeyId"
+    ],
+    [
+      "PreferredMaintenanceWindow"
+    ],
+    [
+      "RestoreTime"
+    ],
+    [
+      "SourceDBClusterIdentifier"
+    ],
+    [
+      "SourceDBInstanceAutomatedBackupsArn"
+    ],
+    [
+      "SourceDBInstanceIdentifier"
+    ],
+    [
+      "SourceDbiResourceId"
+    ],
+    [
+      "UseLatestRestorableTime"
+    ]
   ],
   "nestedProperties": {
     "AssociatedRoles": [

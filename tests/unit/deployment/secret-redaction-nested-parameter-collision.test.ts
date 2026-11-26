@@ -1440,17 +1440,19 @@ describe('the resolver outcome records (#4954)', () => {
       conditions,
     } as unknown as ResolverContext);
 
-  it('records Fn::If branches only in a nested child holding inherited secrets, and array drops in any stack', async () => {
+  it('records Fn::If branches and array drops in any stack', async () => {
+    // Since go-to-k/cdkd#7037 the branch is recorded for every pass: the
+    // template-text arm spells an `Fn::If` leaf as the branch taken.
     const on = { 'Fn::If': ['On', 'a', NV] };
     const list = [on, 'b'];
     const topLevel: RecordedSecretValues = new Map();
     await resolveInto(list, topLevel, { On: false }, null);
-    expect(takenIfBranchOf(topLevel, on)).toBeUndefined();
+    expect(takenIfBranchOf(topLevel, on)).toBe(false);
     // The top-level array pairing reads the drops.
     expect(droppedArrayElementsOf(topLevel, list)).toEqual([0]);
     const emptyParent: RecordedSecretValues = new Map();
     await resolveInto(list, emptyParent, { On: false }, new Map());
-    expect(takenIfBranchOf(emptyParent, on)).toBeUndefined();
+    expect(takenIfBranchOf(emptyParent, on)).toBe(false);
     const nested: RecordedSecretValues = new Map();
     await resolveInto(list, nested, { On: false });
     expect(takenIfBranchOf(nested, on)).toBe(false);

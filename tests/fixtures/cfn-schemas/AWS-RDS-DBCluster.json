@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::RDS::DBCluster",
-  "generatedAt": "2026-10-30",
+  "generatedAt": "2026-11-26",
   "properties": [
     "AllocatedStorage",
     "AssociatedRoles",
@@ -153,6 +153,20 @@
   ],
   "primaryIdentifier": [
     "DBClusterIdentifier"
+  ],
+  "conditionalCreateOnlyPropertyPaths": [
+    [
+      "AvailabilityZones"
+    ],
+    [
+      "Engine"
+    ],
+    [
+      "GlobalClusterIdentifier"
+    ],
+    [
+      "MasterUsername"
+    ]
   ],
   "nestedProperties": {
     "Endpoint": [

@@ -100,6 +100,15 @@ const BACKFILL: Input = {
 
 const BACKFILL_MEMBERS = Object.keys(BACKFILL);
 
+/** A live instance that has applied the CA certificate and Multi-AZ values the tests send. */
+const APPLIED: Record<string, Input> = {
+  MultiAZ: { MultiAZ: false },
+  CACertificateIdentifier: {
+    CACertificateIdentifier: 'rds-ca-ecc384-g1',
+    CertificateDetails: { CAIdentifier: 'rds-ca-ecc384-g1' },
+  },
+};
+
 describe('RDSProvider DBInstance backfill (go-to-k/cdkd#2762)', () => {
   let provider: RDSProvider;
 
@@ -186,7 +195,9 @@ describe('RDSProvider DBInstance backfill (go-to-k/cdkd#2762)', () => {
       ['OptionGroupName', 'og-2', 'og-2'],
       ['CACertificateIdentifier', 'rds-ca-ecc384-g1', 'rds-ca-ecc384-g1'],
     ])('a changed %s is sent alone', async (key, value, wire) => {
-      armLive({ AllocatedStorage: 400 });
+      // The instance reads a changed CA certificate or Multi-AZ setting as
+      // applied, which the update waits for (go-to-k/cdkd#7006).
+      armLive({ AllocatedStorage: 400, ...APPLIED[key] });
       await update({ ...BASE, ...BACKFILL, [key]: value }, { ...BASE, ...BACKFILL });
       const input = modify();
       expect(input[key]).toEqual(wire);
@@ -322,7 +333,13 @@ describe('RDSProvider DBInstance backfill (go-to-k/cdkd#2762)', () => {
     });
 
     it('a forced update naming every key (reput) re-sends no unchanged storage member, and the rest as named', async () => {
-      armLive({ AllocatedStorage: 512 });
+      armLive({
+        AllocatedStorage: 512,
+        MultiAZ: true,
+        SecondaryAvailabilityZone: 'us-east-1b',
+        CACertificateIdentifier: 'rds-ca-rsa2048-g1',
+        CertificateDetails: { CAIdentifier: 'rds-ca-rsa2048-g1' },
+      });
       const bag = { ...BASE, ...BACKFILL };
       await provider.update('Db', 'db-1', 'AWS::RDS::DBInstance', bag, { ...bag }, {
         changedProperties: new Set(Object.keys(bag)),

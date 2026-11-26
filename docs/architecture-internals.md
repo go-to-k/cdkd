@@ -202,6 +202,14 @@ every attribute of which is its handler's response `Data` (issue #3662) and
 whose `Ref` its handler may move by answering an Update with a new
 `PhysicalResourceId` (issue #3722).
 
+Which read-only attributes an in-place update moves is classified, not
+guessed. Every attribute of a type with an SDK provider has a hand verdict, and
+the attributes of a Cloud-Control-only type are settled by rule or held in a
+committed baseline. The
+[in-place attribute coverage](_generated/in-place-attr-coverage.md) table lists
+each verdict, and CI's `audit:in-place-attr-coverage:check` fails on an
+attribute with none (issue #7001).
+
 A nested stack's outputs are decided by the child's own deploy, which runs after
 the parent's diff, so every reader of an updated `AWS::CloudFormation::Stack`'s
 outputs is promoted, and the deploy engine skips the provider call for each one
@@ -542,8 +550,8 @@ by design.
   lives in `src/deployment/secret-redaction/readback-certification.ts`. A value
   that is exactly the template's own plain string is stored as written, even
   when a secret's text occurs inside it (the generated username `postgres` in
-  `Engine: aurora-postgresql`): nothing was substituted into it, and the
-  template already holds that text. A separate floor,
+  `Engine: aurora-postgresql`) or IS it (`Engine: postgres`): nothing was
+  substituted into it, and the template already holds that text. A separate floor,
   `MIN_NEEDLE_LENGTH`, bounds the SUBSTRING and derived arms only: an
   expression-bearing needle below it is still substituted on the whole-value
   arm, and masking still replaces an exact whole-value match at any length —
@@ -640,6 +648,23 @@ back. The exception is an old resource that still uses a resource its stack's
 template removed: it is deleted right before that removal, in the child's own
 deploy, and a rollback re-creates it (issue
 [#6977](https://github.com/go-to-k/cdkd/issues/6977)).
+
+A top-level stack whose outputs another stack of the same `cdkd deploy` run
+imports holds its cleanup phase, with its children's queued passes, in the
+same kind of queue (`consumerCleanupQueue`, built by
+`src/cli/commands/deploy/consumer-cleanup-hold.ts`). Its state is saved with
+the old resources still listed, its work-graph node completes so the
+consumers can start, and its deploy then waits: once every consumer deployed,
+the queue runs under the producer's lock, as a nested child's does; if one did
+not, the queue is abandoned and the old resources stay listed for the next
+deploy (issue [#7012](https://github.com/go-to-k/cdkd/issues/7012)). A stack
+with nothing to delete queues nothing. Each held entry is saved marked
+`heldForConsumers`; a later deploy's cleanup sends one only once no stack
+importing the producer's outputs names its physical id or a recorded string
+attribute (8+ characters, not numeric, carried by no live record of the
+producer) in its resources' properties (`consumer-held-superseded.ts`, issue
+[#7017](https://github.com/go-to-k/cdkd/issues/7017)). An unmarked entry reads
+nothing.
 
 Adoption of an existing CFn-managed nested-stack hierarchy uses `cdkd import
 --migrate-from-cloudformation` (issue

@@ -666,7 +666,17 @@ const FLOORS = {
 // the `DescribeInstance` answer its readiness / ACTIVE wait returns, so the
 // walk follows it into the poll loop and drops three past the cap. A wait's
 // last read, not a fallback.
-const DEPTH_DROPPED_CAP = 46;
+// Raised to 52 by go-to-k/cdkd#7009: `agentcore-runtime-provider.ts` records
+// `LastUpdatedAt` from the READY read `waitForRuntimeReady` returns, so the
+// walk follows its create and update sites into the poll loop and drops six
+// past the cap (measured: the pre-#7009 provider file gives 46). The same
+// wait's-last-read class as #6912.
+// Raised to 54 by go-to-k/cdkd#7006: `rds/instance-update.ts` records its map
+// through `withoutUnappliedMovedAttributes(dbInstanceAttributes(described,
+// ...))`, one hop deeper, so `javaInstantText`'s `value.toISOString()` and
+// its `value` receiver drop past the cap too (measured: 52 on main, 54 with the wrap).
+// The same formatting chain as #6242, not a fallback.
+const DEPTH_DROPPED_CAP = 54;
 
 /**
  * The fence's verdict over a scan: hits that match no allow-list entry, and
