@@ -143,7 +143,9 @@ export async function runChildDeploy(
       // `inRunStacks` (go-to-k/cdkd#6088) names stacks too, and inheriting it
       // is the intent: it lists the RUN's stacks, and a consumer of a child's
       // export that this run deploys is exempt from the child's in-use export
-      // refusal exactly as it is from the parent's.
+      // refusal exactly as it is from the parent's. `consumerCleanupQueue`
+      // (go-to-k/cdkd#7012) holds the top-level stack's cleanup; a child
+      // inherits it inert, as only a root engine reads it.
       ...(parentCtx.options ?? {}),
       // Always overwrite (never spread-inherit) parameters: the parent's
       // `--parameters Foo=Bar` CLI option lives in `parentCtx.options.parameters`,

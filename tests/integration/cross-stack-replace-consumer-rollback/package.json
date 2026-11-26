@@ -1,0 +1,19 @@
+{
+  "name": "cdkd-integ-cross-stack-replace-consumer-rollback",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A consumer that fails in the same run as its producer's export replacement rolls back onto a live resource (go-to-k/cdkd#7012)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

@@ -649,6 +649,17 @@ template removed: it is deleted right before that removal, in the child's own
 deploy, and a rollback re-creates it (issue
 [#6977](https://github.com/go-to-k/cdkd/issues/6977)).
 
+A top-level stack whose outputs another stack of the same `cdkd deploy` run
+imports holds its cleanup phase, with its children's queued passes, in the
+same kind of queue (`consumerCleanupQueue`, built by
+`src/cli/commands/deploy/consumer-cleanup-hold.ts`). Its state is saved with
+the old resources still listed, its work-graph node completes so the
+consumers can start, and its deploy then waits: once every consumer deployed,
+the queue runs under the producer's lock, as a nested child's does; if one did
+not, the queue is abandoned and the old resources stay listed for the next
+deploy (issue [#7012](https://github.com/go-to-k/cdkd/issues/7012)). A stack
+with nothing to delete queues nothing.
+
 Adoption of an existing CFn-managed nested-stack hierarchy uses `cdkd import
 --migrate-from-cloudformation` (issue
 [#464](https://github.com/go-to-k/cdkd/issues/464) PR A — recursive
