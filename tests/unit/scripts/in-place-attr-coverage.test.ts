@@ -127,7 +127,7 @@ describe('classifyByRule (#7001)', () => {
     const t = input('AWS::X::Thing', { Name: 'yes', Config: 'yes', Tags: undefined });
     expect(classifyByRule(t, 'Status')).toBe('no-in-place-update');
     // A tag edit may stamp it.
-    for (const a of ['UpdatedAt', 'LastModifiedTime', 'LastUpdatedDateTime']) {
+    for (const a of ['UpdatedAt', 'LastModifiedTime', 'LastUpdatedDateTime', 'UpdateTime', 'LastModificationDate']) {
       expect(classifyByRule(t, a), a).toBeUndefined();
     }
   });

@@ -113,7 +113,7 @@ function typeInputFromFixture(type: string): TypeInput | undefined {
 export type RuleName = 'no-in-place-update' | 'creation-timestamp' | 'own-identity';
 
 const CREATION_TIMESTAMP = /^(Create|Created|Creation)(At|Time|Date|Timestamp|DateTime|On)?$/;
-const UPDATE_TIMESTAMP = /Updated|Modified|LastUpdate/;
+const UPDATE_TIMESTAMP = /Update|Modif/;
 const OWN_IDENTITY = /^(.*?)(Arn|ARN|Id|ID|Uuid|UUID)$/;
 
 /**

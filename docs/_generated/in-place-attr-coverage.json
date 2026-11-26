@@ -7,11 +7,11 @@
     "ccTypes": 1584,
     "ccPairs": 5545,
     "ccByRule": {
-      "no-in-place-update": 1162,
+      "no-in-place-update": 1151,
       "creation-timestamp": 376,
-      "own-identity": 925
+      "own-identity": 926
     },
-    "ccBaseline": 3082
+    "ccBaseline": 3092
   },
   "sdk": [
     {
@@ -4339,6 +4339,9 @@
       "State",
       "UpdateEffectiveAt"
     ],
+    "AWS::EC2::TransitGatewayMeteringPolicyEntry": [
+      "UpdateEffectiveAt"
+    ],
     "AWS::EC2::TransitGatewayMulticastDomain": [
       "State"
     ],
@@ -5037,7 +5040,8 @@
       "Version"
     ],
     "AWS::IoT::OTAUpdate": [
-      "LastModifiedDate"
+      "LastModifiedDate",
+      "OtaUpdateStatus"
     ],
     "AWS::IoT::ResourceSpecificLogging": [
       "TargetId"
@@ -5162,6 +5166,9 @@
     ],
     "AWS::IoTTwinMaker::Scene": [
       "GeneratedSceneMetadata",
+      "UpdateDateTime"
+    ],
+    "AWS::IoTTwinMaker::SyncJob": [
       "UpdateDateTime"
     ],
     "AWS::IoTTwinMaker::Workspace": [
@@ -5373,6 +5380,15 @@
       "UpdateTime"
     ],
     "AWS::Location::GeofenceCollection": [
+      "UpdateTime"
+    ],
+    "AWS::Location::Map": [
+      "UpdateTime"
+    ],
+    "AWS::Location::PlaceIndex": [
+      "UpdateTime"
+    ],
+    "AWS::Location::RouteCalculator": [
       "UpdateTime"
     ],
     "AWS::Location::Tracker": [
@@ -5775,6 +5791,9 @@
       "State",
       "UpdatedAt"
     ],
+    "AWS::NetworkManager::ConnectPeer": [
+      "LastModificationErrors"
+    ],
     "AWS::NetworkManager::Connection": [
       "State"
     ],
@@ -5824,6 +5843,9 @@
       "SegmentName",
       "State",
       "UpdatedAt"
+    ],
+    "AWS::NetworkManager::TransitGatewayPeering": [
+      "LastModificationErrors"
     ],
     "AWS::NetworkManager::TransitGatewayRouteTableAttachment": [
       "AttachmentId",
@@ -5918,6 +5940,9 @@
     "AWS::Notifications::NotificationConfiguration": [
       "Arn",
       "Status"
+    ],
+    "AWS::NotificationsContacts::EmailContact": [
+      "EmailContact.UpdateTime"
     ],
     "AWS::ODB::CloudAutonomousVmCluster": [
       "AutonomousDataStoragePercentage",
@@ -7155,6 +7180,9 @@
     ],
     "AWS::SageMaker::Workforce": [
       "SubDomain"
+    ],
+    "AWS::Scheduler::ScheduleGroup": [
+      "LastModificationDate"
     ],
     "AWS::SecurityAgent::AgentSpace": [
       "AgentSpaceId",

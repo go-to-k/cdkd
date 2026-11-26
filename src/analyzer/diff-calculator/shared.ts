@@ -341,7 +341,9 @@ function streamSpecificationMovesStreamArn(oldValue: unknown, newValue: unknown)
 /**
  * go-to-k/cdkd#7001: a managed policy's `AttachmentCount` moves only when a
  * principal list changes LENGTH; a same-length swap keeps the count. A side
- * that is not a list (an intrinsic) answers `true`.
+ * that is not a list (an intrinsic) answers `true`. Bound: a swapped-in
+ * principal already holding the policy another way (a role's
+ * `ManagedPolicyArns`) lowers the count without promoting the reader.
  */
 function principalListLengthMoves(oldValue: unknown, newValue: unknown): boolean {
   const length = (v: unknown): number | undefined =>

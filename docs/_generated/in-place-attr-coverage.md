@@ -13,7 +13,7 @@ Whether an in-place update moves each read-only `Fn::GetAtt` attribute (issue [#
 Source: `@aws-cdk/aws-service-spec` 0.1.235.
 
 - SDK-provider types: **131**, pairs classified by hand: **390** (moving: **66**)
-- Cloud Control types: **1584**, pairs: **5545** — by rule: `no-in-place-update` 1162, `creation-timestamp` 376, `own-identity` 925; in the baseline: **3082**
+- Cloud Control types: **1584**, pairs: **5545** — by rule: `no-in-place-update` 1151, `creation-timestamp` 376, `own-identity` 926; in the baseline: **3092**
 
 ## SDK-provider types (hand classification)
 
@@ -1161,6 +1161,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::EC2::SqlHaStandbyDetectedInstance` | 3 |
 | `AWS::EC2::TransitGateway` | 1 |
 | `AWS::EC2::TransitGatewayMeteringPolicy` | 2 |
+| `AWS::EC2::TransitGatewayMeteringPolicyEntry` | 1 |
 | `AWS::EC2::TransitGatewayMulticastDomain` | 1 |
 | `AWS::EC2::TransitGatewayNetworkFunctionAttachment` | 3 |
 | `AWS::EC2::TransitGatewayPeeringAttachment` | 9 |
@@ -1300,7 +1301,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::IoT::DomainConfiguration` | 2 |
 | `AWS::IoT::EncryptionConfiguration` | 3 |
 | `AWS::IoT::FleetMetric` | 3 |
-| `AWS::IoT::OTAUpdate` | 1 |
+| `AWS::IoT::OTAUpdate` | 2 |
 | `AWS::IoT::ResourceSpecificLogging` | 1 |
 | `AWS::IoT::SoftwarePackageVersion` | 3 |
 | `AWS::IoT::Stream` | 2 |
@@ -1329,6 +1330,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::IoTTwinMaker::ComponentType` | 8 |
 | `AWS::IoTTwinMaker::Entity` | 8 |
 | `AWS::IoTTwinMaker::Scene` | 2 |
+| `AWS::IoTTwinMaker::SyncJob` | 1 |
 | `AWS::IoTTwinMaker::Workspace` | 1 |
 | `AWS::IoTWireless::FuotaTask` | 4 |
 | `AWS::IoTWireless::MulticastGroup` | 5 |
@@ -1373,6 +1375,9 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Lightsail::StaticIp` | 2 |
 | `AWS::Location::APIKey` | 1 |
 | `AWS::Location::GeofenceCollection` | 1 |
+| `AWS::Location::Map` | 1 |
+| `AWS::Location::PlaceIndex` | 1 |
+| `AWS::Location::RouteCalculator` | 1 |
 | `AWS::Location::Tracker` | 1 |
 | `AWS::Logs::AccountPolicy` | 1 |
 | `AWS::Logs::LogAnomalyDetector` | 4 |
@@ -1441,6 +1446,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::NetworkFlowMonitor::Monitor` | 2 |
 | `AWS::NetworkFlowMonitor::PerformanceMonitor` | 3 |
 | `AWS::NetworkManager::ConnectAttachment` | 12 |
+| `AWS::NetworkManager::ConnectPeer` | 1 |
 | `AWS::NetworkManager::Connection` | 1 |
 | `AWS::NetworkManager::ContextStore` | 1 |
 | `AWS::NetworkManager::CoreNetwork` | 5 |
@@ -1449,6 +1455,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::NetworkManager::Link` | 1 |
 | `AWS::NetworkManager::Site` | 1 |
 | `AWS::NetworkManager::SiteToSiteVpnAttachment` | 12 |
+| `AWS::NetworkManager::TransitGatewayPeering` | 1 |
 | `AWS::NetworkManager::TransitGatewayRouteTableAttachment` | 13 |
 | `AWS::NetworkManager::VpcAttachment` | 13 |
 | `AWS::NetworkMonitor::Monitor` | 2 |
@@ -1464,6 +1471,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::NimbleStudio::StudioComponent` | 1 |
 | `AWS::Notifications::EventRule` | 2 |
 | `AWS::Notifications::NotificationConfiguration` | 2 |
+| `AWS::NotificationsContacts::EmailContact` | 1 |
 | `AWS::ODB::CloudAutonomousVmCluster` | 26 |
 | `AWS::ODB::CloudExadataInfrastructure` | 19 |
 | `AWS::ODB::CloudVmCluster` | 13 |
@@ -1686,6 +1694,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::SageMaker::Space` | 2 |
 | `AWS::SageMaker::TrialComponent` | 3 |
 | `AWS::SageMaker::Workforce` | 1 |
+| `AWS::Scheduler::ScheduleGroup` | 1 |
 | `AWS::SecurityAgent::AgentSpace` | 2 |
 | `AWS::SecurityAgent::Application` | 3 |
 | `AWS::SecurityAgent::Artifact` | 1 |
