@@ -3,6 +3,7 @@ import type { PropertyChange, ResourceChange, ResourceState } from '../../../typ
 import type { OutputChange } from '../../../analyzer/outputs-diff.js';
 import type { DiffCalculator } from '../../../analyzer/diff-calculator.js';
 import type { SecurityDiff } from '../../../analyzer/security-diff.js';
+import { isScrutinizedProperty } from '../../../analyzer/security-changes.js';
 import {
   SECRET_MASK,
   isSingleDynamicReferenceToken,
@@ -75,21 +76,15 @@ function holdsMixedDynamicReference(value: unknown): boolean {
   return false;
 }
 
-/** A string holding a reference whose SPELLING says it is a secret. */
-function spellsSecretReference(value: string): boolean {
-  return SPELLED_SECRET_PREFIXES.some((prefix) => value.includes(prefix));
-}
-
-const SPELLED_SECRET_PREFIXES = ['{{resolve:secretsmanager:', '{{resolve:ssm-secure:'];
-
 /**
- * Does a TEMPLATE value compose a reference SPELLED secret
- * (`secretsmanager:` / `ssm-secure:`) with other text: a literal string
- * mixing one (an `Fn::Sub` body too), or an `Fn::Join` whose list holds one
- * beside another element? A whole token, behind an `Fn::If` or not, passes
- * the reference through as it is. A bare `{{resolve:ssm:` cannot be judged
- * before resolution (a public `String` resolves away), so a row mixing one is
- * seeded from its resolved values instead ({@link mixedSecretRowKeys}).
+ * Does a TEMPLATE value compose a dynamic reference with other text: a
+ * literal string mixing one (an `Fn::Sub` body too), or an `Fn::Join` whose
+ * list holds one beside another element? A whole token, behind an `Fn::If`
+ * or not, passes the reference through as it is. Read before any resolution,
+ * so a bare `{{resolve:ssm:` counts whatever its parameter's type: a
+ * `SecureString` (or a lookup that fails) cannot be told from a public
+ * `String` here, and a reader of the row's outputs masked over a public one
+ * is the safe side of that.
  */
 function templateMixesDynamicReference(value: unknown): boolean {
   const pending: unknown[] = [value];
@@ -97,7 +92,7 @@ function templateMixesDynamicReference(value: unknown): boolean {
   while (pending.length > 0) {
     const next = pending.pop();
     if (typeof next === 'string') {
-      if (spellsSecretReference(next) && !isSingleDynamicReferenceToken(next)) return true;
+      if (mixesDynamicReference(next)) return true;
       continue;
     }
     if (next === null || typeof next !== 'object' || seen.has(next)) continue;
@@ -107,7 +102,7 @@ function templateMixesDynamicReference(value: unknown): boolean {
       const parts = join[1] as unknown[];
       if (
         parts.length > 1 &&
-        parts.some((part) => typeof part === 'string' && spellsSecretReference(part))
+        parts.some((part) => typeof part === 'string' && part.includes('{{resolve:'))
       ) {
         return true;
       }
@@ -179,11 +174,9 @@ export function mixedSecretRowKeys(
  */
 export function taintedNamesOf(
   template: CloudFormationTemplate,
-  passed: ReadonlySet<string> | undefined,
-  /** Rows the child walk found passing a mixed value once resolved. */
-  resolvedSeeds: Iterable<string> = []
+  passed: ReadonlySet<string> | undefined
 ): Set<string> {
-  const tainted = new Set<string>([...(passed ?? []), ...resolvedSeeds]);
+  const tainted = new Set<string>(passed ?? []);
   const resources = recordOf(template.Resources as unknown);
   for (const [logicalId, raw] of Object.entries(resources)) {
     const resource = recordOf(raw);
@@ -547,20 +540,24 @@ export function securityDiffWithPassedSecretWithheld(
   template: CloudFormationTemplate,
   tainted: ReadonlySet<string>
 ): () => Promise<SecurityDiff> {
-  // A changed resource whose own properties READ a tainted name: a seeded
-  // nested row is no statement of its own.
+  // A changed IAM / security-group property (what the table formats) whose
+  // template reads a tainted name: a seeded nested row, or a reader of one
+  // the table never shows, withholds nothing.
   const resources = recordOf(template.Resources as unknown);
-  const touched = [...changes.values()].some(
-    (change) =>
-      change.changeType !== 'NO_CHANGE' &&
-      tainted.has(change.logicalId) &&
-      readsTainted(
-        recordOf(
-          Object.hasOwn(resources, change.logicalId) ? resources[change.logicalId] : undefined
-        )['Properties'],
-        tainted
-      )
-  );
+  const touched = [...changes.values()].some((change) => {
+    if (change.changeType === 'NO_CHANGE' || !tainted.has(change.logicalId)) return false;
+    const properties = recordOf(
+      recordOf(
+        Object.hasOwn(resources, change.logicalId) ? resources[change.logicalId] : undefined
+      )['Properties']
+    );
+    return (change.propertyChanges ?? []).some(
+      (propertyChange) =>
+        isScrutinizedProperty(change.resourceType, propertyChange.path) &&
+        Object.hasOwn(properties, propertyChange.path) &&
+        readsTainted(properties[propertyChange.path], tainted)
+    );
+  });
   if (!touched) return securityDiff;
   return async () => {
     const shown = await securityDiff();

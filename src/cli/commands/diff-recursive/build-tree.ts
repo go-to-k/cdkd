@@ -527,7 +527,6 @@ export async function buildDiffTree(args: {
   // A condition-false row is absent here, so a child still in state falls
   // through to the state-only DELETE loop below.
   const templateChildIds = new Set<string>();
-  const resolvedSecretRows: string[] = [];
   for (const [logicalId, resource] of Object.entries(effectiveTemplate.Resources ?? {})) {
     if (resource?.Type !== NESTED_STACK_RESOURCE_TYPE) continue;
     templateChildIds.add(logicalId);
@@ -684,22 +683,6 @@ export async function buildDiffTree(args: {
       childParameters,
       passedSecretNames
     );
-    // A row its template could not judge (a bare `{{resolve:ssm:` a
-    // `SecureString` answers) that passes a mixed value once resolved:
-    // its outputs and stack ARN are read back from a child holding the
-    // plaintext, so it seeds this node's taint after the walk.
-    if (
-      !passedSecretNames.has(logicalId) &&
-      (childMixedSecretParameters.size > 0 ||
-        mixedSecretTagKeys(
-          resource.Properties,
-          stackDiff.childStackTags?.get(logicalId),
-          passedSecretNames,
-          undefined
-        ).size > 0)
-    ) {
-      resolvedSecretRows.push(logicalId);
-    }
     const childMixedSecretTagKeys = mixedSecretTagKeys(
       resource.Properties,
       stackDiff.childStackTags?.get(logicalId),
@@ -796,21 +779,6 @@ export async function buildDiffTree(args: {
       await (hasMaskableValues(childDerivedNames)
         ? withPrintingSecrets(childDerivedNames, buildChild)
         : buildChild())
-    );
-  }
-
-  if (resolvedSecretRows.length > 0) {
-    const tainted = taintedNamesOf(template, inheritedMixedSecretParameters, [
-      ...passedSecretNames,
-      ...resolvedSecretRows,
-    ]);
-    node.changes = maskPassedSecretChanges(changes, template, tainted, inheritedMixedSecretTagKeys);
-    node.outputChanges = maskPassedSecretOutputs(outputChanges, template, tainted);
-    node.securityDiff = securityDiffWithPassedSecretWithheld(
-      securityDiff,
-      changes,
-      template,
-      tainted
     );
   }
 

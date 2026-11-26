@@ -504,7 +504,7 @@ describe('readers of a nested row output, by what the row passes (#7068 review)'
       },
     },
   });
-  const run = async (url: unknown, piece: string) => {
+  const run = async (url: unknown, piece: string, recursive = true) => {
     const states: Record<string, StackState> = {
       Parent: stack('Parent', {
         Row: {
@@ -524,7 +524,7 @@ describe('readers of a nested row output, by what the row passes (#7068 review)'
       template: rowTemplate(url),
       parameters: { Sep: 'Q7' },
       nestedTemplates: { Row: join(dir, 'child.json') },
-      recursive: true,
+      recursive,
       stateBackend: {
         getState: async (name: string) =>
           states[name] ? { state: structuredClone(states[name]), etag: 'e' } : null,
@@ -537,15 +537,23 @@ describe('readers of a nested row output, by what the row passes (#7068 review)'
     root.changes.get('Reader')?.propertyChanges?.find((change) => change.path === 'Value')
       ?.newValue;
 
-  it('shows a reader of a row passing only a PUBLIC reference with text', async () => {
-    const root = await run({ 'Fn::Join': ['', ['https://', '{{resolve:ssm:/pub/host}}', '/x']] }, 'new-bucket');
-    expect(readerValue(root)).toBe('new-bucket');
+  it('shows a reader of a row passing a whole token, or no reference at all', async () => {
+    expect(readerValue(await run('{{resolve:ssm:/pub/host}}', 'new-bucket'))).toBe('new-bucket');
+    expect(readerValue(await run({ 'Fn::Join': ['', ['a', 'b']] }, 'new-bucket'))).toBe(
+      'new-bucket'
+    );
   });
 
-  it('masks a reader of a row passing a SecureString bare ssm reference with text', async () => {
-    const root = await run({ 'Fn::Join': ['', [{ Ref: 'Sep' }, '/', '{{resolve:ssm:/sec}}']] }, 'Q7');
-    expect(readerValue(root)).toBe('***');
-  });
+  // A bare `ssm:` reference is judged before resolution: SecureString,
+  // failed lookup and public String alike (the last is the safe over-mask).
+  for (const name of ['/sec', '/sec/a', '/pub/host']) {
+    for (const recursive of [true, false]) {
+      it(`masks a reader of a row mixing {{resolve:ssm:${name}}} (recursive: ${recursive})`, async () => {
+        const url = { 'Fn::Join': ['', [{ Ref: 'Sep' }, '/', `{{resolve:ssm:${name}}}`]] };
+        expect(readerValue(await run(url, 'Q7', recursive))).toBe('***');
+      });
+    }
+  }
 });
 
 describe('stack-tag keys and tag maps (#7068 review)', () => {
@@ -584,19 +592,47 @@ describe('stack-tag keys and tag maps (#7068 review)', () => {
 });
 
 describe('securityDiffWithPassedSecretWithheld (#7068 review)', () => {
-  it('keeps the table when only a seeded row changed and no statement reads it', async () => {
-    const securityDiff = async () => ({ broadening: true, rendered: 'TABLE' });
-    const changes = new Map([
-      ['Child', { logicalId: 'Child', changeType: 'UPDATE' as const, resourceType: 'AWS::CloudFormation::Stack' }],
-      ['Pol', { logicalId: 'Pol', changeType: 'UPDATE' as const, resourceType: 'AWS::IAM::Policy' }],
-    ]);
-    const template = {
-      Resources: {
-        Child: { Type: 'AWS::CloudFormation::Stack', Properties: {} },
-        Pol: { Type: 'AWS::IAM::Policy', Properties: { PolicyDocument: policy('arn:aws:s3:::unrelated') } },
+  const securityDiff = async () => ({ broadening: true, rendered: 'TABLE' });
+  const change = (logicalId: string, resourceType: string, path: string) => ({
+    logicalId,
+    changeType: 'UPDATE' as const,
+    resourceType,
+    propertyChanges: [{ path, oldValue: 'a', newValue: 'b', requiresReplacement: false }],
+  });
+  const template = (statementResource: unknown) => ({
+    Resources: {
+      Child: { Type: 'AWS::CloudFormation::Stack', Properties: { Parameters: {} } },
+      Reader: {
+        Type: 'AWS::SSM::Parameter',
+        Properties: { Value: { 'Fn::GetAtt': ['Child', 'Outputs.O'] } },
       },
-    };
-    const shown = securityDiffWithPassedSecretWithheld(securityDiff, changes, template as never, new Set(['Child']));
+      Pol: { Type: 'AWS::IAM::Policy', Properties: { PolicyDocument: policy(statementResource) } },
+    },
+  });
+  const changes = new Map([
+    ['Child', change('Child', 'AWS::CloudFormation::Stack', 'Parameters')],
+    ['Reader', change('Reader', 'AWS::SSM::Parameter', 'Value')],
+    ['Pol', change('Pol', 'AWS::IAM::Policy', 'PolicyDocument')],
+  ]);
+  const tainted = new Set(['Child', 'Reader']);
+
+  it('keeps the table when no IAM property reads a tainted name', async () => {
+    const shown = securityDiffWithPassedSecretWithheld(
+      securityDiff,
+      changes,
+      template('arn:aws:s3:::unrelated') as never,
+      tainted
+    );
     expect((await shown()).rendered).toBe('TABLE');
+  });
+
+  it('withholds it when one does, keeping the verdict', async () => {
+    const shown = securityDiffWithPassedSecretWithheld(
+      securityDiff,
+      changes,
+      template({ 'Fn::GetAtt': ['Child', 'Outputs.O'] }) as never,
+      new Set([...tainted, 'Pol'])
+    );
+    expect(await shown()).toEqual({ broadening: true, rendered: SECURITY_TABLE_WITHHELD });
   });
 });
