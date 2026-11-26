@@ -305,11 +305,10 @@ describe('issue #3156: what the provenance arm refuses', () => {
       { Tail: '' }
     );
     expect(bag.has(`port:${PIN}`)).toBe(false);
-    // Neither parent leaf takes the other's reference. `B`'s token holds the
-    // map slot for the value, so the template-text arm positions it at its own
-    // spelling (#7037); `A`'s has no slot and keeps the scan's answer.
+    // Neither parent leaf takes the other's reference: each token sits at the
+    // span the resolver substituted it (#7050).
     expect(record.Parameters).toEqual({
-      A: `port:${PIN}`,
+      A: 'port:{{resolve:ssm-secure:/app/a}}',
       B: 'port:{{resolve:ssm-secure:/app/b}}',
     });
   });
@@ -426,7 +425,8 @@ describe('issue #3156: what the provenance arm refuses', () => {
       // the affix cases below keep a part with no record of its own.
       expect(bag.get(PIN)).toMatch(/^\{\{resolve:ssm-secure:\/app\/[ab]\}\}$/);
       expect(bag.has(`${PIN}/${PIN}`)).toBe(false);
-      expect(record.Parameters['Pin']).toBe(`${PIN}/${PIN}`);
+      // #7050: each token at the span the resolver substituted it, never the plaintext.
+      expect(record.Parameters['Pin']).toBe('{{resolve:ssm-secure:/app/a}}/{{resolve:ssm-secure:/app/b}}');
     });
   }
 
@@ -622,7 +622,8 @@ describe('issue #3306: the carry certifies a token a nested part, a Sub variable
       // Premise: both secrets resolved into the bag.
       expect(bag.get(PIN)).toMatch(/^\{\{resolve:ssm-secure:\/app\/[ab]\}\}$/);
       expect(bag.has(`${PIN}/${PIN}`)).toBe(false);
-      expect(record.Parameters['Pin']).toBe(`${PIN}/${PIN}`);
+      // #7050: each token at the span the resolver substituted it, never the plaintext.
+      expect(record.Parameters['Pin']).toBe('{{resolve:ssm-secure:/app/a}}/{{resolve:ssm-secure:/app/b}}');
     });
   }
 });
@@ -691,8 +692,11 @@ describe('issue #3306 review M2: a frame whose own value occurs in its token tex
       const { bag, resolved, record } = await deployRow({ Pin: pin }, bound);
       expect(resolved.Parameters['Pin']).toBe('in:in');
       expect(bag.has('in:in')).toBe(false);
-      expect(await childPersist(bag, 'Pin', 'in:in')).toBe('in:in');
-      expect(String(record.Parameters['Pin'])).not.toContain('{{resolve:');
+      // #7050: the token is placed by its recorded span, and the parameter's
+      // coinciding `in` is redacted too: no plaintext of the secret remains
+      // in the parent's record or the child's.
+      expect(String(record.Parameters['Pin'])).toBe('{{resolve:ssm:/app/kin}}:{{resolve:ssm:/app/kin}}'.replace(':{{', bound === undefined ? ':{{' : ':{{'));
+      expect(await childPersist(bag, 'Pin', 'in:in')).toBe(record.Parameters['Pin']);
     });
   }
 });

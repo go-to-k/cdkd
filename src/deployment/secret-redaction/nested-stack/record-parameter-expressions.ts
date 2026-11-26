@@ -1,6 +1,16 @@
-import { resolvedPlaintextOf, substitutedSpellingOf, type RecordedSecretValues } from '../pairs.js';
+import {
+  SECRET_MASK,
+  resolvedPlaintextOf,
+  substitutedSpellingOf,
+  type RecordedSecretValues,
+} from '../pairs.js';
 import { storeAssociation } from '../cross-stack.js';
-import { isPlainObject, isSingleDynamicReferenceToken, MIN_NEEDLE_LENGTH } from '../rules.js';
+import {
+  isPlainObject,
+  isSingleDynamicReferenceToken,
+  MIN_NEEDLE_LENGTH,
+  TEMPLATE_DERIVED_RULES,
+} from '../rules.js';
 import { redactForState, redactAtProvenance } from '../context.js';
 import { plaintextIndexOf } from '../certified-positions.js';
 import {
@@ -11,6 +21,7 @@ import {
   rendersLiteralTo,
 } from '../positions.js';
 import { dynamicReferenceSpans, withoutLiteralRendering } from '../redact-path.js';
+import { positionBySubstitutionSpans } from '../redact-path/substitution-spans.js';
 import { SPELLED_SECRET_REFERENCE_PREFIXES } from '../anchors.js';
 import { wholeStringLeavesOf } from '../mask-only.js';
 import {
@@ -382,17 +393,28 @@ export function recordNestedStackParameterExpressions(
   // --recursive` -- binding the literal -- never renders.
   for (const [name, resolvedValue] of Object.entries(resolvedParameters)) {
     const sourceLeaf = sourceParameters[name];
-    if (typeof resolvedValue !== 'string' || typeof sourceLeaf !== 'string') continue;
-    if (isSingleDynamicReferenceToken(sourceLeaf) || positioned[name] !== sourceLeaf) continue;
-    if (!rendersLiteralTo(sourceLeaf, secrets, resolvedValue)) continue;
+    if (typeof resolvedValue !== 'string') continue;
+    // go-to-k/cdkd#7050: an INTRINSIC source whose tokens the resolver's own
+    // record places (`positionBySubstitutionSpans`) is a rendered spelling
+    // too, so the child's `{Ref}` leaf persists it rather than the value
+    // scan's answer, which misses a sub-floor secret beside a parameter.
+    const spelling =
+      typeof sourceLeaf === 'string'
+        ? !isSingleDynamicReferenceToken(sourceLeaf) && positioned[name] === sourceLeaf
+          ? sourceLeaf
+          : undefined
+        : provenance === 'template-derived'
+          ? substitutionSpelling(resolvedValue, sourceLeaf, secrets)
+          : undefined;
+    if (spelling === undefined || !rendersLiteralTo(spelling, secrets, resolvedValue)) continue;
     let rendered = renderedParameterSpellings.get(secrets);
     if (rendered === undefined) {
       rendered = new Map();
       renderedParameterSpellings.set(secrets, rendered);
     }
     const previous = rendered.get(name);
-    if (previous === undefined) rendered.set(name, { spelling: sourceLeaf, value: resolvedValue });
-    else if (previous?.spelling !== sourceLeaf || previous.value !== resolvedValue) {
+    if (previous === undefined) rendered.set(name, { spelling, value: resolvedValue });
+    else if (previous?.spelling !== spelling || previous.value !== resolvedValue) {
       rendered.set(name, null);
     }
   }
@@ -853,4 +875,26 @@ export function recordNestedStackParameterExpressions(
     }
     storeAssociation(table, name, expression, plaintext);
   }
+}
+
+/**
+ * The spelling the substitution-span arm persists for an intrinsic parameter
+ * source (go-to-k/cdkd#7050), when it positions one: never the mask, never
+ * the value itself.
+ */
+function substitutionSpelling(
+  resolvedValue: string,
+  sourceLeaf: unknown,
+  secrets: RecordedSecretValues
+): string | undefined {
+  const spelled = positionBySubstitutionSpans(
+    resolvedValue,
+    sourceLeaf,
+    secrets,
+    TEMPLATE_DERIVED_RULES,
+    (text) => redactForState(text, { provenance: 'value-scan', secrets })
+  );
+  return spelled === undefined || spelled === SECRET_MASK || spelled === resolvedValue
+    ? undefined
+    : spelled;
 }

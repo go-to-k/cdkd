@@ -26,6 +26,7 @@ import {
 import { hasPlainPrototype } from './redact-path/json-equality.js';
 import { isSourcePlainLiteral, rerenderedSourceLiteral } from './redact-path/template-literal.js';
 import { positionByLiteralRendering } from './redact-path/literal-rendering.js';
+import { positionBySubstitutionSpans } from './redact-path/substitution-spans.js';
 
 export { sourceElementsKeptFor, arrayPairsWhateverDrops } from './redact-path/array-drop.js';
 export {
@@ -272,9 +273,14 @@ export function redactByPath(
     // kept as resolved only where no recorded secret sits in them. A gap that
     // holds one refuses, leaving the leaf to the arms below, which exist for
     // exactly those parts.
-    const rendered = positionByLiteralRendering(bag, source, secrets, rules, (text) =>
-      redactForState(text, { provenance: 'value-scan', secrets })
-    );
+    const valueScan = (text: string): unknown =>
+      redactForState(text, { provenance: 'value-scan', secrets });
+    // Every SECRET token at the span the resolver substituted it
+    // (go-to-k/cdkd#7050): its plaintext never stays, whatever its length or
+    // whatever else in the leaf spells the same text.
+    const substituted = positionBySubstitutionSpans(bag, source, secrets, rules, valueScan);
+    if (substituted !== undefined) return substituted;
+    const rendered = positionByLiteralRendering(bag, source, secrets, rules, valueScan);
     if (rendered !== undefined) return rendered;
     const certified = positionByCrossStackSource(bag, source, secrets);
     if (certified !== undefined) return certified;
