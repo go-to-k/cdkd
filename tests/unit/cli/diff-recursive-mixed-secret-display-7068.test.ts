@@ -319,11 +319,13 @@ describe('cdkd diff: a nested row parameter mixing a secret reference (#7068)', 
       });
     }
 
-    it(`never prints "${sep}" on the parent row, non-recursive`, async () => {
-      const root = await diff(sep, '***', false);
+    for (const old of ['***', `${sep}/${sep}`]) {
+    it(`never prints "${sep}" on the parent row, non-recursive (stored ${old === '***' ? 'masked' : 'legacy plaintext'})`, async () => {
+      const root = await diff(sep, old, false);
       expect(root.changes.get('Child')?.changeType).toBe('UPDATE');
       const printed = everythingPrinted(root);
       expect(printed.includes(sep), printed).toBe(false);
     });
+    }
   }
 });

@@ -130,14 +130,15 @@ function maskedSides(change: PropertyChange): PropertyChange {
   return masked;
 }
 
-/** A `Parameters` side with the flagged keys masked; the whole side when it is no plain object. */
-function maskParameterKeys(side: unknown, flagged: (key: string) => boolean): unknown {
-  if (side === undefined || side === SECRET_MASK) return side;
-  if (!isRecord(side)) return holdsMixedDynamicReference(side) ? SECRET_MASK : side;
+/** A `Parameters` side with the flagged keys masked. */
+function maskParameterKeys(
+  side: Record<string, unknown>,
+  flagged: ReadonlySet<string>
+): Record<string, unknown> {
   let changed = false;
   const shown: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(side)) {
-    if (value !== SECRET_MASK && (flagged(key) || holdsMixedDynamicReference(value))) {
+    if (value !== SECRET_MASK && flagged.has(key)) {
       shown[key] = SECRET_MASK;
       changed = true;
     } else {
@@ -147,27 +148,52 @@ function maskParameterKeys(side: unknown, flagged: (key: string) => boolean): un
   return changed ? shown : side;
 }
 
-/** A nested-stack row's `Parameters` change with its mixed-secret keys masked. */
+const SIDES = ['oldValue', 'newValue', 'newValueTemplate'] as const;
+
+/**
+ * A nested-stack row's `Parameters` change with its mixed-secret keys masked
+ * on EVERY side: a key is flagged when any side holds a mixed value there (a
+ * legacy record's old side may hold the plaintext with no reference left),
+ * the child walk flagged it, or its template value reads a tainted name.
+ */
 function maskRowParameters(
   change: PropertyChange,
   templateValue: unknown,
   rowKeys: ReadonlySet<string> | undefined,
   tainted: ReadonlySet<string>
 ): PropertyChange {
-  // A `Parameters` that is itself an intrinsic over a tainted name: whole.
-  if (templateValue !== undefined && !isRecord(templateValue)) {
-    if (readsTainted(templateValue, tainted)) return maskedSides(change);
+  const present = SIDES.filter(
+    (side) => Object.prototype.hasOwnProperty.call(change, side) && change[side] !== undefined
+  );
+  // A `Parameters` that is itself an intrinsic over a tainted name, or a side
+  // that is no plain object and holds a mixed value: every side whole.
+  if (
+    (templateValue !== undefined &&
+      !isRecord(templateValue) &&
+      readsTainted(templateValue, tainted)) ||
+    present.some((side) => !isRecord(change[side]) && holdsMixedDynamicReference(change[side]))
+  ) {
+    return maskedSides(change);
   }
   const raw = recordOf(templateValue);
-  const flagged = (key: string): boolean =>
-    rowKeys?.has(key) === true || (Object.hasOwn(raw, key) && readsTainted(raw[key], tainted));
+  const flagged = new Set<string>(rowKeys ?? []);
+  for (const [key, value] of Object.entries(raw)) {
+    if (readsTainted(value, tainted)) flagged.add(key);
+  }
+  for (const side of present) {
+    for (const [key, value] of Object.entries(recordOf(change[side]))) {
+      if (holdsMixedDynamicReference(value)) flagged.add(key);
+    }
+  }
+  if (flagged.size === 0) return change;
   const next: PropertyChange = { ...change };
   let changed = false;
-  for (const side of ['oldValue', 'newValue', 'newValueTemplate'] as const) {
-    if (!Object.prototype.hasOwnProperty.call(change, side)) continue;
-    const value = maskParameterKeys(change[side], flagged);
-    if (value !== change[side]) {
-      next[side] = value;
+  for (const side of present) {
+    const value = change[side];
+    if (!isRecord(value)) continue;
+    const shown = maskParameterKeys(value, flagged);
+    if (shown !== value) {
+      next[side] = shown;
       changed = true;
     }
   }
