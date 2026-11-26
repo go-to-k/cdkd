@@ -121,6 +121,13 @@
 # naming AvailabilityZone, leaving the instance (DbiResourceId, zone) and its
 # record unchanged. No later phase sets the variable.
 #
+# go-to-k/cdkd#7057 (a zone-less record): phase 2c-az-legacy, after 2c-pi,
+# strips AvailabilityZone from the BackfillInstance record and its drift
+# baseline (a record written before #5640). Under the phase-2c variables
+# `cdkd diff` must show no AvailabilityZone change, the deploy must succeed with
+# no replacement (same DbiResourceId and zone), and the record must hold the
+# zone again afterwards.
+#
 # go-to-k/cdkd#7052 (a Performance Insights key the diff cannot resolve yet):
 # the instance's PerformanceInsightsKMSKeyId is the stack's PiKeyA from phase
 # 1 on (asserted live). Phase 2c-pi (CDKD_TEST_PI_KEY_NEW=true) moves it to
@@ -1151,6 +1158,77 @@ if [ "${PI_KEY_B_RECORDS}" != "0" ]; then
   exit 1
 fi
 echo "    OK: phase 2c-pi: refused; the instance, its key and its record are unchanged, and PiKeyB was rolled back (go-to-k/cdkd#7052)"
+
+# --- Phase 2c-az-legacy: a zone-less pre-#5640 record (go-to-k/cdkd#7057) -----
+# A record written before #5640 while --prefer-sdk-route kept AvailabilityZone
+# out of it holds no zone where the template declares one. Since #7044 that read
+# as a zone added: cdkd diff showed a replacement and every deploy refused it.
+# The zone is stripped from the record and from its drift baseline (so the live
+# DescribeDBInstances read is the path exercised, not the baseline shortcut);
+# the unchanged phase-2c template must then diff with no AvailabilityZone row
+# and deploy with no replacement, and the deploy's save records the zone again.
+# It runs after the refused 2c-az / 2c-pi phases under the phase-2c variables
+# alone (each refused phase deployed nothing, so no mode token is dropped).
+echo "==> Phase 2c-az-legacy: the record's AvailabilityZone stripped (a pre-#5640 record): no replacement, and the record heals (go-to-k/cdkd#7057)"
+LEGACY_DB_RESOURCE_ID=$(aws rds describe-db-instances --db-instance-identifier "${DB_INSTANCE_ID}" \
+  --region "${REGION}" --query 'DBInstances[0].DbiResourceId' --output text)
+if [ -z "${LEGACY_DB_RESOURCE_ID}" ] || [ "${LEGACY_DB_RESOURCE_ID}" = "None" ]; then
+  echo "FAIL: phase 2c-az-legacy premise: no DbiResourceId for ${DB_INSTANCE_ID}" >&2
+  exit 1
+fi
+LEGACY_STATE_FILE="$(mktemp)"
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null |
+  jq '([.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBInstance" and (.key | test("^BackfillInstance"))) | .key] | first) as $k
+      | .resources[$k].properties |= del(.AvailabilityZone)
+      | .resources[$k].observedProperties |= (if . == null then null else del(.AvailabilityZone) end)' \
+  >"${LEGACY_STATE_FILE}"
+LEGACY_LEFT=$(jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBInstance" and (.key | test("^BackfillInstance"))) | (.value.properties.AvailabilityZone // empty), (.value.observedProperties.AvailabilityZone // empty)] | length' "${LEGACY_STATE_FILE}")
+if [ "${LEGACY_LEFT}" != "0" ] || [ "$(jq -r '.resources | length' "${LEGACY_STATE_FILE}")" -lt 2 ]; then
+  echo "FAIL: phase 2c-az-legacy premise: the doctored record still holds ${LEGACY_LEFT} zone value(s), or the state lost its resources" >&2
+  exit 1
+fi
+aws s3 cp "${LEGACY_STATE_FILE}" "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null
+rm -f "${LEGACY_STATE_FILE}"
+set +e
+LEGACY_DIFF_OUT=$(CDKD_TEST_UPDATE=true CDKD_TEST_PARAM_GROUP=b CDKD_TEST_LOGS_REMOVED=true \
+  node "${LOCAL_DIST}" diff "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+  --fail-on=destructive </dev/null 2>&1)
+LEGACY_DIFF_RC=$?
+set -e
+LEGACY_DIFF_TXT=$(printf '%s' "${LEGACY_DIFF_OUT}" | sed $'s/\033\[[0-9;]*m//g')
+if [ "${LEGACY_DIFF_RC}" -ne 0 ] || grep -q -- "- AvailabilityZone:" <<<"${LEGACY_DIFF_TXT}" ||
+  grep -qE "BackfillInstance[A-Za-z0-9]* will be replaced" <<<"${LEGACY_DIFF_TXT}"; then
+  echo "FAIL: phase 2c-az-legacy: cdkd diff (rc=${LEGACY_DIFF_RC}) shows an AvailabilityZone change or a replacement for a zone-less record whose instance runs in the declared zone (go-to-k/cdkd#7057)" >&2
+  echo "${LEGACY_DIFF_TXT}" >&2
+  exit 1
+fi
+echo "    OK: phase 2c-az-legacy: cdkd diff shows no AvailabilityZone change and --fail-on=destructive exits 0"
+LEGACY_DEPLOY_LOG="$(mktemp)"
+set +e
+CDKD_TEST_UPDATE=true CDKD_TEST_PARAM_GROUP=b CDKD_TEST_LOGS_REMOVED=true \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes \
+  >"${LEGACY_DEPLOY_LOG}" 2>&1
+LEGACY_DEPLOY_RC=$?
+set -e
+if [ "${LEGACY_DEPLOY_RC}" -ne 0 ] || grep -qF "but it is a stateful resource" "${LEGACY_DEPLOY_LOG}"; then
+  echo "FAIL: phase 2c-az-legacy: the deploy of a zone-less record exited ${LEGACY_DEPLOY_RC} (or hit the stateful refusal); expected no change (go-to-k/cdkd#7057)" >&2
+  tail -n 60 "${LEGACY_DEPLOY_LOG}" >&2
+  exit 1
+fi
+rm -f "${LEGACY_DEPLOY_LOG}"
+INSTANCE=$(aws rds describe-db-instances \
+  --db-instance-identifier "${DB_INSTANCE_ID}" \
+  --region "${REGION}" \
+  --query 'DBInstances[0]' --output json)
+assert_instance_field '.DbiResourceId' "${LEGACY_DB_RESOURCE_ID}" 'the zone-less record kept the same instance (go-to-k/cdkd#7057)' 'phase 2c-az-legacy'
+assert_instance_field '.AvailabilityZone' "${EXPECTED_AZ}" 'the zone-less record left the zone as it was (go-to-k/cdkd#7057)' 'phase 2c-az-legacy'
+LEGACY_RECORDED=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null |
+  jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBInstance" and (.key | test("^BackfillInstance"))) | .value.properties.AvailabilityZone // empty] | first // ""')
+if [ "${LEGACY_RECORDED}" != "${EXPECTED_AZ}" ]; then
+  echo "FAIL: phase 2c-az-legacy: the record's AvailabilityZone is '${LEGACY_RECORDED}' after the deploy, want ${EXPECTED_AZ} (the heal was not saved, go-to-k/cdkd#7057)" >&2
+  exit 1
+fi
+echo "    OK: phase 2c-az-legacy: no replacement, same instance and zone, and the record holds ${EXPECTED_AZ} again (go-to-k/cdkd#7057)"
 
 # --- Phase 2d: two read replicas (go-to-k/cdkd#5640) --------------------------
 # SourceDBInstanceIdentifier, named by ARN as CDK's DatabaseInstanceReadReplica
