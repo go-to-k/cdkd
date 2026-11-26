@@ -4,6 +4,10 @@ import { healZonelessDbInstanceRecords } from '../../zoneless-db-instance-heal.j
 import { readDbInstanceAvailabilityZone } from '../../../provisioning/providers/rds/live-zone.js';
 import { freshNoEchoParametersWithDeclared, noEchoDiffComparison } from '../noecho.js';
 import { diffLogMasker, redactParametersForDiff } from '../masking.js';
+import {
+  deployCalculatorMaskingSubFloorLines,
+  subFloorDisplayTainted,
+} from '../sub-floor-display.js';
 import { makeCanonicalizePropertiesFn } from '../../../provisioning/canonicalize-properties.js';
 import { recreateTargetIdsFor } from '../../recreate-target-promotion.js';
 import { replaceResourceIdsFor } from '../../replace-resource-targets.js';
@@ -47,6 +51,7 @@ export async function calculateDeployDiff(
   // reference where the template spells plain text is compared as that text
   // when the secret proves it, so no plan reader acts on a change that is not.
   await healLegacyLiteralSpellings(engine, currentState, effectiveTemplate);
+  const diffParameters = redactParametersForDiff(engine.maskingDeps(), parameterValues);
   // Pass a best-effort resolver so that changes hidden inside intrinsics (e.g.
   // `Fn::Join` literal args like "-value" -> "-value2") are detected against
   // the already-resolved values stored in state.
@@ -61,7 +66,7 @@ export async function calculateDeployDiff(
       // so does the condition evaluation above, where substituting an
       // expression would flip an `Fn::Equals` over a parameter. See
       // `redactParametersForDiff`.
-      parameters: redactParametersForDiff(engine.maskingDeps(), parameterValues),
+      parameters: diffParameters,
       conditions,
     },
     stackName
@@ -130,7 +135,15 @@ export async function calculateDeployDiff(
     ]),
   };
   clock.lap('journal, parameters, conditions, DAG build');
-  const changes = await engine.diffCalculator.calculateDiff(
+  // go-to-k/cdkd#7050: a value read from a sub-floor-marked parameter the
+  // diff side keeps (`subFloorDisplayTainted`) is masked on the `--verbose`
+  // replacement line. Display only: the comparison runs on that value.
+  const diffCalculator = deployCalculatorMaskingSubFloorLines(
+    engine.diffCalculator,
+    effectiveTemplate,
+    subFloorDisplayTainted(effectiveTemplate, diffParameters, engine.options.inheritedSecrets)
+  );
+  const changes = await diffCalculator.calculateDiff(
     currentState,
     effectiveTemplate,
     diffResolveFn,

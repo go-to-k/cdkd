@@ -1,4 +1,6 @@
-import { diffLogMasker } from '../masking.js';
+import { diffLogMasker, redactParametersForDiff } from '../masking.js';
+import { subFloorDisplayTainted } from '../sub-floor-display.js';
+import { securityDiffWithPassedSecretWithheld } from '../../../cli/commands/diff-recursive/passed-secret-display.js';
 import { getAccountInfo } from '../../intrinsic-function-resolver.js';
 import { GeneratedNameGuard, type GeneratedNameGuardInput } from '../../generated-name-guard.js';
 import { withStackScope } from '../../../provisioning/resource-name.js';
@@ -175,6 +177,19 @@ export async function prepareChangeExecution(
         effectiveTemplate,
         parameterValues,
         currentState.resources
+      ),
+    // go-to-k/cdkd#7050: withheld when it prints a value read from a
+    // sub-floor-marked parameter the diff side keeps (`subFloorDisplayTainted`).
+    securityShown: (compute, asked) =>
+      securityDiffWithPassedSecretWithheld(
+        compute,
+        new Map(asked.map((change) => [change.logicalId, change])),
+        effectiveTemplate,
+        subFloorDisplayTainted(
+          effectiveTemplate,
+          redactParametersForDiff(engine.maskingDeps(), parameterValues),
+          engine.options.inheritedSecrets
+        )
       ),
   });
   // go-to-k/cdkd#4705: the prompt may have waited; the lookups made before
