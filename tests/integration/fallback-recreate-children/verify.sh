@@ -98,6 +98,7 @@ cleanup() {
     [ -n "${g}" ] && aws logs delete-log-group --log-group-name "${g}" --region "${REGION}" >/dev/null 2>&1
   done <"${GEN_IDS_FILE}"
   aws ssm delete-parameter --name "${GEN_PARAM}" --region "${REGION}" >/dev/null 2>&1 || true
+  rm -f "${GEN_IDS_FILE}"
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/rollback-journal.json" >/dev/null 2>&1 || true

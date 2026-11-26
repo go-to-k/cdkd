@@ -1,4 +1,5 @@
 import { DiffCalculator } from '../../../analyzer/diff-calculator.js';
+import { dropSupersededProviderReplacements } from '../../../analyzer/diff-calculator/provider-replacement.js';
 import { TemplateParser } from '../../../analyzer/template-parser.js';
 import type { ResourceChange } from '../../../types/state.js';
 import { safeMsg } from '../../../utils/display-safe.js';
@@ -84,7 +85,6 @@ export async function enqueueReadersOfFallbackReplacement(
     if (change !== undefined) readers.set(id, change);
   }
   const scope = new Map<string, ResourceChange>([[replacedId, replaced], ...readers]);
-  const before = new Map([...readers].map(([id, change]) => [id, change.changeType]));
   const forced: ReadonlySet<string> = new Set([replacedId]);
 
   const syntheticCreateOnlyPaths = await diff.loadSyntheticCreateOnlyPaths(
@@ -94,6 +94,10 @@ export async function enqueueReadersOfFallbackReplacement(
     undefined,
     forced
   );
+  // Taken after the await, with the passes below in the same synchronous
+  // stretch: another completion running meanwhile (a second fallback, a lost
+  // child) may have promoted a shared reader, which is then not added twice.
+  const before = new Map([...readers].map(([id, change]) => [id, change.changeType]));
   // The in-place attribute pass reads the replaced row's own (in-place)
   // property changes as an in-place upstream; the replacement pass already
   // promoted every reader of it, so the pass sees only its readers.
@@ -107,6 +111,9 @@ export async function enqueueReadersOfFallbackReplacement(
       syntheticCreateOnlyPaths
     )
   );
+  // As the diff does after its passes: a resource replaced anyway carries no
+  // provider-replacement mark.
+  dropSupersededProviderReplacements(readers);
 
   const promoted: string[] = [];
   for (const [id, change] of readers) {

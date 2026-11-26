@@ -16,6 +16,8 @@ import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../../src/types/state.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
+import { getLogger } from '../../../src/utils/logger.js';
+import { ccUpdateUnsupportedRejection } from '../_cc-unsupported-action.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
@@ -160,7 +162,10 @@ describe('DeployEngine - NO_CHANGE readers of a fallback replacement under a new
     };
   });
 
-  function makeEngine(options: Record<string, unknown> = {}): DeployEngine {
+  function makeEngine(
+    options: Record<string, unknown> = {},
+    diffCalculator: DiffCalculator = new DiffCalculator()
+  ): DeployEngine {
     return new DeployEngine(
       stateBackend as never,
       {
@@ -168,7 +173,7 @@ describe('DeployEngine - NO_CHANGE readers of a fallback replacement under a new
         releaseLock: vi.fn().mockResolvedValue(undefined),
       } as never,
       new DagBuilder(),
-      new DiffCalculator(),
+      diffCalculator,
       {
         getProvider: vi.fn().mockReturnValue(sdk),
         getProviderFor: vi.fn().mockReturnValue({ provider: sdk, provisionedBy: 'sdk' }),
@@ -371,6 +376,183 @@ describe('DeployEngine - NO_CHANGE readers of a fallback replacement under a new
     expect((sentProps(sdk.create, 'NamedParam', 2) as Record<string, unknown>)['Name']).toBe(
       `${NEW_ID}-cfg`
     );
+  });
+
+  const stateWith = (extra: Record<string, ResourceState>): void => {
+    const state = priorState();
+    Object.assign(state.resources, extra);
+    stateBackend['getState']!.mockResolvedValue({ state, etag: 'etag-old' });
+  };
+  const paramRecord = (physicalId: string, props: Record<string, unknown>, deps: string[]) =>
+    ({
+      physicalId,
+      resourceType: PARAM_TYPE,
+      properties: props,
+      observedProperties: props,
+      attributes: {},
+      dependencies: deps,
+      provisionedBy: 'sdk',
+    }) as ResourceState;
+  const errorCodes = (error: unknown): unknown[] => {
+    const codes: unknown[] = [];
+    for (let e = error; e instanceof Error; e = e.cause) codes.push((e as { code?: unknown }).code);
+    return codes;
+  };
+
+  it("moves the readers on Cloud Control's no-flag fallback too (UnsupportedActionException)", async () => {
+    sdk.update.mockImplementation((logicalId: string, physicalId: string) =>
+      logicalId === 'Fn'
+        ? Promise.reject(ccUpdateUnsupportedRejection(FN_TYPE, 'Fn', OLD_ID))
+        : Promise.resolve({ physicalId, wasReplaced: false })
+    );
+    await makeEngine({ replace: false }).deploy(STACK, template('nodejs24.x'));
+
+    expect(saved('Fn')?.physicalId).toBe(NEW_ID);
+    expect(saved('RefParam')?.properties?.['Value']).toBe(NEW_ID);
+    expect(saved('AttParam')?.properties?.['Value']).toBe(arnOf(NEW_ID));
+    expect(saved('Perm')?.properties?.['FunctionName']).toBe(NEW_ID);
+  });
+
+  it('moves the readers to the new resource under UpdateReplacePolicy: Retain, keeping the old one', async () => {
+    const t = template('nodejs24.x');
+    t.Resources['Fn']!.UpdateReplacePolicy = 'Retain';
+    await makeEngine().deploy(STACK, t);
+
+    expect(callsFor(sdk.delete, 'Fn')).toHaveLength(0);
+    expect(saved('Fn')?.physicalId).toBe(NEW_ID);
+    expect(saved('RefParam')?.properties?.['Value']).toBe(NEW_ID);
+    expect(saved('Perm')?.properties?.['FunctionName']).toBe(NEW_ID);
+  });
+
+  it('refuses a stateful reader replaced transitively (behind a replaced permission)', async () => {
+    const t = template('nodejs24.x');
+    t.Resources['PermNamed'] = {
+      Type: PARAM_TYPE,
+      Properties: {
+        Name: { 'Fn::Join': ['-', [{ Ref: 'Perm' }, 'cfg']] },
+        Type: 'String',
+        Value: 'v',
+      },
+    };
+    stateWith({
+      PermNamed: paramRecord(
+        'stack-Perm-OLD-cfg',
+        { Name: 'stack-Perm-OLD-cfg', Type: 'String', Value: 'v' },
+        ['Perm']
+      ),
+    });
+
+    const error = await makeEngine()
+      .deploy(STACK, t)
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    expect(errorCodes(error)).toContain('STATEFUL_REPLACE_BLOCKED');
+    expect(callsFor(sdk.create, 'PermNamed')).toHaveLength(0);
+    expect(callsFor(sdk.delete, 'PermNamed')).toHaveLength(0);
+  });
+
+  it('journals a promoted reader, so a later failure reverts it', async () => {
+    // `Sib` reads the promoted parameter, changes on its own, and fails.
+    const t = template('nodejs24.x');
+    t.Resources['Sib'] = {
+      Type: PARAM_TYPE,
+      Properties: {
+        Name: 'sib',
+        Type: 'String',
+        Value: { 'Fn::Join': ['', [{ Ref: 'RefParam' }, '-v2']] },
+      },
+    };
+    stateWith({
+      Sib: paramRecord('sib', { Name: 'sib', Type: 'String', Value: 'ref-v1' }, ['RefParam']),
+    });
+    sdk.update.mockImplementation((logicalId: string, physicalId: string) =>
+      logicalId === 'Fn'
+        ? Promise.reject(new ResourceUpdateNotSupportedError(FN_TYPE, 'Fn', 'Runtime cannot change'))
+        : logicalId === 'Sib'
+          ? Promise.reject(new Error('sib failed'))
+          : Promise.resolve({ physicalId, wasReplaced: false })
+    );
+
+    await expect(makeEngine().deploy(STACK, t)).rejects.toThrow();
+
+    const refUpdates = callsFor(sdk.update, 'RefParam');
+    expect(refUpdates).toHaveLength(2);
+    expect((refUpdates[0]![3] as Record<string, unknown>)['Value']).toBe(NEW_ID);
+    // The rollback's revert sends the recorded value back.
+    expect((refUpdates[1]![3] as Record<string, unknown>)['Value']).toBe(OLD_ID);
+  });
+
+  it('adds a reader two fallback replacements share once', async () => {
+    const t = template('nodejs24.x');
+    t.Resources['Fn2'] = { Type: FN_TYPE, Properties: { Runtime: 'nodejs24.x' } };
+    t.Resources['Both'] = {
+      Type: PARAM_TYPE,
+      Properties: {
+        Name: 'both',
+        Type: 'String',
+        Value: { 'Fn::Join': [',', [{ Ref: 'Fn' }, { Ref: 'Fn2' }]] },
+      },
+    };
+    stateWith({
+      Fn2: {
+        physicalId: 'stack-Fn2-OLD',
+        resourceType: FN_TYPE,
+        properties: FN_PROPS,
+        observedProperties: FN_PROPS,
+        attributes: {},
+        dependencies: [],
+        provisionedBy: 'sdk',
+      } as ResourceState,
+      Both: paramRecord(
+        'both',
+        { Name: 'both', Type: 'String', Value: `${OLD_ID},stack-Fn2-OLD` },
+        ['Fn', 'Fn2']
+      ),
+    });
+    sdk.update.mockImplementation((logicalId: string, physicalId: string) =>
+      logicalId === 'Fn' || logicalId === 'Fn2'
+        ? Promise.reject(new ResourceUpdateNotSupportedError(FN_TYPE, logicalId, 'Runtime cannot change'))
+        : Promise.resolve({ physicalId, wasReplaced: false })
+    );
+    sdk.create.mockImplementation((logicalId: string) =>
+      Promise.resolve(
+        logicalId === 'Fn'
+          ? { physicalId: NEW_ID, attributes: { Arn: arnOf(NEW_ID) } }
+          : { physicalId: `stack-${logicalId}-NEW`, attributes: {} }
+      )
+    );
+
+    // The first fallback completion's create-only load waits until the second
+    // completion has promoted the shared reader (a bounded wait, should the
+    // two never overlap): the overlap a real DescribeType makes possible.
+    const diff = new DiffCalculator();
+    const load = diff.loadSyntheticCreateOnlyPaths.bind(diff);
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+      setTimeout(resolve, 500);
+    });
+    let loads = 0;
+    vi.spyOn(diff, 'loadSyntheticCreateOnlyPaths').mockImplementation(async (...args) => {
+      const nth = ++loads;
+      const result = await load(...args);
+      // The first load is the plan's own.
+      if (nth === 2) await gate;
+      else if (nth === 3) release();
+      return result;
+    });
+
+    await makeEngine({}, diff).deploy(STACK, t);
+
+    expect(loads).toBe(3);
+    expect(callsFor(sdk.update, 'Both')).toHaveLength(1);
+    expect(saved('Both')?.properties?.['Value']).toBe(`${NEW_ID},stack-Fn2-NEW`);
+    const promotedLines = (getLogger().info as ReturnType<typeof vi.fn>).mock.calls.filter((c) =>
+      String(c[0]).includes('Both reads')
+    );
+    expect(promotedLines).toHaveLength(1);
   });
 
   it('promotes nothing without --replace (no fallback replacement ran)', async () => {
