@@ -240,6 +240,8 @@ never substitute for it** (#2383) — they are its children and
 inherit its premise. The parent runs its round once the lane's push
 is CI-green, ONCE, on the final sha — brief each reviewer with the maintainer's
 design answers and "what does this break that CFn or the CDK CLI accepts?" (a
+recurrence of a closed issue adds "can a THIRD instance of the class land?",
+`implement.md` §5-b, #7037; a
 redaction slice adds: "sweep every helper that returns or mutates the ORIGINAL
 SDK error after the try — created-before-failure cleanup, orphan notes, retire
 paths", #5161; a state machine adds the table to walk: path × previous side ×

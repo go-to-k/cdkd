@@ -76,6 +76,26 @@ done                                                               # RIGHT
   A masking fix's population is every SINK the value reaches, each `warn` that
   names the error CLASS included (a test puts the secret IN the class), and the
   lane prompt NAMES each one (#5248).
+- **A RECURRENCE closes the CLASS, not a second instance** — the issue names
+  `recurrence of #N`, or `gh issue list --state all --search '<root-cause
+  concept>'` finds a closed one (`filing.md`). Both instances share a mechanism
+  (e.g. a match by VALUE that ignores where the value came from), so a fix
+  keyed on this instance's shape leaves the third open. The PR owes three
+  things, named in its body:
+  1. **The mechanism changed**, so the class cannot occur: decide on the
+     property that separates the cases (provenance, not value), not on a
+     list of known bad inputs.
+  2. **Both comparison sides normalized** wherever an artifact of the
+     mechanism could still surface (a diff, a drift compare, a preflight),
+     through ONE shared helper.
+  3. **A generated invariant test over the class's input space**, in its own
+     file, never the two known instances alone: e.g. short secret values ×
+     literal positions → scrub, then diff, assert `NO_CHANGE` and no
+     plaintext. Break the mechanism and it must fail on cases neither
+     instance covered.
+
+  The parent's review brief asks "can a THIRD instance land?" (`verify.md`
+  §8-i).
 - A defect this lane is NOT fixing gets FILED (`filing.md`, §5-f) — a PR-body
   "residual" or "not acted on" note is not filing: once merged it is never
   read again (#6871).

@@ -116,6 +116,11 @@ unreached ones stood down with a four-field comment.
   Taking a `next`, the claim says why it no longer applies ("an integ run" is
   no reason).
 
+**A candidate whose root cause a CLOSED issue already fixed is a RECURRENCE**
+(`gh issue list --state all --search '<root-cause concept>'`). Return that
+issue number in the table, and brief the lane with `implement.md` §5-b's class
+closure; never brief it as a second instance (#7037 of #6303).
+
 **Resolve every premise against the tree at CLAIM time**, the issue's OWN
 record included (its comments; a body's "conditional on #N": read N's `state`;
 an umbrella's row ticks lag its claim-release comments — `ship.md`'s "Release
