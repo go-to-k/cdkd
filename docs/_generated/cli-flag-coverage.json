@@ -3442,7 +3442,6 @@
     "--location-arn",
     "--location-type",
     "--lock-token",
-    "--log-config",
     "--log-delivery-configurations",
     "--log-events",
     "--log-group-identifier",

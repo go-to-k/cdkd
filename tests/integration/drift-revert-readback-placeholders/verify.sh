@@ -18,12 +18,14 @@
 #      live name and descriptions are the template's again, and the job keeps
 #      its workers.
 #   6. `cdkd drift` exits 0.
-#   7. Out of band: turn the API's logging on (`ALL`, the fixture's LogsRole)
-#      and set the job's ExecutionClass to FLEX: members the baselines hold
-#      as placeholders.
-#   8. `cdkd drift` exits 1; `cdkd drift --revert -y` exits 0; the API's
-#      logging is NONE and the job is not FLEX.
-#   9. `cdkd drift` exits 0: a NONE level beside its role reads as no logging.
+#   7. Out of band: set the job's ExecutionClass to FLEX, a member its
+#      baseline holds as a placeholder (AWS also lowers its Timeout to 120).
+#   8. `cdkd drift` exits 1; `cdkd drift --revert -y` exits 0; the job is no
+#      longer FLEX and its Timeout is 2880 again.
+#   9. `cdkd drift` exits 0.
+# (The API's logging is not in this arm: a LogConfig the template does not
+# declare is not compared, as in CloudFormation, so turning it on out of band
+# is not drift.)
 #  10. Destroy + gone-probes.
 #
 # Required env vars:
@@ -98,11 +100,6 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/rollback-journal.json" >/dev/null 2>&1
   fi
   sweep_stack_lambda_log_groups "${STACK}" "${REGION}"
-  # Phase 7 turns the API's logging on: AppSync may create its log group.
-  case "${API_ID:-}" in
-    [a-z0-9]????*) aws logs delete-log-group --region "${REGION}" \
-      --log-group-name "/aws/appsync/apis/${API_ID}" >/dev/null 2>&1 ;;
-  esac
   set -eu
 }
 
@@ -168,12 +165,10 @@ JOB="$(pid_of "${JOB_LID}")"
 TRIGGER="$(pid_of "${TRIGGER_LID}")"
 SCRIPTS="$(pid_of "$(logical_id_at "${STACK}/Scripts/Resource")")"
 GLUE_ROLE="$(pid_of "$(logical_id_at "${STACK}/GlueRole/Resource")")"
-LOGS_ROLE="$(pid_of "$(logical_id_at "${STACK}/LogsRole/Resource")")"
-if [ -z "${SCRIPTS}" ] || [ -z "${GLUE_ROLE}" ] || [ -z "${LOGS_ROLE}" ]; then
-  echo "FAIL: Phase 1: the state lacks the bucket or a role record" >&2
+if [ -z "${SCRIPTS}" ] || [ -z "${GLUE_ROLE}" ]; then
+  echo "FAIL: Phase 1: the state lacks the bucket or the role record" >&2
   exit 1
 fi
-LOGS_ROLE_ARN="$(aws iam get-role --role-name "${LOGS_ROLE}" --query Role.Arn --output text)"
 for id in "${API_ID_LID}" "${JOB_LID}" "${TRIGGER_LID}"; do
   if [ "$(jq -r --arg id "${id}" '.resources[$id].provisionedBy // empty' <<<"${STATE_JSON}")" != "sdk" ]; then
     echo "FAIL: premise: ${id} is not SDK provisioned" >&2
@@ -242,42 +237,37 @@ echo "==> Phase 6: cdkd drift is clean again"
 run_drift
 expect_drift_rc 0 "Phase 6"
 
-echo "==> Phase 7: turn the API's logging on and the job FLEX, out of band"
-aws appsync update-graphql-api --region "${REGION}" --api-id "${API_ID}" --name "${API_NAME}" \
-  --authentication-type API_KEY \
-  --log-config "cloudWatchLogsRoleArn=${LOGS_ROLE_ARN},fieldLogLevel=ALL" >/dev/null
+echo "==> Phase 7: set the job's ExecutionClass to FLEX, out of band"
 JOB_DEF="$(aws glue get-job --region "${REGION}" --job-name "${JOB}" --output json)"
 aws glue update-job --region "${REGION}" --job-name "${JOB}" --job-update "$(jq -c \
   '.Job | {Role, Command, Description, GlueVersion, WorkerType, NumberOfWorkers, ExecutionClass: "FLEX"}' <<<"${JOB_DEF}")" >/dev/null
 
-echo "==> Phase 8: cdkd drift reports both, and --revert takes them back off"
+echo "==> Phase 8: cdkd drift reports it, and --revert takes it back off"
 run_drift
 expect_drift_rc 1 "Phase 8 (drift)"
 # A `+ <path>` change line under each resource's block, and both blocks.
-for id in "${API_ID_LID} (AWS::AppSync::GraphQLApi)" "${JOB_LID} (AWS::Glue::Job)"; do
-  if ! grep -qF "${id}" "${DRIFT_LOG}"; then
-    echo "FAIL: Phase 8: no drift block for ${id} — the report wording drifted" >&2
-    exit 1
-  fi
-done
-for path in "LogConfig" "ExecutionClass"; do
+if ! grep -qF "${JOB_LID} (AWS::Glue::Job)" "${DRIFT_LOG}"; then
+  echo "FAIL: Phase 8: no drift block for ${JOB_LID} — the report wording drifted" >&2
+  exit 1
+fi
+for path in "ExecutionClass"; do
   if ! grep -qE "^ +\+ ${path}[.:]" "${DRIFT_LOG}"; then
     echo "FAIL: Phase 8: the drift report has no '+ ${path}' change line" >&2
     exit 1
   fi
 done
-revert_identity_snapshot "${REVERT_DIR}/revert-ids-2-before" "${STACK}" "${API_ID_LID}" "${JOB_LID}" || exit 1
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-2-before" "${STACK}" "${JOB_LID}" || exit 1
 run_drift --revert -y
-revert_identity_verify "${REVERT_DIR}/revert-ids-2-before" "${REVERT_DIR}/revert-ids-2-after" 2 "${DRIFT_LOG}" || exit 1
+revert_identity_verify "${REVERT_DIR}/revert-ids-2-before" "${REVERT_DIR}/revert-ids-2-after" 1 "${DRIFT_LOG}" || exit 1
 expect_drift_rc 0 "Phase 8 (revert)"
-expect_text "Phase 8" "API logging level" \
-  "$(aws appsync get-graphql-api --region "${REGION}" --api-id "${API_ID}" --query graphqlApi.logConfig.fieldLogLevel --output text)" "NONE"
 JOB_CLASS="$(aws glue get-job --region "${REGION}" --job-name "${JOB}" --query Job.ExecutionClass --output text)"
 if [ "${JOB_CLASS}" = "FLEX" ]; then
   echo "FAIL: Phase 8: the job is still FLEX after the revert" >&2
   exit 1
 fi
 echo "    ok: Phase 8: job execution class '${JOB_CLASS}'"
+expect_text "Phase 8" "job timeout" \
+  "$(aws glue get-job --region "${REGION}" --job-name "${JOB}" --query Job.Timeout --output text)" "2880"
 
 echo "==> Phase 9: cdkd drift is clean again"
 run_drift
@@ -290,7 +280,6 @@ assert_gone "job ${JOB} leaked" aws glue get-job --region "${REGION}" --job-name
 assert_gone "trigger ${TRIGGER} leaked" aws glue get-trigger --region "${REGION}" --name "${TRIGGER}"
 assert_gone "bucket ${SCRIPTS} leaked" aws s3api head-bucket --bucket "${SCRIPTS}"
 assert_gone "role ${GLUE_ROLE} leaked" aws iam get-role --role-name "${GLUE_ROLE}"
-assert_gone "role ${LOGS_ROLE} leaked" aws iam get-role --role-name "${LOGS_ROLE}"
 assert_gone "state ${STATE_KEY} leaked" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 
 trap - EXIT INT TERM
