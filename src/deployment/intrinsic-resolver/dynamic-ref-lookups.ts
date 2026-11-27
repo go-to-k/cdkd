@@ -126,11 +126,13 @@ export async function resolveSecretsManagerReference(
   // message reaches only the substring arm, where a sub-floor plaintext
   // prints in full. Same rule `masked-retry-logger.ts` states for a
   // provider's wrapped `error.message`.
-  const loggedSecretId = displayMasked(resolver, nameLogText(secretId), context);
-  const loggedJsonKey = displayMasked(resolver, nameLogText(jsonKey), context);
+  // go-to-k/cdkd#7105: through `logOperand`, so an id or key assembled from a
+  // sub-floor secret's piece prints `***` on the debug line and every throw.
+  const loggedSecretId = logOperand(resolver, nameLogText(secretId), context, { render: 'plain' });
+  const loggedJsonKey = logOperand(resolver, nameLogText(jsonKey), context, { render: 'plain' });
 
   resolver.logger.debug(
-    `Resolving dynamic reference: secretsmanager:${logOperand(resolver, secretId, context, { render: () => loggedSecretId })}:SecretString:${logOperand(resolver, jsonKey, context, { render: () => loggedJsonKey })}:` +
+    `Resolving dynamic reference: secretsmanager:${loggedSecretId}:SecretString:${loggedJsonKey}:` +
       `${logOperand(resolver, nameLogText(versionStage), context, { render: 'plain' })}:` +
       `${logOperand(resolver, nameLogText(versionId), context, { render: 'plain' })}`
   );
@@ -156,8 +158,11 @@ export async function resolveSecretsManagerReference(
       resolver,
       [
         [secretId, loggedSecretId],
-        [versionStage, displayMasked(resolver, nameLogText(versionStage), context)],
-        [versionId, displayMasked(resolver, nameLogText(versionId), context)],
+        [
+          versionStage,
+          logOperand(resolver, nameLogText(versionStage), context, { render: 'plain' }),
+        ],
+        [versionId, logOperand(resolver, nameLogText(versionId), context, { render: 'plain' })],
       ],
       context
     )

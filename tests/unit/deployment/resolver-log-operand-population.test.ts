@@ -28,7 +28,48 @@ const CONDITION = 'a condition name or verdict (a boolean, or a list of booleans
 const PRODUCER = "a producer stack or region an export index / state listing names, not this resolution's operand";
 const COUNT = 'a count, an attempt number or a duration';
 const ERROR = 'an error class, remedy or refusal text built from names, masked beside the operands';
+const REMEDY = 'a cdkd-authored remedy or refusal sentence built from names';
 const NOT_AN_OPERAND: Readonly<Record<string, string>> = {
+  // go-to-k/cdkd#7105: thrown refusal messages.
+  'get-azs.ts: masks.text(text)': "EC2 DescribeAvailabilityZones' failure text, with the request's region rewritten by its routed pair",
+  'account-drain.ts: error.message': 'an AccountIdUnavailableError re-thrown as itself (STS text, no operand)',
+  'getatt-heal.ts: error.message': "the account-id lookup's own refusal text (STS, no operand)",
+  "cdkCrossAccountRefRefusal({ consumer: displayStackName(consumer), output: displayIdent(outputName), producer: displayStackName(stackName), region: displayIdent(region), producerAccount: shape.accountId, roleName: displayIdent(shape.roleName), consumerAccount: consumerStack.account, reason, noLookupRole: verdict.kind === 'generated', })": 'an app-scan refusal over LITERAL template strings (typeof-string-gated raw args), before any resolution',
+  "cdkCrossAccountRefRefusal({ consumer: context.stackName ? logOperand(resolver, context.stackName, context, { render: (text) => displayMaskedIdent(resolver, text, context, STACK_REF_MAX_CODE_POINTS), }) : undefined, output: loggedOutputName, producer: loggedStackName, region: displayIdent(loggedRegion), producerAccount, roleName: displayIdent(ref.shape.roleName), consumerAccount: resolver.consumerAccount, reason, noLookupRole, })": 'its operand fields are the logOperand bindings above; the role name and accounts are literal RoleArn parts',
+  'accountIdUnavailableMessage(reason)': "STS's account-id failure, no operand",
+  'accountIdUnavailableMessage(`${reason}, and AWS_ACCOUNT_ID is not a 12-digit account id`)': "STS's account-id failure, no operand",
+  'boundAltered(targetRegion ?? loggedTarget, displaySafe(stripControlChars(loggedTarget)), 64)': 'the region a region-scoped client set targets, already masked by its caller',
+  'getatt-construct-compute.ts: resourceType': 'a resource TYPE',
+  'staleRecordRemedy(resolver, vpcIdHealOutcome, context)': REMEDY,
+  'displayMasked(resolver, resource.resourceType, context)': 'a resource TYPE',
+  'resource.resourceType': 'a resource TYPE',
+  'getatt-refusals.ts: defined': REMEDY,
+  'endpointTheEngineLacks(resource, attributeName)': REMEDY,
+  'getatt-refusals.ts: observed': 'a cdkd-authored sentence from an AWS state name or an error CLASS name',
+  'getatt-refusals.ts: remedy': REMEDY,
+  'unenrichedRemedy(resolver, resourceType, attributeName, healOutcome, context)': REMEDY,
+  'getatt-refusals.ts: why': REMEDY,
+  'describeAwsFailure(because).detail': "the dynamic-reference lookup's AWS failure, masked by the token's own pass",
+  'param.type': 'the SSM parameter Type AWS returned',
+  'log-twin-pass.ts: placeholder': 'an Fn::Sub placeholder the template spelled (`${Name}`), names only',
+  'displayMasked(resolver, name)': 'a template PARAMETER name',
+  'displayMasked(resolver, paramDef.Type)': 'a template parameter TYPE',
+  'displaySafe(resolver.explicitRegion, { asciiOnly: true })': "the resolver's own region (operator --region or a state field)",
+  'encodeURIComponent(title)': 'a cdkd-authored issue title',
+  'ref-values.ts: key': 'a template object KEY, rendered quoted only when plain',
+  'lacksRecordedRefArn(resource)': REMEDY,
+  "proseQuoted(cdkdRemedy('cdkd deploy'))": 'a cdkd command',
+  "proseQuoted(cdkdRemedy('cdkd import'))": 'a cdkd command',
+  "proseQuoted(cdkdRemedy('cdkd state show', '--json'))": 'a cdkd command',
+  'refs.ts: via': "the intrinsic's name ('Ref' | 'Fn::GetAtt')",
+  'describeAvailableOutputs(resolver, Object.keys(cfnOutputs), context)': "the producer's OUTPUT NAMES",
+  'describeAvailableOutputs(resolver, Object.keys(outputs), context)': "the producer's OUTPUT NAMES",
+  'stack-output.ts: readRoleArn': 'the lookup role ARN cdkd derives from the account id',
+  'stack-state.ts: UNSHOWABLE_VALUE': 'the description constant',
+  'describeOperandShape(resolver, resolvedIndex, context)': 'routes its value through logOperand itself',
+  'describeOperandShape(resolver, selectArgs, context)': 'routes its value through logOperand itself',
+  'subTemplateKind(subArgs)': "the Fn::Sub argument's SHAPE",
+  'subTemplateKind(templateString)': "the Fn::Sub argument's SHAPE",
   'logRender(resolver, logicalId, context)': NAME,
   'displayMasked(resolver, logicalId, context)': NAME,
   'logRender(resolver, attributeName, context)': NAME,
@@ -85,7 +126,6 @@ const NOT_AN_OPERAND: Readonly<Record<string, string>> = {
   'described.detail': "STS GetCallerIdentity's failure text (no operand reaches the call)",
   'error.name': "a caught error's class name (`account-drain.ts`' account lookup)",
   'account-drain.ts: reason': "the account-id fallback's reason, built from STS failure text",
-  'message(failure.detail)': "EC2 DescribeAvailabilityZones' failure text, masked by the builder",
   'line(message)': "`retry.ts`'s own retry line over the masked request names",
   'staleRecordRemedy(resolver, healOutcome, context)': ERROR,
   'withheldRemedy(resolver, context)': ERROR,
@@ -108,7 +148,10 @@ interface Site {
 }
 
 /** Renders that quote or bound their FIRST argument and print nothing else of a value. */
-const QUOTING_WRAPPERS = new Set(['quotedRender', 'asIsMessage']);
+const QUOTING_WRAPPERS = new Set(['quotedRender', 'asIsMessage', 'displayIdent', 'shellBoundedDisplay']);
+
+/** Helpers taking `[raw, <render>]` pairs that rewrite an error's text. */
+const MASK_PAIR_HELPERS = new Set(['maskStateReadError', 'namedRequestMasks', 'positionalNameMask']);
 
 const ROOT = path.join(import.meta.dirname, '../../..');
 const LOG_METHODS = new Set(['debug', 'info', 'warn', 'error']);
@@ -133,6 +176,13 @@ function isLogCall(call: ts.CallExpression, source: ts.SourceFile): boolean {
   // Whitespace stripped: a chain is often formatted across lines.
   const receiver = callee.expression.getText(source).replace(/\s+/g, '');
   return /(^|\.)logger(\(\))?$/.test(receiver) || /(^|\.)getLogger\(\)(\.child\([^)]*\))?$/.test(receiver);
+}
+
+/** `new <X>Error(...)`: an error whose message a refusal throws. */
+function isErrorConstruction(node: ts.Node): node is ts.NewExpression {
+  return (
+    ts.isNewExpression(node) && ts.isIdentifier(node.expression) && /Error$/.test(node.expression.text)
+  );
 }
 
 /** A bare identifier: allow-listed only with its file named (`<basename>: <name>`). */
@@ -184,12 +234,24 @@ function scanLogOperands(file: string, text: string): Site[] {
     if (ts.isParenthesizedExpression(expr)) return classify(expr.expression, seen);
     if (isOperandCall(expr)) return record(expr, 'operand');
     const text = normalize(expr.getText(source));
-    const key = isBareIdentifier(text) ? `${basename}: ${text}` : text;
-    if (Object.hasOwn(NOT_AN_OPERAND, key)) return record(expr, 'allowed', key);
+    // A file-qualified entry first, for any text; an unqualified one only for
+    // a text that is no bare identifier.
+    const qualified = `${basename}: ${text}`;
+    if (Object.hasOwn(NOT_AN_OPERAND, qualified)) return record(expr, 'allowed', qualified);
+    if (!isBareIdentifier(text) && Object.hasOwn(NOT_AN_OPERAND, text)) {
+      return record(expr, 'allowed', text);
+    }
     if (
       ts.isNoSubstitutionTemplateLiteral(expr) ||
       ts.isStringLiteral(expr) ||
       ts.isNumericLiteral(expr)
+    ) {
+      return;
+    }
+    // A TYPE name or a COUNT prints nothing of the value it describes.
+    if (
+      ts.isTypeOfExpression(expr) ||
+      (ts.isPropertyAccessExpression(expr) && expr.name.text === 'length')
     ) {
       return;
     }
@@ -208,6 +270,14 @@ function scanLogOperands(file: string, text: string): Site[] {
     ) {
       return classify(expr.arguments[0], seen);
     }
+    // `<render>.slice(...)` prints a cut of the render: classify the render.
+    if (
+      ts.isCallExpression(expr) &&
+      ts.isPropertyAccessExpression(expr.expression) &&
+      expr.expression.name.text === 'slice'
+    ) {
+      return classify(expr.expression.expression, seen);
+    }
     if (ts.isTemplateExpression(expr)) {
       for (const span of expr.templateSpans) classify(span.expression, seen);
       return;
@@ -217,6 +287,15 @@ function scanLogOperands(file: string, text: string): Site[] {
       classify(expr.left, seen);
       classify(expr.right, seen);
       return;
+    }
+    // A call to a LOCAL message builder (`const message = (t) => \`...\``)
+    // prints its body: classify the body, so a binding inside it is read
+    // rather than hidden behind the call (go-to-k/cdkd#7105 review).
+    if (ts.isCallExpression(expr) && ts.isIdentifier(expr.expression) && !seen.has(expr.expression.text)) {
+      const init = constInitializerFor(expr.expression);
+      if (init !== 'unresolved' && init !== undefined && ts.isArrowFunction(init) && !ts.isBlock(init.body)) {
+        return classify(init.body, new Set(seen).add(expr.expression.text));
+      }
     }
     if (ts.isIdentifier(expr) && !seen.has(expr.text)) {
       const init = constInitializerFor(expr);
@@ -230,6 +309,28 @@ function scanLogOperands(file: string, text: string): Site[] {
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node) && isLogCall(node, source)) {
       for (const argument of node.arguments) classify(argument, new Set());
+    }
+    // go-to-k/cdkd#7105: a thrown refusal's MESSAGE prints at default
+    // verbosity (and lands in the journal's `error.message`): its first
+    // argument is held to the same rule as a log line's.
+    if (isErrorConstruction(node) && node.arguments?.[0] !== undefined) {
+      classify(node.arguments[0], new Set());
+    }
+    // A request-mask pair `[raw, <render>]` rewrites another module's error
+    // text: its render is held to the same rule (go-to-k/cdkd#7105 review).
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      MASK_PAIR_HELPERS.has(node.expression.text)
+    ) {
+      for (const argument of node.arguments) {
+        if (!ts.isArrayLiteralExpression(argument)) continue;
+        for (const pair of argument.elements) {
+          if (ts.isArrayLiteralExpression(pair) && pair.elements[1] !== undefined) {
+            classify(pair.elements[1], new Set());
+          }
+        }
+      }
     }
     ts.forEachChild(node, visit);
   };
@@ -282,6 +383,16 @@ describe('every resolver log operand goes through logOperand (#7077)', () => {
     // A logger getter and a `getLogger()` chain are log calls too.
     expect(verdicts('this.deps.logger().warn(`v ${value}`);')).toEqual(['unclassified']);
     expect(verdicts("getLogger().child('R').debug(`v ${value}`);")).toEqual(['unclassified']);
+    // A local message builder is read through, and a mask pair's render is classified.
+    expect(
+      verdicts('const shown = displayMasked(r, v, c);\nconst msg = (t) => `x ${shown} ${t}`;\nthrow new Error(msg(\'a\'));')
+    ).toEqual(['unclassified', 'unclassified']);
+    expect(verdicts('namedRequestMasks(r, [[raw, displayMasked(r, raw, c)]], c);')).toEqual(['unclassified']);
+    // A thrown refusal's message too (go-to-k/cdkd#7105).
+    expect(verdicts('throw markNonRetryable(new Error(`v ${value}`));')).toEqual(['unclassified']);
+    expect(verdicts('throw new IntrinsicResolutionRefusalError(`v ${logOperand(r, v, c)}`);')).toEqual([
+      'operand',
+    ]);
     expect(verdicts("getLogger()\n  .child('R')\n  .debug(`v ${value}`);")).toEqual(['unclassified']);
     // A binding is resolved in ITS scope: another function's `const` of the
     // same name, a parameter, or a reassignable `let` classifies nothing.

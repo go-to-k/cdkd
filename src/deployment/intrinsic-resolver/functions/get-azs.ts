@@ -94,7 +94,7 @@ export async function resolveGetAZs(
           // `the value` LEADS the clause: after `: ` a quoted value would be
           // the pasted clause's COMMAND, and `QUOTABLE_RENDER` admits a path
           // (`'/usr/bin/touch' is not …` runs touch; go-to-k/cdkd#4100 M2).
-          `Fn::GetAZs: the value ${quotedRender(displayMasked(resolver, logTextOfLeaf(resolver, resolvedValue, context) !== resolvedValue ? SECRET_MASK : resolvedValue, context).slice(0, 64), "'")} is not a valid AWS ` +
+          `Fn::GetAZs: the value ${quotedRender(logOperand(resolver, logTextOfLeaf(resolver, resolvedValue, context) !== resolvedValue ? SECRET_MASK : resolvedValue, context, { render: 'plain' }).slice(0, 64), "'")} is not a valid AWS ` +
             `region name. A region is substituted into the AWS service hostname, so cdkd will ` +
             `not build a client from it.`
         )
@@ -169,7 +169,9 @@ export async function resolveGetAZs(
     // assembled into the region, and the SDK quotes the region as SENT —
     // canonicalized, which is why the pair keys on `region` rather than on
     // the raw value `loggedRegionText` was derived from.
-    const loggedRegion = displayMasked(resolver, loggedRegionText ?? region, context);
+    const loggedRegion = logOperand(resolver, loggedRegionText ?? region, context, {
+      render: 'plain',
+    });
     const masks = namedRequestMasks(resolver, [[region, loggedRegion]], context);
     // go-to-k/cdkd#2319: a thrown message is persisted to
     // `deployments/{runId}.jsonl`, and an EC2 `UnauthorizedOperation` names
@@ -205,7 +207,7 @@ export async function resolveGetAZs(
     throw markNonRetryable(
       new Error(
         `Fn::GetAZs: no availability zones returned for region ` +
-          `${quotedRender(displayMasked(resolver, loggedRegionText ?? region, context), "'")}. Either the region ` +
+          `${quotedRender(logOperand(resolver, loggedRegionText ?? region, context, { render: 'plain' }), "'")}. Either the region ` +
           `is not enabled on this account (opt-in regions must be enabled before use), or the ` +
           `request was answered by a different region's endpoint.`
       )

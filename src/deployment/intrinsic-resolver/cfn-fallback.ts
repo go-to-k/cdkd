@@ -223,8 +223,8 @@ export class CfnFallbackCache {
       // only nest quotes.
       const resolver = this.deps.resolver;
       const cfnNameMask = positionalNameMask(resolver, [
-        [stackName, displayMasked(resolver, stackName, context)],
-        [region, displayMasked(resolver, loggedRegionText, context)],
+        [stackName, logOperand(resolver, stackName, context, { render: 'plain' })],
+        [region, logOperand(resolver, loggedRegionText, context, { render: 'plain' })],
       ]);
       this.deps.logger().warn(
         // MASKED, the exact twin of `lookupCfnExport`'s own line (issue #2133

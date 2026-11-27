@@ -318,9 +318,9 @@ export async function resolveDynamicReferencesWithLogTwin(
             // so `resolveSub` re-entering with an assembled body puts a
             // plaintext here — the same plaintext the sibling throws mask after
             // parsing it out of this very token (issue #2827 review round 2).
-            `Refusing to resolve the secret reference ${displayMasked(resolver, tokenLogText, context)}: it names ` +
-              `${quotedRender(displayMasked(resolver, nameLogText(regionVerdict.secretName), context), "'", 'a secret whose name is not a plain identifier')} without a region, and this stack reads from ` +
-              `${displayMasked(resolver, regionVerdict.foreignProducerRegions.map((r) => displayMasked(resolver, r, context)).join(', '), context)} as well as its own ` +
+            `Refusing to resolve the secret reference ${logOperand(resolver, tokenLogText, context, { render: 'plain' })}: it names ` +
+              `${quotedRender(logOperand(resolver, nameLogText(regionVerdict.secretName), context, { render: 'plain' }), "'", 'a secret whose name is not a plain identifier')} without a region, and this stack reads from ` +
+              `${logOperand(resolver, regionVerdict.foreignProducerRegions.map((r) => displayMasked(resolver, r, context)).join(', '), context, { render: 'plain' })} as well as its own ` +
               `region. cdkd cannot tell which one must answer, and resolving against ` +
               `the wrong one yields a different secret. Spell the reference as a full ARN ` +
               `to say which region owns it.`
@@ -673,7 +673,7 @@ export async function resolveDynamicReferencesWithLogTwin(
           throw markNonRetryable(
             new IntrinsicResolutionRefusalError(
               // Masked for the reason the `ssm-secure` refusal above states.
-              `Refusing to resolve ${displayMasked(resolver, tokenLogText, context)}: the parameter is a ${param.type} ` +
+              `Refusing to resolve ${logOperand(resolver, tokenLogText, context, { render: 'plain' })}: the parameter is a ${param.type} ` +
                 `parameter, and the ssm-secure spelling is defined for SecureString parameters only. ` +
                 `Reference it as {{resolve:ssm:...}} if it is public configuration.`
             )
@@ -727,7 +727,7 @@ export async function resolveDynamicReferencesWithLogTwin(
         ) {
           throw markNonRetryable(
             new IntrinsicResolutionRefusalError(
-              `Refusing to resolve ${displayMasked(resolver, tokenLogText, context)}: its service is not one cdkd ` +
+              `Refusing to resolve ${logOperand(resolver, tokenLogText, context, { render: 'plain' })}: its service is not one cdkd ` +
                 `resolves (secretsmanager, ssm, ssm-secure), and the reference was assembled from a ` +
                 `secret value, so leaving it as written would send that value to AWS and record it ` +
                 `in state in the clear.`

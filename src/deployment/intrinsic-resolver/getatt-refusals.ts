@@ -93,7 +93,7 @@ export function refuseUnservedAttribute(
   // every future caller.
   throw new IntrinsicResolutionRefusalError(
     `Cannot resolve Fn::GetAtt [${displayMasked(resolver, logicalId, context)}, ${displayMasked(resolver, attributeName, context)}] for ${displayMasked(resolver, resourceType, context)}: ` +
-      `${observed}. The physical id ${quotedRender(displayMasked(resolver, displayPhysicalId(resourceType, physicalId), context), '"')} is not a usable ` +
+      `${observed}. The physical id ${quotedRender(logOperand(resolver, displayPhysicalId(resourceType, physicalId), context, { render: 'plain' }), '"')} is not a usable ` +
       `${displayMasked(resolver, attributeName, context)}, so cdkd refuses to substitute it. ${remedy}`
   );
 }
@@ -402,7 +402,7 @@ export function guardedPhysicalIdFallback(
           (recordMayBeStale
             ? `the state record holds no value for it, and the physical ID `
             : `attributes are not enriched for this resource type, and the physical ID `) +
-          `fallback ${quotedRender(displayMasked(resolver, displayPhysicalId(resourceType, physicalId), context), '"')} is not ${expectedShape}. CloudFormation would return ` +
+          `fallback ${quotedRender(logOperand(resolver, displayPhysicalId(resourceType, physicalId), context, { render: 'plain' }), '"')} is not ${expectedShape}. CloudFormation would return ` +
           `a different value here, so falling back to the physical ID would silently ` +
           `produce a wrong value (e.g. in stack Outputs). ` +
           (recordMayBeStale
@@ -421,7 +421,7 @@ export function guardedPhysicalIdFallback(
           (recordMayBeStale
             ? `the state record holds no value for it, and --strict-getatt `
             : `attributes are not enriched for this resource type, and --strict-getatt `) +
-          `rejects the physical ID fallback ${quotedRender(displayMasked(resolver, displayPhysicalId(resourceType, physicalId), context), '"')} (which may not be the value ` +
+          `rejects the physical ID fallback ${quotedRender(logOperand(resolver, displayPhysicalId(resourceType, physicalId), context, { render: 'plain' }), '"')} (which may not be the value ` +
           `CloudFormation would return). Drop --strict-getatt to fall back with a warning. ` +
           (recordMayBeStale
             ? staleRecordRemedy(resolver, healOutcome, context)
@@ -463,7 +463,7 @@ export function guardedPhysicalIdFallback(
             : healOutcome?.kind === 'read'
               ? `the provider's re-read of the resource reports no value for it (one still creating has none yet), and its physical ID `
               : `cdkd does not record it for this resource type, and its physical ID `) +
-          `${quotedRender(displayMasked(resolver, displayPhysicalId(resourceType, physicalId), context), '"')} is not the value CloudFormation returns, ` +
+          `${quotedRender(logOperand(resolver, displayPhysicalId(resourceType, physicalId), context, { render: 'plain' }), '"')} is not the value CloudFormation returns, ` +
           `so serving it would silently produce a wrong value. ` +
           (recordMayBeStale
             ? staleRecordRemedy(resolver, healOutcome, context)
@@ -542,7 +542,7 @@ export function refuseEndpointTheEngineLacks(
     new IntrinsicResolutionRefusalError(
       `Cannot resolve Fn::GetAtt [${displayMasked(resolver, logicalId, context)}, ` +
         `${displayMasked(resolver, attributeName, context)}]: the cache cluster's engine is ` +
-        `${displayMasked(resolver, engine, context)}, which has no ${lacking}. CloudFormation answers an ` +
+        `${logOperand(resolver, engine, context, { render: 'plain' })}, which has no ${lacking}. CloudFormation answers an ` +
         `empty Address and Port for it; cdkd refuses instead of passing an empty endpoint on. ` +
         `Reference ${other} instead.`
     )

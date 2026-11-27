@@ -2,7 +2,7 @@ import { cdkdRemedy, proseQuoted } from '../../utils/pasteable-command.js';
 import { crossStackTaintOf, markCrossStackReadTainted } from './display-taint.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { describeAvailableOutputs } from './cfn-fallback.js';
-import { displayLeaf, displayMasked, displayMaskedIdent, logOperand } from './masking-display.js';
+import { displayLeaf, displayMaskedIdent, logOperand } from './masking-display.js';
 import { logTextOfLeaf, regionLogText } from './masking.js';
 import { getCrossAccountStackState, getSameAccountStackState } from './stack-state.js';
 import { reresolveCrossStackValue } from './cross-stack.js';
@@ -164,7 +164,7 @@ export async function resolveGetStackOutput(
       throw markNonRetryable(
         new Error(
           // allow-raw-region-compare: a mask test (did the log text alter this value?), not a region equality.
-          `Fn::GetStackOutput: ${displayMaskedIdent(resolver, logTextOfLeaf(resolver, resolvedRegion, context) !== resolvedRegion ? SECRET_MASK : resolvedRegion, context, 64)} is not a ` +
+          `Fn::GetStackOutput: ${logOperand(resolver, logTextOfLeaf(resolver, resolvedRegion, context) !== resolvedRegion ? SECRET_MASK : resolvedRegion, context, { render: (text) => displayMaskedIdent(resolver, text, context, 64) })} is not a ` +
             `valid AWS region name. The region selects both the AWS endpoint and the state-file ` +
             `key, so cdkd will not use it.`
         )
@@ -201,7 +201,7 @@ export async function resolveGetStackOutput(
             `(no Ref / Fn::GetAtt / Fn::Sub allowed for cross-account references). ` +
             `Got ${
               raw === null ? 'null' : Array.isArray(raw) ? 'array' : typeof raw
-            }${typeof raw === 'object' ? ` (intrinsic shape: ${displayMasked(resolver, JSON.stringify(raw).slice(0, 80), context)})` : ''}.`
+            }${typeof raw === 'object' ? ` (intrinsic shape: ${logOperand(resolver, JSON.stringify(raw).slice(0, 80), context, { render: 'plain' })})` : ''}.`
         )
       );
     // S1: a literal role ARN, or EXACTLY aws-cdk-lib's `Fn::Join` over
@@ -275,8 +275,8 @@ export async function resolveGetStackOutput(
     throw markNonRetryable(
       new Error(
         `Fn::GetStackOutput: cannot reference own stack ` +
-          `${displayMaskedIdent(resolver, stackName, context, STACK_REF_MAX_CODE_POINTS)} in the same region ` +
-          `${displayMaskedIdent(resolver, loggedRegionText, context)}`
+          `${logOperand(resolver, stackName, context, { render: (text) => displayMaskedIdent(resolver, text, context, STACK_REF_MAX_CODE_POINTS) })} in the same region ` +
+          `${logOperand(resolver, loggedRegionText, context, { render: (text) => displayMaskedIdent(resolver, text, context) })}`
       )
     );
   }
@@ -315,20 +315,21 @@ export async function resolveGetStackOutput(
   // plaintext split by an invisible would be reconstituted contiguous by a
   // strip applied after a single mask. Masking on both sides of it closes
   // that, and it is a no-op on any ordinary name.
-  const loggedStackName = displayMaskedIdent(
-    resolver,
-    stackName,
-    context,
-    STACK_REF_MAX_CODE_POINTS
-  );
-  const loggedOutputName = displayMaskedIdent(resolver, outputName, context);
+  // go-to-k/cdkd#7105: through `logOperand`, so a name built from a
+  // sub-floor secret's piece prints `***` on every line and throw below.
+  const loggedStackName = logOperand(resolver, stackName, context, {
+    render: (text) => displayMaskedIdent(resolver, text, context, STACK_REF_MAX_CODE_POINTS),
+  });
+  const loggedOutputName = logOperand(resolver, outputName, context, {
+    render: (text) => displayMaskedIdent(resolver, text, context),
+  });
   // The THIRD resolved value of this trio (issue
   // [#2827](https://github.com/go-to-k/cdkd/issues/2827)): a `Region`
   // argument also comes back from `resolveValue`, and the shape gate above
   // only proves it is `[a-z0-9-]{1,31}` — a real plaintext can be. Bound
   // here so the log lines and the three throws below share ONE masked
   // spelling instead of each deciding.
-  const loggedRegion = displayMasked(resolver, loggedRegionText, context);
+  const loggedRegion = logOperand(resolver, loggedRegionText, context, { render: 'plain' });
   // The FOURTH value of this group, and the one that needed a different
   // helper (issue
   // [#3397](https://github.com/go-to-k/cdkd/issues/3397)). `roleArn` is NOT a
@@ -355,17 +356,10 @@ export async function resolveGetStackOutput(
   const shownRoleArn = roleArn
     ? displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })
     : '';
-  // go-to-k/cdkd#7077: the trio as the log lines print it, masked by
-  // provenance (`logOperand`); the throws keep the bindings above.
-  const logStackName = logOperand(resolver, stackName, context, { render: () => loggedStackName });
-  const logRegion = logOperand(resolver, loggedRegionText, context, { render: () => loggedRegion });
-  const logOutputName = logOperand(resolver, outputName, context, {
-    render: () => loggedOutputName,
-  });
   // not-in-class(roleArn ? `, RoleArn=${shownRoleArn}` : ''): the RoleArn argument, refused unless it is a literal template string.
   resolver.logger.debug(
-    `Resolving Fn::GetStackOutput: StackName=${logStackName}, Region=${logRegion}, ` +
-      `OutputName=${logOutputName}${roleArn ? `, RoleArn=${shownRoleArn}` : ''}`
+    `Resolving Fn::GetStackOutput: StackName=${loggedStackName}, Region=${loggedRegion}, ` +
+      `OutputName=${loggedOutputName}${roleArn ? `, RoleArn=${shownRoleArn}` : ''}`
   );
 
   // go-to-k/cdkd#7077: an output the preview marks as derived from a secret
@@ -389,7 +383,7 @@ export async function resolveGetStackOutput(
       );
     }
     resolver.logger.info(
-      safeMsg`Resolved Fn::GetStackOutput: StackName=${logStackName}, OutputName=${logOutputName} (from this diff of the stack, which changes it)`
+      safeMsg`Resolved Fn::GetStackOutput: StackName=${loggedStackName}, OutputName=${loggedOutputName} (from this diff of the stack, which changes it)`
     );
     return previewed.value;
   }
@@ -409,7 +403,10 @@ export async function resolveGetStackOutput(
         new Error(
           cdkCrossAccountRefRefusal({
             consumer: context.stackName
-              ? displayMaskedIdent(resolver, context.stackName, context, STACK_REF_MAX_CODE_POINTS)
+              ? logOperand(resolver, context.stackName, context, {
+                  render: (text) =>
+                    displayMaskedIdent(resolver, text, context, STACK_REF_MAX_CODE_POINTS),
+                })
               : undefined,
             output: loggedOutputName,
             producer: loggedStackName,
@@ -500,7 +497,7 @@ export async function resolveGetStackOutput(
         // The pair's replacement is the MASKED spelling, not the bounded
         // one: it rewrites the name inside text another module already
         // rendered, where a second boundary would only nest quotes.
-        [stackName, displayMasked(resolver, stackName, context)],
+        [stackName, logOperand(resolver, stackName, context, { render: 'plain' })],
         [region, loggedRegion],
       ],
       context
@@ -539,8 +536,8 @@ export async function resolveGetStackOutput(
         // CloudFormation fallback: a CFn stack output never passed through
         // cdkd's redaction, so it is whatever the producer resolved.
         resolver.logger.info(
-          `Resolved Fn::GetStackOutput: StackName=${logStackName}, Region=${logRegion}, ` +
-            `OutputName=${logOutputName} ` +
+          `Resolved Fn::GetStackOutput: StackName=${loggedStackName}, Region=${loggedRegion}, ` +
+            `OutputName=${loggedOutputName} ` +
             `(from CloudFormation stack outputs; weak reference — producer is not cdkd-managed)`
         );
         // Deliberately NOT recorded into `recordedOutputReads` —
@@ -640,8 +637,8 @@ export async function resolveGetStackOutput(
   // before that, holding the plaintext.
   // not-in-class(roleArn ? `, RoleArn=${shownRoleArn}` : ''): the RoleArn argument, refused unless it is a literal template string.
   resolver.logger.info(
-    `Resolved Fn::GetStackOutput: StackName=${logStackName}, Region=${logRegion}, ` +
-      `OutputName=${logOutputName}${roleArn ? `, RoleArn=${shownRoleArn}` : ''} ` +
+    `Resolved Fn::GetStackOutput: StackName=${loggedStackName}, Region=${loggedRegion}, ` +
+      `OutputName=${loggedOutputName}${roleArn ? `, RoleArn=${shownRoleArn}` : ''} ` +
       `(${carriesDynamicReference(value) ? 'redacted dynamic reference' : 'literal value'})`
   );
   // Schema v8 (issue #668): record same-account reads so
