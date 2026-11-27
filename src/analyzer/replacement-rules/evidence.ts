@@ -128,6 +128,14 @@ const update = row('update');
 const conditional = row('conditional');
 const nested = row('nested');
 
+/** Account-level service roles a probe may not create (go-to-k/cdkd#7083). */
+const APPSTREAM_ROLE = cannotProbe(
+  'AppStream refuses a fleet create unless the account-level service role AmazonAppStreamServiceAccess exists ("your service role ... is invalid"), and creating that role is an account-level change'
+);
+const WORKSPACES_ROLE = cannotProbe(
+  'WorkSpaces refuses to register a directory unless the account-level role workspaces_DefaultRole exists, and creating that role is an account-level change'
+);
+
 /** `<Type>#<Property>` -> its evidence. */
 export const REPLACEMENT_EVIDENCE: ReadonlyMap<string, ReplacementEvidence> = new Map([
   // --- conditionalReplacements predicates
@@ -856,6 +864,122 @@ export const REPLACEMENT_EVIDENCE: ReadonlyMap<string, ReplacementEvidence> = ne
       "A Cognito work team's pool is the private workforce's, one per account and Region, and UpdateWorkforce cannot change its Cognito pool: no second pool can be named"
     ),
   ],
+  // FSx file systems (no Cloud Control handlers): CloudFormation A/B chains in
+  // us-east-1 on #7083, one property per step, each replacement read as a
+  // new file system id. Lustre (CopyTagsToBackups, PerUnitStorageThroughput
+  // and DeploymentType on PERSISTENT_1; ImportPath, ExportPath and
+  // ImportedFileChunkSize on SCRATCH_2; DriveCacheType on HDD): every member
+  // below replaced the file system except PerUnitStorageThroughput (50 ->
+  // 100, same id). DeploymentType PERSISTENT_1 -> PERSISTENT_2 moved
+  // PerUnitStorageThroughput too (the step before showed it alone is in
+  // place). ImportPath was measured alone, with no ExportPath.
+  ['AWS::FSx::FileSystem#LustreConfiguration.CopyTagsToBackups', replace('cfn-measured', 7083)],
+  ['AWS::FSx::FileSystem#LustreConfiguration.DeploymentType', replace('cfn-measured', 7083)],
+  ['AWS::FSx::FileSystem#LustreConfiguration.DriveCacheType', replace('cfn-measured', 7083)],
+  ['AWS::FSx::FileSystem#LustreConfiguration.ExportPath', replace('cfn-measured', 7083)],
+  ['AWS::FSx::FileSystem#LustreConfiguration.ImportPath', replace('cfn-measured', 7083)],
+  ['AWS::FSx::FileSystem#LustreConfiguration.ImportedFileChunkSize', replace('cfn-measured', 7083)],
+  [
+    'AWS::FSx::FileSystem#LustreConfiguration.PerUnitStorageThroughput',
+    update('cfn-measured', 7083),
+  ],
+  // The whole block replaces only through those members (the measured
+  // replacement paths below), while the reference page reads "No
+  // interruption" for it.
+  ['AWS::FSx::FileSystem#LustreConfiguration', nested('cfn-measured', 7083)],
+  // OpenZFS SINGLE_AZ_1 and MULTI_AZ_1: each change replaced the file system.
+  // DeploymentType SINGLE_AZ_1 -> SINGLE_AZ_2 moved ThroughputCapacity too
+  // (64 -> 160: the two types share no value).
+  ['AWS::FSx::FileSystem#OpenZFSConfiguration.DeploymentType', replace('cfn-measured', 7083)],
+  [
+    'AWS::FSx::FileSystem#OpenZFSConfiguration.EndpointIpAddressRange',
+    replace('cfn-measured', 7083),
+  ],
+  ['AWS::FSx::FileSystem#OpenZFSConfiguration.PreferredSubnetId', replace('cfn-measured', 7083)],
+  [
+    'AWS::FSx::FileSystem#OpenZFSConfiguration.RootVolumeConfiguration.CopyTagsToSnapshots',
+    replace('cfn-measured', 7083),
+  ],
+  [
+    'AWS::FSx::FileSystem#OpenZFSConfiguration.RootVolumeConfiguration.DataCompressionType',
+    replace('cfn-measured', 7083),
+  ],
+  [
+    'AWS::FSx::FileSystem#OpenZFSConfiguration.RootVolumeConfiguration.NfsExports',
+    replace('cfn-measured', 7083),
+  ],
+  [
+    'AWS::FSx::FileSystem#OpenZFSConfiguration.RootVolumeConfiguration.ReadOnly',
+    replace('cfn-measured', 7083),
+  ],
+  [
+    'AWS::FSx::FileSystem#OpenZFSConfiguration.RootVolumeConfiguration.RecordSizeKiB',
+    replace('cfn-measured', 7083),
+  ],
+  [
+    'AWS::FSx::FileSystem#OpenZFSConfiguration.RootVolumeConfiguration.UserAndGroupQuotas',
+    replace('cfn-measured', 7083),
+  ],
+  ['AWS::FSx::FileSystem#OpenZFSConfiguration', nested('cfn-measured', 7083)],
+  // ONTAP MULTI_AZ_1: EndpointIpAddressRange replaced the file system; a
+  // PreferredSubnetId change went to the create path, whose new file system
+  // failed on the endpoint range the old one still held, and rolled back.
+  // DeploymentType SINGLE_AZ_1 -> SINGLE_AZ_2 (one subnet, HAPairs 1)
+  // replaced it too, with ThroughputCapacityPerHAPair 128 -> 1536 (SINGLE_AZ_2
+  // takes no lower value).
+  ['AWS::FSx::FileSystem#OntapConfiguration.DeploymentType', replace('cfn-measured', 7083)],
+  ['AWS::FSx::FileSystem#OntapConfiguration.EndpointIpAddressRange', replace('cfn-measured', 7083)],
+  ['AWS::FSx::FileSystem#OntapConfiguration.PreferredSubnetId', replace('cfn-measured', 7083)],
+  ['AWS::FSx::FileSystem#OntapConfiguration', nested('cfn-measured', 7083)],
+  // DataSync FSx locations: Cloud Control updates read back in place under the
+  // same location ARN (the write-only Subdirectory and Password through an
+  // `add` patch).
+  ['AWS::DataSync::LocationFSxLustre#Subdirectory', update('cc-measured', 7083)],
+  ['AWS::DataSync::LocationFSxONTAP#Subdirectory', update('cc-measured', 7083)],
+  ['AWS::DataSync::LocationFSxOpenZFS#Protocol', update('cc-measured', 7083)],
+  ['AWS::DataSync::LocationFSxOpenZFS#Subdirectory', update('cc-measured', 7083)],
+  ['AWS::DataSync::LocationFSxWindows#Domain', update('cc-measured', 7083)],
+  ['AWS::DataSync::LocationFSxWindows#Password', update('cc-measured', 7083)],
+  ['AWS::DataSync::LocationFSxWindows#Subdirectory', update('cc-measured', 7083)],
+  ['AWS::DataSync::LocationFSxWindows#User', update('cc-measured', 7083)],
+  // Agent-based and agentless locations: Cloud Control updates (an `add`
+  // patch, the hostname being write-only) read back the new hostname under the
+  // same location ARN, the NFS and SMB ones through a throwaway activated agent.
+  ['AWS::DataSync::LocationNFS#ServerHostname', update('cc-measured', 7083)],
+  ['AWS::DataSync::LocationObjectStorage#ServerHostname', update('cc-measured', 7083)],
+  ['AWS::DataSync::LocationSMB#ServerHostname', update('cc-measured', 7083)],
+  ['AWS::WorkSpaces::Workspace#BundleId', WORKSPACES_ROLE],
+  ['AWS::WorkSpaces::Workspace#RootVolumeEncryptionEnabled', WORKSPACES_ROLE],
+  ['AWS::WorkSpaces::Workspace#UserVolumeEncryptionEnabled', WORKSPACES_ROLE],
+  ['AWS::WorkSpaces::Workspace#VolumeEncryptionKey', WORKSPACES_ROLE],
+  // CloudFormation A/B: UPDATE_COMPLETE under the same datastore id, reading
+  // back the new name, then SMART_ON_FHIR_V1.
+  ['AWS::HealthLake::FHIRDatastore#DatastoreName', update('cfn-measured', 7083)],
+  ['AWS::HealthLake::FHIRDatastore#IdentityProviderConfiguration', update('cfn-measured', 7083)],
+  // CloudFormation A/B: UPDATE_COMPLETE under the same image ARN / app id.
+  ['AWS::ImageBuilder::Image#Tags', update('cfn-measured', 7083)],
+  ['AWS::SageMaker::App#Tags', update('cfn-measured', 7083)],
+  // CloudFormation A/B, as for the other container members: UPDATE_COMPLETE
+  // under the same ARN (Framework XGBOOST -> PYTORCH; ImageDigest with its
+  // Image tag, 1.7-1 -> 1.5-1).
+  [
+    'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecifications.*.Containers.*.Framework',
+    update('cfn-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecifications.*.Containers.*.ImageDigest',
+    update('cfn-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecificationsToAdd.*.Containers.*.Framework',
+    update('cfn-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecificationsToAdd.*.Containers.*.ImageDigest',
+    update('cfn-measured', 7083),
+  ],
+  ['AWS::AppStream::StackFleetAssociation#FleetName', APPSTREAM_ROLE],
+  ['AWS::AppStream::StackFleetAssociation#StackName', APPSTREAM_ROLE],
   // --- updateableProperties beyond the fixture or the spec
   ['AWS::Budgets::Budget#NotificationsWithSubscribers', update('deviation', 7038)],
   ['AWS::EC2::Subnet#Ipv6CidrBlock', update('cfn-measured', 5632)],

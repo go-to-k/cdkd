@@ -224,6 +224,24 @@ describe('spec-replacement table (go-to-k/cdkd#7070)', () => {
     ).toBe(false);
   });
 
+  // go-to-k/cdkd#7083: FSx file systems have no Cloud Control handlers; each
+  // member below was measured with a CloudFormation A/B chain (new file system
+  // id), while PerUnitStorageThroughput applied in place.
+  it('an FSx file system replaces on the members CloudFormation replaces on', async () => {
+    const TYPE = 'AWS::FSx::FileSystem';
+    for (const path of [
+      ['LustreConfiguration', 'CopyTagsToBackups'],
+      ['LustreConfiguration', 'ImportedFileChunkSize'],
+      ['OpenZFSConfiguration', 'RootVolumeConfiguration', 'RecordSizeKiB'],
+      ['OntapConfiguration', 'EndpointIpAddressRange'],
+    ]) {
+      expect(await replacesOnChange(TYPE, path), path.join('.')).toBe(true);
+    }
+    expect(await replacesOnChange(TYPE, ['LustreConfiguration', 'PerUnitStorageThroughput'])).toBe(
+      false
+    );
+  });
+
   // The rename CloudFormation fails rather than replaces stays the provider's
   // refusal (#3750), not a replacement of a stateful database.
   it('a nested measured update stays in place', async () => {

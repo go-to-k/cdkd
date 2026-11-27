@@ -20,6 +20,63 @@ import { markRefusedBeforeApplying } from '../../prior-attempt-scope.js';
 import { markNonRetryable } from '../../retryable-errors.js';
 
 /**
+ * The CloudFormation-measured replacement paths (`SPEC_REPLACEMENT_CFN_MEASURED`)
+ * at or under the top-level property of `pc`: the property itself, or each
+ * nested member whose value differs between the change's old and new values
+ * (both resolved, as the diff compared them; `128` and `"128"` are equal).
+ */
+function measuredPathsChanged(
+  resourceType: string,
+  pc: { path: string; oldValue?: unknown; newValue?: unknown }
+): string[] {
+  if (SPEC_REPLACEMENT_CFN_MEASURED.has([resourceType, pc.path].join('#'))) return [pc.path];
+  const prefix = [resourceType, pc.path].join('#') + '.';
+  const at = (value: unknown, path: readonly string[]): unknown =>
+    path.reduce<unknown>(
+      (v, k) =>
+        typeof v === 'object' && v !== null && !Array.isArray(v)
+          ? (v as Record<string, unknown>)[k]
+          : undefined,
+      value
+    );
+  return [...SPEC_REPLACEMENT_CFN_MEASURED]
+    .filter((key) => key.startsWith(prefix))
+    .map((key) => key.slice(resourceType.length + 1))
+    .filter((path) => {
+      const sub = path.split('.').slice(1);
+      return !sameValue(at(pc.oldValue, sub), at(pc.newValue, sub));
+    })
+    .sort();
+}
+
+/** Structural equality reading a number and its string spelling as one value. */
+function sameValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a === undefined || b === undefined || a === null || b === null) return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return (
+      Array.isArray(a) &&
+      Array.isArray(b) &&
+      a.length === b.length &&
+      a.every((v, i) => sameValue(v, b[i]))
+    );
+  }
+  if (typeof a === 'object' || typeof b === 'object') {
+    if (typeof a !== 'object' || typeof b !== 'object') return false;
+    const ka = Object.keys(a as object);
+    const kb = Object.keys(b as object);
+    return (
+      ka.length === kb.length &&
+      kb.every((k) => k in (a as object)) &&
+      ka.every((k) =>
+        sameValue((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k])
+      )
+    );
+  }
+  return String(a) === String(b);
+}
+
+/**
  * `updateByReplacement`'s pre-flight refusals (`update-replace.ts`), split out
  * of it (go-to-k/cdkd#5835): the stateful guard and the `--recreate-via-cc-api`
  * route checks, run before anything is created or deleted.
@@ -99,10 +156,12 @@ export function refuseUnsafeReplacement(
       // CloudFormation execution was measured replacing on. Say so, since the
       // user may expect the in-place update the schema suggests; only a
       // measured row may claim it.
+      // A nested measured row (go-to-k/cdkd#7083, an FSx file system's
+      // `LustreConfiguration.ImportPath`) names the member that changed: its
+      // property change is keyed by the top-level property.
       const measuredReplaced = (change.propertyChanges ?? [])
         .filter((pc) => pc.requiresReplacement)
-        .map((pc) => pc.path)
-        .filter((path) => SPEC_REPLACEMENT_CFN_MEASURED.has([oldResourceType, path].join('#')));
+        .flatMap((pc) => measuredPathsChanged(oldResourceType, pc));
       // go-to-k/cdkd#7126: measured replacing, but CloudFormation's
       // replacement then fails on the name it keeps, so no data is lost there.
       const replacing = (change.propertyChanges ?? []).filter((pc) => pc.requiresReplacement);

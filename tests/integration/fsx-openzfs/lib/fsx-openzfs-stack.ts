@@ -45,6 +45,12 @@ import type { Construct } from 'constructs';
  *   - WeeklyMaintenanceStartTime is ADDED in the same deploy, a companion
  *     change proving UpdateFileSystem fired with the removals beside it.
  *
+ * RECORD SIZE phase (the THROUGHPUT REMOVAL phase's env plus
+ * CDKD_TEST_RECORDSIZE_CHANGE=true, go-to-k/cdkd#7083): RootVolumeConfiguration
+ * RecordSizeKiB 128 -> 64, which CloudFormation was measured replacing the
+ * file system on. The diff must show the replacement and the deploy must
+ * refuse it (stateful) before any call; it is never applied.
+ *
  * THROUGHPUT REMOVAL phase (the REMOVAL phase's env plus
  * CDKD_TEST_TP_REMOVAL=true, issue #1160):
  *   - ThroughputCapacity (128) is DROPPED. The CFn A/B on issue #1160 measured
@@ -60,6 +66,7 @@ export class FsxOpenZfsStack extends cdk.Stack {
     const isRemoval = process.env.CDKD_TEST_REMOVAL === 'true';
     const isMaintAlt = process.env.CDKD_TEST_MAINT_ALT === 'true';
     const isTpRemoval = process.env.CDKD_TEST_TP_REMOVAL === 'true';
+    const isRecordSize = process.env.CDKD_TEST_RECORDSIZE_CHANGE === 'true';
 
     // VPC with 1 AZ, public subnet only, no NAT (cheapest legal shape).
     const vpc = new ec2.Vpc(this, 'Vpc', {
@@ -94,7 +101,10 @@ export class FsxOpenZfsStack extends cdk.Stack {
         // Default root volume — exercises the RootVolumeConfiguration create
         // mapping (record size + compression).
         rootVolumeConfiguration: {
-          recordSizeKiB: 128,
+          // 128 -> 64 under CDKD_TEST_RECORDSIZE_CHANGE=true (go-to-k/cdkd#7083):
+          // CloudFormation replaces the file system on it, so the deploy must
+          // refuse the stateful replacement. Never deployed.
+          recordSizeKiB: isRecordSize ? 64 : 128,
           dataCompressionType: 'LZ4',
         },
       },

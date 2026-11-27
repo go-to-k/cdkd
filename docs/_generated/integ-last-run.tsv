@@ -221,7 +221,7 @@ firehose-iceberg-destination	2026-11-22T02:46:37Z	PASS	186	verify.sh	rc ok, orph
 firehose-msk-source	2026-11-02T19:24:26Z	PASS	588	verify.sh	rc ok, destroy 9 deleted 0 errors, orph clean
 fsx-lustre	2026-11-23T08:26:12Z	PASS	2896	verify.sh	PR6859 11e38d61f us-east-1 rc ok, orph clean, no fs/backup left
 fsx-ontap	2026-11-05T04:49:36Z	PASS	1533	verify.sh	rc ok, orph clean, no final backup (fsx fs/svm/vol/backup none; VPCs none)
-fsx-openzfs	2026-11-06T21:30:00Z	PASS	1460	verify.sh	#5910 fsx-filesystem split head; rc ok, orph clean
+fsx-openzfs	2026-11-27T22:27:39Z	PASS	1539	verify.sh	rc ok, orph clean, no fs backup (fs-0a463234952855eff)
 fsx-windows	2026-11-10T18:23:37Z	PASS	4748	verify.sh	rc ok, orph clean
 full-stack-demo	2026-11-04T05:17:34Z	PASS	51	standard	deploy 16 res, destroy 16 deleted 0 errors, orph clean
 gc-custom-asset-names	2026-11-04T07:51:26Z	PASS	163	verify.sh	rc ok, orph clean; us-east-2, run alone (a parallel batch's locks make gc refuse) (#2624 PR #4573)

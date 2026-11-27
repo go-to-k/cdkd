@@ -618,6 +618,7 @@
         "elasticache-replicationgroup-getatt",
         "emr-cluster",
         "fallback-recreate-children",
+        "fsx-openzfs",
         "generated-name-lifecycle",
         "globaltable-keyschema-replace",
         "glue-update-hardening",

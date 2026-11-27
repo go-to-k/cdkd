@@ -12,21 +12,12 @@
  * no longer an unsettled candidate. Read by that test and the generator only.
  */
 export const UNMEASURED_SPEC_REPLACEMENT_CANDIDATES: ReadonlySet<string> = new Set([
-  'AWS::AppStream::StackFleetAssociation#FleetName',
-  'AWS::AppStream::StackFleetAssociation#StackName',
   'AWS::Batch::ComputeEnvironment#EksConfiguration',
-  'AWS::DataSync::LocationFSxLustre#Subdirectory',
+  // Measured on #7083 (Cloud Control): a member change applies in place
+  // (SMB MountOptions Version AUTOMATIC -> SMB3), while DataSync refuses an
+  // NFS -> SMB switch ("Cannot switch protocol from NFS to SMB"), and only
+  // NFS3 is accepted under NFS. Neither verdict describes the whole property.
   'AWS::DataSync::LocationFSxONTAP#Protocol',
-  'AWS::DataSync::LocationFSxONTAP#Subdirectory',
-  'AWS::DataSync::LocationFSxOpenZFS#Protocol',
-  'AWS::DataSync::LocationFSxOpenZFS#Subdirectory',
-  'AWS::DataSync::LocationFSxWindows#Domain',
-  'AWS::DataSync::LocationFSxWindows#Password',
-  'AWS::DataSync::LocationFSxWindows#Subdirectory',
-  'AWS::DataSync::LocationFSxWindows#User',
-  'AWS::DataSync::LocationNFS#ServerHostname',
-  'AWS::DataSync::LocationObjectStorage#ServerHostname',
-  'AWS::DataSync::LocationSMB#ServerHostname',
   // Measured on #7083: its mutable member, ElasticLoadBalancing, applies in
   // place with Auto Mode, and IpFamily / ServiceIpv4Cidr already replace
   // through the schema's nested create-only paths. Neither `replace` nor
@@ -51,25 +42,6 @@ export const UNMEASURED_SPEC_REPLACEMENT_CANDIDATES: ReadonlySet<string> = new S
   // (#7130) and its Enabled member applies in place, so neither verdict
   // describes the whole property.
   'AWS::Elasticsearch::Domain#EncryptionAtRestOptions',
-  'AWS::FSx::FileSystem#LustreConfiguration.CopyTagsToBackups',
-  'AWS::FSx::FileSystem#LustreConfiguration.DeploymentType',
-  'AWS::FSx::FileSystem#LustreConfiguration.DriveCacheType',
-  'AWS::FSx::FileSystem#LustreConfiguration.ExportPath',
-  'AWS::FSx::FileSystem#LustreConfiguration.ImportPath',
-  'AWS::FSx::FileSystem#LustreConfiguration.ImportedFileChunkSize',
-  'AWS::FSx::FileSystem#LustreConfiguration.PerUnitStorageThroughput',
-  'AWS::FSx::FileSystem#OntapConfiguration.DeploymentType',
-  'AWS::FSx::FileSystem#OntapConfiguration.EndpointIpAddressRange',
-  'AWS::FSx::FileSystem#OntapConfiguration.PreferredSubnetId',
-  'AWS::FSx::FileSystem#OpenZFSConfiguration.DeploymentType',
-  'AWS::FSx::FileSystem#OpenZFSConfiguration.EndpointIpAddressRange',
-  'AWS::FSx::FileSystem#OpenZFSConfiguration.PreferredSubnetId',
-  'AWS::FSx::FileSystem#OpenZFSConfiguration.RootVolumeConfiguration.CopyTagsToSnapshots',
-  'AWS::FSx::FileSystem#OpenZFSConfiguration.RootVolumeConfiguration.DataCompressionType',
-  'AWS::FSx::FileSystem#OpenZFSConfiguration.RootVolumeConfiguration.NfsExports',
-  'AWS::FSx::FileSystem#OpenZFSConfiguration.RootVolumeConfiguration.ReadOnly',
-  'AWS::FSx::FileSystem#OpenZFSConfiguration.RootVolumeConfiguration.RecordSizeKiB',
-  'AWS::FSx::FileSystem#OpenZFSConfiguration.RootVolumeConfiguration.UserAndGroupQuotas',
   'AWS::FSx::FileSystem#WindowsConfiguration.ActiveDirectoryId',
   'AWS::FSx::FileSystem#WindowsConfiguration.CopyTagsToBackups',
   'AWS::FSx::FileSystem#WindowsConfiguration.DeploymentType',
@@ -77,9 +49,6 @@ export const UNMEASURED_SPEC_REPLACEMENT_CANDIDATES: ReadonlySet<string> = new S
   'AWS::FSx::FileSystem#WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DomainName',
   'AWS::FSx::FileSystem#WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.FileSystemAdministratorsGroup',
   'AWS::FSx::FileSystem#WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.OrganizationalUnitDistinguishedName',
-  'AWS::HealthLake::FHIRDatastore#DatastoreName',
-  'AWS::HealthLake::FHIRDatastore#IdentityProviderConfiguration',
-  'AWS::ImageBuilder::Image#Tags',
   'AWS::KafkaConnect::Connector#ConnectorConfiguration',
   'AWS::KafkaConnect::Connector#Plugins',
   'AWS::KafkaConnect::Connector#WorkerConfiguration',
@@ -101,18 +70,9 @@ export const UNMEASURED_SPEC_REPLACEMENT_CANDIDATES: ReadonlySet<string> = new S
   // ARN). As for EKS KubernetesNetworkConfig, neither `replace` nor `update`
   // describes the whole property, so it stays here.
   'AWS::S3Vectors::Index#MetadataConfiguration',
-  'AWS::SageMaker::App#Tags',
   // Measured on #7083: TtlDuration applies in place under CloudFormation, and
   // a StorageType change replaces through the schema's nested create-only
   // paths (CloudFormation: "requires replacing"). As for EKS
   // KubernetesNetworkConfig, neither verdict describes the whole property.
   'AWS::SageMaker::FeatureGroup#OnlineStoreConfig',
-  'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecifications.*.Containers.*.Framework',
-  'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecifications.*.Containers.*.ImageDigest',
-  'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecificationsToAdd.*.Containers.*.Framework',
-  'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecificationsToAdd.*.Containers.*.ImageDigest',
-  'AWS::WorkSpaces::Workspace#BundleId',
-  'AWS::WorkSpaces::Workspace#RootVolumeEncryptionEnabled',
-  'AWS::WorkSpaces::Workspace#UserVolumeEncryptionEnabled',
-  'AWS::WorkSpaces::Workspace#VolumeEncryptionKey',
 ]);
