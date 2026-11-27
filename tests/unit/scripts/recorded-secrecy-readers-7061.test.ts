@@ -212,6 +212,7 @@ const GROUPS: Readonly<Record<string, readonly string[]>> = {
     'src/analyzer/outputs-diff.ts',
     'src/analyzer/outputs-diff',
     'src/analyzer/cross-stack-preview.ts',
+    'src/analyzer/security-diff.ts',
   ],
 };
 
@@ -737,7 +738,7 @@ function violations(
 describe('readers ask recorded-secrecy, never test a marker by hand (go-to-k/cdkd#7061)', () => {
   it('no migrated group holds a hand test', () => {
     // A floor the scan does not read: a group that lost its files proves nothing.
-    expect(groupFiles().length).toBeGreaterThanOrEqual(331);
+    expect(groupFiles().length).toBeGreaterThanOrEqual(332);
     expect(violations()).toEqual([]);
   });
 
