@@ -676,15 +676,25 @@ scan_verbose_output() { # scan_verbose_output <label> <text>
 # that piece; the resolver masks it by provenance. Premises first, so the
 # negative checks cannot pass on a run that never resolved the select.
 # <mode> `child`: the child engine ran, so its lines must be present and
-# masked. `no-change`: a same-value redeploy, where the parent plans no
-# change and runs no child engine; it must say so, and print no piece.
-scan_7077_arm() { # scan_7077_arm <label> <text> <child|no-change>
+# masked. `diff`: `cdkd diff --recursive` binds the child's parameters but
+# leaves the condition UNKNOWN (its operand holds a reference the diff never
+# resolves, so it keeps the recorded verdict): the masked binding line must
+# be present. `no-change`: a same-value redeploy, where the parent plans no
+# change and runs no child engine; it must say so. Every mode scans for the
+# piece.
+scan_7077_arm() { # scan_7077_arm <label> <text> <child|diff|no-change>
   local label="$1" text="$2" mode="$3"
   if ! grep -qF "Parameter Sep7077: using default value ${PIN_SSM_VALUE}" <<<"${text}"; then
     echo "FAIL: #7077: ${label}: premise: no 'Parameter Sep7077: using default value ${PIN_SSM_VALUE}' line -- the separator is not the sub-floor pin, so the arm tests nothing" >&2
     exit 1
   fi
-  if [ "${mode}" = "no-change" ]; then
+  if [ "${mode}" = "diff" ]; then
+    if ! awk 'index($0, "Parameter Mixed7077: using user-provided value ") { n++; if ($0 !~ /Parameter Mixed7077: using user-provided value \*\*\*$/) bad = 1 }
+      END { exit (n == 0 || bad) ? 1 : 0 }' <<<"${text}"; then
+      echo "FAIL: #7077: ${label}: the child's 'Parameter Mixed7077: using user-provided value' lines are absent (the diff did not bind the child) or not masked whole" >&2
+      exit 1
+    fi
+  elif [ "${mode}" = "no-change" ]; then
     if ! grep -qF 'No changes detected' <<<"${text}"; then
       echo "FAIL: #7077: ${label}: the same-value redeploy planned a change (no 'No changes detected' line): masking Mixed7077 by provenance must change only what is printed" >&2
       exit 1
@@ -1994,7 +2004,7 @@ if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDO
   exit 1
 fi
 echo "    OK: the diff printed no resolved plaintext"
-scan_7077_arm "phase 2 diff --recursive" "${DIFF_OUT}" child
+scan_7077_arm "phase 2 diff --recursive" "${DIFF_OUT}" diff
 
 echo "==> Phase 2b: a second deploy is a no-op and does not rewrite the redaction"
 # `--verbose` and captured for the #7077 arm: a same-value redeploy prints

@@ -282,7 +282,13 @@ describe('resolver log operands with a sub-floor provenance print as *** (#7077)
       { template: template('Q7'), resources: {}, recordedSecretValues: diffBag, crossStackTaint: taint } as never,
       'vpc-0abc'
     );
-    expect(logOnlyValuesOf.get(diffBag)?.has('vpc-0abc')).toBe(true);
+    // Never into the pass bag a decider reads (the fingerprint pass's
+    // `printingCorpusOf`, the tag settle's `holdsRecordedSecret`): a
+    // display-only bag beside it (go-to-k/cdkd#7077 review).
+    expect(logOnlyValuesOf.get(diffBag)?.has('vpc-0abc') ?? false).toBe(false);
+    const { displayOnlyBagOf } = await import('../../../src/deployment/intrinsic-resolver/display-taint.js');
+    const display = displayOnlyBagOf({ recordedSecretValues: diffBag } as never);
+    expect(display !== undefined && logOnlyValuesOf.get(display)?.has('vpc-0abc')).toBe(true);
   });
 
   it('a value with no provenance still prints (the scan above can see it)', async () => {

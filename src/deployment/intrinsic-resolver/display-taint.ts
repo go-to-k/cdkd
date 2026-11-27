@@ -276,16 +276,40 @@ export function innermostCrossStackReadTainted(): boolean {
  * the pass (`recordLogOnlyValue`): masked whole at any length, and embedded
  * at or above the floor, on any line the pass prints.
  *
- * `cdkd diff` only (a context carrying the preview's marks): a log-only needle
- * is NOT display-only everywhere. A deploy's write decisions read it (the
+ * `cdkd diff` only (a context carrying the preview's marks), and never into
+ * the pass bag: a log-only needle there is read by deciders (the
  * masked-property fingerprint's `templateCarriesNeedle`, a nested row's
- * `holdsRecordedSecret` tag withholding), so a deploy records nothing here.
+ * `holdsRecordedSecret` tag settle), so it goes to a display-only bag beside
+ * it ({@link displayOnlyBagOf}).
  */
 export function recordTaintedCrossStackValue(context: ResolverContext, value: unknown): void {
   if (crossStackTaintOf(context) === undefined) return;
-  const bag = context.recordedSecretValues;
-  if (bag === undefined || typeof value !== 'string' || value === '') return;
-  recordLogOnlyValue(bag, value);
+  const pass = context.recordedSecretValues;
+  if (pass === undefined || typeof value !== 'string' || value === '') return;
+  let display = displayOnlyBags.get(pass);
+  if (display === undefined) {
+    display = new Map();
+    displayOnlyBags.set(pass, display);
+  }
+  recordLogOnlyValue(display, value);
+}
+
+/**
+ * The DISPLAY-ONLY bag beside each pass bag (go-to-k/cdkd#7077 review): the
+ * needles {@link recordTaintedCrossStackValue} records. Read by the
+ * resolver's render mask alone (`maskRenderedNeedlesForLog`), never handed to
+ * a decider: a needle in the pass bag itself made `cdkd diff`'s nested-row
+ * tag settle (`holdsRecordedSecret`) and fingerprint pass read the import as
+ * secret and plan a phantom UPDATE.
+ */
+const displayOnlyBags = new WeakMap<RecordedSecretValues, RecordedSecretValues>();
+
+/** The display-only bag of `context`'s pass, when one was recorded. */
+export function displayOnlyBagOf(
+  context: ResolverContext | undefined
+): RecordedSecretValues | undefined {
+  const pass = context?.recordedSecretValues;
+  return pass === undefined ? undefined : displayOnlyBags.get(pass);
 }
 
 /** What a log render knows about the operand it prints. */
