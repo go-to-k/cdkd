@@ -144,7 +144,8 @@ function derivedOutputsOf(
   const template = entry.template;
   const resources = recordOf(template.Resources);
   const rowMemo = new Map<string, DerivedOutputs>();
-  const attributeMemo = new Map<string, boolean>();
+  // Resource id -> property name -> whether it reads a tainted source.
+  const attributeMemo = new Map<string, Map<string, boolean>>();
   const sources: NoEchoPositionSources = {
     parameters: tainted,
     attributeIsNoEcho: (id, attribute) => attributeIsDerived(id, attribute),
@@ -178,12 +179,13 @@ function derivedOutputsOf(
     const property = attribute.split('.')[0]!;
     const properties = recordOf(resource['Properties']);
     if (!Object.hasOwn(properties, property)) return false;
-    const key = `${id}\u0000${property}`;
-    const known = attributeMemo.get(key);
+    let memo = attributeMemo.get(id);
+    if (memo === undefined) attributeMemo.set(id, (memo = new Map()));
+    const known = memo.get(property);
     if (known !== undefined) return known;
-    attributeMemo.set(key, false); // a cycle reads nothing more
+    memo.set(property, false); // a cycle reads nothing more
     const reads = readsNoEchoSource(properties[property], sources);
-    attributeMemo.set(key, reads);
+    memo.set(property, reads);
     return reads;
   };
   const derived = new Set<string>();
