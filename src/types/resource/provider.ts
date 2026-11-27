@@ -498,7 +498,16 @@ export interface ResourceProvider {
    * @returns paths to exclude from the drift comparison; defaults to
    *          empty when not implemented
    */
-  getDriftUnknownPaths?(resourceType: string, properties?: Record<string, unknown>): string[];
+  getDriftUnknownPaths?(
+    resourceType: string,
+    properties?: Record<string, unknown>,
+    /**
+     * go-to-k/cdkd#7061: the record's own `noEchoLeaves` and
+     * `maskedPropertyFingerprints`, as stored, for a provider that asks
+     * `recordedSecrecyOf` whether a recorded property is a secret.
+     */
+    provenance?: { readonly noEchoLeaves?: unknown; readonly maskedPropertyFingerprints?: unknown }
+  ): string[];
 
   /**
    * Narrow a property bag the same way this provider narrows what it actually

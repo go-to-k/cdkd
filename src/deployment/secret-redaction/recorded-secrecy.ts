@@ -134,3 +134,59 @@ export function dynamicReferenceBody(token: string, service: string): string | u
 export function isMaskRun(text: string): boolean {
   return /^\*{3,}$/.test(text);
 }
+
+/**
+ * What a RECORD says about one position of its own bags (go-to-k/cdkd#7061):
+ *
+ * - `masked`: the value there carries a redaction marker (the mask as a whole
+ *   leaf at any depth, or a dynamic reference), or a provenance field names
+ *   the position: a `noEchoLeaves` coordinate under the key, a
+ *   `maskedPropertyFingerprints` key (both `properties`), or a
+ *   `noEchoAttributeNames` entry (`attributes`).
+ * - `unknown`: there is no record, or its bag is not an object.
+ * - `clear`: everything else.
+ *
+ * Every reader treats `unknown` exactly as `masked`: when in doubt, mask.
+ * Provenance only ever ADDS `masked`, so a reader moving here from a text
+ * test of the same position masks the same or more. Malformed provenance
+ * fields read as absent, as their own readers read them.
+ */
+export type RecordedSecrecy = 'masked' | 'clear' | 'unknown';
+
+/** The fields of a record {@link recordedSecrecyOf} reads, structurally. */
+export interface RecordedSecrecySource {
+  readonly properties?: unknown;
+  readonly attributes?: unknown;
+  readonly noEchoLeaves?: unknown;
+  readonly noEchoAttributeNames?: unknown;
+  readonly maskedPropertyFingerprints?: unknown;
+}
+
+export function recordedSecrecyOf(
+  record: RecordedSecrecySource | undefined,
+  at: { readonly field: 'properties' | 'attributes'; readonly key: string }
+): RecordedSecrecy {
+  if (record === undefined || record === null || typeof record !== 'object') return 'unknown';
+  const bag = record[at.field];
+  if (bag === null || typeof bag !== 'object' || Array.isArray(bag)) return 'unknown';
+  const value = Object.hasOwn(bag, at.key) ? (bag as Record<string, unknown>)[at.key] : undefined;
+  if (holdsMaskLeaf(value) || valueMentionsDynamicReference(value)) return 'masked';
+  if (at.field === 'attributes') {
+    const names = record.noEchoAttributeNames;
+    return Array.isArray(names) && names.includes(at.key) ? 'masked' : 'clear';
+  }
+  const leaves = record.noEchoLeaves;
+  if (Array.isArray(leaves) && leaves.some((c) => Array.isArray(c) && c[0] === at.key)) {
+    return 'masked';
+  }
+  const fingerprints = record.maskedPropertyFingerprints;
+  if (
+    fingerprints !== null &&
+    typeof fingerprints === 'object' &&
+    !Array.isArray(fingerprints) &&
+    Object.hasOwn(fingerprints, at.key)
+  ) {
+    return 'masked';
+  }
+  return 'clear';
+}

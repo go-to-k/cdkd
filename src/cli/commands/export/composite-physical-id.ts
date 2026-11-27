@@ -1,4 +1,4 @@
-import { holdsMaskLeaf } from '../../../deployment/secret-redaction/recorded-secrecy.js';
+import { recordedSecrecyOf } from '../../../deployment/secret-redaction/recorded-secrecy.js';
 import {
   cdkdRemedy,
   commandHole,
@@ -27,6 +27,11 @@ export interface CompositePhysicalIdContext {
   readonly logicalId: string;
   readonly physicalId: string;
   readonly attributes: Record<string, unknown>;
+  /**
+   * The record's `noEchoAttributeNames` as stored (go-to-k/cdkd#7061): an
+   * attribute its provider declared `NoEcho` is masked whatever it holds.
+   */
+  readonly noEchoAttributeNames?: unknown;
 }
 
 /**
@@ -306,8 +311,14 @@ export async function resolveIdentifierValue(
     // masked attribute whose physicalId is itself a usable identifier never
     // reaches here: `resolve` returns the physicalId and nothing masked is
     // shipped. Tested only when NO backfill ran — a live read that answered
-    // has already replaced the state-only question.
-    if (holdsMaskLeaf(ctx.attributes[entry.field])) {
+    // has already replaced the state-only question. The RECORD decides
+    // (go-to-k/cdkd#7061): an attribute its provider declared `NoEcho` is
+    // refused as masked whatever text it holds, and so is an unreadable bag.
+    const secrecy = recordedSecrecyOf(
+      { attributes: ctx.attributes, noEchoAttributeNames: ctx.noEchoAttributeNames },
+      { field: 'attributes', key: entry.field }
+    );
+    if (secrecy !== 'clear') {
       throw new RepairableRefusal(
         maskedIdentifierAttributeReason(entry.field, ctx.logicalId),
         importRepairCommand(ctx.logicalId)

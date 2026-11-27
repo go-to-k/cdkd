@@ -137,7 +137,10 @@ export async function compareDriftReadback(args: CompareDriftReadbackArgs): Prom
   // of resources it is actually unreadable for (API Gateway V2
   // `TlsConfig` on a non-private integration, issue #1602).
   const ignorePaths = provider.getDriftUnknownPaths
-    ? provider.getDriftUnknownPaths(resource.resourceType, resource.properties ?? {})
+    ? provider.getDriftUnknownPaths(resource.resourceType, resource.properties ?? {}, {
+        noEchoLeaves: resource.noEchoLeaves,
+        maskedPropertyFingerprints: resource.maskedPropertyFingerprints,
+      })
     : [];
   // Providers can also declare plain-string array paths that are
   // semantically UNORDERED sets (FSx `WindowsConfiguration.Aliases`, ...).

@@ -19,7 +19,10 @@ import {
 import type { EC2Provider } from '../ec2-provider.js';
 import { isNamedError } from './common.js';
 import { inDeclaredOrder } from '../../declared-order.js';
-import { carriesSecretMask } from '../../../deployment/secret-redaction.js';
+import {
+  recordedSecrecyOf,
+  type RecordedSecrecySource,
+} from '../../../deployment/secret-redaction/recorded-secrecy.js';
 
 /** The instance's own not-found code on a per-attribute read. */
 const INVALID_INSTANCE_NOT_FOUND: ReadonlySet<string> = new Set(['InvalidInstanceID.NotFound']);
@@ -34,7 +37,8 @@ const CREDIT_SPECIFICATION_NOT_APPLICABLE: ReadonlySet<string> = new Set([
 export async function readInstanceCurrentState(
   this: EC2Provider,
   physicalId: string,
-  properties?: Record<string, unknown>
+  properties?: Record<string, unknown>,
+  provenance?: RecordedSecrecySource
 ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
   const resp = await this.ec2Client.send(
     new DescribeInstancesCommand({ InstanceIds: [physicalId] })
@@ -49,7 +53,7 @@ export async function readInstanceCurrentState(
     return RESOURCE_NOT_FOUND;
   }
   try {
-    return await readInstanceDetails.call(this, physicalId, instance, properties);
+    return await readInstanceDetails.call(this, physicalId, instance, properties, provenance);
   } catch (err) {
     // The instance's own not-found (gone between the calls) keeps mapping to
     // RESOURCE_NOT_FOUND there.
@@ -82,7 +86,8 @@ async function readInstanceDetails(
   this: EC2Provider,
   physicalId: string,
   instance: Instance,
-  properties: Record<string, unknown> | undefined
+  properties: Record<string, unknown> | undefined,
+  provenance: RecordedSecrecySource | undefined
 ): Promise<Record<string, unknown>> {
   const result: Record<string, unknown> = {};
   if (instance.ImageId !== undefined) result['ImageId'] = instance.ImageId;
@@ -403,8 +408,10 @@ async function readInstanceDetails(
   // read throws rather than omitting the key, which would read as that
   // removal. A record holding the mask in its place (a secret under
   // `Fn::Base64` is persisted as `***`) is not read: the value cannot be
-  // compared, and `getDriftUnknownPaths` declares it unknown.
-  if (properties?.['UserData'] != null && !carriesSecretMask(properties['UserData'])) {
+  // compared, and `getDriftUnknownPaths` declares it unknown. So is one the
+  // record's provenance names (go-to-k/cdkd#7061): a masked-property
+  // fingerprint or a `NoEcho` coordinate under it.
+  if (properties?.['UserData'] != null && !userDataUnreadable(properties, provenance)) {
     const attrResp = await this.ec2Client.send(
       new DescribeInstanceAttributeCommand({ InstanceId: physicalId, Attribute: 'userData' })
     );
@@ -479,3 +486,21 @@ export function declaredBlockDeviceNames(
 
 /** The {@link EC2Provider} methods this module defines. */
 export const readInstanceStateMethods = { readInstanceCurrentState };
+
+/**
+ * Whether the record's `UserData` has no value to compare a readback with
+ * (go-to-k/cdkd#6754): the record holds a secret there, by its text (the mask,
+ * a reference) or by its provenance (a masked-property fingerprint, a `NoEcho`
+ * coordinate under it; go-to-k/cdkd#7061), or the record cannot tell. Read by
+ * the readback, which then makes no `userData` call, and by
+ * `getDriftUnknownPaths`, which declares the path unknown.
+ */
+export function userDataUnreadable(
+  properties: Record<string, unknown> | undefined,
+  provenance: RecordedSecrecySource | undefined
+): boolean {
+  return (
+    recordedSecrecyOf({ ...provenance, properties }, { field: 'properties', key: 'UserData' }) !==
+    'clear'
+  );
+}

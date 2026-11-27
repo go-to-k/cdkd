@@ -525,6 +525,7 @@ function stateWith(
       physicalId: string;
       properties?: Record<string, unknown>;
       attributes?: Record<string, unknown>;
+      noEchoAttributeNames?: string[];
     }
   >
 ): StackState {
@@ -536,6 +537,7 @@ function stateWith(
       properties: r.properties ?? {},
       attributes: r.attributes ?? {},
       dependencies: [],
+      ...(r.noEchoAttributeNames && { noEchoAttributeNames: r.noEchoAttributeNames }),
     };
   }
   return {
@@ -1253,6 +1255,32 @@ describe('buildImportPlan — a redaction mask never reaches the import identifi
     // is printed in both places and the withheld wording appears in neither.
     expect(reason).toContain('at attributes.TableARN for Table, and that attribute');
     expect(reason).not.toContain('is not a plain identifier');
+  });
+
+  it('BLOCKS as masked an identifier attribute its provider declared NoEcho, whatever text it holds (go-to-k/cdkd#7061)', async () => {
+    // The record's provenance decides, not the value's text: a declared
+    // `NoEcho` attribute holding an unusable value is refused with the mask's
+    // remedy, never the state-only one.
+    const state = stateWith({
+      Table: {
+        resourceType: 'AWS::S3Tables::Table',
+        physicalId: TABLE_COMPOSITE,
+        properties: { Namespace: 'analytics', TableName: 'events' },
+        attributes: { TableARN: 'not-an-arn-7061' },
+        noEchoAttributeNames: ['TableARN'],
+      },
+    });
+    const template = {
+      Resources: {
+        Table: { Type: 'AWS::S3Tables::Table', Properties: { Namespace: 'analytics', TableName: 'events' } },
+      },
+    };
+    const plan = await buildImportPlan(state, template, cfnClientFor(), 'MyStack');
+    expect(plan.phase1Imports).toEqual([]);
+    const reason = groupBlockedReasons(plan.blocked).join('\n');
+    expect(reason).toMatch(/redaction mask/);
+    expect(reason).toMatch(/attributes\.TableARN/);
+    expect(reason).not.toContain('not-an-arn-7061');
   });
 
   it('WITHHOLDS a hostile logical id from the repair command, and never renders it through displayIdent there', async () => {

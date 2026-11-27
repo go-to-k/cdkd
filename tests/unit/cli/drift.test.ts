@@ -1219,7 +1219,9 @@ describe('cdkd drift', () => {
     expect(error).toBeUndefined();
     expect(getDriftUnknownPaths).toHaveBeenCalledWith(
       'AWS::ApiGatewayV2::Integration',
-      expect.objectContaining({ ConnectionType: 'INTERNET' })
+      expect.objectContaining({ ConnectionType: 'INTERNET' }),
+      // go-to-k/cdkd#7061: the record's own secrecy provenance, as stored.
+      { noEchoLeaves: undefined, maskedPropertyFingerprints: undefined }
     );
     expect(output).toContain('no drift detected');
     expect(output).not.toContain('TlsConfig');

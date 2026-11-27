@@ -124,6 +124,14 @@ export interface ReadCurrentStateContext {
    */
   attributes?: Readonly<Record<string, unknown>>;
   /**
+   * go-to-k/cdkd#7061: the read resource's OWN `noEchoLeaves` and
+   * `maskedPropertyFingerprints`, as stored, set by `buildReadCurrentStateContext`.
+   * A provider deciding whether a recorded property is a secret asks
+   * `recordedSecrecyOf` with these beside `properties`. Absent where no record
+   * is read (the deploy capture): the value's text alone then decides.
+   */
+  provenance?: { readonly noEchoLeaves?: unknown; readonly maskedPropertyFingerprints?: unknown };
+  /**
    * The read resource's OWN recorded `observedProperties` (the drift
    * baseline), set by `buildReadCurrentStateContext` beside `attributes`. A
    * provider that must pick ONE of several live copies to report may compare
