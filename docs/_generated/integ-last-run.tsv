@@ -518,7 +518,7 @@ servicediscovery-http-namespace-update	2026-11-17T06:22:39Z	PASS	145	verify.sh	r
 servicediscovery-namespaces	2026-11-17T05:50:34Z	PASS	145	verify.sh	rc ok, destroy 0 errors, orph clean; at 148f393bc (#6484)
 ses-identity	2026-11-04T05:36:33Z	PASS	196	verify.sh	batch 4; all 3 phases clean, 0 err 0 orph
 sg-circular-dependency	2026-11-04T21:40:26Z	PASS	376	verify.sh	us-east-1; own temp state bucket; rc ok, orph clean
-sg-ingress-secret-source	2026-11-27T05:05:22Z	FAIL	97	verify.sh	phase 3: cdkd drift exit 2 (InCidr drift unknown, unsupported type); phases 1-2 ok; cleanup+orph clean
+sg-ingress-secret-source	2026-11-27T05:16:09Z	PASS	125	verify.sh	rc ok, orph clean
 sg-ingress-source-replacement	2026-11-27T05:05:22Z	PASS	135	verify.sh	rc ok, orph clean
 sg-rule-description-update	2026-11-26T18:43:17Z	PASS	235	verify.sh	PR7075 run at 430bf0ba0, rc ok, orph clean
 shared-stackname-multi-region	2026-11-05T07:40:12Z	PASS	105	verify.sh	rc ok, us-east-1+us-west-2, orph clean both regions (own temp state bucket)
