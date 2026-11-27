@@ -92,6 +92,14 @@ export interface ReplacementEvidence {
   readonly kind: ReplacementEvidenceKind;
   /** Issues / PRs holding the measurement, quote or decision. */
   readonly refs: readonly number[];
+  /**
+   * A `cfn-measured` `replace` whose CloudFormation execution went to the
+   * create path and FAILED there on this name property, which the replacement
+   * keeps (go-to-k/cdkd#7126): CloudFormation replaces on the change only
+   * when the name changes too, and otherwise loses no data. The refusal says
+   * so instead of claiming the data is lost there as well.
+   */
+  readonly cfnKeepsName?: string;
 }
 
 const row =
@@ -745,6 +753,21 @@ export const REPLACEMENT_EVIDENCE: ReadonlyMap<string, ReplacementEvidence> = ne
   ],
   ['AWS::SageMaker::Domain#SubnetIds', update('cc-measured', 7083)],
   ['AWS::SageMaker::Domain#Tags', update('cc-measured', 7083)],
+  // Measured on #7083 (us-east-1): Cloud Control refuses a VpcId change
+  // (NotUpdatable, "VpcId change requires replacement"), and a CloudFormation
+  // execution of a VpcId-only change went to the handler's create path: the
+  // new domain failed AlreadyExists on the DomainName it keeps, and the stack
+  // rolled back. So CloudFormation replaces on it (#7126), and succeeds only
+  // when DomainName changes too. Only a value -> value change was measured;
+  // adding or removing VpcId was not. Stateful: a replacement stays behind
+  // --force-stateful-recreation, and with it cdkd's create-first replacement
+  // meets the same collision (probed: a second Cloud Control create under the
+  // same name fails AlreadyExists) and refuses it unless --replace deletes the
+  // old domain first.
+  [
+    'AWS::SageMaker::Domain#VpcId',
+    { ...replace('cfn-measured', 7083, 7126), cfnKeepsName: 'DomainName' },
+  ],
   // CloudFormation reports UPDATE_COMPLETE under the same version ARN and
   // leaves the specifications as created: no replacement either way.
   [

@@ -3084,6 +3084,11 @@
       "scenarios": []
     },
     {
+      "name": "sagemaker-domain-vpc",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "schedule-group-rename-rollback",
       "annotated": false,
       "scenarios": []
@@ -4634,6 +4639,7 @@
     "s3-object-lock",
     "s3-replication-and-filter",
     "s3-retry-own-bucket",
+    "sagemaker-domain-vpc",
     "schedule-group-rename-rollback",
     "scheduler-custom-group",
     "schema-v6-to-v7-migration",

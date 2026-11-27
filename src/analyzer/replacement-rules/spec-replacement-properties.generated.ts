@@ -16,6 +16,7 @@ export const SPEC_REPLACEMENT_PATHS: ReadonlyMap<
   ['AWS::AppConfig::ConfigurationProfile', [['Type']]],
   ['AWS::ElastiCache::ReplicationGroup', [['NodeGroupConfiguration'], ['NumNodeGroups']]],
   ['AWS::Route53Resolver::ResolverRule', [['DomainName']]],
+  ['AWS::SageMaker::Domain', [['VpcId']]],
 ]);
 
 /** `<Type>#<path>` of the rows above that a CloudFormation execution measured replacing (#7100). */
@@ -23,4 +24,12 @@ export const SPEC_REPLACEMENT_CFN_MEASURED: ReadonlySet<string> = new Set([
   'AWS::ElastiCache::ReplicationGroup#NodeGroupConfiguration',
   'AWS::ElastiCache::ReplicationGroup#NumNodeGroups',
   'AWS::Route53Resolver::ResolverRule#DomainName',
+]);
+
+/**
+ * `<Type>#<path>` -> the name property, for the measured rows whose CloudFormation
+ * replacement failed on that name, which it keeps (#7126).
+ */
+export const SPEC_REPLACEMENT_CFN_KEEPS_NAME: ReadonlyMap<string, string> = new Map([
+  ['AWS::SageMaker::Domain#VpcId', 'DomainName'],
 ]);

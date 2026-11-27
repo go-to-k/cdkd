@@ -10,7 +10,10 @@ import {
 } from '../../../provisioning/stateful-types.js';
 import { type ResourceChange, type ResourceState } from '../../../types/state.js';
 import { safeMsg } from '../../../utils/display-safe.js';
-import { SPEC_REPLACEMENT_CFN_MEASURED } from '../../../analyzer/replacement-rules/spec-replacement-properties.generated.js';
+import {
+  SPEC_REPLACEMENT_CFN_KEEPS_NAME,
+  SPEC_REPLACEMENT_CFN_MEASURED,
+} from '../../../analyzer/replacement-rules/spec-replacement-properties.generated.js';
 import { CdkdError } from '../../../utils/error-handler.js';
 import { markRefusedBeforeApplying } from '../../prior-attempt-scope.js';
 import { markNonRetryable } from '../../retryable-errors.js';
@@ -99,6 +102,14 @@ export function refuseUnsafeReplacement(
         .filter((pc) => pc.requiresReplacement)
         .map((pc) => pc.path)
         .filter((path) => SPEC_REPLACEMENT_CFN_MEASURED.has([oldResourceType, path].join('#')));
+      // go-to-k/cdkd#7126: measured replacing, but CloudFormation's
+      // replacement then fails on the name it keeps, so no data is lost there.
+      const keptNames = (change.propertyChanges ?? [])
+        .filter((pc) => pc.requiresReplacement)
+        .flatMap((pc) => {
+          const name = SPEC_REPLACEMENT_CFN_KEEPS_NAME.get([oldResourceType, pc.path].join('#'));
+          return name === undefined ? [] : [{ path: pc.path, name }];
+        });
       // `markNonRetryable`: the verdict is computed from a CLI flag and
       // a state-recorded property bag, neither of which a retry can
       // change — and the message interpolates a template-controlled
@@ -126,6 +137,9 @@ export function refuseUnsafeReplacement(
               safeMsg`${renderStatefulReason(statefulReason)}. ` +
               (measuredReplaced.length > 0
                 ? safeMsg`CloudFormation was measured replacing it on a ${measuredReplaced.join(' / ')} change, so the data is lost there as well. `
+                : '') +
+              (keptNames.length > 0
+                ? safeMsg`CloudFormation was measured replacing it on a ${keptNames.map((k) => k.path).join(' / ')} change, and failing that replacement on the ${[...new Set(keptNames.map((k) => k.name))].join(' / ')} it keeps (AlreadyExists): it replaces only when the name changes too. `
                 : '') +
               (protection
                 ? safeMsg`${recordedProtectionNote(protection, '--force-stateful-recreation')} Or change ` +

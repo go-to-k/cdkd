@@ -15,7 +15,7 @@ what cdkd does; `update` and `baseline` rows keep the in-place update, and a `ha
 is decided by `src/analyzer/replacement-rules/rules.ts` or a provider-replacement planner.
 Evidence: `REPLACEMENT_EVIDENCE`.
 
-Candidates: 389 (replace 4, update 219, baseline 76, hand rule 90).
+Candidates: 389 (replace 5, update 219, baseline 75, hand rule 90).
 
 | Candidate | Spec | Verdict |
 | --- | --- | --- |
@@ -372,7 +372,7 @@ Candidates: 389 (replace 4, update 219, baseline 76, hand rule 90).
 | `AWS::SageMaker::Domain#DefaultUserSettings.RSessionAppSettings.DefaultResourceSpec.SageMakerImageVersionArn` | maybe | update |
 | `AWS::SageMaker::Domain#SubnetIds` | yes | update |
 | `AWS::SageMaker::Domain#Tags` | yes | update |
-| `AWS::SageMaker::Domain#VpcId` | yes | baseline |
+| `AWS::SageMaker::Domain#VpcId` | yes | replace |
 | `AWS::SageMaker::FeatureGroup#OnlineStoreConfig` | yes | baseline |
 | `AWS::SageMaker::ModelPackage#AdditionalInferenceSpecifications.*.Containers.*.ContainerHostname` | maybe | update |
 | `AWS::SageMaker::ModelPackage#AdditionalInferenceSpecifications.*.Containers.*.Environment` | maybe | update |
