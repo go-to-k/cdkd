@@ -638,6 +638,8 @@ describe('re-adopt the retained old resource (delete the new)', () => {
       "Any other id stops the revert and drops the journal's only record of the retained old resource (phys-old)"
     );
     expect(warn).not.toContain('To orphan it');
+    // A plain id is not described as masked (go-to-k/cdkd#7061).
+    expect(warn).not.toContain('shown masked');
   });
 
   it('readopt: an absent op id over a damaged record says the re-run deletes what the repair names', async () => {
