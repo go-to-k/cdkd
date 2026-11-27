@@ -1,5 +1,6 @@
 import type { CloudFormationTemplate, TemplateOutput } from '../../types/resource.js';
 import { getLogger } from '../../utils/logger.js';
+import { mentionsDynamicReference } from '../../deployment/secret-redaction/recorded-secrecy.js';
 import type { IntrinsicResolveFn } from '../diff-calculator.js';
 import {
   collectPublishedOutputNames,
@@ -193,7 +194,7 @@ export async function resolveTemplateOutputs(
   // A leaf walk rather than `JSON.stringify`, which throws on a BigInt or a
   // cycle, and would count a key NAME spelling a token.
   const spellsToken = (raw: unknown): boolean => {
-    if (typeof raw === 'string') return raw.includes('{{resolve:');
+    if (typeof raw === 'string') return mentionsDynamicReference(raw);
     if (Array.isArray(raw)) return raw.some(spellsToken);
     if (raw !== null && typeof raw === 'object') {
       return Object.values(raw as Record<string, unknown>).some(spellsToken);

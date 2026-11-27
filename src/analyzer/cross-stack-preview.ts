@@ -13,7 +13,7 @@
 import type { CloudFormationTemplate } from '../types/resource.js';
 import type { ResourceChange } from '../types/state.js';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
-import { SECRET_MASK } from '../deployment/secret-redaction/pairs.js';
+import { isMaskLeaf, mentionsDynamicReference } from '../deployment/secret-redaction/recorded-secrecy.js';
 import { referencedLogicalIds } from './refactor-pairing.js';
 
 /** A previewed value: known, or decided only by the producer's deploy. */
@@ -110,7 +110,7 @@ export class CrossStackPreview {
     if (exportName === null) this.everyExportTainted = true;
     else if (exportName !== undefined) this.taintedExports.add(exportName);
     for (const value of values) {
-      if (isScalar(value) && value !== '' && value !== SECRET_MASK) {
+      if (isScalar(value) && value !== '' && !isMaskLeaf(value)) {
         this.taintedTexts.add(String(value));
       }
     }
@@ -214,8 +214,8 @@ export function previewProducerValues(input: ProducerPreviewInput): ProducerPrev
   const stored = input.storedOutputs ?? {};
   const verdict = (desired: unknown): PreviewedValue =>
     isScalar(desired) &&
-    desired !== SECRET_MASK &&
-    !String(desired).includes('{{resolve:') &&
+    !isMaskLeaf(desired) &&
+    !mentionsDynamicReference(String(desired)) &&
     !input.holdsSecret(String(desired))
       ? { kind: 'known', value: desired, producerStack }
       : { kind: 'unknown', producerStack };
@@ -235,7 +235,7 @@ export function previewProducerValues(input: ProducerPreviewInput): ProducerPrev
       const desired = input.desiredOutputs[outputName];
       // A `NoEcho`-served output is stored as the mask, so the producer's own
       // diff cannot tell it changed either (go-to-k/cdkd#4043); neither can this.
-      if (stored[outputName] === SECRET_MASK || desired === undefined) continue;
+      if (isMaskLeaf(stored[outputName]) || desired === undefined) continue;
       if (JSON.stringify(desired) !== JSON.stringify(stored[outputName])) {
         previewed = verdict(desired);
       } else if (exportName !== undefined && !Object.hasOwn(stored, exportName)) {

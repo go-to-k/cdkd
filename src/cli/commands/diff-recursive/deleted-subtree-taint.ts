@@ -1,4 +1,5 @@
 import { MIN_NEEDLE_LENGTH, SECRET_MASK } from '../../../deployment/secret-redaction.js';
+import { isMaskLeaf } from '../../../deployment/secret-redaction/recorded-secrecy.js';
 import type { CrossStackPreview } from '../../../analyzer/cross-stack-preview.js';
 import type { ResourceState } from '../../../types/state.js';
 import type { DiffTreeNode } from './types.js';
@@ -27,7 +28,7 @@ export function deletedRowRecordTainted(
     if (typeof value !== 'string') return false;
     if (mixesDynamicReference(value)) return true;
     for (const text of tainted) {
-      if (text === '' || text === SECRET_MASK) continue;
+      if (text === '' || isMaskLeaf(text)) continue;
       if (value === text || (text.length >= MIN_NEEDLE_LENGTH && value.includes(text))) return true;
     }
     return false;

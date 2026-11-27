@@ -201,6 +201,14 @@ const GROUPS: Readonly<Record<string, readonly string[]>> = {
     'src/state/export-index-store.ts',
     'src/state/malformed-resources-bag/outputs.ts',
   ],
+  'diff rendering and the cross-stack preview': [
+    'src/cli/commands/diff.ts',
+    'src/cli/commands/diff-recursive.ts',
+    'src/cli/commands/diff-recursive',
+    'src/analyzer/outputs-diff.ts',
+    'src/analyzer/outputs-diff',
+    'src/analyzer/cross-stack-preview.ts',
+  ],
 };
 
 /**
@@ -725,7 +733,7 @@ function violations(
 describe('readers ask recorded-secrecy, never test a marker by hand (go-to-k/cdkd#7061)', () => {
   it('no migrated group holds a hand test', () => {
     // A floor the scan does not read: a group that lost its files proves nothing.
-    expect(groupFiles().length).toBeGreaterThanOrEqual(296);
+    expect(groupFiles().length).toBeGreaterThanOrEqual(327);
     expect(violations()).toEqual([]);
   });
 
@@ -895,6 +903,25 @@ describe('readers ask recorded-secrecy, never test a marker by hand (go-to-k/cdk
     );
     expect(text).not.toBe(real(NAME));
     expect(violations({ [NAME]: text })).toEqual([`hand test: ${NAME}#typeChangeNameQuestion#desired === SECRET_MASK`]);
+  });
+
+  it.each([
+    [
+      'src/cli/commands/diff-recursive/trust.ts',
+      "!mentionsDynamicReferenceTo(text, 'ssm')",
+      "!text.includes('{{resolve:ssm:')",
+      "literalTrusted#text.includes('{{resolve:ssm:')",
+    ],
+    [
+      'src/analyzer/cross-stack-preview.ts',
+      'isMaskLeaf(stored[outputName])',
+      'stored[outputName] === SECRET_MASK',
+      'previewProducerValues#stored[outputName] === SECRET_MASK',
+    ],
+  ])('probe: putting a diff-rendering site back fails (%s)', (file, now, before, key) => {
+    const text = real(file).replace(now, before);
+    expect(text).not.toBe(real(file));
+    expect(violations({ [file]: text })).toEqual([`hand test: ${file}#${key}`]);
   });
 
   // The helper keeps each hand test's meaning exactly.
