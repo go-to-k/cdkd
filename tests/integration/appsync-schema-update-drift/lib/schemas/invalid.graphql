@@ -1,0 +1,5 @@
+# AppSync refuses this schema: NoSuchType is not defined (#7127).
+type Query {
+  a: NoSuchType
+  b: String
+}

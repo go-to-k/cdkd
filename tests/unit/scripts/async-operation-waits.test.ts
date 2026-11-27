@@ -44,7 +44,6 @@ const FROZEN_UNMEASURED: ReadonlySet<string> = new Set([
   'api-gateway:UpdateStage',
   'appconfig:CreateEnvironment',
   'appconfig:UpdateEnvironment',
-  'appsync:StartSchemaCreation',
   'bedrock-agentcore-control:CreateEvaluator',
   'bedrock-agentcore-control:DeleteAgentRuntime',
   'bedrock-agentcore-control:DeleteEvaluator',

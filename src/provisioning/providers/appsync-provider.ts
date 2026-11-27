@@ -120,6 +120,7 @@ import {
   openIDConnectConfigToCfn,
   lambdaAuthorizerConfigToCfn,
 } from './appsync/read-state.js';
+import { waitForSchemaCreation } from './appsync/schema-wait.js';
 import { readDataSource, readResolver, readApiKey, importImpl } from './appsync/read-children.js';
 
 export {
@@ -161,6 +162,9 @@ export class AppSyncProvider implements ResourceProvider {
    * and the old entry simply becomes unreachable.
    */
   arnCache = new Map<string, string>();
+  /** The schema-status wait's clock and pause (go-to-k/cdkd#7127); tests replace them. */
+  sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+  now = (): number => Date.now();
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -811,6 +815,24 @@ export class AppSyncProvider implements ResourceProvider {
   }
   canonicalizeSdl(sdl: string, source: 'state' | 'aws'): Promise<string> {
     return canonicalizeSdl.call(this, sdl, source);
+  }
+  waitForSchemaCreation(
+    apiId: string,
+    logicalId: string,
+    resourceType: string,
+    phase: 'create' | 'update',
+    mask: MaskerFn,
+    startStatus?: string
+  ): Promise<void> {
+    return waitForSchemaCreation.call(
+      this,
+      apiId,
+      logicalId,
+      resourceType,
+      phase,
+      mask,
+      startStatus
+    );
   }
   readGraphQLSchema(
     physicalId: string,

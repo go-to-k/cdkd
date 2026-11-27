@@ -285,6 +285,14 @@ export function undeclaredUncomparedDriftKeys(resourceType: string, properties: 
  * this rule (top-level keys only) cannot skip without hiding the replica's
  * other members, so a pre-fix replica `Tags` baseline is still compared until
  * the next update or `cdkd state refresh-observed` rewrites it.
+ *
+ * `AWS::AppSync::GraphQLSchema` `Definition` (go-to-k/cdkd#7127), same blind
+ * spot: before #7127 the baseline was read while AppSync still served the
+ * schema the deploy replaced, so `drift --revert` pushed the old schema back.
+ * Skipped only while the live SDL is the declared inline `Definition`; a
+ * schema sourced from `DefinitionS3Location` declares no SDL to compare with,
+ * so its pre-fix baseline stays compared until the next update or
+ * `cdkd state refresh-observed` rewrites it (go-to-k/cdkd#7139).
  */
 export function preFixBaselineUncomparedDriftKeys(
   resourceType: string,
@@ -560,6 +568,17 @@ const OWN_WRITE_MEMBERS: ReadonlyMap<string, readonly OwnWriteHeal[]> = new Map(
     'AWS::EC2::SecurityGroup': [
       sgRulesHeal('SecurityGroupIngress', 'ingress'),
       sgRulesHeal('SecurityGroupEgress', 'egress'),
+    ],
+    // go-to-k/cdkd#7127: the read answers the declared bytes exactly when the
+    // live SDL canonicalizes to them (`readGraphQLSchema`).
+    'AWS::AppSync::GraphQLSchema': [
+      {
+        key: 'Definition',
+        liveIsDeclared: (properties, aws) =>
+          typeof properties['Definition'] === 'string' &&
+          properties['Definition'] !== '' &&
+          aws['Definition'] === properties['Definition'],
+      },
     ],
   })
 );

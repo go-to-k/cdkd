@@ -12,7 +12,7 @@ Every SDK command a provider sends whose operation the SDK model marks as asynch
 (issue [#7132](https://github.com/go-to-k/cdkd/issues/7132)), with its hand classification
 from `src/provisioning/async-operation-waits.ts`.
 
-Total: 173 (no-wait-by-design 17, unmeasured 60, waits 96).
+Total: 173 (no-wait-by-design 17, unmeasured 59, waits 97).
 
 | Operation | Signal | Verdict | Detail | Providers |
 | --- | --- | --- | --- | --- |
@@ -24,7 +24,7 @@ Total: 173 (no-wait-by-design 17, unmeasured 60, waits 96).
 | api-gateway:UpdateStage | cacheClusterStatus: CacheClusterStatus (CREATE_IN_PROGRESS, DELETE_IN_PROGRESS, FLUSH_IN_PROGRESS) | unmeasured | returns after the call; no code comment says why; needs a CloudFormation A/B (a CacheClusterEnabled change answers CREATE_IN_PROGRESS / DELETE_IN_PROGRESS) | apigateway-provider.ts |
 | appconfig:CreateEnvironment | State: EnvironmentState (DEPLOYING) | unmeasured | returns after the call; no code comment says why; needs a CloudFormation A/B | appconfig-environment-provider.ts |
 | appconfig:UpdateEnvironment | State: EnvironmentState (DEPLOYING) | unmeasured | returns after the call; no code comment says why; needs a CloudFormation A/B | appconfig-environment-provider.ts |
-| appsync:StartSchemaCreation | StartSchemaCreation; status: SchemaStatus (DELETING, PROCESSING) | unmeasured | returns while the schema is PROCESSING; CloudFormation fails NotStabilized on an invalid schema (#7127, whose open fix adds the wait) | appsync-provider.ts |
+| appsync:StartSchemaCreation | StartSchemaCreation; status: SchemaStatus (DELETING, PROCESSING) | waits | `waitForSchemaCreation`; fails on FAILED, NOT_APPLICABLE, DELETING; every outcome is decided by a GetSchemaCreationStatus poll, as CloudFormation waits (#7127) | appsync-provider.ts |
 | auto-scaling:StartInstanceRefresh | StartInstanceRefresh | waits | `runInstanceRefresh`; fails on Failed, Cancelled; --no-wait skips it (docs/cli-deploy.md); a timeout or Ctrl-C cancels the refresh and throws | asg-provider.ts |
 | bedrock-agentcore-control:CreateAgentRuntime | status: AgentRuntimeStatus (CREATING, DELETING, UPDATING) | waits | `waitForRuntimeReady`; fails on CREATE_FAILED, UPDATE_FAILED; --no-wait defers it to deferReadiness (runs only if the deploy needs the resource) | agentcore-runtime-provider.ts |
 | bedrock-agentcore-control:CreateEvaluator | status: EvaluatorStatus (CREATING, DELETING, UPDATING) | unmeasured | returns after the call; no code comment says why; needs a CloudFormation A/B | agentcore-evaluator-provider.ts |

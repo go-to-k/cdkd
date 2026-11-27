@@ -48,6 +48,8 @@ export async function createGraphQLSchema(
   const definition = properties['Definition'] as string | undefined;
   const definitionS3Location = properties['DefinitionS3Location'];
 
+  // The start's own status: the wait's first observation (#7127).
+  let started: { status?: string | undefined } | undefined;
   try {
     if (definition) {
       // Inline wins when both are present — same precedence as the
@@ -58,7 +60,7 @@ export async function createGraphQLSchema(
             'using the inline Definition and ignoring DefinitionS3Location (CFn treats them as alternatives)'
         );
       }
-      await this.getClient().send(
+      started = await this.getClient().send(
         new StartSchemaCreationCommand({
           apiId,
           definition: new TextEncoder().encode(definition),
@@ -75,7 +77,7 @@ export async function createGraphQLSchema(
         'DefinitionS3Location',
         maskerOrIdentity(context?.maskSecrets)
       );
-      await this.getClient().send(
+      started = await this.getClient().send(
         new StartSchemaCreationCommand({
           apiId,
           definition: new TextEncoder().encode(body),
@@ -84,12 +86,6 @@ export async function createGraphQLSchema(
     }
 
     this.logger.debug(`Successfully started schema creation for ${logicalId}`);
-
-    // Schema is tied to the API, use apiId as physical ID
-    return {
-      physicalId: apiId,
-      attributes: {},
-    };
   } catch (error) {
     const cause = error instanceof Error ? error : undefined;
     throw this.wrapCaughtError(
@@ -105,6 +101,28 @@ export async function createGraphQLSchema(
         )
     );
   }
+
+  // go-to-k/cdkd#7127: AppSync applies the schema asynchronously; wait for it
+  // as CloudFormation does, so a refused schema fails the create and the
+  // observed baseline reads the schema just submitted. Nothing is retired on
+  // a failure: the schema has no identity or delete of its own (the API's
+  // record owns it, and AppSync keeps serving the API's previous schema).
+  if (definition || definitionS3Location !== undefined) {
+    await this.waitForSchemaCreation(
+      apiId,
+      logicalId,
+      resourceType,
+      'create',
+      maskerOrIdentity(context?.maskSecrets),
+      started?.status
+    );
+  }
+
+  // Schema is tied to the API, use apiId as physical ID
+  return {
+    physicalId: apiId,
+    attributes: {},
+  };
 }
 
 // ─── AWS::AppSync::DataSource ──────────────────────────────────────

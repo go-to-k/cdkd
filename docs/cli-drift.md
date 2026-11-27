@@ -288,6 +288,14 @@ until `cdkd state refresh-observed`. Until then, disabling such a mapping
 outside cdkd is not reported either, because the snapshot already says
 `false`.
 
+An `AWS::AppSync::GraphQLSchema` changed by an older cdkd can hold the
+schema the change replaced in its recorded snapshot, because that cdkd read
+the schema before AppSync applied the new one. Drift does not report the
+`Definition` difference while the live schema is the template's inline
+`Definition`, so `--revert` never pushes the old schema back. A schema from
+`DefinitionS3Location` is compared as usual; the next deploy that changes the
+schema, or `cdkd state refresh-observed`, replaces the old snapshot.
+
 ## Reading the report
 
 A stack with no drift prints one line:

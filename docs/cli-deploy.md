@@ -317,6 +317,12 @@ return leaves unfinished, and what `--full-wait` does when a wait runs out.
   group does too, and the next deploy that updates the instance reboots it;
   editing the group alone reboots nothing. CloudFormation reboots the same way.
   Under `--no-wait` cdkd returns once the reboot starts.
+- **`AWS::AppSync::GraphQLSchema` waits for AppSync to apply the schema in
+  every mode**, `--no-wait` included, on create and on a schema change: until
+  `GetSchemaCreationStatus` leaves `PROCESSING` the API still serves the
+  previous schema, and a schema AppSync refuses (`FAILED`) fails the deploy, as
+  in CloudFormation. See
+  [wait mode details](cli-deploy-waits.md#the-waits-no-wait-never-skips).
 - **`AWS::Lambda::NetworkConnector` waits for `ACTIVE` in every mode.** AWS
   rejects a web function revision that uses a connector still in `PENDING`, so
   an early return would only move the wait into a failure. See

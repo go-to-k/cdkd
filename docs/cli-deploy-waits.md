@@ -342,6 +342,17 @@ tag-only change returns at once. RDS refuses the next modify or delete
 of a proxy or endpoint that is still `modifying`. That includes the call a
 rollback replays, so returning early would only move the failure later.
 
+An `AWS::AppSync::GraphQLSchema` waits in every mode as well. AppSync applies
+a schema asynchronously, so a create or a schema change returns only once
+`GetSchemaCreationStatus` leaves `PROCESSING`; the rollback of a schema change
+and a `cdkd drift --revert` wait the same way. This is the resource's own
+completion, not a readiness wait: until then the API still serves the previous
+schema, which the drift baseline would record, and a schema AppSync refuses
+reads `FAILED`, which fails the resource as CloudFormation does (AWS's reason
+is in the `--verbose` output). The wait polls up to 15 minutes (an explicit
+`--resource-timeout` below 30 minutes lowers it to half of that value), and
+honors Ctrl-C.
+
 ### `AWS::Lambda::NetworkConnector`
 
 A Lambda network connector also waits in every mode. Its create returns only

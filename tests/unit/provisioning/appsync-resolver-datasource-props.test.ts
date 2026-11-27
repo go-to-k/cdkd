@@ -612,6 +612,7 @@ describe('AppSync Resolver + DataSource properties (#609)', () => {
     it('create fetches the S3 body and submits it via StartSchemaCreation', async () => {
       mockS3Send.mockResolvedValueOnce(s3Body('type Query { hello: String }'));
       mockSend.mockResolvedValueOnce({});
+      mockSend.mockResolvedValueOnce({ status: 'SUCCESS' }); // GetSchemaCreationStatus (#7127)
 
       await provider.create('L', SCHEMA_TYPE, {
         ApiId: 'api-1',
@@ -629,6 +630,7 @@ describe('AppSync Resolver + DataSource properties (#609)', () => {
 
     it('create prefers the inline Definition over DefinitionS3Location (warn, no S3 call)', async () => {
       mockSend.mockResolvedValueOnce({});
+      mockSend.mockResolvedValueOnce({ status: 'SUCCESS' }); // GetSchemaCreationStatus (#7127)
 
       await provider.create('L', SCHEMA_TYPE, {
         ApiId: 'api-1',
@@ -663,6 +665,7 @@ describe('AppSync Resolver + DataSource properties (#609)', () => {
       // Changed URL — fetch + StartSchemaCreation with the new body.
       mockS3Send.mockResolvedValueOnce(s3Body('type Query { v2: String }'));
       mockSend.mockResolvedValueOnce({});
+      mockSend.mockResolvedValueOnce({ status: 'SUCCESS' }); // GetSchemaCreationStatus (#7127)
       await provider.update(
         'L',
         'api-1',
