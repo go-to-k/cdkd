@@ -505,14 +505,28 @@ export function outputReferenceProvenanceFor(
     carriedFrom:
       baseline !== undefined && outputs === baseline.outputs
         ? baseline
-        : readsWrittenBack.get(outputs),
+        : writtenBackReadFor(outputs, redacted),
     sinkOf,
   });
 }
 
 /**
+ * The registered read whose `outputs` bag this save writes back, only while
+ * the bag still equals the read's (redacted, as it persists): a bag edited
+ * after registration is a merge, and carries nothing.
+ */
+function writtenBackReadFor(
+  outputs: Record<string, unknown>,
+  redacted: Record<string, unknown>
+): Pick<StackState, 'outputs' | 'outputReferenceProvenance'> | undefined {
+  const read = readsWrittenBack.get(outputs);
+  return read !== undefined && outputMapsEqual(redacted, read.outputs) ? read : undefined;
+}
+
+/**
  * go-to-k/cdkd#7110: the stored records a save writes back with their
- * `outputs` bag untouched, keyed by that bag's identity. Such a bag is
+ * `outputs` bag untouched, keyed by that bag's identity, each holding a copy
+ * of the bag as read (the store's redacted form) and the read's field. Such a bag is
  * neither this deploy's baseline nor one it resolved, so without the entry
  * {@link outputReferenceProvenanceFor} takes its "merge" arm and the save
  * erased the stack's `outputReferenceProvenance`, leaving every later
@@ -526,7 +540,8 @@ const readsWrittenBack = new WeakMap<
 /**
  * Register `read` (a state just read from the backend, already redacted) as
  * written back with its `outputs` bag unchanged: a save of a state holding
- * that same bag object carries `read`'s `outputReferenceProvenance` whole.
+ * that same bag object, still equal to the copy taken here, carries `read`'s
+ * `outputReferenceProvenance` whole.
  * Call it on the read every engine save rebuilds from, before the save.
  * Nothing new persists: the field is the stored one, tokens and versions only.
  */
@@ -535,7 +550,7 @@ export function carryReadOutputs(
 ): void {
   if (read.outputs === null || typeof read.outputs !== 'object') return;
   readsWrittenBack.set(read.outputs, {
-    outputs: read.outputs,
+    outputs: structuredClone(read.outputs),
     ...(read.outputReferenceProvenance !== undefined && {
       outputReferenceProvenance: read.outputReferenceProvenance,
     }),
