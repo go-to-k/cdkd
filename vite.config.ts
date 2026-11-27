@@ -570,6 +570,16 @@ export default defineConfig({
         command: 'node --experimental-strip-types scripts/gen-in-place-attr-coverage.ts --check',
         cache: false,
       },
+      // Issue #7132: every provider call the SDK model marks asynchronous is
+      // classified for whether the provider waits for it.
+      'gen:async-operation-waits': {
+        command: 'node --experimental-strip-types scripts/gen-async-operation-waits.ts',
+        cache: false,
+      },
+      'audit:async-operation-waits:check': {
+        command: 'node --experimental-strip-types scripts/gen-async-operation-waits.ts --check',
+        cache: false,
+      },
       // Issue #7070: the spec-replacement candidates measured as replacing,
       // unioned with the schema's create-only paths. Offline; the registry
       // snapshot it reads is refreshed by the network-only task below, which
@@ -787,6 +797,7 @@ export default defineConfig({
           'vp run gen:nested-key-coverage',
           'vp run gen:getatt-attributes',
           'vp run gen:in-place-attr-coverage',
+          'vp run gen:async-operation-waits',
           'vp run gen:spec-replacement-properties',
           // Not a matrix, but the same class of CI guard: a rebase can
           // denormalize the committed integ ledger, and the failure looks

@@ -433,6 +433,8 @@ const FREE_TEXT_SITES_BY_FILE: Readonly<Record<string, number>> = {
   // case that keeps that half of the vocabulary load-bearing. It is also the
   // cell that actually carries `invoke|start-api`.
   'build-scenario-coverage-matrix.ts': 2,
+  // TWO: the evidence `detail` cell and the classification `detail` cell (#7132).
+  'gen-async-operation-waits.ts': 2,
   'gen-cc-update-measurements.ts': 1,
   'gen-drift-readback-coverage.ts': 1,
   'gen-nested-key-coverage.ts': 3,

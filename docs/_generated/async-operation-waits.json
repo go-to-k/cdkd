@@ -1,0 +1,5855 @@
+{
+  "issue": 7132,
+  "total": 173,
+  "counts": {
+    "unmeasured": 60,
+    "waits": 96,
+    "no-wait-by-design": 17
+  },
+  "rows": [
+    {
+      "key": "api-gateway:CreateRestApi",
+      "client": "api-gateway",
+      "operation": "CreateRestApi",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "apiStatus: ApiStatus (PENDING, UPDATING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/apigateway/rest-api.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/apigateway-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+      }
+    },
+    {
+      "key": "api-gateway:CreateStage",
+      "client": "api-gateway",
+      "operation": "CreateStage",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "cacheClusterStatus: CacheClusterStatus (CREATE_IN_PROGRESS, DELETE_IN_PROGRESS, FLUSH_IN_PROGRESS)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/apigateway/stage.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/apigateway-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (a cache cluster answers CREATE_IN_PROGRESS)"
+      }
+    },
+    {
+      "key": "api-gateway:ImportRestApi",
+      "client": "api-gateway",
+      "operation": "ImportRestApi",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "apiStatus: ApiStatus (PENDING, UPDATING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/apigateway/rest-api.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/apigateway-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+      }
+    },
+    {
+      "key": "api-gateway:PutRestApi",
+      "client": "api-gateway",
+      "operation": "PutRestApi",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "apiStatus: ApiStatus (PENDING, UPDATING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/apigateway/rest-api.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/apigateway-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+      }
+    },
+    {
+      "key": "api-gateway:UpdateRestApi",
+      "client": "api-gateway",
+      "operation": "UpdateRestApi",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "apiStatus: ApiStatus (PENDING, UPDATING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/apigateway/rest-api.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/apigateway-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+      }
+    },
+    {
+      "key": "api-gateway:UpdateStage",
+      "client": "api-gateway",
+      "operation": "UpdateStage",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "cacheClusterStatus: CacheClusterStatus (CREATE_IN_PROGRESS, DELETE_IN_PROGRESS, FLUSH_IN_PROGRESS)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/apigateway/stage.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/apigateway-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (a CacheClusterEnabled change answers CREATE_IN_PROGRESS / DELETE_IN_PROGRESS)"
+      }
+    },
+    {
+      "key": "appconfig:CreateEnvironment",
+      "client": "appconfig",
+      "operation": "CreateEnvironment",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "State: EnvironmentState (DEPLOYING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/appconfig-environment-provider.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/appconfig-environment-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+      }
+    },
+    {
+      "key": "appconfig:UpdateEnvironment",
+      "client": "appconfig",
+      "operation": "UpdateEnvironment",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "State: EnvironmentState (DEPLOYING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/appconfig-environment-provider.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/appconfig-environment-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+      }
+    },
+    {
+      "key": "appsync:StartSchemaCreation",
+      "client": "appsync",
+      "operation": "StartSchemaCreation",
+      "evidence": [
+        {
+          "signal": "start-operation",
+          "detail": "StartSchemaCreation"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "status: SchemaStatus (DELETING, PROCESSING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/appsync/children.ts",
+        "src/provisioning/providers/appsync/update-children.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/appsync-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns while the schema is PROCESSING; CloudFormation fails NotStabilized on an invalid schema (#7127, whose open fix adds the wait)"
+      }
+    },
+    {
+      "key": "auto-scaling:StartInstanceRefresh",
+      "client": "auto-scaling",
+      "operation": "StartInstanceRefresh",
+      "evidence": [
+        {
+          "signal": "start-operation",
+          "detail": "StartInstanceRefresh"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/asg/instance-refresh.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/asg-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "runInstanceRefresh"
+        ],
+        "failureStatuses": [
+          "Failed",
+          "Cancelled"
+        ],
+        "note": "--no-wait skips it (docs/cli-deploy.md); a timeout or Ctrl-C cancels the refresh and throws"
+      }
+    },
+    {
+      "key": "bedrock-agentcore-control:CreateAgentRuntime",
+      "client": "bedrock-agentcore-control",
+      "operation": "CreateAgentRuntime",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "status: AgentRuntimeStatus (CREATING, DELETING, UPDATING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/agentcore-runtime-provider.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/agentcore-runtime-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForRuntimeReady"
+        ],
+        "failureStatuses": [
+          "CREATE_FAILED",
+          "UPDATE_FAILED"
+        ],
+        "note": "--no-wait defers it to deferReadiness (runs only if the deploy needs the resource)"
+      }
+    },
+    {
+      "key": "bedrock-agentcore-control:CreateEvaluator",
+      "client": "bedrock-agentcore-control",
+      "operation": "CreateEvaluator",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "status: EvaluatorStatus (CREATING, DELETING, UPDATING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/agentcore-evaluator-provider.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/agentcore-evaluator-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+      }
+    },
+    {
+      "key": "bedrock-agentcore-control:DeleteAgentRuntime",
+      "client": "bedrock-agentcore-control",
+      "operation": "DeleteAgentRuntime",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "status: AgentRuntimeStatus (CREATING, DELETING, UPDATING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/agentcore-runtime-provider.ts",
+        "src/provisioning/providers/agentcore-runtime/wait.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/agentcore-runtime-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (it waits only before the delete)"
+      }
+    },
+    {
+      "key": "bedrock-agentcore-control:DeleteEvaluator",
+      "client": "bedrock-agentcore-control",
+      "operation": "DeleteEvaluator",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "status: EvaluatorStatus (CREATING, DELETING, UPDATING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/agentcore-evaluator-provider.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/agentcore-evaluator-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+      }
+    },
+    {
+      "key": "bedrock-agentcore-control:UpdateAgentRuntime",
+      "client": "bedrock-agentcore-control",
+      "operation": "UpdateAgentRuntime",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "status: AgentRuntimeStatus (CREATING, DELETING, UPDATING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/agentcore-runtime-provider.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/agentcore-runtime-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForRuntimeReady"
+        ],
+        "failureStatuses": [
+          "CREATE_FAILED",
+          "UPDATE_FAILED"
+        ],
+        "note": "--no-wait defers it to deferReadiness (runs only if the deploy needs the resource)"
+      }
+    },
+    {
+      "key": "bedrock-agentcore-control:UpdateEvaluator",
+      "client": "bedrock-agentcore-control",
+      "operation": "UpdateEvaluator",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "status: EvaluatorStatus (CREATING, DELETING, UPDATING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/agentcore-evaluator-provider.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/agentcore-evaluator-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+      }
+    },
+    {
+      "key": "cloudfront:CreateDistribution",
+      "client": "cloudfront",
+      "operation": "CreateDistribution",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "Distribution.Status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "Distribution.AliasICPRecordals.ICPRecordalStatus: ICPRecordalStatus (PENDING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/cloudfront-distribution/core.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/cloudfront-distribution-provider.ts"
+      ],
+      "classification": {
+        "verdict": "no-wait-by-design",
+        "reason": "`Deployed` changes only when edges serve; the default returns and --full-wait waits (#1282, docs/cli-deploy.md wait table)"
+      }
+    },
+    {
+      "key": "cloudfront:CreateDistributionWithTags",
+      "client": "cloudfront",
+      "operation": "CreateDistributionWithTags",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "Distribution.Status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "Distribution.AliasICPRecordals.ICPRecordalStatus: ICPRecordalStatus (PENDING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/cloudfront-distribution/core.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/cloudfront-distribution-provider.ts"
+      ],
+      "classification": {
+        "verdict": "no-wait-by-design",
+        "reason": "`Deployed` changes only when edges serve; the default returns and --full-wait waits (#1282, docs/cli-deploy.md wait table)"
+      }
+    },
+    {
+      "key": "cloudfront:UpdateDistribution",
+      "client": "cloudfront",
+      "operation": "UpdateDistribution",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "Distribution.Status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "Distribution.AliasICPRecordals.ICPRecordalStatus: ICPRecordalStatus (PENDING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/cloudfront-distribution/core.ts",
+        "src/provisioning/providers/cloudfront-distribution/delete.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/cloudfront-distribution-provider.ts"
+      ],
+      "classification": {
+        "verdict": "no-wait-by-design",
+        "reason": "`Deployed` changes only when edges serve; the default returns and --full-wait waits (#1282, docs/cli-deploy.md wait table); the disable before a delete always waits"
+      }
+    },
+    {
+      "key": "cloudtrail:StartLogging",
+      "client": "cloudtrail",
+      "operation": "StartLogging",
+      "evidence": [
+        {
+          "signal": "start-operation",
+          "detail": "StartLogging"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/cloudtrail/core.ts",
+        "src/provisioning/providers/cloudtrail/update.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/cloudtrail-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+      }
+    },
+    {
+      "key": "codebuild:CreateProject",
+      "client": "codebuild",
+      "operation": "CreateProject",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "project.webhook.status: WebhookStatus (CREATING, DELETING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/codebuild/create.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/codebuild-provider.ts"
+      ],
+      "classification": {
+        "verdict": "no-wait-by-design",
+        "reason": "settled once AWS answers: the flagged `project.webhook.status` belongs to the separate CreateWebhook call, its own row"
+      }
+    },
+    {
+      "key": "codebuild:CreateWebhook",
+      "client": "codebuild",
+      "operation": "CreateWebhook",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "webhook.status: WebhookStatus (CREATING, DELETING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/codebuild/create.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/codebuild-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+      }
+    },
+    {
+      "key": "codebuild:UpdateProject",
+      "client": "codebuild",
+      "operation": "UpdateProject",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "project.webhook.status: WebhookStatus (CREATING, DELETING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/codebuild/update.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/codebuild-provider.ts"
+      ],
+      "classification": {
+        "verdict": "no-wait-by-design",
+        "reason": "settled once AWS answers: the flagged `project.webhook.status` belongs to the separate CreateWebhook / UpdateWebhook calls, their own rows"
+      }
+    },
+    {
+      "key": "codebuild:UpdateWebhook",
+      "client": "codebuild",
+      "operation": "UpdateWebhook",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "webhook.status: WebhookStatus (CREATING, DELETING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/codebuild/update.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/codebuild-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+      }
+    },
+    {
+      "key": "docdb:CreateDBCluster",
+      "client": "docdb",
+      "operation": "CreateDBCluster",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterMembers.DBClusterParameterGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.AssociatedRoles.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.MasterUserSecret.SecretStatus: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/docdb/cluster-create.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/docdb-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForClusterAvailable"
+        ],
+        "failureStatuses": [
+          "deleting",
+          "failed",
+          "stopped",
+          "storage-full",
+          "insufficient-capacity",
+          "restore-error",
+          "inaccessible-*",
+          "incompatible-*",
+          "*-failed"
+        ],
+        "note": "--no-wait defers it to deferReadiness (runs only if the deploy needs the resource)"
+      }
+    },
+    {
+      "key": "docdb:CreateDBInstance",
+      "client": "docdb",
+      "operation": "CreateDBInstance",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBInstanceStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StatusInfos.Status: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/docdb/instance.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/docdb-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForInstanceAvailable"
+        ],
+        "failureStatuses": [
+          "deleting",
+          "failed",
+          "stopped",
+          "storage-full",
+          "insufficient-capacity",
+          "restore-error",
+          "inaccessible-*",
+          "incompatible-*",
+          "*-failed"
+        ],
+        "note": "--no-wait defers it to deferReadiness (runs only if the deploy needs the resource)"
+      }
+    },
+    {
+      "key": "docdb:CreateDBSubnetGroup",
+      "client": "docdb",
+      "operation": "CreateDBSubnetGroup",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBSubnetGroup.Subnets.SubnetStatus: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/docdb-subnet-group-provider.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/docdb-subnet-group-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+      }
+    },
+    {
+      "key": "docdb:DeleteDBCluster",
+      "client": "docdb",
+      "operation": "DeleteDBCluster",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterMembers.DBClusterParameterGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.AssociatedRoles.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.MasterUserSecret.SecretStatus: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/docdb/cluster-delete.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/docdb-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForClusterDeleted"
+        ],
+        "failureStatuses": []
+      }
+    },
+    {
+      "key": "docdb:DeleteDBInstance",
+      "client": "docdb",
+      "operation": "DeleteDBInstance",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBInstanceStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StatusInfos.Status: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/docdb/instance.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/docdb-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForInstanceDeleted"
+        ],
+        "failureStatuses": []
+      }
+    },
+    {
+      "key": "docdb:ModifyDBCluster",
+      "client": "docdb",
+      "operation": "ModifyDBCluster",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterMembers.DBClusterParameterGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.AssociatedRoles.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.MasterUserSecret.SecretStatus: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/docdb/cluster-create.ts",
+        "src/provisioning/providers/docdb/cluster-delete.ts",
+        "src/provisioning/providers/docdb/cluster-update.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/docdb-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForClusterPortApplied",
+          "waitForSecurityGroupsApplied",
+          "waitForApplied"
+        ],
+        "failureStatuses": [
+          "deleting",
+          "failed",
+          "stopped",
+          "storage-full",
+          "insufficient-capacity",
+          "restore-error",
+          "inaccessible-*",
+          "incompatible-*",
+          "*-failed"
+        ],
+        "note": "only for a changed port, security groups or read-back setting, skipped under --no-wait; a DeletionProtection flip or re-enable around a delete does not wait after the call"
+      }
+    },
+    {
+      "key": "docdb:ModifyDBInstance",
+      "client": "docdb",
+      "operation": "ModifyDBInstance",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBInstanceStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StatusInfos.Status: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/docdb/instance.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/docdb-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForApplied"
+        ],
+        "failureStatuses": [],
+        "note": "only CACertificateIdentifier / EnablePerformanceInsights are read back, and it warns on its cap; a DeletionProtection flip or re-enable around a delete does not wait after the call"
+      }
+    },
+    {
+      "key": "docdb:ModifyDBSubnetGroup",
+      "client": "docdb",
+      "operation": "ModifyDBSubnetGroup",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBSubnetGroup.Subnets.SubnetStatus: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/docdb-subnet-group-provider.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/docdb-subnet-group-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+      }
+    },
+    {
+      "key": "docdb:RemoveFromGlobalCluster",
+      "client": "docdb",
+      "operation": "RemoveFromGlobalCluster",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "GlobalCluster.Status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "GlobalCluster.GlobalClusterMembers.SynchronizationStatus: GlobalClusterMemberSynchronizationStatus (pending-resync)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "GlobalCluster.FailoverState.Status: FailoverStatus (cancelling, pending)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/docdb/cluster-delete.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/docdb-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "detachFromGlobalCluster"
+        ],
+        "failureStatuses": []
+      }
+    },
+    {
+      "key": "docdb:RestoreDBClusterFromSnapshot",
+      "client": "docdb",
+      "operation": "RestoreDBClusterFromSnapshot",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterMembers.DBClusterParameterGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.AssociatedRoles.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.MasterUserSecret.SecretStatus: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/docdb/cluster-create.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/docdb-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForClusterAvailable"
+        ],
+        "failureStatuses": [
+          "deleting",
+          "failed",
+          "stopped",
+          "storage-full",
+          "insufficient-capacity",
+          "restore-error",
+          "inaccessible-*",
+          "incompatible-*",
+          "*-failed"
+        ],
+        "note": "--no-wait defers it to deferReadiness (runs only if the deploy needs the resource), unless a follow-up ModifyDBCluster needs it"
+      }
+    },
+    {
+      "key": "docdb:RestoreDBClusterToPointInTime",
+      "client": "docdb",
+      "operation": "RestoreDBClusterToPointInTime",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterMembers.DBClusterParameterGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.AssociatedRoles.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.MasterUserSecret.SecretStatus: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/docdb/cluster-create.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/docdb-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForClusterAvailable"
+        ],
+        "failureStatuses": [
+          "deleting",
+          "failed",
+          "stopped",
+          "storage-full",
+          "insufficient-capacity",
+          "restore-error",
+          "inaccessible-*",
+          "incompatible-*",
+          "*-failed"
+        ],
+        "note": "--no-wait defers it to deferReadiness (runs only if the deploy needs the resource), unless a follow-up ModifyDBCluster needs it"
+      }
+    },
+    {
+      "key": "dynamodb:CreateTable",
+      "client": "dynamodb",
+      "operation": "CreateTable",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.TableStatus: TableStatus (ARCHIVING, CREATING, DELETING, UPDATING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.GlobalSecondaryIndexes.IndexStatus: IndexStatus (CREATING, DELETING, UPDATING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.Replicas.ReplicaStatus: ReplicaStatus (ARCHIVING, CREATING, DELETING, UPDATING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.GlobalTableWitnesses.WitnessStatus: WitnessStatus (CREATING, DELETING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.SSEDescription.Status: SSEStatus (DISABLING, ENABLING, UPDATING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.WarmThroughput.Status: TableStatus (ARCHIVING, CREATING, DELETING, UPDATING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.VectorIndexes.IndexStatus: IndexStatus (CREATING, DELETING, UPDATING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/dynamodb-globaltable/create.ts",
+        "src/provisioning/providers/dynamodb-table/create.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/dynamodb-globaltable-provider.ts",
+        "src/provisioning/providers/dynamodb-table-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForTableActive"
+        ],
+        "failureStatuses": [
+          "any status other than CREATING / UPDATING / ACTIVE"
+        ]
+      }
+    },
+    {
+      "key": "dynamodb:DeleteTable",
+      "client": "dynamodb",
+      "operation": "DeleteTable",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.TableStatus: TableStatus (ARCHIVING, CREATING, DELETING, UPDATING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.GlobalSecondaryIndexes.IndexStatus: IndexStatus (CREATING, DELETING, UPDATING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.Replicas.ReplicaStatus: ReplicaStatus (ARCHIVING, CREATING, DELETING, UPDATING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.GlobalTableWitnesses.WitnessStatus: WitnessStatus (CREATING, DELETING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.SSEDescription.Status: SSEStatus (DISABLING, ENABLING, UPDATING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.WarmThroughput.Status: TableStatus (ARCHIVING, CREATING, DELETING, UPDATING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.VectorIndexes.IndexStatus: IndexStatus (CREATING, DELETING, UPDATING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/dynamodb-globaltable/create-commit.ts",
+        "src/provisioning/providers/dynamodb-globaltable/create-support.ts",
+        "src/provisioning/providers/dynamodb-globaltable/delete.ts",
+        "src/provisioning/providers/dynamodb-table/create.ts",
+        "src/provisioning/providers/dynamodb-table/delete.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/dynamodb-globaltable-provider.ts",
+        "src/provisioning/providers/dynamodb-table-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForGoneAfterDelete",
+          "waitForTableGone"
+        ],
+        "failureStatuses": [],
+        "note": "a cap or Ctrl-C warns and returns; a failed-create cleanup delete does not wait"
+      }
+    },
+    {
+      "key": "dynamodb:DisableKinesisStreamingDestination",
+      "client": "dynamodb",
+      "operation": "DisableKinesisStreamingDestination",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "DestinationStatus: DestinationStatus (DISABLING, ENABLING, UPDATING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/dynamodb-globaltable/replica-ops.ts",
+        "src/provisioning/providers/dynamodb-table/kinesis.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/dynamodb-globaltable-provider.ts",
+        "src/provisioning/providers/dynamodb-table-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForKinesisDisableSettled"
+        ],
+        "failureStatuses": [],
+        "note": "best effort: warns on its cap"
+      }
+    },
+    {
+      "key": "dynamodb:EnableKinesisStreamingDestination",
+      "client": "dynamodb",
+      "operation": "EnableKinesisStreamingDestination",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "DestinationStatus: DestinationStatus (DISABLING, ENABLING, UPDATING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/dynamodb-globaltable/replica-ops.ts",
+        "src/provisioning/providers/dynamodb-table/kinesis.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/dynamodb-globaltable-provider.ts",
+        "src/provisioning/providers/dynamodb-table-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (the destination answers ENABLING)"
+      }
+    },
+    {
+      "key": "dynamodb:UpdateContributorInsights",
+      "client": "dynamodb",
+      "operation": "UpdateContributorInsights",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "ContributorInsightsStatus: ContributorInsightsStatus (DISABLING, ENABLING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/dynamodb-globaltable/replica-ops.ts",
+        "src/provisioning/providers/dynamodb-table/streams.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/dynamodb-globaltable-provider.ts",
+        "src/provisioning/providers/dynamodb-table-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B; the answer is ENABLING / DISABLING. #6778 fixed the drift baseline, not the wait"
+      }
+    },
+    {
+      "key": "dynamodb:UpdateKinesisStreamingDestination",
+      "client": "dynamodb",
+      "operation": "UpdateKinesisStreamingDestination",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "DestinationStatus: DestinationStatus (DISABLING, ENABLING, UPDATING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/dynamodb-globaltable/replica-ops.ts",
+        "src/provisioning/providers/dynamodb-table/kinesis.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/dynamodb-globaltable-provider.ts",
+        "src/provisioning/providers/dynamodb-table-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "AWS::DynamoDB::Table waits (waitForKinesisDestinationSettled); AWS::DynamoDB::GlobalTable does not"
+      }
+    },
+    {
+      "key": "dynamodb:UpdateTable",
+      "client": "dynamodb",
+      "operation": "UpdateTable",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.TableStatus: TableStatus (ARCHIVING, CREATING, DELETING, UPDATING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.GlobalSecondaryIndexes.IndexStatus: IndexStatus (CREATING, DELETING, UPDATING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.Replicas.ReplicaStatus: ReplicaStatus (ARCHIVING, CREATING, DELETING, UPDATING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.GlobalTableWitnesses.WitnessStatus: WitnessStatus (CREATING, DELETING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.SSEDescription.Status: SSEStatus (DISABLING, ENABLING, UPDATING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.WarmThroughput.Status: TableStatus (ARCHIVING, CREATING, DELETING, UPDATING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.VectorIndexes.IndexStatus: IndexStatus (CREATING, DELETING, UPDATING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/dynamodb-globaltable/create-commit.ts",
+        "src/provisioning/providers/dynamodb-globaltable/create-support.ts",
+        "src/provisioning/providers/dynamodb-globaltable/delete.ts",
+        "src/provisioning/providers/dynamodb-globaltable/replica-ops.ts",
+        "src/provisioning/providers/dynamodb-globaltable/replica-protection.ts",
+        "src/provisioning/providers/dynamodb-globaltable/replica-settings.ts",
+        "src/provisioning/providers/dynamodb-globaltable/update-indexes.ts",
+        "src/provisioning/providers/dynamodb-globaltable/update-replicas.ts",
+        "src/provisioning/providers/dynamodb-globaltable/update-table.ts",
+        "src/provisioning/providers/dynamodb-table/delete.ts",
+        "src/provisioning/providers/dynamodb-table/gsi-updates.ts",
+        "src/provisioning/providers/dynamodb-table/update-billing.ts",
+        "src/provisioning/providers/dynamodb-table/update-settings.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/dynamodb-globaltable-provider.ts",
+        "src/provisioning/providers/dynamodb-table-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForTableActiveAfterUpdate",
+          "waitForTableAndIndexesActive",
+          "waitForGlobalTableSettled"
+        ],
+        "failureStatuses": [],
+        "note": "waits for ACTIVE; a DeletionProtection flip or re-enable around a delete does not wait after the call"
+      }
+    },
+    {
+      "key": "ec2:AssociateIamInstanceProfile",
+      "client": "ec2",
+      "operation": "AssociateIamInstanceProfile",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "IamInstanceProfileAssociation.State: IamInstanceProfileAssociationState (associating, disassociating)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/instance-create.ts",
+        "src/provisioning/providers/ec2/instance-lifecycle.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "the create waits (isInstanceProfileAssociated, warns on its cap); the update does not"
+      }
+    },
+    {
+      "key": "ec2:AssociateNatGatewayAddress",
+      "client": "ec2",
+      "operation": "AssociateNatGatewayAddress",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "NatGatewayAddresses.Status: NatGatewayAddressStatus (assigning, associating, disassociating, unassigning)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/nat-gateway.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "no-wait-by-design",
+        "reason": "CloudFormation waits, cdkd deliberately does not: the gateway keeps serving its other zones (ec2/nat-gateway.ts comment, measured on #2762)"
+      }
+    },
+    {
+      "key": "ec2:AssociateRouteTable",
+      "client": "ec2",
+      "operation": "AssociateRouteTable",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "AssociationState.State: RouteTableAssociationStateCode (associating, disassociating)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/route.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+      }
+    },
+    {
+      "key": "ec2:AssociateSubnetCidrBlock",
+      "client": "ec2",
+      "operation": "AssociateSubnetCidrBlock",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "Ipv6CidrBlockAssociation.Ipv6CidrBlockState.State: SubnetCidrBlockStateCode (associating, disassociating, failing)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/subnet-attributes.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForSubnetIpv6Association"
+        ],
+        "failureStatuses": [
+          "failed",
+          "failing"
+        ],
+        "note": "every mode (docs/cli-deploy.md edge cases)"
+      }
+    },
+    {
+      "key": "ec2:AttachVolume",
+      "client": "ec2",
+      "operation": "AttachVolume",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "State: VolumeAttachmentState (attaching, detaching)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/instance-lifecycle.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForVolumeAttachment"
+        ],
+        "failureStatuses": [],
+        "note": "throws if the attachment goes missing"
+      }
+    },
+    {
+      "key": "ec2:AttachVpnGateway",
+      "client": "ec2",
+      "operation": "AttachVpnGateway",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "VpcAttachment.State: AttachmentStatus (attaching, detaching)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/gateway-attachment.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForVpnGatewayAttachment"
+        ],
+        "failureStatuses": []
+      }
+    },
+    {
+      "key": "ec2:AuthorizeSecurityGroupEgress",
+      "client": "ec2",
+      "operation": "AuthorizeSecurityGroupEgress",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "SecurityGroupRules.ReferencedGroupInfo.PeeringStatus: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/security-group.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "no-wait-by-design",
+        "reason": "the flagged member is a referenced peering's PeeringStatus, not the rule's; the rule exists once AWS answers"
+      }
+    },
+    {
+      "key": "ec2:AuthorizeSecurityGroupIngress",
+      "client": "ec2",
+      "operation": "AuthorizeSecurityGroupIngress",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "SecurityGroupRules.ReferencedGroupInfo.PeeringStatus: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/security-group.ts",
+        "src/provisioning/providers/ec2/sg-ingress-create.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "no-wait-by-design",
+        "reason": "the flagged member is a referenced peering's PeeringStatus, not the rule's; the rule exists once AWS answers"
+      }
+    },
+    {
+      "key": "ec2:CreateInternetGateway",
+      "client": "ec2",
+      "operation": "CreateInternetGateway",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "InternetGateway.Attachments.State: AttachmentStatus (attaching, detaching)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/igw-eip.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "no-wait-by-design",
+        "reason": "a new gateway has no attachments: the flagged Attachments[].State belongs to AttachInternetGateway"
+      }
+    },
+    {
+      "key": "ec2:CreateNatGateway",
+      "client": "ec2",
+      "operation": "CreateNatGateway",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "NatGateway.NatGatewayAddresses.Status: NatGatewayAddressStatus (assigning, associating, disassociating, unassigning)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "NatGateway.ProvisionedBandwidth.Status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "NatGateway.State: NatGatewayState (deleting, pending)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "NatGateway.AttachedAppliances.AttachmentState: NatGatewayApplianceState (attaching, detaching)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "NatGateway.AttachedAppliances.ModificationState: NatGatewayApplianceModifyState (modifying)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/nat-gateway.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitUntilNatGatewayAvailable"
+        ],
+        "failureStatuses": [
+          "failed",
+          "deleting",
+          "deleted"
+        ],
+        "note": "--no-wait defers it to deferReadiness (runs only if the deploy needs the resource)"
+      }
+    },
+    {
+      "key": "ec2:CreateSubnet",
+      "client": "ec2",
+      "operation": "CreateSubnet",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "Subnet.State: SubnetState (pending)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/subnet.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (only an IPv6 association and attribute read-back wait)"
+      }
+    },
+    {
+      "key": "ec2:CreateVpc",
+      "client": "ec2",
+      "operation": "CreateVpc",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "Vpc.EncryptionControl.State: VpcEncryptionControlState (creating, deleting, enforce-in-progress, monitor-in-progress)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "Vpc.NetworkFirewallAssociations.FirewallOnboardingStatus: FirewallOnboardingStatus (disabling, pending)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "Vpc.State: VpcState (deleting, pending)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/vpc.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+      }
+    },
+    {
+      "key": "ec2:CreateVpcEndpoint",
+      "client": "ec2",
+      "operation": "CreateVpcEndpoint",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "VpcEndpoint.State: State (Deleting, Pending, PendingAcceptance)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2-vpc-endpoint-provider.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-vpc-endpoint-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForSettled"
+        ],
+        "failureStatuses": [
+          "failed",
+          "rejected",
+          "expired",
+          "partial",
+          "deleting",
+          "deleted"
+        ],
+        "note": "--no-wait defers it to deferReadiness (runs only if the deploy needs the resource)"
+      }
+    },
+    {
+      "key": "ec2:DetachVolume",
+      "client": "ec2",
+      "operation": "DetachVolume",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "State: VolumeAttachmentState (attaching, detaching)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/instance-lifecycle.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForVolumeAttachment"
+        ],
+        "failureStatuses": []
+      }
+    },
+    {
+      "key": "ec2:DisassociateIamInstanceProfile",
+      "client": "ec2",
+      "operation": "DisassociateIamInstanceProfile",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "IamInstanceProfileAssociation.State: IamInstanceProfileAssociationState (associating, disassociating)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/instance-lifecycle.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+      }
+    },
+    {
+      "key": "ec2:DisassociateNatGatewayAddress",
+      "client": "ec2",
+      "operation": "DisassociateNatGatewayAddress",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "NatGatewayAddresses.Status: NatGatewayAddressStatus (assigning, associating, disassociating, unassigning)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/nat-gateway.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "no-wait-by-design",
+        "reason": "CloudFormation waits, cdkd deliberately does not: the gateway keeps serving its other zones (ec2/nat-gateway.ts comment, measured on #2762)"
+      }
+    },
+    {
+      "key": "ec2:DisassociateSubnetCidrBlock",
+      "client": "ec2",
+      "operation": "DisassociateSubnetCidrBlock",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "Ipv6CidrBlockAssociation.Ipv6CidrBlockState.State: SubnetCidrBlockStateCode (associating, disassociating, failing)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/subnet-attributes.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForSubnetIpv6Association"
+        ],
+        "failureStatuses": [
+          "failed",
+          "failing"
+        ],
+        "note": "every mode (docs/cli-deploy.md edge cases)"
+      }
+    },
+    {
+      "key": "ec2:ModifyInstanceMetadataOptions",
+      "client": "ec2",
+      "operation": "ModifyInstanceMetadataOptions",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "InstanceMetadataOptions.State: InstanceMetadataOptionsState (pending)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/instance-update.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+      }
+    },
+    {
+      "key": "ec2:MonitorInstances",
+      "client": "ec2",
+      "operation": "MonitorInstances",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "InstanceMonitorings.Monitoring.State: MonitoringState (disabling, pending)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/instance-update.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (monitoring answers pending)"
+      }
+    },
+    {
+      "key": "ec2:ReplaceIamInstanceProfileAssociation",
+      "client": "ec2",
+      "operation": "ReplaceIamInstanceProfileAssociation",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "IamInstanceProfileAssociation.State: IamInstanceProfileAssociationState (associating, disassociating)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/instance-lifecycle.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+      }
+    },
+    {
+      "key": "ec2:RevokeSecurityGroupEgress",
+      "client": "ec2",
+      "operation": "RevokeSecurityGroupEgress",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "UnknownIpPermissions.UserIdGroupPairs.PeeringStatus: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/security-group.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "no-wait-by-design",
+        "reason": "the flagged member is an unknown permission's peering PeeringStatus, not the rule's; the revoke is done once AWS answers"
+      }
+    },
+    {
+      "key": "ec2:RevokeSecurityGroupIngress",
+      "client": "ec2",
+      "operation": "RevokeSecurityGroupIngress",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "UnknownIpPermissions.UserIdGroupPairs.PeeringStatus: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/security-group.ts",
+        "src/provisioning/providers/ec2/sg-ingress-update.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "no-wait-by-design",
+        "reason": "the flagged member is an unknown permission's peering PeeringStatus, not the rule's; the revoke is done once AWS answers"
+      }
+    },
+    {
+      "key": "ec2:RunInstances",
+      "client": "ec2",
+      "operation": "RunInstances",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "Instances.ElasticGpuAssociations.ElasticGpuAssociationState: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "Instances.ElasticInferenceAcceleratorAssociations.ElasticInferenceAcceleratorAssociationState: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "Instances.NetworkInterfaces.Status: NetworkInterfaceStatus (attaching, detaching)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "Instances.MetadataOptions.State: InstanceMetadataOptionsState (pending)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "Instances.State.Name: InstanceStateName (pending, stopping)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "Instances.Monitoring.State: MonitoringState (disabling, pending)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/instance-create.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitUntilInstanceRunning"
+        ],
+        "failureStatuses": [
+          "shutting-down",
+          "terminated",
+          "stopping"
+        ],
+        "note": "--no-wait defers it to deferReadiness (runs only if the deploy needs the resource), unless Volumes or SsmAssociations need running"
+      }
+    },
+    {
+      "key": "ec2:StartInstances",
+      "client": "ec2",
+      "operation": "StartInstances",
+      "evidence": [
+        {
+          "signal": "start-operation",
+          "detail": "StartInstances"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "StartingInstances.CurrentState.Name: InstanceStateName (pending, stopping)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "StartingInstances.PreviousState.Name: InstanceStateName (pending, stopping)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/instance-apply.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForInstanceState"
+        ],
+        "failureStatuses": [
+          "terminated",
+          "shutting-down"
+        ],
+        "note": "--no-wait defers it to deferReadiness (runs only if the deploy needs the resource); the restart of an instance cdkd stopped, and the best-effort restart after a failure, do not wait"
+      }
+    },
+    {
+      "key": "ec2:StopInstances",
+      "client": "ec2",
+      "operation": "StopInstances",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "StoppingInstances.CurrentState.Name: InstanceStateName (pending, stopping)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "StoppingInstances.PreviousState.Name: InstanceStateName (pending, stopping)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/instance-apply.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForInstanceState"
+        ],
+        "failureStatuses": [
+          "terminated",
+          "shutting-down"
+        ]
+      }
+    },
+    {
+      "key": "ec2:TerminateInstances",
+      "client": "ec2",
+      "operation": "TerminateInstances",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "TerminatingInstances.CurrentState.Name: InstanceStateName (pending, stopping)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TerminatingInstances.PreviousState.Name: InstanceStateName (pending, stopping)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/instance-create.ts",
+        "src/provisioning/providers/ec2/instance-lifecycle.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitUntilInstanceTerminated"
+        ],
+        "failureStatuses": [],
+        "note": "the delete waits; a failed-launch cleanup waits only when an attached volume must be freed"
+      }
+    },
+    {
+      "key": "ec2:UnmonitorInstances",
+      "client": "ec2",
+      "operation": "UnmonitorInstances",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "InstanceMonitorings.Monitoring.State: MonitoringState (disabling, pending)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/instance-update.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (monitoring answers disabling)"
+      }
+    },
+    {
+      "key": "ecs:CreateCluster",
+      "client": "ecs",
+      "operation": "CreateCluster",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "cluster.status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "cluster.attachments.status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "cluster.attachmentsStatus: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ecs/cluster-task-definition.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ecs-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+      }
+    },
+    {
+      "key": "ecs:CreateService",
+      "client": "ecs",
+      "operation": "CreateService",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "service.status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "service.deploymentConfiguration.strategy: DeploymentStrategy (ROLLING)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "service.taskSets.status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "service.taskSets.stabilityStatus: StabilityStatus (STABILIZING)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "service.deployments.status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "service.deployments.rolloutState: DeploymentRolloutState (IN_PROGRESS)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ecs/service-create.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ecs-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "settleService"
+        ],
+        "failureStatuses": [
+          "MISSING",
+          "DRAINING",
+          "INACTIVE",
+          "a FAILED deployment"
+        ],
+        "note": "--no-wait defers it to deferReadiness (runs only if the deploy needs the resource); a non-ECS deployment controller skips it"
+      }
+    },
+    {
+      "key": "ecs:DeleteCluster",
+      "client": "ecs",
+      "operation": "DeleteCluster",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "cluster.status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "cluster.attachments.status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "cluster.attachmentsStatus: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ecs/cluster-task-definition.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ecs-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+      }
+    },
+    {
+      "key": "ecs:DeleteService",
+      "client": "ecs",
+      "operation": "DeleteService",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "service.status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "service.deploymentConfiguration.strategy: DeploymentStrategy (ROLLING)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "service.taskSets.status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "service.taskSets.stabilityStatus: StabilityStatus (STABILIZING)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "service.deployments.status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "service.deployments.rolloutState: DeploymentRolloutState (IN_PROGRESS)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ecs/service-create-ambiguous.ts",
+        "src/provisioning/providers/ecs/service-create.ts",
+        "src/provisioning/providers/ecs/service-delete.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ecs-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForServiceInactive"
+        ],
+        "failureStatuses": [],
+        "note": "every mode; the failed-create cleanup delete does not wait (DRAINING outlives the call, #1291)"
+      }
+    },
+    {
+      "key": "ecs:DeregisterTaskDefinition",
+      "client": "ecs",
+      "operation": "DeregisterTaskDefinition",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "taskDefinition.status: TaskDefinitionStatus (DELETE_IN_PROGRESS)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ecs/cluster-task-definition.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ecs-provider.ts"
+      ],
+      "classification": {
+        "verdict": "no-wait-by-design",
+        "reason": "settled once AWS answers: the revision is INACTIVE at once; DELETE_IN_PROGRESS belongs to DeleteTaskDefinitions, which no provider sends (ECS API reference)"
+      }
+    },
+    {
+      "key": "ecs:PutClusterCapacityProviders",
+      "client": "ecs",
+      "operation": "PutClusterCapacityProviders",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "cluster.status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "cluster.attachments.status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "cluster.attachmentsStatus: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ecs/cluster-task-definition.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ecs-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForOwnCapacityProviderPut"
+        ],
+        "failureStatuses": [
+          "UPDATE_FAILED"
+        ]
+      }
+    },
+    {
+      "key": "ecs:RegisterTaskDefinition",
+      "client": "ecs",
+      "operation": "RegisterTaskDefinition",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "taskDefinition.status: TaskDefinitionStatus (DELETE_IN_PROGRESS)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ecs/cluster-task-definition.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ecs-provider.ts"
+      ],
+      "classification": {
+        "verdict": "no-wait-by-design",
+        "reason": "settled once AWS answers: the revision is ACTIVE at once; DELETE_IN_PROGRESS belongs to DeleteTaskDefinitions (ECS API reference)"
+      }
+    },
+    {
+      "key": "ecs:UpdateCluster",
+      "client": "ecs",
+      "operation": "UpdateCluster",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "cluster.status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "cluster.attachments.status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "cluster.attachmentsStatus: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ecs/cluster-task-definition.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ecs-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (it waits only before a refused write)"
+      }
+    },
+    {
+      "key": "ecs:UpdateService",
+      "client": "ecs",
+      "operation": "UpdateService",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "service.status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "service.deploymentConfiguration.strategy: DeploymentStrategy (ROLLING)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "service.taskSets.status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "service.taskSets.stabilityStatus: StabilityStatus (STABILIZING)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "service.deployments.status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "service.deployments.rolloutState: DeploymentRolloutState (IN_PROGRESS)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ecs/service-delete.ts",
+        "src/provisioning/providers/ecs/service-update.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ecs-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "settleService"
+        ],
+        "failureStatuses": [
+          "MISSING",
+          "DRAINING",
+          "INACTIVE",
+          "a FAILED deployment"
+        ],
+        "note": "--no-wait defers it to deferReadiness (runs only if the deploy needs the resource); drift revert, a non-ECS controller and the scale-down before a delete skip it"
+      }
+    },
+    {
+      "key": "efs:CreateAccessPoint",
+      "client": "efs",
+      "operation": "CreateAccessPoint",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "LifeCycleState: LifeCycleState (creating, deleting, updating)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/efs/access-point.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/efs-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (the provider has no access-point waiter)"
+      }
+    },
+    {
+      "key": "efs:CreateFileSystem",
+      "client": "efs",
+      "operation": "CreateFileSystem",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "LifeCycleState: LifeCycleState (creating, deleting, updating)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/efs/file-system-create.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/efs-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForFileSystemAvailable"
+        ],
+        "failureStatuses": []
+      }
+    },
+    {
+      "key": "efs:CreateMountTarget",
+      "client": "efs",
+      "operation": "CreateMountTarget",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "LifeCycleState: LifeCycleState (creating, deleting, updating)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/efs/mount-target.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/efs-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForMountTargetAvailable"
+        ],
+        "failureStatuses": []
+      }
+    },
+    {
+      "key": "efs:PutBackupPolicy",
+      "client": "efs",
+      "operation": "PutBackupPolicy",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "BackupPolicy.Status: Status (DISABLING, ENABLING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/efs/file-system.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/efs-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (the policy answers ENABLING / DISABLING)"
+      }
+    },
+    {
+      "key": "efs:UpdateFileSystem",
+      "client": "efs",
+      "operation": "UpdateFileSystem",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "LifeCycleState: LifeCycleState (creating, deleting, updating)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/efs/file-system.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/efs-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForFileSystemAvailable"
+        ],
+        "failureStatuses": []
+      }
+    },
+    {
+      "key": "elastic-load-balancing-v2:CreateLoadBalancer",
+      "client": "elastic-load-balancing-v2",
+      "operation": "CreateLoadBalancer",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "LoadBalancers.State.Code: LoadBalancerStateEnum (provisioning)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/elbv2/load-balancer.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/elbv2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitUntilLoadBalancerAvailable"
+        ],
+        "failureStatuses": [],
+        "note": "--no-wait defers it to deferReadiness (runs only if the deploy needs the resource)"
+      }
+    },
+    {
+      "key": "elastic-load-balancing-v2:ModifyCapacityReservation",
+      "client": "elastic-load-balancing-v2",
+      "operation": "ModifyCapacityReservation",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "CapacityReservationState.State.Code: CapacityReservationStateEnum (pending, rebalancing)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/elbv2/load-balancer-update.ts",
+        "src/provisioning/providers/elbv2/load-balancer.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/elbv2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForCapacityReservationProvisioned"
+        ],
+        "failureStatuses": [
+          "failed"
+        ],
+        "note": "skipped under --no-wait"
+      }
+    },
+    {
+      "key": "elasticache:CreateCacheCluster",
+      "client": "elasticache",
+      "operation": "CreateCacheCluster",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.CacheClusterStatus: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "CacheCluster.PendingModifiedValues.AuthTokenStatus: AuthTokenUpdateStatus (ROTATING, SETTING)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.NotificationConfiguration.TopicStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.CacheSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.CacheParameterGroup.ParameterApplyStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.CacheNodes.CacheNodeStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.CacheNodes.ParameterGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.SecurityGroups.Status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "CacheCluster.LogDeliveryConfigurations.Status: LogDeliveryConfigurationStatus (disabling, enabling, modifying)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/elasticache/cache-cluster.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/elasticache-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForClusterAvailable"
+        ],
+        "failureStatuses": [
+          "restore-failed",
+          "incompatible-network"
+        ],
+        "note": "--no-wait defers it to deferReadiness (runs only if the deploy needs the resource)"
+      }
+    },
+    {
+      "key": "elasticache:DeleteCacheCluster",
+      "client": "elasticache",
+      "operation": "DeleteCacheCluster",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.CacheClusterStatus: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "CacheCluster.PendingModifiedValues.AuthTokenStatus: AuthTokenUpdateStatus (ROTATING, SETTING)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.NotificationConfiguration.TopicStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.CacheSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.CacheParameterGroup.ParameterApplyStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.CacheNodes.CacheNodeStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.CacheNodes.ParameterGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.SecurityGroups.Status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "CacheCluster.LogDeliveryConfigurations.Status: LogDeliveryConfigurationStatus (disabling, enabling, modifying)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/elasticache/cache-cluster.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/elasticache-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForClusterDeleted"
+        ],
+        "failureStatuses": []
+      }
+    },
+    {
+      "key": "elasticache:ModifyCacheCluster",
+      "client": "elasticache",
+      "operation": "ModifyCacheCluster",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.CacheClusterStatus: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "CacheCluster.PendingModifiedValues.AuthTokenStatus: AuthTokenUpdateStatus (ROTATING, SETTING)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.NotificationConfiguration.TopicStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.CacheSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.CacheParameterGroup.ParameterApplyStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.CacheNodes.CacheNodeStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.CacheNodes.ParameterGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.SecurityGroups.Status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "CacheCluster.LogDeliveryConfigurations.Status: LogDeliveryConfigurationStatus (disabling, enabling, modifying)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/elasticache/cache-cluster-update.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/elasticache-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForClusterAvailable"
+        ],
+        "failureStatuses": [
+          "restore-failed",
+          "incompatible-network"
+        ]
+      }
+    },
+    {
+      "key": "emr:PutAutoScalingPolicy",
+      "client": "emr",
+      "operation": "PutAutoScalingPolicy",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "AutoScalingPolicy.Status.State: AutoScalingPolicyState (ATTACHING, DETACHING, PENDING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/emr-instance-group-config-provider.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/emr-instance-group-config-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (the policy answers PENDING / ATTACHING)"
+      }
+    },
+    {
+      "key": "eventbridge:CreateArchive",
+      "client": "eventbridge",
+      "operation": "CreateArchive",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "State: ArchiveState (CREATING, UPDATING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/eventbridge-archive-provider.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/eventbridge-archive-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForSettled"
+        ],
+        "failureStatuses": [
+          "CREATE_FAILED",
+          "UPDATE_FAILED"
+        ],
+        "note": "--no-wait defers it to deferReadiness (runs only if the deploy needs the resource)"
+      }
+    },
+    {
+      "key": "eventbridge:UpdateArchive",
+      "client": "eventbridge",
+      "operation": "UpdateArchive",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "State: ArchiveState (CREATING, UPDATING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/eventbridge-archive-provider.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/eventbridge-archive-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForSettled"
+        ],
+        "failureStatuses": [
+          "CREATE_FAILED",
+          "UPDATE_FAILED"
+        ],
+        "note": "--no-wait defers it to deferReadiness (runs only if the deploy needs the resource)"
+      }
+    },
+    {
+      "key": "firehose:StartDeliveryStreamEncryption",
+      "client": "firehose",
+      "operation": "StartDeliveryStreamEncryption",
+      "evidence": [
+        {
+          "signal": "start-operation",
+          "detail": "StartDeliveryStreamEncryption"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/firehose/encryption.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/firehose-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForEncryption"
+        ],
+        "failureStatuses": [
+          "ENABLING_FAILED"
+        ]
+      }
+    },
+    {
+      "key": "fsx:AssociateFileSystemAliases",
+      "client": "fsx",
+      "operation": "AssociateFileSystemAliases",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "Aliases.Lifecycle: AliasLifecycle (CREATING, DELETING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/fsx-filesystem/aliases.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/fsx-filesystem-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForAliases"
+        ],
+        "failureStatuses": [
+          "CREATE_FAILED"
+        ]
+      }
+    },
+    {
+      "key": "fsx:CreateFileSystem",
+      "client": "fsx",
+      "operation": "CreateFileSystem",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "FileSystem.Lifecycle: FileSystemLifecycle (CREATING, DELETING, UPDATING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "FileSystem.AdministrativeActions.Status: Status (IN_PROGRESS, OPTIMIZING, PENDING, UPDATED_OPTIMIZING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/fsx-filesystem/create.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/fsx-filesystem-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForFileSystemAvailable"
+        ],
+        "failureStatuses": [
+          "FAILED",
+          "MISCONFIGURED"
+        ]
+      }
+    },
+    {
+      "key": "fsx:CreateFileSystemFromBackup",
+      "client": "fsx",
+      "operation": "CreateFileSystemFromBackup",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "FileSystem.Lifecycle: FileSystemLifecycle (CREATING, DELETING, UPDATING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "FileSystem.AdministrativeActions.Status: Status (IN_PROGRESS, OPTIMIZING, PENDING, UPDATED_OPTIMIZING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/fsx-filesystem/create.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/fsx-filesystem-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForFileSystemAvailable"
+        ],
+        "failureStatuses": [
+          "FAILED",
+          "MISCONFIGURED"
+        ]
+      }
+    },
+    {
+      "key": "fsx:DeleteFileSystem",
+      "client": "fsx",
+      "operation": "DeleteFileSystem",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "Lifecycle: FileSystemLifecycle (CREATING, DELETING, UPDATING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/fsx-filesystem/create.ts",
+        "src/provisioning/providers/fsx-filesystem/delete.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/fsx-filesystem-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForFileSystemDeleted"
+        ],
+        "failureStatuses": [
+          "FAILED"
+        ],
+        "note": "the failed-create cleanup delete does not wait"
+      }
+    },
+    {
+      "key": "fsx:DisassociateFileSystemAliases",
+      "client": "fsx",
+      "operation": "DisassociateFileSystemAliases",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "Aliases.Lifecycle: AliasLifecycle (CREATING, DELETING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/fsx-filesystem/aliases.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/fsx-filesystem-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForAliases"
+        ],
+        "failureStatuses": [
+          "DELETE_FAILED"
+        ]
+      }
+    },
+    {
+      "key": "fsx:UpdateFileSystem",
+      "client": "fsx",
+      "operation": "UpdateFileSystem",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "FileSystem.Lifecycle: FileSystemLifecycle (CREATING, DELETING, UPDATING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "FileSystem.AdministrativeActions.Status: Status (IN_PROGRESS, OPTIMIZING, PENDING, UPDATED_OPTIMIZING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/fsx-filesystem/update.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/fsx-filesystem-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForUpdateActionComplete"
+        ],
+        "failureStatuses": [
+          "FAILED"
+        ],
+        "note": "STORAGE_OPTIMIZATION is not waited for"
+      }
+    },
+    {
+      "key": "glue:CreateConnection",
+      "client": "glue",
+      "operation": "CreateConnection",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "CreateConnectionStatus: ConnectionStatus (IN_PROGRESS)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/glue/connection.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/glue-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+      }
+    },
+    {
+      "key": "glue:StartCrawlerSchedule",
+      "client": "glue",
+      "operation": "StartCrawlerSchedule",
+      "evidence": [
+        {
+          "signal": "start-operation",
+          "detail": "StartCrawlerSchedule"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/glue/crawler.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/glue-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+      }
+    },
+    {
+      "key": "glue:StartTrigger",
+      "client": "glue",
+      "operation": "StartTrigger",
+      "evidence": [
+        {
+          "signal": "start-operation",
+          "detail": "StartTrigger"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/glue/trigger.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/glue-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+      }
+    },
+    {
+      "key": "glue:UpdateTrigger",
+      "client": "glue",
+      "operation": "UpdateTrigger",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "Trigger.State: TriggerState (ACTIVATING, CREATING, DEACTIVATING, DELETING, UPDATING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/glue/trigger.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/glue-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (it waits only for the deactivation before)"
+      }
+    },
+    {
+      "key": "kinesis:RegisterStreamConsumer",
+      "client": "kinesis",
+      "operation": "RegisterStreamConsumer",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "Consumer.ConsumerStatus: ConsumerStatus (CREATING, DELETING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/kinesis-streamconsumer-provider.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/kinesis-streamconsumer-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForConsumerActive"
+        ],
+        "failureStatuses": [
+          "any status other than CREATING / ACTIVE"
+        ]
+      }
+    },
+    {
+      "key": "kinesis:StartStreamEncryption",
+      "client": "kinesis",
+      "operation": "StartStreamEncryption",
+      "evidence": [
+        {
+          "signal": "start-operation",
+          "detail": "StartStreamEncryption"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/kinesis/create.ts",
+        "src/provisioning/providers/kinesis/update.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/kinesis-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForStreamActive"
+        ],
+        "failureStatuses": [
+          "any status other than ACTIVE / CREATING / UPDATING"
+        ]
+      }
+    },
+    {
+      "key": "kms:CreateKey",
+      "client": "kms",
+      "operation": "CreateKey",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "KeyMetadata.KeyState: KeyState (Creating, PendingDeletion, PendingImport, PendingReplicaDeletion, Updating)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/kms/key-create.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/kms-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+      }
+    },
+    {
+      "key": "kms:ScheduleKeyDeletion",
+      "client": "kms",
+      "operation": "ScheduleKeyDeletion",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "KeyState: KeyState (Creating, PendingDeletion, PendingImport, PendingReplicaDeletion, Updating)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/kms/delete.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/kms-provider.ts"
+      ],
+      "classification": {
+        "verdict": "no-wait-by-design",
+        "reason": "the call sets PendingDeletion, which holds for the whole 7-30 day window: nothing is in progress to wait for"
+      }
+    },
+    {
+      "key": "lambda-core:CreateNetworkConnector",
+      "client": "lambda-core",
+      "operation": "CreateNetworkConnector",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "State: NetworkConnectorState (DELETING, PENDING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/lambda-network-connector-provider.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/lambda-network-connector-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForSettled"
+        ],
+        "failureStatuses": [
+          "FAILED",
+          "DELETING",
+          "DELETE_FAILED",
+          "INACTIVE"
+        ],
+        "note": "every mode"
+      }
+    },
+    {
+      "key": "lambda-core:DeleteNetworkConnector",
+      "client": "lambda-core",
+      "operation": "DeleteNetworkConnector",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "State: NetworkConnectorState (DELETING, PENDING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/lambda-network-connector-provider.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/lambda-network-connector-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForGone"
+        ],
+        "failureStatuses": [
+          "DELETE_FAILED"
+        ]
+      }
+    },
+    {
+      "key": "lambda-core:UpdateNetworkConnector",
+      "client": "lambda-core",
+      "operation": "UpdateNetworkConnector",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "State: NetworkConnectorState (DELETING, PENDING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "LastUpdateStatus: NetworkConnectorLastUpdateStatus (InProgress)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/lambda-network-connector-provider.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/lambda-network-connector-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForSettled"
+        ],
+        "failureStatuses": [
+          "FAILED",
+          "DELETING",
+          "DELETE_FAILED",
+          "INACTIVE"
+        ]
+      }
+    },
+    {
+      "key": "lambda-microvms:CreateMicrovmImage",
+      "client": "lambda-microvms",
+      "operation": "CreateMicrovmImage",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "state: MicrovmImageState (CREATING, DELETING, UPDATING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/lambda-microvm-image-provider.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/lambda-microvm-image-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForTerminalState"
+        ],
+        "failureStatuses": [
+          "CREATE_FAILED",
+          "UPDATE_FAILED"
+        ],
+        "note": "--no-wait defers it to deferReadiness (runs only if the deploy needs the resource)"
+      }
+    },
+    {
+      "key": "lambda-microvms:DeleteMicrovmImage",
+      "client": "lambda-microvms",
+      "operation": "DeleteMicrovmImage",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "state: MicrovmImageState (CREATING, DELETING, UPDATING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/lambda-microvm-image-provider.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/lambda-microvm-image-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForDeleted"
+        ],
+        "failureStatuses": [
+          "DELETE_FAILED"
+        ]
+      }
+    },
+    {
+      "key": "lambda-microvms:UpdateMicrovmImage",
+      "client": "lambda-microvms",
+      "operation": "UpdateMicrovmImage",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "state: MicrovmImageState (CREATING, DELETING, UPDATING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/lambda-microvm-image-provider.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/lambda-microvm-image-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForTerminalState"
+        ],
+        "failureStatuses": [
+          "CREATE_FAILED",
+          "UPDATE_FAILED"
+        ],
+        "note": "--no-wait defers it to deferReadiness (runs only if the deploy needs the resource)"
+      }
+    },
+    {
+      "key": "lambda-web:CreateWebFunctionEndpoint",
+      "client": "lambda-web",
+      "operation": "CreateWebFunctionEndpoint",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "state: EndpointState (Deleting, Pending)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "updateStatus: EndpointUpdateStatus (InProgress)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/lambda-web-function-endpoint-provider.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/lambda-web-function-endpoint-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForSettled"
+        ],
+        "failureStatuses": [
+          "Failed"
+        ],
+        "note": "every mode"
+      }
+    },
+    {
+      "key": "lambda-web:CreateWebFunctionRevision",
+      "client": "lambda-web",
+      "operation": "CreateWebFunctionRevision",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "state: RevisionState (Pending)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/lambda-web-function-revision-provider.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/lambda-web-function-revision-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForActive"
+        ],
+        "failureStatuses": [
+          "Failed"
+        ],
+        "note": "every mode"
+      }
+    },
+    {
+      "key": "lambda-web:UpdateWebFunctionEndpoint",
+      "client": "lambda-web",
+      "operation": "UpdateWebFunctionEndpoint",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "state: EndpointState (Deleting, Pending)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "updateStatus: EndpointUpdateStatus (InProgress)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/lambda-web-function-endpoint-provider.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/lambda-web-function-endpoint-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForSettled"
+        ],
+        "failureStatuses": [
+          "Failed"
+        ]
+      }
+    },
+    {
+      "key": "lambda:CreateEventSourceMapping",
+      "client": "lambda",
+      "operation": "CreateEventSourceMapping",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "State: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/lambda-eventsource/create.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/lambda-eventsource-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns while the mapping is Creating; #5737 fixed the drift baseline, not the wait"
+      }
+    },
+    {
+      "key": "lambda:CreateFunction",
+      "client": "lambda",
+      "operation": "CreateFunction",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "State: State (Deactivating, Deleting, Pending)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "StateReasonCode: StateReasonCode (Creating, Restoring)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "LastUpdateStatus: LastUpdateStatus (InProgress)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/lambda-function/create.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/lambda-function-provider.ts"
+      ],
+      "classification": {
+        "verdict": "no-wait-by-design",
+        "reason": "Pending is accepted by every dependent except a synchronous invoke and a Lambda target group, which wait themselves; waiting for Active doubled benchmark deploys (lambda-function/create.ts comment, #5002); a capacity-provider or RuntimeManagementConfig create waits"
+      }
+    },
+    {
+      "key": "lambda:DeleteEventSourceMapping",
+      "client": "lambda",
+      "operation": "DeleteEventSourceMapping",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "State: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/lambda-eventsource/delete.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/lambda-eventsource-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "waits only after a ResourceInUseException refusal (#7011); an accepted delete returns while Deleting"
+      }
+    },
+    {
+      "key": "lambda:PublishVersion",
+      "client": "lambda",
+      "operation": "PublishVersion",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "State: State (Deactivating, Deleting, Pending)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "StateReasonCode: StateReasonCode (Creating, Restoring)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "LastUpdateStatus: LastUpdateStatus (InProgress)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/lambda-function/update.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/lambda-function-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForLatestPublishedSettled"
+        ],
+        "failureStatuses": [
+          "Failed"
+        ]
+      }
+    },
+    {
+      "key": "lambda:PutFunctionScalingConfig",
+      "client": "lambda",
+      "operation": "PutFunctionScalingConfig",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "FunctionState: State (Deactivating, Deleting, Pending)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/lambda-function/create.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/lambda-function-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForLatestPublishedSettled"
+        ],
+        "failureStatuses": [
+          "Failed"
+        ]
+      }
+    },
+    {
+      "key": "lambda:UpdateEventSourceMapping",
+      "client": "lambda",
+      "operation": "UpdateEventSourceMapping",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "State: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/lambda-eventsource/update.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/lambda-eventsource-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+      }
+    },
+    {
+      "key": "lambda:UpdateFunctionCode",
+      "client": "lambda",
+      "operation": "UpdateFunctionCode",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "State: State (Deactivating, Deleting, Pending)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "StateReasonCode: StateReasonCode (Creating, Restoring)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "LastUpdateStatus: LastUpdateStatus (InProgress)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/lambda-function/update.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/lambda-function-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForFunctionUpdated"
+        ],
+        "failureStatuses": [
+          "Failed"
+        ]
+      }
+    },
+    {
+      "key": "lambda:UpdateFunctionConfiguration",
+      "client": "lambda",
+      "operation": "UpdateFunctionConfiguration",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "State: State (Deactivating, Deleting, Pending)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "StateReasonCode: StateReasonCode (Creating, Restoring)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "LastUpdateStatus: LastUpdateStatus (InProgress)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/custom-resource/recycle.ts",
+        "src/provisioning/providers/lambda-function/delete.ts",
+        "src/provisioning/providers/lambda-function/update.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/custom-resource-provider.ts",
+        "src/provisioning/providers/lambda-function-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForFunctionUpdated",
+          "waitForBackingFunctionUpdated"
+        ],
+        "failureStatuses": [
+          "Failed"
+        ],
+        "note": "every mode; the custom-resource recycle only logs a wait failure, and the VPC detach before a delete warns on its cap"
+      }
+    },
+    {
+      "key": "neptune:CreateDBCluster",
+      "client": "neptune",
+      "operation": "CreateDBCluster",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterOptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterMembers.DBClusterParameterGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.AssociatedRoles.Status: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/neptune/cluster-create.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/neptune-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForClusterAvailable"
+        ],
+        "failureStatuses": [
+          "deleting",
+          "failed",
+          "stopped",
+          "storage-full",
+          "insufficient-capacity",
+          "restore-error",
+          "inaccessible-*",
+          "incompatible-*",
+          "*-failed"
+        ],
+        "note": "--no-wait defers it to deferReadiness (runs only if the deploy needs the resource), unless a follow-up ModifyDBCluster needs it"
+      }
+    },
+    {
+      "key": "neptune:CreateDBInstance",
+      "client": "neptune",
+      "operation": "CreateDBInstance",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBInstanceStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBParameterGroups.ParameterApplyStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.OptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StatusInfos.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DomainMemberships.Status: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/neptune/instance.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/neptune-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForInstanceAvailable"
+        ],
+        "failureStatuses": [
+          "deleting",
+          "failed",
+          "stopped",
+          "storage-full",
+          "insufficient-capacity",
+          "restore-error",
+          "inaccessible-*",
+          "incompatible-*",
+          "*-failed"
+        ],
+        "note": "--no-wait defers it to deferReadiness (runs only if the deploy needs the resource)"
+      }
+    },
+    {
+      "key": "neptune:CreateDBSubnetGroup",
+      "client": "neptune",
+      "operation": "CreateDBSubnetGroup",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBSubnetGroup.Subnets.SubnetStatus: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/neptune/subnet-group.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/neptune-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+      }
+    },
+    {
+      "key": "neptune:DeleteDBCluster",
+      "client": "neptune",
+      "operation": "DeleteDBCluster",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterOptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterMembers.DBClusterParameterGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.AssociatedRoles.Status: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/neptune/cluster-delete.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/neptune-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForClusterDeleted"
+        ],
+        "failureStatuses": []
+      }
+    },
+    {
+      "key": "neptune:DeleteDBInstance",
+      "client": "neptune",
+      "operation": "DeleteDBInstance",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBInstanceStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBParameterGroups.ParameterApplyStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.OptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StatusInfos.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DomainMemberships.Status: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/neptune/instance.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/neptune-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForInstanceDeleted"
+        ],
+        "failureStatuses": []
+      }
+    },
+    {
+      "key": "neptune:ModifyDBCluster",
+      "client": "neptune",
+      "operation": "ModifyDBCluster",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterOptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterMembers.DBClusterParameterGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.AssociatedRoles.Status: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/neptune/cluster-create.ts",
+        "src/provisioning/providers/neptune/cluster-delete.ts",
+        "src/provisioning/providers/neptune/cluster-update.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/neptune-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForSecurityGroupsApplied",
+          "waitForApplied",
+          "waitForClusterRolesSettled"
+        ],
+        "failureStatuses": [
+          "deleting",
+          "failed",
+          "stopped",
+          "storage-full",
+          "insufficient-capacity",
+          "restore-error",
+          "inaccessible-*",
+          "incompatible-*",
+          "*-failed"
+        ],
+        "note": "only for changed security groups, roles or read-back settings, skipped under --no-wait; a DeletionProtection flip or re-enable around a delete does not wait after the call"
+      }
+    },
+    {
+      "key": "neptune:ModifyDBInstance",
+      "client": "neptune",
+      "operation": "ModifyDBInstance",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBInstanceStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBParameterGroups.ParameterApplyStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.OptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StatusInfos.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DomainMemberships.Status: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/neptune/instance.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/neptune-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForApplied"
+        ],
+        "failureStatuses": [],
+        "note": "only PubliclyAccessible is read back, and it warns on its cap; a DeletionProtection flip or re-enable around a delete does not wait after the call"
+      }
+    },
+    {
+      "key": "neptune:ModifyDBSubnetGroup",
+      "client": "neptune",
+      "operation": "ModifyDBSubnetGroup",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBSubnetGroup.Subnets.SubnetStatus: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/neptune/subnet-group.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/neptune-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+      }
+    },
+    {
+      "key": "neptune:RestoreDBClusterFromSnapshot",
+      "client": "neptune",
+      "operation": "RestoreDBClusterFromSnapshot",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterOptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterMembers.DBClusterParameterGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.AssociatedRoles.Status: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/neptune/cluster-create.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/neptune-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForClusterAvailable"
+        ],
+        "failureStatuses": [
+          "deleting",
+          "failed",
+          "stopped",
+          "storage-full",
+          "insufficient-capacity",
+          "restore-error",
+          "inaccessible-*",
+          "incompatible-*",
+          "*-failed"
+        ],
+        "note": "--no-wait defers it to deferReadiness (runs only if the deploy needs the resource), unless a follow-up ModifyDBCluster needs it"
+      }
+    },
+    {
+      "key": "neptune:RestoreDBClusterToPointInTime",
+      "client": "neptune",
+      "operation": "RestoreDBClusterToPointInTime",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterOptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterMembers.DBClusterParameterGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.AssociatedRoles.Status: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/neptune/cluster-create.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/neptune-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForClusterAvailable"
+        ],
+        "failureStatuses": [
+          "deleting",
+          "failed",
+          "stopped",
+          "storage-full",
+          "insufficient-capacity",
+          "restore-error",
+          "inaccessible-*",
+          "incompatible-*",
+          "*-failed"
+        ],
+        "note": "--no-wait defers it to deferReadiness (runs only if the deploy needs the resource), unless a follow-up ModifyDBCluster needs it"
+      }
+    },
+    {
+      "key": "pipes:CreatePipe",
+      "client": "pipes",
+      "operation": "CreatePipe",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "CurrentState: PipeState (CREATING, DELETING, STARTING, STOPPING, UPDATING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/pipes/create.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/pipes-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForSettled"
+        ],
+        "failureStatuses": [
+          "*_FAILED"
+        ]
+      }
+    },
+    {
+      "key": "pipes:DeletePipe",
+      "client": "pipes",
+      "operation": "DeletePipe",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "CurrentState: PipeState (CREATING, DELETING, STARTING, STOPPING, UPDATING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/pipes/create.ts",
+        "src/provisioning/providers/pipes/delete.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/pipes-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForGoneAfterDelete"
+        ],
+        "failureStatuses": [
+          "DELETE_FAILED",
+          "DELETE_ROLLBACK_FAILED"
+        ],
+        "note": "a cap or Ctrl-C warns and returns"
+      }
+    },
+    {
+      "key": "pipes:UpdatePipe",
+      "client": "pipes",
+      "operation": "UpdatePipe",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "CurrentState: PipeState (CREATING, DELETING, STARTING, STOPPING, UPDATING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/pipes/update.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/pipes-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForSettled"
+        ],
+        "failureStatuses": [
+          "*_FAILED"
+        ]
+      }
+    },
+    {
+      "key": "rds:CreateDBCluster",
+      "client": "rds",
+      "operation": "CreateDBCluster",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterOptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.StatusInfos.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterMembers.DBClusterParameterGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.AssociatedRoles.Status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "DBCluster.ActivityStreamStatus: ActivityStreamStatus (starting, stopping)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DomainMemberships.Status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "DBCluster.GlobalWriteForwardingStatus: WriteForwardingStatus (disabling, enabling)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.MasterUserSecret.SecretStatus: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "DBCluster.LocalWriteForwardingStatus: LocalWriteForwardingStatus (disabling, enabling)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "DBCluster.LimitlessDatabase.Status: LimitlessDatabaseStatus (disabling, enabling)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/rds/cluster-create.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/rds-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForClusterAvailable"
+        ],
+        "failureStatuses": [
+          "deleting",
+          "failed",
+          "stopped",
+          "storage-full",
+          "insufficient-capacity",
+          "restore-error",
+          "inaccessible-*",
+          "incompatible-*",
+          "*-failed"
+        ],
+        "note": "--no-wait defers it to deferReadiness (runs only if the deploy needs the resource)"
+      }
+    },
+    {
+      "key": "rds:CreateDBInstance",
+      "client": "rds",
+      "operation": "CreateDBInstance",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBInstanceStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBParameterGroups.ParameterApplyStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.OptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StatusInfos.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DomainMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AssociatedRoles.Status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "DBInstance.ActivityStreamStatus: ActivityStreamStatus (starting, stopping)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.MasterUserSecret.SecretStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AdditionalStorageVolumes.StorageVolumeStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AdditionalStorageVolumes.StorageOperationStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StorageVolumeStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StorageOperationStatus: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/rds/instance-create.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/rds-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForInstanceAvailable"
+        ],
+        "failureStatuses": [
+          "deleting",
+          "failed",
+          "stopped",
+          "storage-full",
+          "insufficient-capacity",
+          "restore-error",
+          "inaccessible-*",
+          "incompatible-*",
+          "*-failed"
+        ],
+        "note": "--no-wait defers it to deferReadiness (runs only if the deploy needs the resource)"
+      }
+    },
+    {
+      "key": "rds:CreateDBInstanceReadReplica",
+      "client": "rds",
+      "operation": "CreateDBInstanceReadReplica",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBInstanceStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBParameterGroups.ParameterApplyStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.OptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StatusInfos.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DomainMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AssociatedRoles.Status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "DBInstance.ActivityStreamStatus: ActivityStreamStatus (starting, stopping)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.MasterUserSecret.SecretStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AdditionalStorageVolumes.StorageVolumeStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AdditionalStorageVolumes.StorageOperationStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StorageVolumeStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StorageOperationStatus: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/rds/instance-create.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/rds-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForInstanceAvailable"
+        ],
+        "failureStatuses": [
+          "deleting",
+          "failed",
+          "stopped",
+          "storage-full",
+          "insufficient-capacity",
+          "restore-error",
+          "inaccessible-*",
+          "incompatible-*",
+          "*-failed"
+        ],
+        "note": "--no-wait defers it to deferReadiness (runs only if the deploy needs the resource), unless a follow-up ModifyDBInstance needs it"
+      }
+    },
+    {
+      "key": "rds:CreateDBProxy",
+      "client": "rds",
+      "operation": "CreateDBProxy",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "DBProxy.Status: DBProxyStatus (creating, deleting, modifying, reactivating, suspending)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/rds-dbproxy/create.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/rds-dbproxy-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "DescribeDBProxiesCommand"
+        ],
+        "failureStatuses": [
+          "incompatible-network",
+          "insufficient-resource-limits"
+        ],
+        "note": "an inline poll in create(), every mode"
+      }
+    },
+    {
+      "key": "rds:CreateDBProxyEndpoint",
+      "client": "rds",
+      "operation": "CreateDBProxyEndpoint",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "DBProxyEndpoint.Status: DBProxyEndpointStatus (creating, deleting, modifying)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/rds-dbproxy-endpoint-provider.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/rds-dbproxy-endpoint-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "DescribeDBProxyEndpointsCommand"
+        ],
+        "failureStatuses": [
+          "incompatible-network",
+          "insufficient-resource-limits"
+        ],
+        "note": "an inline poll in create(), every mode"
+      }
+    },
+    {
+      "key": "rds:CreateDBSubnetGroup",
+      "client": "rds",
+      "operation": "CreateDBSubnetGroup",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBSubnetGroup.Subnets.SubnetStatus: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/rds/subnet-group.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/rds-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+      }
+    },
+    {
+      "key": "rds:DeleteDBCluster",
+      "client": "rds",
+      "operation": "DeleteDBCluster",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterOptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.StatusInfos.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterMembers.DBClusterParameterGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.AssociatedRoles.Status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "DBCluster.ActivityStreamStatus: ActivityStreamStatus (starting, stopping)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DomainMemberships.Status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "DBCluster.GlobalWriteForwardingStatus: WriteForwardingStatus (disabling, enabling)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.MasterUserSecret.SecretStatus: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "DBCluster.LocalWriteForwardingStatus: LocalWriteForwardingStatus (disabling, enabling)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "DBCluster.LimitlessDatabase.Status: LimitlessDatabaseStatus (disabling, enabling)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/rds/cluster-create.ts",
+        "src/provisioning/providers/rds/cluster-delete.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/rds-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForClusterDeleted"
+        ],
+        "failureStatuses": [],
+        "note": "the failed-create cleanup delete does not wait"
+      }
+    },
+    {
+      "key": "rds:DeleteDBInstance",
+      "client": "rds",
+      "operation": "DeleteDBInstance",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBInstanceStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBParameterGroups.ParameterApplyStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.OptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StatusInfos.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DomainMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AssociatedRoles.Status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "DBInstance.ActivityStreamStatus: ActivityStreamStatus (starting, stopping)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.MasterUserSecret.SecretStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AdditionalStorageVolumes.StorageVolumeStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AdditionalStorageVolumes.StorageOperationStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StorageVolumeStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StorageOperationStatus: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/rds/cluster-create.ts",
+        "src/provisioning/providers/rds/express-writer.ts",
+        "src/provisioning/providers/rds/instance-delete.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/rds-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForInstanceDeleted"
+        ],
+        "failureStatuses": [],
+        "note": "the failed-create cleanup and an express-configuration writer delete do not wait"
+      }
+    },
+    {
+      "key": "rds:DeleteDBProxy",
+      "client": "rds",
+      "operation": "DeleteDBProxy",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "DBProxy.Status: DBProxyStatus (creating, deleting, modifying, reactivating, suspending)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/rds-dbproxy/delete.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/rds-dbproxy-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForDBProxyDeleteGone"
+        ],
+        "failureStatuses": [
+          "a status other than deleting after deleting was read"
+        ],
+        "note": "a cap or Ctrl-C warns and returns"
+      }
+    },
+    {
+      "key": "rds:DeleteDBProxyEndpoint",
+      "client": "rds",
+      "operation": "DeleteDBProxyEndpoint",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "DBProxyEndpoint.Status: DBProxyEndpointStatus (creating, deleting, modifying)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/rds-dbproxy-endpoint-provider.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/rds-dbproxy-endpoint-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForDBProxyDeleteGone"
+        ],
+        "failureStatuses": [
+          "a status other than deleting after deleting was read"
+        ],
+        "note": "a cap or Ctrl-C warns and returns"
+      }
+    },
+    {
+      "key": "rds:ModifyDBCluster",
+      "client": "rds",
+      "operation": "ModifyDBCluster",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterOptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.StatusInfos.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterMembers.DBClusterParameterGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.AssociatedRoles.Status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "DBCluster.ActivityStreamStatus: ActivityStreamStatus (starting, stopping)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DomainMemberships.Status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "DBCluster.GlobalWriteForwardingStatus: WriteForwardingStatus (disabling, enabling)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.MasterUserSecret.SecretStatus: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "DBCluster.LocalWriteForwardingStatus: LocalWriteForwardingStatus (disabling, enabling)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "DBCluster.LimitlessDatabase.Status: LimitlessDatabaseStatus (disabling, enabling)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/rds/cluster-create.ts",
+        "src/provisioning/providers/rds/cluster-delete.ts",
+        "src/provisioning/providers/rds/cluster-restore.ts",
+        "src/provisioning/providers/rds/cluster-update.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/rds-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForClusterState",
+          "waitForClusterAvailable"
+        ],
+        "failureStatuses": [
+          "deleting",
+          "failed",
+          "stopped",
+          "storage-full",
+          "insufficient-capacity",
+          "restore-error",
+          "inaccessible-*",
+          "incompatible-*",
+          "*-failed"
+        ],
+        "note": "only for the settings that changed (docs/cli-deploy.md), skipped under --no-wait; a DeletionProtection flip or re-enable around a delete does not wait after the call"
+      }
+    },
+    {
+      "key": "rds:ModifyDBInstance",
+      "client": "rds",
+      "operation": "ModifyDBInstance",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBInstanceStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBParameterGroups.ParameterApplyStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.OptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StatusInfos.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DomainMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AssociatedRoles.Status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "DBInstance.ActivityStreamStatus: ActivityStreamStatus (starting, stopping)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.MasterUserSecret.SecretStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AdditionalStorageVolumes.StorageVolumeStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AdditionalStorageVolumes.StorageOperationStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StorageVolumeStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StorageOperationStatus: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/rds/instance-create.ts",
+        "src/provisioning/providers/rds/instance-delete.ts",
+        "src/provisioning/providers/rds/instance-update.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/rds-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForInstanceState",
+          "waitForInstanceAvailable"
+        ],
+        "failureStatuses": [
+          "deleting",
+          "failed",
+          "stopped",
+          "storage-full",
+          "insufficient-capacity",
+          "restore-error",
+          "inaccessible-*",
+          "incompatible-*",
+          "*-failed"
+        ],
+        "note": "only for the settings that changed (docs/cli-deploy.md), skipped under --no-wait; a DeletionProtection flip or re-enable around a delete does not wait after the call"
+      }
+    },
+    {
+      "key": "rds:ModifyDBProxy",
+      "client": "rds",
+      "operation": "ModifyDBProxy",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "DBProxy.Status: DBProxyStatus (creating, deleting, modifying, reactivating, suspending)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/rds-dbproxy/update.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/rds-dbproxy-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForAvailableAfterModify"
+        ],
+        "failureStatuses": [
+          "incompatible-network",
+          "insufficient-resource-limits"
+        ],
+        "note": "every mode"
+      }
+    },
+    {
+      "key": "rds:ModifyDBProxyEndpoint",
+      "client": "rds",
+      "operation": "ModifyDBProxyEndpoint",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "DBProxyEndpoint.Status: DBProxyEndpointStatus (creating, deleting, modifying)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/rds-dbproxy-endpoint-provider.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/rds-dbproxy-endpoint-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForAvailableAfterModify"
+        ],
+        "failureStatuses": [
+          "incompatible-network",
+          "insufficient-resource-limits"
+        ],
+        "note": "every mode"
+      }
+    },
+    {
+      "key": "rds:ModifyDBProxyTargetGroup",
+      "client": "rds",
+      "operation": "ModifyDBProxyTargetGroup",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "DBProxyTargetGroup.Status: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/rds-dbproxy-targetgroup/create.ts",
+        "src/provisioning/providers/rds-dbproxy-targetgroup/update.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/rds-dbproxy-targetgroup-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+      }
+    },
+    {
+      "key": "rds:ModifyDBSubnetGroup",
+      "client": "rds",
+      "operation": "ModifyDBSubnetGroup",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBSubnetGroup.Subnets.SubnetStatus: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/rds/subnet-group.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/rds-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+      }
+    },
+    {
+      "key": "rds:PromoteReadReplica",
+      "client": "rds",
+      "operation": "PromoteReadReplica",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBInstanceStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBParameterGroups.ParameterApplyStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.OptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StatusInfos.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DomainMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AssociatedRoles.Status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "DBInstance.ActivityStreamStatus: ActivityStreamStatus (starting, stopping)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.MasterUserSecret.SecretStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AdditionalStorageVolumes.StorageVolumeStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AdditionalStorageVolumes.StorageOperationStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StorageVolumeStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StorageOperationStatus: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/rds/instance-update.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/rds-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForInstanceState"
+        ],
+        "failureStatuses": [
+          "deleting",
+          "failed",
+          "stopped",
+          "storage-full",
+          "insufficient-capacity",
+          "restore-error",
+          "inaccessible-*",
+          "incompatible-*",
+          "*-failed"
+        ],
+        "note": "every mode"
+      }
+    },
+    {
+      "key": "rds:RebootDBInstance",
+      "client": "rds",
+      "operation": "RebootDBInstance",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBInstanceStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBParameterGroups.ParameterApplyStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.OptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StatusInfos.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DomainMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AssociatedRoles.Status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "DBInstance.ActivityStreamStatus: ActivityStreamStatus (starting, stopping)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.MasterUserSecret.SecretStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AdditionalStorageVolumes.StorageVolumeStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AdditionalStorageVolumes.StorageOperationStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StorageVolumeStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StorageOperationStatus: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/rds/waits.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/rds-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForInstanceState"
+        ],
+        "failureStatuses": [
+          "deleting",
+          "failed",
+          "stopped",
+          "storage-full",
+          "insufficient-capacity",
+          "restore-error",
+          "inaccessible-*",
+          "incompatible-*",
+          "*-failed"
+        ],
+        "note": "skipped under --no-wait"
+      }
+    },
+    {
+      "key": "rds:RegisterDBProxyTargets",
+      "client": "rds",
+      "operation": "RegisterDBProxyTargets",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "DBProxyTargets.TargetHealth.State: TargetState (REGISTERING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "DBProxyTargets.TargetHealth.Reason: TargetHealthReason (PENDING_PROXY_CAPACITY)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/rds-dbproxy-targetgroup/create.ts",
+        "src/provisioning/providers/rds-dbproxy-targetgroup/update.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/rds-dbproxy-targetgroup-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (targets answer REGISTERING)"
+      }
+    },
+    {
+      "key": "rds:RemoveFromGlobalCluster",
+      "client": "rds",
+      "operation": "RemoveFromGlobalCluster",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "GlobalCluster.Status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "GlobalCluster.GlobalClusterMembers.GlobalWriteForwardingStatus: WriteForwardingStatus (disabling, enabling)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "GlobalCluster.GlobalClusterMembers.SynchronizationStatus: GlobalClusterMemberSynchronizationStatus (pending-resync)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "GlobalCluster.FailoverState.Status: FailoverStatus (cancelling, pending)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/rds/cluster-delete.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/rds-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "detachFromGlobalCluster"
+        ],
+        "failureStatuses": []
+      }
+    },
+    {
+      "key": "rds:RestoreDBClusterFromSnapshot",
+      "client": "rds",
+      "operation": "RestoreDBClusterFromSnapshot",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterOptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.StatusInfos.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterMembers.DBClusterParameterGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.AssociatedRoles.Status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "DBCluster.ActivityStreamStatus: ActivityStreamStatus (starting, stopping)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DomainMemberships.Status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "DBCluster.GlobalWriteForwardingStatus: WriteForwardingStatus (disabling, enabling)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.MasterUserSecret.SecretStatus: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "DBCluster.LocalWriteForwardingStatus: LocalWriteForwardingStatus (disabling, enabling)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "DBCluster.LimitlessDatabase.Status: LimitlessDatabaseStatus (disabling, enabling)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/rds/cluster-restore.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/rds-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForClusterAvailable"
+        ],
+        "failureStatuses": [
+          "deleting",
+          "failed",
+          "stopped",
+          "storage-full",
+          "insufficient-capacity",
+          "restore-error",
+          "inaccessible-*",
+          "incompatible-*",
+          "*-failed"
+        ],
+        "note": "every mode"
+      }
+    },
+    {
+      "key": "rds:RestoreDBClusterToPointInTime",
+      "client": "rds",
+      "operation": "RestoreDBClusterToPointInTime",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterOptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.StatusInfos.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterMembers.DBClusterParameterGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.AssociatedRoles.Status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "DBCluster.ActivityStreamStatus: ActivityStreamStatus (starting, stopping)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DomainMemberships.Status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "DBCluster.GlobalWriteForwardingStatus: WriteForwardingStatus (disabling, enabling)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.MasterUserSecret.SecretStatus: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "DBCluster.LocalWriteForwardingStatus: LocalWriteForwardingStatus (disabling, enabling)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "DBCluster.LimitlessDatabase.Status: LimitlessDatabaseStatus (disabling, enabling)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/rds/cluster-restore.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/rds-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForClusterAvailable"
+        ],
+        "failureStatuses": [
+          "deleting",
+          "failed",
+          "stopped",
+          "storage-full",
+          "insufficient-capacity",
+          "restore-error",
+          "inaccessible-*",
+          "incompatible-*",
+          "*-failed"
+        ],
+        "note": "every mode"
+      }
+    },
+    {
+      "key": "rds:RestoreDBInstanceFromDBSnapshot",
+      "client": "rds",
+      "operation": "RestoreDBInstanceFromDBSnapshot",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBInstanceStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBParameterGroups.ParameterApplyStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.OptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StatusInfos.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DomainMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AssociatedRoles.Status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "DBInstance.ActivityStreamStatus: ActivityStreamStatus (starting, stopping)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.MasterUserSecret.SecretStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AdditionalStorageVolumes.StorageVolumeStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AdditionalStorageVolumes.StorageOperationStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StorageVolumeStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StorageOperationStatus: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/rds/instance-create.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/rds-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForInstanceAvailable"
+        ],
+        "failureStatuses": [
+          "deleting",
+          "failed",
+          "stopped",
+          "storage-full",
+          "insufficient-capacity",
+          "restore-error",
+          "inaccessible-*",
+          "incompatible-*",
+          "*-failed"
+        ],
+        "note": "every mode"
+      }
+    },
+    {
+      "key": "rds:RestoreDBInstanceToPointInTime",
+      "client": "rds",
+      "operation": "RestoreDBInstanceToPointInTime",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBInstanceStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBParameterGroups.ParameterApplyStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.OptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StatusInfos.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DomainMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AssociatedRoles.Status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "DBInstance.ActivityStreamStatus: ActivityStreamStatus (starting, stopping)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.MasterUserSecret.SecretStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AdditionalStorageVolumes.StorageVolumeStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AdditionalStorageVolumes.StorageOperationStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StorageVolumeStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StorageOperationStatus: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/rds/instance-create.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/rds-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForInstanceAvailable"
+        ],
+        "failureStatuses": [
+          "deleting",
+          "failed",
+          "stopped",
+          "storage-full",
+          "insufficient-capacity",
+          "restore-error",
+          "inaccessible-*",
+          "incompatible-*",
+          "*-failed"
+        ],
+        "note": "every mode"
+      }
+    },
+    {
+      "key": "rds:StartDBInstanceAutomatedBackupsReplication",
+      "client": "rds",
+      "operation": "StartDBInstanceAutomatedBackupsReplication",
+      "evidence": [
+        {
+          "signal": "start-operation",
+          "detail": "StartDBInstanceAutomatedBackupsReplication"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstanceAutomatedBackup.Status: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/rds/calls.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/rds-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForInstanceState"
+        ],
+        "failureStatuses": [
+          "deleting",
+          "failed",
+          "stopped",
+          "storage-full",
+          "insufficient-capacity",
+          "restore-error",
+          "inaccessible-*",
+          "incompatible-*",
+          "*-failed"
+        ],
+        "note": "skipped under --no-wait"
+      }
+    },
+    {
+      "key": "rds:StopDBInstanceAutomatedBackupsReplication",
+      "client": "rds",
+      "operation": "StopDBInstanceAutomatedBackupsReplication",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "DBInstanceAutomatedBackup.Status: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/rds/calls.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/rds-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForInstanceState"
+        ],
+        "failureStatuses": [
+          "deleting",
+          "failed",
+          "stopped",
+          "storage-full",
+          "insufficient-capacity",
+          "restore-error",
+          "inaccessible-*",
+          "incompatible-*",
+          "*-failed"
+        ],
+        "note": "skipped under --no-wait unless a start follows"
+      }
+    },
+    {
+      "key": "route-53:AssociateVPCWithHostedZone",
+      "client": "route-53",
+      "operation": "AssociateVPCWithHostedZone",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "ChangeInfo.Status: ChangeStatus (PENDING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/route53/hosted-zone.ts",
+        "src/provisioning/providers/route53/zone-config.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/route53-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (the change answers PENDING; nothing reads GetChange)"
+      }
+    },
+    {
+      "key": "route-53:ChangeResourceRecordSets",
+      "client": "route-53",
+      "operation": "ChangeResourceRecordSets",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "ChangeInfo.Status: ChangeStatus (PENDING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/acm-certificate/wait.ts",
+        "src/provisioning/providers/route53/record-set-group.ts",
+        "src/provisioning/providers/route53/record-set.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/acm-certificate-provider.ts",
+        "src/provisioning/providers/route53-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (the change answers PENDING; nothing reads GetChange)"
+      }
+    },
+    {
+      "key": "route-53:CreateHostedZone",
+      "client": "route-53",
+      "operation": "CreateHostedZone",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "HostedZone.Features.AcceleratedRecoveryStatus: AcceleratedRecoveryStatus (DISABLING, ENABLING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "HostedZone.Features.PublicDNSFallbackStatus: FeatureStatus (DISABLING, ENABLING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "ChangeInfo.Status: ChangeStatus (PENDING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/route53/hosted-zone.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/route53-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (the change answers PENDING; nothing reads GetChange)"
+      }
+    },
+    {
+      "key": "route-53:DeleteHostedZone",
+      "client": "route-53",
+      "operation": "DeleteHostedZone",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "ChangeInfo.Status: ChangeStatus (PENDING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/route53/hosted-zone-delete.ts",
+        "src/provisioning/providers/route53/hosted-zone.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/route53-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (the change answers PENDING; nothing reads GetChange)"
+      }
+    },
+    {
+      "key": "route-53:DisassociateVPCFromHostedZone",
+      "client": "route-53",
+      "operation": "DisassociateVPCFromHostedZone",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "ChangeInfo.Status: ChangeStatus (PENDING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/route53/zone-config.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/route53-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (the change answers PENDING; nothing reads GetChange)"
+      }
+    },
+    {
+      "key": "route-53:UpdateHostedZoneComment",
+      "client": "route-53",
+      "operation": "UpdateHostedZoneComment",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "HostedZone.Features.AcceleratedRecoveryStatus: AcceleratedRecoveryStatus (DISABLING, ENABLING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "HostedZone.Features.PublicDNSFallbackStatus: FeatureStatus (DISABLING, ENABLING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/route53/hosted-zone.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/route53-provider.ts"
+      ],
+      "classification": {
+        "verdict": "no-wait-by-design",
+        "reason": "the call changes only the comment; the flagged feature statuses belong to UpdateHostedZoneFeatures"
+      }
+    },
+    {
+      "key": "s3tables:PutTableBucketReplication",
+      "client": "s3tables",
+      "operation": "PutTableBucketReplication",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "status: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/s3-tables/table-bucket.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/s3-tables-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+      }
+    },
+    {
+      "key": "secrets-manager:CreateSecret",
+      "client": "secrets-manager",
+      "operation": "CreateSecret",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "ReplicationStatus.Status: StatusType (InProgress, Pending)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/secretsmanager-secret/create.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/secretsmanager-secret-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (replica regions answer InProgress)"
+      }
+    },
+    {
+      "key": "secrets-manager:RemoveRegionsFromReplication",
+      "client": "secrets-manager",
+      "operation": "RemoveRegionsFromReplication",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "ReplicationStatus.Status: StatusType (InProgress, Pending)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/secretsmanager-secret/delete.ts",
+        "src/provisioning/providers/secretsmanager-secret/update.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/secretsmanager-secret-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+      }
+    },
+    {
+      "key": "secrets-manager:ReplicateSecretToRegions",
+      "client": "secrets-manager",
+      "operation": "ReplicateSecretToRegions",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "ReplicationStatus.Status: StatusType (InProgress, Pending)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/secretsmanager-secret/update.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/secretsmanager-secret-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (replica regions answer InProgress)"
+      }
+    },
+    {
+      "key": "ssm:CreateAssociation",
+      "client": "ssm",
+      "operation": "CreateAssociation",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "AssociationDescription.Status.Name: AssociationStatusName (Pending)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "AssociationDescription.Overview.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "AssociationDescription.Overview.DetailedStatus: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/instance-ssm.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (the association answers Pending)"
+      }
+    }
+  ]
+}

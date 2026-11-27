@@ -244,6 +244,8 @@ resource type. `cdkd destroy` accepts neither.
 The table lists every resource type whose behaviour differs between the modes.
 The two flags do not affect any other type. The last two columns show what
 CloudFormation and Terraform do, for comparison.
+[Asynchronous provider operations](_generated/async-operation-waits.md) lists,
+per AWS call, whether cdkd waits for it at all.
 
 | Resource type | `--no-wait` | Default | `--full-wait` | CloudFormation | Terraform |
 | --- | --- | --- | --- | --- | --- |

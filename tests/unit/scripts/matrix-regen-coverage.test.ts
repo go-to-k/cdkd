@@ -90,6 +90,7 @@ describe('CI regenerates through gen:all-matrices (#1417)', () => {
     expect([...aggregateTasks()].sort()).toEqual(
       [
         'cli-flag-coverage',
+        'gen:async-operation-waits',
         'format',
         'gen:drift-readback-coverage',
         'gen:enrichment-coverage',

@@ -203,6 +203,10 @@ jobs:
       # no shared.ts row names leaves its readers on the old value.
       - run: vp run audit:in-place-attr-coverage:check
 
+      # go-to-k/cdkd#7132 — a provider call that only starts an asynchronous
+      # change needs a recorded verdict on whether the provider waits for it.
+      - run: vp run audit:async-operation-waits:check
+
       # go-to-k/cdkd#7070 — a property CloudFormation replaces that the
       # registry schema leaves mutable is sent as a failing in-place update.
       - run: vp run audit:spec-replacement-properties:check
