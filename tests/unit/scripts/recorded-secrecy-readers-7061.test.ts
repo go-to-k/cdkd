@@ -751,20 +751,41 @@ function readsRecordField(raw: unknown): boolean {
 function recordFieldTextReadsIn(file: string, text: string): string[] {
   const out: string[] = [];
   const program = parseOrThrow(file, text);
-  // One hop through a local copy (`const v = record.attributes.Arn; holdsMaskLeaf(v)`),
-  // declared in the NEAREST enclosing function (a parameter of that name is no copy).
+  // One hop through a local copy: `const v = record.attributes.Arn`, a member
+  // of one (`const attrs = record.attributes; attrs[k]`), a destructured one
+  // (`const { Arn } = record.attributes`) or a `for...of` / `for...in` binding
+  // (`for (const [, value] of Object.entries(attributes))`), looked up through
+  // the enclosing functions until a parameter of that name shadows it.
   const FUNCTIONS = ['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression'];
-  const copiesIn = new Map<Node, Map<string, unknown[]>>();
-  const copiesOf = (scope: Node): Map<string, unknown[]> => {
-    let found = copiesIn.get(scope);
-    if (found !== undefined) return found;
-    found = new Map();
-    const into = found;
+  const patternNames = (pattern: unknown): string[] => {
+    const p = unwrap(pattern);
+    if (!isNode(p)) return [];
+    if (p.type === 'Identifier') return [p['name'] as string];
+    if (p.type === 'AssignmentPattern') return patternNames(p['left']);
+    if (p.type === 'RestElement') return patternNames(p['argument']);
+    if (p.type === 'ArrayPattern') return (p['elements'] as unknown[]).flatMap(patternNames);
+    if (p.type === 'ObjectPattern') {
+      return (p['properties'] as Node[]).flatMap((prop) =>
+        prop.type === 'RestElement' ? patternNames(prop['argument']) : patternNames(prop['value'])
+      );
+    }
+    return [];
+  };
+  const scopes = new Map<Node, { copies: Map<string, unknown[]>; params: Set<string> }>();
+  const scopeOf = (scope: Node): { copies: Map<string, unknown[]>; params: Set<string> } => {
+    const known = scopes.get(scope);
+    if (known !== undefined) return known;
+    const copies = new Map<string, unknown[]>();
+    const bind = (pattern: unknown, init: unknown): void => {
+      for (const name of patternNames(pattern)) copies.set(name, [...(copies.get(name) ?? []), init]);
+    };
     const collect = (node: Node): void => {
       if (node !== scope && FUNCTIONS.includes(node.type)) return;
-      if (node.type === 'VariableDeclarator' && isNode(node['id']) && node['id'].type === 'Identifier') {
-        const name = node['id']['name'] as string;
-        into.set(name, [...(into.get(name) ?? []), node['init']]);
+      if (node.type === 'VariableDeclarator') bind(node['id'], node['init']);
+      if ((node.type === 'ForOfStatement' || node.type === 'ForInStatement') && isNode(node['left'])) {
+        const left = node['left'];
+        const targets = left.type === 'VariableDeclaration' ? (left['declarations'] as Node[]).map((d) => d['id']) : [left];
+        for (const target of targets) bind(target, node['right']);
       }
       for (const v of Object.values(node)) {
         if (Array.isArray(v)) {
@@ -775,17 +796,38 @@ function recordFieldTextReadsIn(file: string, text: string): string[] {
       }
     };
     collect(scope);
-    copiesIn.set(scope, found);
+    const params = new Set(FUNCTIONS.includes(scope.type) ? (scope['params'] as unknown[]).flatMap(patternNames) : []);
+    const found = { copies, params };
+    scopes.set(scope, found);
     return found;
   };
-  const readsRecord = (arg: unknown, scope: Node): boolean =>
-    readsRecordField(arg) ||
-    (isNode(arg) &&
-      arg.type === 'Identifier' &&
-      (copiesOf(scope).get(arg['name'] as string) ?? []).some(readsRecordField));
-  const walk = (node: Node, fn: string, scope: Node): void => {
+  /** The names an expression reads as values (not the property names of `a.b`). */
+  const namesRead = (raw: unknown): string[] => {
+    const n = unwrap(raw);
+    if (!isNode(n)) return [];
+    if (n.type === 'Identifier') return [n['name'] as string];
+    if (n.type === 'MemberExpression') {
+      return [...namesRead(n['object']), ...(n['computed'] === true ? namesRead(n['property']) : [])];
+    }
+    if (FUNCTIONS.includes(n.type)) return [];
+    return Object.entries(n).flatMap(([key, v]) =>
+      key === 'key' && n.type === 'Property' ? [] : Array.isArray(v) ? v.flatMap(namesRead) : namesRead(v)
+    );
+  };
+  const copiedFromRecord = (name: string, chain: readonly Node[]): boolean => {
+    for (let i = chain.length - 1; i >= 0; i--) {
+      const { copies, params } = scopeOf(chain[i]!);
+      const inits = copies.get(name);
+      if (inits !== undefined) return inits.some(readsRecordField);
+      if (params.has(name)) return false;
+    }
+    return false;
+  };
+  const readsRecord = (arg: unknown, chain: readonly Node[]): boolean =>
+    readsRecordField(arg) || namesRead(arg).some((name) => copiedFromRecord(name, chain));
+  const walk = (node: Node, fn: string, chain: readonly Node[]): void => {
     let here = fn;
-    const inScope = FUNCTIONS.includes(node.type) ? node : scope;
+    const inChain = FUNCTIONS.includes(node.type) ? [...chain, node] : chain;
     if (node.type === 'FunctionDeclaration' && isNode(node['id'])) here = node['id']['name'] as string;
     if (
       node.type === 'VariableDeclarator' &&
@@ -804,19 +846,19 @@ function recordFieldTextReadsIn(file: string, text: string): string[] {
           : callee.type === 'MemberExpression' && isNode(callee['property'])
             ? (callee['property']['name'] as string)
             : undefined;
-      if (name !== undefined && TEXT_PREDICATES.has(name) && (node['arguments'] as unknown[]).some((arg) => readsRecord(arg, inScope))) {
+      if (name !== undefined && TEXT_PREDICATES.has(name) && (node['arguments'] as unknown[]).some((arg) => readsRecord(arg, inChain))) {
         out.push(`${file}#${here}#${text.slice(node.start, node.end).replace(/\s+/g, ' ')}`);
       }
     }
     for (const v of Object.values(node)) {
       if (Array.isArray(v)) {
-        for (const c of v) if (isNode(c)) walk(c, here, inScope);
+        for (const c of v) if (isNode(c)) walk(c, here, inChain);
       } else if (isNode(v)) {
-        walk(v, here, inScope);
+        walk(v, here, inChain);
       }
     }
   };
-  walk(program, '<module>', program);
+  walk(program, '<module>', [program]);
   return out;
 }
 
@@ -901,9 +943,27 @@ const READS_RECORD_TEXT: Readonly<Record<string, { count: number; why: string }>
     count: 1,
     why: 'a wider `masked` would SKIP the delete, leaving the resource in place, for a ServiceToken the record holds in plaintext; that needs its own decision',
   },
+  'src/analyzer/diff-calculator/calculate-diff.ts#calculateDiff#holdsMaskLeaf(recordedProps[key])': { count: 1, why: BOTH },
+  'src/deployment/deploy-engine/update/resolve-inputs.ts#resolveUpdateInputs#holdsMaskLeaf(recorded[key])': { count: 1, why: BOTH },
+  'src/deployment/deploy-engine/noecho.ts#noEchoAttributeNamesFor#holdsMaskLeaf(attribute)': {
+    count: 1,
+    why: 'skips an attribute that already IS the mask when finding the attributes that echo a NoEcho value: a wider `masked` would find fewer and mask LESS',
+  },
+  'src/deployment/masked-baseline-recapture.ts#recaptureMaskedBaseline#mentionsDynamicReference(leaf)': {
+    count: 1,
+    why: 'collects the reference leaves a recapture may certify: it needs the marker KIND, which `recordedSecrecyOf` merges',
+  },
+  'src/deployment/orphan-adoption.ts#planOrphanAdoption#carriesSecretMask(value)': {
+    count: 1,
+    why: "drops the mask from a found record's refreshed attributes: a wider `masked` would drop attributes it holds in plaintext, which changes what is written",
+  },
+  'src/provisioning/providers/custom-resource/delete.ts#deleteImpl#holdsMaskLeaf(payload)': {
+    count: 1,
+    why: 'a wider `masked` would SKIP the delete, leaving the resource in place, for a payload the record holds in plaintext; that needs its own decision',
+  },
   'src/provisioning/providers/ssm-parameter/import.ts#importImpl#mentionsDynamicReference(declared)': {
     count: 1,
-    why: "the DECLARED Value (the template's, or the heal's redacted bag), not a recorded one: no provenance field describes it",
+    why: "the import input's Value (the template's, or on the heal path the record's redacted properties): no provenance field arrives in the input",
   },
 };
 
@@ -966,7 +1026,7 @@ describe('readers ask recorded-secrecy, never test a marker by hand (go-to-k/cdk
 
   it('no reader tests a record bag by its text outside the pinned table', () => {
     // A floor the scan does not read: an empty table would pass a broken scan.
-    expect(Object.keys(READS_RECORD_TEXT).length).toBeGreaterThanOrEqual(23);
+    expect(Object.keys(READS_RECORD_TEXT).length).toBeGreaterThanOrEqual(29);
     expect(recordTextProblems()).toEqual([]);
   });
 
@@ -977,6 +1037,10 @@ describe('readers ask recorded-secrecy, never test a marker by hand (go-to-k/cdk
     ['the observed baseline', 'export const r4 = (r: { observedProperties: unknown }) => carriesSecretMask(r.observedProperties);', 'r4#carriesSecretMask(r.observedProperties)'],
     ['a local copy of a record value', 'export const r5 = (record: { attributes: Record<string, unknown> }) => { const v = record.attributes.Arn; return holdsMaskLeaf(v); };', 'r5#holdsMaskLeaf(v)'],
     ['a computed bag access', "export const r6 = (record: Record<string, Record<string, unknown>>) => holdsMaskLeaf(record['attributes'].Arn);", "r6#holdsMaskLeaf(record['attributes'].Arn)"],
+    ['a member of a copy', 'export const r8 = (record: { attributes: Record<string, unknown> }, k: string) => { const attrs = record.attributes; return holdsMaskLeaf(attrs[k]); };', 'r8#holdsMaskLeaf(attrs[k])'],
+    ['a copy used in a callback', 'export const r9 = (record: { attributes: Record<string, unknown> }, ks: string[]) => { const v = record.attributes.Arn; return ks.some(() => holdsMaskLeaf(v)); };', 'r9#holdsMaskLeaf(v)'],
+    ['a for-of entry', 'export function r10(record: { attributes: Record<string, unknown> }) { for (const [, value] of Object.entries(record.attributes)) if (holdsMaskLeaf(value)) return true; return false; }', 'r10#holdsMaskLeaf(value)'],
+    ['a destructured value', 'export const r11 = (record: { attributes: Record<string, unknown> }) => { const { Arn } = record.attributes; return holdsMaskLeaf(Arn); };', 'r11#holdsMaskLeaf(Arn)'],
     ['a namespace call', "import * as sr from './deployment/secret-redaction/recorded-secrecy.js';\nexport const r7 = (record: { attributes: Record<string, unknown> }) => sr.holdsMaskLeaf(record.attributes.Arn);", 'r7#sr.holdsMaskLeaf(record.attributes.Arn)'],
   ])('probe: a new text check of %s fails', (_what, line, key) => {
     const file = 'src/zz-probe-record-text.ts';
@@ -987,6 +1051,7 @@ describe('readers ask recorded-secrecy, never test a marker by hand (go-to-k/cdk
     const file = 'src/zz-probe-record-text.ts';
     const line =
       'export const s1 = (desired: unknown) => holdsMaskLeaf(desired);\n' +
+      "export const s3 = (record: { attributes: Record<string, unknown> }) => { const v = record.attributes.Arn; return [v].some((v: unknown) => holdsMaskLeaf(v)); };\n" +
       "export const s2 = (record: never) => recordedSecrecyOf(record, { field: 'attributes', key: 'K' });";
     expect(recordTextProblems({ [file]: line })).toEqual([]);
   });
