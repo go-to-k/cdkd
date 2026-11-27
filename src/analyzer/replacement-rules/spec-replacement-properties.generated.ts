@@ -15,6 +15,10 @@ export const SPEC_REPLACEMENT_PATHS: ReadonlyMap<
 > = new Map<string, ReadonlyArray<readonly string[]>>([
   ['AWS::AppConfig::ConfigurationProfile', [['Type']]],
   ['AWS::ElastiCache::ReplicationGroup', [['NodeGroupConfiguration'], ['NumNodeGroups']]],
+  [
+    'AWS::Elasticsearch::Domain',
+    [['ElasticsearchVersion'], ['EncryptionAtRestOptions', 'KmsKeyId']],
+  ],
   ['AWS::Route53Resolver::ResolverRule', [['DomainName']]],
 ]);
 
@@ -22,5 +26,7 @@ export const SPEC_REPLACEMENT_PATHS: ReadonlyMap<
 export const SPEC_REPLACEMENT_CFN_MEASURED: ReadonlySet<string> = new Set([
   'AWS::ElastiCache::ReplicationGroup#NodeGroupConfiguration',
   'AWS::ElastiCache::ReplicationGroup#NumNodeGroups',
+  'AWS::Elasticsearch::Domain#ElasticsearchVersion',
+  'AWS::Elasticsearch::Domain#EncryptionAtRestOptions.KmsKeyId',
   'AWS::Route53Resolver::ResolverRule#DomainName',
 ]);

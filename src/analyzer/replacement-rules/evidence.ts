@@ -610,6 +610,18 @@ export const REPLACEMENT_EVIDENCE: ReadonlyMap<string, ReplacementEvidence> = ne
   ['AWS::Elasticsearch::Domain#EncryptionAtRestOptions.Enabled', update('cfn-measured', 7083)],
   ['AWS::Elasticsearch::Domain#NodeToNodeEncryptionOptions', update('cfn-measured', 7083)],
   ['AWS::Elasticsearch::Domain#NodeToNodeEncryptionOptions.Enabled', update('cfn-measured', 7083)],
+  // CloudFormation A/B on #7083: ElasticsearchVersion 7.9 -> 7.10 with no
+  // UpdatePolicy, and KmsKeyId from the AWS-managed key to a customer key,
+  // each failed "cannot update a stack when a custom-named resource requires
+  // replacing", so CloudFormation replaces on both (#7130). Under
+  // `UpdatePolicy: EnableVersionUpgrade` it upgrades the version in place, so
+  // the diff keeps that change in place there (`version-upgrade-policy.ts`).
+  // Stateful: a replacement stays behind --force-stateful-recreation.
+  ['AWS::Elasticsearch::Domain#ElasticsearchVersion', replace('cfn-measured', 7083, 7130)],
+  [
+    'AWS::Elasticsearch::Domain#EncryptionAtRestOptions.KmsKeyId',
+    replace('cfn-measured', 7083, 7130),
+  ],
   // Recovery Control: a CloudFormation A/B in us-west-2, its home Region.
   ['AWS::Route53RecoveryControl::SafetyRule#Tags', update('cfn-measured', 7083)],
   // UpdateDomain: each applied under the same domain id and read back (Tags by

@@ -47,13 +47,10 @@ export const UNMEASURED_SPEC_REPLACEMENT_CANDIDATES: ReadonlySet<string> = new S
   'AWS::ElastiCache::ReplicationGroup#NodeGroupConfiguration.*.ReplicaAvailabilityZones',
   'AWS::ElastiCache::ReplicationGroup#NodeGroupConfiguration.*.ReplicaCount',
   'AWS::ElastiCache::ReplicationGroup#NodeGroupConfiguration.*.Slots',
-  // Measured on #7083 (CloudFormation A/B): the version change (no
-  // UpdatePolicy) and a KmsKeyId change each required a replacement;
-  // Enabled applied in place, so the whole EncryptionAtRestOptions stays
-  // here too. The `replace` / conditional rows need a fixture first (#7130).
-  'AWS::Elasticsearch::Domain#ElasticsearchVersion',
+  // Measured on #7083 (CloudFormation A/B): its KmsKeyId member replaces
+  // (#7130) and its Enabled member applies in place, so neither verdict
+  // describes the whole property.
   'AWS::Elasticsearch::Domain#EncryptionAtRestOptions',
-  'AWS::Elasticsearch::Domain#EncryptionAtRestOptions.KmsKeyId',
   'AWS::FSx::FileSystem#LustreConfiguration.CopyTagsToBackups',
   'AWS::FSx::FileSystem#LustreConfiguration.DeploymentType',
   'AWS::FSx::FileSystem#LustreConfiguration.DriveCacheType',
