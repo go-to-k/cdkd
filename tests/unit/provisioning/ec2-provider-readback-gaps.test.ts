@@ -367,7 +367,12 @@ describe('EC2 drift readback gaps (go-to-k/cdkd#6754)', () => {
       ).toContain('UserData');
       expect(
         provider.getDriftUnknownPaths('AWS::EC2::Instance', { UserData: 'IyEvYmluL2Jhc2g=' })
-      ).not.toContain('UserData');
+      ).not.toContain('UserData');      // An ABSENT bag compares (the unsettled re-check passes none; #7061 review).
+      expect(provider.getDriftUnknownPaths('AWS::EC2::Instance')).not.toContain('UserData');
+    });
+
+    it('declares UserData unknown for a properties bag the record cannot be read through (unknown is masked)', () => {
+      expect(provider.getDriftUnknownPaths('AWS::EC2::Instance', 'x' as never)).toContain('UserData');
     });
 
     // go-to-k/cdkd#7061: the record's provenance decides too, whatever the

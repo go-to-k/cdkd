@@ -1,3 +1,4 @@
+import type { RecordedProvenanceFields } from '../../deployment/secret-redaction/recorded-secrecy.js';
 /**
  * What `ResourceProvider.readCurrentState` returns when AWS reports the
  * resource is NOT THERE — deleted outside cdkd (go-to-k/cdkd#4283).
@@ -130,7 +131,7 @@ export interface ReadCurrentStateContext {
    * `recordedSecrecyOf` with these beside `properties`. Absent where no record
    * is read (the deploy capture): the value's text alone then decides.
    */
-  provenance?: { readonly noEchoLeaves?: unknown; readonly maskedPropertyFingerprints?: unknown };
+  provenance?: RecordedProvenanceFields;
   /**
    * The read resource's OWN recorded `observedProperties` (the drift
    * baseline), set by `buildReadCurrentStateContext` beside `attributes`. A

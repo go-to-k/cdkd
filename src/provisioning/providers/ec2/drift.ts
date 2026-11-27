@@ -1,4 +1,4 @@
-import type { RecordedSecrecySource } from '../../../deployment/secret-redaction/recorded-secrecy.js';
+import type { RecordedProvenanceFields } from '../../../deployment/secret-redaction/recorded-secrecy.js';
 import type { Subnet } from '@aws-sdk/client-ec2';
 import { DescribeSubnetsCommand } from '@aws-sdk/client-ec2';
 import { canonicalizeIpv6Cidr } from '../../../utils/ipv6-cidr.js';
@@ -346,7 +346,7 @@ export function getDriftUnknownPaths(
   this: EC2Provider,
   resourceType: string,
   properties?: Record<string, unknown>,
-  provenance?: RecordedSecrecySource
+  provenance?: RecordedProvenanceFields
 ): string[] {
   switch (resourceType) {
     // NetworkInterfaces cannot be read back faithfully: the drift
@@ -378,7 +378,11 @@ export function getDriftUnknownPaths(
         'Ipv6Addresses',
         'LaunchTemplate',
         'LicenseSpecifications',
-        ...(userDataUnreadable(properties, provenance) ? ['UserData'] : []),
+        // An ABSENT bag compares (`.claude/rules/layout-drift.md`): the
+        // unsettled re-check passes none.
+        ...(properties !== undefined && userDataUnreadable(properties, provenance)
+          ? ['UserData']
+          : []),
       ];
     // go-to-k/cdkd#5633: DescribeVpcs names no IPAM pool; the netmask is
     // read back from the CIDR instead. A `monitor` encryption control

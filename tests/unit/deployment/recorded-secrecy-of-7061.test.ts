@@ -29,6 +29,7 @@ describe('recordedSecrecyOf (#7061)', () => {
   it.each<[string, unknown]>([
     ['the mask', '***'],
     ['the mask nested', { a: ['x', '***'] }],
+    ['an embedded mask (a redacted piece)', 'arn:***'],
     ['a dynamic reference', 'x-{{resolve:ssm:/p}}'],
     ['a nested dynamic reference', { a: '{{resolve:secretsmanager:s}}' }],
   ])('is masked when the value carries %s', (_what, value) => {
@@ -50,7 +51,6 @@ describe('recordedSecrecyOf (#7061)', () => {
 
   it.each<[string, RecordedSecrecySource]>([
     ['a plain value', { properties: { K: 'plain' } }],
-    ['an embedded mask (not a whole leaf)', { properties: { K: 'arn:***' } }],
     ['a missing key', { properties: {} }],
     ['a NoEcho coordinate of another key', { properties: { K: 'plain' }, noEchoLeaves: [['L']] }],
     ['a fingerprint of another key', { properties: { K: 'plain' }, maskedPropertyFingerprints: { L: 'x' } }],

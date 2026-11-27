@@ -734,8 +734,10 @@ const RECORD_FIELDS = new Set(['properties', 'attributes', 'observedProperties']
 /** Does the expression read a record bag: `x.attributes`, `record.properties?.[k]`, or a local named like one? */
 function readsRecordField(raw: unknown): boolean {
   if (!isNode(raw)) return false;
-  if (raw.type === 'MemberExpression' && raw['computed'] !== true && isNode(raw['property'])) {
-    if (RECORD_FIELDS.has(raw['property']['name'] as string)) return true;
+  if (raw.type === 'MemberExpression' && isNode(raw['property'])) {
+    // `x.attributes`, or `x['attributes']`.
+    const key = raw['computed'] === true ? literalText(raw['property']) : (raw['property']['name'] as string);
+    if (key !== undefined && RECORD_FIELDS.has(key)) return true;
   }
   if (raw.type === 'Identifier' && RECORD_FIELDS.has(raw['name'] as string)) return true;
   return Object.values(raw).some((v) => (Array.isArray(v) ? v.some(readsRecordField) : readsRecordField(v)));
@@ -748,8 +750,42 @@ function readsRecordField(raw: unknown): boolean {
  */
 function recordFieldTextReadsIn(file: string, text: string): string[] {
   const out: string[] = [];
-  const walk = (node: Node, fn: string): void => {
+  const program = parseOrThrow(file, text);
+  // One hop through a local copy (`const v = record.attributes.Arn; holdsMaskLeaf(v)`),
+  // declared in the NEAREST enclosing function (a parameter of that name is no copy).
+  const FUNCTIONS = ['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression'];
+  const copiesIn = new Map<Node, Map<string, unknown[]>>();
+  const copiesOf = (scope: Node): Map<string, unknown[]> => {
+    let found = copiesIn.get(scope);
+    if (found !== undefined) return found;
+    found = new Map();
+    const into = found;
+    const collect = (node: Node): void => {
+      if (node !== scope && FUNCTIONS.includes(node.type)) return;
+      if (node.type === 'VariableDeclarator' && isNode(node['id']) && node['id'].type === 'Identifier') {
+        const name = node['id']['name'] as string;
+        into.set(name, [...(into.get(name) ?? []), node['init']]);
+      }
+      for (const v of Object.values(node)) {
+        if (Array.isArray(v)) {
+          for (const c of v) if (isNode(c)) collect(c);
+        } else if (isNode(v)) {
+          collect(v);
+        }
+      }
+    };
+    collect(scope);
+    copiesIn.set(scope, found);
+    return found;
+  };
+  const readsRecord = (arg: unknown, scope: Node): boolean =>
+    readsRecordField(arg) ||
+    (isNode(arg) &&
+      arg.type === 'Identifier' &&
+      (copiesOf(scope).get(arg['name'] as string) ?? []).some(readsRecordField));
+  const walk = (node: Node, fn: string, scope: Node): void => {
     let here = fn;
+    const inScope = FUNCTIONS.includes(node.type) ? node : scope;
     if (node.type === 'FunctionDeclaration' && isNode(node['id'])) here = node['id']['name'] as string;
     if (
       node.type === 'VariableDeclarator' &&
@@ -768,19 +804,19 @@ function recordFieldTextReadsIn(file: string, text: string): string[] {
           : callee.type === 'MemberExpression' && isNode(callee['property'])
             ? (callee['property']['name'] as string)
             : undefined;
-      if (name !== undefined && TEXT_PREDICATES.has(name) && (node['arguments'] as unknown[]).some(readsRecordField)) {
+      if (name !== undefined && TEXT_PREDICATES.has(name) && (node['arguments'] as unknown[]).some((arg) => readsRecord(arg, inScope))) {
         out.push(`${file}#${here}#${text.slice(node.start, node.end).replace(/\s+/g, ' ')}`);
       }
     }
     for (const v of Object.values(node)) {
       if (Array.isArray(v)) {
-        for (const c of v) if (isNode(c)) walk(c, here);
+        for (const c of v) if (isNode(c)) walk(c, here, inScope);
       } else if (isNode(v)) {
-        walk(v, here);
+        walk(v, here, inScope);
       }
     }
   };
-  walk(parseOrThrow(file, text), '<module>');
+  walk(program, '<module>', program);
   return out;
 }
 
@@ -830,6 +866,44 @@ const READS_RECORD_TEXT: Readonly<Record<string, { count: number; why: string }>
   'src/deployment/noecho-delete-reresolution.ts#maskedNoEchoCoordinates#holdsMaskLeaf(valueAtCoordinate(properties, coordinate))': {
     count: 1,
     why: BOTH,
+  },
+  // Reached through a local copy (the fence follows one hop).
+  'src/deployment/deploy-engine/noecho.ts#noEchoAttributeNamesFor#holdsMaskLeaf(value)': { count: 1, why: BOTH },
+  'src/cli/commands/drift/revert-write-only.ts#revertWriteOnlyResendNames#holdsMaskLeaf(value)': {
+    count: 1,
+    why: 'the write-only resend list: a wider `masked` would drop from the revert a key the record holds in plaintext, which changes what is written',
+  },
+  'src/deployment/intrinsic-resolver/getatt-heal.ts#usableHealedAttribute#carriesSecretMask(value)': {
+    count: 1,
+    why: "a live read's attributes (the heal's outcome), not a record: no provenance field is in hand",
+  },
+  'src/deployment/masked-baseline-recapture.ts#isMaskedBaselineRecaptureCandidate#holdsMaskLeaf(observed)': {
+    count: 1,
+    why: 'the observed baseline holding the mask is what makes a recapture candidate; no provenance field describes observedProperties',
+  },
+  'src/deployment/rollback-executor/names.ts#secretDerivedNamePairs#mentionsDynamicReference(value)': {
+    count: 1,
+    why: 'derives needle spellings from a usable recorded name: a wider `masked` would derive fewer needles and mask LESS',
+  },
+  'src/deployment/rollback-executor/names.ts#secretDerivedNamePairs#isMaskLeaf(value)': {
+    count: 1,
+    why: 'derives needle spellings from a usable recorded name: a wider `masked` would derive fewer needles and mask LESS',
+  },
+  'src/deployment/secret-redaction/redact-path/baseline-mask.ts#isUncertifiedBaselineMaskPosition#isMaskLeaf(cursor)': {
+    count: 1,
+    why: 'classifies a baseline position by WHICH marker it holds (a reference, not the mask); `recordedSecrecyOf` merges the two',
+  },
+  'src/deployment/secret-redaction/redact-path/baseline-mask.ts#isUncertifiedBaselineMaskPosition#holdsMaskLeaf(cursor)': {
+    count: 1,
+    why: 'classifies a baseline position by WHICH marker it holds (a reference, not the mask); `recordedSecrecyOf` merges the two',
+  },
+  'src/provisioning/providers/custom-resource/delete.ts#deleteImpl#holdsMaskLeaf(serviceToken)': {
+    count: 1,
+    why: 'a wider `masked` would SKIP the delete, leaving the resource in place, for a ServiceToken the record holds in plaintext; that needs its own decision',
+  },
+  'src/provisioning/providers/ssm-parameter/import.ts#importImpl#mentionsDynamicReference(declared)': {
+    count: 1,
+    why: "the DECLARED Value (the template's, or the heal's redacted bag), not a recorded one: no provenance field describes it",
   },
 };
 
@@ -892,7 +966,7 @@ describe('readers ask recorded-secrecy, never test a marker by hand (go-to-k/cdk
 
   it('no reader tests a record bag by its text outside the pinned table', () => {
     // A floor the scan does not read: an empty table would pass a broken scan.
-    expect(Object.keys(READS_RECORD_TEXT).length).toBeGreaterThanOrEqual(13);
+    expect(Object.keys(READS_RECORD_TEXT).length).toBeGreaterThanOrEqual(23);
     expect(recordTextProblems()).toEqual([]);
   });
 
@@ -901,6 +975,9 @@ describe('readers ask recorded-secrecy, never test a marker by hand (go-to-k/cdk
     ['an optional element read', "export const r2 = (record: { properties?: Record<string, unknown> }) => isMaskLeaf(record.properties?.['UserData']);", "r2#isMaskLeaf(record.properties?.['UserData'])"],
     ['a local bag', "export const r3 = (properties: Record<string, unknown>) => mentionsDynamicReference(String(properties['K']));", "r3#mentionsDynamicReference(String(properties['K']))"],
     ['the observed baseline', 'export const r4 = (r: { observedProperties: unknown }) => carriesSecretMask(r.observedProperties);', 'r4#carriesSecretMask(r.observedProperties)'],
+    ['a local copy of a record value', 'export const r5 = (record: { attributes: Record<string, unknown> }) => { const v = record.attributes.Arn; return holdsMaskLeaf(v); };', 'r5#holdsMaskLeaf(v)'],
+    ['a computed bag access', "export const r6 = (record: Record<string, Record<string, unknown>>) => holdsMaskLeaf(record['attributes'].Arn);", "r6#holdsMaskLeaf(record['attributes'].Arn)"],
+    ['a namespace call', "import * as sr from './deployment/secret-redaction/recorded-secrecy.js';\nexport const r7 = (record: { attributes: Record<string, unknown> }) => sr.holdsMaskLeaf(record.attributes.Arn);", 'r7#sr.holdsMaskLeaf(record.attributes.Arn)'],
   ])('probe: a new text check of %s fails', (_what, line, key) => {
     const file = 'src/zz-probe-record-text.ts';
     expect(recordTextProblems({ [file]: line })).toEqual([`record text read: ${file}#${key}`]);

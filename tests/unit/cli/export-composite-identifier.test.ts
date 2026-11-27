@@ -1283,6 +1283,25 @@ describe('buildImportPlan — a redaction mask never reaches the import identifi
     expect(reason).not.toContain('not-an-arn-7061');
   });
 
+  it('BLOCKS as masked an identifier whose attributes bag cannot be read (unknown is masked; go-to-k/cdkd#7061)', async () => {
+    const state = stateWith({
+      Table: {
+        resourceType: 'AWS::S3Tables::Table',
+        physicalId: TABLE_COMPOSITE,
+        properties: { Namespace: 'analytics', TableName: 'events' },
+        attributes: 'not-a-bag' as never,
+      },
+    });
+    const template = {
+      Resources: {
+        Table: { Type: 'AWS::S3Tables::Table', Properties: { Namespace: 'analytics', TableName: 'events' } },
+      },
+    };
+    const plan = await buildImportPlan(state, template, cfnClientFor(), 'MyStack');
+    expect(plan.phase1Imports).toEqual([]);
+    expect(groupBlockedReasons(plan.blocked).join('\n')).toMatch(/redaction mask/);
+  });
+
   it('WITHHOLDS a hostile logical id from the repair command, and never renders it through displayIdent there', async () => {
     // The P1 this lane shipped and review probed. The remedy line is a
     // `cdkd import` an operator PASTES, and the first cut rendered the logical

@@ -19,15 +19,12 @@ import { carriesSecretMask } from './mask-only.js';
  * Each predicate keeps the exact meaning of the hand tests it replaced: this
  * module changes no verdict, it only names them.
  *
- * NOT YET HERE: the record-provenance answer. These predicates read a value's
- * text, which is right for the markers the redaction itself writes; they
- * cannot see a secret the record kept in plaintext (a sub-floor piece, a
- * legacy row, a cross-stack copy). Readers that need that today consult the
- * record's provenance fields (`noEchoLeaves`, masked fingerprints, `NoEcho`
- * MACs) beside these. The plan of #7061 adds one record-aware entry point here
- * that answers masked / clear / unknown, moves the readers that decide on a
- * record onto it group by group, and then narrows the fence so these text-only
- * predicates are reachable only from it.
+ * These predicates read a value's TEXT, which is right for the markers the
+ * redaction itself writes; they cannot see a secret the record kept in
+ * plaintext. A reader deciding on a RECORDED position asks
+ * {@link recordedSecrecyOf}, which adds the record's provenance fields; the
+ * fence fails on a text predicate called on a record bag outside its pinned
+ * table of readers whose verdict the provenance answer would change.
  */
 
 /** The mask leaf itself: the whole value is `***`. */
@@ -138,8 +135,9 @@ export function isMaskRun(text: string): boolean {
 /**
  * What a RECORD says about one position of its own bags (go-to-k/cdkd#7061):
  *
- * - `masked`: the value there carries a redaction marker (the mask as a whole
- *   leaf at any depth, or a dynamic reference), or a provenance field names
+ * - `masked`: the value there carries a redaction marker (the mask anywhere
+ *   in it, an embedded piece included, or a dynamic reference), or a
+ *   provenance field names
  *   the position: a `noEchoLeaves` coordinate under the key, a
  *   `maskedPropertyFingerprints` key (both `properties`), or a
  *   `noEchoAttributeNames` entry (`attributes`).
@@ -162,6 +160,12 @@ export interface RecordedSecrecySource {
   readonly maskedPropertyFingerprints?: unknown;
 }
 
+/** A record's own secrecy provenance fields, as stored, carried to a reader without the record. */
+export type RecordedProvenanceFields = Pick<
+  RecordedSecrecySource,
+  'noEchoLeaves' | 'maskedPropertyFingerprints'
+>;
+
 export function recordedSecrecyOf(
   record: RecordedSecrecySource | undefined,
   at: { readonly field: 'properties' | 'attributes'; readonly key: string }
@@ -170,7 +174,7 @@ export function recordedSecrecyOf(
   const bag = record[at.field];
   if (bag === null || typeof bag !== 'object' || Array.isArray(bag)) return 'unknown';
   const value = Object.hasOwn(bag, at.key) ? (bag as Record<string, unknown>)[at.key] : undefined;
-  if (holdsMaskLeaf(value) || valueMentionsDynamicReference(value)) return 'masked';
+  if (mentionsMask(value) || valueMentionsDynamicReference(value)) return 'masked';
   if (at.field === 'attributes') {
     const names = record.noEchoAttributeNames;
     return Array.isArray(names) && names.includes(at.key) ? 'masked' : 'clear';

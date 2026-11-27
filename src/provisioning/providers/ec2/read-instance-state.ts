@@ -21,7 +21,7 @@ import { isNamedError } from './common.js';
 import { inDeclaredOrder } from '../../declared-order.js';
 import {
   recordedSecrecyOf,
-  type RecordedSecrecySource,
+  type RecordedProvenanceFields,
 } from '../../../deployment/secret-redaction/recorded-secrecy.js';
 
 /** The instance's own not-found code on a per-attribute read. */
@@ -38,7 +38,7 @@ export async function readInstanceCurrentState(
   this: EC2Provider,
   physicalId: string,
   properties?: Record<string, unknown>,
-  provenance?: RecordedSecrecySource
+  provenance?: RecordedProvenanceFields
 ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
   const resp = await this.ec2Client.send(
     new DescribeInstancesCommand({ InstanceIds: [physicalId] })
@@ -87,7 +87,7 @@ async function readInstanceDetails(
   physicalId: string,
   instance: Instance,
   properties: Record<string, unknown> | undefined,
-  provenance: RecordedSecrecySource | undefined
+  provenance: RecordedProvenanceFields | undefined
 ): Promise<Record<string, unknown>> {
   const result: Record<string, unknown> = {};
   if (instance.ImageId !== undefined) result['ImageId'] = instance.ImageId;
@@ -490,14 +490,16 @@ export const readInstanceStateMethods = { readInstanceCurrentState };
 /**
  * Whether the record's `UserData` has no value to compare a readback with
  * (go-to-k/cdkd#6754): the record holds a secret there, by its text (the mask,
- * a reference) or by its provenance (a masked-property fingerprint, a `NoEcho`
+ * or, since go-to-k/cdkd#7061, a dynamic reference) or by its provenance (a masked-property fingerprint, a `NoEcho`
  * coordinate under it; go-to-k/cdkd#7061), or the record cannot tell. Read by
  * the readback, which then makes no `userData` call, and by
- * `getDriftUnknownPaths`, which declares the path unknown.
+ * `getDriftUnknownPaths`, which declares the path unknown. A read with no
+ * record context (the deploy capture, the unsettled re-check) has no provenance
+ * and decides on the text alone.
  */
 export function userDataUnreadable(
   properties: Record<string, unknown> | undefined,
-  provenance: RecordedSecrecySource | undefined
+  provenance: RecordedProvenanceFields | undefined
 ): boolean {
   return (
     recordedSecrecyOf({ ...provenance, properties }, { field: 'properties', key: 'UserData' }) !==

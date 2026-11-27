@@ -1,3 +1,4 @@
+import type { RecordedProvenanceFields } from '../../deployment/secret-redaction/recorded-secrecy.js';
 import type {
   ResourceCreateResult,
   ResourceDeleteResult,
@@ -506,7 +507,7 @@ export interface ResourceProvider {
      * `maskedPropertyFingerprints`, as stored, for a provider that asks
      * `recordedSecrecyOf` whether a recorded property is a secret.
      */
-    provenance?: { readonly noEchoLeaves?: unknown; readonly maskedPropertyFingerprints?: unknown }
+    provenance?: RecordedProvenanceFields
   ): string[];
 
   /**
