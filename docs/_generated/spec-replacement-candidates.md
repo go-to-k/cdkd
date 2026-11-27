@@ -15,7 +15,7 @@ what cdkd does; `update` and `baseline` rows keep the in-place update, and a `ha
 is decided by `src/analyzer/replacement-rules/rules.ts` or a provider-replacement planner.
 Evidence: `REPLACEMENT_EVIDENCE`.
 
-Candidates: 389 (replace 4, update 150, baseline 145, hand rule 90).
+Candidates: 389 (replace 4, update 156, baseline 139, hand rule 90).
 
 | Candidate | Spec | Verdict |
 | --- | --- | --- |
@@ -124,14 +124,14 @@ Candidates: 389 (replace 4, update 150, baseline 145, hand rule 90).
 | `AWS::EC2::SpotFleet#SpotFleetRequestConfigData.LaunchTemplateConfigs` | yes | baseline |
 | `AWS::EC2::SpotFleet#SpotFleetRequestConfigData.OnDemandTargetCapacity` | yes | baseline |
 | `AWS::EC2::Subnet#Ipv6CidrBlock` | maybe | hand rule |
-| `AWS::EC2::TrafficMirrorSession#NetworkInterfaceId` | yes | baseline |
+| `AWS::EC2::TrafficMirrorSession#NetworkInterfaceId` | yes | update |
 | `AWS::EC2::TransitGatewayRouteTable#Tags` | yes | update |
 | `AWS::EC2::VPC#InstanceTenancy` | maybe | hand rule |
 | `AWS::EC2::VPCPeeringConnection#PeerRoleArn` | yes | update |
-| `AWS::EC2::VPNConnection#CustomerGatewayId` | yes | baseline |
-| `AWS::EC2::VPNConnection#TransitGatewayId` | yes | baseline |
-| `AWS::EC2::VPNConnection#VpnGatewayId` | yes | baseline |
-| `AWS::EC2::VPNConnection#VpnTunnelOptionsSpecifications` | yes | baseline |
+| `AWS::EC2::VPNConnection#CustomerGatewayId` | yes | update |
+| `AWS::EC2::VPNConnection#TransitGatewayId` | yes | update |
+| `AWS::EC2::VPNConnection#VpnGatewayId` | yes | update |
+| `AWS::EC2::VPNConnection#VpnTunnelOptionsSpecifications` | yes | update |
 | `AWS::ECS::Service#DeploymentController` | yes | update |
 | `AWS::ECS::Service#LaunchType` | yes | hand rule |
 | `AWS::EKS::Cluster#KubernetesNetworkConfig` | yes | baseline |
@@ -270,7 +270,7 @@ Candidates: 389 (replace 4, update 150, baseline 145, hand rule 90).
 | `AWS::KinesisAnalyticsV2::Application#RuntimeEnvironment` | yes | update |
 | `AWS::KinesisAnalyticsV2::ApplicationOutput#Output.Name` | yes | update |
 | `AWS::KinesisAnalyticsV2::ApplicationReferenceDataSource#ReferenceDataSource.TableName` | yes | update |
-| `AWS::LakeFormation::Resource#UseServiceLinkedRole` | maybe | baseline |
+| `AWS::LakeFormation::Resource#UseServiceLinkedRole` | maybe | update |
 | `AWS::Lambda::EventSourceMapping#AmazonManagedKafkaEventSourceConfig` | yes | update |
 | `AWS::Lambda::EventSourceMapping#SelfManagedKafkaEventSourceConfig` | yes | update |
 | `AWS::Location::GeofenceCollection#Description` | yes | update |

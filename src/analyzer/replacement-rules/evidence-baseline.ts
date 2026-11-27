@@ -31,11 +31,6 @@ export const UNMEASURED_SPEC_REPLACEMENT_CANDIDATES: ReadonlySet<string> = new S
   'AWS::DataSync::LocationSMB#ServerHostname',
   'AWS::EC2::SpotFleet#SpotFleetRequestConfigData.LaunchTemplateConfigs',
   'AWS::EC2::SpotFleet#SpotFleetRequestConfigData.OnDemandTargetCapacity',
-  'AWS::EC2::TrafficMirrorSession#NetworkInterfaceId',
-  'AWS::EC2::VPNConnection#CustomerGatewayId',
-  'AWS::EC2::VPNConnection#TransitGatewayId',
-  'AWS::EC2::VPNConnection#VpnGatewayId',
-  'AWS::EC2::VPNConnection#VpnTunnelOptionsSpecifications',
   // Measured on #7083: its mutable member, ElasticLoadBalancing, applies in
   // place with Auto Mode, and IpFamily / ServiceIpv4Cidr already replace
   // through the schema's nested create-only paths. Neither `replace` nor
@@ -96,7 +91,6 @@ export const UNMEASURED_SPEC_REPLACEMENT_CANDIDATES: ReadonlySet<string> = new S
   'AWS::KafkaConnect::Connector#ConnectorConfiguration',
   'AWS::KafkaConnect::Connector#Plugins',
   'AWS::KafkaConnect::Connector#WorkerConfiguration',
-  'AWS::LakeFormation::Resource#UseServiceLinkedRole',
   'AWS::MediaLive::Channel#InputAttachments.*.InputId',
   'AWS::Route53RecoveryControl::SafetyRule#ControlPanelArn',
   'AWS::Route53RecoveryControl::SafetyRule#RuleConfig',
