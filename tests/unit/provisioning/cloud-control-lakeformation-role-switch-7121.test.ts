@@ -264,12 +264,19 @@ describe('a Lake Formation location moving off the service-linked role (go-to-k/
     );
   });
 
-  it('masks the caller identity in the double-failure message', async () => {
-    serve(
-      SLR,
-      ['FAILED', 'FAILED'],
-      'User: arn:aws:sts::123456789012:assumed-role/Deployer/session-1 is not authorized to perform: lakeformation:RegisterResource'
-    );
+  it('masks the caller identity of a synchronous refusal in the double-failure message', async () => {
+    serve(SLR);
+    const served = mockCcSend.getMockImplementation()!;
+    mockCcSend.mockImplementation(async (command: { constructor: { name: string } }) => {
+      if (command.constructor.name === 'CreateResourceCommand') {
+        const err = new Error(
+          'User: arn:aws:sts::123456789012:assumed-role/Deployer/session-1 is not authorized to perform: lakeformation:RegisterResource'
+        );
+        err.name = 'AccessDeniedException';
+        throw err;
+      }
+      return served(command);
+    });
     const err = await provider()
       .update('Lf', ARN, T, own, slr)
       .then(
@@ -277,7 +284,9 @@ describe('a Lake Formation location moving off the service-linked role (go-to-k/
         (e: unknown) => e as Error
       );
     expect(err?.message).toContain('registering it back with the service-linked role failed too');
+    expect(err?.message).toContain('not authorized to perform');
     expect(err?.message).not.toContain('assumed-role/Deployer');
+    expect(err?.message).toContain('The location is not registered with Lake Formation now');
   });
 });
 
