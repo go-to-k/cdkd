@@ -32,6 +32,7 @@ import {
   liveHoldsFreshLeaves,
 } from '../../deploy-value-equality.js';
 import { noEchoLeavesOf, valueAtCoordinate } from '../../secret-redaction.js';
+import { withRebaselinedFingerprints } from '../../masked-property-fingerprints.js';
 import { withRefreshedReadVersions } from '../read-provenance-moved.js';
 import { approveLateReplacement } from '../../deployment-approval.js';
 import { findDestructiveChanges } from '../../../analyzer/destructive-changes.js';
@@ -82,6 +83,8 @@ export async function provisionUpdate(
     lostChild,
     lostWithParent,
     staleCoordinates,
+    staleUnmovedKeys,
+    staleUnprovableKeys,
     desiredProps,
     noEchoSources,
     parameterCoordinates,
@@ -358,6 +361,16 @@ export async function provisionUpdate(
       )
       .map((pc) => pc.path)
   );
+  // go-to-k/cdkd#7050 review: a stale NoEcho leaf's key whose other inputs
+  // cannot be proven unmoved reads unmoved. Only a create-only key is then
+  // never sent; an updatable one is sent when its readback differs.
+  for (const key of staleUnprovableKeys) {
+    engine.logger.warn(
+      parameterCreateOnlyPaths.has(key)
+        ? safeMsg`${logicalId}.${key} is recorded masked and reads a parameter whose NoEcho was removed, also outside the value it fed, so cdkd cannot prove the key unchanged and treats it as unchanged: a change to that parameter is not applied there. To apply one, deploy with --recreate-via-cc-api ${logicalId} or --recreate-via-sdk-provider ${logicalId}.`
+        : safeMsg`${logicalId}.${key} is recorded masked and reads a parameter whose NoEcho was removed, also outside the value it fed, so cdkd cannot prove the key unchanged from its record: the readback decides this key.`
+    );
+  }
   // go-to-k/cdkd#6146: never sent in place, so the save keeps each one's
   // previous NoEcho value MAC (a replacement's new record starts with none).
   // Nothing reads a create-only key's MAC today (no verdict for it); it is
@@ -693,8 +706,15 @@ export async function provisionUpdate(
     // holds `***` where no NoEcho source serves the leaf any more) that AWS
     // confirmed holding the resolved value is rewritten to that value and
     // unmarked, so the diff stops comparing `***` with it on every run.
+    // go-to-k/cdkd#7050 review: a key whose other inputs are unprovable
+    // (`staleUnprovableKeys`) keeps its stale leaves, so the next deploy
+    // weighs the same evidence and warns again; settled without a re-stamp it
+    // would read moved, and be refused, on every later deploy.
     const staleHeld = staleCoordinates.filter(
-      (coordinate) => typeof coordinate[0] === 'string' && parameterHeldKeys.has(coordinate[0])
+      (coordinate) =>
+        typeof coordinate[0] === 'string' &&
+        parameterHeldKeys.has(coordinate[0]) &&
+        !staleUnprovableKeys.has(coordinate[0])
     );
     if (staleHeld.length > 0) {
       let properties = currentResource.properties;
@@ -710,11 +730,23 @@ export async function provisionUpdate(
           !staleHeld.some((stale) => keyOrderFreeJson(stale) === keyOrderFreeJson(coordinate))
       );
       const { noEchoLeaves: _dropped, ...rest } = currentResource;
-      stateResources[logicalId] = {
-        ...rest,
-        properties,
-        ...(remaining.length > 0 && { noEchoLeaves: remaining.map((c) => [...c]) }),
-      };
+      // go-to-k/cdkd#7050 review: a key whose other inputs were proven
+      // unmoved (`staleUnmovedKeys`) takes today's input fingerprint, which
+      // now hashes the settled leaf as the value AWS holds.
+      const today = engine.secretsRun.perResourceInputFingerprints.get(logicalId) ?? {};
+      const restamped = Object.fromEntries(
+        [...staleUnmovedKeys]
+          .filter((key) => parameterHeldKeys.has(key) && Object.hasOwn(today, key))
+          .map((key) => [key, today[key]!])
+      );
+      stateResources[logicalId] = withRebaselinedFingerprints(
+        {
+          ...rest,
+          properties,
+          ...(remaining.length > 0 && { noEchoLeaves: remaining.map((c) => [...c]) }),
+        },
+        restamped
+      );
     }
     // go-to-k/cdkd#4852: as on the first skip, an equal-value version move
     // refreshes the read versions, so the next diff does not promote again.

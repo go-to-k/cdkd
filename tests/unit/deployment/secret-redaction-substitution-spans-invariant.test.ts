@@ -1,0 +1,208 @@
+/**
+ * go-to-k/cdkd#7050, the generated invariant: a secret's plaintext never
+ * reaches state, at ANY length, whatever else in the leaf holds the same text.
+ *
+ * Through the real resolver and the real persist walk: each case resolves a
+ * template node into a pass bag (which records where each `{{resolve:...}}`
+ * token was substituted) and redacts the result against the same node, as the
+ * deploy persist does. Crossed: secret values (two under MIN_NEEDLE_LENGTH) x
+ * gap kinds (a parameter holding the secret's text, one containing it, one
+ * unrelated, a pseudo parameter, an `Fn::Sub` variable map) x the token's
+ * place (before, after, between gaps) x `Fn::Join` / `Fn::Sub`. Asserted:
+ *
+ * - no plaintext of the secret outside a `{{resolve:...}}` token;
+ * - the template's own text (`tt:` / `:tt`) is kept as written;
+ * - every token the template spells is in the persisted leaf.
+ */
+import { describe, it, expect, vi } from 'vite-plus/test';
+
+const secret = vi.hoisted(() => ({ username: 'pg', other: 'zz' }));
+
+vi.mock('../../../src/utils/logger.js', () => {
+  const fns = {
+    setLevel: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    child: () => fns,
+  };
+  return { getLogger: () => fns };
+});
+vi.mock('../../../src/utils/aws-clients.js', () => ({
+  getAwsClients: () => ({
+    sts: { send: vi.fn().mockResolvedValue({ Account: '210987654321' }) },
+    secretsManager: {
+      send: vi.fn(async () => ({ SecretString: JSON.stringify(secret) })),
+      config: { region: () => Promise.resolve('us-east-1') },
+    },
+  }),
+}));
+vi.mock('@aws-sdk/client-secrets-manager', async (importOriginal) => {
+  const actual = (await importOriginal()) as object;
+  class FakeSecretsManagerClient {
+    readonly config = { region: () => Promise.resolve('us-east-1') };
+    constructor(_config?: unknown) {}
+    async send(): Promise<unknown> {
+      return { SecretString: JSON.stringify(secret) };
+    }
+    destroy(): void {}
+  }
+  return { ...actual, SecretsManagerClient: FakeSecretsManagerClient };
+});
+
+import { IntrinsicFunctionResolver } from '../../../src/deployment/intrinsic-function-resolver.js';
+import {
+  dynamicReferenceTokens,
+  redactForState,
+  type RecordedSecretValues,
+} from '../../../src/deployment/secret-redaction.js';
+import { MIN_NEEDLE_LENGTH } from '../../../src/deployment/secret-redaction/rules.js';
+
+const SECRET_VALUES = ['pg', 'x9', 'root', 'postgres', '1234'] as const;
+/** A second secret of the same bag, referenced by another property, under the floor. */
+const OTHER = 'zz';
+
+/** Parameter values per gap kind, as a function of the secret's text. */
+const PARAMETER_GAPS: Record<string, (v: string) => string> = {
+  'a parameter holding the secret text': (v) => v,
+  'a parameter containing it': (v) => `a${v}${v}b`,
+  'an unrelated parameter': () => 'qqq',
+  "a parameter containing the OTHER secret's text": () => `x${OTHER}x`,
+  "a parameter EQUAL to the OTHER secret's text": () => OTHER,
+};
+const REGION = 'us-east-1';
+
+type Part = { text: string } | { token: true } | { gap: string };
+
+/**
+ * The persisted spelling the rule gives (go-to-k/cdkd#7050): template text as
+ * written and the token as itself, while a gap holding ANY recorded secret's
+ * text (the leaf's own, or the other secret's, at any length) masks the whole
+ * leaf: no token is written into a gap on the strength of its bytes.
+ */
+function expected(parts: readonly Part[], delimiter: string, v: string, token: string, gapValue: (name: string) => string): string {
+  const gaps = parts.flatMap((part) => ('gap' in part ? [gapValue(part.gap)] : []));
+  if (gaps.some((g) => g.includes(v) || g.includes(OTHER))) return '***';
+  return parts
+    .map((part) => ('text' in part ? part.text : 'token' in part ? token : gapValue(part.gap)))
+    .join(delimiter);
+}
+
+interface Case {
+  source: unknown;
+  expected: string;
+}
+
+function cases(v: string, token: string): Record<string, Case> {
+  const out: Record<string, Case> = {};
+  const gapNodes: Record<string, unknown> = {
+    ...Object.fromEntries(Object.keys(PARAMETER_GAPS).map((name, i) => [name, { Ref: `P${i}` }])),
+    'a pseudo parameter': { Ref: 'AWS::Region' },
+  };
+  const gapValue = (name: string): string =>
+    name === 'a pseudo parameter' ? REGION : PARAMETER_GAPS[name]!(v);
+  // How the token reaches the leaf: spelled (its span recorded), or LENT by a
+  // part that records no span (`Fn::Select` over a literal list, over an
+  // `Fn::Split`): the generic taint must mask those.
+  const lenders: Record<string, (t: string) => unknown> = {
+    spelled: (t) => t,
+    'lent by Fn::Select': (t) => ({ 'Fn::Select': [0, [t, 'unused']] }),
+    'lent by Fn::Select over Fn::Split': (t) => ({ 'Fn::Select': [0, { 'Fn::Split': ['|', t] }] }),
+  };
+  for (const [lender, lend] of Object.entries(lenders)) {
+  const node = (part: Part): unknown =>
+    'text' in part ? part.text : 'token' in part ? lend(token) : gapNodes[part.gap];
+  const lent = lender !== 'spelled';
+  for (const gap of Object.keys(gapNodes)) {
+    for (const text of ['tt:', `${v}-`]) {
+      const shapes: Record<string, Part[]> = {
+        'token, then the gap': [{ text }, { token: true }, { gap }],
+        'the gap, then the token': [{ gap }, { token: true }, { text }],
+        'the token between two gaps': [{ text }, { gap }, { token: true }, { gap }],
+      };
+      for (const [shape, parts] of Object.entries(shapes)) {
+        out[`${lender}, Join, ${shape}: ${gap}, text ${JSON.stringify(text)}`] = {
+          source: { 'Fn::Join': ['', parts.map(node)] },
+          expected: lent ? '***' : expected(parts, '', v, token, gapValue),
+        };
+        out[`${lender}, Join with a delimiter, ${shape}: ${gap}, text ${JSON.stringify(text)}`] = {
+          source: { 'Fn::Join': ['/', parts.map(node)] },
+          expected: lent ? '***' : expected(parts, '/', v, token, gapValue),
+        };
+      }
+      const subParts: Part[] = [{ text }, { gap }, { token: true }, { gap }];
+      out[`${lender}, Sub variable map: ${gap}, text ${JSON.stringify(text)}`] = {
+        source: { 'Fn::Sub': [`${text}\${G}\${T}\${G}`, { G: gapNodes[gap], T: lend(token) }] },
+        expected: lent ? '***' : expected(subParts, '', v, token, gapValue),
+      };
+      if (!lent) {
+        out[`Sub inline token: ${gap}, text ${JSON.stringify(text)}`] = {
+          source: { 'Fn::Sub': [`${text}\${G}${token}`, { G: gapNodes[gap] }] },
+          expected: expected([{ text }, { gap }, { token: true }], '', v, token, gapValue),
+        };
+      }
+    }
+  }
+  }
+  return out;
+}
+
+async function persist(
+  v: string,
+  source: unknown,
+  other: string
+): Promise<{ leaf: string; whole: string }> {
+  secret.username = v;
+  const resolver = new IntrinsicFunctionResolver('us-east-1');
+  const bag: RecordedSecretValues = new Map();
+  const parameters = Object.fromEntries(
+    Object.values(PARAMETER_GAPS).map((value, i) => [`P${i}`, value(v)])
+  );
+  // `M` puts a second, sub-floor secret into the same pass bag.
+  const template = { L: source, M: other };
+  const resolved = await resolver.resolve(template, {
+    template: {
+      Resources: {},
+      Parameters: Object.fromEntries(Object.keys(parameters).map((k) => [k, { Type: 'String' }])),
+    },
+    resources: {},
+    parameters,
+    recordedSecretValues: bag,
+  } as never);
+  const out = redactForState(resolved as Record<string, unknown>, {
+    provenance: 'template-derived',
+    secrets: bag,
+    source: template,
+    generation: 'same-generation',
+  }) as Record<string, unknown>;
+  expect(out['M']).toBe(other);
+  return { leaf: String(out['L']), whole: JSON.stringify(out) };
+}
+
+describe('a secret never reaches state beside a value-bearing part (#7050)', () => {
+  it('the sample reaches under the substring floor', () => {
+    expect(SECRET_VALUES.filter((v) => v.length < MIN_NEEDLE_LENGTH).length).toBeGreaterThan(1);
+    expect(OTHER.length).toBeLessThan(MIN_NEEDLE_LENGTH);
+  });
+
+  const all = SECRET_VALUES.flatMap((v, n) => {
+    const token = `{{resolve:secretsmanager:db-7050-${n}:SecretString:username::}}`;
+    const other = `{{resolve:secretsmanager:db-7050-${n}:SecretString:other::}}`;
+    return Object.entries(cases(v, token)).map(([name, c]) => [v, name, c, other] as const);
+  });
+
+  it.each(all)('secret %j, %s', async (v, name, c, other) => {
+    const { leaf, whole } = await persist(v, c.source, other);
+    // The exact spelling: the template's text kept, every secret byte a token
+    // or the leaf masked, and nothing attributed by search.
+    expect(leaf).toBe(c.expected);
+    if (leaf !== '***') expect(dynamicReferenceTokens(leaf).length).toBeGreaterThan(0);
+    // NEGATIVE: no secret's plaintext, at any length, anywhere in the whole
+    // persisted bag outside a reference, except where the template's own
+    // text spells it (`v-`, public).
+    const outside = whole.split(/\{\{resolve:[^}]+\}\}/).join('\u0000');
+    expect(outside).not.toContain(OTHER);
+    if (!name.includes(`text "${v}-"`)) expect(outside).not.toContain(v);
+  });
+});

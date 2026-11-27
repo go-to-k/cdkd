@@ -1748,9 +1748,10 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
 
       expect([...parent]).toEqual(before);
       expect(inheritedParameterExpression(parent, 'Pub', frame(PIN))).toBeUndefined();
-      // The child keeps the value scan's answer, never the sibling's reference.
+      // Never the sibling's reference, and never the sub-floor plaintext
+      // either: the child masks the read (go-to-k/cdkd#7059).
       const persisted = childPersist(parent, { Value: frame(PIN) }, { Value: { Ref: 'Pub' } });
-      expect(persisted['Value']).toBe(frame(PIN));
+      expect(persisted['Value']).toBe('***');
     });
 
     it('writes nothing for an object leaf beside a PLAIN LITERAL equal to its value (condition (iv))', () => {

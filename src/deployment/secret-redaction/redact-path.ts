@@ -1,4 +1,5 @@
-import { type RecordedSecretValues } from './pairs.js';
+import { referencesConsumedBy } from './consumed-references.js';
+import { SECRET_MASK, resolvedPlaintextOf, type RecordedSecretValues } from './pairs.js';
 import {
   type PathSourceRules,
   isDynamicReferenceString,
@@ -26,6 +27,12 @@ import {
 import { hasPlainPrototype } from './redact-path/json-equality.js';
 import { isSourcePlainLiteral, rerenderedSourceLiteral } from './redact-path/template-literal.js';
 import { positionByLiteralRendering } from './redact-path/literal-rendering.js';
+import {
+  TAINTED_WITHOUT_SPAN,
+  positionBySubstitutionSpans,
+} from './redact-path/substitution-spans.js';
+import { attributionRefusedReadsOf } from './nested-stack/refused-parameter-reads.js';
+import { placeUnpairedListElements } from './redact-path/unplaced-list-elements.js';
 
 export { sourceElementsKeptFor, arrayPairsWhateverDrops } from './redact-path/array-drop.js';
 export {
@@ -230,6 +237,11 @@ export function redactByPath(
     // same PARENT bag, ahead of the arms below. Their fall-through scans the
     // CHILD bag, whose slot holds whichever parameter's expression resolved
     // last, while the diff side scans the parent's.
+    // go-to-k/cdkd#7050 / #7059: a parameter the parent could not let the
+    // child attribute by search. A masked one masks every read; a sub-floor
+    // one is read only as the parent's certified spelling, or masked.
+    const refused = attributionRefusedReadsOf(source, secrets);
+    if (refused === 'masked') return SECRET_MASK;
     const inherited = positionByInheritedParameter(bag, source, secrets);
     if (inherited !== undefined) return inherited;
     // Its `Fn::Select` / `Fn::Split` / `Fn::If` twin (issues #4731, #4919):
@@ -272,35 +284,66 @@ export function redactByPath(
     // kept as resolved only where no recorded secret sits in them. A gap that
     // holds one refuses, leaving the leaf to the arms below, which exist for
     // exactly those parts.
-    const rendered = positionByLiteralRendering(bag, source, secrets, rules, (text) =>
-      redactForState(text, { provenance: 'value-scan', secrets })
-    );
-    if (rendered !== undefined) return rendered;
-    const certified = positionByCrossStackSource(bag, source, secrets);
-    if (certified !== undefined) return certified;
-    // The EMBEDDING twin of the `{Ref: <Param>}` arm above (issue #2320): an
-    // `Fn::Sub` / `Fn::Join` over the child's own parameters, or embedding a
-    // cross-stack read (issue #2298), each placeholder answered from its OWN
-    // association. Before the skeleton arm, because an
-    // association is exact evidence where a pattern is a search.
-    const placeheld = positionByParameterPlaceholders(bag, source, secrets);
-    if (placeheld !== undefined) return placeheld;
-    const positioned = positionByIntrinsicSkeleton(bag, source, secrets, secretExpressions);
-    if (positioned !== undefined) return positioned;
-    // The FRAME arm LAST (issue #2745): a leaf that EMBEDS one token inside
-    // the intrinsic's literal text, which the skeleton arm declines — and a
-    // whole-token leaf the skeleton arm REFUSED, answered here only on
-    // pass-local pair evidence the skeleton's stores cannot hold (its
-    // docstring names the one shape).
-    const framed = positionByIntrinsicFrame(
-      bag,
-      source,
-      secrets,
-      secretExpressions,
-      bagIsSameGeneration
-    );
-    if (framed !== undefined) return framed;
+    const valueScan = (text: string): unknown =>
+      redactForState(text, { provenance: 'value-scan', secrets });
+    // Every SECRET token at the span the resolver substituted it
+    // (go-to-k/cdkd#7050): its plaintext never stays, whatever its length or
+    // whatever else in the leaf spells the same text.
+    // Fail closed: an arm that cannot finish masks the leaf, never leaves it.
+    let substituted: ReturnType<typeof positionBySubstitutionSpans>;
+    try {
+      substituted = positionBySubstitutionSpans(bag, source, secrets, rules, valueScan);
+    } catch {
+      return SECRET_MASK;
+    }
+    // A consumed secret's text with no span to place it by
+    // (go-to-k/cdkd#7050): only the arms below that place by PROVENANCE or
+    // structure may answer it, never the template-text rendering arm, and if
+    // none does the leaf is masked, never searched for by the value scan.
+    const tainted = substituted === TAINTED_WITHOUT_SPAN;
+    if (!tainted && substituted !== undefined) return substituted;
+    try {
+      const answered = positionByCertifiedArms(
+        bag,
+        source,
+        secrets,
+        secretExpressions,
+        bagIsSameGeneration,
+        tainted
+          ? undefined
+          : () => positionByLiteralRendering(bag, source, secrets, rules, valueScan)
+      );
+      if (answered !== undefined) return answered;
+    } catch (error) {
+      if (tainted) return SECRET_MASK;
+      throw error;
+    }
+    if (tainted) return SECRET_MASK;
+    // go-to-k/cdkd#7059: a read of a parameter holding a sub-floor secret's
+    // text that no certified arm above placed is masked: the value scan
+    // below cannot see that text.
+    if (attributionRefusedReadsOf(source, secrets) !== undefined) return SECRET_MASK;
     // Fall through to the value scan below on any refusal.
+  }
+  // go-to-k/cdkd#7050 review: a LIST leaf (an `Fn::Split` / `Fn::GetAZs`
+  // result) holding the text of a secret its resolution consumed has no span
+  // to place it by either: a cross-stack list is placed by its provenance,
+  // anything else is masked whole, never left to the list arms' search.
+  if (
+    Array.isArray(bag) &&
+    isPlainObject(source) &&
+    listHoldsConsumedSecret(bag, source, secrets)
+  ) {
+    try {
+      return positionListByCrossStackSource(bag, source, secrets) ?? SECRET_MASK;
+    } catch {
+      return SECRET_MASK;
+    }
+  }
+  if (Array.isArray(bag) && isPlainObject(source) && attributionRefusedReadsOf(source, secrets)) {
+    // ...and its list-valued twin, once its own arm below refuses.
+    const positionedList = positionListByCrossStackSource(bag, source, secrets);
+    return positionedList !== undefined ? positionedList : SECRET_MASK;
   }
   if (Array.isArray(bag) && isPlainObject(source)) {
     // The LIST-VALUED twin of the arm above (issue #2327). A child parameter
@@ -415,6 +458,7 @@ export function redactByPath(
       // answer reads as protection while fencing nothing.
       const positionalIsExact =
         rules.descendArrays && bag.length === source.length && orderPreserved;
+      const unpaired = placeUnpairedListElements(source, secrets, rules, listValueScan(secrets));
       return bag.map((item, i) => {
         const j = partnerIndex[i]!;
         if (j >= 0)
@@ -436,7 +480,9 @@ export function redactByPath(
             bagIsSameGeneration
           );
         }
-        return redactForState(item, { provenance: 'value-scan', secrets });
+        return unpaired !== undefined
+          ? unpaired(item)
+          : redactForState(item, { provenance: 'value-scan', secrets });
       });
     }
     if (rules.descendArrays && bag.length === source.length) {
@@ -468,6 +514,12 @@ export function redactByPath(
         );
       }
     }
+    // No position pairs the elements (an AWS readback, never descended by
+    // index): an element holding the text of a secret the source consumed is
+    // placed by its recorded spans or masked, never left to the value scan,
+    // which cannot see a 1-3 character secret (go-to-k/cdkd#7050).
+    const unpaired = placeUnpairedListElements(source, secrets, rules, listValueScan(secrets));
+    if (unpaired !== undefined) return bag.map(unpaired);
   }
   // `hasPlainPrototype` for issue
   // [#2869](https://github.com/go-to-k/cdkd/issues/2869): this is the FIRST of
@@ -515,4 +567,70 @@ export function redactByPath(
   // has an object, a key the source lacks): fall back to the value scan, which
   // is strictly better than leaving the subtree unredacted.
   return redactForState(bag, { provenance: 'value-scan', secrets });
+}
+
+/**
+ * The certified positional arms, in order (`rendered` first when given).
+ * Split out so a TAINTED leaf (go-to-k/cdkd#7050) runs them without the
+ * template-text rendering arm.
+ */
+function positionByCertifiedArms(
+  bag: string,
+  source: Record<string, unknown>,
+  secrets: RecordedSecretValues,
+  secretExpressions: Parameters<typeof positionByIntrinsicSkeleton>[3],
+  bagIsSameGeneration: Parameters<typeof positionByIntrinsicFrame>[4],
+  render: (() => string | undefined) | undefined
+): string | undefined {
+  const rendered = render?.();
+  if (rendered !== undefined) return rendered;
+  const certified = positionByCrossStackSource(bag, source, secrets);
+  if (certified !== undefined) return certified;
+  // The EMBEDDING twin of the `{Ref: <Param>}` arm above (issue #2320): an
+  // `Fn::Sub` / `Fn::Join` over the child's own parameters, or embedding a
+  // cross-stack read (issue #2298), each placeholder answered from its OWN
+  // association. Before the skeleton arm, because an
+  // association is exact evidence where a pattern is a search.
+  const placeheld = positionByParameterPlaceholders(bag, source, secrets);
+  if (placeheld !== undefined) return placeheld;
+  const positioned = positionByIntrinsicSkeleton(bag, source, secrets, secretExpressions);
+  if (positioned !== undefined) return positioned;
+  // The FRAME arm LAST (issue #2745): a leaf that EMBEDS one token inside
+  // the intrinsic's literal text, which the skeleton arm declines — and a
+  // whole-token leaf the skeleton arm REFUSED, answered here only on
+  // pass-local pair evidence the skeleton's stores cannot hold (its
+  // docstring names the one shape).
+  const framed = positionByIntrinsicFrame(
+    bag,
+    source,
+    secrets,
+    secretExpressions,
+    bagIsSameGeneration
+  );
+  return framed;
+}
+
+/** Does a string leaf of `bag` hold the text of a secret `source`'s resolution consumed? */
+function listHoldsConsumedSecret(
+  bag: unknown[],
+  source: Record<string, unknown>,
+  secrets: RecordedSecretValues
+): boolean {
+  const plaintexts: string[] = [];
+  for (const token of referencesConsumedBy(secrets, source)) {
+    const plaintext = resolvedPlaintextOf(secrets, token);
+    if (plaintext !== undefined && plaintext !== '') plaintexts.push(plaintext);
+  }
+  if (plaintexts.length === 0) return false;
+  const holds = (value: unknown): boolean =>
+    typeof value === 'string'
+      ? plaintexts.some((plaintext) => value.includes(plaintext))
+      : Array.isArray(value)
+        ? value.some(holds)
+        : value !== null && typeof value === 'object' && Object.values(value).some(holds);
+  return holds(bag);
+}
+
+function listValueScan(secrets: RecordedSecretValues): (value: unknown) => unknown {
+  return (value) => redactForState(value, { provenance: 'value-scan', secrets });
 }

@@ -118,7 +118,7 @@ custom-resource-noecho-nested	2026-11-11T19:34:00Z	PASS	1414	verify.sh	rc ok, 8 
 custom-resource-payload-types	2026-11-14T19:25:11Z	PASS	150	verify.sh	rc ok, orph clean
 custom-resource-physid-replace	2026-11-16T23:47:53Z	PASS	456	verify.sh	rc ok, orph clean (#6466 PR #6467)
 custom-resource-provider	2026-11-25T07:06:26Z	PASS	295	verify.sh	rc ok, orph clean, PR #6968 f350f555: 2 settle INFO lines per deploy, 0 transient-authz
-custom-resource-resolved-secret	2026-11-05T04:09:30Z	PASS	341	verify.sh	rc ok on main 8547010bb dist, own temp state bucket, destroy 0 errors, orph clean (state keys + live resources, us-east-1/us-west-2); #4009 refusals + clean destroy; no stray Lambda log groups
+custom-resource-resolved-secret	2026-11-27T05:36:36Z	PASS	456	verify.sh	PR7060 73afba08d us-east-1 rc ok, orph clean
 custom-resource-service-token-change	2026-11-06T16:04:59Z	PASS	135	verify.sh	post-hoc on main after #5879 split; rc ok, orph clean
 data-analytics	2026-11-06T17:24:03Z	PASS	128	verify.sh	#5896 firehose split head; rc ok, orph clean
 data-pipeline	2026-11-04T05:45:58Z	PASS	65	standard	1104 sweep b5; 7 del 0 err, 0 orph
@@ -150,7 +150,7 @@ drift-ecs-capacity-association	2026-11-22T02:46:37Z	PASS	175	verify.sh	rc ok, or
 drift-revert	2026-11-27T05:22:02Z	PASS	916	verify.sh	rc ok, orph clean, #7092 e5aec88
 drift-revert-arrays	2026-11-23T08:26:12Z	PASS	267	verify.sh	PR6859 11e38d61f us-east-1 rc ok, orph clean
 drift-revert-firehose	2026-11-26T07:18:30Z	PASS	365	verify.sh	rc ok, orph clean; #7025 step 6 post-revert verification
-drift-revert-nested-write-only	2026-11-23T12:11:05Z	PASS	289	verify.sh	PR6876 828e1c821 us-east-1 rc ok, orph clean (duration not timed; see logs)
+drift-revert-nested-write-only	2026-11-27T05:43:30Z	PASS	386	verify.sh	PR7060 73afba08d us-east-1 rc ok, orph clean
 drift-revert-readback-placeholders	2026-11-26T07:18:30Z	PASS	295	verify.sh	rc ok, orph clean; #7025 step 6 post-revert verification
 drift-revert-vpc	2026-11-25T15:18:54Z	PASS	502	verify.sh	rc ok, orph clean
 drift-rotation-schedule-revert	2026-11-20T11:50:48Z	PASS	138	verify.sh	PR6652 be63cc056, us-west-2; rc 0, revert-identity kept identity x1, orph clean
@@ -382,7 +382,7 @@ nested-stack-3level	2026-11-16T12:51:14Z	PASS	559	verify.sh	rc ok, orph clean (#
 nested-stack-deep	2026-11-16T12:51:14Z	PASS	132	verify.sh	rc ok, orph clean (#6398)
 nested-stack-replace-guard	2026-11-16T12:51:14Z	PASS	85	verify.sh	rc ok, orph clean (#6398)
 nested-stack-rollback	2026-11-21T12:35:54Z	PASS	95	verify.sh	rc ok, orph clean (#6762 run)
-nested-stack-secret	2026-11-23T19:53:15Z	PASS	381	verify.sh	rc ok, orph clean; #6893 short row-tag secret framed + tagged nested row accepted
+nested-stack-secret	2026-11-27T05:28:25Z	PASS	366	verify.sh	PR7060 73afba08d us-east-1 rc ok, orph clean; final run, probe without 57fee309e fails at ChildFallSelectOutput
 nested-stack-transform	2026-11-16T09:13:05Z	PASS	150	verify.sh	rc ok, orph clean
 nlb-quic-server-id	2026-11-10T17:00:47Z	PASS	241	verify.sh	rc ok, orph clean
 nlb-source-nat	2026-11-21T21:07:36Z	PASS	350	verify.sh	rc ok, orph clean (PR 6795 0162f3918)

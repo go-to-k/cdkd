@@ -446,8 +446,10 @@ describe('secret-redaction - cross-stack source leaf (issue #2059)', () => {
 
       const survivor = recordedSecretValues.get(SHARED);
       expect(survivor).toBeTypeOf('string');
-      expect(redacted.Variables['CURRENT']).toBe(survivor);
-      expect(redacted.Variables['PREVIOUS']).toBe(survivor);
+      expect(redacted.Variables['CURRENT']).toBe('***');
+      expect(redacted.Variables['PREVIOUS']).toBe('***');
+      // go-to-k/cdkd#7050: a consumed secret no span places is masked, not
+      // collapsed to a survivor the value scan guessed.
       // Still not a plaintext disclosure — the fallback redacts, it just cannot
       // separate the pair.
       expect(JSON.stringify(redacted)).not.toContain(SHARED);
@@ -772,8 +774,8 @@ describe('secret-redaction - cross-stack source leaf (issue #2059)', () => {
         Variables: Record<string, string>;
       };
       const survivor = recordedSecretValues.get(SHARED);
-      expect(redacted.Variables['CURRENT']).toBe(survivor);
-      expect(redacted.Variables['PREVIOUS']).toBe(survivor);
+      expect(redacted.Variables['CURRENT']).toBe('***');
+      expect(redacted.Variables['PREVIOUS']).toBe('***');
       expect(JSON.stringify(redacted)).not.toContain(SHARED);
     });
   });
@@ -1120,8 +1122,8 @@ describe('secret-redaction - cross-stack source leaf (issue #2059)', () => {
         Variables: Record<string, string>;
       };
       const survivor = recordedSecretValues.get(SHARED);
-      expect(redacted.Variables['CURRENT']).toBe(survivor);
-      expect(redacted.Variables['PREVIOUS']).toBe(survivor);
+      expect(redacted.Variables['CURRENT']).toBe('***');
+      expect(redacted.Variables['PREVIOUS']).toBe('***');
       // Whatever the fallback picks, it is never the PLAINTEXT.
       expect(JSON.stringify(redacted)).not.toContain(SHARED);
     });

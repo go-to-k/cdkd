@@ -16,9 +16,14 @@ import {
 } from '../../state/malformed-resources-bag.js';
 import {
   inputFingerprinter,
+  maskedPropertyFingerprintsOf,
   movedMaskedProperties,
+  publicReferencesMoved,
   type MaskedInputSources,
+  type PublicReferenceOf,
+  type UnverifiedPassedSecret,
 } from '../../deployment/masked-property-fingerprints.js';
+import { carriesSecretMask } from '../../deployment/secret-redaction.js';
 import type { MaskerFn } from '../../provisioning/masked-retry-logger.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import type { LockRecoveryContext } from '../../state/lock-contention-message.js';
@@ -27,6 +32,12 @@ import { unsettledPropertiesOf } from '../../state/unsettled-properties.js';
 import type { ReadProvenanceSources } from '../read-provenance-promotion.js';
 import { DiffCalculator } from '../diff-calculator.js';
 import { markLegacyHandleHeals } from './legacy-handle-heal.js';
+import {
+  holdsStaleNoEchoLeafAt,
+  maskUnmovedRedactionMasks,
+  reportUnverifiedPassedSecrets,
+  type PassedSecretBackfill,
+} from './redaction-masks.js';
 import {
   type IntrinsicResolveFn,
   type CanonicalizePropertiesFn,
@@ -112,6 +123,18 @@ export async function calculateDiff(
   maskedInputs?: {
     sources: MaskedInputSources;
     rebaselined?: Map<string, Record<string, string>>;
+    /**
+     * go-to-k/cdkd#7050 review: the passed-secret members the deploy stamps
+     * on a record that held none for a key the plan read unmoved (logical
+     * id -> property -> member). Only the deploy passes it.
+     */
+    passedSecretBackfills?: Map<string, Record<string, PassedSecretBackfill>>;
+    /**
+     * go-to-k/cdkd#7050: what the diff pass proved of each plain
+     * `{{resolve:ssm:...}}` reference (`publicReferencesOf` over its bag).
+     * Absent, a masked key spelling one reads as moved.
+     */
+    publicReferences?: PublicReferenceOf;
   },
   /**
    * The run's account flags (go-to-k/cdkd#4159), carried on the two
@@ -456,8 +479,24 @@ export async function calculateDiff(
         desired: desiredPropsForCompare,
         current: currentPropsForCompare,
       });
-      const desiredCompared = noEchoCompared?.desired ?? desiredPropsForCompare;
       const currentCompared = noEchoCompared?.current ?? currentPropsForCompare;
+      // go-to-k/cdkd#7050: a leaf the persist walk MASKED as a redaction,
+      // whose template and inputs provably did not move, compares masked.
+      // One memoized input walk per key, shared by every check below.
+      const maskedFingerprinter =
+        maskedInputs && inputFingerprinter(rawDesiredProps, maskedInputs.sources);
+      const desiredCompared = await maskUnmovedRedactionMasks(
+        currentResource,
+        rawDesiredProps,
+        currentCompared,
+        noEchoCompared?.desired ?? desiredPropsForCompare,
+        maskedFingerprinter,
+        maskedInputs?.publicReferences,
+        (key) =>
+          this.logger.warn(
+            safeMsg`${logicalId}: ${key} is recorded masked and reads an input cdkd keeps as written or cannot resolve here, so it cannot be proven unchanged and is treated as unchanged. No replacement is planned over it.`
+          )
+      );
       const propertyChanges = await this.compareProperties(
         desiredResource.Type,
         currentCompared,
@@ -475,14 +514,65 @@ export async function calculateDiff(
       // behind that text moved.
       const reported = new Set(propertyChanges.map((pc) => pc.path));
       const rebaselined: Array<[string, string]> = [];
+      // go-to-k/cdkd#7050 review: a key with no usable passed-secret MAC and
+      // unmoved inputs: warned of, and backfilled when it never held one.
+      const unverified: Array<[string, UnverifiedPassedSecret | 'none']> = [];
       const moved = await movedMaskedProperties(
         currentResource,
         rawDesiredProps,
-        maskedInputs && inputFingerprinter(rawDesiredProps, maskedInputs.sources),
-        maskedInputs?.rebaselined && ((key, fingerprint) => rebaselined.push([key, fingerprint]))
+        maskedFingerprinter,
+        maskedInputs?.rebaselined &&
+          ((key, fingerprint) => {
+            // A `NoEcho` leaf whose source is gone is decided by the deploy's
+            // readback, never re-baselined unsent (#7050 review).
+            if (
+              holdsStaleNoEchoLeafAt(
+                currentResource,
+                key,
+                noEchoCompared?.desired ?? desiredPropsForCompare
+              )
+            )
+              return;
+            rebaselined.push([key, fingerprint]);
+          }),
+        (key, verdict) => unverified.push([key, verdict])
       );
       if (rebaselined.length > 0) {
         maskedInputs!.rebaselined!.set(logicalId, Object.fromEntries(rebaselined));
+      }
+      // go-to-k/cdkd#7050 review: the deploy drops a stale `NoEcho` leaf's
+      // input-fingerprint non-proof (`staleNoEchoNonProofs`); the plan need
+      // not, since such a key is already reported above (its record holds the
+      // mask where the desired side no longer does), so either way it shows.
+      await reportUnverifiedPassedSecrets({
+        logicalId,
+        record: currentResource,
+        unverified,
+        fingerprinter: maskedFingerprinter || undefined,
+        backfills: maskedInputs?.passedSecretBackfills,
+        rebaselined: new Map(rebaselined),
+        warn: (message) => this.logger.warn(message),
+      });
+      // go-to-k/cdkd#7050: a masked key whose public `ssm` value moved, or
+      // cannot be told unmoved; a secret's value is not compared.
+      if (maskedInputs !== undefined) {
+        const recordedProps = (currentResource.properties ?? {}) as Record<string, unknown>;
+        for (const key of maskedPropertyFingerprintsOf(currentResource).keys()) {
+          if (moved.includes(key) || !Object.hasOwn(rawDesiredProps, key)) continue;
+          if (!Object.hasOwn(recordedProps, key) || !carriesSecretMask(recordedProps[key]))
+            continue;
+          if (
+            await publicReferencesMoved(
+              currentResource,
+              key,
+              rawDesiredProps[key],
+              maskedInputs.publicReferences,
+              maskedFingerprinter
+            )
+          ) {
+            moved.push(key);
+          }
+        }
       }
       for (const key of moved) {
         if (reported.has(key)) continue;

@@ -36,6 +36,7 @@ import {
   type ResolverContext,
   type ParameterDefinition,
   inheritedSecretsCarriedBy,
+  carriedWithRenderedSpelling,
   QUOTABLE_RENDER,
   quotedRender,
 } from './support.js';
@@ -174,7 +175,11 @@ export function recordInheritedParameterSecrets(
   // certified one, rather than the collapsed map's survivor. See the
   // "WHICH EXPRESSION" section of the doc above for why the survivor is the
   // wrong answer for an EMBEDDING leaf and what residual is left.
-  for (const [plaintext, expression] of inheritedSecretsCarriedBy(value, inherited)) {
+  for (const [plaintext, expression] of carriedWithRenderedSpelling(
+    value,
+    inherited,
+    parameterName
+  )) {
     // ASKED PER PLAINTEXT, not per VALUE (issue #2327). This bag is keyed by
     // PLAINTEXT, so the question it needs answered is "does THIS parameter
     // certify THIS plaintext" -- which `inheritedParameterExpression` answers

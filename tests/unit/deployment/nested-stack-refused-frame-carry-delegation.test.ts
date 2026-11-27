@@ -129,6 +129,8 @@ describe('issue #3156: the carry reads the verdict a region-pinned sibling took'
     const { bag, value } = await deployRow({ 'Fn::Sub': [`port:${TOKEN}`, { Unused: TOKEN }] });
     expect(value).toBe(`port:${PIN}`);
     expect(bag.get(PIN)).toBe(TOKEN);
-    expect(bag.has(`port:${PIN}`)).toBe(false);
+    // No frame is carried; the row, holding a consumed secret's text with no
+    // span to place it by, is masked instead (#7050).
+    expect(bag.get(`port:${PIN}`)).toBe('***');
   });
 });

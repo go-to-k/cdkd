@@ -4,14 +4,20 @@ import { healZonelessDbInstanceRecords } from '../../zoneless-db-instance-heal.j
 import { readDbInstanceAvailabilityZone } from '../../../provisioning/providers/rds/live-zone.js';
 import { freshNoEchoParametersWithDeclared, noEchoDiffComparison } from '../noecho.js';
 import { diffLogMasker, redactParametersForDiff } from '../masking.js';
+import {
+  deployCalculatorMaskingSubFloorLines,
+  subFloorDisplayTainted,
+} from '../sub-floor-display.js';
 import { makeCanonicalizePropertiesFn } from '../../../provisioning/canonicalize-properties.js';
 import { recreateTargetIdsFor } from '../../recreate-target-promotion.js';
 import { replaceResourceIdsFor } from '../../replace-resource-targets.js';
 import { crossStackOutputProvenanceSource } from '../../read-provenance-sources.js';
 import type { CrossStackRead } from '../../intrinsic-resolver/context.js';
 import { buildResolverContext, maskedInputSources } from '../resolver-context.js';
+import { publicReferencesOf } from '../../masked-property-fingerprints.js';
 import type { DeployEngine } from '../../deploy-engine.js';
 import type { StackState } from '../../../types/state.js';
+import type { PassedSecretMacsMember } from '../../noecho-value-macs.js';
 import type { CloudFormationTemplate } from '../../../types/resource.js';
 import type { PhaseClock } from '../../../utils/phase-timings.js';
 
@@ -45,6 +51,7 @@ export async function calculateDeployDiff(
   // reference where the template spells plain text is compared as that text
   // when the secret proves it, so no plan reader acts on a change that is not.
   await healLegacyLiteralSpellings(engine, currentState, effectiveTemplate);
+  const diffParameters = redactParametersForDiff(engine.maskingDeps(), parameterValues);
   // Pass a best-effort resolver so that changes hidden inside intrinsics (e.g.
   // `Fn::Join` literal args like "-value" -> "-value2") are detected against
   // the already-resolved values stored in state.
@@ -59,7 +66,7 @@ export async function calculateDeployDiff(
       // so does the condition evaluation above, where substituting an
       // expression would flip an `Fn::Equals` over a parameter. See
       // `redactParametersForDiff`.
-      parameters: redactParametersForDiff(engine.maskingDeps(), parameterValues),
+      parameters: diffParameters,
       conditions,
     },
     stackName
@@ -113,9 +120,36 @@ export async function calculateDeployDiff(
   const maskedInputs = maskedInputSourcesForDiff && {
     sources: maskedInputSourcesForDiff,
     rebaselined: new Map<string, Record<string, string>>(),
+    // go-to-k/cdkd#7050 review: the passed-secret members the deploy backfills
+    // (none in a dry run, which writes nothing: its warning says so).
+    ...(engine.options.dryRun !== true && {
+      passedSecretBackfills: new Map<string, Record<string, PassedSecretMacsMember>>(),
+    }),
+    // go-to-k/cdkd#7050: the public `ssm` values this diff pass resolved.
+    // The same refusal corpora the provisioning arms read, so a public value
+    // equal to a `NoEcho` / parent-passed secret is refused alike (#7050 review).
+    publicReferences: publicReferencesOf(diffResolverContext.recordedSecretValues, [
+      diffResolverContext.recordedSecretValues,
+      engine.secretsRun.fingerprintNoEchoValues,
+      engine.options.inheritedSecrets,
+    ]),
   };
   clock.lap('journal, parameters, conditions, DAG build');
-  const changes = await engine.diffCalculator.calculateDiff(
+  // go-to-k/cdkd#7050: a value read from a sub-floor-marked parameter the
+  // diff side keeps (`subFloorDisplayTainted`) is masked on the `--verbose`
+  // replacement line. Display only: the comparison runs on that value.
+  const subFloorTainted = subFloorDisplayTainted(
+    effectiveTemplate,
+    diffParameters,
+    engine.options.inheritedSecrets
+  );
+  engine.secretsRun.subFloorTainted = subFloorTainted;
+  const diffCalculator = deployCalculatorMaskingSubFloorLines(
+    engine.diffCalculator,
+    effectiveTemplate,
+    subFloorTainted
+  );
+  const changes = await diffCalculator.calculateDiff(
     currentState,
     effectiveTemplate,
     diffResolveFn,

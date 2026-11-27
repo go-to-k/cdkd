@@ -3,6 +3,7 @@ import { recordLogOnlyValue } from './log-only.js';
 import { isPlainObject, isSingleDynamicReferenceToken } from './rules.js';
 import { identityKeyFor } from './identity-keys.js';
 import { DYNAMIC_REFERENCE_TOKEN_SCAN } from './redact-path.js';
+import { carriesSecretMask } from './mask-only.js';
 
 /**
  * The POSITIONAL arm of `NoEcho` redaction (go-to-k/cdkd#4043, Phase B): which
@@ -392,6 +393,37 @@ function readAt(bag: unknown, coordinate: NoEchoCoordinate): { found: boolean; v
 /** The value at `coordinate` in `bag`, or `undefined` where the path does not exist. */
 export function valueAtCoordinate(bag: unknown, coordinate: NoEchoCoordinate): unknown {
   return readAt(bag, coordinate).value;
+}
+
+/**
+ * Is `value` the mask at every leaf (a scalar `***`, or a list / object of
+ * nothing but masks, as `maskWholeValue` writes a list parameter)?
+ */
+export function isWhollyMask(value: unknown): boolean {
+  if (value === SECRET_MASK) return true;
+  if (Array.isArray(value)) return value.length > 0 && value.every(isWhollyMask);
+  if (value !== null && typeof value === 'object') {
+    const children = Object.values(value as Record<string, unknown>);
+    return children.length > 0 && children.every(isWhollyMask);
+  }
+  return false;
+}
+
+/**
+ * go-to-k/cdkd#7050 review: is the record's `NoEcho` leaf at `coordinate`
+ * STALE? The record holds it wholly as the mask, and `today` (the bag compared
+ * with the record, its live `NoEcho` positions masked) holds a value there
+ * that carries no mask: the leaf's `NoEcho` source is gone. The plan and the
+ * deploy both read "stale" through this one predicate.
+ */
+export function isStaleNoEchoLeaf(
+  recorded: unknown,
+  today: unknown,
+  coordinate: NoEchoCoordinate
+): boolean {
+  if (!isWhollyMask(valueAtCoordinate(recorded, coordinate))) return false;
+  const value = valueAtCoordinate(today, coordinate);
+  return value !== undefined && !carriesSecretMask(value);
 }
 
 function cloneContainer(node: unknown): unknown {

@@ -69,7 +69,9 @@ import {
   classifyPassedParameters,
   inputFingerprinter,
   maskedInputFingerprintsFor,
+  maskedReferenceFingerprintsFor,
   possiblyMaskedKeys,
+  publicReferencesOf,
   recordPassedParameterClasses,
 } from '../masked-property-fingerprints.js';
 import {
@@ -82,7 +84,11 @@ import {
   noEchoAttributeOverridesFor,
   noEchoPositionSources,
 } from './noecho.js';
-import { noEchoMacCover, noEchoMacInputBindingsFor } from './noecho-macs.js';
+import {
+  noEchoMacCover,
+  noEchoMacInputBindingsFor,
+  passedSecretMacEntriesFor,
+} from './noecho-macs.js';
 
 /** The `CREATE` arm of `provisionResourceBody` (`deployment/deploy-engine/provision.ts`, #4200 phase 3a). */
 export async function provisionCreate(
@@ -183,14 +189,23 @@ export async function provisionCreate(
     fingerprintSources &&
     inputFingerprinter(desiredProps, fingerprintSources, (key) => macCover.get(key));
   if (fingerprinter !== undefined) {
+    const corpora = [
+      context.recordedSecretValues,
+      engine.secretsRun.fingerprintNoEchoValues,
+      engine.options.inheritedSecrets,
+    ];
+    const keys = possiblyMaskedKeys(resolvedProps, corpora);
     engine.secretsRun.perResourceInputFingerprints.set(
       logicalId,
-      await maskedInputFingerprintsFor(
-        possiblyMaskedKeys(resolvedProps, [
-          context.recordedSecretValues,
-          engine.secretsRun.fingerprintNoEchoValues,
-          engine.options.inheritedSecrets,
-        ]),
+      await maskedInputFingerprintsFor(keys, fingerprinter)
+    );
+    // go-to-k/cdkd#7050: and each key's public `ssm` values, hashed.
+    engine.secretsRun.perResourceReferenceFingerprints.set(
+      logicalId,
+      await maskedReferenceFingerprintsFor(
+        keys,
+        desiredProps,
+        publicReferencesOf(context.recordedSecretValues, corpora),
         fingerprinter
       )
     );
@@ -200,6 +215,13 @@ export async function provisionCreate(
     engine,
     logicalId,
     macCover,
+    fingerprinter,
+    engine.secretsRun.perResourceInputFingerprints.get(logicalId)
+  );
+  // go-to-k/cdkd#7050: and the passed-secret MACs of each key it may record masked.
+  await passedSecretMacEntriesFor(
+    engine,
+    logicalId,
     fingerprinter,
     engine.secretsRun.perResourceInputFingerprints.get(logicalId)
   );

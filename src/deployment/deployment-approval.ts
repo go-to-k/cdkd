@@ -5,7 +5,7 @@ import {
   rollbackOrphanIds,
   withMovedTo,
 } from '../analyzer/refactor-hints.js';
-import { diffSecurity } from '../analyzer/security-diff.js';
+import { diffSecurity, type SecurityDiff } from '../analyzer/security-diff.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../types/state.js';
 import { safeMsg } from '../utils/display-safe.js';
@@ -58,6 +58,17 @@ export async function requireDeploymentApproval(args: {
   recreateTargetIds?: Iterable<string> | undefined;
   /** Hides secrets in the `broadening` table (`diffSecurity`); built only at that level. */
   secretMask?: (() => (text: string) => string) | undefined;
+  /**
+   * The `broadening` table as shown, given how it is computed and the changes
+   * asked about: go-to-k/cdkd#7050 withholds one printing a value read from a
+   * sub-floor-marked parameter. Its verdict is kept.
+   */
+  securityShown?:
+    | ((
+        compute: () => Promise<SecurityDiff>,
+        changes: ResourceChange[]
+      ) => () => Promise<SecurityDiff>)
+    | undefined;
 }): Promise<boolean> {
   const level = args.options.requireApproval ?? 'never';
   const approve = args.options.approveDeployment;
@@ -81,15 +92,17 @@ export async function requireDeploymentApproval(args: {
   );
   // A diff that cannot be computed fails the deploy before anything changes
   // (a gate that cannot decide must not pass), and no retry computes it again.
+  const compute = (): Promise<SecurityDiff> =>
+    diffSecurity({
+      stackName: args.stackName,
+      changes,
+      records: args.records,
+      template: args.template,
+      secretMask: args.secretMask,
+    });
   const security =
     level === 'broadening'
-      ? await diffSecurity({
-          stackName: args.stackName,
-          changes,
-          records: args.records,
-          template: args.template,
-          secretMask: args.secretMask,
-        }).catch((error: unknown) => {
+      ? await (args.securityShown?.(compute, changes) ?? compute)().catch((error: unknown) => {
           throw error instanceof Error ? markNonRetryable(error) : error;
         })
       : undefined;

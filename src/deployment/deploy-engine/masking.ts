@@ -125,6 +125,12 @@ export class SecretsRunState {
    */
   fingerprintNoEchoValues: RecordedSecretValues | undefined = undefined;
   /**
+   * go-to-k/cdkd#7050: the diff's `subFloorDisplayTainted` set, so the
+   * approval's broadening table masks on the same resources as the diff's
+   * replacement line. Set by `calculateDeployDiff`; reset per `deploy()`.
+   */
+  subFloorTainted: ReadonlySet<string> | undefined = undefined;
+  /**
    * The needles of every record named from a secret AS THE DEPLOY FOUND THEM
    * (go-to-k/cdkd#3869), judged once before anything provisions: a nested
    * stack row's registry carries them into the child's deploy, whose stored
@@ -159,6 +165,11 @@ export class SecretsRunState {
    * save stamps on a record this deploy wrote. Reset per `deploy()`.
    */
   perResourceInputFingerprints = new Map<string, Record<string, string>>();
+  /**
+   * go-to-k/cdkd#7050: the public `ssm` reference fingerprints of the same
+   * keys (`public-references.ts`), stamped beside them. Reset per `deploy()`.
+   */
+  perResourceReferenceFingerprints = new Map<string, Record<string, string>>();
 }
 
 /**

@@ -36,6 +36,7 @@ import {
   backfillMaskedPropertyFingerprints,
   withRebaselinedFingerprints,
 } from '../masked-property-fingerprints.js';
+import { withPassedSecretBackfill } from '../noecho-value-macs.js';
 import { withProducerRegions } from '../producer-regions-scope.js';
 import {
   noteDeployStateRecord,
@@ -60,9 +61,9 @@ import {
 import { refuseUnsafePlan } from './deploy-flow/plan-checks.js';
 import { deployWithoutChanges } from './deploy-flow/no-change.js';
 import { prepareChangeExecution } from './deploy-flow/change-plan.js';
+import { setUpRunValueMacs } from './deploy-flow/parameters.js';
 import { settleSuccessfulDeploy } from './deploy-flow/success-settle.js';
 import { keptHistorySources } from './deploy-flow/kept-history.js';
-import { createNoEchoValueMacs } from '../noecho-value-macs.js';
 import {
   healSlashedSsmParameterNames,
   slashedSsmNameHealNote,
@@ -438,19 +439,7 @@ export async function doDeployWithPrefetch(
       engine,
       template
     );
-    // go-to-k/cdkd#6146: the run's KMS MACs of its `NoEcho` parameter values,
-    // made only when a resource reading one is provisioned (nothing otherwise),
-    // bound to the stack instance id the creates run under (read then, so a
-    // first deploy's write-ahead id is in place).
-    engine.noEchoRun.noEchoMacs = createNoEchoValueMacs({
-      template,
-      parameterValues,
-      inherited: engine.noEchoRun.inheritedNoEchoParameters,
-      stackName,
-      region: engine.stackRegion,
-      stackInstanceId: () => currentState.stackInstanceId,
-      logger: engine.logger,
-    });
+    setUpRunValueMacs(engine, { template, parameterValues, stackName, currentState });
     let maskedFingerprintsBackfilled =
       backfillMaskedPropertyFingerprints(currentState.resources, template, backfillNoEchoValues) >
       0;
@@ -607,6 +596,13 @@ export async function doDeployWithPrefetch(
       const record = currentState.resources[logicalId];
       if (record === undefined) continue;
       currentState.resources[logicalId] = withRebaselinedFingerprints(record, fingerprints);
+      maskedFingerprintsBackfilled = true;
+    }
+    // go-to-k/cdkd#7050 review: and the passed-secret MACs the plan backfilled.
+    for (const [logicalId, members] of maskedInputs?.passedSecretBackfills ?? []) {
+      const record = currentState.resources[logicalId];
+      if (record === undefined) continue;
+      currentState.resources[logicalId] = withPassedSecretBackfill(record, members);
       maskedFingerprintsBackfilled = true;
     }
 

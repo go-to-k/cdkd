@@ -310,14 +310,16 @@ export function redactStateForPersist(this: DeployEngine, state: StackState): St
             templateProps,
             secrets,
             this.secretsRun.fingerprintNoEchoValues,
-            this.secretsRun.perResourceInputFingerprints.get(logicalId)
+            this.secretsRun.perResourceInputFingerprints.get(logicalId),
+            this.secretsRun.perResourceReferenceFingerprints.get(logicalId)
           ),
           record.properties,
           templateProps,
           macSources,
           this.noEchoRun.noEchoMacs?.settled(),
           this.noEchoRun.noEchoMacKept.get(logicalId),
-          this.noEchoRun.noEchoMacInputBindings.get(logicalId)
+          this.noEchoRun.noEchoMacInputBindings.get(logicalId),
+          this.noEchoRun.passedSecretMacEntries.get(logicalId)
         ),
         constructPathOf(this.noEchoRun.constructPathTemplate, logicalId)
       ),
@@ -403,7 +405,12 @@ export function redactStateForPersist(this: DeployEngine, state: StackState): St
         orphanTemplateProps,
         sameResource ? this.secretsRun.perResourceSecrets.get(entry.logicalId) : undefined,
         sameResource ? this.secretsRun.fingerprintNoEchoValues : undefined,
-        sameResource ? this.secretsRun.perResourceInputFingerprints.get(entry.logicalId) : undefined
+        sameResource
+          ? this.secretsRun.perResourceInputFingerprints.get(entry.logicalId)
+          : undefined,
+        sameResource
+          ? this.secretsRun.perResourceReferenceFingerprints.get(entry.logicalId)
+          : undefined
       )
     );
   };

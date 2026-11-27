@@ -2,7 +2,12 @@ import { stringifyValue } from '../../utils/stringify.js';
 import { displayIdent, UNRENDERABLE } from '../../utils/display-safe.js';
 import { isInertUnquoted } from '../../utils/pasteable-command.js';
 import { isListParameterType } from '../../utils/parameter-types.js';
-import { MIN_NEEDLE_LENGTH, SECRET_MASK, type RecordedSecretValues } from '../secret-redaction.js';
+import {
+  MIN_NEEDLE_LENGTH,
+  SECRET_MASK,
+  inheritedParameterExpression,
+  type RecordedSecretValues,
+} from '../secret-redaction.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import { TemplateParser } from '../../analyzer/template-parser.js';
 import { declaresNoEcho } from '../noecho-declared.js';
@@ -448,4 +453,33 @@ export function quotedRender(
   described = '(not shown: it is not a plain identifier)'
 ): string {
   return QUOTABLE_RENDER.test(rendered) ? `${quote}${rendered}${quote}` : described;
+}
+
+/**
+ * The inherited pairs `value` carries ({@link inheritedSecretsCarriedBy}),
+ * plus each one a sub-floor plaintext that the parent's RENDERED spelling of
+ * `parameterName` places by a token (go-to-k/cdkd#7050). The parent certified
+ * that spelling from the resolver's own substitution record
+ * (`positionBySubstitutionSpans`), so the child's `{Ref}` leaf may persist
+ * it: without the carry the reads table never names the parameter, and a
+ * 1-3 character secret the value embeds stays in the child's state in
+ * plaintext.
+ */
+export function carriedWithRenderedSpelling(
+  value: unknown,
+  inherited: RecordedSecretValues,
+  parameterName: string
+): Array<[string, string]> {
+  const carried = inheritedSecretsCarriedBy(value, inherited);
+  if (typeof value !== 'string') return carried;
+  const spelling = inheritedParameterExpression(inherited, parameterName, value);
+  if (typeof spelling !== 'string') return carried;
+  const have = new Set(carried.map(([plaintext]) => plaintext));
+  for (const [plaintext, expression] of inherited) {
+    if (have.has(plaintext) || plaintext === '' || expression === SECRET_MASK) continue;
+    if (spelling.includes(expression) && value.includes(plaintext)) {
+      carried.push([plaintext, expression]);
+    }
+  }
+  return carried;
 }

@@ -8,7 +8,16 @@ import {
   unwrittenCreateOnlyReplacement,
 } from '../../../provisioning/property-coverage.js';
 import { NESTED_STACK_RESOURCE_TYPE } from '../retire-cfn-stack.js';
-import type { NestedStackTypeChange } from '../../../deployment/type-change-guard.js';
+import {
+  findNestedStackTypeChanges,
+  type NestedStackTypeChange,
+} from '../../../deployment/type-change-guard.js';
+import {
+  deferredServiceTokenWarning,
+  findServiceTokenRefusals,
+  serviceTokenBlockingReason,
+} from '../../../deployment/custom-resource-service-token.js';
+import type { MaskerFn } from '../../../provisioning/masked-retry-logger.js';
 import type { CcRouteUnavailableReason } from './types.js';
 
 /**
@@ -263,3 +272,33 @@ export function deployRefusesDroppedOrphanRowsReason(
 }
 
 export const EMPTY_ALLOW_SET: ReadonlySet<string> = new Set();
+
+/**
+ * The deploy's nested-stack Type-change refusal (go-to-k/cdkd#3453) and its
+ * ServiceToken refusal (go-to-k/cdkd#4749), through the SAME finders over the
+ * same two inputs the engine hands them (this diff's `changes` and the state
+ * after the orphan splice), so the preview cannot disagree with the deploy
+ * about which rows it refuses (moved from `compute-stack-diff.ts`).
+ *
+ * The Type change blocks at every node, beside the adoption refusals: in a
+ * CDK assembly a change to a child's template moves the parent row's
+ * `TemplateURL` hash, so the deploy reaches the child engine where it runs.
+ * The diff takes no `--recreate-via-*`, so it previews the flag-less deploy;
+ * a ServiceToken row the preview cannot judge (the token reads a resource
+ * this deploy replaces, or a value it could not resolve) is decided by the
+ * deploy once resolved, so it is a warning (the caller masks and prints it).
+ */
+export function previewTypeAndServiceTokenRefusals(
+  changes: Map<string, ResourceChange>,
+  stateResources: Record<string, ResourceState>,
+  maskForLog: MaskerFn
+): { blocking: string[]; warnings: string[] } {
+  const blocking = findNestedStackTypeChanges({ changes, stateResources }).map(
+    nestedStackTypeChangeReason
+  );
+  const serviceTokens = findServiceTokenRefusals({ changes, stateResources });
+  blocking.push(
+    ...serviceTokens.refused.map((refusal) => serviceTokenBlockingReason(refusal, maskForLog))
+  );
+  return { blocking, warnings: serviceTokens.deferred.map(deferredServiceTokenWarning) };
+}

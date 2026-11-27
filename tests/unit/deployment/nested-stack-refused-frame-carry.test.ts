@@ -280,8 +280,11 @@ describe('issue #3156: what the provenance arm refuses', () => {
     );
     // Premise: the frame arm's residual -- it wrote the sibling's reference.
     expect(record.Parameters['Pub']).toBe('port:{{resolve:ssm:/app/dev}}');
-    expect(bag.has(`port:${PIN}`)).toBe(false);
-    expect(await childPersist(bag, 'Pub', `port:${PIN}`)).toBe(`port:${PIN}`);
+    // No EXPRESSION is carried for it; since #7050 a masked row value is a
+    // mask-only needle there, which certifies nothing.
+    expect(bag.get(`port:${PIN}`) ?? '***').toBe('***');
+    // #7050: the child never keeps the sub-floor secret's text.
+    expect(await childPersist(bag, 'Pub', `port:${PIN}`)).toBe('***');
   });
 
   it('a token whose own substitution was PUBLIC, though an unused variable resolved it as a secret first', async () => {
@@ -293,7 +296,9 @@ describe('issue #3156: what the provenance arm refuses', () => {
     expect(flipReads.count).toBe(2);
     expect(resolved.Parameters['Pin']).toBe(`port:${PIN}`);
     expect(bag.get(PIN)).toBe('{{resolve:ssm:/app/flip}}');
-    expect(bag.has(`port:${PIN}`)).toBe(false);
+    // No EXPRESSION is carried for it; since #7050 a masked row value is a
+    // mask-only needle there, which certifies nothing.
+    expect(bag.get(`port:${PIN}`) ?? '***').toBe('***');
   });
 
   it('two non-literal frames of one value through DIFFERENT tokens, which the parent row could not keep apart', async () => {
@@ -304,12 +309,13 @@ describe('issue #3156: what the provenance arm refuses', () => {
       },
       { Tail: '' }
     );
-    expect(bag.has(`port:${PIN}`)).toBe(false);
-    // Neither parent leaf takes the other's reference. `B`'s token holds the
-    // map slot for the value, so the template-text arm positions it at its own
-    // spelling (#7037); `A`'s has no slot and keeps the scan's answer.
+    // No EXPRESSION is carried for it; since #7050 a masked row value is a
+    // mask-only needle there, which certifies nothing.
+    expect(bag.get(`port:${PIN}`) ?? '***').toBe('***');
+    // Neither parent leaf takes the other's reference: each token sits at the
+    // span the resolver substituted it (#7050).
     expect(record.Parameters).toEqual({
-      A: `port:${PIN}`,
+      A: 'port:{{resolve:ssm-secure:/app/a}}',
       B: 'port:{{resolve:ssm-secure:/app/b}}',
     });
   });
@@ -359,7 +365,9 @@ describe('issue #3156: what the provenance arm refuses', () => {
       });
       expect(flipReads.count).toBe(2);
       expect(bag.get(PIN)).toBe('{{resolve:ssm:/app/flip}}');
-      expect(bag.has(`port:${PIN}`)).toBe(false);
+      // No EXPRESSION is carried for it; since #7050 a masked row value is a
+    // mask-only needle there, which certifies nothing.
+    expect(bag.get(`port:${PIN}`) ?? '***').toBe('***');
     });
 
     it('keeps certifying a leaf resolved twice, identically, into one bag', async () => {
@@ -381,7 +389,9 @@ describe('issue #3156: what the provenance arm refuses', () => {
         expect(reads()).toBe(2);
         // Premise: the unclassifiable read left the pair either way.
         expect(bag.get(PIN)).toBe(`{{resolve:ssm:${parameter}}}`);
-        expect(bag.has(`port:${PIN}`)).toBe(false);
+        // No EXPRESSION is carried for it; since #7050 a masked row value is a
+    // mask-only needle there, which certifies nothing.
+    expect(bag.get(`port:${PIN}`) ?? '***').toBe('***');
       });
     }
   });
@@ -425,8 +435,12 @@ describe('issue #3156: what the provenance arm refuses', () => {
       // replacements and the count refuses it before the affix test is asked;
       // the affix cases below keep a part with no record of its own.
       expect(bag.get(PIN)).toMatch(/^\{\{resolve:ssm-secure:\/app\/[ab]\}\}$/);
-      expect(bag.has(`${PIN}/${PIN}`)).toBe(false);
-      expect(record.Parameters['Pin']).toBe(`${PIN}/${PIN}`);
+      expect(bag.get(`${PIN}/${PIN}`) ?? '***').toBe('***');
+      // #7050: both parts lend records, so each token sits at the span the
+      // resolver substituted it.
+      expect(record.Parameters['Pin']).toBe(
+        '{{resolve:ssm-secure:/app/a}}/{{resolve:ssm-secure:/app/b}}'
+      );
     });
   }
 
@@ -545,7 +559,9 @@ describe('issue #3306: the carry certifies a token a nested part, a Sub variable
       // above), and both seeded tokens hold a pair for the pin.
       expect(resolved.Parameters['Pin']).toBe(`port:${PIN}`);
       expect(resolved.Parameters['Other']).toBe(PIN);
-      expect(bag.has(`port:${PIN}`)).toBe(false);
+      // No EXPRESSION is carried for it; since #7050 a masked row value is a
+    // mask-only needle there, which certifies nothing.
+    expect(bag.get(`port:${PIN}`) ?? '***').toBe('***');
     });
   }
 
@@ -556,7 +572,9 @@ describe('issue #3306: the carry certifies a token a nested part, a Sub variable
     expect(resolved.Parameters['Pin']).toBe(`port:${PIN}`);
     // Premise: the token resolved into the bag.
     expect(bag.get(PIN)).toBe('{{resolve:ssm:/app/pin}}');
-    expect(bag.has(`port:${PIN}`)).toBe(false);
+    // No EXPRESSION is carried for it; since #7050 a masked row value is a
+    // mask-only needle there, which certifies nothing.
+    expect(bag.get(`port:${PIN}`) ?? '***').toBe('***');
   });
 
   for (const [label, otherBranch] of [
@@ -581,7 +599,9 @@ describe('issue #3306: the carry certifies a token a nested part, a Sub variable
         // Premise: the certified branch alone is carried (the `On` rows
         // above); the other resolution selected a branch that says otherwise.
         expect(resolved.Parameters['Pin']).toBe(`port:${PIN}`);
-        expect(bag.has(`port:${PIN}`)).toBe(false);
+        // No EXPRESSION is carried for it; since #7050 a masked row value is a
+    // mask-only needle there, which certifies nothing.
+    expect(bag.get(`port:${PIN}`) ?? '***').toBe('***');
       });
     }
   }
@@ -621,8 +641,10 @@ describe('issue #3306: the carry certifies a token a nested part, a Sub variable
       expect(resolved.Parameters['Pin']).toBe(`${PIN}/${PIN}`);
       // Premise: both secrets resolved into the bag.
       expect(bag.get(PIN)).toMatch(/^\{\{resolve:ssm-secure:\/app\/[ab]\}\}$/);
-      expect(bag.has(`${PIN}/${PIN}`)).toBe(false);
-      expect(record.Parameters['Pin']).toBe(`${PIN}/${PIN}`);
+      expect(bag.get(`${PIN}/${PIN}`) ?? '***').toBe('***');
+      // #7050: `a` reaches the value through a part with no record, so no span
+      // proves where it sits: the leaf is masked, never the plaintext.
+      expect(record.Parameters['Pin']).toBe('***');
     });
   }
 });
@@ -690,9 +712,16 @@ describe('issue #3306 review M2: a frame whose own value occurs in its token tex
     it(`refuses a frame whose own value also sits in ${label}`, async () => {
       const { bag, resolved, record } = await deployRow({ Pin: pin }, bound);
       expect(resolved.Parameters['Pin']).toBe('in:in');
-      expect(bag.has('in:in')).toBe(false);
-      expect(await childPersist(bag, 'Pin', 'in:in')).toBe('in:in');
-      expect(String(record.Parameters['Pin'])).not.toContain('{{resolve:');
+      expect(bag.get('in:in') ?? '***').toBe('***');
+      // #7050: the token is placed by its recorded span, and the parameter's
+      // coinciding `in` is redacted too: no plaintext of the secret remains
+      // in the parent's record or the child's.
+      // The parameter's `in` is the leaf's own secret's text, so it is written
+      // as that token too (a gap never keeps an own secret's text).
+      // A parameter holding the leaf's own secret's text: no token is written
+      // into it, the leaf is masked (#7050).
+      expect(String(record.Parameters['Pin'])).toBe('***');
+      expect(await childPersist(bag, 'Pin', 'in:in')).toBe(record.Parameters['Pin']);
     });
   }
 });
@@ -783,7 +812,9 @@ describe('issue #3156: a record the resolver would not write is refused, not cer
         [name, '{{resolve:secretsmanager:cdkd-name-probe:SecretString:name}}'],
       ])
     );
-    expect(bag.has(`port:${PIN}`)).toBe(false);
+    // No EXPRESSION is carried for it; since #7050 a masked row value is a
+    // mask-only needle there, which certifies nothing.
+    expect(bag.get(`port:${PIN}`) ?? '***').toBe('***');
   });
 });
 

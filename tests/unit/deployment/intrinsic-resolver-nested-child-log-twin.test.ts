@@ -421,10 +421,10 @@ describe('issue #3114 route 1: a nested child takes the mask its parent register
     expect(parameterValue).toBe(`port:${PIN_SSM}`);
     recordNestedStackParameterExpressions(parentBag, 'AWS::CloudFormation::Stack', resolved, source);
     expect(parentBag.get(`lit:${PIN_SSM}`)).toBe('lit:{{resolve:ssm:pinssm}}');
-    // Premise: after the carry, value-only redaction is SILENT on the value --
-    // no whole-value entry and no substring needle -- so the child's masked
-    // lines below can come only from the log twin the parent registered.
-    expect(redactSecretsForState(parameterValue, parentBag)).toBe(parameterValue);
+    // go-to-k/cdkd#7050: the row the parent could not attribute (its token
+    // lent through an `Fn::Select`) is MASKED, never left to a search, so
+    // value-only redaction masks the value whole.
+    expect(redactSecretsForState(parameterValue, parentBag)).toBe('***');
 
     logSpies.debug.mockClear();
     const child = new IntrinsicFunctionResolver('us-east-1');
@@ -433,9 +433,10 @@ describe('issue #3114 route 1: a nested child takes the mask its parent register
       childContext(parentBag, parameterValue) as never
     );
 
-    expect(debugLines('Resolved Fn::Join: ')).toEqual(['Resolved Fn::Join: x-port:***']);
+    // The masked row masks the child's lines WHOLE (#7050).
+    expect(debugLines('Resolved Fn::Join: ')).toEqual(['Resolved Fn::Join: ***']);
     expect(debugLines('Resolved Ref to parameter: ')).toEqual([
-      'Resolved Ref to parameter: Endpoint resolved to port:***',
+      'Resolved Ref to parameter: Endpoint resolved to ***',
     ]);
   });
 
