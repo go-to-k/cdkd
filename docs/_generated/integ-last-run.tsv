@@ -505,7 +505,7 @@ sdk-ccapi-crossref	2026-11-18T22:09:14Z	PASS	136	verify.sh	rc ok, destroy 0 erro
 sdk-to-cc-autoroute	2026-11-07T08:40:09Z	PASS	235	verify.sh	PR #5946 f7e8b6577 rc ok, orph clean
 sdk-to-cc-identifier	2026-11-25T06:59:42Z	PASS	70	verify.sh	rc ok, orph clean; rerun at dc81f732f (#6976)
 sdk-unmodelled-nested-route	2026-11-24T14:17:10Z	PASS	513	verify.sh	rc ok, orph clean; zone SDK->CC->SDK same id, distribution OriginHttpVersion on SDK route incl. CC->SDK return
-secret-derived-immutable-names	2026-11-21T02:46:03Z	PASS	1018	verify.sh	rc ok, orph clean, own state bucket, head 812542cb9 (#6736)
+secret-derived-immutable-names	2026-11-27T16:03:08Z	PASS	1093	verify.sh	rc ok at 664ad6cd7 (#7123), destroy 0 errors, 0 orphans, 0 surviving state versions
 secret-substring-literal	2026-11-14T17:45:48Z	PASS	100	verify.sh	rc ok, orph clean, versions swept
 secrets-array-nested	2026-11-20T11:22:10Z	PASS	300	verify.sh	PR6652 be63cc056, us-east-1, revert-identity kept, orph clean
 secrets-dynamic-ref	2026-11-20T11:22:10Z	PASS	721	verify.sh	PR6652 be63cc056, us-east-1, revert-identity kept, orph clean
