@@ -709,6 +709,154 @@ function handTestsIn(file: string, text: string, globalNames: ReadonlySet<string
   return out;
 }
 
+/**
+ * The text predicates of `recorded-secrecy.ts` (and `carriesSecretMask`): a
+ * call of one on a RECORD's bag reads the value's text where the record's
+ * provenance has an answer (`recordedSecrecyOf`).
+ */
+const TEXT_PREDICATES = new Set([
+  'isMaskLeaf',
+  'holdsMaskLeaf',
+  'mentionsMask',
+  'mentionsMaskedIdSegment',
+  'mentionsDynamicReference',
+  'valueMentionsDynamicReference',
+  'mentionsDynamicReferenceTo',
+  'opensDynamicReferenceTo',
+  'countDynamicReferenceOpenings',
+  'dynamicReferenceOpeners',
+  'isMaskRun',
+  'carriesSecretMask',
+]);
+/** The record bags a provenance answer exists for. */
+const RECORD_FIELDS = new Set(['properties', 'attributes', 'observedProperties']);
+
+/** Does the expression read a record bag: `x.attributes`, `record.properties?.[k]`, or a local named like one? */
+function readsRecordField(raw: unknown): boolean {
+  if (!isNode(raw)) return false;
+  if (raw.type === 'MemberExpression' && raw['computed'] !== true && isNode(raw['property'])) {
+    if (RECORD_FIELDS.has(raw['property']['name'] as string)) return true;
+  }
+  if (raw.type === 'Identifier' && RECORD_FIELDS.has(raw['name'] as string)) return true;
+  return Object.values(raw).some((v) => (Array.isArray(v) ? v.some(readsRecordField) : readsRecordField(v)));
+}
+
+/**
+ * Each text-predicate call on a record bag, keyed `<file>#<enclosing
+ * function>#<source text>` (go-to-k/cdkd#7061, the narrowed fence). A reader
+ * deciding whether a RECORDED position is a secret asks `recordedSecrecyOf`.
+ */
+function recordFieldTextReadsIn(file: string, text: string): string[] {
+  const out: string[] = [];
+  const walk = (node: Node, fn: string): void => {
+    let here = fn;
+    if (node.type === 'FunctionDeclaration' && isNode(node['id'])) here = node['id']['name'] as string;
+    if (
+      node.type === 'VariableDeclarator' &&
+      isNode(node['id']) &&
+      isNode(node['init']) &&
+      ['ArrowFunctionExpression', 'FunctionExpression'].includes((node['init'] as Node).type)
+    ) {
+      here = (node['id'] as Node)['name'] as string;
+    }
+    if (node.type === 'MethodDefinition' && isNode(node['key'])) here = (node['key'] as Node)['name'] as string;
+    if (node.type === 'CallExpression' && isNode(node['callee'])) {
+      const callee = node['callee'];
+      const name =
+        callee.type === 'Identifier'
+          ? (callee['name'] as string)
+          : callee.type === 'MemberExpression' && isNode(callee['property'])
+            ? (callee['property']['name'] as string)
+            : undefined;
+      if (name !== undefined && TEXT_PREDICATES.has(name) && (node['arguments'] as unknown[]).some(readsRecordField)) {
+        out.push(`${file}#${here}#${text.slice(node.start, node.end).replace(/\s+/g, ' ')}`);
+      }
+    }
+    for (const v of Object.values(node)) {
+      if (Array.isArray(v)) {
+        for (const c of v) if (isNode(c)) walk(c, here);
+      } else if (isNode(v)) {
+        walk(v, here);
+      }
+    }
+  };
+  walk(parseOrThrow(file, text), '<module>');
+  return out;
+}
+
+/**
+ * The record readers that still read a record bag's TEXT, each pinned with
+ * how many and why (go-to-k/cdkd#7061). Every other one asks
+ * `recordedSecrecyOf`. An entry here is a reader whose verdict the
+ * provenance answer would CHANGE rather than only widen, or one with no
+ * record in hand; moving one needs its own decision.
+ */
+const BOTH = 'reads the provenance field already, and the text narrows it to the positions that still hold the mask; `masked` from the field alone would change the verdict';
+const INVERSE = 'skips what already IS the mask and masks the rest: a wider `masked` would mask LESS';
+const READS_RECORD_TEXT: Readonly<Record<string, { count: number; why: string }>> = {
+  'src/cli/commands/export/import-plan.ts#buildImportPlan#holdsMaskLeaf(stateEntry.properties)': {
+    count: 2,
+    why: 'the whole-bag blocker beside the noEchoLeaves-only exception; a provenance answer per key would refuse records the exception admits',
+  },
+  'src/cli/commands/export/import-plan.ts#buildImportPlan#holdsMaskLeaf(withoutCoordinates(stateEntry.properties, noEchoLeaves))': {
+    count: 1,
+    why: 'asks whether a mask sits OUTSIDE the noEchoLeaves coordinates, which no provenance field answers',
+  },
+  'src/cli/commands/import/stack-state.ts#reimportedAttributes#holdsMaskLeaf(attributes[key])': { count: 1, why: BOTH },
+  'src/cli/commands/import/stack-state.ts#withDeclaredNoEchoMasked#holdsMaskLeaf(attributes[name])': { count: 1, why: INVERSE },
+  'src/cli/commands/import/stack-state.ts#noEchoAttributeNamesCarried#holdsMaskLeaf(attributes[name])': { count: 1, why: BOTH },
+  'src/deployment/cc-pending-requests.ts#holdsSecretReference#holdsMaskLeaf(properties)': {
+    count: 1,
+    why: 'a journaled request bag, not a record: no provenance field is in hand',
+  },
+  'src/deployment/cc-pending-requests.ts#holdsSecretReference#valueMentionsDynamicReference(properties)': {
+    count: 1,
+    why: 'a journaled request bag, not a record: no provenance field is in hand',
+  },
+  'src/deployment/deploy-engine/noecho.ts#noEchoAttributeNamesFor#holdsMaskLeaf(attributes[name])': { count: 1, why: BOTH },
+  'src/deployment/deploy-engine/noecho.ts#noEchoAttributeOverridesFor#holdsMaskLeaf(record.attributes?.[attribute])': {
+    count: 1,
+    why: BOTH,
+  },
+  'src/deployment/legacy-row-output-mask.ts#maskLegacyTaintedRowOutputs#holdsMaskLeaf(attributes[key])': { count: 1, why: INVERSE },
+  'src/deployment/masked-baseline-recapture.ts#isMaskedBaselineRecaptureCandidate#holdsMaskLeaf(properties)': {
+    count: 1,
+    why: 'the whole bag decides on the mask alone: a reference there is what makes the record a candidate, so `masked` for a reference would end the feature',
+  },
+  'src/deployment/masked-property-fingerprints/records.ts#movedMaskedProperties#holdsMaskLeaf((properties as Record<string, unknown>)[key])': {
+    count: 1,
+    why: BOTH,
+  },
+  'src/deployment/noecho-delete-reresolution.ts#maskedNoEchoCoordinates#holdsMaskLeaf(valueAtCoordinate(properties, coordinate))': {
+    count: 1,
+    why: BOTH,
+  },
+};
+
+function recordTextProblems(extra: Record<string, string> = {}): string[] {
+  const found: string[] = [];
+  const files = new Set([
+    ...tsFiles(join(ROOT, 'src')).map((f) => relative(ROOT, f).split('\\').join('/')),
+    ...Object.keys(extra),
+  ]);
+  for (const file of files) {
+    if (file === HELPER) continue;
+    found.push(...recordFieldTextReadsIn(file, extra[file] ?? readFileSync(join(ROOT, file), 'utf8')));
+  }
+  const counts = new Map<string, number>();
+  for (const key of found) counts.set(key, (counts.get(key) ?? 0) + 1);
+  const problems: string[] = [];
+  for (const [key, n] of counts) {
+    const pinned = READS_RECORD_TEXT[key];
+    if (pinned === undefined) problems.push(`record text read: ${key}`);
+    else if (pinned.count !== n) problems.push(`${key}: ${n} sites, pinned ${pinned.count}`);
+  }
+  for (const key of Object.keys(READS_RECORD_TEXT)) {
+    if (!counts.has(key)) problems.push(`pinned record text read matches nothing: ${key}`);
+  }
+  return problems;
+}
+
 let cachedNames: Set<string> | undefined;
 function violations(
   extra: Record<string, string> = {},
@@ -740,6 +888,30 @@ describe('readers ask recorded-secrecy, never test a marker by hand (go-to-k/cdk
     // A floor the scan does not read: a group that lost its files proves nothing.
     expect(groupFiles().length).toBeGreaterThanOrEqual(332);
     expect(violations()).toEqual([]);
+  });
+
+  it('no reader tests a record bag by its text outside the pinned table', () => {
+    // A floor the scan does not read: an empty table would pass a broken scan.
+    expect(Object.keys(READS_RECORD_TEXT).length).toBeGreaterThanOrEqual(13);
+    expect(recordTextProblems()).toEqual([]);
+  });
+
+  it.each([
+    ['a member read', 'export const r1 = (record: { attributes: Record<string, unknown> }) => holdsMaskLeaf(record.attributes.Arn);', 'r1#holdsMaskLeaf(record.attributes.Arn)'],
+    ['an optional element read', "export const r2 = (record: { properties?: Record<string, unknown> }) => isMaskLeaf(record.properties?.['UserData']);", "r2#isMaskLeaf(record.properties?.['UserData'])"],
+    ['a local bag', "export const r3 = (properties: Record<string, unknown>) => mentionsDynamicReference(String(properties['K']));", "r3#mentionsDynamicReference(String(properties['K']))"],
+    ['the observed baseline', 'export const r4 = (r: { observedProperties: unknown }) => carriesSecretMask(r.observedProperties);', 'r4#carriesSecretMask(r.observedProperties)'],
+  ])('probe: a new text check of %s fails', (_what, line, key) => {
+    const file = 'src/zz-probe-record-text.ts';
+    expect(recordTextProblems({ [file]: line })).toEqual([`record text read: ${file}#${key}`]);
+  });
+
+  it('probe: a text check of a value no record bag reaches, and a provenance answer, pass', () => {
+    const file = 'src/zz-probe-record-text.ts';
+    const line =
+      'export const s1 = (desired: unknown) => holdsMaskLeaf(desired);\n' +
+      "export const s2 = (record: never) => recordedSecrecyOf(record, { field: 'attributes', key: 'K' });";
+    expect(recordTextProblems({ [file]: line })).toEqual([]);
   });
 
   it('the marker names include the constants other modules bind', () => {
