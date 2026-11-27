@@ -87,15 +87,24 @@ function makeEngine(opts: { replace?: boolean }): InstanceType<typeof DeployEngi
 }
 
 async function refusal(type: string, path: string, oldValue: unknown, newValue: unknown): Promise<string> {
-  const recorded = { [path]: oldValue };
-  const desired = { [path]: newValue };
+  return refusalOf(type, { [path]: oldValue }, { [path]: newValue }, [
+    { path, oldValue, newValue, requiresReplacement: true },
+  ]);
+}
+
+async function refusalOf(
+  type: string,
+  recorded: Record<string, unknown>,
+  desired: Record<string, unknown>,
+  propertyChanges: NonNullable<ResourceChange['propertyChanges']>
+): Promise<string> {
   const change: ResourceChange = {
     logicalId: 'Rg',
     changeType: 'UPDATE',
     resourceType: type,
     currentProperties: recorded,
     desiredProperties: desired,
-    propertyChanges: [{ path, oldValue, newValue, requiresReplacement: true }],
+    propertyChanges,
   };
   const stateResources = {
     Rg: {
@@ -144,6 +153,18 @@ describe('SageMaker domain VpcId replacement (go-to-k/cdkd#7126)', () => {
     // must not say it is lost there.
     expect(text).not.toContain('so the data is lost there as well');
     expect(text).toContain(SHORT_ADVICE);
+  });
+
+  // When the same deploy renames the domain, CloudFormation's replacement
+  // succeeds, so the kept-name sentence must not be printed.
+  it('drops the kept-name sentence when DomainName changes too', async () => {
+    const recorded = { VpcId: 'vpc-a', DomainName: 'a' };
+    const desired = { VpcId: 'vpc-b', DomainName: 'b' };
+    const text = await refusalOf('AWS::SageMaker::Domain', recorded, desired, [
+      { path: 'VpcId', oldValue: 'vpc-a', newValue: 'vpc-b', requiresReplacement: true },
+      { path: 'DomainName', oldValue: 'a', newValue: 'b', requiresReplacement: true },
+    ]);
+    expect(text).not.toContain('it keeps (AlreadyExists)');
   });
 
   // A control: passes before the fix too. DomainName is schema create-only, so

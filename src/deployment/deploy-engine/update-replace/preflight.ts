@@ -104,12 +104,15 @@ export function refuseUnsafeReplacement(
         .filter((path) => SPEC_REPLACEMENT_CFN_MEASURED.has([oldResourceType, path].join('#')));
       // go-to-k/cdkd#7126: measured replacing, but CloudFormation's
       // replacement then fails on the name it keeps, so no data is lost there.
-      const keptNames = (change.propertyChanges ?? [])
-        .filter((pc) => pc.requiresReplacement)
-        .flatMap((pc) => {
-          const name = SPEC_REPLACEMENT_CFN_KEEPS_NAME.get([oldResourceType, pc.path].join('#'));
-          return name === undefined ? [] : [{ path: pc.path, name }];
-        });
+      const replacing = (change.propertyChanges ?? []).filter((pc) => pc.requiresReplacement);
+      // Not when the same deploy changes that name: CloudFormation's
+      // replacement then succeeds, and loses the data like any other.
+      const keptNames = replacing.flatMap((pc) => {
+        const name = SPEC_REPLACEMENT_CFN_KEEPS_NAME.get([oldResourceType, pc.path].join('#'));
+        return name === undefined || replacing.some((other) => other.path === name)
+          ? []
+          : [{ path: pc.path, name }];
+      });
       // `markNonRetryable`: the verdict is computed from a CLI flag and
       // a state-recorded property bag, neither of which a retry can
       // change — and the message interpolates a template-controlled

@@ -762,8 +762,9 @@ export const REPLACEMENT_EVIDENCE: ReadonlyMap<string, ReplacementEvidence> = ne
   // adding or removing VpcId was not. Stateful: a replacement stays behind
   // --force-stateful-recreation, and with it cdkd's create-first replacement
   // meets the same collision (probed: a second Cloud Control create under the
-  // same name fails AlreadyExists) and refuses it unless --replace deletes the
-  // old domain first.
+  // same name fails AlreadyExists) and refuses it, deleting nothing even
+  // under --replace: cdkd has no name key for the type, so it cannot prove the
+  // old domain holds the colliding name.
   [
     'AWS::SageMaker::Domain#VpcId',
     { ...replace('cfn-measured', 7083, 7126), cfnKeepsName: 'DomainName' },

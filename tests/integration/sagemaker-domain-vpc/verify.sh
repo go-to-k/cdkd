@@ -316,9 +316,11 @@ if [ "${P2B_RC}" -eq 0 ]; then
   echo "FAIL: #7126: with the flag, the VpcId replacement deployed although DomainName is kept (expected the create-first collision)" >&2
   exit 1
 fi
-# The no---replace refusal for a name the old domain is proven to hold
-# (create-first.ts). Not the Retain branch: the fixture's policy is Delete.
-if ! grep -qF 'requires replacement, but the create-first attempt collided with the existing resource' "${P2B_LOG}"; then
+# create-first.ts's refusal when cdkd cannot prove the old domain holds the
+# name (the type has no name key): it deletes nothing under any flag. Not the
+# Retain branch: the fixture's policy is Delete.
+if ! grep -qF 'requires replacement, but the create-first attempt collided' "${P2B_LOG}" \
+  || ! grep -qF 'Nothing was deleted' "${P2B_LOG}"; then
   echo "FAIL: #7126: with the flag, the deploy exited ${P2B_RC} without the create-first collision refusal for DomainName" >&2
   exit 1
 fi
