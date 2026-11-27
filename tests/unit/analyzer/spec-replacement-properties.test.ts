@@ -162,6 +162,16 @@ describe('spec-replacement table (go-to-k/cdkd#7070)', () => {
     expect(await diff({ UseOnlineResharding: true }, 'Port', 6379, 6380)).toBe(true);
   });
 
+  // go-to-k/cdkd#7126: CloudFormation replaces a SageMaker domain on a VpcId
+  // change (measured), while a subnet or network-access change in the same VPC
+  // applied in place.
+  it('a SageMaker domain replaces on VpcId only', async () => {
+    const TYPE = 'AWS::SageMaker::Domain';
+    expect(await replacesOnChange(TYPE, ['VpcId'])).toBe(true);
+    expect(await replacesOnChange(TYPE, ['SubnetIds'])).toBe(false);
+    expect(await replacesOnChange(TYPE, ['AppNetworkAccessType'])).toBe(false);
+  });
+
   // go-to-k/cdkd#7130: CloudFormation replaces an Elasticsearch domain on a
   // version change without EnableVersionUpgrade and upgrades it in place under
   // the policy; a KmsKeyId change replaces whatever the policy says.

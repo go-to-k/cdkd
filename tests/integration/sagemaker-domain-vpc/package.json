@@ -1,0 +1,10 @@
+{
+  "name": "cdkd-integ-sagemaker-domain-vpc",
+  "version": "1.0.0",
+  "private": true,
+  "description": "cdkd SageMaker domain VpcId change: a stateful replacement refused without --force-stateful-recreation (go-to-k/cdkd#7126)",
+  "scripts": { "build": "tsc", "watch": "tsc -w" },
+  "devDependencies": { "@types/node": "^20.0.0", "aws-cdk": "^2.1112.0", "typescript": "^5.0.0" },
+  "dependencies": { "aws-cdk-lib": "^2.260.0", "constructs": "^10.0.0" },
+  "type": "module"
+}

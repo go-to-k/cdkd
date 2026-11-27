@@ -102,10 +102,6 @@ export const UNMEASURED_SPEC_REPLACEMENT_CANDIDATES: ReadonlySet<string> = new S
   // describes the whole property, so it stays here.
   'AWS::S3Vectors::Index#MetadataConfiguration',
   'AWS::SageMaker::App#Tags',
-  // Measured on #7083: Cloud Control refuses it (NotUpdatable), and
-  // CloudFormation replaced on it (its named domain failed AlreadyExists).
-  // The `replace` row needs a fixture first (#7126).
-  'AWS::SageMaker::Domain#VpcId',
   // Measured on #7083: TtlDuration applies in place under CloudFormation, and
   // a StorageType change replaces through the schema's nested create-only
   // paths (CloudFormation: "requires replacing"). As for EKS

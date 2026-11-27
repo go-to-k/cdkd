@@ -500,7 +500,9 @@ describe('integ fixture aws invocations (#1402)', () => {
     // (2026-11-13 measurement, go-to-k/cdkd#5640's rds-dbinstance-snapshot-restore).
     // Raised 9150 -> 10400 with the ceiling below at a re-measured 11186
     // (re-measured at go-to-k/cdkd#6577, whose logs-delivery fixture crossed the old ceiling).
-    expect(stats.total).toBeGreaterThan(10400);
+    // Raised 10400 -> 11810 with the ceiling below at a re-measured 12706
+    // (go-to-k/cdkd#7126's sagemaker-domain-vpc fixture crossed the old ceiling).
+    expect(stats.total).toBeGreaterThan(11810);
     // Re-tracked with the total (issue #2057): 55 / 290 sat 21% and 28% below
     // the measured 70 / 404, so either could have lost a fifth of its coverage
     // silently — the same argument the total's floor rests on. A floor is only
@@ -559,7 +561,9 @@ describe('integ fixture aws invocations (#1402)', () => {
     // (2026-11-13 measurement, go-to-k/cdkd#5640). Same ~1.135x headroom.
     // Raised 11170 -> 12700 with the floor above, at a re-measured 11186
     // (go-to-k/cdkd#6577). Same ~1.135x headroom.
-    expect(stats.total).toBeLessThan(12700);
+    // Raised 12700 -> 14420 with the floor above, at a re-measured 12706
+    // (go-to-k/cdkd#7126). Same ~1.135x headroom.
+    expect(stats.total).toBeLessThan(14420);
     // The highest-traffic services must always be represented.
     for (const svc of ['s3api', 'lambda', 'ec2', 'iam', 'logs']) {
       expect(stats.services.has(svc), `no aws ${svc} invocation parsed`).toBe(true);

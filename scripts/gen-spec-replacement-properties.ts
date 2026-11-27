@@ -142,19 +142,36 @@ export function renderSrc(candidates: readonly SpecReplacementCandidate[]): stri
   lines.push(']);', '');
   // go-to-k/cdkd#7100: the rows a CloudFormation execution measured, which
   // alone may say "CloudFormation was measured replacing" in a refusal.
-  const measured = candidates
-    .filter(
-      (c) =>
-        labelOf(c) === 'replace' &&
-        !c.path.includes('*') &&
-        REPLACEMENT_EVIDENCE.get(candidateKey(c.type, c.path))?.kind === 'cfn-measured'
-    )
+  const measuredRows = candidates.filter(
+    (c) =>
+      labelOf(c) === 'replace' &&
+      !c.path.includes('*') &&
+      REPLACEMENT_EVIDENCE.get(candidateKey(c.type, c.path))?.kind === 'cfn-measured'
+  );
+  // go-to-k/cdkd#7126: a row whose measured replacement failed on the name it
+  // keeps cannot say the data is lost under CloudFormation too.
+  const keptName = (c: SpecReplacementCandidate): string | undefined =>
+    REPLACEMENT_EVIDENCE.get(candidateKey(c.type, c.path))?.cfnKeepsName;
+  const measured = measuredRows
+    .filter((c) => keptName(c) === undefined)
     .map((c) => candidateKey(c.type, c.path))
     .sort();
+  const keepsName = measuredRows
+    .filter((c) => keptName(c) !== undefined)
+    .map((c) => [candidateKey(c.type, c.path), keptName(c)!] as const)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   lines.push(
     '/** `<Type>#<path>` of the rows above that a CloudFormation execution measured replacing (#7100). */',
     'export const SPEC_REPLACEMENT_CFN_MEASURED: ReadonlySet<string> = new Set([',
     ...measured.map((k) => `  '${k}',`),
+    ']);',
+    '',
+    '/**',
+    ' * `<Type>#<path>` -> the name property, for the measured rows whose CloudFormation',
+    ' * replacement failed on that name, which it keeps (#7126).',
+    ' */',
+    'export const SPEC_REPLACEMENT_CFN_KEEPS_NAME: ReadonlyMap<string, string> = new Map([',
+    ...keepsName.map(([k, n]) => `  ['${k}', '${n}'],`),
     ']);',
     ''
   );

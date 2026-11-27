@@ -4110,6 +4110,7 @@
         "replace-snapshot-failed-rollback",
         "replacement-rename-onto-holder",
         "rollback-failure-injection",
+        "sagemaker-domain-vpc",
         "sg-circular-dependency",
         "sg-ingress-secret-source",
         "sg-ingress-source-replacement",
@@ -4444,6 +4445,10 @@
         ],
         "rollback-failure-injection": [
           "l2"
+        ],
+        "sagemaker-domain-vpc": [
+          "l1",
+          "literal"
         ],
         "sg-circular-dependency": [
           "l2"
@@ -5011,6 +5016,7 @@
         "replacement-rename-onto-holder",
         "rollback-failure-injection",
         "rollback-replay-effective-props",
+        "sagemaker-domain-vpc",
         "servicediscovery",
         "sg-circular-dependency",
         "sg-ingress-secret-source",
@@ -5378,6 +5384,10 @@
         ],
         "rollback-replay-effective-props": [
           "l1"
+        ],
+        "sagemaker-domain-vpc": [
+          "l1",
+          "literal"
         ],
         "servicediscovery": [
           "l1"
@@ -7381,6 +7391,7 @@
         "rollback-replay-cc-generated-name",
         "s3-replication-and-filter",
         "s3-subconfig-removal",
+        "sagemaker-domain-vpc",
         "scheduler-custom-group",
         "sdk-ccapi-crossref",
         "secret-derived-immutable-names",
@@ -7827,6 +7838,10 @@
         ],
         "s3-subconfig-removal": [
           "l1"
+        ],
+        "sagemaker-domain-vpc": [
+          "l2",
+          "literal"
         ],
         "scheduler-custom-group": [
           "l2"
@@ -12502,6 +12517,7 @@
     "AWS::SSM::MaintenanceWindowTarget",
     "AWS::SSM::MaintenanceWindowTask",
     "AWS::SSM::ParameterStrategy",
+    "AWS::SageMaker::Domain",
     "AWS::Scheduler::ScheduleGroup",
     "AWS::SecretsManager::ResourcePolicy",
     "AWS::SecretsManager::RotationSchedule",

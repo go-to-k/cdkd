@@ -502,7 +502,9 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   // (`TieredStorageConfig`) holding training checkpoints.
   'AWS::SageMaker::Cluster',
   // A SageMaker Studio domain OWNS the EFS file system holding every user
-  // profile's home directory (`HomeEfsFileSystemId`).
+  // profile's home directory (`HomeEfsFileSystemId`). A replacement's domain
+  // gets a new, empty one. The old one is not deleted with the domain (see
+  // STATEFUL_REPLACE_LEFTOVERS).
   'AWS::SageMaker::Domain',
 
   // Service-owned "domains" that hold the records themselves rather than DNS
@@ -579,6 +581,21 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   // the two SMS Voice types, AWS ships no deletion protection for it: the
   // release alone puts it here.
   'AWS::Connect::PhoneNumber',
+]);
+
+/**
+ * What AWS keeps after a stateful type's delete, stated in its replacement
+ * refusal (go-to-k/cdkd#7126). Values only: no ids. Keyed by resource type.
+ *
+ * `AWS::SageMaker::Domain`: measured on #7126. After the Cloud Control delete,
+ * the home EFS and the two NFS security groups SageMaker made for it remain
+ * (`DeleteDomain`'s `RetentionPolicy` defaults to `Retain`).
+ */
+export const STATEFUL_REPLACE_LEFTOVERS: ReadonlyMap<string, string> = new Map([
+  [
+    'AWS::SageMaker::Domain',
+    "the old domain's home EFS file system and its security groups are retained by AWS and keep billing",
+  ],
 ]);
 
 /**
