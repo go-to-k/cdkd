@@ -1,7 +1,7 @@
 import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
-import { displayMasked, maskValueLeaves } from './masking-display.js';
+import { displayMasked, logOperand, maskValueLeaves } from './masking-display.js';
 import { startInterruptWatch } from '../../provisioning/interrupt-watch.js';
 import type { ResourceState } from '../../types/state.js';
 import { IntrinsicResolutionRefusalError } from '../../utils/error-handler.js';
@@ -302,10 +302,11 @@ export async function constructAttributeForCoreTypes(
           // <id>=<physicalId>`, a record another binary or a hand edit
           // wrote), so being an id answers the secret question, not the
           // control-character one. Bound once for the five renders below.
-          const loggedId = displayMasked(
+          const loggedId = logOperand(
             resolver,
             displayPhysicalId(resourceType, physicalId),
-            context
+            context,
+            { render: 'plain' }
           );
           for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             const resp = await ec2.send(new DescribeVpcsCommand({ VpcIds: [physicalId] }));
@@ -315,7 +316,7 @@ export async function constructAttributeForCoreTypes(
               .map((a) => a.Ipv6CidrBlock);
             if (blocks.length > 0) {
               resolver.logger.debug(
-                `Resolved VPC Ipv6CidrBlocks for ${loggedId}: ${displayMasked(resolver, JSON.stringify(maskValueLeaves(resolver, blocks, context)), context)}`
+                `Resolved VPC Ipv6CidrBlocks for ${loggedId}: ${logOperand(resolver, JSON.stringify(maskValueLeaves(resolver, blocks, context)), context, { render: 'plain' })}`
               );
               return blocks;
             }
@@ -345,7 +346,7 @@ export async function constructAttributeForCoreTypes(
           // Rebuilt here rather than reusing `loggedId`, which the `try`
           // scopes away.
           resolver.logger.warn(
-            `Failed to fetch VPC Ipv6CidrBlocks for ${displayMasked(resolver, displayPhysicalId(resourceType, physicalId), context)}: ${displayMasked(resolver, describeAwsFailure(error).detail, context)}`
+            `Failed to fetch VPC Ipv6CidrBlocks for ${logOperand(resolver, displayPhysicalId(resourceType, physicalId), context, { render: 'plain' })}: ${logOperand(resolver, describeAwsFailure(error).detail, context, { render: 'plain' })}`
           );
           return [];
         }

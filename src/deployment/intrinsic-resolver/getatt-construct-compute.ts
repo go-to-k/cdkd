@@ -2,7 +2,7 @@ import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
 import { cdkdRemedy } from '../../utils/pasteable-command.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
-import { displayMasked, maskValueLeaves } from './masking-display.js';
+import { displayMasked, logOperand, maskValueLeaves } from './masking-display.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { isSettledInstanceState } from '../../provisioning/ec2-instance-state.js';
 import type { ResourceState } from '../../types/state.js';
@@ -601,7 +601,7 @@ export async function constructAttributeForComputeTypes(
         // beside it already was: a state-record id is not always
         // AWS-assigned (see the VPC `Ipv6CidrBlocks` arm).
         resolver.logger.warn(
-          `DescribeLaunchTemplates(${displayMasked(resolver, displayPhysicalId(resourceType, physicalId), context)}) failed for ${displayMasked(resolver, attributeName, context)}: ${displayMasked(resolver, describeAwsFailure(err).detail, context)}`
+          `DescribeLaunchTemplates(${logOperand(resolver, displayPhysicalId(resourceType, physicalId), context, { render: 'plain' })}) failed for ${displayMasked(resolver, attributeName, context)}: ${logOperand(resolver, describeAwsFailure(err).detail, context, { render: 'plain' })}`
         );
       }
       // Fallback to "$Latest" / "$Default" — both are AWS-accepted
@@ -867,7 +867,9 @@ async function readSubnetAttributeLive(
     );
 
   if (attributeName === 'Ipv6CidrBlocks') {
-    const loggedId = displayMasked(resolver, displayPhysicalId(resourceType, physicalId), context);
+    const loggedId = logOperand(resolver, displayPhysicalId(resourceType, physicalId), context, {
+      render: 'plain',
+    });
     const { attempts, delayMs } = subnetIpv6AttributeWait;
     for (let attempt = 1; attempt <= attempts; attempt++) {
       const subnet = (await describe()) ?? notFound();
@@ -877,7 +879,7 @@ async function readSubnetAttributeLive(
         .map((a) => a.Ipv6CidrBlock as string);
       if (blocks.length > 0) {
         resolver.logger.debug(
-          safeMsg`Resolved Subnet Ipv6CidrBlocks for ${loggedId}: ${displayMasked(resolver, JSON.stringify(maskValueLeaves(resolver, blocks, context)), context)}`
+          safeMsg`Resolved Subnet Ipv6CidrBlocks for ${loggedId}: ${logOperand(resolver, JSON.stringify(maskValueLeaves(resolver, blocks, context)), context, { render: 'plain' })}`
         );
         return blocks;
       }

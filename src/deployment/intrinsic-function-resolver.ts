@@ -3,6 +3,12 @@ import {
   withConsumptionScope,
 } from './secret-redaction/consumed-references.js';
 import { GetParameterCommand } from '@aws-sdk/client-ssm';
+import {
+  displayScopeOpenFor,
+  innermostCrossStackReadTainted,
+  recordTaintedCrossStackValue,
+  withDisplayScope,
+} from './intrinsic-resolver/display-taint.js';
 import { getLogger } from '../utils/logger.js';
 import { canonicalizeRegion, sameRegion } from '../utils/aws-partition.js';
 import { withSharedDrainBudget } from './drain-budget.js';
@@ -420,6 +426,12 @@ export class IntrinsicFunctionResolver {
     value: unknown,
     reresolved = false
   ): unknown {
+    // go-to-k/cdkd#7077: a read the diff's preview marked tainted is a
+    // log-only needle of this pass too, for a line the resolver's scope does
+    // not cover (`cdkd diff` only: a deploy's write decisions read the set).
+    if (reresolved && innermostCrossStackReadTainted()) {
+      recordTaintedCrossStackValue(context, value);
+    }
     if (typeof value === 'string') {
       // go-to-k/cdkd#7050: a cross-stack read whose producer value spelled a
       // token keeps that spelling and where each token was substituted.
@@ -456,6 +468,19 @@ export class IntrinsicFunctionResolver {
       !consumptionScopeOpenFor(value)
     ) {
       return withConsumptionScope(value, () => this.resolveValue(value, context));
+    }
+    // go-to-k/cdkd#7077: the display scope a log operand's provenance is read
+    // from (`display-taint.ts`); opened only when the template has a tainted
+    // name, and read by log renders alone.
+    if (
+      value !== null &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      isIntrinsicCallShape(value) &&
+      !displayScopeOpenFor(value)
+    ) {
+      const scoped = withDisplayScope(value, context, () => this.resolveValue(value, context));
+      if (scoped !== undefined) return scoped;
     }
     // Primitives: return as-is (but check strings for dynamic references)
     if (typeof value !== 'object' || value === null) {

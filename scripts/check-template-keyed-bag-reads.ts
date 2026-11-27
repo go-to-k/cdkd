@@ -128,6 +128,7 @@ export const SCANNED_FILES: readonly string[] = [
   'src/deployment/intrinsic-resolver/functions/cidr.ts',
   'src/deployment/intrinsic-resolver/masking.ts',
   'src/deployment/intrinsic-resolver/masking-display.ts',
+  'src/deployment/intrinsic-resolver/display-taint.ts',
   'src/analyzer/template-parser.ts',
 ];
 

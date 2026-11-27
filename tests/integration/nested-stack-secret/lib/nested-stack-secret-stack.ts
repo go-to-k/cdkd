@@ -382,6 +382,21 @@ class SecretBearingChild extends cdk.NestedStack {
       expression: cdk.Fn.conditionEquals(cdk.Fn.join('', ['x-', subFloorPinSsm.valueAsString]), 'never'),
     });
     pinSsmCondition.overrideLogicalId('PinSsmNeverMatches');
+    // THE #7077 ARM's input: a parameter MIXING a secret reference with other
+    // text (`<Sep7077>/{{resolve:ssm-secure:...}}`), whose other text is the
+    // sub-floor `PIN_SSM_VALUE` -- another secret's plaintext. A piece of it
+    // (`Fn::Select` over `Fn::Split`) is below the value scan's floor, so the
+    // resolver's `--verbose` lines mask it by provenance. Consumed ONLY by a
+    // condition, as `SubFloorPinSsm` is: a condition persists nothing.
+    const mixed7077 = new cdk.CfnParameter(this, 'Mixed7077', { type: 'String' });
+    mixed7077.overrideLogicalId('Mixed7077');
+    const piece7077Condition = new cdk.CfnCondition(this, 'Piece7077NeverMatches', {
+      expression: cdk.Fn.conditionEquals(
+        cdk.Fn.select(0, cdk.Fn.split('/', mixed7077.valueAsString)),
+        'never'
+      ),
+    });
+    piece7077Condition.overrideLogicalId('Piece7077NeverMatches');
 
     const stageParam = new ssm.StringParameter(this, 'StageParam', {
       parameterName: names.stageParamName,
@@ -1153,6 +1168,17 @@ export class NestedStackSecretStack extends cdk.Stack {
       cdk.Aws.ACCOUNT_ID,
       '}}',
     ]);
+    // THE #7077 SEPARATOR: the parent's own parameter, its DEFAULT the
+    // sub-floor `PIN_SSM_VALUE` (kept in sync with verify.sh), so the text
+    // beside the reference in `Mixed7077` equals another secret's plaintext.
+    const sep7077 = new cdk.CfnParameter(this, 'Sep7077', { type: 'String', default: 'm8' });
+    sep7077.overrideLogicalId('Sep7077');
+    const mixed7077Reference = cdk.Fn.join('', [
+      sep7077.valueAsString,
+      '/{{resolve:ssm-secure:cdkd-nested-pinssm-',
+      cdk.Aws.ACCOUNT_ID,
+      '}}',
+    ]);
     // THE #3079 TWIN. A SIXTH JSON key holding the SAME two characters as
     // `pin`, in the SAME `port:` frame -- two tokens, one middle, one frame.
     // Kept in sync with verify.sh's secret JSON (`pintwin`).
@@ -1244,6 +1270,8 @@ export class NestedStackSecretStack extends cdk.Stack {
           SubFloorPinJoin: pinJoinReference,
           // The #3114 frame: an `Fn::Join` around an `ssm` SecureString token.
           SubFloorPinSsm: pinSsmReference,
+          // The #7077 mixed value: the sub-floor separator beside a reference.
+          Mixed7077: mixed7077Reference,
         },
       }
     );

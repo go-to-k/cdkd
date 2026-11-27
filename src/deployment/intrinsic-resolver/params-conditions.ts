@@ -16,7 +16,7 @@ import {
   recordInheritedPseudoParameterValues,
   refuseCoercedInheritedSecret,
 } from './parameter-secrets.js';
-import { displayMasked, maskValueLeaves } from './masking-display.js';
+import { displayMasked, logOperand, maskValueLeaves } from './masking-display.js';
 import { abandonedUnit } from './masking.js';
 import { isSelectOutOfBounds } from './string-functions.js';
 import {
@@ -193,11 +193,14 @@ export async function resolveParameters(
         refuseCoercedInheritedSecret(resolver, name, paramDef, userValue, inheritedSecrets);
         parameters[name] = resolver.coerceParameterValue(userValue, paramDef.Type);
         resolver.logger.debug(
-          `Parameter ${maskInherited(name)}: using user-provided value ${maskInherited(
+          `Parameter ${maskInherited(name)}: using user-provided value ${logOperand(
+            resolver,
             stringifyParameterForLog(
               paramDef,
               maskValueLeaves(resolver, userValue, inheritedLogContext)
-            )
+            ),
+            inheritedLogContext,
+            { render: maskInherited, parameter: { name, value: userValue } }
           )}`
         );
         continue;
@@ -278,8 +281,11 @@ export async function resolveParameters(
             ? resolved
             : resolver.coerceParameterValue(resolved, resolvedType);
         resolver.logger.debug(
-          `Parameter ${maskInherited(name)}: resolved SSM value ${maskInherited(
-            stringifyParameterForLog(paramDef, resolved)
+          `Parameter ${maskInherited(name)}: resolved SSM value ${logOperand(
+            resolver,
+            stringifyParameterForLog(paramDef, resolved),
+            inheritedLogContext,
+            { render: maskInherited, parameter: { name, value: parameters[name] } }
           )}`
         );
         continue;
@@ -291,8 +297,11 @@ export async function resolveParameters(
       // {@link coerceParameterDefault} for the measured parsed shapes.
       parameters[name] = coerceParameterDefault(paramDef.Default, paramDef.Type);
       resolver.logger.debug(
-        `Parameter ${maskInherited(name)}: using default value ${maskInherited(
-          stringifyParameterForLog(paramDef, paramDef.Default)
+        `Parameter ${maskInherited(name)}: using default value ${logOperand(
+          resolver,
+          stringifyParameterForLog(paramDef, paramDef.Default),
+          inheritedLogContext,
+          { render: maskInherited, parameter: { name, value: parameters[name] } }
         )}`
       );
       continue;

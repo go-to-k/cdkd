@@ -1,7 +1,8 @@
 import { cdkdRemedy, proseQuoted } from '../../utils/pasteable-command.js';
+import { crossStackTaintOf, markCrossStackReadTainted } from './display-taint.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { describeAvailableOutputs } from './cfn-fallback.js';
-import { displayLeaf, displayMasked, displayMaskedIdent } from './masking-display.js';
+import { displayLeaf, displayMasked, displayMaskedIdent, logOperand } from './masking-display.js';
 import { logTextOfLeaf, regionLogText } from './masking.js';
 import { getCrossAccountStackState, getSameAccountStackState } from './stack-state.js';
 import { reresolveCrossStackValue } from './cross-stack.js';
@@ -354,12 +355,24 @@ export async function resolveGetStackOutput(
   const shownRoleArn = roleArn
     ? displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })
     : '';
+  // go-to-k/cdkd#7077: the trio as the log lines print it, masked by
+  // provenance (`logOperand`); the throws keep the bindings above.
+  const logStackName = logOperand(resolver, stackName, context, { render: () => loggedStackName });
+  const logRegion = logOperand(resolver, loggedRegionText, context, { render: () => loggedRegion });
+  const logOutputName = logOperand(resolver, outputName, context, {
+    render: () => loggedOutputName,
+  });
   // not-in-class(roleArn ? `, RoleArn=${shownRoleArn}` : ''): the RoleArn argument, refused unless it is a literal template string.
   resolver.logger.debug(
-    `Resolving Fn::GetStackOutput: StackName=${loggedStackName}, Region=${loggedRegion}, ` +
-      `OutputName=${loggedOutputName}${roleArn ? `, RoleArn=${shownRoleArn}` : ''}`
+    `Resolving Fn::GetStackOutput: StackName=${logStackName}, Region=${logRegion}, ` +
+      `OutputName=${logOutputName}${roleArn ? `, RoleArn=${shownRoleArn}` : ''}`
   );
 
+  // go-to-k/cdkd#7077: an output the preview marks as derived from a secret
+  // taints every call enclosing this read, diffed producer or not.
+  if (crossStackTaintOf(context)?.stackOutputTainted(region, stackName, outputName) === true) {
+    markCrossStackReadTainted();
+  }
   // `cdkd diff` (go-to-k/cdkd#6796): a same-account producer diffed earlier in
   // this run that changes the output decides it, as its deploy will first.
   const previewed = roleArn
@@ -376,7 +389,7 @@ export async function resolveGetStackOutput(
       );
     }
     resolver.logger.info(
-      safeMsg`Resolved Fn::GetStackOutput: StackName=${loggedStackName}, OutputName=${loggedOutputName} (from this diff of the stack, which changes it)`
+      safeMsg`Resolved Fn::GetStackOutput: StackName=${logStackName}, OutputName=${logOutputName} (from this diff of the stack, which changes it)`
     );
     return previewed.value;
   }
@@ -439,7 +452,7 @@ export async function resolveGetStackOutput(
       const failure = innermost instanceof Error ? describeAwsFailure(innermost) : undefined;
       if (failure?.redacted !== true) return refuseCdkRef(denialText(awsText), error);
       resolver.logger.debug(
-        safeMsg`Fn::GetStackOutput: ${asIsMessage(displayMasked(resolver, denialText(awsText), context))}`
+        safeMsg`Fn::GetStackOutput: ${asIsMessage(logOperand(resolver, denialText(awsText), context, { render: 'plain' }))}`
       );
       return refuseCdkRef(denialText(displaySafe(failure.summary)), error);
     };
@@ -526,8 +539,8 @@ export async function resolveGetStackOutput(
         // CloudFormation fallback: a CFn stack output never passed through
         // cdkd's redaction, so it is whatever the producer resolved.
         resolver.logger.info(
-          `Resolved Fn::GetStackOutput: StackName=${loggedStackName}, Region=${loggedRegion}, ` +
-            `OutputName=${loggedOutputName} ` +
+          `Resolved Fn::GetStackOutput: StackName=${logStackName}, Region=${logRegion}, ` +
+            `OutputName=${logOutputName} ` +
             `(from CloudFormation stack outputs; weak reference — producer is not cdkd-managed)`
         );
         // Deliberately NOT recorded into `recordedOutputReads` —
@@ -627,8 +640,8 @@ export async function resolveGetStackOutput(
   // before that, holding the plaintext.
   // not-in-class(roleArn ? `, RoleArn=${shownRoleArn}` : ''): the RoleArn argument, refused unless it is a literal template string.
   resolver.logger.info(
-    `Resolved Fn::GetStackOutput: StackName=${loggedStackName}, Region=${loggedRegion}, ` +
-      `OutputName=${loggedOutputName}${roleArn ? `, RoleArn=${shownRoleArn}` : ''} ` +
+    `Resolved Fn::GetStackOutput: StackName=${logStackName}, Region=${logRegion}, ` +
+      `OutputName=${logOutputName}${roleArn ? `, RoleArn=${shownRoleArn}` : ''} ` +
       `(${carriesDynamicReference(value) ? 'redacted dynamic reference' : 'literal value'})`
   );
   // Schema v8 (issue #668): record same-account reads so

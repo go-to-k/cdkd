@@ -1,6 +1,6 @@
 import { cdkdRemedy, proseQuoted } from '../../utils/pasteable-command.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
-import { displayMasked, logRender, maskValueLeaves } from './masking-display.js';
+import { displayMasked, logOperand, logRender, maskValueLeaves } from './masking-display.js';
 import type { ResourceState } from '../../types/state.js';
 import {
   AccountIdUnavailableError,
@@ -247,7 +247,7 @@ export function serveHealedAttribute(
   // log line (go-to-k/cdkd#3659), as every serving branch is.
   const noted = noteAttributeSecrecy(resolver, logicalId, attributeName, value, context);
   resolver.logger.debug(
-    `Resolved Fn::GetAtt from a re-read of AWS (the state record lacked it): ${logRender(resolver, logicalId, context)}.${logRender(resolver, attributeName, context)} resolved to ${logRender(resolver, stringifyAttributeForLog(attributeName, maskValueLeaves(resolver, value, context)), context, { structured: isStructured(value), redacted: isSensitiveAttributeName(attributeName) })}`
+    `Resolved Fn::GetAtt from a re-read of AWS (the state record lacked it): ${logRender(resolver, logicalId, context)}.${logRender(resolver, attributeName, context)} resolved to ${logOperand(resolver, stringifyAttributeForLog(attributeName, maskValueLeaves(resolver, value, context)), context, { structured: isStructured(value), redacted: isSensitiveAttributeName(attributeName) })}`
   );
   return noted;
 }

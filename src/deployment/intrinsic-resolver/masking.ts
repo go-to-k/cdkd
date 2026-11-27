@@ -1,4 +1,5 @@
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { displayOnlyBagOf } from './display-taint.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { displayMasked } from './masking-display.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
@@ -103,7 +104,8 @@ export function maskSecretsRaw(
   if (
     hasLogOnlyNeedles(resolver, context) ||
     hasMaskableValues(context?.printingSecrets) ||
-    hasMaskableValues(context?.secretNameSink)
+    hasMaskableValues(context?.secretNameSink) ||
+    hasMaskableValues(displayOnlyBagOf(context))
   ) {
     const printed = maskRenderedNeedlesForLog(resolver, text, context);
     if (printed !== needled) return registered === undefined ? printed : SECRET_MASK;
@@ -249,7 +251,8 @@ export function maskRenderedNeedlesForLog(
     text,
     context,
     context?.printingSecrets,
-    context?.secretNameSink
+    context?.secretNameSink,
+    displayOnlyBagOf(context)
   );
 }
 

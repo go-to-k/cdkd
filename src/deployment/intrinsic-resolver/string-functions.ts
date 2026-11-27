@@ -1,7 +1,7 @@
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import {
   displayMasked,
-  logRender,
+  logOperand,
   maskValueLeaves,
   splitDelimiterRender,
 } from './masking-display.js';
@@ -270,7 +270,7 @@ export async function resolveJoin(
   });
   rememberLogTwin(resolver, context, result, twin);
   resolver.logger.debug(
-    `Resolved Fn::Join: ${logRender(resolver, logTwinText(resolver, result, twin, context), context)}`
+    `Resolved Fn::Join: ${logOperand(resolver, logTwinText(resolver, result, twin, context), context)}`
   );
   return result;
 }
@@ -378,7 +378,7 @@ export async function resolveSelect(
     // matches literally — so a mask over the ENCODED text misses exactly the
     // secrets that carry those bytes. Leaf-masking also reaches the
     // whole-value arm, which has no `MIN_NEEDLE_LENGTH` floor.
-    `Resolved Fn::Select: index ${loggedPosition} resolved to ${logRender(resolver, JSON.stringify(maskValueLeaves(resolver, result, context)), context, { structured: true })}`
+    `Resolved Fn::Select: index ${logOperand(resolver, String(position), context, { render: () => loggedPosition })} resolved to ${logOperand(resolver, JSON.stringify(maskValueLeaves(resolver, result, context)), context, { structured: true })}`
   );
   return result;
 }
@@ -743,7 +743,7 @@ export async function resolveSplit(
     // (issue [#2759](https://github.com/go-to-k/cdkd/issues/2759)). The
     // delimiter through the builder (issue #3479): it is raw template text,
     // and a structural operand is still arbitrary JSON.
-    `Resolved Fn::Split: split by ${splitDelimiterRender(resolver, String(delimiter), lineContext)} resolved to ${logRender(resolver, JSON.stringify(maskValueLeaves(resolver, pieceTwins, lineContext)), lineContext, { structured: true })}`
+    `Resolved Fn::Split: split by ${logOperand(resolver, String(delimiter), lineContext, { render: (text) => splitDelimiterRender(resolver, text, lineContext) })} resolved to ${logOperand(resolver, JSON.stringify(maskValueLeaves(resolver, pieceTwins, lineContext)), lineContext, { structured: true })}`
   );
   return result;
 }

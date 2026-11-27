@@ -13,7 +13,7 @@
  */
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
-import { displayMasked } from './masking-display.js';
+import { displayMasked, logOperand } from './masking-display.js';
 import { resolveDynamicReferences } from './dynamic-refs.js';
 import { reresolveCrossStackValue } from './cross-stack.js';
 import type { ReferenceProvenance } from '../../types/state.js';
@@ -320,7 +320,7 @@ async function readsPinnedVersion(
   } catch (err) {
     if (isDeliberateResolutionRefusal(err)) throw err;
     resolver.logger.debug(
-      safeMsg`Pinned read of ${displayMasked(resolver, token, context)} failed: ${displayMasked(resolver, describeAwsFailure(err).detail, context)}`
+      safeMsg`Pinned read of ${logOperand(resolver, token, context, { render: 'plain' })} failed: ${logOperand(resolver, describeAwsFailure(err).detail, context, { render: 'plain' })}`
     );
     // Memoized only when DEFINITIVE: a throttle that outlived the retries may
     // answer on the next read.

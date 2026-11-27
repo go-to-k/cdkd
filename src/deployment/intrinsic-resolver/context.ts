@@ -140,6 +140,16 @@ export interface ResolverContext {
    */
   crossStackPreview?: CrossStackPreview;
   /**
+   * `cdkd diff` only (go-to-k/cdkd#7077): the preview's TAINT half alone, for
+   * a pass that must resolve cross-stack reads from state (a fingerprint
+   * pass) yet still mask a tainted read's lines. Read by log renders only;
+   * `crossStackPreview` answers it too when set.
+   */
+  crossStackTaint?: Pick<
+    CrossStackPreview,
+    'exportTainted' | 'stackOutputTainted' | 'holdsAnyTaint'
+  >;
+  /**
    * Bag for the resolver to push every successful `Fn::ImportValue`
    * resolution into. The deploy engine reads this after resource
    * provisioning and persists it to the consumer's `state.imports`

@@ -67,6 +67,15 @@ export class CrossStackPreview {
     this.nestedOutputsTaintedOutside = topLevelStackNames;
   }
 
+  /**
+   * Does any read of this run's exports or outputs taint? `anyTainted` plus an
+   * export tainted by NAME alone, which the resolver's display scope must
+   * also see (go-to-k/cdkd#7077).
+   */
+  holdsAnyTaint(): boolean {
+    return this.anyTainted() || this.taintedExports.size > 0;
+  }
+
   /** Does this run hold any tainted export or output? */
   anyTainted(): boolean {
     return this.everyExportTainted || this.taintedOutputs.size > 0;

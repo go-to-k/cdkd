@@ -1,6 +1,6 @@
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
-import { displayMasked, logRender } from './masking-display.js';
+import { displayMasked, logOperand } from './masking-display.js';
 import { resolveDynamicReferencesWithLogTwin } from './dynamic-refs.js';
 import {
   logTwinText,
@@ -700,7 +700,7 @@ export async function resolveSub(
   });
   rememberLogTwin(resolver, context, result, twin);
   resolver.logger.debug(
-    `Resolved Fn::Sub: ${logRender(resolver, logTwinText(resolver, result, twin, context), context)}`
+    `Resolved Fn::Sub: ${logOperand(resolver, logTwinText(resolver, result, twin, context), context)}`
   );
   return result;
 }

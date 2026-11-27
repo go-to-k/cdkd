@@ -669,6 +669,59 @@ scan_verbose_output() { # scan_verbose_output <label> <text>
   echo "    OK: ${label}: the parameter debug lines are present, the framed pin's Join line and the child's ssm-framed lines are masked, and no line carries a plaintext"
 }
 
+# THE #7077 ARM. The child's `Piece7077NeverMatches` condition reads a 1-3
+# character piece (`Fn::Select` over `Fn::Split`) of `Mixed7077`, a parameter
+# mixing a secret reference with the parent's `Sep7077` (its default is
+# `PIN_SSM_VALUE`, kept in sync with the stack). The value scan cannot mask
+# that piece; the resolver masks it by provenance. Premises first, so the
+# negative checks cannot pass on a run that never resolved the select.
+# <mode> `child`: the child engine ran, so its lines must be present and
+# masked. `diff`: `cdkd diff --recursive` binds the child's parameters but
+# leaves the condition UNKNOWN (its operand holds a reference the diff never
+# resolves, so it keeps the recorded verdict): the masked binding line must
+# be present. `no-change`: a same-value redeploy, where the parent plans no
+# change and runs no child engine; it must say so. Every mode scans for the
+# piece.
+scan_7077_arm() { # scan_7077_arm <label> <text> <child|diff|no-change>
+  local label="$1" text="$2" mode="$3"
+  if ! grep -qF "Parameter Sep7077: using default value ${PIN_SSM_VALUE}" <<<"${text}"; then
+    echo "FAIL: #7077: ${label}: premise: no 'Parameter Sep7077: using default value ${PIN_SSM_VALUE}' line -- the separator is not the sub-floor pin, so the arm tests nothing" >&2
+    exit 1
+  fi
+  if [ "${mode}" = "diff" ]; then
+    if ! awk 'index($0, "Parameter Mixed7077: using user-provided value ") { n++; if ($0 !~ /Parameter Mixed7077: using user-provided value \*\*\*$/) bad = 1 }
+      END { exit (n == 0 || bad) ? 1 : 0 }' <<<"${text}"; then
+      echo "FAIL: #7077: ${label}: the child's 'Parameter Mixed7077: using user-provided value' lines are absent (the diff did not bind the child) or not masked whole" >&2
+      exit 1
+    fi
+  elif [ "${mode}" = "no-change" ]; then
+    if ! grep -qF 'No changes detected' <<<"${text}"; then
+      echo "FAIL: #7077: ${label}: the same-value redeploy planned a change (no 'No changes detected' line): masking Mixed7077 by provenance must change only what is printed" >&2
+      exit 1
+    fi
+  elif ! grep -qF 'Evaluated condition Piece7077NeverMatches = false' <<<"${text}"; then
+    echo "FAIL: #7077: ${label}: premise: the child never evaluated Piece7077NeverMatches, so its Fn::Select over Mixed7077 was not resolved" >&2
+    exit 1
+  elif ! grep -qF 'Resolved Fn::Select: index *** resolved to ***' <<<"${text}"; then
+    echo "FAIL: #7077: no masked 'Resolved Fn::Select: index *** resolved to ***' line in the ${label} --verbose output -- the piece of Mixed7077 was not masked by provenance" >&2
+    exit 1
+  elif ! awk 'index($0, "Parameter Mixed7077: using user-provided value ") { n++; if ($0 !~ /Parameter Mixed7077: using user-provided value \*\*\*$/) bad = 1 }
+    END { exit (n == 0 || bad) ? 1 : 0 }' <<<"${text}"; then
+    echo "FAIL: #7077: ${label}: the child's 'Parameter Mixed7077: using user-provided value' lines are absent or not masked whole" >&2
+    exit 1
+  fi
+  # Outside every `{{resolve:...}}` span: the piece beside its separator, and
+  # the piece as a quoted Fn::Select / Fn::Split result.
+  local outside
+  outside=$(sed -E 's/\{\{resolve:[^}]*\}\}//g' <<<"${text}")
+  if grep -qF "${PIN_SSM_VALUE}/" <<<"${outside}" \
+    || grep -E 'Resolved Fn::(Select|Split):' <<<"${outside}" | grep -qF "\"${PIN_SSM_VALUE}\""; then
+    echo "FAIL: #7077: the ${label} --verbose output printed the sub-floor piece of Mixed7077 outside a {{resolve:...}} span" >&2
+    exit 1
+  fi
+  echo "    OK: #7077: ${label}: the piece of Mixed7077 is resolved, and every line printing it is masked"
+}
+
 # ONE cleanup handler. A second `trap ... EXIT` would silently REPLACE this one
 # (bash traps do not chain) and disarm the AWS teardown, so any extra teardown
 # belongs INSIDE this function.
@@ -800,6 +853,7 @@ if [ "${DEPLOY_RC}" -ne 0 ]; then
   exit 1
 fi
 scan_verbose_output "phase 1 deploy" "${DEPLOY_OUT}"
+scan_7077_arm "phase 1 deploy" "${DEPLOY_OUT}" child
 
 CHILD_STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${CHILD_KEY}" - --region "${REGION}")"
 PARENT_STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${PARENT_KEY}" - --region "${REGION}")"
@@ -1926,7 +1980,7 @@ assert_spans_state "${CHILD_STATE}" "after CREATE"
 # the persisted side disagree at a leaf on every run.
 echo "==> Phase 2: a freshly-deployed tree reports NO change"
 set +e
-DIFF_OUT="$(node "${LOCAL_DIST}" diff "${STACK}" --recursive --fail \
+DIFF_OUT="$(node "${LOCAL_DIST}" diff "${STACK}" --recursive --fail --verbose \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)"
 DIFF_RC=$?
 set -e
@@ -1950,10 +2004,31 @@ if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDO
   exit 1
 fi
 echo "    OK: the diff printed no resolved plaintext"
+scan_7077_arm "phase 2 diff --recursive" "${DIFF_OUT}" diff
 
 echo "==> Phase 2b: a second deploy is a no-op and does not rewrite the redaction"
-node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+# `--verbose` and captured for the #7077 arm: a same-value redeploy prints
+# the resolver's lines from its diff pass.
+set +e
+DEPLOY_OUT_2B="$(node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes 2>&1)"
+DEPLOY_RC_2B=$?
+set -e
+if [ "${DEPLOY_RC_2B}" -ne 0 ]; then
+  echo "FAIL: phase 2b deploy exited ${DEPLOY_RC_2B}" >&2
+  diag_output "${DEPLOY_OUT_2B}"
+  exit 1
+fi
+# Not `scan_verbose_output`: a no-op redeploy runs no child engine, so the
+# child's `using user-provided value` / `Resolved Ref to parameter` lines
+# that guard expects never print here. The plaintext scan still runs, and
+# `scan_7077_arm` below asserts the parent's `Sep7077` line, so the capture
+# is not empty.
+if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${MIXED_PW_VALUE}|${SPANS_PW_VALUE}|${FALL_PW_VALUE}|${FALL_USER_VALUE}|${FALL2_PW_VALUE}|${FALL2_USER_VALUE}|${EMBED_PW_VALUE}|${MULTI_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_SSM_FRAMED_VALUE}|${PIN_TAG_FRAMED_VALUE}|${PIN_TAG_JOIN_FRAMED_VALUE}" <<<"${DEPLOY_OUT_2B}"; then
+  echo "FAIL: phase 2b redeploy: --verbose printed a resolved secret plaintext" >&2
+  exit 1
+fi
+scan_7077_arm "phase 2b same-value redeploy" "${DEPLOY_OUT_2B}" no-change
 
 CHILD_STATE2="$(aws s3 cp "s3://${STATE_BUCKET}/${CHILD_KEY}" - --region "${REGION}")"
 assert_eq "child StageParam is STILL the expression after a second deploy" \
@@ -2001,6 +2076,9 @@ if [ "${UPDATE_RC}" -ne 0 ]; then
   diag_output "${UPDATE_OUT}"
   exit 1
 fi
+# The #7077 arm again: the child engine re-runs with Mixed7077 unchanged,
+# through its diff pass and its provisioning pass.
+scan_7077_arm "phase 2c child update" "${UPDATE_OUT}" child
 
 # PROOF THE ARM ACTUALLY RAN, from AWS rather than from the log: if the parent
 # had treated `Child` as NO_CHANGE, the child engine would never have run and

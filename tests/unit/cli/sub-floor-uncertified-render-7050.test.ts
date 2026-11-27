@@ -12,10 +12,10 @@
  *   `--recursive` (the child's rows, its security table, every log line).
  *
  * Each scan finds no `q7` outside a `{{resolve:...}}` span, and no plaintext
- * of the secret above the floor. The resolver's own debug lines are held
- * apart: they print a piece read from the parameter (`Fn::Select ... "xq7"`),
- * in the diff pass and the provisioning pass alike, which only a
- * resolver-side mask can close (go-to-k/cdkd#7077).
+ * of the secret above the floor. The resolver's own debug lines are scanned
+ * too, in the diff pass and the provisioning pass alike: a piece read from the
+ * parameter (`Fn::Select ... "xq7"`) is masked by provenance there
+ * (go-to-k/cdkd#7077), and each such line is asserted present.
  */
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vite-plus/test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -277,12 +277,15 @@ describe("the child's deploy prints no sub-floor text of a parameter with no cer
       const created = await deployChild({}, BIG, level);
       expect(created.thrown).toBeUndefined();
       expect(leaks(created.printed), created.printed).toEqual([]);
+      expect(leaks(created.resolverLines), created.resolverLines).toEqual([]);
+      expect(created.resolverLines).toMatch(/Resolved Fn::Select: index \*\*\* resolved to \*\*\*/);
       for (const id of IDS) expect(leaks(JSON.stringify(created.records[id] ?? {})), id).toEqual([]);
 
       // The parent's value moved: a real change, shown and executed.
       const moved = await deployChild(created.records, BIG2, level);
       expect(moved.thrown).toBeUndefined();
       expect(leaks(moved.printed), moved.printed).toEqual([]);
+      expect(leaks(moved.resolverLines), moved.resolverLines).toEqual([]);
       expect(moved.calls.sort()).toEqual([...IDS].sort());
       expect(moved.approvals.length, moved.printed).toBe(1);
       // Still shown as the change it is, its value masked: the replacement
@@ -299,6 +302,9 @@ describe("the child's deploy prints no sub-floor text of a parameter with no cer
       expect(same.calls).toEqual([]);
       expect(same.approvals).toEqual([]);
       expect(leaks(same.printed), same.printed).toEqual([]);
+      expect(leaks(same.resolverLines), same.resolverLines).toEqual([]);
+      // The same-value redeploy prints the diff pass's lines (go-to-k/cdkd#7077).
+      expect(same.resolverLines).toMatch(/Resolved Fn::Select: index \*\*\* resolved to \*\*\*/);
     });
   }
 });
@@ -354,7 +360,8 @@ describe('cdkd diff prints no sub-floor text of a parameter with no certified sp
           ...lines,
           JSON.stringify(diffTreeToJson(root)),
           ...(await securityTables(root)),
-          ...captured.filter((line) => !isResolverLine(line)),
+          // The resolver's lines too (go-to-k/cdkd#7077).
+          ...captured,
         ].join('\n');
         expect(leaks(printed), printed).toEqual([]);
         if (recursive) {

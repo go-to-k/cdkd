@@ -4,6 +4,8 @@ import { UNSHOWABLE_VALUE } from '../../utils/pasteable-command.js';
 import { stripControlChars } from '../../utils/regexp.js';
 import { type ResolverContext, boundAltered, isLogInert, isLogInertJson } from './support.js';
 import { logTextOfLeaf, maskSecretsRaw } from './masking.js';
+import { type OperandProvenance, operandDisplayTainted } from './display-taint.js';
+import { SECRET_MASK } from '../secret-redaction.js';
 
 /**
  * The resolver the display builders mask for: its raw masker is
@@ -302,6 +304,45 @@ export function logRender(
   if (opts.redacted === true && shown === '<redacted>') return shown;
   const inert = opts.structured === true ? isLogInertJson(shown) : isLogInert(shown);
   return inert ? shown : UNSHOWABLE_VALUE;
+}
+
+/**
+ * THE ONE render of a resolved OPERAND or RESULT on a resolver log line
+ * (go-to-k/cdkd#7077): `SECRET_MASK` whenever the operand's provenance is
+ * display-tainted ({@link operandDisplayTainted}: the call being resolved
+ * reads a parameter carrying a secret below the needle floor, or the operand
+ * is such a parameter's bound value), otherwise `render` of it, by default
+ * {@link logRender}.
+ *
+ * The value scan skips a 1-3 character needle, so only provenance can mask
+ * such a piece; every `logger.*` operand under `src/deployment/intrinsic-resolver/`
+ * passes through here, and `resolver-log-operand-population.test.ts` refuses
+ * a site that does not. A NAME (a logical id, an attribute, a condition) is
+ * no operand: it keeps {@link logRender} / {@link displayMasked}, so a
+ * masked line still says what it resolved.
+ *
+ * Display only: `value` is a rendering input, never written back.
+ */
+/** @internal */
+export function logOperand(
+  masker: ResolverMasker,
+  value: string,
+  context: ResolverContext | undefined,
+  opts: {
+    readonly structured?: boolean;
+    readonly redacted?: boolean;
+    /** `plain`: {@link displayMasked}; a function: the site's own masking render. */
+    readonly render?: 'plain' | ((text: string) => string);
+  } & OperandProvenance = {}
+): string {
+  const render = opts.render;
+  const shown =
+    render === 'plain'
+      ? displayMasked(masker, value, context)
+      : typeof render === 'function'
+        ? render(value)
+        : logRender(masker, value, context, opts);
+  return operandDisplayTainted(context, opts) ? SECRET_MASK : shown;
 }
 
 /**

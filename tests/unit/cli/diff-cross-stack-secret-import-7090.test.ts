@@ -53,7 +53,6 @@ import {
   renderDiffTree,
 } from '../../../src/cli/commands/diff-recursive.js';
 import { getLogger } from '../../../src/utils/logger.js';
-import { MIN_NEEDLE_LENGTH } from '../../../src/deployment/secret-redaction.js';
 import type { DiffTreeNode } from '../../../src/cli/commands/diff-recursive/types.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -197,6 +196,9 @@ async function diffPair(
     Cons: stack(
       'Cons',
       {
+        // go-to-k/cdkd#7077 review: a reader of `Reader` placed BEFORE it, so
+        // its line prints before the import is read.
+        Early: record('AWS::SSM::Parameter', { Type: 'String', Value: c.consumerHolds ? held : 'old-early' }),
         Reader: record('AWS::SSM::Parameter', { Type: 'String', Value: held }, {
           attributes: { Value: held },
         }),
@@ -210,13 +212,23 @@ async function diffPair(
         Row2: record('AWS::CloudFormation::Stack', {
           TemplateURL: 'u2',
           Parameters: { P: held },
+          // go-to-k/cdkd#7077 review: a row TAG importing the value. The tag
+          // settle (`holdsRecordedSecret`) read a needle of it in the pass bag
+          // and planned the row as unknowable, a phantom UPDATE.
+          Tags: [{ Key: 'Env', Value: held }],
         }),
       },
       { Shown: held }
     ),
     'Cons~Row2': stack('Cons~Row2', {
-      Inner: record('AWS::SSM::Parameter', { Type: 'String', Value: held }),
+      // The row's stack tag, merged into the child's taggable resource.
+      Inner: record('AWS::SSM::Parameter', { Type: 'String', Value: held, Tags: { Env: held } }),
     }),
+  };
+  // The row's recorded stack tags, as a deploy stores them: without them the
+  // tag run is planned on main too, and the case decides nothing.
+  (states['Cons'] as unknown as { nestedStackTags: unknown }).nestedStackTags = {
+    Row2: { Env: held },
   };
   const backend = {
     listStacks: async () => [
@@ -271,6 +283,10 @@ async function diffPair(
     nestedTemplates: { Row2: join(dir, 'inner.json') },
     template: {
       Resources: {
+        Early: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: { Type: 'String', Value: { 'Fn::GetAtt': ['Reader', 'Value'] } },
+        },
         Reader: { Type: 'AWS::SSM::Parameter', Properties: { Type: 'String', Value: read.value } },
         Echo: {
           Type: 'AWS::SSM::Parameter',
@@ -287,7 +303,11 @@ async function diffPair(
         Row2: {
           Type: 'AWS::CloudFormation::Stack',
           Metadata: { 'aws:asset:path': 'inner.json' },
-          Properties: { TemplateURL: 'u2', Parameters: { P: read.value } },
+          Properties: {
+            TemplateURL: 'u2',
+            Parameters: { P: read.value },
+            Tags: [{ Key: 'Env', Value: read.value }],
+          },
         },
       },
       Outputs: { Shown: { Value: read.value } },
@@ -346,18 +366,16 @@ describe('cdkd diff: a consumer reading a secret-fed producer output (#7090)', (
               await printed(cons, consLog),
             ].join('\n');
             expect(text.includes(secret), text).toBe(false);
-            // The consumer's resolver lines too (`--verbose`), once the value
-            // clears the masker's floor (a sub-floor piece there is #7077's).
-            // Not when the producer is not diffed: the app-wide marks carry no
-            // value to mask the resolver's lines with. Its fix is resolver-side,
-            // folded into go-to-k/cdkd#7077 as this case.
-            if (secret.length >= MIN_NEEDLE_LENGTH && !consumerOnly) {
-              const resolved = consLog.join('\n');
-              expect(resolved.includes(secret), resolved).toBe(false);
-            }
+            // The consumer's resolver lines too (`--verbose`), at any length and
+            // whether or not the producer is diffed: a tainted read masks every
+            // line reading it by provenance (go-to-k/cdkd#7077).
+            const resolved = consLog.join('\n');
+            expect(resolved.includes(secret), resolved).toBe(false);
+            // Present, so the scan above cannot pass on silence.
+            expect(consLog.some((line) => line.includes('[IntrinsicFunctionResolver]')), resolved).toBe(true);
             // Display only: a consumer already holding the value plans nothing.
             if (consumerHolds) {
-              for (const id of ['Reader', 'Echo', 'Pol']) {
+              for (const id of ['Early', 'Reader', 'Echo', 'Pol']) {
                 expect(changeTypeOf(cons, id), id).toBe('NO_CHANGE');
               }
               expect(cons.outputChanges, JSON.stringify(cons.outputChanges)).toEqual([]);

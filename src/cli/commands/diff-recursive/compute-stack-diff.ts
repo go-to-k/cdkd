@@ -482,6 +482,9 @@ export async function computeStackDiff(
             ...(Object.keys(classified.bound).length > 0 && { parameters: classified.bound }),
             ...(conditions && Object.keys(conditions).length > 0 && { conditions }),
             skipDynamicReferences: true,
+            // go-to-k/cdkd#7077: the preview's taint marks only, so a tainted
+            // read's lines are masked while its value still comes from state.
+            ...(crossStackPreview && { crossStackTaint: crossStackPreview }),
             // As the deploy's fingerprint pass (`maskedInputSources`): no
             // healer, and a physical-id fallback reads as an unknown input.
             staleAttributeHeal: { phase: 'probe' },

@@ -1,7 +1,7 @@
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { noteReferenceConsumed } from '../../secret-redaction/consumed-references.js';
 import type { IntrinsicFunctionResolver } from '../../intrinsic-function-resolver.js';
-import { displayMasked } from '../masking-display.js';
+import { displayMasked, logOperand } from '../masking-display.js';
 import { injectiveKey } from '../../../state/record-keys.js';
 import {
   ambientCredentialConfig,
@@ -737,7 +737,7 @@ export async function resolveDynamicReferencesWithLogTwin(
         resolver.logger.warn(
           displayMasked(
             resolver,
-            `Unsupported dynamic reference service: ${displayMasked(resolver, nameLogText(String(service)), context)}`,
+            `Unsupported dynamic reference service: ${logOperand(resolver, nameLogText(String(service)), context, { render: 'plain' })}`,
             context
           )
         );

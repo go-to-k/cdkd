@@ -102,6 +102,19 @@ export function withPrintingSecrets<T>(secrets: RecordedSecretValues, fn: () => 
 }
 
 /**
+ * Every bag bound on the current async chain (go-to-k/cdkd#7077), for the
+ * resolver's display-taint test, which asks only whether one HOLDS a value
+ * (`has`). Like {@link getCurrentResourceSecrets}, a reader MUST NOT
+ * enumerate or log the keys: they are secret plaintext.
+ */
+export function boundPrintingBags(): readonly RecordedSecretValues[] {
+  return boundSecretBagsStore.getStore() ?? NO_BOUND_BAGS;
+}
+
+/** One shared empty answer, so a caller can compare answers by identity (a memo key). */
+const NO_BOUND_BAGS: readonly RecordedSecretValues[] = Object.freeze([]);
+
+/**
  * The bag {@link withCurrentResourceSecrets} bound for the provider call
  * currently in flight, or `undefined` when no binder is on the stack.
  *
