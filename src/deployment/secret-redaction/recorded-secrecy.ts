@@ -70,6 +70,27 @@ export function valueMentionsDynamicReference(value: unknown): boolean {
   return mentionsDynamicReference(JSON.stringify(value) ?? '');
 }
 
+/** The opener of a reference to one service (`{{resolve:<service>:`) in a string. */
+export function mentionsDynamicReferenceTo(text: string, service: string): boolean {
+  return text.includes(`${DYNAMIC_REFERENCE_OPENER}${service}:`);
+}
+
+/** Whether `text` STARTS with the opener of a reference to `service` (`{{resolve:<service>:`). */
+export function opensDynamicReferenceTo(text: string, service: string): boolean {
+  return text.startsWith(`${DYNAMIC_REFERENCE_OPENER}${service}:`);
+}
+
+/**
+ * How many dynamic-reference openers `text` holds, non-overlapping; with
+ * `service`, only the openers of a reference to that service.
+ */
+export function countDynamicReferenceOpenings(text: string, service?: string): number {
+  const openers = dynamicReferenceOpeners(text);
+  return service === undefined
+    ? openers.length
+    : openers.filter(({ rest }) => rest.startsWith(`${service}:`)).length;
+}
+
 /**
  * Each dynamic-reference opener in `text`, in order: where it starts and the
  * text after it (`secretsmanager:...}}`), for a reader that walks the tokens.

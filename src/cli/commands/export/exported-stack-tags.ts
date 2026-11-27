@@ -6,6 +6,7 @@
  * winning (`childStackTags`, the same rule `cdkd deploy` applies, #6871).
  */
 
+import { mentionsDynamicReference } from '../../../deployment/secret-redaction/recorded-secrecy.js';
 import { childStackTags, literalRowTags } from '../../../provisioning/stack-tags.js';
 import { hasOwnKey } from '../../../utils/own-keys.js';
 import { quotedOrNotShown, rowIdent } from './render.js';
@@ -51,7 +52,10 @@ export function exportedStackTagsByStack(
       // A dynamic reference is resolved in a template, never in the stack-tag
       // API: sent there, the expression itself would replace the resolved
       // value on every resource.
-      if (rowTags !== undefined && Object.values(rowTags).some((v) => v.includes('{{resolve:'))) {
+      if (
+        rowTags !== undefined &&
+        Object.values(rowTags).some((v) => mentionsDynamicReference(v))
+      ) {
         rowTags = undefined;
       }
       if (rowTags === undefined) {

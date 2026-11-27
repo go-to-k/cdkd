@@ -1,3 +1,8 @@
+import {
+  countDynamicReferenceOpenings,
+  mentionsDynamicReference,
+  opensDynamicReferenceTo,
+} from '../../../deployment/secret-redaction/recorded-secrecy.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 import type { CdkdError } from '../../../utils/error-handler.js';
@@ -182,12 +187,6 @@ function unresolvableForeignScrubSecretError(
 }
 
 /**
- * The literal that OPENS a dynamic reference. Used as the CHEAP pre-filter that
- * decides whether a leaf is walked at all — see {@link pinCrossRegionSecrets}.
- */
-export const DYNAMIC_REFERENCE_OPENING = '{{resolve:';
-
-/**
  * The openings the assembled-reference guard actually COUNTS: `{{resolve:`
  * followed by a service whose VALUE CloudFormation defines as a secret. Counted
  * against the number of WHOLE tokens of the same class the scan matched, which
@@ -221,11 +220,7 @@ export const DYNAMIC_REFERENCE_OPENING = '{{resolve:';
  * classification issue [#2134](https://github.com/go-to-k/cdkd/issues/2134)
  * tracks.
  */
-const SECRET_REFERENCE_OPENINGS = [
-  `${DYNAMIC_REFERENCE_OPENING}secretsmanager:`,
-  `${DYNAMIC_REFERENCE_OPENING}ssm:`,
-  `${DYNAMIC_REFERENCE_OPENING}ssm-secure:`,
-] as const;
+const SECRET_REFERENCE_SERVICES = ['secretsmanager', 'ssm', 'ssm-secure'] as const;
 
 /**
  * What an `Fn::Sub` placeholder opens with. A whole token that CONTAINS one is
@@ -233,16 +228,17 @@ const SECRET_REFERENCE_OPENINGS = [
  */
 const SUB_PLACEHOLDER_OPENING = '${';
 
-/** How many SECRET references {@link SECRET_REFERENCE_OPENINGS} `leaf` opens. */
+/** How many references to a {@link SECRET_REFERENCE_SERVICES} service `leaf` opens. */
 function countSecretReferenceOpenings(leaf: string): number {
   let count = 0;
-  for (const opening of SECRET_REFERENCE_OPENINGS) count += leaf.split(opening).length - 1;
+  for (const service of SECRET_REFERENCE_SERVICES)
+    count += countDynamicReferenceOpenings(leaf, service);
   return count;
 }
 
 /** Whether a WHOLE token the scan matched is one of the secret spellings. */
 function isSecretReferenceToken(token: string): boolean {
-  return SECRET_REFERENCE_OPENINGS.some((opening) => token.startsWith(opening));
+  return SECRET_REFERENCE_SERVICES.some((service) => opensDynamicReferenceTo(token, service));
 }
 
 /**
@@ -304,7 +300,7 @@ function isSecretReferenceToken(token: string): boolean {
  *
  * Residual, unchanged and stated rather than hidden: an `Fn::Join` that splits
  * BEFORE the service name opens no counted reference at all (see
- * {@link SECRET_REFERENCE_OPENINGS}), so this predicate returns `false` for it
+ * {@link SECRET_REFERENCE_SERVICES}), so this predicate returns `false` for it
  * and the leaf is returned by identity anyway — the same destination, reached
  * without being noticed.
  */
@@ -595,7 +591,7 @@ export async function pinCrossRegionSecrets<T>(
       // same holds for a `Ref` / `Fn::FindInMap` that yields the opening, and it
       // is why the assembled-reference refusal this pass used to raise could be
       // relaxed to a deferral (issue #2157): the destination now answers.
-      if (!v.includes(DYNAMIC_REFERENCE_OPENING)) return v;
+      if (!mentionsDynamicReference(v)) return v;
       return await resolveForeignRegionTokens(v, stackName, ctx);
     }
     if (Array.isArray(v)) {

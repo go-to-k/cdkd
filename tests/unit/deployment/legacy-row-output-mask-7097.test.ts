@@ -157,6 +157,14 @@ describe('maskLegacyTaintedRowOutputs (#7097)', () => {
     expect(state.resources['Row']!.attributes!['Outputs.Piece']).toBe('***');
   });
 
+  it('reads an output the record already holds as the mask as a current one: no refusal, nothing rewritten (#7061)', () => {
+    const state = legacyState();
+    state.resources['Row']!.attributes = { 'Outputs.Piece': '***' };
+    // The child template cannot be read: a row with any plain output would be refused.
+    const reads = maskLegacyTaintedRowOutputs(state, parentTemplate(), STACK, childTemplateLoader({}));
+    expect(reads.size).toBe(0);
+    expect(state.resources['Row']!.attributes).toEqual({ 'Outputs.Piece': '***' });
+  });
 
   it('refuses, naming the row and the output but never the value, when the child template cannot be read', () => {
     const state = legacyState();
@@ -342,6 +350,14 @@ describe('conditions and resource properties decide as a current record would (r
   it('an Fn::If no plain value decides reads both branches (masking)', () => {
     expect(run(IF_CHILD, { X: `${PIN}/${A}`, Mode: `${PIN}/${A}` }, { 'Outputs.O': 'plain' }, 'if-unknown')).toEqual({
       'Outputs.O': '***',
+    });
+  });
+
+  it('a parameter the record holds as the mask decides no condition: both branches are read (#7061)', () => {
+    // `***` read as plain text would decide `On` false, so `O` would keep its plaintext.
+    expect(run(IF_CHILD, { X: `${PIN}/${A}`, Mode: '***' }, { 'Outputs.O': PIN, 'Outputs.N': PIN }, 'if-masked')).toEqual({
+      'Outputs.O': '***',
+      'Outputs.N': '***',
     });
   });
 

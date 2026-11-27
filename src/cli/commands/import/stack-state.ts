@@ -1,3 +1,4 @@
+import { holdsMaskLeaf } from '../../../deployment/secret-redaction/recorded-secrecy.js';
 import { CrossPrefixGuard } from '../../../state/stack-registry.js';
 import {
   nameGenerationCarriedFrom,
@@ -9,11 +10,7 @@ import { getLogger } from '../../../utils/logger.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { S3StateBackend } from '../../../state/s3-state-backend.js';
 import { TemplateParser } from '../../../analyzer/template-parser.js';
-import {
-  carriesSecretMask,
-  maskWholeValue,
-  splitGetAttStringForm,
-} from '../../../deployment/secret-redaction.js';
+import { maskWholeValue, splitGetAttStringForm } from '../../../deployment/secret-redaction.js';
 import {
   resourcesNamingDeclaredParameter,
   type ParameterNamingVerdict,
@@ -208,7 +205,7 @@ export function rebuiltLogicalIdsFrom(
  *    every dependent's `Fn::GetAtt` was refused. A mask is not a value, so
  *    replacing a value with one is never a refresh. The test is per
  *    top-level key because that is the granularity the mask is written at,
- *    and because a whole-bag test (`carriesSecretMask(row)`) would discard
+ *    and because a whole-bag test (`holdsMaskLeaf(row)`) would discard
  *    the CERTIFIED siblings of one masked key. `keptRecordedKeys` names
  *    them: the recorded value may be stale, and the caller says so.
  * 3. **A masked `prior` key the `row` omits is carried, not dropped.** A
@@ -243,13 +240,13 @@ export function reimportedAttributes(
     >;
     for (const [key, value] of Object.entries(row)) {
       const keepRecorded =
-        carriesSecretMask(value) && hasOwnKey(prior, key) && !carriesSecretMask(prior[key]);
+        holdsMaskLeaf(value) && hasOwnKey(prior, key) && !holdsMaskLeaf(prior[key]);
       if (keepRecorded) keptRecordedKeys.push(key);
       defineOwnKey(attributes, key, keepRecorded ? prior[key] : value);
     }
     // Rule 3: a masked prior key the row OMITS is carried, not dropped.
     for (const [key, value] of Object.entries(prior)) {
-      if (!hasOwnKey(attributes, key) && carriesSecretMask(value)) {
+      if (!hasOwnKey(attributes, key) && holdsMaskLeaf(value)) {
         defineOwnKey(attributes, key, value);
       }
     }
@@ -260,9 +257,9 @@ export function reimportedAttributes(
       : Object.keys(prior)
           .filter(
             (key) =>
-              carriesSecretMask(prior[key]) &&
+              holdsMaskLeaf(prior[key]) &&
               hasOwnKey(attributes, key) &&
-              carriesSecretMask(attributes[key])
+              holdsMaskLeaf(attributes[key])
           )
           .sort();
   return { attributes, stillMaskedKeys, keptRecordedKeys: keptRecordedKeys.sort() };
@@ -283,7 +280,7 @@ export function withDeclaredNoEchoMasked(
     (name): name is string =>
       typeof name === 'string' &&
       hasOwnKey(attributes, name) &&
-      !carriesSecretMask(attributes[name]) &&
+      !holdsMaskLeaf(attributes[name]) &&
       attributes[name] !== undefined &&
       attributes[name] !== null
   );
@@ -310,7 +307,7 @@ export function noEchoAttributeNamesCarried(
   if (!Array.isArray(prior) || attributes === undefined) return {};
   const kept = prior.filter(
     (name): name is string =>
-      typeof name === 'string' && hasOwnKey(attributes, name) && carriesSecretMask(attributes[name])
+      typeof name === 'string' && hasOwnKey(attributes, name) && holdsMaskLeaf(attributes[name])
   );
   return kept.length > 0 ? { noEchoAttributeNames: kept } : {};
 }

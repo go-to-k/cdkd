@@ -1,3 +1,4 @@
+import { mentionsDynamicReference } from '../../../deployment/secret-redaction/recorded-secrecy.js';
 import { withoutLapsedStaleShapeStamp } from '../../../deployment/intrinsic-resolver/getatt-stale-shape.js';
 import { isSupersededResourceRecord } from '../../../deployment/superseded-resources.js';
 import { nullPrototypeRecord } from '../../../utils/own-keys.js';
@@ -45,7 +46,6 @@ import {
   readConsumerRecords,
   findDroppedOutputReaders,
 } from './outputs.js';
-import { DYNAMIC_REFERENCE_OPENING } from './cross-region.js';
 import { findUnrepairedCrossStackReadNames } from './cross-stack-findings.js';
 import { type ScrubStackResult, exportNameDisplayOver } from './stack-result.js';
 import type { ScrubStackRewriteInput } from './stack.js';
@@ -877,8 +877,8 @@ export async function scrubStackRewritePass({
       if (
         typeof was === 'string' &&
         typeof now === 'string' &&
-        now.includes(DYNAMIC_REFERENCE_OPENING) &&
-        !was.includes(DYNAMIC_REFERENCE_OPENING)
+        mentionsDynamicReference(now) &&
+        !mentionsDynamicReference(was)
       ) {
         outputRewrites.set(now, was);
       }

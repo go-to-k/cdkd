@@ -6,7 +6,7 @@
  * THE POPULATION. Every `.ts` file of each MIGRATED module group in
  * {@link GROUPS}, parsed with a real parser, so a comment is never read. A
  * MARKER is `SECRET_MASK`, any constant bound anywhere under `src/` to a string
- * spelling `***` or `{{resolve` (`DYNAMIC_REFERENCE_OPENING`, ...), or such a
+ * spelling `***` or `{{resolve`, or such a
  * string or template literal itself. Literals are FOLDED first: a `+` chain, a
  * template literal, `[...].join(sep)` and `.concat(...)` over literal parts
  * read as the text they build (`'{{' + 'resolve:'`). A marker FRAGMENT is a
@@ -32,10 +32,10 @@
  * matches nothing fails too.
  *
  * BOUNDS. The groups grow one PR at a time (#7061's plan): update compare and
- * preflight, then rollback and drift, are here; export and import, delete,
- * nested child resolution and scrub follow; and the diff rendering with the cross-stack
- * preview. A file outside every group is outside the fence (the legacy-row
- * output mask joins the export group). Within a group, the fence finds hand
+ * preflight, rollback and drift, and export and import, delete, nested child
+ * resolution and scrub (with the legacy-row output mask) are here; the diff
+ * rendering with the cross-stack preview follows. A file outside every group
+ * is outside the fence. Within a group, the fence finds hand
  * tests for a MARKER only: a reader that compares, sends or addresses a
  * recorded value with no secrecy test at all is not seen, and neither is a
  * marker reached through a value no constant names (a string built at run
@@ -54,12 +54,15 @@ import { join, relative } from 'node:path';
 import { parseSync } from 'vite-plus';
 import { describe, expect, it } from 'vite-plus/test';
 import {
+  countDynamicReferenceOpenings,
   dynamicReferenceBody,
   dynamicReferenceOpeners,
   isMaskLeaf,
   isMaskRun,
   mentionsDynamicReference,
+  mentionsDynamicReferenceTo,
   mentionsMask,
+  opensDynamicReferenceTo,
   usableRecordedName,
   valueMentionsDynamicReference,
 } from '../../../src/deployment/secret-redaction/recorded-secrecy.js';
@@ -149,6 +152,54 @@ const GROUPS: Readonly<Record<string, readonly string[]>> = {
     'src/deployment/journaled-holder.ts',
     'src/deployment/nested-child-journal.ts',
     'src/deployment/cc-pending-requests.ts',
+  ],
+  'export and import, delete, nested child resolution and scrub': [
+    'src/cli/commands/export',
+    'src/cli/commands/export.ts',
+    'src/cli/commands/import',
+    'src/cli/commands/import.ts',
+    'src/cli/commands/import-deployed-parameters.ts',
+    'src/cli/commands/destroy',
+    'src/cli/commands/destroy.ts',
+    'src/cli/commands/destroy-runner',
+    'src/cli/commands/destroy-runner.ts',
+    'src/cli/commands/destroy-skip-message.ts',
+    'src/cli/commands/scrub',
+    'src/cli/commands/scrub.ts',
+    'src/deployment/delete-guard-scope.ts',
+    'src/deployment/delete-outcome.ts',
+    'src/deployment/deleted-outside-cdkd.ts',
+    'src/deployment/deleted-resource-remedy.ts',
+    'src/deployment/deploy-engine/delete.ts',
+    'src/deployment/deploy-engine/execute/removal-delete-kept.ts',
+    'src/deployment/deploy-engine/nested-cleanup.ts',
+    'src/deployment/deploy-engine/outputs.ts',
+    'src/deployment/deploy-engine/outputs',
+    'src/deployment/intrinsic-resolver/cross-stack',
+    'src/deployment/intrinsic-resolver/stack-output.ts',
+    'src/deployment/intrinsic-resolver/stack-output',
+    'src/deployment/legacy-row-output-mask.ts',
+    'src/deployment/nested-cleanup-scope.ts',
+    'src/deployment/nested-output-templates.ts',
+    'src/deployment/nested-ssm-name-check.ts',
+    'src/deployment/nested-stack-tags.ts',
+    'src/deployment/no-change-outputs-merge.ts',
+    'src/deployment/noecho-delete-reresolution.ts',
+    'src/deployment/output-value-preflight.ts',
+    'src/deployment/outputs-export-alias.ts',
+    'src/deployment/outputs-export-alias',
+    'src/deployment/secret-redaction/nested-stack.ts',
+    'src/deployment/secret-redaction/nested-stack',
+    'src/deployment/secret-redaction/cross-stack.ts',
+    'src/deployment/secret-redaction/redact-path/baseline-mask.ts',
+    'src/provisioning/cloud-control/delete-guards.ts',
+    'src/provisioning/cloud-control/delete-identity.ts',
+    'src/provisioning/cloud-control/delete.ts',
+    'src/provisioning/cloud-control/import.ts',
+    'src/provisioning/providers/nested-stack',
+    'src/state/active-import-consumers.ts',
+    'src/state/export-index-store.ts',
+    'src/state/malformed-resources-bag/outputs.ts',
   ],
 };
 
@@ -328,6 +379,15 @@ function literalRuns(raw: unknown): string[] {
   return runs;
 }
 
+/**
+ * A literal that is a marker TOKEN, not prose naming one: some literal run
+ * spells a marker and holds no whitespace (`'{{resolve:'`, `` `${OPEN}ssm:` ``,
+ * never `' (checks only {{resolve:...}} values)'`). A marker never holds a space.
+ */
+function spellsMarkerToken(node: unknown): boolean {
+  return literalRuns(node).some((run) => MARKER_TEXT.test(run) && !/\s/.test(run));
+}
+
 /** A literal spelling a marker: a string, a fold of literals, or a template literal or `+` chain any run of which does. */
 function spellsMarkerLiteral(node: unknown): boolean {
   return literalRuns(node).some((run) => MARKER_TEXT.test(run));
@@ -371,6 +431,11 @@ function markerNames(extraModules: Readonly<Record<string, string>> = {}): Set<s
       return names.has(n['property']['name'] as string);
     }
     if (n.type === 'ArrayExpression') return (n['elements'] as unknown[]).some(namesMarker);
+    // A template or `+` chain of a marker name with token text (`` `${OPEN}ssm:` ``).
+    if (n.type === 'TemplateLiteral' || (n.type === 'BinaryExpression' && n['operator'] === '+')) {
+      const parts = n.type === 'TemplateLiteral' ? (n['expressions'] as unknown[]) : plusOperands(n);
+      return parts.some(namesMarker) && literalRuns(n).every((run) => !/\s/.test(run));
+    }
     if (n.type === 'NewExpression' && isNode(n['callee']) && n['callee']['name'] === 'Set') {
       return namesMarker((n['arguments'] as unknown[])[0]);
     }
@@ -490,6 +555,28 @@ function handTestsIn(file: string, text: string, globalNames: ReadonlySet<string
     if (node.type === 'LogicalExpression') return isMarker(node['left']) || isMarker(node['right']);
     return spellsMarkerLiteral(node);
   };
+  // A value that IS a marker wherever it is read, so a binding of it is an
+  // alias: a marker name, or a template / `+` chain of one with token text, or a
+  // `??` / `||` fallback TO one (`const m = o ?? SECRET_MASK`: a marker by
+  // default). Not a ternary that MAY yield one (`const s = c ? SECRET_MASK : v`):
+  // that binding is a value, and its uses compare a value.
+  const isAlias = (raw: unknown): boolean => {
+    const node = unwrap(raw);
+    if (!isNode(node)) return false;
+    if (node.type === 'Identifier' || node.type === 'MemberExpression') return isMarker(node);
+    if (node.type === 'TemplateLiteral' || (node.type === 'BinaryExpression' && node['operator'] === '+')) {
+      return isMarker(node) && literalRuns(node).every((run) => !/\s/.test(run));
+    }
+    if (node.type === 'LogicalExpression' && ['??', '||'].includes(node['operator'] as string)) {
+      return isAlias(node['right']) || spellsMarkerToken(node['right']);
+    }
+    // A ternary yielding a marker on BOTH branches is one whichever it takes.
+    if (node.type === 'ConditionalExpression') {
+      const branch = (b: unknown): boolean => isAlias(b) || spellsMarkerToken(b);
+      return branch(node['consequent']) && branch(node['alternate']);
+    }
+    return false;
+  };
   const isMarkerOrFragment = (raw: unknown): boolean => {
     const node = unwrap(raw);
     if (isNode(node) && node.type === 'ConditionalExpression') {
@@ -574,10 +661,10 @@ function handTestsIn(file: string, text: string, globalNames: ReadonlySet<string
     }
     if (
       node.type === 'VariableDeclarator' &&
-      (spellsMarkerLiteral(node['init']) ||
+      (spellsMarkerToken(node['init']) ||
         (isNode(node['init']) &&
           (node['init'] as Node).type === 'ArrayExpression' &&
-          ((node['init'] as Node)['elements'] as unknown[]).some(spellsMarkerLiteral)))
+          ((node['init'] as Node)['elements'] as unknown[]).some(spellsMarkerToken)))
     ) {
       flag();
       // ...and every later use of it is a hand test too.
@@ -588,14 +675,14 @@ function handTestsIn(file: string, text: string, globalNames: ReadonlySet<string
       if (isMarkerFragment(node['init'])) {
         flag();
         names.add(node['id']['name'] as string);
-      } else if (isMarker(node['init']) || (isNode(node['init']) && holdsMarker(node['init'] as Node))) {
+      } else if (isAlias(node['init']) || (isNode(node['init']) && holdsMarker(node['init'] as Node))) {
         // ...a local list or Set of markers (`const S = new Set([SECRET_MASK])`) too.
         names.add(node['id']['name'] as string);
       }
     }
     // A default parameter of a marker (`(v, mask = SECRET_MASK) => v === mask`).
     if (node.type === 'AssignmentPattern' && isNode(node['left']) && node['left'].type === 'Identifier') {
-      if (isMarker(node['right'])) names.add(node['left']['name'] as string);
+      if (isAlias(node['right'])) names.add(node['left']['name'] as string);
     }
     for (const v of Object.values(node)) {
       if (Array.isArray(v)) {
@@ -610,12 +697,16 @@ function handTestsIn(file: string, text: string, globalNames: ReadonlySet<string
 }
 
 let cachedNames: Set<string> | undefined;
-function violations(extra: Record<string, string> = {}): string[] {
+function violations(
+  extra: Record<string, string> = {},
+  extraModules?: Readonly<Record<string, string>>
+): string[] {
   cachedNames ??= markerNames();
+  const names = extraModules === undefined ? cachedNames : markerNames(extraModules);
   const found: string[] = [];
   const files = new Set([...groupFiles(), ...Object.keys(extra)]);
   for (const file of files) {
-    found.push(...handTestsIn(file, extra[file] ?? readFileSync(join(ROOT, file), 'utf8'), cachedNames));
+    found.push(...handTestsIn(file, extra[file] ?? readFileSync(join(ROOT, file), 'utf8'), names));
   }
   const counts = new Map<string, number>();
   for (const key of found) counts.set(key, (counts.get(key) ?? 0) + 1);
@@ -634,13 +725,13 @@ function violations(extra: Record<string, string> = {}): string[] {
 describe('readers ask recorded-secrecy, never test a marker by hand (go-to-k/cdkd#7061)', () => {
   it('no migrated group holds a hand test', () => {
     // A floor the scan does not read: a group that lost its files proves nothing.
-    expect(groupFiles().length).toBeGreaterThanOrEqual(166);
+    expect(groupFiles().length).toBeGreaterThanOrEqual(296);
     expect(violations()).toEqual([]);
   });
 
   it('the marker names include the constants other modules bind', () => {
     cachedNames ??= markerNames();
-    expect([...cachedNames]).toEqual(expect.arrayContaining(['SECRET_MASK', 'DYNAMIC_REFERENCE_OPENING']));
+    expect([...cachedNames]).toEqual(expect.arrayContaining(['SECRET_MASK']));
   });
 
   it('probe: a module-level alias or collection of a marker is a marker name, across modules', () => {
@@ -664,7 +755,6 @@ describe('readers ask recorded-secrecy, never test a marker by hand (go-to-k/cdk
     ['a template-literal search', 'export const e = (v: string) => v.indexOf(`{{resolve:${"x"}`);'],
     ['a computed-key search', "export const e2 = (v: string) => v['includes']('{{resolve:');"],
     ['a replace of the mask', "export const e3 = (v: string) => v.replace('***', '');"],
-    ['another module\'s opener constant', 'export const e4 = (v: string) => v.includes(DYNAMIC_REFERENCE_OPENING);'],
     ['a regular expression', 'export const f = (v: string) => /\\{\\{resolve:/.test(v);'],
     ['a quantified regular expression', 'export const f2 = (v: string) => /\\*{3}/.test(v);'],
     ['a class regular expression', 'export const f3 = (v: string) => /[{][{]resolve/.test(v);'],
@@ -722,6 +812,67 @@ describe('readers ask recorded-secrecy, never test a marker by hand (go-to-k/cdk
     for (const p of problems) {
       expect(p).toMatch(/^hand test: src\/deployment\/deploy-engine\/replacement\/name-change\.ts#/);
     }
+  });
+
+  // Each line's ONLY hand test is the USE of a local binding: the binding is
+  // read as a marker alias, or the use passes unseen.
+  it.each([
+    ['a local alias behind ??', 'export const q1 = (v: string, o?: string) => { const m = o ?? SECRET_MASK; return v === m; };', 'q1#v === m'],
+    ['a local alias behind ||', 'export const q2 = (v: string, o?: string) => { const m = o || SECRET_MASK; return v.includes(m); };', 'q2#v.includes(m)'],
+    ['a default-parameter alias behind ??', 'export const q3 = (v: string, o?: string, m = o ?? SECRET_MASK) => v === m;', 'q3#v === m'],
+    ['a local template alias', 'export const q4 = (v: string) => { const quoted = `"${SECRET_MASK}"`; return v.includes(quoted); };', 'q4#v.includes(quoted)'],
+    ['a ternary of a marker on both branches', 'export const q8 = (v: string, c: boolean) => { const m = c ? SECRET_MASK : `"${SECRET_MASK}"`; return v.includes(m); };', 'q8#v.includes(m)'],
+  ])('probe: %s fails at its use', (_what, line, key) => {
+    expect(violations({ [NAME]: `${real(NAME)}\n${line}\n` })).toEqual([`hand test: ${NAME}#${key}`]);
+  });
+
+  it('probe: a marker token inside other text is a second marker constant, and its use a hand test', () => {
+    const line = "export const q5 = (v: string) => { const P = 'arn:***'; return v.endsWith(P); };";
+    expect(violations({ [NAME]: `${real(NAME)}\n${line}\n` }).sort()).toEqual(
+      [`hand test: ${NAME}#q5#P = 'arn:***'`, `hand test: ${NAME}#q5#v.endsWith(P)`].sort()
+    );
+  });
+
+  it('probe: a default parameter that MAY yield a marker is a value, not an alias', () => {
+    const line = 'export const q6 = (v: string, c: boolean, s = c ? SECRET_MASK : v) => s === v;';
+    expect(violations({ [NAME]: `${real(NAME)}\n${line}\n` })).toEqual([]);
+  });
+
+  it("probe: another module's template constant of a marker name fails", () => {
+    const names = markerNames({
+      'src/zz-probe-tpl-a.ts': "export const PROBE_OPEN = '{{resolve:';",
+      'src/zz-probe-tpl-b.ts':
+        "import { PROBE_OPEN } from './zz-probe-tpl-a.js';\n" +
+        'export const PROBE_SSM_OPEN = `${PROBE_OPEN}ssm:`;\n' +
+        'export const PROBE_PROSE = `${PROBE_OPEN} names a reference`;',
+    });
+    expect(names.has('PROBE_SSM_OPEN')).toBe(true);
+    // A template holding prose names no marker.
+    expect(names.has('PROBE_PROSE')).toBe(false);
+    const problems = violations(
+      { [NAME]: `${real(NAME)}\nexport const q7 = (v: string) => v.startsWith(PROBE_SSM_OPEN);\n` },
+      {
+        'src/zz-probe-tpl-a.ts': "export const PROBE_OPEN = '{{resolve:';",
+        'src/zz-probe-tpl-b.ts': "import { PROBE_OPEN } from './zz-probe-tpl-a.js';\nexport const PROBE_SSM_OPEN = `${PROBE_OPEN}ssm:`;",
+      }
+    );
+    expect(problems).toEqual([`hand test: ${NAME}#q7#v.startsWith(PROBE_SSM_OPEN)`]);
+  });
+
+  it("probe: another module's opener constant fails", () => {
+    const problems = violations(
+      { [NAME]: `${real(NAME)}\nexport const e4 = (v: string) => v.includes(PROBE_OPENING);\n` },
+      { 'src/zz-probe-open.ts': "export const PROBE_OPENING = '{{resolve:';" }
+    );
+    expect(problems).toEqual([`hand test: ${NAME}#e4#v.includes(PROBE_OPENING)`]);
+  });
+
+  it('probe: a prose constant naming a marker, and a ternary that may yield one, are no hand tests', () => {
+    const line =
+      "const NOTE = ' (scrub checks only values named through a {{resolve:...}} reference)';\n" +
+      'export const p1 = (v: string) => v + NOTE;\n' +
+      "export const p2 = (v: string, c: boolean) => { const s = c ? SECRET_MASK : v; return s === undefined || s === v; };";
+    expect(violations({ [NAME]: `${real(NAME)}\n${line}\n` })).toEqual([]);
   });
 
   it('probe: a comment, an unrelated string or an unrelated pattern is no hand test', () => {
@@ -806,6 +957,34 @@ describe('readers ask recorded-secrecy, never test a marker by hand (go-to-k/cdk
     const prefix = ['{{', 'resolve:secretsmanager:'].join('');
     const before = !token.startsWith(prefix) || !token.endsWith('}}') ? undefined : token.slice(prefix.length, -2);
     expect(dynamicReferenceBody(token, 'secretsmanager')).toBe(before);
+  });
+
+  const OPENER = ['{{', 'resolve:'].join('');
+  it.each([
+    '',
+    'plain',
+    '{{resolve:ssm:/a}}',
+    '{{resolve:ssm-secure:/a}}',
+    'x{{resolve:secretsmanager:s}}y{{resolve:ssm:/b}}',
+    '{{resolve:{{resolve:ssm:/c}}',
+    '{{resolve:ssm',
+  ])('the service-scoped opener predicates are the hand tests they replaced (%j)', (text) => {
+    for (const service of ['secretsmanager', 'ssm', 'ssm-secure']) {
+      const opening = `${OPENER}${service}:`;
+      expect(mentionsDynamicReferenceTo(text, service)).toBe(text.includes(opening));
+      expect(opensDynamicReferenceTo(text, service)).toBe(text.startsWith(opening));
+      // scrub's per-service count: `leaf.split(opening).length - 1`.
+      expect(countDynamicReferenceOpenings(text, service)).toBe(text.split(opening).length - 1);
+    }
+    // import's opener count: the indexOf loop.
+    let count = 0;
+    for (let from = 0; ; ) {
+      const at = text.indexOf(OPENER, from);
+      if (at === -1) break;
+      count++;
+      from = at + OPENER.length;
+    }
+    expect(countDynamicReferenceOpenings(text)).toBe(count);
   });
 
   it.each(['', '*', '**', '***', '****', '***a', ' ***', '*+*'])('isMaskRun(%j)', (text) => {

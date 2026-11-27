@@ -1,7 +1,7 @@
+import { holdsMaskLeaf } from '../../../deployment/secret-redaction/recorded-secrecy.js';
 import type { CdkdError } from '../../../utils/error-handler.js';
 import type { ExportIndexStore, ExportIndexEntry } from '../../../state/export-index-store.js';
 import { carriesDynamicReference } from '../../../deployment/intrinsic-function-resolver.js';
-import { carriesSecretMask } from '../../../deployment/secret-redaction.js';
 // An export NAME is a template-controlled RESOLVED value and an index read's
 // error message interpolates a bucket / key, so both reach the terminal only
 // through the same control-byte strip `export-index-store.ts` uses for the
@@ -92,7 +92,7 @@ export function planExportIndexRepair(
     // C): a `NoEcho`-served output scrub masked, which a deploy also publishes
     // to the index as `***` (`redactOutputs`), so an entry still holding the
     // value converges onto the mask.
-    if (!carriesDynamicReference(stateValue) && !carriesSecretMask(stateValue)) continue;
+    if (!carriesDynamicReference(stateValue) && !holdsMaskLeaf(stateValue)) continue;
     // `JSON.stringify` for the same reason `mapsEqual` uses it in the store:
     // an Output value is `unknown` and a list-valued `Fn::GetAtt` persists an
     // array, so `!==` alone reports every array as divergent.

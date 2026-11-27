@@ -1,8 +1,8 @@
+import { mentionsDynamicReference } from '../../../deployment/secret-redaction/recorded-secrecy.js';
 import { AccountIdUnavailableError } from '../../../utils/error-handler.js';
 import { getAccountInfo } from '../../../deployment/intrinsic-function-resolver.js';
 import { defineOwnKey } from '../../../utils/own-keys.js';
 import { canonicalizeRegion, derivePartitionAndUrlSuffix } from '../../../utils/aws-partition.js';
-import { DYNAMIC_REFERENCE_OPENER } from './discarded-subtree.js';
 
 /**
  * The pseudo-parameters {@link resolvePseudoParameterIntrinsics} resolves:
@@ -188,7 +188,7 @@ export async function resolvePseudoParameterIntrinsics(
         values.set('AWS::AccountId', accountId);
       }
       const resolved = evaluatePseudoParameterClosure(obj, values);
-      return resolved.includes(DYNAMIC_REFERENCE_OPENER) ? node : resolved;
+      return mentionsDynamicReference(resolved) ? node : resolved;
     }
     // An ordinary `{}` written through `defineOwnKey`: the bag goes to a
     // PROVIDER, and a template key named `__proto__` must stay a key.

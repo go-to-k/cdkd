@@ -1,3 +1,4 @@
+import { mentionsDynamicReference } from '../../../deployment/secret-redaction/recorded-secrecy.js';
 import { isDeepStrictEqual } from 'node:util';
 import {
   DescribeStacksCommand,
@@ -148,7 +149,7 @@ export function nestedChildStackTags(
     if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) continue;
     const { Key: key, Value: value } = entry as Record<string, unknown>;
     if (typeof key !== 'string') continue;
-    if (typeof value === 'string' && !value.includes('{{resolve:')) {
+    if (typeof value === 'string' && !mentionsDynamicReference(value)) {
       defineOwnKey(tags, key, value);
     } else {
       // The parent's value for the key is not this stack's any more either.
@@ -320,8 +321,6 @@ function collectNames(value: unknown, out: ReferencedNames): void {
   for (const child of Object.values(obj)) collectNames(child, out);
 }
 
-const DYNAMIC_REFERENCE_OPENER = '{{resolve:';
-
 /**
  * The first path (`A.B.0`) at which `synth` holds a string spelling a dynamic
  * reference while `deployed` holds anything but such a string, or `undefined`.
@@ -333,8 +332,8 @@ function dynamicReferenceDowngradePath(
   path: string
 ): string | undefined {
   if (typeof synth === 'string') {
-    if (!synth.includes(DYNAMIC_REFERENCE_OPENER)) return undefined;
-    return typeof deployed === 'string' && deployed.includes(DYNAMIC_REFERENCE_OPENER)
+    if (!mentionsDynamicReference(synth)) return undefined;
+    return typeof deployed === 'string' && mentionsDynamicReference(deployed)
       ? undefined
       : path || '(the whole bag)';
   }

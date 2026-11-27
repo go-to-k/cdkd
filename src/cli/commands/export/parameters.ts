@@ -1,3 +1,4 @@
+import { mentionsMask } from '../../../deployment/secret-redaction/recorded-secrecy.js';
 import { GetParameterCommand } from '@aws-sdk/client-ssm';
 import { displayIdent } from '../../../utils/display-safe.js';
 import { type Parameter } from '@aws-sdk/client-cloudformation';
@@ -10,7 +11,6 @@ import {
 } from '../../../deployment/intrinsic-function-resolver.js';
 import { AwsClients } from '../../../utils/aws-clients.js';
 import { type StackState } from '../../../types/state.js';
-import { SECRET_MASK } from '../../../deployment/secret-redaction.js';
 import { stateSecretNameNeedles } from '../../../deployment/secret-name-needles.js';
 import { type CdkdStateStackTree, quotedOrNotShown, recordValueOrNotShown } from './render.js';
 import { flattenCdkdStateTreeRootFirst } from './stack-tree.js';
@@ -302,7 +302,7 @@ export async function resolveChildImportParameters(
     // resolves to `***`, whole or embedded. It is REFUSED, never passed to
     // CloudFormation and never replaced by the child's `Default`: either
     // would declare a value the live child was not deployed with.
-    if (JSON.stringify(result ?? null).includes(SECRET_MASK)) {
+    if (mentionsMask(result ?? null)) {
       throw new CdkdError(
         `Cannot export the nested stack row ${quotedOrNotShown(childLogicalId)}: its parameter ` +
           `${quotedOrNotShown(key)} resolves from a value cdkd stores only as the redaction mask ` +

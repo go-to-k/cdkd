@@ -1,3 +1,4 @@
+import { holdsMaskLeaf } from '../../../deployment/secret-redaction/recorded-secrecy.js';
 import {
   cdkdRemedy,
   commandHole,
@@ -8,7 +9,6 @@ import {
 } from '../../../utils/pasteable-command.js';
 import { isPasteableIdent } from '../../../utils/display-safe.js';
 import { type EC2Client } from '@aws-sdk/client-ec2';
-import { carriesSecretMask } from '../../../deployment/secret-redaction.js';
 import { type SecurityGroupRuleLookup, recordedRuleIdIdentifier } from './sg-ingress-rule-id.js';
 import { RepairableRefusal } from './plan-types.js';
 import { quotedOrNotShown, showRecordValue } from './render.js';
@@ -307,7 +307,7 @@ export async function resolveIdentifierValue(
     // reaches here: `resolve` returns the physicalId and nothing masked is
     // shipped. Tested only when NO backfill ran — a live read that answered
     // has already replaced the state-only question.
-    if (carriesSecretMask(ctx.attributes[entry.field])) {
+    if (holdsMaskLeaf(ctx.attributes[entry.field])) {
       throw new RepairableRefusal(
         maskedIdentifierAttributeReason(entry.field, ctx.logicalId),
         importRepairCommand(ctx.logicalId)

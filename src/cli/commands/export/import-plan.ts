@@ -1,3 +1,7 @@
+import {
+  holdsMaskLeaf,
+  mentionsMask,
+} from '../../../deployment/secret-redaction/recorded-secrecy.js';
 import { commandHole, cdkdRemedy, pasteableCommand } from '../../../utils/pasteable-command.js';
 import { displayAwsMessage, isPasteableIdent } from '../../../utils/display-safe.js';
 import { type EC2Client } from '@aws-sdk/client-ec2';
@@ -5,11 +9,7 @@ import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { AwsClients } from '../../../utils/aws-clients.js';
 import { NESTED_STACK_RESOURCE_TYPE } from '../retire-cfn-stack.js';
 import { type ResourceState, type StackState } from '../../../types/state.js';
-import {
-  carriesSecretMask,
-  noEchoLeavesOf,
-  SECRET_MASK,
-} from '../../../deployment/secret-redaction.js';
+import { noEchoLeavesOf } from '../../../deployment/secret-redaction.js';
 import {
   type BlockedResource,
   IMPORT_UNSUPPORTED_RECREATABLE_TYPES,
@@ -222,8 +222,8 @@ export async function buildImportPlan(
     const masksOnlyAtNoEchoLeaves =
       noEchoLeaves !== undefined &&
       noEchoLeaves.length > 0 &&
-      carriesSecretMask(stateEntry.properties) &&
-      !carriesSecretMask(withoutCoordinates(stateEntry.properties, noEchoLeaves));
+      holdsMaskLeaf(stateEntry.properties) &&
+      !holdsMaskLeaf(withoutCoordinates(stateEntry.properties, noEchoLeaves));
     const noEchoReadByPreDelete =
       masksOnlyAtNoEchoLeaves &&
       IMPORT_UNSUPPORTED_RECREATABLE_TYPES.has(resourceType) &&
@@ -243,7 +243,7 @@ export async function buildImportPlan(
       });
       continue;
     }
-    if (!masksOnlyAtNoEchoLeaves && carriesSecretMask(stateEntry.properties)) {
+    if (!masksOnlyAtNoEchoLeaves && holdsMaskLeaf(stateEntry.properties)) {
       blocked.push({
         logicalId,
         resourceType,
@@ -512,9 +512,8 @@ export async function buildImportPlan(
     // embedded through `Fn::Sub` reaches an identifier the same way. A whole
     // `***` leaf takes the general reason below.
     if (
-      (JSON.stringify(resolved.resourceIdentifier).includes(SECRET_MASK) ||
-        JSON.stringify(propertiesOverlay).includes(SECRET_MASK)) &&
-      !(carriesSecretMask(resolved.resourceIdentifier) || carriesSecretMask(propertiesOverlay))
+      (mentionsMask(resolved.resourceIdentifier) || mentionsMask(propertiesOverlay)) &&
+      !(holdsMaskLeaf(resolved.resourceIdentifier) || holdsMaskLeaf(propertiesOverlay))
     ) {
       blocked.push({
         logicalId,
@@ -526,7 +525,7 @@ export async function buildImportPlan(
       });
       continue;
     }
-    if (carriesSecretMask(resolved.resourceIdentifier) || carriesSecretMask(propertiesOverlay)) {
+    if (holdsMaskLeaf(resolved.resourceIdentifier) || holdsMaskLeaf(propertiesOverlay)) {
       blocked.push({
         logicalId,
         resourceType,
