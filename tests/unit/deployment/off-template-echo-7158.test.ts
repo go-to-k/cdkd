@@ -288,6 +288,19 @@ describe('a secret echoed under a key the template lacks (go-to-k/cdkd#7158, #71
     expect(record.observedMaskedLeaves).toEqual([['Extra']]);
   });
 
+  it('learns an EMBEDDED reference plaintext from between the template literal prefix and suffix', () => {
+    const out = withOffTemplateEchoesMasked<OffTemplateEchoRecord>(
+      {
+        physicalId: 'p',
+        properties: { Conn: 'host=db;pw={{resolve:secretsmanager:conn}};' },
+        observedProperties: { Conn: 'host=db;pw={{resolve:secretsmanager:conn}};', Extra: 'emb3dded-7152' },
+      },
+      { readback: { Conn: 'host=db;pw=emb3dded-7152;', Extra: 'emb3dded-7152' } }
+    );
+    expect(out.observedProperties?.['Extra']).toBe('***');
+    expect(out.observedMaskedLeaves).toEqual([['Extra']]);
+  });
+
   describe('over-mask controls: never learned as a needle', () => {
     const run = (
       properties: Record<string, unknown>,

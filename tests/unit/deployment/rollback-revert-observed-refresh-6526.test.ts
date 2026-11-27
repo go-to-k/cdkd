@@ -359,6 +359,23 @@ describe('withRefreshedObservedBaseline (go-to-k/cdkd#6526)', () => {
     expect(out.observedProperties).toEqual({ L: ['b', '***'] });
   });
 
+  it('masks and names a secret reference plaintext the readback echoes under a key the template lacks (go-to-k/cdkd#7152)', async () => {
+    // A reference inside a list no identity field pairs: the scrub cannot
+    // learn the pair, so only the raw readback teaches the value.
+    const restored = res(
+      { Users: [{ Password: '{{resolve:ssm-secure:/p7152}}' }] },
+      { Users: [{ Password: '{{resolve:ssm-secure:/p7152}}' }] }
+    );
+    const live = { Users: [{ Password: 'pw-rollback-7152' }], Login: 'user:pw-rollback-7152' };
+    const out = await withRefreshedObservedBaseline(
+      restored,
+      args(restored, vi.fn().mockResolvedValue(live))
+    );
+    expect(JSON.stringify(out)).not.toContain('pw-rollback-7152');
+    expect(out.observedProperties?.['Login']).toBe('***');
+    expect(out.observedMaskedLeaves).toEqual([['Login']]);
+  });
+
   it('never aliases the object the provider returned', async () => {
     const live = { ...RESTORED_LIVE };
     const restored = res(V1, V1_OBSERVED);
