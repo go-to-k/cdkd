@@ -83,7 +83,12 @@ export function maskLegacyTaintedRowOutputs(
         plainOutputs.map((key) => key.slice(OUTPUT_PREFIX.length))
       );
     }
-    const derived = derivedOutputsOf(child, mixedKeys, 0);
+    const derived = derivedOutputsOf(
+      child,
+      mixedKeys,
+      plainParameterValues(recordOf(record?.properties)['Parameters']),
+      0
+    );
     if (derived !== ALL_OUTPUTS && derived.size === 0) continue;
     for (const key of plainOutputs) {
       const name = key.slice(OUTPUT_PREFIX.length);
@@ -138,6 +143,7 @@ const MAX_DEPTH = 32;
 function derivedOutputsOf(
   entry: NestedTemplate,
   tainted: ReadonlySet<string>,
+  passedValues: Readonly<Record<string, string>>,
   depth: number
 ): DerivedOutputs {
   if (depth > MAX_DEPTH) return ALL_OUTPUTS;
@@ -149,6 +155,9 @@ function derivedOutputsOf(
   const sources: NoEchoPositionSources = {
     parameters: tainted,
     attributeIsNoEcho: (id, attribute) => attributeIsDerived(id, attribute),
+    // Review: an `Fn::If` whose condition the passed values decide reads only
+    // the branch it selects, as the value a current record holds does.
+    conditions: knownConditions(template, passedValues),
   };
   const rowDerived = (id: string): DerivedOutputs => {
     const known = rowMemo.get(id);
@@ -163,7 +172,9 @@ function derivedOutputsOf(
     if (passed.size > 0) {
       const grandchild = entry.childTemplate(id);
       result =
-        grandchild === undefined ? ALL_OUTPUTS : derivedOutputsOf(grandchild, passed, depth + 1);
+        grandchild === undefined
+          ? ALL_OUTPUTS
+          : derivedOutputsOf(grandchild, passed, plainParameterValues(parameters), depth + 1);
     }
     rowMemo.set(id, result);
     return result;
@@ -184,7 +195,9 @@ function derivedOutputsOf(
     const known = memo.get(property);
     if (known !== undefined) return known;
     memo.set(property, false); // a cycle reads nothing more
-    const reads = readsNoEchoSource(properties[property], sources);
+    const reads =
+      composesSecretReference(properties[property]) ||
+      readsNoEchoSource(properties[property], sources);
     memo.set(property, reads);
     return reads;
   };
@@ -193,6 +206,81 @@ function derivedOutputsOf(
     if (readsNoEchoSource(recordOf(output)['Value'], sources)) derived.add(name);
   }
   return derived;
+}
+
+/**
+ * The parameter values a row passes that are plain text: a recorded value, or
+ * a template literal, holding no dynamic reference and no mask. Only these may
+ * decide a condition.
+ */
+function plainParameterValues(parameters: unknown): Record<string, string> {
+  const values = Object.create(null) as Record<string, string>;
+  for (const [key, value] of Object.entries(recordOf(parameters))) {
+    if (typeof value !== 'string' || value.includes('{{resolve:') || carriesSecretMask(value)) {
+      continue;
+    }
+    values[key] = value;
+  }
+  return values;
+}
+
+/**
+ * The verdicts of the template's conditions that plain values decide:
+ * `Fn::Equals` / `Fn::And` / `Fn::Or` / `Fn::Not` / `Condition` over literals
+ * and `Ref`s of parameters passed plain (or left at a string `Default`). A
+ * condition reading anything else is left out, so its `Fn::If` reads both
+ * branches (masking, never leaking).
+ */
+function knownConditions(
+  template: CloudFormationTemplate,
+  passedValues: Readonly<Record<string, string>>
+): Record<string, boolean> {
+  const declared = recordOf(template.Conditions);
+  const parameters = recordOf(template.Parameters);
+  const verdicts = Object.create(null) as Record<string, boolean>;
+  const visiting = new Set<string>();
+  const valueOf = (node: unknown): string | undefined => {
+    if (typeof node === 'string') return node;
+    const ref = recordOf(node)['Ref'];
+    if (typeof ref !== 'string' || Object.keys(recordOf(node)).length !== 1) return undefined;
+    if (Object.hasOwn(passedValues, ref)) return passedValues[ref];
+    if (!Object.hasOwn(parameters, ref)) return undefined;
+    const fallback = recordOf(parameters[ref])['Default'];
+    return typeof fallback === 'string' ? fallback : undefined;
+  };
+  const evaluate = (node: unknown): boolean | undefined => {
+    const record = recordOf(node);
+    if (Object.keys(record).length !== 1) return undefined;
+    const [key, argument] = Object.entries(record)[0]!;
+    const list = Array.isArray(argument) ? (argument as unknown[]) : undefined;
+    if (key === 'Condition')
+      return typeof argument === 'string' ? conditionOf(argument) : undefined;
+    if (key === 'Fn::Equals' && list?.length === 2) {
+      const [left, right] = [valueOf(list[0]), valueOf(list[1])];
+      return left === undefined || right === undefined ? undefined : left === right;
+    }
+    if (key === 'Fn::Not' && list?.length === 1) {
+      const inner = evaluate(list[0]);
+      return inner === undefined ? undefined : !inner;
+    }
+    if ((key === 'Fn::And' || key === 'Fn::Or') && list !== undefined && list.length > 0) {
+      const each = list.map(evaluate);
+      if (each.some((verdict) => verdict === undefined)) return undefined;
+      return key === 'Fn::And' ? each.every(Boolean) : each.some(Boolean);
+    }
+    return undefined;
+  };
+  const conditionOf = (name: string): boolean | undefined => {
+    if (Object.hasOwn(verdicts, name)) return verdicts[name];
+    if (!Object.hasOwn(declared, name) || visiting.has(name)) return undefined;
+    visiting.add(name);
+    const verdict = evaluate(declared[name]);
+    visiting.delete(name);
+    if (verdict !== undefined) verdicts[name] = verdict;
+    return verdict;
+  };
+  for (const name of Object.keys(declared)) conditionOf(name);
+  return verdicts;
 }
 
 /** Does a template value compose a SECRET-spelled dynamic reference with other text? */

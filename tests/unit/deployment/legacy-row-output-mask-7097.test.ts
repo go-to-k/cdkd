@@ -300,6 +300,60 @@ describe('a secret composed one level down: the row record holds no secret param
   });
 });
 
+describe('conditions and resource properties decide as a current record would (review round 4)', () => {
+  function run(child: unknown, recorded: Record<string, unknown>, attributes: Record<string, string>, name: string) {
+    const path = join(dir, `${name}.json`);
+    writeFileSync(path, JSON.stringify(child));
+    const state = legacyState();
+    state.resources['Row']!.properties!['Parameters'] = recorded;
+    state.resources['Row']!.attributes = attributes;
+    maskLegacyTaintedRowOutputs(state, parentTemplate(), STACK, childTemplateLoader({ Row: path }));
+    return state.resources['Row']!.attributes;
+  }
+  const IF_CHILD = {
+    Parameters: { X: { Type: 'String' }, Mode: { Type: 'String', Default: 'on' } },
+    Conditions: { On: { 'Fn::Equals': [{ Ref: 'Mode' }, 'on'] }, Off: { 'Fn::Not': [{ Condition: 'On' }] } },
+    Outputs: {
+      O: { Value: { 'Fn::If': ['On', { Ref: 'X' }, 'plain'] } },
+      N: { Value: { 'Fn::If': ['Off', { Ref: 'X' }, 'plain'] } },
+    },
+  };
+
+  it('an Fn::If the recorded plain parameters decide reads only its selected branch', () => {
+    expect(run(IF_CHILD, { X: `${PIN}/${A}`, Mode: 'off' }, { 'Outputs.O': 'plain', 'Outputs.N': PIN }, 'if-off')).toEqual(
+      { 'Outputs.O': 'plain', 'Outputs.N': '***' }
+    );
+    expect(run(IF_CHILD, { X: `${PIN}/${A}`, Mode: 'on' }, { 'Outputs.O': PIN, 'Outputs.N': 'plain' }, 'if-on')).toEqual({
+      'Outputs.O': '***',
+      'Outputs.N': 'plain',
+    });
+    // Not passed: the template Default decides.
+    expect(run(IF_CHILD, { X: `${PIN}/${A}` }, { 'Outputs.O': PIN, 'Outputs.N': 'plain' }, 'if-default')).toEqual({
+      'Outputs.O': '***',
+      'Outputs.N': 'plain',
+    });
+  });
+
+  it('an Fn::If no plain value decides reads both branches (masking)', () => {
+    expect(run(IF_CHILD, { X: `${PIN}/${A}`, Mode: `${PIN}/${A}` }, { 'Outputs.O': 'plain' }, 'if-unknown')).toEqual({
+      'Outputs.O': '***',
+    });
+  });
+
+  it('a child resource property composing a secret reference masks the attribute echoing it', () => {
+    const child = {
+      Resources: {
+        P: { Type: 'AWS::SSM::Parameter', Properties: { Type: 'String', Value: 'a-{{resolve:secretsmanager:s}}' } },
+      },
+      Outputs: { V: { Value: { 'Fn::GetAtt': ['P', 'Value'] } }, R: { Value: { Ref: 'P' } } },
+    };
+    expect(run(child, { X: 'plain' }, { 'Outputs.V': `a-${PIN}`, 'Outputs.R': 'p-name' }, 'prop-secret')).toEqual({
+      'Outputs.V': '***',
+      'Outputs.R': 'p-name',
+    });
+  });
+});
+
 describe('a deploy over a legacy mixed-fed row record persists no plaintext (#7097)', () => {
   let saveState: ReturnType<typeof vi.fn>;
   let indexWrites: ReturnType<typeof vi.fn>;
