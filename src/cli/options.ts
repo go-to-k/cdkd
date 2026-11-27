@@ -37,6 +37,7 @@ export {
   recreateViaSdkProviderOption,
   parseReplaceResourceToken,
   replaceResourceOption,
+  diffReplaceResourceOption,
 } from './options/provisioning-route.js';
 export {
   parseAssumeRoleToken,

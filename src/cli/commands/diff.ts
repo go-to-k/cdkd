@@ -13,6 +13,7 @@ import {
   useCdkBootstrapAssetsOption,
   noCfnFallbackOption,
   diffUpdatePolicyOptions,
+  diffReplaceResourceOption,
 } from '../options.js';
 import { resolveStackTagsOverride, stackTagsOption } from '../options/stack-tags.js';
 import { getLogger } from '../../utils/logger.js';
@@ -85,6 +86,10 @@ import {
   type DiffTreeNode,
 } from './diff-recursive.js';
 import { formatDestructiveChange } from '../../analyzer/destructive-changes.js';
+import {
+  checkReplaceResourceOptions,
+  replaceResourcesForStack,
+} from './deploy/replace-resource-checks.js';
 import { producerLookupOver } from '../../deployment/intrinsic-resolver/cdk-cross-account-ref.js';
 
 /** This node and every descendant, DFS order. */
@@ -238,6 +243,8 @@ async function diffCommand(
     useCdkBootstrapAssets?: boolean;
     cfnFallback?: boolean;
     updatePolicy?: boolean;
+    /** `--replace-resource <logicalId>` (go-to-k/cdkd#7089). */
+    replaceResource?: string[];
   }
 ): Promise<void> {
   // Awaited first, so provider construction below stays synchronous once the
@@ -384,6 +391,9 @@ async function diffCommand(
     // expand now for exactly the stacks being diffed, mutating each
     // template in place before the diff calculator consumes it.
     await synthesizer.expandMacrosForStacks(targetStacks, synthOptions);
+    // go-to-k/cdkd#7089: the deploy's run-level `--replace-resource` checks,
+    // over the same expanded templates, so a target the deploy refuses is refused here.
+    checkReplaceResourceOptions(options, targetStacks);
 
     // 3. Initialize components
     const stateConfig = {
@@ -609,6 +619,11 @@ async function diffCommand(
         );
       }
       const stackTags = stackTagsOverride ?? stackInfo.tags;
+      const replaceResources = replaceResourcesForStack(
+        options.replaceResource,
+        stackInfo.stackName,
+        stackInfo.template
+      );
       trees.push(
         await buildDiffTree({
           stackName: stackInfo.stackName,
@@ -642,6 +657,8 @@ async function diffCommand(
           // go-to-k/cdkd#6437: preview the replacement `cdkd deploy --update-policy`
           // makes, with the deploy's precedence (CLI > cdk.json).
           ...(resolveUpdatePolicy(options.updatePolicy) === true && { updatePolicy: true }),
+          // go-to-k/cdkd#7089: the replacement `cdkd deploy --replace-resource` plans.
+          ...(replaceResources && { replaceResources: replaceResources.logicalIds }),
           // Consulted lazily, by a `Fn::GetStackOutput` carrying a `RoleArn` only.
           producerLookup,
           crossStackPreview,
@@ -844,6 +861,7 @@ export function createDiffCommand(): Command {
     .addOption(noCfnFallbackOption)
     .addOption(diffUpdatePolicyOptions[0]!)
     .addOption(diffUpdatePolicyOptions[1]!)
+    .addOption(diffReplaceResourceOption)
     .action(withErrorHandling(diffCommand));
 
   // Add options

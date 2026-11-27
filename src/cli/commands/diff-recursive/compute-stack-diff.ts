@@ -83,6 +83,7 @@ import { stackIdTailOf } from '../../../state/stack-id-tail.js';
 import { previewNoEchoMacChanges } from './noecho-macs.js';
 import { markProducerTaint, recordProducerPreview } from '../../../analyzer/cross-stack-preview.js';
 import { producerReadsSecretFedName } from './cross-stack-taint.js';
+import { previewReplaceResourceTargets } from './replace-resource-preview.js';
 
 /**
  * Compute the per-resource diff for one stack: `currentState` (cdkd state)
@@ -511,7 +512,9 @@ export async function computeStackDiff(
     undefined,
     // `--verbose`'s replacement line prints resolved values (go-to-k/cdkd#4049).
     maskForLog,
-    undefined,
+    // go-to-k/cdkd#7089: the readers of a `--replace-resource` target are
+    // promoted as a planned replacement's, as the deploy's diff seeds them.
+    options.replaceResources,
     maskedInputs,
     options.refusalRecovery,
     // go-to-k/cdkd#4043: compare what the deploy persists for a value a
@@ -544,7 +547,6 @@ export async function computeStackDiff(
     // go-to-k/cdkd#6437: the deploy's diff takes the same flag.
     options.updatePolicy === true
   );
-  warnLegacySpelling(changes, effectiveTemplate, stackName, logger); // go-to-k/cdkd#7037
   // go-to-k/cdkd#6871: the rows the deploy updates for their child's tags.
   const childStackTags = await settleStackTagChildRuns({
     changes,
@@ -554,6 +556,21 @@ export async function computeStackDiff(
     resolve: resolveFn,
     secrets: diffSecrets,
   });
+  // go-to-k/cdkd#7089: the deploy's `--replace-resource` plan, at the point
+  // of the deploy's flow it runs (after its diff, first of its plan checks).
+  blocking = [
+    ...blocking,
+    ...(await previewReplaceResourceTargets({
+      changes,
+      targetIds: options.replaceResources,
+      stackName,
+      state: stateForDiff,
+      template: effectiveTemplate,
+      conditions: namingConditions ?? {},
+      warn: (message) => logger.warn(printing.mask(message)),
+    })),
+  ];
+  warnLegacySpelling(changes, effectiveTemplate, stackName, logger); // go-to-k/cdkd#7037
   // go-to-k/cdkd#6146: a property whose recorded NoEcho value MACs prove the
   // value moved is a change, as the deploy sends it. No KMS call unless a
   // record carries MACs; none in a nested child.

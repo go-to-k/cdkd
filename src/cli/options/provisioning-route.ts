@@ -344,3 +344,15 @@ export const replaceResourceOption = new Option(
     'Applies only to a resource this deploy updates. Stateful resource types refuse ' +
     'unless --force-stateful-recreation is ALSO passed.'
 ).argParser(cliArgParser(parseReplaceResourceToken));
+
+/**
+ * go-to-k/cdkd#7089: `cdkd diff --replace-resource <logicalId>`, the preview of
+ * `cdkd deploy --replace-resource`: the same parser, the same plan.
+ */
+export const diffReplaceResourceOption = new Option(
+  '--replace-resource <logicalId>',
+  'Preview cdkd deploy --replace-resource: show the named resource (by ' +
+    "CloudFormation logical id) as the replacement that deploy plans, its readers " +
+    'updated or replaced, and the refusals it makes. Repeatable — pass the flag once ' +
+    'per resource.'
+).argParser(cliArgParser(parseReplaceResourceToken));
