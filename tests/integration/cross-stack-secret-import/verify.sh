@@ -427,8 +427,7 @@ sweep() {
         --region "${REGION}" --yes >/dev/null 2>&1
       CDKD_TEST_7097=1 node "${LOCAL_DIST}" state destroy "${P7097}" --state-bucket "${BUCKET_7097}" \
         --region "${REGION}" --yes >/dev/null 2>&1
-      s3_purge_prefix_versions "${BUCKET_7097}" "cdkd/" all || true
-      aws s3api delete-bucket --bucket "${BUCKET_7097}" --region "${REGION}" >/dev/null 2>&1
+      delete_bucket_7097 "${BUCKET_7097}" >/dev/null 2>&1 || true
     fi
     aws ssm delete-parameter --name "${READER_7097_PARAM:-}" --region "${REGION}" >/dev/null 2>&1
     aws ssm delete-parameter --name "${PIN_7097_PARAM:-}" --region "${REGION}" >/dev/null 2>&1
@@ -2607,6 +2606,21 @@ pass "11f: the steady-state consumer deploy left PromoImportReader alone"
 echo ""
 echo "==> Step 11g (go-to-k/cdkd#7097): a legacy mixed-fed nested row's output persists no plaintext"
 ACCOUNT_7097=$(aws sts get-caller-identity --query Account --output text)
+# The step's own bucket, deleted WHOLE: every object version and delete
+# marker, then the bucket. `s3_purge_prefix_versions` refuses a bare `cdkd/`
+# prefix (it sweeps one stack and region at a time) and exits rather than
+# returning, so an `|| true` after it does not keep the teardown going.
+delete_bucket_7097() { # delete_bucket_7097 <bucket> -- nonzero when the bucket survives
+  local bucket="$1" key vid
+  [ -n "${bucket}" ] || return 0
+  while IFS=$'\t' read -r key vid; do
+    [ -n "${key}" ] && [ "${key}" != "None" ] && [ -n "${vid}" ] || continue
+    AWS_PAGER="" aws s3api delete-object --bucket "${bucket}" --key "${key}" --version-id "${vid}" \
+      --region "${REGION}" >/dev/null 2>&1 </dev/null || true
+  done < <(AWS_PAGER="" aws s3api list-object-versions --bucket "${bucket}" --region "${REGION}" \
+    --query '[Versions, DeleteMarkers][] | [].[Key, VersionId]' --output text 2>/dev/null </dev/null || true)
+  AWS_PAGER="" aws s3api delete-bucket --bucket "${bucket}" --region "${REGION}" </dev/null
+}
 BUCKET_7097="cdkd-integ-7097-${ACCOUNT_7097}-$(printf '%s' "${RUN_ID}" | tr -cd 'a-z0-9' | tail -c 20)"
 if [ "${REGION}" = "us-east-1" ]; then
   aws s3api create-bucket --bucket "${BUCKET_7097}" --region "${REGION}" >/dev/null
@@ -2730,8 +2744,8 @@ CDKD_TEST_7097=1 node "${LOCAL_DIST}" destroy "${C7097}" --state-bucket "${BUCKE
   --region "${REGION}" --force
 CDKD_TEST_7097=1 node "${LOCAL_DIST}" destroy "${P7097}" --state-bucket "${BUCKET_7097}" \
   --region "${REGION}" --force
-s3_purge_prefix_versions "${BUCKET_7097}" "cdkd/" all || true
-aws s3api delete-bucket --bucket "${BUCKET_7097}" --region "${REGION}"
+delete_bucket_7097 "${BUCKET_7097}" \
+  || fail "#7097: teardown: the step's state bucket ${BUCKET_7097} could not be deleted"
 BUCKET_7097=""
 aws ssm delete-parameter --name "${PIN_7097_PARAM}" --region "${REGION}" >/dev/null 2>&1 || true
 aws ssm delete-parameter --name "${LONG_7097_PARAM}" --region "${REGION}" >/dev/null 2>&1 || true
