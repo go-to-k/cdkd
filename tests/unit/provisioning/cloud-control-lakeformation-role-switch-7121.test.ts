@@ -56,11 +56,26 @@ interface Sent {
 }
 
 /**
- * Serve Cloud Control: GetResource returns a registration on `liveRole`;
- * each create request's outcome is taken in turn from `creates`.
+ * Serve Cloud Control over one registration: GetResource reads it (NotFound
+ * when `liveRole` is 'gone' or after a delete), DeleteResource removes it, and
+ * each CreateResource takes its outcome in turn from `creates`; a successful
+ * one registers the role its desired state names.
  */
-function serve(liveRole: string, creates: Array<'SUCCESS' | 'FAILED'> = ['SUCCESS']): Sent[] {
+function serve(
+  liveRole: string | 'gone',
+  creates: Array<'SUCCESS' | 'FAILED'> = ['SUCCESS'],
+  createMessage = 'cdkd-probe-missing is not found. (Service: LakeFormation, Status Code: 400)'
+): Sent[] {
   const sent: Sent[] = [];
+  const model = (role: string): Record<string, unknown> => ({
+    ResourceArn: ARN,
+    Id: ARN,
+    RoleArn: role,
+    WithFederation: false,
+    HybridAccessEnabled: true,
+  });
+  let registered: Record<string, unknown> | undefined =
+    liveRole === 'gone' ? undefined : model(liveRole);
   const statusByToken = new Map<string, { status: string; model?: string; message?: string }>();
   let createIndex = 0;
   mockCcSend.mockImplementation(
@@ -68,34 +83,45 @@ function serve(liveRole: string, creates: Array<'SUCCESS' | 'FAILED'> = ['SUCCES
       const name = command.constructor.name;
       if (name !== 'GetResourceRequestStatusCommand') sent.push({ name, input: command.input });
       switch (name) {
-        case 'GetResourceCommand':
-          return {
-            ResourceDescription: {
-              Properties: JSON.stringify({
-                ResourceArn: ARN,
-                Id: ARN,
-                RoleArn: liveRole,
-                WithFederation: false,
-                HybridAccessEnabled: true,
-              }),
-            },
-          };
+        case 'GetResourceCommand': {
+          if (registered === undefined) {
+            const err = new Error('not found');
+            err.name = 'ResourceNotFoundException';
+            throw err;
+          }
+          return { ResourceDescription: { Properties: JSON.stringify(registered) } };
+        }
         case 'DeleteResourceCommand':
+          registered = undefined;
           statusByToken.set('del', { status: 'SUCCESS' });
           return { ProgressEvent: { RequestToken: 'del', OperationStatus: 'IN_PROGRESS' } };
         case 'CreateResourceCommand': {
           const token = `create-${createIndex}`;
           const outcome = creates[createIndex++] ?? 'SUCCESS';
+          const desired = JSON.parse(String(command.input['DesiredState'])) as Record<
+            string,
+            unknown
+          >;
+          if (outcome === 'SUCCESS') {
+            registered = model(typeof desired['RoleArn'] === 'string' ? desired['RoleArn'] : SLR);
+          }
           statusByToken.set(token, {
             status: outcome,
-            model: String(command.input['DesiredState']),
-            message: 'cdkd-probe-missing is not found. (Service: LakeFormation, Status Code: 400)',
+            model: JSON.stringify(registered),
+            message: createMessage,
           });
           return { ProgressEvent: { RequestToken: token, OperationStatus: 'IN_PROGRESS' } };
         }
-        case 'UpdateResourceCommand':
+        case 'UpdateResourceCommand': {
+          const patch = JSON.parse(String(command.input['PatchDocument'])) as Array<{
+            path: string;
+            value?: unknown;
+          }>;
+          const role = patch.find((op) => op.path === '/RoleArn')?.value;
+          registered = model(typeof role === 'string' ? role : SLR);
           statusByToken.set('upd', { status: 'SUCCESS' });
           return { ProgressEvent: { RequestToken: 'upd', OperationStatus: 'IN_PROGRESS' } };
+        }
         case 'GetResourceRequestStatusCommand': {
           const s = statusByToken.get(String(command.input['RequestToken']));
           return {
@@ -211,6 +237,47 @@ describe('a Lake Formation location moving off the service-linked role (go-to-k/
       );
     expect(err?.message).toContain('The location is not registered with Lake Formation now');
     expect(isMarkedNonRetryable(err)).toBe(true);
+  });
+
+  it('records the attributes the ordinary update path records (the shared tail runs)', async () => {
+    serve(SLR);
+    const switched = await provider().update('Lf', ARN, T, own, slr);
+    serve(OWN);
+    const ordinary = await provider().update('Lf', ARN, T, { ...own, RoleArn: `${OWN}-2` }, own);
+    expect(Object.keys(switched.attributes ?? {}).sort()).toEqual(
+      Object.keys(ordinary.attributes ?? {}).sort()
+    );
+    expect(switched.attributes?.['RoleArn']).toEqual(ordinary.attributes?.['RoleArn']);
+  });
+
+  it('registers a location a previous switch left deregistered (NotFound), instead of failing', async () => {
+    const sent = serve('gone');
+    await provider().update('Lf', ARN, T, own, slr);
+    const names = sent.map((s) => s.name);
+    expect(names).not.toContain('DeleteResourceCommand');
+    expect(names).not.toContain('UpdateResourceCommand');
+    const creates = sent.filter((s) => s.name === 'CreateResourceCommand');
+    expect(creates).toHaveLength(1);
+    expect(JSON.parse(String(creates[0]!.input['DesiredState']))).toEqual(own);
+    expect(mockWarn.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+      'was interrupted after its deregister'
+    );
+  });
+
+  it('masks the caller identity in the double-failure message', async () => {
+    serve(
+      SLR,
+      ['FAILED', 'FAILED'],
+      'User: arn:aws:sts::123456789012:assumed-role/Deployer/session-1 is not authorized to perform: lakeformation:RegisterResource'
+    );
+    const err = await provider()
+      .update('Lf', ARN, T, own, slr)
+      .then(
+        () => null,
+        (e: unknown) => e as Error
+      );
+    expect(err?.message).toContain('registering it back with the service-linked role failed too');
+    expect(err?.message).not.toContain('assumed-role/Deployer');
   });
 });
 

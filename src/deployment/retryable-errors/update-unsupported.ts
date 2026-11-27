@@ -129,7 +129,7 @@ export function isUpdateUnsupportedError(error: unknown, logicalId: string): boo
     // NO operation anchor on this arm, unlike the `ccErrorCode` one below, and
     // that asymmetry is deliberate rather than an oversight. AUDITED
     // 2026-09-05 for what a non-UPDATE Cloud Control call could put here.
-    // THREE Cloud Control calls are reachable from
+    // THREE Cloud Control calls (five for one type, below) are reachable from
     // `CloudControlProvider.update()`, derived by grepping every
     // `new *ResourceCommand(` in that file and resolving each to its enclosing
     // method rather than from memory (an earlier revision of this comment
@@ -145,6 +145,11 @@ export function isUpdateUnsupportedError(error: unknown, logicalId: string): boo
     //     `mergeSparseModelReadback` and from six sites inside
     //     `enrichResourceAttributes`. It NEVER throws: its own body is one
     //     try/catch that logs at debug and returns `undefined`.
+    //
+    //   - `DeleteResource` / `CreateResource` / `GetResource` — only for an
+    //     `AWS::LakeFormation::Resource` moving off the service-linked role
+    //     (`lakeformation-role-switch.ts`, go-to-k/cdkd#7121). That type has
+    //     create and delete handlers, so neither raises this exception there.
     //
     // The remaining `GetResource` sites in that file (`getResourceState`,
     // `readCurrentState`, `import`) are entry points for drift / import and

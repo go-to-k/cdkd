@@ -206,29 +206,6 @@ export async function updateInIdLogScope(
     // CodeDeploy wrote the alias, so an empty patch did send something.
     const sentNothing = shifted ? {} : { sentNothing: true as const };
 
-    // go-to-k/cdkd#7121: a Lake Formation location moving off the
-    // service-linked role is re-registered (deregister + register), as
-    // CloudFormation does; Cloud Control's update refuses it. See the helper.
-    const reRegistered = await switchLakeFormationOffServiceLinkedRole(this, {
-      logicalId,
-      physicalId,
-      resourceType,
-      properties: cleanProperties,
-      previousProperties: cleanPreviousProperties,
-      log: idLog,
-    });
-    if (reRegistered !== undefined) {
-      const attributes = await this.mergeSparseModelReadback(
-        resourceType,
-        physicalId,
-        reRegistered.ResourceModel
-          ? this.parseResourceModel(reRegistered.ResourceModel, idLog)
-          : {},
-        idLog
-      );
-      return { physicalId, wasReplaced: false, attributes };
-    }
-
     // Generate JSON Patch document
     let patch = this.patchGenerator.generatePatch(cleanPreviousProperties, cleanProperties);
 
@@ -486,7 +463,22 @@ export async function updateInIdLogScope(
     // A reimport that left Cloud Control nothing to apply skips it; the
     // attribute read-back below still runs.
     let progressEvent: ProgressEvent | undefined;
-    if (!(reimported && patch.length === 0)) {
+    // go-to-k/cdkd#7121: a Lake Formation location moving off the
+    // service-linked role is re-registered (deregister + register), as
+    // CloudFormation does; Cloud Control's update refuses it. See the helper.
+    // Its create's event takes the update's place, so the attribute tail
+    // below (read-back, #7099 check, enrichment, masking) runs as usual.
+    const reRegistered = await switchLakeFormationOffServiceLinkedRole(this, {
+      logicalId,
+      physicalId,
+      resourceType,
+      properties: cleanProperties,
+      previousProperties: cleanPreviousProperties,
+      log: idLog,
+    });
+    if (reRegistered !== undefined) {
+      progressEvent = reRegistered;
+    } else if (!(reimported && patch.length === 0)) {
       // Start resource update
       const updateResponse = await this.cloudControlClient.send(
         new UpdateResourceCommand({

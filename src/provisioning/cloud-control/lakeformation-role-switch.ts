@@ -1,4 +1,8 @@
-import { CreateResourceCommand, DeleteResourceCommand } from '@aws-sdk/client-cloudcontrol';
+import {
+  CreateResourceCommand,
+  DeleteResourceCommand,
+  GetResourceCommand,
+} from '@aws-sdk/client-cloudcontrol';
 import type { ProgressEvent } from '@aws-sdk/client-cloudcontrol';
 import type { CloudControlProvider } from '../cloud-control-provider.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -6,6 +10,7 @@ import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { displaySafe } from '../../utils/display-safe.js';
 import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import type { IdLogSink } from './id-log.js';
+import { maskCallerIdentity } from './caller-identity.js';
 
 /**
  * go-to-k/cdkd#7121: an `AWS::LakeFormation::Resource` moving from the
@@ -89,11 +94,60 @@ export interface LakeFormationRoleSwitchInput {
   log: IdLogSink;
 }
 
+/** The live registration's model, `'gone'` when Cloud Control says NotFound, `undefined` when unreadable. */
+async function readLiveRegistration(
+  provider: CloudControlProvider,
+  resourceType: string,
+  physicalId: string,
+  log: IdLogSink
+): Promise<Record<string, unknown> | 'gone' | undefined> {
+  try {
+    const response = await provider.cloudControlClient.send(
+      new GetResourceCommand({ TypeName: resourceType, Identifier: physicalId })
+    );
+    const raw = response.ResourceDescription?.Properties;
+    if (typeof raw !== 'string' || raw === '') return undefined;
+    const parsed = JSON.parse(raw) as unknown;
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined;
+  } catch (error) {
+    if ((error as { name?: unknown } | undefined)?.name === 'ResourceNotFoundException') {
+      return 'gone';
+    }
+    log.debug(
+      `Could not read the Lake Formation registration: ${maskCallerIdentity(displaySafe(describeAwsFailure(error).detail))}`
+    );
+    return undefined;
+  }
+}
+
+const failureText = (error: unknown): string =>
+  maskCallerIdentity(displaySafe(describeAwsFailure(error).detail));
+
+function createRegistration(
+  provider: CloudControlProvider,
+  logicalId: string,
+  resourceType: string,
+  model: Record<string, unknown>
+): Promise<ProgressEvent> {
+  return runCcOperation(provider, 'CREATE', logicalId, resourceType, () =>
+    provider.cloudControlClient.send(
+      new CreateResourceCommand({ TypeName: resourceType, DesiredState: JSON.stringify(model) })
+    )
+  );
+}
+
 /**
  * Re-register the location with its own role when the live registration is
  * on the service-linked role. Returns the create's final progress event when
- * it did (the update is then complete), or `undefined` when this update is
+ * it did (it takes the update's place), or `undefined` when this update is
  * not such a switch and goes through Cloud Control's update as before.
+ *
+ * A location Cloud Control reports NotFound is one a previous run
+ * deregistered and was stopped before registering again (an interrupt
+ * between the two calls): it is registered with the desired model, which
+ * finishes that switch, instead of failing every later deploy on NotFound.
  */
 export async function switchLakeFormationOffServiceLinkedRole(
   provider: CloudControlProvider,
@@ -101,7 +155,13 @@ export async function switchLakeFormationOffServiceLinkedRole(
 ): Promise<ProgressEvent | undefined> {
   const { logicalId, physicalId, resourceType, properties, previousProperties, log } = input;
   if (!movesToOwnRole(resourceType, previousProperties, properties)) return undefined;
-  const live = await provider.readCcResourceModel(resourceType, physicalId, log);
+  const live = await readLiveRegistration(provider, resourceType, physicalId, log);
+  if (live === 'gone') {
+    log.warn(
+      `${logicalId}: the Lake Formation location is not registered (a previous switch off the service-linked role was interrupted after its deregister); registering it with its own role`
+    );
+    return createRegistration(provider, logicalId, resourceType, properties);
+  }
   if (live === undefined || !isServiceLinkedRoleArn(live['RoleArn'])) return undefined;
 
   log.info(
@@ -113,30 +173,30 @@ export async function switchLakeFormationOffServiceLinkedRole(
     )
   );
   try {
-    return await runCcOperation(provider, 'CREATE', logicalId, resourceType, () =>
-      provider.cloudControlClient.send(
-        new CreateResourceCommand({
-          TypeName: resourceType,
-          DesiredState: JSON.stringify(properties),
-        })
-      )
-    );
+    return await createRegistration(provider, logicalId, resourceType, properties);
   } catch (registerError) {
     // The location is deregistered now. Put the service-linked registration
     // back, so the record (and a rollback replay) still describes AWS.
     try {
-      await runCcOperation(provider, 'CREATE', logicalId, resourceType, () =>
-        provider.cloudControlClient.send(
-          new CreateResourceCommand({
-            TypeName: resourceType,
-            DesiredState: JSON.stringify(serviceLinkedRestoreModel(physicalId, live)),
-          })
-        )
+      await createRegistration(
+        provider,
+        logicalId,
+        resourceType,
+        serviceLinkedRestoreModel(physicalId, live)
       );
     } catch (restoreError) {
+      // A create whose wait failed may still have registered the location
+      // (the restore then fails on AlreadyExists): say what AWS holds now.
+      const after = await readLiveRegistration(provider, resourceType, physicalId, log);
+      const now =
+        after === 'gone'
+          ? "The location is not registered with Lake Formation now: register it again (aws lakeformation register-resource --resource-arn <the location's ARN> --use-service-linked-role), then re-run the deploy."
+          : after === undefined
+            ? "cdkd could not read whether the location is registered now: check it (aws lakeformation describe-resource --resource-arn <the location's ARN>), then re-run the deploy."
+            : `The location is registered with ${isServiceLinkedRoleArn(after['RoleArn']) ? 'the service-linked role' : 'its own role'} now; re-run the deploy.`;
       throw markNonRetryable(
         new ProvisioningError(
-          `${logicalId}: cdkd deregistered the Lake Formation location to register it with its own role, the register failed (${displaySafe(describeAwsFailure(registerError).detail)}), and registering it back with the service-linked role failed too (${displaySafe(describeAwsFailure(restoreError).detail)}). The location is not registered with Lake Formation now: register it again (aws lakeformation register-resource --resource-arn <the location's ARN> --use-service-linked-role), then re-run the deploy.`,
+          `${logicalId}: cdkd deregistered the Lake Formation location to register it with its own role, the register failed (${failureText(registerError)}), and registering it back with the service-linked role failed too (${failureText(restoreError)}). ${now}`,
           resourceType,
           logicalId,
           physicalId,
