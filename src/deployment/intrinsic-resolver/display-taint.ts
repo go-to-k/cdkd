@@ -70,9 +70,10 @@ function isRecordedSubFloorValue(text: string, bags: readonly RecordedSecretValu
  *   `passedSecretNeedles`). A log-only needle has no position twins, so the
  *   value scan masks it only whole; a recorded PAIR keeps the positional mask
  *   it already has (`port:***`, go-to-k/cdkd#3100);
- * - the value EMBEDS a parent-resolved secret at or above the floor (an
- *   inherited pair): the child holds it as plain text, with no substitution
- *   span, so a `Fn::Split` / `Fn::Select` piece of it matches no needle.
+ * - the value EMBEDS a parent-resolved secret at or above the floor beside
+ *   other text (an inherited pair): the child holds it as plain text, with
+ *   no substitution span, so a `Fn::Split` / `Fn::Select` piece of it
+ *   matches no needle.
  */
 export function parameterDisplayTainted(
   name: string,
@@ -102,10 +103,15 @@ export function parameterDisplayTainted(
   return leaves.some((leaf) => isRecordedSubFloorValue(leaf, bags));
 }
 
-/** Does `text` hold an inherited secret's plaintext at or above the floor? */
+/**
+ * Does `text` EMBED an inherited secret's plaintext (at or above the floor)
+ * beside other text? A text that IS the plaintext is masked piece by piece
+ * already (the whole-source arm of `Fn::Split`, go-to-k/cdkd#3100).
+ */
 function embedsInheritedSecret(text: string, inherited: RecordedSecretValues): boolean {
   for (const plaintext of inherited.keys()) {
-    if (plaintext.length >= MIN_NEEDLE_LENGTH && text.includes(plaintext)) return true;
+    if (plaintext.length < MIN_NEEDLE_LENGTH || text === plaintext) continue;
+    if (text.includes(plaintext)) return true;
   }
   return false;
 }
