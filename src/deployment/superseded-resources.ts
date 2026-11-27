@@ -32,6 +32,10 @@ import { reportDeleteGuards } from './delete-guard-scope.js';
 import { deleteSkipReason } from './delete-outcome.js';
 import { readsNoEchoDeleteValues } from './noecho-delete-reresolution.js';
 import { isMarkedNonRetryable } from './retryable-errors.js';
+import {
+  equalIdNamesDifferentResources,
+  recordedIdsNameDifferentResources,
+} from './type-change-guard.js';
 
 /**
  * The well-formed entries of `state.supersededResources`. A malformed entry
@@ -113,10 +117,41 @@ export function isSupersededHeld(
 }
 
 /**
+ * Whether two records of one type under one physical id name the SAME
+ * resource (go-to-k/cdkd#7088). Not always: a stage on another API, a
+ * permission on another function, an ingress rule from another source or a
+ * table in another database carries the same id
+ * (`equalIdNamesDifferentResources`), and two ingress records holding
+ * different `sgr-` ids are two rules (`recordedIdsNameDifferentResources`).
+ * Where those cannot tell (a masked value, a missing key) the answer is
+ * "the same", as before.
+ */
+export function namesSameResource(a: ResourceState, b: ResourceState): boolean {
+  if (a.physicalId !== b.physicalId || a.resourceType !== b.resourceType) return false;
+  if (
+    equalIdNamesDifferentResources({
+      resourceType: a.resourceType,
+      physicalId: a.physicalId,
+      oldProperties: a.properties,
+      newProperties: b.properties,
+    })
+  ) {
+    return false;
+  }
+  return !recordedIdsNameDifferentResources(a.resourceType, a.attributes, b.attributes);
+}
+
+const isRecord = (record: unknown): record is ResourceState =>
+  typeof record === 'object' && record !== null;
+
+/**
  * The record naming the entry's physical id, if any. A holder of ANOTHER
  * type may be a different resource that happens to share the string (an IAM
  * role and a function both called `foo`): the entry is still never deleted,
- * but its caller warns that the superseded copy may be left in AWS.
+ * but its caller warns that the superseded copy may be left in AWS. A record
+ * of the SAME type holds it only when it names the same resource
+ * ({@link namesSameResource}): the new stage on another API does not hold
+ * the old one (go-to-k/cdkd#7088).
  */
 export function supersededHolderOf(
   entry: SupersededResourceRecord,
@@ -124,27 +159,26 @@ export function supersededHolderOf(
 ): ResourceState | undefined {
   const holders = Object.values(resources).filter(
     (record) =>
-      typeof record === 'object' && record !== null && record.physicalId === entry.state.physicalId
+      isRecord(record) &&
+      record.physicalId === entry.state.physicalId &&
+      (record.resourceType !== entry.state.resourceType || namesSameResource(entry.state, record))
   );
   // A same-type holder first: it is the one that took the copy back.
   return holders.find((record) => record.resourceType === entry.state.resourceType) ?? holders[0];
 }
 
 /**
- * Held by a record of the SAME type: a rollback took the copy back, or a
- * same-id re-create made it live again. Dropped silently; another type's
- * holder is left for the retry or destroy, which warns.
+ * Held by a record of the SAME type naming the same resource
+ * ({@link namesSameResource}): a rollback took the copy back, or a same-id
+ * re-create made it live again. Dropped silently; another type's holder is
+ * left for the retry or destroy, which warns.
  */
 export function isSupersededHeldBySameType(
   entry: SupersededResourceRecord,
   resources: Record<string, ResourceState>
 ): boolean {
   return Object.values(resources).some(
-    (record) =>
-      typeof record === 'object' &&
-      record !== null &&
-      record.physicalId === entry.state.physicalId &&
-      record.resourceType === entry.state.resourceType
+    (record) => isRecord(record) && namesSameResource(entry.state, record)
   );
 }
 
@@ -169,10 +203,7 @@ export function addSuperseded(
   // One entry per resource: a re-recorded one replaces the earlier entry, or
   // a later run would delete (and count) it twice.
   const others = (Array.isArray(host.supersededResources) ? host.supersededResources : []).filter(
-    (row) =>
-      !isSupersededResourceRecord(row) ||
-      row.state.physicalId !== entry.state.physicalId ||
-      row.state.resourceType !== entry.state.resourceType
+    (row) => !isSupersededResourceRecord(row) || !namesSameResource(row.state, entry.state)
   );
   host.supersededResources = [...others, entry];
 }
@@ -305,14 +336,7 @@ function ownNotPending(
   added: readonly SupersededResourceRecord[]
 ): SupersededResourceRecord[] {
   const own = Array.isArray(base.supersededResources) ? base.supersededResources : [];
-  return own.filter(
-    (entry) =>
-      !added.some(
-        (a) =>
-          a.state.physicalId === entry.state.physicalId &&
-          a.state.resourceType === entry.state.resourceType
-      )
-  );
+  return own.filter((entry) => !added.some((a) => namesSameResource(a.state, entry.state)));
 }
 
 /** The remedy a kept entry's warning names. */
