@@ -17,10 +17,12 @@
 #      hosted config version 2 exists with feature=v2.
 #   3. Re-deploy with CDKD_TEST_PROFILE_TYPE_CHANGE=true too (go-to-k/cdkd#7083):
 #      the FlagsProfile's Type goes AWS.Freeform -> AWS.AppConfig.FeatureFlags,
-#      which AppConfig refuses in place. Assert the deploy succeeded (no
-#      NotUpdatable / "Type change is not supported"), a NEW profile id holds
-#      the new type, the old profile is gone, and the SSM parameter holding
-#      the profile's Ref follows the new id.
+#      which AppConfig refuses in place, so cdkd plans a replacement. The type
+#      is stateful (a hosted profile owns its versions), so:
+#      3a. WITHOUT --force-stateful-recreation: the deploy refuses, naming
+#          FlagsProfile, Type and the flag; the profile keeps its id and type.
+#      3b. WITH the flag: a NEW profile id holds the new type, the old one is
+#          gone, and the SSM parameter holding the profile's Ref follows.
 #   4. Destroy + assert the application and cdkd state are gone.
 #
 # Required env vars:
@@ -193,11 +195,45 @@ if [ "${OLD_PARAM}" != "${OLD_FLAGS_ID}" ]; then
   exit 1
 fi
 
-echo "==> Phase 3: re-deploy changing the FlagsProfile Type to AWS.AppConfig.FeatureFlags (#7083)"
+echo "==> Phase 3a: the FlagsProfile Type change WITHOUT --force-stateful-recreation (#7083)"
+P3A_LOG="$(mktemp)"
+set +e
+CDKD_TEST_UPDATE=true CDKD_TEST_PROFILE_TYPE_CHANGE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${P3A_LOG}"
+P3A_RC=${PIPESTATUS[0]}
+set -e
+# The pre-fix shape: an in-place update AWS refuses, no stateful refusal.
+if grep -qE 'NotUpdatable|Type change is not supported' "${P3A_LOG}"; then
+  echo "FAIL: #7083: the FlagsProfile Type change was sent as an in-place update (AWS refused it) instead of a replacement" >&2
+  exit 1
+fi
+if [ "${P3A_RC}" -eq 0 ]; then
+  echo "FAIL: #7083: the FlagsProfile Type change deployed without --force-stateful-recreation (the stateful replacement gate did not refuse)" >&2
+  exit 1
+fi
+if ! grep -qE 'FlagsProfile.*requires replacement.*Type' "${P3A_LOG}" \
+  || ! grep -qF 'stateful resource' "${P3A_LOG}" \
+  || ! grep -qF -- '--force-stateful-recreation' "${P3A_LOG}"; then
+  echo "FAIL: #7083: the deploy exited ${P3A_RC} without the stateful refusal naming FlagsProfile, Type and --force-stateful-recreation" >&2
+  exit 1
+fi
+read -r HELD_FLAGS_ID HELD_FLAGS_TYPE <<<"$(flags_profile "${STACK}-flags-free")"
+if [ "${HELD_FLAGS_ID}" != "${OLD_FLAGS_ID}" ] || [ "${HELD_FLAGS_TYPE}" != "AWS.Freeform" ]; then
+  echo "FAIL: #7083: the refused deploy changed the FlagsProfile (id '${HELD_FLAGS_ID}', type '${HELD_FLAGS_TYPE}'; expected ${OLD_FLAGS_ID}, AWS.Freeform)" >&2
+  exit 1
+fi
+LEAKED="$(flags_profile "${STACK}-flags-ff")"
+if [ "${LEAKED%%[[:space:]]*}" != "None" ]; then
+  echo "FAIL: #7083: the refused deploy created a replacement FlagsProfile anyway (${LEAKED})" >&2
+  exit 1
+fi
+echo "    refused without the flag; FlagsProfile ${OLD_FLAGS_ID} untouched"
+
+echo "==> Phase 3b: the same deploy WITH --force-stateful-recreation (#7083)"
 P3_LOG="$(mktemp)"
 set +e
 CDKD_TEST_UPDATE=true CDKD_TEST_PROFILE_TYPE_CHANGE=true node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${P3_LOG}"
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --force-stateful-recreation 2>&1 | tee "${P3_LOG}"
 P3_RC=${PIPESTATUS[0]}
 set -e
 if grep -qE 'NotUpdatable|Type change is not supported' "${P3_LOG}"; then
@@ -205,7 +241,7 @@ if grep -qE 'NotUpdatable|Type change is not supported' "${P3_LOG}"; then
   exit 1
 fi
 if [ "${P3_RC}" -ne 0 ]; then
-  echo "FAIL: #7083: the deploy changing the FlagsProfile Type exited ${P3_RC}" >&2
+  echo "FAIL: #7083: the deploy changing the FlagsProfile Type with --force-stateful-recreation exited ${P3_RC}" >&2
   exit 1
 fi
 
