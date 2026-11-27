@@ -79,6 +79,10 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
   /** Re-read schedule of the post-write baseline capture; tests set it to zeros. */
   protected ownWriteRereadDelaysMs: readonly number[] = OWN_WRITE_REREAD_DELAYS_MS;
 
+  // go-to-k/cdkd#7141: SetQueueAttributes(Policy) on each named queue, in
+  // order, so a replay converges and writes the same first queue first.
+  readonly idempotentCreateTypes: ReadonlySet<string> = new Set(['AWS::SQS::QueuePolicy']);
+
   handledProperties = new Map<string, ReadonlySet<string>>([
     ['AWS::SQS::QueuePolicy', new Set(['Queues', 'PolicyDocument'])],
   ]);

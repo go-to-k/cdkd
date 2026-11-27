@@ -181,7 +181,9 @@ export async function replaceCreateFirst(
           replaceProvider,
           // Went with its parent: the old copy is gone, so only the user's
           // interrupt stops this re-create (go-to-k/cdkd#5118).
-          lostWithParent !== undefined
+          lostWithParent !== undefined,
+          // go-to-k/cdkd#7141: an idempotent create replays a socket reset.
+          resourceType
         )
     );
   } catch (createError) {

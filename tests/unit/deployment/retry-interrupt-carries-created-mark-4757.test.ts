@@ -98,7 +98,7 @@ describe('the rollback re-create retry keeps the mark on an interrupt (go-to-k/c
       logger as never,
       () => interrupted,
       (t: string) => t,
-      { isRetryable: () => true, interruptedMessage: 'Rollback interrupted' }
+      { isRetryable: () => true, interruptedMessage: 'Rollback interrupted', resourceType: TYPE }
     ).then(
       () => undefined,
       (e: unknown) => e

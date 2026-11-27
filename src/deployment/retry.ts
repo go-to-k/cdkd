@@ -32,6 +32,7 @@ import {
   RETRY_AUXILIARY_OWNER,
 } from '../provisioning/auxiliary-failure.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
+import { isAmbiguousSocketError } from './retryable-errors/transient.js';
 
 export interface RetryLogger {
   debug(message: string): void;
@@ -238,6 +239,16 @@ export interface WithRetryOptions {
    * use.
    */
   isRetryable?: (classificationText: string, error: unknown) => boolean;
+  /**
+   * go-to-k/cdkd#7141: also retry an AMBIGUOUS SOCKET error
+   * (`isAmbiguousSocketError`: a reset, a broken pipe or a client-side timeout
+   * after the send), within the same budget. Set ONLY around a create its
+   * provider declared idempotent (`ResourceProvider.idempotentCreateTypes`), a
+   * put of the whole document whose replay converges on what a landed attempt
+   * did. Every other call leaves it unset: a create that may have landed is
+   * not made twice. Not a schedule knob, so it keeps the default schedule.
+   */
+  replayAmbiguousSocketError?: boolean;
 }
 
 const defaultSleep = (ms: number): Promise<void> =>
@@ -356,6 +367,9 @@ export async function withRetry<T>(
   // the raw AWS error with nothing printed, which is exactly the silence issue
   // #2018 existed to remove for the propagation class. Reporting only.
   let serverErrorRetries = 0;
+  // go-to-k/cdkd#7141: retries spent replaying an ambiguous socket error on an
+  // idempotent create, so a give-up after them says cdkd retried. Reporting only.
+  let socketReplayRetries = 0;
   // Issue #3972: latches once an attempt failed with an AUXILIARY-marked error
   // (`markAuxiliaryFailure`) and never clears. That attempt's main create had
   // SUCCEEDED, and a provider that does not retire what it materialized leaves
@@ -380,8 +394,8 @@ export async function withRetry<T>(
   //
   // Issue #3978: an attempt that ended AMBIGUOUS (`isAmbiguousOutcomeError`: a
   // non-throttle 5xx, a Cloud Control handler failing mid-create, or a socket
-  // reset / timeout after the send -- that last arm reaches no replay today,
-  // since no classifier here retries a socket error) arms the
+  // reset / timeout after the send -- that last arm is replayed only for a
+  // caller passing `replayAmbiguousSocketError`, an idempotent create) arms the
   // same latch. Its main create may have SUCCEEDED server-side, so the replay
   // can collide with the resource that very request made -- the #3972 outcome
   // with no auxiliary call involved. An SDK-level throttle does not arm it:
@@ -500,9 +514,11 @@ export async function withRetry<T>(
         throw settle(error);
       }
 
-      const retryable = opts.isRetryable
-        ? opts.isRetryable(classifyText, error)
-        : isRetryableTransientError(error, classifyText);
+      const retryable =
+        (opts.isRetryable
+          ? opts.isRetryable(classifyText, error)
+          : isRetryableTransientError(error, classifyText)) ||
+        (opts.replayAmbiguousSocketError === true && isAmbiguousSocketError(error));
       const propagation = defaultSchedule && isIamPropagationError(classifyText);
       if (propagation) {
         sawPropagation = true;
@@ -534,7 +550,12 @@ export async function withRetry<T>(
         //
         // Gated on having actually retried, so the overwhelmingly common case
         // (a non-propagation error failing fast on attempt 0) prints nothing.
-        if (propagationRetries > 0 || serverErrorRetries > 0 || nameCooldownRetries > 0) {
+        if (
+          propagationRetries > 0 ||
+          serverErrorRetries > 0 ||
+          nameCooldownRetries > 0 ||
+          socketReplayRetries > 0
+        ) {
           // Whether the BUDGET ran out is a property of the loop's own exit
           // condition, NOT of the retry count. Keying it on
           // `propagationRetries >= IAM_PROPAGATION_MAX_RETRIES` was wrong in
@@ -627,6 +648,12 @@ export async function withRetry<T>(
             spent.push(
               `${serverErrorRetries} transient server-error ` +
                 `${serverErrorRetries === 1 ? 'retry' : 'retries'} (HTTP 5xx)`
+            );
+          }
+          if (socketReplayRetries > 0) {
+            spent.push(
+              `${socketReplayRetries} socket-reset ` +
+                `${socketReplayRetries === 1 ? 'retry' : 'retries'} of an idempotent create`
             );
           }
           const summary = (): string =>
@@ -735,6 +762,8 @@ export async function withRetry<T>(
         // `initialDelayMs` but no classifier, so the default one ran and this
         // arm is the class it just classified.
         serverErrorRetries++;
+      } else if (opts.replayAmbiguousSocketError === true && isAmbiguousSocketError(error)) {
+        socketReplayRetries++;
       }
     }
   }

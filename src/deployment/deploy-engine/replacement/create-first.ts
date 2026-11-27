@@ -138,7 +138,10 @@ export async function createFirstThenDeleteOld(
           logicalId,
           undefined,
           undefined,
-          input.createProvider
+          input.createProvider,
+          undefined,
+          // go-to-k/cdkd#7141: an idempotent create replays a socket reset.
+          resourceType
         )
     );
   } catch (createError) {

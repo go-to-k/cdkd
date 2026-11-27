@@ -83,6 +83,10 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
   /** Re-read schedule of the post-write baseline capture; tests set it to zeros. */
   protected ownWriteRereadDelaysMs: readonly number[] = OWN_WRITE_REREAD_DELAYS_MS;
 
+  // go-to-k/cdkd#7141: SetTopicAttributes(Policy) on each named topic, in
+  // order, so a replay converges and writes the same first topic first.
+  readonly idempotentCreateTypes: ReadonlySet<string> = new Set(['AWS::SNS::TopicPolicy']);
+
   handledProperties = new Map<string, ReadonlySet<string>>([
     ['AWS::SNS::TopicPolicy', new Set(['Topics', 'PolicyDocument'])],
   ]);

@@ -21,6 +21,7 @@ import {
   markSameGenerationBag,
 } from '../secret-redaction.js';
 import { withRetry } from '../retry.js';
+import { replaysAmbiguousCreate } from '../idempotent-create.js';
 import { MAX_CAUSE_CHAIN_DEPTH } from '../retryable-errors/marks.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { withoutUnsettledProperties } from '../../state/unsettled-properties.js';
@@ -355,6 +356,12 @@ export async function createWithRollbackRetry(
      */
     isRetryable: (classificationText: string, error: unknown) => boolean;
     interruptedMessage: string;
+    /**
+     * go-to-k/cdkd#7141: the type `create` makes. A type in the provider's
+     * `idempotentCreateTypes` lets the INNER loop replay an ambiguous socket
+     * error; the outer classifier is the caller's.
+     */
+    resourceType: string;
   }
 ): Promise<ResourceCreateResult> {
   if (provider.disableOuterRetry) {
@@ -375,6 +382,9 @@ export async function createWithRollbackRetry(
     () =>
       withRetry(create, shownId, {
         logger: maskedLogger,
+        ...(replaysAmbiguousCreate(provider, outer.resourceType) && {
+          replayAmbiguousSocketError: true,
+        }),
         ...(isInterrupted && {
           isInterrupted,
           onInterrupted: () =>

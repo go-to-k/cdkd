@@ -414,13 +414,28 @@ export function replayMadeAnotherResource(earlier: unknown, later: unknown): boo
   }
 }
 
+/** The members of `earlier` that `later` lacks, appended, when the two share one. */
+function unionOfSharedMembers(earlier: CreatedMark, later: CreatedMark): string | undefined {
+  if (earlier.logicalId !== later.logicalId || earlier.resourceType !== later.resourceType) {
+    return undefined;
+  }
+  const members = (id: string): string[] => id.split(',').filter((member) => member !== '');
+  const laterMembers = members(later.physicalId);
+  const earlierMembers = members(earlier.physicalId);
+  if (!earlierMembers.some((member) => laterMembers.includes(member))) return undefined;
+  const missing = earlierMembers.filter((member) => !laterMembers.includes(member));
+  return missing.length === 0 ? undefined : [...laterMembers, ...missing].join(',');
+}
+
 /**
  * Carry a {@link markCreatedBeforeFailure} mark from an EARLIER attempt's
  * error onto the error a retry loop finally throws, unless that one carries a
  * mark of its own. A replayed create collides with the resource the earlier
  * attempt made, and its own error proves nothing — without the carry the one
  * record of that resource is dropped with the earlier error. The mark is
- * copied as is, so the reader's logical-id anchor still applies. Never throws.
+ * copied as is, so the reader's logical-id anchor still applies. A later mark of
+ * the SAME create sharing a member with the earlier one takes the earlier's
+ * other members too (go-to-k/cdkd#7141). Never throws.
  */
 export function carryCreatedBeforeFailure<E>(from: unknown, to: E): E {
   try {
@@ -442,7 +457,26 @@ export function carryCreatedBeforeFailure<E>(from: unknown, to: E): E {
       depth < MAX_DEPTH * 2 && typeof probe === 'object' && probe !== null;
       depth++
     ) {
-      if (createdMarkOn(probe)) return to;
+      const own = createdMarkOn(probe);
+      if (own) {
+        // go-to-k/cdkd#7141: a replay that wrote FEWER members of a
+        // comma-joined set (a queue / topic policy's targets) before failing
+        // keeps the earlier attempt's members too, or `--revert-failed`
+        // leaves a target the earlier attempt wrote. Only for the same create,
+        // and only when the two share a member: disjoint marks are another
+        // resource (`replayMadeAnotherResource`), and the later one stands.
+        const union = unionOfSharedMembers(mark, own);
+        if (union !== undefined) {
+          markCreatedBeforeFailure(
+            probe,
+            own.logicalId,
+            own.resourceType,
+            union,
+            own.createdResourceIdentity
+          );
+        }
+        return to;
+      }
       probe = (probe as { cause?: unknown }).cause;
     }
     return markCreatedBeforeFailure(

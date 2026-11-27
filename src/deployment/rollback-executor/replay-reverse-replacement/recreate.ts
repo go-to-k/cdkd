@@ -170,6 +170,7 @@ export async function recreateOldResource(
           isRetryable: isRecreateRetryableError,
           interruptedMessage:
             'Rollback interrupted while waiting for the new resource to release its name or slot',
+          resourceType: oldType,
         }
       );
     } catch (recreateError) {
@@ -298,6 +299,7 @@ export async function recreateOldResource(
         {
           isRetryable: isNameCooldownError,
           interruptedMessage: 'Rollback interrupted while waiting out the name cooldown',
+          resourceType: oldType,
         }
       );
     } catch (createError) {
