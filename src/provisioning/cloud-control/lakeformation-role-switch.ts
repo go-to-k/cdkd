@@ -157,6 +157,9 @@ export async function switchLakeFormationOffServiceLinkedRole(
 ): Promise<ProgressEvent | undefined> {
   const { logicalId, physicalId, resourceType, properties, previousProperties, log } = input;
   if (resourceType !== LAKE_FORMATION_RESOURCE_TYPE) return undefined;
+  // Its own GetResource, not the update's shared live-model read: this one
+  // must tell NotFound apart from an unreadable model. One call per update of
+  // this type only.
   const live = await readLiveRegistration(provider, resourceType, physicalId, log);
   if (live === 'gone') {
     log.warn(

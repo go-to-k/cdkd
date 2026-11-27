@@ -266,7 +266,7 @@ describe('a Lake Formation location moving off the service-linked role (go-to-k/
   });
 
   it.each([
-    ['the template reverted to the service-linked role', slr, own],
+    ['a record on its own role, the template back on the service-linked role', slr, own],
     ['an unrelated change on its own role', { ...own, HybridAccessEnabled: true }, own],
   ])(
     'registers a missing location on any update (%s), instead of updating it',
@@ -284,6 +284,26 @@ describe('a Lake Formation location moving off the service-linked role (go-to-k/
       );
     }
   );
+
+  it('sends a non-switch update to UpdateResource when the registration cannot be read', async () => {
+    const sent = serve(OWN);
+    const served = mockCcSend.getMockImplementation()!;
+    mockCcSend.mockImplementation(
+      async (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
+        if (command.constructor.name === 'GetResourceCommand') {
+          const err = new Error('not authorized to perform lakeformation:DescribeResource');
+          err.name = 'AccessDeniedException';
+          throw err;
+        }
+        return served(command);
+      }
+    );
+    await provider().update('Lf', ARN, T, { ...own, HybridAccessEnabled: true }, own);
+    const names = sent.map((s) => s.name);
+    expect(names).toContain('UpdateResourceCommand');
+    expect(names).not.toContain('CreateResourceCommand');
+    expect(names).not.toContain('DeleteResourceCommand');
+  });
 
   it('masks the caller identity of a synchronous refusal in the double-failure message', async () => {
     serve(SLR);
