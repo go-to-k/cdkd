@@ -35,7 +35,10 @@
 #   2. CDKD_TEST_UPDATE=true adds a tag to the VPC and both subnets: in-place
 #      updates. Assert the same ids, the tags on AWS, and that the recorded
 #      CidrBlock attributes (the VpcCidr / SubnetCidr Outputs) still equal the
-#      live CIDRs, and the IPv6 subnet still holds its block.
+#      live CIDRs, and the IPv6 subnet still holds its block. The same phase
+#      changes only the pool's Description, which moves its State
+#      (create-complete -> modify-complete); an SSM parameter reading that
+#      State must hold the live value (go-to-k/cdkd#7007).
 #   3. Destroy. Assert both subnets' deletes waited on their pools, that both
 #      subnets, both VPCs, the pools, the private scope and the IPAM are gone
 #      (IPAM deletes are asynchronous, so the gone-checks wait), and the state
@@ -298,6 +301,24 @@ if [ "${VPC_CIDR_OUTPUT}" != "${VPC_CIDR}" ]; then
   exit 1
 fi
 echo "    OK: ${VPC_ID} on the SDK path with ${VPC_CIDR}, allocated from ${POOL_ID}; Fn::GetAtt CidrBlock agrees"
+
+# go-to-k/cdkd#7007: the SSM reader holds the pool State recorded at create.
+POOL_STATE_PARAM=$(jq -r '.outputs.PoolStateParam // ""' <<<"${STATE}")
+P1_POOL_STATE=$(jq -r '.resources.Pool.attributes.State // ""' <<<"${STATE}")
+if [ -z "${POOL_STATE_PARAM}" ] || [ -z "${P1_POOL_STATE}" ]; then
+  echo "FAIL: output PoolStateParam '${POOL_STATE_PARAM}' or the recorded pool State '${P1_POOL_STATE}' is empty (issue #7007)" >&2
+  exit 1
+fi
+P1_READER=$(aws ssm get-parameter --name "${POOL_STATE_PARAM}" --region "${REGION}" \
+  --query Parameter.Value --output text 2>&1) || {
+  echo "FAIL: get-parameter ${POOL_STATE_PARAM} failed: ${P1_READER}" >&2
+  exit 1
+}
+if [ "${P1_READER}" != "${P1_POOL_STATE}" ]; then
+  echo "FAIL: premise: the pool State reader holds '${P1_READER}', the recorded State is '${P1_POOL_STATE}' (issue #7007)" >&2
+  exit 1
+fi
+echo "    OK: the pool State reader holds the recorded '${P1_READER}'"
 
 # --- Phase 1b: wait for IPAM to monitor SubnetVpc, then add the subnet -----
 SUBNET_VPC_ID=$(jq -r '.outputs.SubnetVpcId // ""' <<<"${STATE}")
@@ -603,6 +624,33 @@ if [ "${P2_IPV6_SUBNET_TAG}" != "updated" ] || [ "${P2_IPV6_SUBNET_BLOCK}" != "$
 fi
 echo "    OK: ${IPV6_SUBNET_ID} updated in place and keeps ${IPV6_SUBNET_CIDR}"
 
+# go-to-k/cdkd#7007: the Description-only pool update moved its State, and
+# the reader must follow it (on main it kept the value recorded at create).
+P2_POOL_LIVE=$(aws ec2 describe-ipam-pools --ipam-pool-ids "${POOL_ID}" --region "${REGION}" \
+  --query 'IpamPools[0].[State,Description]' --output text 2>&1) || {
+  echo "FAIL: describe-ipam-pools ${POOL_ID} failed: ${P2_POOL_LIVE}" >&2
+  exit 1
+}
+read -r P2_POOL_STATE P2_POOL_DESC <<<"${P2_POOL_LIVE}"
+if [ "${P2_POOL_DESC}" != "cdkd-7007-updated" ]; then
+  echo "FAIL: premise: pool ${POOL_ID} Description is '${P2_POOL_DESC}', expected 'cdkd-7007-updated'; the update did not run (issue #7007)" >&2
+  exit 1
+fi
+if [ "${P2_POOL_STATE}" = "${P1_READER}" ]; then
+  echo "FAIL: premise: the Description update left pool ${POOL_ID} State '${P2_POOL_STATE}', so the reader arm proves nothing (issue #7007)" >&2
+  exit 1
+fi
+P2_READER=$(aws ssm get-parameter --name "${POOL_STATE_PARAM}" --region "${REGION}" \
+  --query Parameter.Value --output text 2>&1) || {
+  echo "FAIL: get-parameter ${POOL_STATE_PARAM} failed: ${P2_READER}" >&2
+  exit 1
+}
+if [ "${P2_READER}" != "${P2_POOL_STATE}" ]; then
+  echo "FAIL: the pool State reader holds '${P2_READER}', the live State is '${P2_POOL_STATE}' (issue #7007)" >&2
+  exit 1
+fi
+echo "    OK: the pool State reader followed '${P1_READER}' -> '${P2_POOL_STATE}'"
+
 # --- Phase 3: destroy ---------------------------------------------------
 echo "==> Phase 3: destroy"
 DESTROY_LOG="$(mktemp -t cdkd-ec2-vpc-ipam-destroy.XXXXXX)"
@@ -674,6 +722,7 @@ fi
 
 assert_gone "subnet '${SUBNET_ID}' still exists after destroy" aws ec2 describe-subnets --subnet-ids "${SUBNET_ID}" --region "${REGION}"
 assert_gone "IPv6 subnet '${IPV6_SUBNET_ID}' still exists after destroy" aws ec2 describe-subnets --subnet-ids "${IPV6_SUBNET_ID}" --region "${REGION}"
+assert_gone "SSM parameter '${POOL_STATE_PARAM}' still exists after destroy" aws ssm get-parameter --name "${POOL_STATE_PARAM}" --region "${REGION}"
 assert_gone "VPC '${VPC_ID}' still exists after destroy" aws ec2 describe-vpcs --vpc-ids "${VPC_ID}" --region "${REGION}"
 assert_gone "VPC '${SUBNET_VPC_ID}' still exists after destroy" aws ec2 describe-vpcs --vpc-ids "${SUBNET_VPC_ID}" --region "${REGION}"
 # IPAM, scope and pool deletes finish asynchronously: wait for each to stop

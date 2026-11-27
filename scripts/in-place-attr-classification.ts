@@ -92,42 +92,26 @@ const renamed = (stack: string, change: string, value: string): InPlaceAttrVerdi
   never(`measured (${stack}): ${change} in place left it ${value}`);
 
 export const RENAME_MEASURED: Readonly<Record<string, Readonly<Record<string, InPlaceAttrVerdict>>>> = {
-  'AWS::Chime::AppInstance': {
-    AppInstanceArn: renamed('cdkd-probe-7007-s2c', 'Name', 'app-instance/2cf58ce3-...'),
-  },
-  'AWS::Chime::AppInstanceUser': {
-    AppInstanceUserArn: renamed('cdkd-probe-7007-s2c', 'Name', '.../user/cdkd-probe-7007-user'),
-  },
-  'AWS::Chime::Channel': {
-    Arn: renamed('cdkd-probe-7007-s3c', 'Name', '.../channel/fdc1ec1c-...'),
-  },
   'AWS::Chime::ChannelFlow': {
-    Arn: renamed('cdkd-probe-7007-s4b', 'Name', '.../channel-flow/1109d9cb...'),
     ChannelFlowId: renamed('cdkd-probe-7007-s4b', 'Name', '1109d9cb...'),
   },
   'AWS::Chime::VoiceConnector': {
-    VoiceConnectorArn: renamed('cdkd-probe-7007-s4b', 'Name', 'vc/dv56tpxjyzqla7zpqp6swq'),
     VoiceConnectorId: renamed('cdkd-probe-7007-s4b', 'Name', 'dv56tpxjyzqla7zpqp6swq'),
   },
-  'AWS::CleanRooms::Collaboration': {
-    Arn: renamed('cdkd-probe-7007-s2c', 'Name', 'collaboration/84408462-...'),
-  },
-  'AWS::DataSync::Task': {
-    TaskArn: renamed('cdkd-probe-7007-s4b', 'Name', 'task/task-0be708b518a40c674'),
-  },
   'AWS::Deadline::Budget': {
-    Arn: renamed('cdkd-probe-7007-s3c', 'DisplayName', '.../budget/budget-4a2b9e7f...'),
     BudgetId: renamed('cdkd-probe-7007-s3c', 'DisplayName', 'budget-4a2b9e7f...'),
   },
   'AWS::Deadline::Queue': {
-    Arn: renamed('cdkd-probe-7007-s2c', 'DisplayName', '.../queue/queue-f632d873...'),
     QueueId: renamed('cdkd-probe-7007-s2c', 'DisplayName', 'queue-f632d873...'),
+  },
+  'AWS::CloudWatch::MetricDataQueryDefinition': {
+    Id: renamed('cdkd-probe-7007-135937-mdq', 'Path', '365aa80b-3b8c-429e-88ff-138229c0e9e8'),
+  },
+  'AWS::MediaLive::EventBridgeRuleTemplate': {
+    Id: renamed('cdkd-probe-7007-135937r2-ml', 'Name', '8289460'),
   },
   'AWS::EC2::PrefixList': {
     Arn: renamed('cdkd-probe-7007-s1', 'PrefixListName', 'prefix-list/pl-0d520b78fc4478f52'),
-  },
-  'AWS::Glue::UserDefinedFunction': {
-    Arn: renamed('cdkd-probe-7007-s2c', 'ClassName / OwnerName', '.../<db>/<create-only name>'),
   },
   'AWS::IAM::ServerCertificate': {
     // The handler completes a Path update without applying it: its update
@@ -150,24 +134,8 @@ export const RENAME_MEASURED: Readonly<Record<string, Readonly<Record<string, In
   'AWS::Lex::BotAlias': {
     Arn: renamed('cdkd-probe-7007-s3c', 'BotAliasName', 'bot-alias/8ACWASRH4S/7ETHCRHKIG'),
   },
-  'AWS::Route53Resolver::FirewallRuleGroupAssociation': {
-    Arn: renamed('cdkd-probe-7007-s3c', 'Name', '.../rslvr-frgassoc-ad8eaddd39cc403a'),
-  },
-  // A DomainName change cannot be applied in place (a Cloud Control update
-  // fails NotUpdatable; go-to-k/cdkd#7070), so only Name is an in-place rename.
-  // cdkd-probe-7007-s1: a Name + DomainName update REPLACED the rule
-  // (rslvr-rr-c051d710... -> rslvr-rr-b961c68a...); a second, Name-only update
-  // completed in place, renamed it (live name cdkd-probe-7007-rr-c) and kept
-  // rslvr-rr-b961c68a7e1e43908.
-  'AWS::Route53Resolver::ResolverRule': {
-    Arn: renamed('cdkd-probe-7007-s1', 'Name only', 'resolver-rule/rslvr-rr-b961c68a7e1e43908'),
-  },
   'AWS::WellArchitected::Workload': {
     WorkloadId: renamed('cdkd-probe-7007-s3c', 'WorkloadName', 'd407459bb0b58e882b630018989ed8fb'),
-  },
-  // The handlers complete a rename without applying it: the name and ARN stay.
-  'AWS::XRay::Group': {
-    GroupARN: renamed('cdkd-probe-7007-s1', 'GroupName', 'group/<old name>/NIY2T2OJ...'),
   },
   // UpdateSamplingRule names the rule by name or ARN and has no rename, so no
   // name field (RuleName, SamplingRule / SamplingRuleUpdate.RuleName) moves it.
@@ -216,24 +184,6 @@ const REASONED: Classification = {
   'AWS::Route53RecoveryReadiness::ReadinessCheck': {
     ReadinessCheckArn: never('built from the create-only ReadinessCheckName; ResourceSetName names a set'),
   },
-  'AWS::IoTWireless::WirelessDeviceImportTask': {
-    Arn: never('`ImportTask/<id>`; DestinationName names a destination'),
-  },
-  'AWS::Amplify::Branch': {
-    Arn: never('`apps/<app>/branches/<create-only BranchName>`; PullRequestEnvironmentName is a backend'),
-  },
-  'AWS::Chatbot::MicrosoftTeamsChannelConfiguration': {
-    Arn: never('built from the create-only ConfigurationName; TeamsChannelName labels the channel'),
-  },
-  'AWS::MediaConnect::FlowOutput': {
-    OutputArn: never('`output:<id>:<create-only Name>`; NdiProgramName is an NDI setting'),
-  },
-  'AWS::MediaConnect::FlowSource': {
-    SourceArn: never('`source:<id>:<create-only Name>`; VpcInterfaceName names an interface'),
-  },
-  'AWS::MediaPackage::OriginEndpoint': {
-    Arn: never('`origin_endpoints/<create-only Id>`; ManifestName names the manifest'),
-  },
   'AWS::SageMaker::Space': {
     SpaceArn: never('`space/<create-only domain>/<create-only SpaceName>`; SpaceDisplayName is a label'),
     Url: never('built from the create-only domain and space name'),
@@ -253,7 +203,6 @@ const REASONED: Classification = {
     ListId: never('PutProtocolsList updates the list its ListId names; the name is a field'),
   },
   'AWS::MediaLive::CloudWatchAlarmTemplate': {
-    Arn: never('`cloudwatch-alarm-template:<id>`; UpdateCloudWatchAlarmTemplate keeps the id'),
     Id: never('the minted id; UpdateCloudWatchAlarmTemplate names the template by it'),
   },
   // A host or address built from the resource's minted id or create-only
@@ -330,6 +279,36 @@ const REASONED: Classification = {
   // Protocol change is taken as a move too.
   'AWS::DataSync::LocationFSxONTAP': {
     LocationUri: movedBy(['Subdirectory', 'Protocol'], 'the storage VM, protocol and subdirectory'),
+    FsxFilesystemArn: never('the file system of the create-only StorageVirtualMachineArn'),
+  },
+  // Pairs the pinned spec settled by `no-in-place-update` that the live
+  // registry snapshot leaves unsettled: it makes one more property in place
+  // (go-to-k/cdkd#7007, after #7074). That property moves none of them.
+  'AWS::Connect::ViewVersion': {
+    // Only VersionDescription is in place. The ARN is the primary identifier
+    // (`view/<id>:<version>`), which an update keeps by the handler contract,
+    // and the version number is its last segment.
+    ViewVersionArn: never('the primary identifier, kept by an update; only VersionDescription is in place'),
+    Version: never('the version number the primary-identifier ARN ends with'),
+  },
+  'AWS::EntityResolution::SchemaMapping': {
+    SchemaArn: never('`schemamapping/<create-only SchemaName>`'),
+    HasWorkflows: never('set by a matching workflow that uses the mapping; an update of the mapping creates none'),
+  },
+  'AWS::Location::Map': {
+    DataSource: never('the data provider of the create-only Configuration style'),
+  },
+  // Only ClientToken (and Tags) are in place; each SQ... attribute echoes a
+  // create-only property.
+  'AWS::Timestream::ScheduledQuery': {
+    SQName: never('echoes the create-only ScheduledQueryName'),
+    SQQueryString: never('echoes the create-only QueryString'),
+    SQScheduleConfiguration: never('echoes the create-only ScheduleConfiguration'),
+    SQNotificationConfiguration: never('echoes the create-only NotificationConfiguration'),
+    SQErrorReportConfiguration: never('echoes the create-only ErrorReportConfiguration'),
+    SQKmsKeyId: never('echoes the create-only KmsKeyId'),
+    SQTargetConfiguration: never('echoes the create-only TargetConfiguration'),
+    SQScheduledQueryExecutionRoleArn: never('echoes the create-only ScheduledQueryExecutionRoleArn'),
   },
   'AWS::DataSync::LocationAzureBlob': {
     LocationUri: movedBy(['Subdirectory'], 'the container URL and subdirectory'),

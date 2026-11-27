@@ -21,7 +21,10 @@
  * is not also a property of the type: an attribute naming a property is
  * already promoted by the in-place pass's arm 1. An SDK-provider type the
  * database does not carry yet falls back to its CFn schema fixture's
- * `readOnlyProperties`.
+ * `readOnlyProperties`. Whether a property is create-only comes from the
+ * live-registry snapshot `tests/fixtures/cfn-registry-create-only-paths.json`
+ * (refreshed weekly), not the spec's `causesReplacement`, which lags it
+ * (go-to-k/cdkd#7007); the spec answers only for a type the snapshot lacks.
  *
  * CLASSIFICATION
  * --------------
@@ -53,6 +56,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadSpec, type SpecResource } from './gen-getatt-attributes.ts';
+import { readRegistryCreateOnlySnapshot } from './spec-replacement-candidates.ts';
 import {
   SDK_IN_PLACE_ATTR_CLASSIFICATION,
   type InPlaceAttrVerdict,
@@ -92,12 +96,42 @@ export interface TypeInput {
   readonly arnTemplate?: string;
 }
 
-export function typeInputFromSpec(resource: SpecResource): TypeInput | undefined {
+/**
+ * The top-level create-only property names per type, from the live-registry
+ * snapshot (`tests/fixtures/cfn-registry-create-only-paths.json`, refreshed
+ * weekly; go-to-k/cdkd#7070). A nested create-only path leaves its top-level
+ * property in place: its other members still update.
+ */
+export function registryTopLevelCreateOnly(
+  snapshot: ReadonlyMap<string, readonly (readonly string[])[]>
+): ReadonlyMap<string, ReadonlySet<string>> {
+  const out = new Map<string, ReadonlySet<string>>();
+  for (const [type, paths] of snapshot) {
+    out.set(type, new Set(paths.filter((p) => p.length === 1).map((p) => p[0]!)));
+  }
+  return out;
+}
+
+/**
+ * `registryCreateOnly` is the type's top-level create-only set from the live
+ * registry snapshot. When given, it alone decides whether a property replaces
+ * (`yes`, else in place): the pinned spec's `causesReplacement` lags the
+ * registry (#7078 measured 21 settled pairs that differ). A type the snapshot
+ * lacks (an `AWS::Serverless` type, a retired service) falls back to the spec.
+ */
+export function typeInputFromSpec(
+  resource: SpecResource,
+  registryCreateOnly?: ReadonlySet<string>
+): TypeInput | undefined {
   const type = resource.cloudFormationType;
   if (typeof type !== 'string') return undefined;
   const rawProps = (resource.properties ?? {}) as Record<string, { causesReplacement?: unknown }>;
   const properties: Record<string, string | undefined> = {};
   for (const [name, prop] of Object.entries(rawProps)) {
+    if (registryCreateOnly !== undefined) {
+      properties[name] = registryCreateOnly.has(name) ? 'yes' : undefined;
+      continue;
+    }
     properties[name] =
       typeof prop?.causesReplacement === 'string' ? prop.causesReplacement : undefined;
   }
@@ -148,10 +182,15 @@ export type RuleName =
   | 'owner-account'
   | 'identifier-arn-member'
   | 'update-marker'
-  | 'parent-fixed';
+  | 'parent-fixed'
+  | 'operational-status';
 
 /** Rules whose verdict is `any-update`; every other rule's is `never`. */
-export const MOVING_RULES: ReadonlySet<RuleName> = new Set(['update-timestamp', 'update-marker']);
+export const MOVING_RULES: ReadonlySet<RuleName> = new Set([
+  'update-timestamp',
+  'update-marker',
+  'operational-status',
+]);
 
 /** Who or which request created the resource. */
 const CREATOR = /^(CreatedBy|Creator|CreatorRequestId)$/;
@@ -181,6 +220,14 @@ const UPDATE_TIMESTAMP = /Update|Modif/;
 const UPDATE_TIME =
   /^(Last)?(Update|Updated|Modified|Modification)(At|Time|Date|DateTime|Timestamp|TimeStamp|On|TimeSeconds)?$/;
 const VERSIONED = /Version|Revision/;
+/**
+ * An operational status or state, or the message, reason or error that
+ * explains it: `Status`, `ConnectionState`, `StatusReason`,
+ * `EnablementStatusReason`, `StatusSummaries`, `FailureReason`,
+ * `LastModificationErrors`, `Health`.
+ */
+const OPERATIONAL_STATUS =
+  /(Status|State|Statuses|States)(Message|Reason|Reasons|Detail|Details|Info|Code|Description|Summary|Summaries|SummaryByRegion)?$|^(Last)?(Modification)?(Error|Errors|Failure)(Message|Reason|Reasons|Details|Info|Code)?$|^(Health|Progress)$/;
 /** An identity-shaped name: what a service mints or the ARN it builds. */
 const IDENTITY_SHAPED = /(Arn|ARN|Id|ID|Identifier|Uuid|UUID)$/;
 /** ARN template placeholders filled by the stack's environment. */
@@ -193,10 +240,9 @@ const PSEUDO_PLACEHOLDERS: ReadonlySet<string> = new Set(['Partition', 'Region',
  */
 export const RULE_HELD_OUT: ReadonlySet<string> = new Set([
   'AWS::ApiGatewayV2::VpcLink.VpcLinkId',
-  // The pinned spec calls every ONTAP property but Tags create-only, so
-  // no-in-place-update would settle these; the live registry makes Protocol
-  // in place, and whether an SMB password change re-mints the managed secret
-  // is not documented.
+  // The live registry makes the ONTAP Protocol in place (the pinned spec
+  // called it create-only), and whether an SMB password change re-mints the
+  // managed secret is not documented: no rule may settle these.
   'AWS::DataSync::LocationFSxONTAP.Protocol.SMB.ManagedSecretConfig',
   'AWS::DataSync::LocationFSxONTAP.Protocol.SMB.CmkSecretConfig.SecretArn',
 ]);
@@ -242,7 +288,11 @@ const OWN_IDENTITY = /^(.*?)(Arn|ARN|Id|ID|Uuid|UUID)$/;
  *   `AttachmentType`, which an internet / VPN gateway swap moves). Neither is
  *   a `Version...` / `Revision...` member (an update can mint one), an ARN
  *   whose `arnTemplate` has a placeholder ENDING with an in-place property's
- *   name, nor an ARN with no template on a type with an in-place name or path.
+ *   name, nor an ARN with no template on a VERSIONED type with an in-place
+ *   name or path (its ARN may carry the version). On an unversioned type a
+ *   template-less ARN is settled: every rename probe of #7007 kept it (#7069's
+ *   26 pairs; BCM Dashboard, CloudWatch MetricDataQueryDefinition, InspectorV2
+ *   Filter and MediaLive EventBridgeRuleTemplate in part 5).
  * - No rule settles an own id or ARN of an `...Association` type with an
  *   in-place `...Id` property: re-pointing it replaces the
  *   association under a new id.
@@ -251,8 +301,10 @@ const OWN_IDENTITY = /^(.*?)(Arn|ARN|Id|ID|Uuid|UUID)$/;
  *   environment and from values fixed for the resource's life: a
  *   primary-identifier member or a create-only property, named as-is or as
  *   `<TypeName><Id|Name|Identifier>` for the bare member (`fleet/${FleetName}`
- *   over a create-only `Name`). A placeholder naming anything else
- *   (`${ResourceId}`, a writable name) settles nothing.
+ *   over a create-only `Name`), or the own minted id (`${ResourceId}`,
+ *   `${Id}`, `${<...TypeName>Id}`) when an id is a primary-identifier member.
+ *   A placeholder naming anything else (another resource's id, a writable
+ *   name) settles nothing.
  * - `creator`: who or which request created it (`CreatedBy`,
  *   `CreatorRequestId`): a creation fact, like the creation time.
  * - `owner-account`: the owning account (`OwnerAccountId`, `OwnerAccount`,
@@ -274,6 +326,15 @@ const OWN_IDENTITY = /^(.*?)(Arn|ARN|Id|ID|Uuid|UUID)$/;
  * - `update-timestamp` (MOVING): an undotted last-update time. Whether a
  *   Cloud Control update, a tag edit included, stamps it is the handler's
  *   choice, so any in-place update may move it.
+ * - `operational-status` (MOVING): a status or state, or the message, reason
+ *   or error explaining it, dotted or not ({@link OPERATIONAL_STATUS}). An
+ *   update handler returns once the resource is stable, but the stable value
+ *   can differ from the one recorded at create: an in-place property sets it
+ *   (a CloudTrail event data store's `IngestionEnabled: false` leaves
+ *   `Status` `STOPPED_INGESTION`), or the service reports the update itself
+ *   (`UPDATE_COMPLETE`). Proving neither per type takes its handler, so any
+ *   in-place update may move it. A wrong `moving` costs only a speculative
+ *   promotion, which the deploy skips when the value is unchanged.
  */
 export function classifyByRule(input: TypeInput, attribute: string): RuleName | undefined {
   if (RULE_HELD_OUT.has(`${input.type}.${attribute}`)) return undefined;
@@ -284,18 +345,21 @@ export function classifyByRule(input: TypeInput, attribute: string): RuleName | 
   if (attribute.includes('.')) {
     // A member is part of its parent attribute's value: it moves when the
     // parent may, and never moves when the parent never does (bar a member
-    // update time, which a tag edit may stamp).
+    // update time, which a tag edit may stamp, and a member status, which an
+    // update may move whatever the parent is).
+    const leaf = attribute.slice(attribute.lastIndexOf('.') + 1);
+    if (OPERATIONAL_STATUS.test(leaf)) return 'operational-status';
     const parent = attribute.slice(0, attribute.indexOf('.'));
     if (!input.attributes.includes(parent)) return undefined;
     const parentRule = classifyByRule(input, parent);
     if (parentRule === undefined) return undefined;
-    const leaf = attribute.slice(attribute.lastIndexOf('.') + 1);
     if (MOVING_RULES.has(parentRule) || UPDATE_TIME.test(leaf)) return 'update-marker';
     return 'parent-fixed';
   }
   // After `no-in-place-update` on purpose: a tag-only type's update time is
   // moving too, since a tag edit may stamp it.
   if (UPDATE_TIME.test(attribute)) return 'update-timestamp';
+  if (OPERATIONAL_STATUS.test(attribute)) return 'operational-status';
   if (CREATION_TIMESTAMP.test(attribute)) return 'creation-timestamp';
   if (CREATOR.test(attribute)) return 'creator';
   const primaryIdentifier = input.primaryIdentifier ?? [];
@@ -339,20 +403,25 @@ export function classifyByRule(input: TypeInput, attribute: string): RuleName | 
   // itself; an ARN whose documented template names an in-place property
   // (`segment/${SegmentName}`) contradicts the contract; and an ARN with no
   // template, on a type with an in-place name, may embed it. None is settled.
+  const versioned =
+    REVISIONED_ARN_TYPES.has(input.type) ||
+    input.attributes.some((a) => VERSIONED.test(a)) ||
+    writable.some(([name]) => VERSIONED.test(name));
+  // A primary-identifier ARN with no template on a type with an in-place
+  // name is settled by the contract, as measured (#7069's renames, and the
+  // BCM Dashboard / CloudWatch MetricDataQueryDefinition / InspectorV2
+  // Filter renames of go-to-k/cdkd#7007 part 5), unless the type is
+  // versioned: its ARN may carry a version.
   const isPrimaryIdentifier =
     IDENTITY_SHAPED.test(attribute) &&
     !VERSIONED.test(attribute) &&
     primaryIdentifier.includes(attribute) &&
     !(isArn && templateNamesWritable) &&
-    !(isArn && input.arnTemplate === undefined && mutableName);
+    !(isArn && input.arnTemplate === undefined && mutableName && versioned);
   const m = OWN_IDENTITY.exec(attribute);
   const prefix = m?.[1]!.toLowerCase();
   const own = prefix !== undefined && (prefix === '' || typeName.toLowerCase().endsWith(prefix));
   if (!own) return isPrimaryIdentifier ? 'primary-identifier' : undefined;
-  const versioned =
-    REVISIONED_ARN_TYPES.has(input.type) ||
-    input.attributes.some((a) => VERSIONED.test(a)) ||
-    writable.some(([name]) => VERSIONED.test(name));
   if (!versioned && !mutableName) return 'own-identity';
   if (isPrimaryIdentifier) return 'primary-identifier';
   // The type's own primary-identifier ARN is fixed (the contract above), and
@@ -387,10 +456,23 @@ export function classifyByRule(input: TypeInput, attribute: string): RuleName | 
   }
   const fixed = (name: string): boolean =>
     primaryIdentifier.includes(name) || input.properties[name] === 'yes';
+  // The resource's own minted id, which the spec spells `${ResourceId}`,
+  // `${Id}` or `${<Type>Id}` (`eventbridge-rule-template:${EventBridgeRuleTemplateId}`,
+  // `task-definition/${WirelessGatewayTaskDefinitionId}`): fixed when an id is
+  // a primary-identifier member.
+  const pidOwnId = primaryIdentifier.some(
+    (p) => /(Id|Identifier)$/.test(p) && !/Account/.test(p) && !VERSIONED.test(p)
+  );
+  const ownIdPlaceholder = (ph: string): boolean => {
+    if (ph === 'ResourceId' || ph === 'Id' || ph === 'Identifier') return true;
+    const q = /^(.+?)(Id|Identifier)$/.exec(ph)?.[1];
+    return q !== undefined && (q.endsWith(typeName) || typeName.endsWith(q));
+  };
   const placeholderFixed = (ph: string): boolean =>
     PSEUDO_PLACEHOLDERS.has(ph) ||
     fixed(ph) ||
-    ['Id', 'Name', 'Identifier'].some((s) => ph === `${typeName}${s}` && fixed(s));
+    ['Id', 'Name', 'Identifier'].some((s) => ph === `${typeName}${s}` && fixed(s)) ||
+    (pidOwnId && ownIdPlaceholder(ph));
   return placeholders.every(placeholderFixed) ? 'arn-template' : undefined;
 }
 
@@ -491,6 +573,7 @@ export function buildReport(input: BuildInput): { report: Report; findings: Find
     'identifier-arn-member': 0,
     'update-marker': 0,
     'parent-fixed': 0,
+    'operational-status': 0,
   };
   let ccTypes = 0;
   let ccPairs = 0;
@@ -624,7 +707,8 @@ export function renderMarkdown(report: Report): string {
       'needs its row in `src/analyzer/diff-calculator/shared.ts`, or a reader of it ' +
       'keeps the old value after the deploy.',
     '',
-    `Source: \`@aws-cdk/aws-service-spec\` ${report.specVersion}.`,
+    `Source: \`@aws-cdk/aws-service-spec\` ${report.specVersion}; create-only properties from ` +
+      'the live-registry snapshot `tests/fixtures/cfn-registry-create-only-paths.json`.',
     '',
     `- SDK-provider types: **${s.sdkTypes}**, pairs classified by hand: **${s.sdkPairs}** ` +
       `(moving: **${s.sdkMoving}**)`,
@@ -727,10 +811,15 @@ export function loadInputs(): Omit<BuildInput, 'baseline' | 'classification'> {
   const { resources, version } = loadSpec();
   const registered = parseRegisteredTypes(readFileSync(REGISTER_PROVIDERS, 'utf8'));
   if (registered.size === 0) throw new Error(`${REGISTER_PROVIDERS}: no registered types parsed`);
+  const createOnly = registryTopLevelCreateOnly(readRegistryCreateOnlySnapshot());
   const types: TypeInput[] = [];
   const seen = new Set<string>();
   for (const r of resources) {
-    const t = typeInputFromSpec(r);
+    const cfnType = r.cloudFormationType;
+    const t = typeInputFromSpec(
+      r,
+      typeof cfnType === 'string' ? createOnly.get(cfnType) : undefined
+    );
     if (t === undefined || seen.has(t.type)) continue;
     seen.add(t.type);
     types.push(t);

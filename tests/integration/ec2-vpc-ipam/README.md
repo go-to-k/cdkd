@@ -46,6 +46,9 @@ IPAM it did not create.
   allocation for it, and `Fn::Select` over `Fn::GetAtt Ipv6Subnet.Ipv6CidrBlocks`
   resolves to it; the update keeps the block
 - `cdkd drift` reads the VPC and both subnets back clean
+- An SSM parameter reading the pool's `State` follows it when the update
+  changes only the pool's `Description`, which moves `State` from
+  `create-complete` to `modify-complete` (go-to-k/cdkd#7007)
 - Destroy waits on each subnet's pool and removes both subnets, both VPCs, the
   five pools, the scope and the IPAM
 

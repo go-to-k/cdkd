@@ -11319,6 +11319,7 @@
         "ec2-instance",
         "ec2-route-targets",
         "ec2-vpc-endpoint",
+        "ec2-vpc-ipam",
         "elasticache-replicationgroup-getatt",
         "eventbridge",
         "export-nested-stack",
@@ -11555,6 +11556,9 @@
         ],
         "ec2-vpc-endpoint": [
           "l2"
+        ],
+        "ec2-vpc-ipam": [
+          "l1"
         ],
         "elasticache-replicationgroup-getatt": [
           "l1"

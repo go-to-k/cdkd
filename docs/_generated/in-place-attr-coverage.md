@@ -10,10 +10,10 @@ unlisted: true
 
 Whether an in-place update moves each read-only `Fn::GetAtt` attribute (issue [#7001](https://github.com/go-to-k/cdkd/issues/7001)). A moving attribute needs its row in `src/analyzer/diff-calculator/shared.ts`, or a reader of it keeps the old value after the deploy.
 
-Source: `@aws-cdk/aws-service-spec` 0.1.235.
+Source: `@aws-cdk/aws-service-spec` 0.1.235; create-only properties from the live-registry snapshot `tests/fixtures/cfn-registry-create-only-paths.json`.
 
 - SDK-provider types: **131**, pairs classified by hand: **390** (moving: **66**)
-- Cloud Control types: **1584**, pairs: **5545** — by rule: `no-in-place-update` 1144, `creation-timestamp` 376, `own-identity` 812, `primary-identifier` 450, `arn-template` 59, `update-timestamp` 372, `creator` 26, `owner-account` 30, `identifier-arn-member` 68, `update-marker` 142, `parent-fixed` 2; by hand: **84**; in the baseline: **1980**
+- Cloud Control types: **1584**, pairs: **5545** — by rule: `no-in-place-update` 1112, `creation-timestamp` 381, `own-identity` 816, `primary-identifier` 522, `arn-template` 96, `update-timestamp` 372, `creator` 26, `owner-account` 30, `identifier-arn-member` 68, `update-marker` 143, `parent-fixed` 2, `operational-status` 486; by hand: **80**; in the baseline: **1411**
 
 ## SDK-provider types (hand classification)
 
@@ -803,27 +803,23 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235.
 ## Cloud Control types classified by hand
 
 - `AWS::APS::Workspace` `PrometheusEndpoint`: never — `aps-workspaces.<region>.../workspaces/<id>/`
-- `AWS::Amplify::Branch` `Arn`: never — `apps/<app>/branches/<create-only BranchName>`; PullRequestEnvironmentName is a backend
 - `AWS::Amplify::Webhook` `WebhookUrl`: never — built from the webhook id and its creation token
 - `AWS::AppSync::Api` `Dns`: never — the api id hosts, fixed for the api life
 - `AWS::AppSync::DomainName` `AppSyncDomainName`: never — the CloudFront host for the create-only DomainName
-- `AWS::Chatbot::MicrosoftTeamsChannelConfiguration` `Arn`: never — built from the create-only ConfigurationName; TeamsChannelName labels the channel
-- `AWS::Chime::AppInstance` `AppInstanceArn`: never — measured (cdkd-probe-7007-s2c): Name in place left it app-instance/2cf58ce3-...
-- `AWS::Chime::AppInstanceUser` `AppInstanceUserArn`: never — measured (cdkd-probe-7007-s2c): Name in place left it .../user/cdkd-probe-7007-user
-- `AWS::Chime::Channel` `Arn`: never — measured (cdkd-probe-7007-s3c): Name in place left it .../channel/fdc1ec1c-...
-- `AWS::Chime::ChannelFlow` `Arn`: never — measured (cdkd-probe-7007-s4b): Name in place left it .../channel-flow/1109d9cb...
 - `AWS::Chime::ChannelFlow` `ChannelFlowId`: never — measured (cdkd-probe-7007-s4b): Name in place left it 1109d9cb...
-- `AWS::Chime::VoiceConnector` `VoiceConnectorArn`: never — measured (cdkd-probe-7007-s4b): Name in place left it vc/dv56tpxjyzqla7zpqp6swq
 - `AWS::Chime::VoiceConnector` `VoiceConnectorId`: never — measured (cdkd-probe-7007-s4b): Name in place left it dv56tpxjyzqla7zpqp6swq
-- `AWS::CleanRooms::Collaboration` `Arn`: never — measured (cdkd-probe-7007-s2c): Name in place left it collaboration/84408462-...
 - `AWS::CloudFront::StreamingDistribution` `DomainName`: never — the `d....cloudfront.net` host assigned at create
+- `AWS::CloudWatch::MetricDataQueryDefinition` `Id`: never — measured (cdkd-probe-7007-135937-mdq): Path in place left it 365aa80b-3b8c-429e-88ff-138229c0e9e8
 - `AWS::CodeStarConnections::SyncConfiguration` `OwnerId`: moved by `RepositoryLinkId` — the owner of the repository the link points at
 - `AWS::CodeStarConnections::SyncConfiguration` `ProviderType`: moved by `RepositoryLinkId` — the provider of the repository the link points at
 - `AWS::CodeStarConnections::SyncConfiguration` `RepositoryName`: moved by `RepositoryLinkId` — the name of the repository the link points at
+- `AWS::Connect::ViewVersion` `Version`: never — the version number the primary-identifier ARN ends with
+- `AWS::Connect::ViewVersion` `ViewVersionArn`: never — the primary identifier, kept by an update; only VersionDescription is in place
 - `AWS::ControlTower::LandingZone` `LatestAvailableVersion`: never — the newest landing zone version AWS offers, a service catalog
 - `AWS::DataSync::LocationAzureBlob` `LocationUri`: moved by `Subdirectory` — the container URL and subdirectory
 - `AWS::DataSync::LocationEFS` `LocationUri`: moved by `Subdirectory` — `efs://<region>.<file system>/<subdirectory>/`
 - `AWS::DataSync::LocationFSxLustre` `LocationUri`: moved by `Subdirectory` — `fsxl://<region>.<file system>/<subdirectory>/`
+- `AWS::DataSync::LocationFSxONTAP` `FsxFilesystemArn`: never — the file system of the create-only StorageVirtualMachineArn
 - `AWS::DataSync::LocationFSxONTAP` `LocationUri`: moved by `Subdirectory`, `Protocol` — the storage VM, protocol and subdirectory
 - `AWS::DataSync::LocationFSxOpenZFS` `LocationUri`: moved by `Subdirectory` — `fsxz://<region>.<file system>/<subdirectory>/`
 - `AWS::DataSync::LocationFSxWindows` `LocationUri`: moved by `Subdirectory` — `fsxw://<file system>/<subdirectory>/`
@@ -832,38 +828,33 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235.
 - `AWS::DataSync::LocationObjectStorage` `LocationUri`: moved by `Subdirectory`, `ServerHostname` — `object-storage://<host>/<bucket>/<subdirectory>/`
 - `AWS::DataSync::LocationS3` `LocationUri`: moved by `Subdirectory` — `s3://<bucket>/<subdirectory>/`
 - `AWS::DataSync::LocationSMB` `LocationUri`: moved by `Subdirectory`, `ServerHostname` — `smb://<host>/<subdirectory>/`
-- `AWS::DataSync::Task` `TaskArn`: never — measured (cdkd-probe-7007-s4b): Name in place left it task/task-0be708b518a40c674
-- `AWS::Deadline::Budget` `Arn`: never — measured (cdkd-probe-7007-s3c): DisplayName in place left it .../budget/budget-4a2b9e7f...
 - `AWS::Deadline::Budget` `BudgetId`: never — measured (cdkd-probe-7007-s3c): DisplayName in place left it budget-4a2b9e7f...
 - `AWS::Deadline::Monitor` `Url`: moved by `Subdomain` — the monitor subdomain host
-- `AWS::Deadline::Queue` `Arn`: never — measured (cdkd-probe-7007-s2c): DisplayName in place left it .../queue/queue-f632d873...
 - `AWS::Deadline::Queue` `QueueId`: never — measured (cdkd-probe-7007-s2c): DisplayName in place left it queue-f632d873...
 - `AWS::EC2::GatewayRouteTableAssociation` `AssociationId`: moved by `RouteTableId` — ReplaceRouteTableAssociation mints a new association id
 - `AWS::EC2::LaunchTemplate` `DefaultVersionNumber`: any-update — the new version becomes the default when the update sets it
 - `AWS::EC2::LaunchTemplate` `LatestVersionNumber`: any-update — a LaunchTemplateData edit mints the next version
 - `AWS::EC2::PrefixList` `Arn`: never — measured (cdkd-probe-7007-s1): PrefixListName in place left it prefix-list/pl-0d520b78fc4478f52
 - `AWS::ElastiCache::ServerlessCache` `ARN`: never — `serverlesscache:<create-only name>`; FinalSnapshotName names the final snapshot
+- `AWS::EntityResolution::SchemaMapping` `HasWorkflows`: never — set by a matching workflow that uses the mapping; an update of the mapping creates none
+- `AWS::EntityResolution::SchemaMapping` `SchemaArn`: never — `schemamapping/<create-only SchemaName>`
 - `AWS::Events::Endpoint` `EndpointUrl`: never — `<endpoint id>.endpoint.events.amazonaws.com`
 - `AWS::FMS::ApplicationsList` `ListId`: never — PutAppsList updates the list its ListId names; the name is a field
 - `AWS::FMS::ProtocolsList` `ListId`: never — PutProtocolsList updates the list its ListId names; the name is a field
-- `AWS::Glue::UserDefinedFunction` `Arn`: never — measured (cdkd-probe-7007-s2c): ClassName / OwnerName in place left it .../<db>/<create-only name>
 - `AWS::HealthLake::FHIRDatastore` `DatastoreEndpoint`: never — built from the datastore id
 - `AWS::IAM::ServerCertificate` `Arn`: never — measured (cdkd-probe-7007-s1): Path in place left it server-certificate/cdkd-probe-7007-a/cdkd-probe-7007-cert
 - `AWS::IVSChat::LoggingConfiguration` `Id`: never — measured (cdkd-probe-7007-s3c): Name in place left it r2zbNTcYVRdc
 - `AWS::IVSChat::Room` `Id`: never — measured (cdkd-probe-7007-s1): Name in place left it 8NJl1byAY7iO
 - `AWS::IoTFleetHub::Application` `ApplicationUrl`: never — built from the application id; UpdateApplication takes name and description only
-- `AWS::IoTWireless::WirelessDeviceImportTask` `Arn`: never — `ImportTask/<id>`; DestinationName names a destination
 - `AWS::KinesisVideo::Stream` `Arn`: never — measured (cdkd-probe-7007-s1): DeviceName in place left it stream/<create-only name>/1795710281819
 - `AWS::Lex::Bot` `Arn`: never — measured (cdkd-probe-7007-s3c): Name in place left it bot/8ACWASRH4S
 - `AWS::Lex::BotAlias` `Arn`: never — measured (cdkd-probe-7007-s3c): BotAliasName in place left it bot-alias/8ACWASRH4S/7ETHCRHKIG
 - `AWS::Lightsail::Distribution` `DistributionArn`: never — `Distribution/<uuid>`; CertificateName attaches a certificate
 - `AWS::Lightsail::Instance` `InstanceArn`: never — `Instance/<uuid>`; KeyPairName names a key pair
 - `AWS::Lightsail::LoadBalancer` `LoadBalancerArn`: never — `LoadBalancer/<uuid>`; TlsPolicyName names a TLS policy
-- `AWS::MediaConnect::FlowOutput` `OutputArn`: never — `output:<id>:<create-only Name>`; NdiProgramName is an NDI setting
-- `AWS::MediaConnect::FlowSource` `SourceArn`: never — `source:<id>:<create-only Name>`; VpcInterfaceName names an interface
-- `AWS::MediaLive::CloudWatchAlarmTemplate` `Arn`: never — `cloudwatch-alarm-template:<id>`; UpdateCloudWatchAlarmTemplate keeps the id
+- `AWS::Location::Map` `DataSource`: never — the data provider of the create-only Configuration style
 - `AWS::MediaLive::CloudWatchAlarmTemplate` `Id`: never — the minted id; UpdateCloudWatchAlarmTemplate names the template by it
-- `AWS::MediaPackage::OriginEndpoint` `Arn`: never — `origin_endpoints/<create-only Id>`; ManifestName names the manifest
+- `AWS::MediaLive::EventBridgeRuleTemplate` `Id`: never — measured (cdkd-probe-7007-135937r2-ml): Name in place left it 8289460
 - `AWS::MediaPackageV2::Channel` `IngestEndpoints`: never — assigned per channel at create; InputType is create-only
 - `AWS::MediaTailor::PlaybackConfiguration` `PlaybackConfigurationArn`: never — built from the create-only Name; TranscodeProfileName names a profile
 - `AWS::MemoryDB::Cluster` `ARN`: never — `cluster/<create-only ClusterName>`; the in-place names are a parameter group, ACL and snapshot
@@ -877,14 +868,19 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235.
 - `AWS::Redshift::Snapshot` `ClusterVersion`: never — the source cluster version, captured when the snapshot was taken
 - `AWS::Redshift::Snapshot` `EngineFullVersion`: never — the source engine version, captured when the snapshot was taken
 - `AWS::Route53RecoveryReadiness::ReadinessCheck` `ReadinessCheckArn`: never — built from the create-only ReadinessCheckName; ResourceSetName names a set
-- `AWS::Route53Resolver::FirewallRuleGroupAssociation` `Arn`: never — measured (cdkd-probe-7007-s3c): Name in place left it .../rslvr-frgassoc-ad8eaddd39cc403a
-- `AWS::Route53Resolver::ResolverRule` `Arn`: never — measured (cdkd-probe-7007-s1): Name only in place left it resolver-rule/rslvr-rr-b961c68a7e1e43908
 - `AWS::SageMaker::Space` `SpaceArn`: never — `space/<create-only domain>/<create-only SpaceName>`; SpaceDisplayName is a label
 - `AWS::SageMaker::Space` `Url`: never — built from the create-only domain and space name
 - `AWS::StorageGateway::NFSFileShare` `FileShareId`: never — the share id; UpdateNFSFileShare takes FileShareARN and FileShareName
 - `AWS::StorageGateway::SMBFileShare` `FileShareId`: never — the share id; UpdateSMBFileShare takes FileShareARN and FileShareName
+- `AWS::Timestream::ScheduledQuery` `SQErrorReportConfiguration`: never — echoes the create-only ErrorReportConfiguration
+- `AWS::Timestream::ScheduledQuery` `SQKmsKeyId`: never — echoes the create-only KmsKeyId
+- `AWS::Timestream::ScheduledQuery` `SQName`: never — echoes the create-only ScheduledQueryName
+- `AWS::Timestream::ScheduledQuery` `SQNotificationConfiguration`: never — echoes the create-only NotificationConfiguration
+- `AWS::Timestream::ScheduledQuery` `SQQueryString`: never — echoes the create-only QueryString
+- `AWS::Timestream::ScheduledQuery` `SQScheduleConfiguration`: never — echoes the create-only ScheduleConfiguration
+- `AWS::Timestream::ScheduledQuery` `SQScheduledQueryExecutionRoleArn`: never — echoes the create-only ScheduledQueryExecutionRoleArn
+- `AWS::Timestream::ScheduledQuery` `SQTargetConfiguration`: never — echoes the create-only TargetConfiguration
 - `AWS::WellArchitected::Workload` `WorkloadId`: never — measured (cdkd-probe-7007-s3c): WorkloadName in place left it d407459bb0b58e882b630018989ed8fb
-- `AWS::XRay::Group` `GroupARN`: never — measured (cdkd-probe-7007-s1): GroupName in place left it group/<old name>/NIY2T2OJ...
 - `AWS::XRay::SamplingRule` `RuleARN`: never — measured (cdkd-probe-7007-s1): SamplingRule.RuleName in place left it sampling-rule/<old name>
 
 ## Cloud Control pairs a moving rule settles
@@ -897,24 +893,29 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::ARCRegionSwitch::Plan` | `Version` |
 | `AWS::AccessAnalyzer::ArchiveRule` | `UpdatedAt` |
 | `AWS::AccountAccess::Application` | `UpdatedAt` |
-| `AWS::AgentRegistry::Registry` | `UpdatedAt` |
-| `AWS::AgentRegistry::RegistryRecord` | `UpdatedAt` |
+| `AWS::AgentRegistry::Registry` | `AutoDetectionStatus`, `Status`, `UpdatedAt` |
+| `AWS::AgentRegistry::RegistryRecord` | `Status`, `UpdatedAt` |
 | `AWS::AmazonMQ::Broker` | `ConfigurationRevision`, `EngineVersionCurrent` |
 | `AWS::AmazonMQ::Configuration` | `Revision` |
+| `AWS::Amplify::Domain` | `DomainStatus`, `StatusReason`, `UpdateStatus` |
 | `AWS::AmplifyUIBuilder::Component` | `ModifiedAt` |
 | `AWS::AmplifyUIBuilder::Theme` | `ModifiedAt` |
 | `AWS::ApiGatewayV2::PortalProduct` | `LastModified` |
-| `AWS::AppConfig::ExperimentDefinition` | `UpdatedAt` |
-| `AWS::AppConfig::ExperimentRun` | `UpdatedAt` |
+| `AWS::AppConfig::ExperimentDefinition` | `Status`, `UpdatedAt` |
+| `AWS::AppConfig::ExperimentRun` | `Status`, `UpdatedAt` |
 | `AWS::AppConfig::Extension` | `VersionNumber` |
-| `AWS::AppFabric::AppAuthorization` | `UpdatedAt` |
+| `AWS::AppFabric::AppAuthorization` | `Status`, `UpdatedAt` |
 | `AWS::AppFabric::Ingestion` | `UpdatedAt` |
-| `AWS::AppFabric::IngestionDestination` | `UpdatedAt` |
+| `AWS::AppFabric::IngestionDestination` | `Status`, `UpdatedAt` |
 | `AWS::AppIntegrations::Application` | `LastModifiedRegion`, `LastModifiedTime` |
+| `AWS::AppRunner::Service` | `Status` |
+| `AWS::AppRunner::VpcIngressConnection` | `Status` |
 | `AWS::AppStream::Entitlement` | `LastModifiedTime` |
-| `AWS::AppTest::TestCase` | `LastUpdateTime`, `LatestVersion`, `TestCaseVersion` |
+| `AWS::AppSync::SourceApiAssociation` | `SourceApiAssociationStatus`, `SourceApiAssociationStatusDetail` |
+| `AWS::AppTest::TestCase` | `LastUpdateTime`, `LatestVersion`, `Status`, `TestCaseVersion` |
 | `AWS::ApplicationSignals::GroupingConfiguration` | `UpdatedAt` |
 | `AWS::ApplicationSignals::ServiceLevelObjective` | `LastUpdatedTime` |
+| `AWS::Athena::CapacityReservation` | `Status` |
 | `AWS::Athena::SystemTables` | `LastModifiedAt` |
 | `AWS::AuditManager::AssessmentFramework` | `LastUpdatedAt`, `LastUpdatedBy` |
 | `AWS::B2BI::Capability` | `ModifiedAt` |
@@ -922,53 +923,61 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::B2BI::Profile` | `ModifiedAt` |
 | `AWS::B2BI::Transformer` | `ModifiedAt` |
 | `AWS::BCM::Dashboard` | `UpdatedAt` |
-| `AWS::BCM::ScheduledReport` | `UpdatedAt` |
+| `AWS::BCM::ScheduledReport` | `HealthStatus`, `UpdatedAt` |
 | `AWS::Backup::BackupPlan` | `VersionId` |
+| `AWS::Backup::Framework` | `DeploymentStatus`, `FrameworkStatus` |
+| `AWS::Backup::LogicallyAirGappedBackupVault` | `VaultState` |
 | `AWS::Backup::TieringConfiguration` | `LastUpdatedTime` |
-| `AWS::Bedrock::Agent` | `AgentVersion`, `UpdatedAt` |
-| `AWS::Bedrock::AgentAlias` | `UpdatedAt` |
+| `AWS::Batch::ComputeEnvironment` | `EksConfiguration.AccessEntry.Status` |
+| `AWS::BcmPricingCalculator::BillEstimate` | `Status` |
+| `AWS::BcmPricingCalculator::BillScenario` | `FailureMessage`, `Status` |
+| `AWS::BcmPricingCalculator::WorkloadEstimate` | `FailureMessage`, `Status` |
+| `AWS::Bedrock::Agent` | `AgentStatus`, `AgentVersion`, `FailureReasons`, `UpdatedAt` |
+| `AWS::Bedrock::AgentAlias` | `AgentAliasStatus`, `UpdatedAt` |
 | `AWS::Bedrock::ApplicationInferenceProfile` | `UpdatedAt` |
 | `AWS::Bedrock::AutomatedReasoningPolicy` | `UpdatedAt`, `Version` |
 | `AWS::Bedrock::AutomatedReasoningPolicyVersion` | `UpdatedAt` |
 | `AWS::Bedrock::Blueprint` | `LastModifiedTime` |
-| `AWS::Bedrock::DataAutomationProject` | `LastModifiedTime` |
-| `AWS::Bedrock::DataSource` | `UpdatedAt` |
+| `AWS::Bedrock::DataAutomationLibrary` | `Status` |
+| `AWS::Bedrock::DataAutomationProject` | `LastModifiedTime`, `Status` |
+| `AWS::Bedrock::DataSource` | `DataSourceStatus`, `FailureReasons`, `UpdatedAt` |
 | `AWS::Bedrock::EnforcedGuardrailConfiguration` | `UpdatedAt`, `UpdatedBy` |
-| `AWS::Bedrock::Flow` | `UpdatedAt`, `Version` |
+| `AWS::Bedrock::Flow` | `Status`, `UpdatedAt`, `Version` |
 | `AWS::Bedrock::FlowAlias` | `UpdatedAt` |
-| `AWS::Bedrock::Guardrail` | `UpdatedAt`, `Version` |
+| `AWS::Bedrock::Guardrail` | `Status`, `StatusReasons`, `UpdatedAt`, `Version` |
 | `AWS::Bedrock::IntelligentPromptRouter` | `UpdatedAt` |
-| `AWS::Bedrock::KnowledgeBase` | `UpdatedAt` |
+| `AWS::Bedrock::KnowledgeBase` | `FailureReasons`, `Status`, `UpdatedAt` |
 | `AWS::Bedrock::KnowledgeBasePolicy` | `RevisionId` |
 | `AWS::Bedrock::Prompt` | `UpdatedAt`, `Version` |
 | `AWS::Bedrock::PromptVersion` | `UpdatedAt` |
-| `AWS::Bedrock::RetrievalInstruction` | `UpdatedAt` |
-| `AWS::Bedrock::Session` | `LastUpdatedAt` |
+| `AWS::Bedrock::RetrievalInstruction` | `LastTransitionStatus`, `Status`, `UpdatedAt` |
+| `AWS::Bedrock::Session` | `LastUpdatedAt`, `SessionStatus` |
 | `AWS::BedrockAgentCore::ApiKeyCredentialProvider` | `LastUpdatedTime` |
 | `AWS::BedrockAgentCore::BrowserCustom` | `LastUpdatedAt` |
 | `AWS::BedrockAgentCore::BrowserProfile` | `LastUpdatedAt` |
-| `AWS::BedrockAgentCore::CapacityProvider` | `LastUpdatedAt` |
+| `AWS::BedrockAgentCore::CapacityProvider` | `LastUpdatedAt`, `Status` |
 | `AWS::BedrockAgentCore::CodeInterpreterCustom` | `LastUpdatedAt` |
 | `AWS::BedrockAgentCore::ConfigurationBundle` | `UpdatedAt`, `VersionId` |
-| `AWS::BedrockAgentCore::ConsentPortal` | `UpdatedAt` |
-| `AWS::BedrockAgentCore::Dataset` | `UpdatedAt` |
-| `AWS::BedrockAgentCore::Gateway` | `UpdatedAt` |
-| `AWS::BedrockAgentCore::GatewayRateLimit` | `UpdatedAt` |
-| `AWS::BedrockAgentCore::GatewayRule` | `UpdatedAt` |
-| `AWS::BedrockAgentCore::GatewayTarget` | `UpdatedAt` |
-| `AWS::BedrockAgentCore::Harness` | `UpdatedAt`, `Version` |
-| `AWS::BedrockAgentCore::HarnessEndpoint` | `LiveVersion`, `UpdatedAt` |
-| `AWS::BedrockAgentCore::Memory` | `UpdatedAt` |
-| `AWS::BedrockAgentCore::OAuth2CredentialProvider` | `LastUpdatedTime` |
-| `AWS::BedrockAgentCore::OnlineEvaluationConfig` | `UpdatedAt` |
+| `AWS::BedrockAgentCore::ConsentPortal` | `Status`, `UpdatedAt` |
+| `AWS::BedrockAgentCore::Dataset` | `Status`, `UpdatedAt` |
+| `AWS::BedrockAgentCore::Gateway` | `Status`, `StatusReasons`, `UpdatedAt` |
+| `AWS::BedrockAgentCore::GatewayRateLimit` | `Status`, `UpdatedAt` |
+| `AWS::BedrockAgentCore::GatewayRule` | `Status`, `UpdatedAt` |
+| `AWS::BedrockAgentCore::GatewayTarget` | `Status`, `StatusReasons`, `UpdatedAt` |
+| `AWS::BedrockAgentCore::Harness` | `Status`, `UpdatedAt`, `Version` |
+| `AWS::BedrockAgentCore::HarnessEndpoint` | `LiveVersion`, `Status`, `UpdatedAt` |
+| `AWS::BedrockAgentCore::Memory` | `FailureReason`, `Status`, `UpdatedAt` |
+| `AWS::BedrockAgentCore::OAuth2CredentialProvider` | `LastUpdatedTime`, `Status` |
+| `AWS::BedrockAgentCore::OnlineEvaluationConfig` | `Status`, `UpdatedAt` |
+| `AWS::BedrockAgentCore::PaymentConnector` | `ConnectorStatus` |
 | `AWS::BedrockAgentCore::PaymentCredentialProvider` | `LastUpdatedTime` |
-| `AWS::BedrockAgentCore::PaymentManager` | `LastUpdatedAt` |
-| `AWS::BedrockAgentCore::Policy` | `UpdatedAt` |
-| `AWS::BedrockAgentCore::PolicyEngine` | `UpdatedAt` |
-| `AWS::BedrockAgentCore::RuntimeEndpoint` | `LastUpdatedAt`, `LiveVersion`, `TargetVersion` |
+| `AWS::BedrockAgentCore::PaymentManager` | `LastUpdatedAt`, `Status` |
+| `AWS::BedrockAgentCore::Policy` | `Status`, `StatusReasons`, `UpdatedAt` |
+| `AWS::BedrockAgentCore::PolicyEngine` | `Status`, `StatusReasons`, `UpdatedAt` |
+| `AWS::BedrockAgentCore::RuntimeEndpoint` | `FailureReason`, `LastUpdatedAt`, `LiveVersion`, `Status`, `TargetVersion` |
 | `AWS::BedrockAgentCore::WorkloadIdentity` | `LastUpdatedTime` |
 | `AWS::Billing::BillingView` | `UpdatedAt` |
-| `AWS::BillingConductor::BillingGroup` | `LastModifiedTime` |
+| `AWS::BillingConductor::BillingGroup` | `LastModifiedTime`, `Status`, `StatusReason` |
 | `AWS::BillingConductor::CustomLineItem` | `LastModifiedTime` |
 | `AWS::BillingConductor::PricingPlan` | `LastModifiedTime` |
 | `AWS::BillingConductor::PricingRule` | `LastModifiedTime` |
@@ -984,44 +993,50 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::Chime::Channel` | `LastUpdatedTimestamp` |
 | `AWS::Chime::ChannelFlow` | `LastUpdatedTimestamp` |
 | `AWS::Chime::MediaInsightsPipelineConfiguration` | `UpdatedTimestamp` |
-| `AWS::Chime::MediaPipelineKinesisVideoStreamPool` | `UpdatedTimestamp` |
+| `AWS::Chime::MediaPipelineKinesisVideoStreamPool` | `PoolStatus`, `UpdatedTimestamp` |
 | `AWS::Chime::SipMediaApplication` | `UpdatedTimestamp` |
 | `AWS::Chime::VoiceConnector` | `UpdatedTimestamp` |
-| `AWS::CloudFormation::GeneratedTemplate` | `LastUpdatedTime` |
+| `AWS::CleanRooms::IntermediateTable` | `Status` |
+| `AWS::CloudFormation::GeneratedTemplate` | `LastUpdatedTime`, `Progress`, `Status` |
 | `AWS::CloudFront::AnycastIpList` | `ETag` |
 | `AWS::CloudFront::CachePolicy` | `LastModifiedTime` |
-| `AWS::CloudFront::ConnectionFunction` | `ETag`, `LastModifiedTime` |
-| `AWS::CloudFront::ConnectionGroup` | `ETag`, `LastModifiedTime` |
+| `AWS::CloudFront::ConnectionFunction` | `ETag`, `LastModifiedTime`, `Status` |
+| `AWS::CloudFront::ConnectionGroup` | `ETag`, `LastModifiedTime`, `Status` |
 | `AWS::CloudFront::ContinuousDeploymentPolicy` | `LastModifiedTime` |
-| `AWS::CloudFront::DistributionTenant` | `ETag`, `LastModifiedTime` |
+| `AWS::CloudFront::DistributionTenant` | `ETag`, `LastModifiedTime`, `Status` |
 | `AWS::CloudFront::FieldLevelEncryptionConfig` | `LastModifiedTime` |
 | `AWS::CloudFront::FieldLevelEncryptionProfile` | `LastModifiedTime` |
 | `AWS::CloudFront::KeyGroup` | `LastModifiedTime` |
+| `AWS::CloudFront::KeyValueStore` | `Status` |
 | `AWS::CloudFront::OriginRequestPolicy` | `LastModifiedTime` |
 | `AWS::CloudFront::ResponseHeadersPolicy` | `LastModifiedTime` |
-| `AWS::CloudFront::TrustStore` | `ETag`, `LastModifiedTime` |
-| `AWS::CloudFront::VpcOrigin` | `LastModifiedTime` |
-| `AWS::CloudTrail::Dashboard` | `UpdatedTimestamp` |
-| `AWS::CloudTrail::EventDataStore` | `UpdatedTimestamp` |
+| `AWS::CloudFront::TrustStore` | `ETag`, `LastModifiedTime`, `Status` |
+| `AWS::CloudFront::VpcOrigin` | `LastModifiedTime`, `Status` |
+| `AWS::CloudHSM::Cluster` | `State` |
+| `AWS::CloudTrail::Dashboard` | `Status`, `UpdatedTimestamp` |
+| `AWS::CloudTrail::EventDataStore` | `Status`, `UpdatedTimestamp` |
 | `AWS::CloudWatch::AccessGrant` | `UpdatedAt` |
-| `AWS::CloudWatch::AccessProfile` | `UpdatedAt` |
-| `AWS::CloudWatch::AlarmMuteRule` | `LastUpdatedTimestamp` |
+| `AWS::CloudWatch::AccessProfile` | `AssumeStatus`, `UpdatedAt` |
+| `AWS::CloudWatch::AlarmMuteRule` | `LastUpdatedTimestamp`, `Status` |
 | `AWS::CloudWatch::Alert` | `UpdatedAt` |
-| `AWS::CloudWatch::Domain` | `UpdatedAt` |
+| `AWS::CloudWatch::Domain` | `Status`, `UpdatedAt` |
 | `AWS::CloudWatch::DomainAccessGrantForOrganization` | `UpdatedAt` |
-| `AWS::CloudWatch::DomainForOrganization` | `UpdatedAt` |
-| `AWS::CloudWatch::Integration` | `UpdatedAt` |
+| `AWS::CloudWatch::DomainForOrganization` | `Status`, `UpdatedAt` |
+| `AWS::CloudWatch::Integration` | `Status`, `UpdatedAt` |
 | `AWS::CloudWatch::MetricDataQueryDefinition` | `UpdatedAt` |
-| `AWS::CloudWatch::MetricStream` | `LastUpdateDate` |
+| `AWS::CloudWatch::MetricStream` | `LastUpdateDate`, `State` |
+| `AWS::CloudWatch::OTelEnrichment` | `Status` |
 | `AWS::CloudWatch::OmniDashboard` | `UpdatedAt` |
 | `AWS::CloudWatch::ResourceMetricsConfiguration` | `UpdatedAt` |
-| `AWS::CloudWatch::Space` | `UpdatedAt` |
+| `AWS::CloudWatch::Space` | `Status`, `UpdatedAt` |
 | `AWS::CloudWatch::View` | `UpdatedAt` |
+| `AWS::CodeConnections::Host` | `Status` |
 | `AWS::CodePipeline::Pipeline` | `Version` |
 | `AWS::Comprehend::DocumentClassifierEndpoint` | `LastModifiedTime` |
-| `AWS::Comprehend::EntityRecognizerEndpoint` | `LastModifiedTime` |
+| `AWS::Comprehend::EntityRecognizerEndpoint` | `EndpointStatus`, `LastModifiedTime` |
 | `AWS::ComputeOptimizer::AutomationRule` | `LastUpdatedTimestamp`, `RuleRevision` |
 | `AWS::Connect::AgentStatus` | `LastModifiedRegion`, `LastModifiedTime` |
+| `AWS::Connect::ContactFlowModule` | `Status` |
 | `AWS::Connect::DataTable` | `LastModifiedRegion`, `LastModifiedTime`, `LockVersion` |
 | `AWS::Connect::DataTableAttribute` | `LastModifiedRegion`, `LastModifiedTime`, `LockVersion` |
 | `AWS::Connect::Metric` | `LastModifiedRegion`, `LastModifiedTime`, `LastModifiedUser` |
@@ -1029,59 +1044,88 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::Connect::Queue` | `LastModifiedRegion`, `LastModifiedTime` |
 | `AWS::Connect::SecurityProfile` | `LastModifiedRegion`, `LastModifiedTime` |
 | `AWS::Connect::TestCase` | `LastModifiedRegion`, `LastModifiedTime` |
+| `AWS::Connect::TrafficDistributionGroup` | `Status` |
 | `AWS::Connect::Vocabulary` | `LastModifiedTime` |
-| `AWS::CustomerProfiles::CalculatedAttributeDefinition` | `LastUpdatedAt` |
-| `AWS::CustomerProfiles::Domain` | `LastUpdatedAt` |
+| `AWS::ControlTower::LandingZone` | `DriftStatus`, `Status` |
+| `AWS::CustomerProfiles::CalculatedAttributeDefinition` | `LastUpdatedAt`, `Status` |
+| `AWS::CustomerProfiles::Domain` | `LastUpdatedAt`, `RuleBasedMatching.Status` |
 | `AWS::CustomerProfiles::DomainObjectType` | `LastUpdatedAt` |
 | `AWS::CustomerProfiles::EventTrigger` | `LastUpdatedAt` |
 | `AWS::CustomerProfiles::Integration` | `LastUpdatedAt` |
 | `AWS::CustomerProfiles::ObjectType` | `LastUpdatedAt` |
-| `AWS::CustomerProfiles::Recommender` | `LastUpdatedAt` |
-| `AWS::DRS::RecoveryPlan` | `UpdatedAt` |
-| `AWS::DSQL::Cluster` | `PolicyVersion` |
+| `AWS::CustomerProfiles::Recommender` | `FailureReason`, `LastUpdatedAt`, `Status` |
+| `AWS::DRS::RecoveryPlan` | `Status`, `UpdatedAt` |
+| `AWS::DSQL::Cluster` | `PolicyVersion`, `Status` |
 | `AWS::DataExchange::DataSet` | `UpdatedAt` |
 | `AWS::DataExchange::EventAction` | `UpdatedAt` |
-| `AWS::DataZone::DataSource` | `UpdatedAt` |
-| `AWS::DataZone::Domain` | `LastUpdatedAt` |
+| `AWS::DataSync::Task` | `Status` |
+| `AWS::DataZone::DataSource` | `LastRunStatus`, `Status`, `UpdatedAt` |
+| `AWS::DataZone::Domain` | `LastUpdatedAt`, `Status` |
 | `AWS::DataZone::DomainUnit` | `LastUpdatedAt` |
-| `AWS::DataZone::Environment` | `UpdatedAt` |
+| `AWS::DataZone::Environment` | `Status`, `UpdatedAt` |
 | `AWS::DataZone::EnvironmentBlueprintConfiguration` | `UpdatedAt` |
 | `AWS::DataZone::EnvironmentProfile` | `UpdatedAt` |
 | `AWS::DataZone::FormType` | `Revision` |
-| `AWS::DataZone::Project` | `LastUpdatedAt` |
+| `AWS::DataZone::Project` | `LastUpdatedAt`, `ProjectStatus` |
 | `AWS::DataZone::ProjectProfile` | `LastUpdatedAt` |
 | `AWS::DataZone::SubscriptionTarget` | `UpdatedAt`, `UpdatedBy` |
+| `AWS::Deadline::Budget` | `Status` |
+| `AWS::Deadline::Fleet` | `Status`, `StatusMessage` |
 | `AWS::DevOpsAgent::AgentSpace` | `UpdatedAt` |
 | `AWS::DevOpsAgent::Asset` | `UpdatedAt`, `Version` |
 | `AWS::DevOpsAgent::Association` | `UpdatedAt` |
+| `AWS::DevOpsAgent::PrivateConnection` | `Status` |
 | `AWS::DevOpsAgent::Trigger` | `UpdatedAt` |
+| `AWS::DirectConnect::Connection` | `ConnectionState` |
+| `AWS::DirectConnect::Lag` | `LagState` |
+| `AWS::EC2::CapacityReservation` | `State` |
 | `AWS::EC2::FcaPolicy` | `LatestVersion`, `VersionExpectedEffectiveAt` |
-| `AWS::EC2::FpgaImage` | `UpdateTime` |
+| `AWS::EC2::FpgaImage` | `State`, `UpdateTime` |
+| `AWS::EC2::IPAMPool` | `State`, `StateMessage` |
+| `AWS::EC2::IPAMResourceDiscovery` | `State` |
+| `AWS::EC2::InstanceEventWindow` | `State` |
+| `AWS::EC2::LocalGatewayRoute` | `State` |
 | `AWS::EC2::NetworkInsightsAccessScope` | `UpdatedDate` |
+| `AWS::EC2::NetworkInsightsAnalysis` | `Status`, `StatusMessage` |
 | `AWS::EC2::PrefixList` | `Version` |
-| `AWS::EC2::SqlHaStandbyDetectedInstance` | `LastUpdatedTime` |
-| `AWS::EC2::VerifiedAccessEndpoint` | `LastUpdatedTime` |
+| `AWS::EC2::SqlHaStandbyDetectedInstance` | `HaStatus`, `LastUpdatedTime` |
+| `AWS::EC2::TransitGateway` | `EncryptionSupportState` |
+| `AWS::EC2::TransitGatewayMeteringPolicy` | `State` |
+| `AWS::EC2::TransitGatewayMulticastDomain` | `State` |
+| `AWS::EC2::TransitGatewayNetworkFunctionAttachment` | `State` |
+| `AWS::EC2::TransitGatewayPeeringAttachment` | `MultipathResilienceStatus`, `State`, `Status`, `Status.Code`, `Status.Message` |
+| `AWS::EC2::TransitGatewayPolicyTableEntry` | `State` |
+| `AWS::EC2::VPCEncryptionControl` | `ResourceExclusions.EgressOnlyInternetGateway.State`, `ResourceExclusions.EgressOnlyInternetGateway.StateMessage`, `ResourceExclusions.ElasticFileSystem.State`, `ResourceExclusions.ElasticFileSystem.StateMessage`, `ResourceExclusions.InternetGateway.State`, `ResourceExclusions.InternetGateway.StateMessage`, `ResourceExclusions.Lambda.State`, `ResourceExclusions.Lambda.StateMessage`, `ResourceExclusions.NatGateway.State`, `ResourceExclusions.NatGateway.StateMessage`, `ResourceExclusions.VirtualPrivateGateway.State`, `ResourceExclusions.VirtualPrivateGateway.StateMessage`, `ResourceExclusions.VpcLattice.State`, `ResourceExclusions.VpcLattice.StateMessage`, `ResourceExclusions.VpcPeering.State`, `ResourceExclusions.VpcPeering.StateMessage`, `State`, `StateMessage` |
+| `AWS::EC2::VPCEndpointService` | `PrivateDnsNameConfiguration.State` |
+| `AWS::EC2::VerifiedAccessEndpoint` | `LastUpdatedTime`, `Status` |
 | `AWS::EC2::VerifiedAccessGroup` | `LastUpdatedTime` |
 | `AWS::EC2::VerifiedAccessInstance` | `LastUpdatedTime` |
 | `AWS::EC2::VerifiedAccessTrustProvider` | `LastUpdatedTime` |
 | `AWS::ECR::RepositoryCreationTemplate` | `UpdatedAt` |
-| `AWS::ECS::Daemon` | `UpdatedAt` |
-| `AWS::ECS::ExpressGatewayService` | `UpdatedAt` |
-| `AWS::ECS::Gateway` | `UpdatedAt` |
-| `AWS::EKS::Capability` | `ModifiedAt`, `Version` |
-| `AWS::EVS::Environment` | `ModifiedAt` |
-| `AWS::ElastiCache::ServerlessCache` | `FullEngineVersion` |
+| `AWS::ECS::Daemon` | `DaemonStatus`, `UpdatedAt` |
+| `AWS::ECS::ExpressGatewayService` | `Status`, `UpdatedAt` |
+| `AWS::ECS::Gateway` | `Status`, `UpdatedAt` |
+| `AWS::EKS::Capability` | `ModifiedAt`, `Status`, `Version` |
+| `AWS::EVS::Environment` | `EnvironmentState`, `ModifiedAt`, `StateDetails` |
+| `AWS::ElastiCache::GlobalReplicationGroup` | `Status` |
+| `AWS::ElastiCache::ServerlessCache` | `FullEngineVersion`, `Status` |
+| `AWS::ElastiCache::User` | `Status` |
+| `AWS::ElastiCache::UserGroup` | `Status` |
+| `AWS::ElasticLoadBalancingV2::TrustStore` | `Status` |
 | `AWS::EntityResolution::IdMappingWorkflow` | `UpdatedAt` |
 | `AWS::EntityResolution::IdNamespace` | `UpdatedAt` |
 | `AWS::EntityResolution::MatchingWorkflow` | `UpdatedAt` |
 | `AWS::EntityResolution::SchemaMapping` | `UpdatedAt` |
+| `AWS::EventSchemas::Discoverer` | `State` |
 | `AWS::EventSchemas::Schema` | `LastModified`, `SchemaVersion`, `VersionCreatedDate` |
-| `AWS::EventsV2::EventBus` | `LastModifiedTime` |
-| `AWS::EventsV2::EventSource` | `LastModifiedTime` |
+| `AWS::Events::Endpoint` | `State`, `StateReason` |
+| `AWS::EventsV2::EventBus` | `LastModifiedTime`, `State` |
+| `AWS::EventsV2::EventSource` | `LastModifiedTime`, `State` |
 | `AWS::EventsV2::ResourcePolicy` | `RevisionId` |
 | `AWS::EventsV2::Subscriber` | `LastModifiedTime` |
 | `AWS::FMS::ApplicationsList` | `LastUpdateTime` |
 | `AWS::FMS::ProtocolsList` | `LastUpdateTime` |
+| `AWS::FinSpace::Environment` | `Status` |
 | `AWS::FraudDetector::Detector` | `DetectorVersionId`, `LastUpdatedTime` |
 | `AWS::FraudDetector::EntityType` | `LastUpdatedTime` |
 | `AWS::FraudDetector::EventType` | `LastUpdatedTime` |
@@ -1089,10 +1133,12 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::FraudDetector::List` | `LastUpdatedTime` |
 | `AWS::FraudDetector::Outcome` | `LastUpdatedTime` |
 | `AWS::FraudDetector::Variable` | `LastUpdatedTime` |
-| `AWS::GameLift::ContainerGroupDefinition` | `VersionNumber` |
-| `AWS::Glue::Blueprint` | `LastModifiedOn` |
-| `AWS::Glue::Catalog` | `UpdateTime` |
-| `AWS::Grafana::Workspace` | `ModificationTimestamp` |
+| `AWS::GameLift::ContainerFleet` | `Status` |
+| `AWS::GameLift::ContainerGroupDefinition` | `Status`, `StatusReason`, `VersionNumber` |
+| `AWS::Glue::Blueprint` | `LastModifiedOn`, `Status` |
+| `AWS::Glue::Catalog` | `CatalogProperties.DataLakeAccessProperties.ManagedWorkgroupStatus`, `FederatedCatalog.SyncConfiguration.AssetsSyncConfiguration.ManagedCrawlerDetails.Error`, `FederatedCatalog.SyncConfiguration.AssetsSyncConfiguration.ManagedCrawlerDetails.Error.ErrorCode`, `FederatedCatalog.SyncConfiguration.AssetsSyncConfiguration.ManagedCrawlerDetails.Error.ErrorMessage`, `FederatedCatalog.SyncConfiguration.AssetsSyncConfiguration.ManagedCrawlerDetails.Status`, `FederatedCatalog.SyncConfiguration.LineageSyncConfiguration.ManagedCrawlerDetails.Error`, `FederatedCatalog.SyncConfiguration.LineageSyncConfiguration.ManagedCrawlerDetails.Error.ErrorCode`, `FederatedCatalog.SyncConfiguration.LineageSyncConfiguration.ManagedCrawlerDetails.Error.ErrorMessage`, `FederatedCatalog.SyncConfiguration.LineageSyncConfiguration.ManagedCrawlerDetails.Status`, `UpdateTime` |
+| `AWS::Glue::Integration` | `Status` |
+| `AWS::Grafana::Workspace` | `ModificationTimestamp`, `SamlConfigurationStatus`, `Status` |
 | `AWS::Greengrass::ConnectorDefinition` | `LatestVersionArn` |
 | `AWS::Greengrass::CoreDefinition` | `LatestVersionArn` |
 | `AWS::Greengrass::DeviceDefinition` | `LatestVersionArn` |
@@ -1102,22 +1148,31 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::Greengrass::ResourceDefinition` | `LatestVersionArn` |
 | `AWS::Greengrass::SubscriptionDefinition` | `LatestVersionArn` |
 | `AWS::GuardDuty::CustomDetectionRuleAssociation` | `UpdatedAt` |
-| `AWS::GuardDuty::ThreatEntitySet` | `UpdatedAt` |
-| `AWS::GuardDuty::TrustedEntitySet` | `UpdatedAt` |
+| `AWS::GuardDuty::MalwareProtectionPlan` | `Status`, `StatusReasons` |
+| `AWS::GuardDuty::PublishingDestination` | `Status` |
+| `AWS::GuardDuty::ThreatEntitySet` | `ErrorDetails`, `Status`, `UpdatedAt` |
+| `AWS::GuardDuty::TrustedEntitySet` | `ErrorDetails`, `Status`, `UpdatedAt` |
 | `AWS::HealthImaging::Datastore` | `UpdatedAt` |
-| `AWS::IdentityStore::User` | `UpdatedAt`, `UpdatedBy` |
+| `AWS::HealthLake::FHIRDatastore` | `DatastoreStatus` |
+| `AWS::IVS::IngestConfiguration` | `State` |
+| `AWS::IVSChat::LoggingConfiguration` | `State` |
+| `AWS::IdentityStore::User` | `UpdatedAt`, `UpdatedBy`, `UserStatus` |
 | `AWS::ImageBuilder::Image` | `LatestVersion`, `LatestVersion.Arn`, `LatestVersion.Major`, `LatestVersion.Minor`, `LatestVersion.Patch` |
-| `AWS::InspectorV2::CodeSecurityIntegration` | `LastUpdatedAt` |
-| `AWS::InspectorV2::Connector` | `LastUpdatedAt` |
-| `AWS::InternetMonitor::Monitor` | `ModifiedAt` |
+| `AWS::InspectorV2::CodeSecurityIntegration` | `LastUpdatedAt`, `Status`, `StatusReason` |
+| `AWS::InspectorV2::Connector` | `EnablementStatus`, `EnablementStatusReason`, `Health`, `LastUpdatedAt`, `ProviderConfiguration.Azure.ScopeConfiguration.ContainerImageScanning.State`, `ProviderConfiguration.Azure.ScopeConfiguration.ContainerImageScanning.StateReason`, `ProviderConfiguration.Azure.ScopeConfiguration.ServerlessScanning.State`, `ProviderConfiguration.Azure.ScopeConfiguration.ServerlessScanning.StateReason`, `ProviderConfiguration.Azure.ScopeConfiguration.VmScanning.State`, `ProviderConfiguration.Azure.ScopeConfiguration.VmScanning.StateReason` |
+| `AWS::Interconnect::Connection` | `State` |
+| `AWS::InternetMonitor::Monitor` | `ModifiedAt`, `ProcessingStatus`, `ProcessingStatusInfo` |
 | `AWS::Invoicing::InvoiceUnit` | `LastModified` |
-| `AWS::Invoicing::ProcurementPortalPreference` | `LastUpdateDate`, `Version` |
+| `AWS::Invoicing::ProcurementPortalPreference` | `EinvoiceDeliveryPreferenceStatus`, `LastUpdateDate`, `PurchaseOrderRetrievalPreferenceStatus`, `Version` |
 | `AWS::IoT::EncryptionConfiguration` | `LastModifiedDate` |
 | `AWS::IoT::FleetMetric` | `LastModifiedDate`, `Version` |
-| `AWS::IoT::OTAUpdate` | `LastModifiedDate` |
+| `AWS::IoT::OTAUpdate` | `LastModifiedDate`, `OtaUpdateStatus` |
+| `AWS::IoT::SoftwarePackageVersion` | `ErrorReason`, `SbomValidationStatus`, `Status` |
 | `AWS::IoT::Stream` | `LastUpdatedAt`, `StreamVersion` |
+| `AWS::IoT::TopicRuleDestination` | `StatusReason` |
 | `AWS::IoTCoreDeviceAdvisor::SuiteDefinition` | `SuiteDefinitionVersion` |
-| `AWS::IoTFleetWise::Campaign` | `LastModificationTime` |
+| `AWS::IoTFleetHub::Application` | `ApplicationState`, `ErrorMessage` |
+| `AWS::IoTFleetWise::Campaign` | `LastModificationTime`, `Status` |
 | `AWS::IoTFleetWise::DecoderManifest` | `LastModificationTime` |
 | `AWS::IoTFleetWise::Fleet` | `LastModificationTime` |
 | `AWS::IoTFleetWise::ModelManifest` | `LastModificationTime` |
@@ -1125,181 +1180,294 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::IoTFleetWise::StateTemplate` | `LastModificationTime` |
 | `AWS::IoTFleetWise::Vehicle` | `LastModificationTime` |
 | `AWS::IoTSiteWise::Application` | `UpdatedAt` |
-| `AWS::IoTSiteWise::Workspace` | `UpdatedAt` |
-| `AWS::IoTTwinMaker::ComponentType` | `UpdateDateTime` |
-| `AWS::IoTTwinMaker::Entity` | `UpdateDateTime` |
+| `AWS::IoTSiteWise::Pipeline` | `Status` |
+| `AWS::IoTSiteWise::Task` | `Status` |
+| `AWS::IoTSiteWise::Workspace` | `Status`, `UpdatedAt` |
+| `AWS::IoTTwinMaker::ComponentType` | `Status`, `Status.Error`, `Status.Error.Code`, `Status.Error.Message`, `Status.State`, `UpdateDateTime` |
+| `AWS::IoTTwinMaker::Entity` | `Status`, `Status.Error`, `Status.Error.Code`, `Status.Error.Message`, `Status.State`, `UpdateDateTime` |
 | `AWS::IoTTwinMaker::Scene` | `UpdateDateTime` |
 | `AWS::IoTTwinMaker::SyncJob` | `UpdateDateTime` |
 | `AWS::IoTTwinMaker::Workspace` | `UpdateDateTime` |
-| `AWS::Lambda::Runtime` | `LastModified` |
-| `AWS::Lambda::RuntimeAlias` | `LastModified`, `RuntimeVersionArn` |
-| `AWS::Lambda::RuntimeVersion` | `LastModified` |
+| `AWS::IoTWireless::FuotaTask` | `FuotaTaskStatus` |
+| `AWS::IoTWireless::MulticastGroup` | `Status` |
+| `AWS::IoTWireless::WirelessDeviceImportTask` | `Status`, `StatusReason` |
+| `AWS::Kinesis::Channel` | `ChannelStatus` |
+| `AWS::Lambda::CapacityProvider` | `State` |
+| `AWS::Lambda::Runtime` | `LastModified`, `State` |
+| `AWS::Lambda::RuntimeAlias` | `LastModified`, `RuntimeVersionArn`, `State` |
+| `AWS::Lambda::RuntimeVersion` | `LastModified`, `State` |
 | `AWS::Lambda::WebFunction` | `UpdatedAt` |
+| `AWS::LaunchWizard::Deployment` | `Status` |
+| `AWS::Lex::BotAlias` | `BotAliasStatus` |
 | `AWS::Lex::ResourcePolicy` | `RevisionId` |
 | `AWS::LicenseManager::Grant` | `Version` |
 | `AWS::LicenseManager::License` | `Version` |
+| `AWS::LicenseManager::LicenseConfiguration` | `Status` |
+| `AWS::Lightsail::Disk` | `AttachmentState`, `State` |
+| `AWS::Lightsail::Distribution` | `Status` |
+| `AWS::Lightsail::LoadBalancerTlsCertificate` | `Status` |
 | `AWS::Location::APIKey` | `UpdateTime` |
 | `AWS::Location::GeofenceCollection` | `UpdateTime` |
 | `AWS::Location::Map` | `UpdateTime` |
 | `AWS::Location::PlaceIndex` | `UpdateTime` |
 | `AWS::Location::RouteCalculator` | `UpdateTime` |
 | `AWS::Location::Tracker` | `UpdateTime` |
-| `AWS::Logs::LogAnomalyDetector` | `LastModifiedTimeStamp` |
-| `AWS::Logs::ScheduledQuery` | `LastUpdatedTime` |
+| `AWS::Logs::LogAnomalyDetector` | `AnomalyDetectorStatus`, `LastModifiedTimeStamp` |
+| `AWS::Logs::ScheduledQuery` | `LastExecutionStatus`, `LastUpdatedTime` |
 | `AWS::Logs::StorageTierPolicy` | `LastUpdatedTime` |
+| `AWS::M2::Deployment` | `Status` |
 | `AWS::MGN::Application` | `LastModifiedDateTime` |
 | `AWS::MGN::NetworkMigrationDefinition` | `UpdatedAt` |
-| `AWS::MGN::Wave` | `LastModifiedDateTime` |
-| `AWS::MPA::ApprovalTeam` | `LastUpdateTime`, `VersionId` |
+| `AWS::MGN::Wave` | `LastModifiedDateTime`, `WaveAggregatedStatus` |
+| `AWS::MPA::ApprovalTeam` | `LastUpdateTime`, `Status`, `StatusCode`, `StatusMessage`, `VersionId` |
+| `AWS::MSK::Channel` | `StateInfo`, `Status` |
 | `AWS::MSK::ClusterPolicy` | `CurrentVersion` |
 | `AWS::MSK::Replicator` | `CurrentVersion` |
-| `AWS::MWAAServerless::Workflow` | `ModifiedAt`, `WorkflowVersion` |
+| `AWS::MWAAServerless::Workflow` | `ModifiedAt`, `WorkflowStatus`, `WorkflowVersion` |
+| `AWS::Macie::AllowList` | `Status` |
 | `AWS::Macie::Member` | `UpdatedAt` |
-| `AWS::MediaConnect::DestinationEndpoint` | `UpdatedAt` |
-| `AWS::MediaConnect::RouterInput` | `UpdatedAt` |
-| `AWS::MediaConnect::RouterNetworkInterface` | `UpdatedAt` |
-| `AWS::MediaConnect::RouterOutput` | `UpdatedAt` |
-| `AWS::MediaConnect::SourceEndpoint` | `UpdatedAt` |
+| `AWS::Macie::Session` | `AutomatedDiscoveryStatus` |
+| `AWS::MediaConnect::Bridge` | `BridgeState` |
+| `AWS::MediaConnect::DestinationEndpoint` | `ConnectionState`, `RegistrationState`, `UpdatedAt` |
+| `AWS::MediaConnect::RouterInput` | `State`, `UpdatedAt` |
+| `AWS::MediaConnect::RouterNetworkInterface` | `State`, `UpdatedAt` |
+| `AWS::MediaConnect::RouterOutput` | `RoutedState`, `State`, `UpdatedAt` |
+| `AWS::MediaConnect::SourceEndpoint` | `ConnectionState`, `RegistrationState`, `UpdatedAt` |
+| `AWS::MediaLive::ChannelPlacementGroup` | `State` |
 | `AWS::MediaLive::CloudWatchAlarmTemplate` | `ModifiedAt` |
 | `AWS::MediaLive::CloudWatchAlarmTemplateGroup` | `ModifiedAt` |
+| `AWS::MediaLive::Cluster` | `State` |
 | `AWS::MediaLive::EventBridgeRuleTemplate` | `ModifiedAt` |
 | `AWS::MediaLive::EventBridgeRuleTemplateGroup` | `ModifiedAt` |
-| `AWS::MediaLive::SignalMap` | `ModifiedAt` |
+| `AWS::MediaLive::Input` | `State` |
+| `AWS::MediaLive::Multiplex` | `State` |
+| `AWS::MediaLive::Network` | `State` |
+| `AWS::MediaLive::Node` | `ConnectionState`, `State` |
+| `AWS::MediaLive::SdiSource` | `State` |
+| `AWS::MediaLive::SignalMap` | `ErrorMessage`, `ModifiedAt`, `Status` |
 | `AWS::MediaPackageV2::Channel` | `ModifiedAt` |
 | `AWS::MediaPackageV2::ChannelGroup` | `ModifiedAt` |
 | `AWS::MediaPackageV2::OriginEndpoint` | `ModifiedAt` |
-| `AWS::NetworkFlowMonitor::Monitor` | `ModifiedAt` |
-| `AWS::NetworkFlowMonitor::PerformanceMonitor` | `ModifiedAt` |
-| `AWS::NetworkManager::ConnectAttachment` | `UpdatedAt` |
-| `AWS::NetworkManager::DirectConnectGatewayAttachment` | `UpdatedAt` |
-| `AWS::NetworkManager::SiteToSiteVpnAttachment` | `UpdatedAt` |
-| `AWS::NetworkManager::TransitGatewayRouteTableAttachment` | `UpdatedAt` |
-| `AWS::NetworkManager::VpcAttachment` | `UpdatedAt` |
-| `AWS::NetworkMonitor::Monitor` | `ModifiedAt` |
-| `AWS::NetworkMonitor::Probe` | `ModifiedAt` |
-| `AWS::NetworkSecurityManager::Deployment` | `UpdatedAt`, `Version` |
-| `AWS::NetworkSecurityManager::Policy` | `UpdatedAt`, `Version` |
-| `AWS::NetworkSecurityManager::Rule` | `UpdatedAt`, `Version` |
-| `AWS::NetworkSecurityManager::Scope` | `UpdatedAt`, `Version` |
-| `AWS::NetworkSecurityManager::Template` | `UpdatedAt`, `Version` |
+| `AWS::MemoryDB::ACL` | `Status` |
+| `AWS::MemoryDB::Cluster` | `ParameterGroupStatus`, `Status` |
+| `AWS::MemoryDB::MultiRegionCluster` | `Status` |
+| `AWS::MemoryDB::User` | `Status` |
+| `AWS::NeptuneGraph::Graph` | `Status` |
+| `AWS::NetworkFirewall::ContainerAssociation` | `Status` |
+| `AWS::NetworkFlowMonitor::Monitor` | `ModifiedAt`, `MonitorStatus` |
+| `AWS::NetworkFlowMonitor::PerformanceMonitor` | `ModifiedAt`, `MonitorStatus` |
+| `AWS::NetworkManager::ConnectAttachment` | `LastModificationErrors`, `State`, `UpdatedAt` |
+| `AWS::NetworkManager::ConnectPeer` | `LastModificationErrors` |
+| `AWS::NetworkManager::Connection` | `State` |
+| `AWS::NetworkManager::ContextStore` | `State` |
+| `AWS::NetworkManager::CoreNetwork` | `State` |
+| `AWS::NetworkManager::Device` | `State` |
+| `AWS::NetworkManager::DirectConnectGatewayAttachment` | `LastModificationErrors`, `State`, `UpdatedAt` |
+| `AWS::NetworkManager::Link` | `State` |
+| `AWS::NetworkManager::Site` | `State` |
+| `AWS::NetworkManager::SiteToSiteVpnAttachment` | `LastModificationErrors`, `State`, `UpdatedAt` |
+| `AWS::NetworkManager::TransitGatewayPeering` | `LastModificationErrors` |
+| `AWS::NetworkManager::TransitGatewayRouteTableAttachment` | `LastModificationErrors`, `State`, `UpdatedAt` |
+| `AWS::NetworkManager::VpcAttachment` | `LastModificationErrors`, `State`, `UpdatedAt` |
+| `AWS::NetworkMonitor::Monitor` | `ModifiedAt`, `State` |
+| `AWS::NetworkMonitor::Probe` | `ModifiedAt`, `State` |
+| `AWS::NetworkSecurityManager::Deployment` | `Status`, `UpdatedAt`, `Version` |
+| `AWS::NetworkSecurityManager::Policy` | `Status`, `UpdatedAt`, `Version` |
+| `AWS::NetworkSecurityManager::Rule` | `Status`, `UpdatedAt`, `Version` |
+| `AWS::NetworkSecurityManager::Scope` | `Status`, `UpdatedAt`, `Version` |
+| `AWS::NetworkSecurityManager::Template` | `Status`, `UpdatedAt`, `Version` |
+| `AWS::Notifications::EventRule` | `StatusSummaryByRegion` |
+| `AWS::Notifications::NotificationConfiguration` | `Status` |
 | `AWS::NotificationsContacts::EmailContact` | `EmailContact.UpdateTime` |
 | `AWS::ObservabilityAdmin::DatasetIntegration` | `UpdatedAt` |
-| `AWS::Omics::AnnotationStore` | `UpdateTime` |
-| `AWS::Omics::SequenceStore` | `UpdateTime` |
-| `AWS::Omics::VariantStore` | `UpdateTime` |
+| `AWS::ObservabilityAdmin::OrganizationTelemetryRule` | `RegionStatuses` |
+| `AWS::ObservabilityAdmin::TelemetryPipelines` | `Status`, `StatusReason` |
+| `AWS::ObservabilityAdmin::TelemetryRule` | `RegionStatuses` |
+| `AWS::Omics::AnnotationStore` | `Status`, `StatusMessage`, `UpdateTime` |
+| `AWS::Omics::Configuration` | `Status` |
+| `AWS::Omics::RunCache` | `Status` |
+| `AWS::Omics::SequenceStore` | `Status`, `StatusMessage`, `UpdateTime` |
+| `AWS::Omics::VariantStore` | `Status`, `StatusMessage`, `UpdateTime` |
+| `AWS::Omics::Workflow` | `Status` |
+| `AWS::Omics::WorkflowVersion` | `Status` |
+| `AWS::OpenSearch::DataSource` | `Status` |
+| `AWS::OpenSearchService::Domain` | `ServiceSoftwareOptions.UpdateStatus` |
+| `AWS::Organizations::Account` | `State`, `Status` |
+| `AWS::Outposts::Outpost` | `LifeCycleStatus` |
+| `AWS::PCS::Cluster` | `ErrorInfo`, `Status` |
+| `AWS::PCS::ComputeNodeGroup` | `ErrorInfo`, `Status` |
+| `AWS::PCS::Queue` | `ErrorInfo`, `Status` |
 | `AWS::Panorama::ApplicationInstance` | `LastUpdatedTime` |
-| `AWS::Personalize::Campaign` | `LastUpdatedDateTime` |
+| `AWS::Panorama::PackageVersion` | `Status`, `StatusDescription` |
+| `AWS::PaymentCryptography::Key` | `KeyState`, `ReplicationStatus` |
+| `AWS::Personalize::Campaign` | `LastUpdatedDateTime`, `Status` |
 | `AWS::Personalize::Filter` | `LastUpdatedDateTime` |
-| `AWS::Personalize::Recommender` | `LastUpdatedDateTime` |
+| `AWS::Personalize::MetricAttribution` | `Status` |
+| `AWS::Personalize::Recommender` | `LastUpdatedDateTime`, `Status` |
 | `AWS::Polly::Lexicon` | `LastModified` |
-| `AWS::PricingPlanManager::Subscription` | `UpdatedAt` |
-| `AWS::QBusiness::Application` | `UpdatedAt` |
+| `AWS::PricingPlanManager::Subscription` | `Status`, `StatusReason`, `UpdatedAt` |
+| `AWS::Proton::EnvironmentAccountConnection` | `Status` |
+| `AWS::QBusiness::Application` | `Status`, `UpdatedAt` |
 | `AWS::QBusiness::DataAccessor` | `UpdatedAt` |
-| `AWS::QBusiness::DataSource` | `UpdatedAt` |
-| `AWS::QBusiness::Index` | `UpdatedAt` |
-| `AWS::QBusiness::Plugin` | `UpdatedAt` |
-| `AWS::QBusiness::Retriever` | `UpdatedAt` |
-| `AWS::QBusiness::WebExperience` | `UpdatedAt` |
-| `AWS::QuickSight::ActionConnector` | `LastUpdatedTime` |
-| `AWS::QuickSight::Agent` | `UpdatedAt` |
+| `AWS::QBusiness::DataSource` | `Status`, `UpdatedAt` |
+| `AWS::QBusiness::Index` | `Status`, `UpdatedAt` |
+| `AWS::QBusiness::Plugin` | `BuildStatus`, `UpdatedAt` |
+| `AWS::QBusiness::Retriever` | `Status`, `UpdatedAt` |
+| `AWS::QBusiness::WebExperience` | `Status`, `UpdatedAt` |
+| `AWS::QuickSight::ActionConnector` | `LastUpdatedTime`, `Status` |
+| `AWS::QuickSight::Agent` | `AgentStatus`, `ErrorMessage`, `UpdatedAt` |
 | `AWS::QuickSight::Analysis` | `LastUpdatedTime` |
 | `AWS::QuickSight::ApprovalPolicy` | `UpdatedAt` |
-| `AWS::QuickSight::Brand` | `LastUpdatedTime`, `VersionId`, `VersionStatus` |
-| `AWS::QuickSight::DLPSetting` | `UpdatedAt` |
+| `AWS::QuickSight::Brand` | `BrandStatus`, `LastUpdatedTime`, `VersionId`, `VersionStatus` |
+| `AWS::QuickSight::DLPSetting` | `Status`, `UpdatedAt` |
 | `AWS::QuickSight::Dashboard` | `LastUpdatedTime`, `Version`, `Version.Arn`, `Version.CreatedTime`, `Version.DataSetArns`, `Version.Description`, `Version.Errors`, `Version.Sheets`, `Version.SourceEntityArn`, `Version.Status`, `Version.ThemeArn`, `Version.VersionNumber` |
 | `AWS::QuickSight::DataSet` | `LastUpdatedTime` |
-| `AWS::QuickSight::DataSource` | `LastUpdatedTime` |
-| `AWS::QuickSight::Flow` | `LastUpdatedTime` |
+| `AWS::QuickSight::DataSource` | `LastUpdatedTime`, `Status` |
+| `AWS::QuickSight::Flow` | `LastUpdatedTime`, `PublishState` |
 | `AWS::QuickSight::Folder` | `LastUpdatedTime` |
-| `AWS::QuickSight::KnowledgeBase` | `UpdatedAt` |
+| `AWS::QuickSight::KnowledgeBase` | `Status`, `UpdatedAt` |
 | `AWS::QuickSight::LimitsProfile` | `UpdatedAt` |
 | `AWS::QuickSight::OAuthClientApplication` | `LastUpdatedTime` |
 | `AWS::QuickSight::Space` | `UpdatedAt` |
 | `AWS::QuickSight::Template` | `LastUpdatedTime`, `Version`, `Version.CreatedTime`, `Version.DataSetConfigurations`, `Version.Description`, `Version.Errors`, `Version.Sheets`, `Version.SourceEntityArn`, `Version.Status`, `Version.ThemeArn`, `Version.VersionNumber` |
 | `AWS::QuickSight::Theme` | `LastUpdatedTime`, `Version`, `Version.Arn`, `Version.BaseThemeId`, `Version.Configuration`, `Version.Configuration.DataColorPalette`, `Version.Configuration.Sheet`, `Version.Configuration.Typography`, `Version.Configuration.UIColorPalette`, `Version.CreatedTime`, `Version.Description`, `Version.Errors`, `Version.Status`, `Version.VersionNumber` |
-| `AWS::QuickSight::VPCConnection` | `LastUpdatedTime` |
-| `AWS::RAM::PermissionAssociation` | `LastUpdatedTime`, `PermissionVersion` |
+| `AWS::QuickSight::VPCConnection` | `LastUpdatedTime`, `Status` |
+| `AWS::RAM::PermissionAssociation` | `AssociationStatus`, `LastUpdatedTime`, `PermissionVersion` |
 | `AWS::RAM::PrincipalAssociation` | `LastUpdatedTime` |
 | `AWS::RAM::ResourceAssociation` | `LastUpdatedTime` |
-| `AWS::RAM::ResourceShare` | `LastUpdatedTime` |
+| `AWS::RAM::ResourceShare` | `LastUpdatedTime`, `Status` |
 | `AWS::RAM::SourceAssociation` | `LastUpdatedTime` |
-| `AWS::RTBFabric::InboundExternalLink` | `UpdatedTimestamp` |
-| `AWS::RTBFabric::Link` | `UpdatedTimestamp` |
-| `AWS::RTBFabric::LinkRoutingRule` | `UpdatedTimestamp` |
-| `AWS::RTBFabric::OutboundExternalLink` | `UpdatedTimestamp` |
-| `AWS::RTBFabric::RequesterGateway` | `UpdatedTimestamp` |
-| `AWS::RTBFabric::ResponderGateway` | `UpdatedTimestamp` |
+| `AWS::RDS::DBClusterEndpoint` | `Status` |
+| `AWS::RTBFabric::InboundExternalLink` | `LinkStatus`, `UpdatedTimestamp` |
+| `AWS::RTBFabric::Link` | `LinkStatus`, `UpdatedTimestamp` |
+| `AWS::RTBFabric::LinkRoutingRule` | `Status`, `UpdatedTimestamp` |
+| `AWS::RTBFabric::OutboundExternalLink` | `LinkStatus`, `UpdatedTimestamp` |
+| `AWS::RTBFabric::RequesterGateway` | `RequesterGatewayStatus`, `UpdatedTimestamp` |
+| `AWS::RTBFabric::ResponderGateway` | `CertificateAssociationStatus`, `ResponderGatewayStatus`, `UpdatedTimestamp` |
+| `AWS::Rbin::Rule` | `LockState` |
+| `AWS::Redshift::EndpointAccess` | `EndpointStatus` |
+| `AWS::Redshift::EndpointAuthorization` | `ClusterStatus`, `Status` |
+| `AWS::Redshift::EventSubscription` | `Status` |
+| `AWS::Redshift::QEV2IdcApplication` | `IdcOnboardStatus` |
+| `AWS::Redshift::RedshiftIdcApplication` | `IdcOnboardStatus` |
+| `AWS::Redshift::ScheduledAction` | `State` |
+| `AWS::Redshift::Snapshot` | `Status` |
+| `AWS::RedshiftServerless::Namespace` | `Namespace.Status` |
+| `AWS::RedshiftServerless::Snapshot` | `Snapshot.Status` |
+| `AWS::RedshiftServerless::Workgroup` | `Workgroup.Status` |
+| `AWS::ResilienceHub::App` | `DriftStatus` |
 | `AWS::ResilienceHubV2::Policy` | `UpdatedAt` |
 | `AWS::ResilienceHubV2::Service` | `UpdatedAt` |
 | `AWS::ResilienceHubV2::ServiceFunction` | `UpdatedAt` |
 | `AWS::ResilienceHubV2::System` | `UpdatedAt` |
 | `AWS::ResilienceHubV2::UserJourney` | `UpdatedAt` |
+| `AWS::ResourceExplorer2::Index` | `IndexState` |
 | `AWS::Route53::TrafficPolicy` | `Version` |
-| `AWS::Route53GlobalResolver::AccessSource` | `UpdatedAt` |
-| `AWS::Route53GlobalResolver::AccessToken` | `UpdatedAt` |
-| `AWS::Route53GlobalResolver::DnsView` | `UpdatedAt` |
-| `AWS::Route53GlobalResolver::FirewallDomainList` | `UpdatedAt` |
-| `AWS::Route53GlobalResolver::FirewallRule` | `UpdatedAt` |
-| `AWS::Route53GlobalResolver::GlobalResolver` | `UpdatedAt` |
-| `AWS::Route53GlobalResolver::HostedZoneAssociation` | `UpdatedAt` |
-| `AWS::Route53Resolver::FirewallDomainList` | `ModificationTime` |
-| `AWS::Route53Resolver::FirewallRuleGroup` | `ModificationTime` |
-| `AWS::Route53Resolver::FirewallRuleGroupAssociation` | `ModificationTime` |
-| `AWS::Route53Resolver::OutpostResolver` | `ModificationTime` |
+| `AWS::Route53::TrafficPolicyInstance` | `State` |
+| `AWS::Route53GlobalResolver::AccessSource` | `Status`, `UpdatedAt` |
+| `AWS::Route53GlobalResolver::AccessToken` | `Status`, `UpdatedAt` |
+| `AWS::Route53GlobalResolver::DnsView` | `Status`, `UpdatedAt` |
+| `AWS::Route53GlobalResolver::FirewallDomainList` | `Status`, `StatusMessage`, `UpdatedAt` |
+| `AWS::Route53GlobalResolver::FirewallRule` | `Status`, `UpdatedAt` |
+| `AWS::Route53GlobalResolver::GlobalResolver` | `Status`, `UpdatedAt` |
+| `AWS::Route53GlobalResolver::HostedZoneAssociation` | `Status`, `UpdatedAt` |
+| `AWS::Route53RecoveryControl::Cluster` | `Status` |
+| `AWS::Route53RecoveryControl::ControlPanel` | `Status` |
+| `AWS::Route53RecoveryControl::RoutingControl` | `Status` |
+| `AWS::Route53RecoveryControl::SafetyRule` | `Status` |
+| `AWS::Route53Resolver::FirewallDomainList` | `ModificationTime`, `Status`, `StatusMessage` |
+| `AWS::Route53Resolver::FirewallRuleGroup` | `ModificationTime`, `ShareStatus`, `Status`, `StatusMessage` |
+| `AWS::Route53Resolver::FirewallRuleGroupAssociation` | `ModificationTime`, `Status`, `StatusMessage` |
+| `AWS::Route53Resolver::OutpostResolver` | `ModificationTime`, `Status`, `StatusMessage` |
+| `AWS::S3::MultiRegionAccessPointPolicy` | `PolicyStatus`, `PolicyStatus.IsPublic` |
+| `AWS::S3Files::FileSystem` | `Status`, `StatusMessage` |
+| `AWS::S3Files::MountTarget` | `Status`, `StatusMessage` |
+| `AWS::S3ObjectLambda::AccessPoint` | `Alias.Status`, `PolicyStatus`, `PolicyStatus.IsPublic` |
+| `AWS::S3Outposts::Endpoint` | `Status` |
 | `AWS::SCN::DataIntegrationFlow` | `LastModifiedTime` |
 | `AWS::SCN::Dataset` | `LastModifiedTime` |
-| `AWS::SCN::Instance` | `LastModifiedTime`, `VersionNumber` |
+| `AWS::SCN::Instance` | `LastModifiedTime`, `State`, `VersionNumber` |
 | `AWS::SCN::Namespace` | `LastModifiedTime` |
+| `AWS::SES::MailManagerArchive` | `ArchiveState` |
+| `AWS::SES::MailManagerIngressPoint` | `Status` |
+| `AWS::SMSVOICE::NotifyConfiguration` | `Status`, `TierUpgradeStatus` |
+| `AWS::SMSVOICE::RcsAgent` | `Status` |
 | `AWS::SSM::CloudConnector` | `UpdatedAt` |
-| `AWS::SSM::DefaultHostManagementConfiguration` | `LastModifiedDate`, `LastModifiedUser` |
-| `AWS::SSM::OpsItem` | `LastModifiedBy`, `LastModifiedTime`, `Version` |
-| `AWS::SSM::ServiceSetting` | `LastModifiedDate`, `LastModifiedUser` |
-| `AWS::SSMQuickSetup::ConfigurationManager` | `LastModifiedAt` |
+| `AWS::SSM::DefaultHostManagementConfiguration` | `LastModifiedDate`, `LastModifiedUser`, `Status` |
+| `AWS::SSM::OpsItem` | `LastModifiedBy`, `LastModifiedTime`, `Status`, `Version` |
+| `AWS::SSM::ServiceSetting` | `LastModifiedDate`, `LastModifiedUser`, `Status` |
+| `AWS::SSMQuickSetup::ConfigurationManager` | `LastModifiedAt`, `StatusSummaries` |
+| `AWS::SSO::Instance` | `Status` |
 | `AWS::SageMaker::Action` | `LastModifiedTime` |
 | `AWS::SageMaker::Artifact` | `LastModifiedTime` |
-| `AWS::SageMaker::ClusterSchedulerConfig` | `ClusterSchedulerConfigVersion` |
-| `AWS::SageMaker::ComputeQuota` | `ComputeQuotaVersion`, `LastModifiedTime` |
+| `AWS::SageMaker::Cluster` | `ClusterStatus`, `FailureMessage` |
+| `AWS::SageMaker::ClusterSchedulerConfig` | `ClusterSchedulerConfigVersion`, `Status` |
+| `AWS::SageMaker::ComputeQuota` | `ComputeQuotaVersion`, `LastModifiedTime`, `Status` |
 | `AWS::SageMaker::Context` | `LastModifiedTime` |
 | `AWS::SageMaker::Experiment` | `LastModifiedTime` |
 | `AWS::SageMaker::ExperimentTrialComponent` | `LastModifiedTime` |
-| `AWS::SageMaker::Extension` | `LastModifiedTime` |
-| `AWS::SageMaker::Hub` | `LastModifiedTime` |
-| `AWS::SageMaker::InferenceComponent` | `LastModifiedTime` |
-| `AWS::SageMaker::InferenceExperiment` | `LastModifiedTime` |
-| `AWS::SageMaker::MlflowApp` | `LastModifiedTime`, `MlflowVersion` |
-| `AWS::SageMaker::ModelCard` | `LastModifiedTime`, `ModelCardVersion` |
+| `AWS::SageMaker::Extension` | `LastModifiedTime`, `Status` |
+| `AWS::SageMaker::FeatureGroup` | `FeatureGroupStatus` |
+| `AWS::SageMaker::Hub` | `HubStatus`, `LastModifiedTime` |
+| `AWS::SageMaker::InferenceComponent` | `FailureReason`, `InferenceComponentStatus`, `LastModifiedTime`, `RuntimeConfig.PlacementStatus` |
+| `AWS::SageMaker::InferenceExperiment` | `EndpointMetadata.EndpointStatus`, `LastModifiedTime`, `Status` |
+| `AWS::SageMaker::MlflowApp` | `LastModifiedTime`, `MlflowVersion`, `Status` |
+| `AWS::SageMaker::ModelCard` | `LastModifiedTime`, `ModelCardProcessingStatus`, `ModelCardVersion` |
+| `AWS::SageMaker::ModelPackage` | `ModelPackageStatus` |
+| `AWS::SageMaker::ModelPackageGroup` | `ModelPackageGroupStatus` |
 | `AWS::SageMaker::MonitoringSchedule` | `LastModifiedTime` |
 | `AWS::SageMaker::PartnerApp` | `CurrentVersionEolDate` |
 | `AWS::SageMaker::ProcessingJob` | `LastModifiedTime` |
+| `AWS::SageMaker::Project` | `ProjectStatus` |
 | `AWS::SageMaker::TrialComponent` | `LastModifiedTime` |
 | `AWS::Scheduler::ScheduleGroup` | `LastModificationDate` |
 | `AWS::SecurityAgent::AgentSpace` | `UpdatedAt` |
 | `AWS::SecurityAgent::Artifact` | `UpdatedAt` |
 | `AWS::SecurityAgent::Pentest` | `UpdatedAt` |
+| `AWS::SecurityAgent::PrivateConnection` | `Status` |
+| `AWS::SecurityAgent::TargetDomain` | `VerificationStatus`, `VerificationStatusReason` |
 | `AWS::SecurityHub::AutomationRule` | `UpdatedAt` |
 | `AWS::SecurityHub::AutomationRuleV2` | `UpdatedAt` |
 | `AWS::SecurityHub::ConfigurationPolicy` | `UpdatedAt` |
-| `AWS::SecurityHub::Connector` | `LastUpdatedAt` |
-| `AWS::SecurityHub::ConnectorV2` | `LastUpdatedAt` |
-| `AWS::SecurityHub::PolicyAssociation` | `UpdatedAt` |
+| `AWS::SecurityHub::Connector` | `ConnectorStatus`, `EnablementStatus`, `LastUpdatedAt` |
+| `AWS::SecurityHub::ConnectorV2` | `ConnectorStatus`, `EnablementStatus`, `EnablementStatusReason`, `LastUpdatedAt` |
+| `AWS::SecurityHub::OrganizationConfiguration` | `Status`, `StatusMessage` |
+| `AWS::SecurityHub::PolicyAssociation` | `AssociationStatus`, `AssociationStatusMessage`, `UpdatedAt` |
+| `AWS::StorageGateway::NFSFileShare` | `FileShareStatus` |
+| `AWS::StorageGateway::SMBFileShare` | `FileShareStatus` |
+| `AWS::Synthetics::Canary` | `State` |
+| `AWS::Timestream::InfluxDBCluster` | `Status` |
+| `AWS::Timestream::InfluxDBInstance` | `Status` |
 | `AWS::Transcribe::CallAnalyticsCategory` | `LastUpdateTime` |
-| `AWS::Transcribe::Vocabulary` | `LastModifiedTime` |
-| `AWS::Translate::ParallelData` | `LastUpdatedAt` |
+| `AWS::Transcribe::Vocabulary` | `LastModifiedTime`, `VocabularyState` |
+| `AWS::Transfer::Certificate` | `Status` |
+| `AWS::Transfer::Connector` | `ErrorMessage`, `Status` |
+| `AWS::Transfer::Server` | `State` |
+| `AWS::Translate::ParallelData` | `LastUpdatedAt`, `Status` |
 | `AWS::Translate::Terminology` | `LastUpdatedAt` |
-| `AWS::VpcLattice::Service` | `LastUpdatedAt` |
+| `AWS::VerifiedPermissions::PolicyStore` | `EncryptionState` |
+| `AWS::VpcLattice::AuthPolicy` | `State` |
+| `AWS::VpcLattice::Service` | `LastUpdatedAt`, `Status` |
 | `AWS::VpcLattice::ServiceNetwork` | `LastUpdatedAt` |
-| `AWS::VpcLattice::TargetGroup` | `LastUpdatedAt` |
+| `AWS::VpcLattice::ServiceNetworkServiceAssociation` | `Status` |
+| `AWS::VpcLattice::ServiceNetworkVpcAssociation` | `Status` |
+| `AWS::VpcLattice::TargetGroup` | `LastUpdatedAt`, `Status` |
 | `AWS::WellArchitected::AgentContext` | `LastModifiedAt`, `LastModifiedBy` |
 | `AWS::WellArchitected::AgentGoal` | `LastModifiedAt`, `LastModifiedBy` |
 | `AWS::WellArchitected::AgentOrganizationalProfile` | `LastModifiedAt`, `LastModifiedBy` |
 | `AWS::WellArchitected::AgentProfile` | `LastModifiedAt`, `LastModifiedBy` |
 | `AWS::WellArchitected::Profile` | `ProfileVersion`, `UpdatedAt` |
-| `AWS::WellArchitected::ReviewTemplate` | `UpdatedAt` |
+| `AWS::WellArchitected::ReviewTemplate` | `UpdateStatus`, `UpdatedAt` |
+| `AWS::WellArchitected::Workload` | `ImprovementStatus` |
+| `AWS::Wickr::Network` | `MigrationState` |
 | `AWS::Wisdom::AIAgent` | `ModifiedTimeSeconds` |
 | `AWS::Wisdom::AIGuardrail` | `ModifiedTimeSeconds` |
 | `AWS::Wisdom::AIPrompt` | `ModifiedTimeSeconds` |
-| `AWS::Wisdom::Content` | `RevisionId` |
-| `AWS::WorkSpacesThinClient::Environment` | `PendingSoftwareSetVersion`, `UpdatedAt` |
+| `AWS::Wisdom::Content` | `RevisionId`, `Status` |
+| `AWS::Wisdom::QuickResponse` | `Status` |
+| `AWS::WorkSpaces::Directory` | `State` |
+| `AWS::WorkSpacesThinClient::Environment` | `PendingSoftwareSetVersion`, `SoftwareSetComplianceStatus`, `UpdatedAt` |
+| `AWS::WorkSpacesWeb::Portal` | `PortalStatus`, `StatusReason` |
 
 ## Cloud Control baseline
 
@@ -1312,23 +1480,21 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::APS::Scraper` | 1 |
 | `AWS::ARCRegionSwitch::Plan` | 4 |
 | `AWS::AWSExternalAnthropic::Workspace` | 1 |
-| `AWS::AgentRegistry::Registry` | 2 |
-| `AWS::AgentRegistry::RegistryRecord` | 4 |
+| `AWS::AgentRegistry::RegistryRecord` | 3 |
 | `AWS::AmazonMQ::Broker` | 9 |
 | `AWS::AmazonMQ::Configuration` | 1 |
 | `AWS::Amplify::App` | 2 |
-| `AWS::Amplify::Domain` | 5 |
+| `AWS::Amplify::Domain` | 2 |
 | `AWS::ApiGateway::DomainName` | 4 |
 | `AWS::ApiGateway::DomainNameV2` | 1 |
 | `AWS::ApiGatewayV2::DomainName` | 2 |
 | `AWS::ApiGatewayV2::VpcLink` | 1 |
 | `AWS::AppConfig::ConfigurationProfile` | 1 |
-| `AWS::AppConfig::ExperimentDefinition` | 2 |
-| `AWS::AppConfig::ExperimentRun` | 3 |
+| `AWS::AppConfig::ExperimentDefinition` | 1 |
+| `AWS::AppConfig::ExperimentRun` | 2 |
 | `AWS::AppConfig::Extension` | 1 |
 | `AWS::AppConfig::ExtensionAssociation` | 2 |
-| `AWS::AppFabric::AppAuthorization` | 4 |
-| `AWS::AppFabric::IngestionDestination` | 1 |
+| `AWS::AppFabric::AppAuthorization` | 3 |
 | `AWS::AppFlow::ConnectorProfile` | 1 |
 | `AWS::AppMesh::GatewayRoute` | 1 |
 | `AWS::AppMesh::Mesh` | 2 |
@@ -1337,77 +1503,63 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::AppMesh::VirtualNode` | 1 |
 | `AWS::AppMesh::VirtualRouter` | 1 |
 | `AWS::AppMesh::VirtualService` | 1 |
-| `AWS::AppRunner::Service` | 2 |
-| `AWS::AppRunner::VpcIngressConnection` | 2 |
+| `AWS::AppRunner::Service` | 1 |
+| `AWS::AppRunner::VpcIngressConnection` | 1 |
 | `AWS::AppStream::ImageBuilder` | 1 |
 | `AWS::AppSync::Api` | 2 |
 | `AWS::AppSync::DomainName` | 1 |
 | `AWS::AppSync::DomainNameApiAssociation` | 1 |
 | `AWS::AppSync::FunctionConfiguration` | 2 |
-| `AWS::AppSync::SourceApiAssociation` | 7 |
+| `AWS::AppSync::SourceApiAssociation` | 5 |
 | `AWS::AppSync::Type` | 1 |
-| `AWS::AppTest::TestCase` | 2 |
+| `AWS::AppTest::TestCase` | 1 |
 | `AWS::ApplicationSignals::ServiceLevelObjective` | 1 |
-| `AWS::Athena::CapacityReservation` | 3 |
+| `AWS::Athena::CapacityReservation` | 2 |
 | `AWS::Athena::WorkGroup` | 2 |
 | `AWS::AuditManager::AssessmentFramework` | 1 |
 | `AWS::AutoScaling::ScalingPolicy` | 1 |
 | `AWS::AutoScaling::ScheduledAction` | 1 |
 | `AWS::AutoScalingPlans::ScalingPlan` | 3 |
-| `AWS::B2BI::Capability` | 1 |
-| `AWS::B2BI::Partnership` | 2 |
-| `AWS::B2BI::Profile` | 2 |
-| `AWS::B2BI::Transformer` | 1 |
-| `AWS::BCM::Dashboard` | 2 |
-| `AWS::BCM::ScheduledReport` | 2 |
+| `AWS::B2BI::Partnership` | 1 |
+| `AWS::B2BI::Profile` | 1 |
+| `AWS::BCM::Dashboard` | 1 |
 | `AWS::BCMDataExports::Export` | 1 |
 | `AWS::Backup::BackupPlan` | 1 |
-| `AWS::Backup::Framework` | 2 |
-| `AWS::Backup::LogicallyAirGappedBackupVault` | 2 |
+| `AWS::Backup::LogicallyAirGappedBackupVault` | 1 |
 | `AWS::Backup::TieringConfiguration` | 1 |
-| `AWS::Batch::ComputeEnvironment` | 1 |
 | `AWS::Batch::ConsumableResource` | 2 |
 | `AWS::Batch::JobDefinition` | 1 |
-| `AWS::BcmPricingCalculator::BillEstimate` | 5 |
-| `AWS::BcmPricingCalculator::BillScenario` | 3 |
-| `AWS::BcmPricingCalculator::WorkloadEstimate` | 5 |
-| `AWS::Bedrock::Agent` | 5 |
-| `AWS::Bedrock::AgentAlias` | 3 |
+| `AWS::BcmPricingCalculator::BillEstimate` | 4 |
+| `AWS::BcmPricingCalculator::BillScenario` | 1 |
+| `AWS::BcmPricingCalculator::WorkloadEstimate` | 3 |
+| `AWS::Bedrock::Agent` | 3 |
+| `AWS::Bedrock::AgentAlias` | 2 |
 | `AWS::Bedrock::AutomatedReasoningPolicy` | 2 |
 | `AWS::Bedrock::Blueprint` | 1 |
-| `AWS::Bedrock::DataAutomationLibrary` | 2 |
-| `AWS::Bedrock::DataAutomationProject` | 2 |
-| `AWS::Bedrock::DataSource` | 3 |
+| `AWS::Bedrock::DataAutomationLibrary` | 1 |
+| `AWS::Bedrock::DataAutomationProject` | 1 |
+| `AWS::Bedrock::DataSource` | 1 |
 | `AWS::Bedrock::EnforcedGuardrailConfiguration` | 3 |
-| `AWS::Bedrock::Flow` | 2 |
-| `AWS::Bedrock::FlowAlias` | 3 |
-| `AWS::Bedrock::Guardrail` | 3 |
-| `AWS::Bedrock::KnowledgeBase` | 2 |
-| `AWS::Bedrock::RetrievalInstruction` | 2 |
-| `AWS::Bedrock::Session` | 1 |
+| `AWS::Bedrock::Flow` | 1 |
+| `AWS::Bedrock::FlowAlias` | 2 |
+| `AWS::Bedrock::Guardrail` | 1 |
 | `AWS::BedrockAgentCore::ApiKeyCredentialProvider` | 2 |
-| `AWS::BedrockAgentCore::CapacityProvider` | 1 |
 | `AWS::BedrockAgentCore::ConfigurationBundle` | 1 |
-| `AWS::BedrockAgentCore::ConsentPortal` | 2 |
-| `AWS::BedrockAgentCore::Dataset` | 2 |
-| `AWS::BedrockAgentCore::Gateway` | 6 |
-| `AWS::BedrockAgentCore::GatewayRateLimit` | 1 |
-| `AWS::BedrockAgentCore::GatewayRule` | 3 |
-| `AWS::BedrockAgentCore::GatewayTarget` | 7 |
-| `AWS::BedrockAgentCore::Harness` | 5 |
-| `AWS::BedrockAgentCore::HarnessEndpoint` | 2 |
-| `AWS::BedrockAgentCore::Memory` | 2 |
-| `AWS::BedrockAgentCore::OAuth2CredentialProvider` | 6 |
-| `AWS::BedrockAgentCore::OnlineEvaluationConfig` | 1 |
-| `AWS::BedrockAgentCore::PaymentConnector` | 4 |
+| `AWS::BedrockAgentCore::ConsentPortal` | 1 |
+| `AWS::BedrockAgentCore::Dataset` | 1 |
+| `AWS::BedrockAgentCore::Gateway` | 3 |
+| `AWS::BedrockAgentCore::GatewayRule` | 2 |
+| `AWS::BedrockAgentCore::GatewayTarget` | 5 |
+| `AWS::BedrockAgentCore::Harness` | 4 |
+| `AWS::BedrockAgentCore::HarnessEndpoint` | 1 |
+| `AWS::BedrockAgentCore::OAuth2CredentialProvider` | 5 |
+| `AWS::BedrockAgentCore::PaymentConnector` | 3 |
 | `AWS::BedrockAgentCore::PaymentCredentialProvider` | 1 |
-| `AWS::BedrockAgentCore::PaymentManager` | 2 |
-| `AWS::BedrockAgentCore::Policy` | 2 |
-| `AWS::BedrockAgentCore::PolicyEngine` | 2 |
-| `AWS::BedrockAgentCore::RuntimeEndpoint` | 4 |
+| `AWS::BedrockAgentCore::PaymentManager` | 1 |
+| `AWS::BedrockAgentCore::RuntimeEndpoint` | 2 |
 | `AWS::BedrockMantle::Project` | 1 |
 | `AWS::Billing::BillingView` | 1 |
-| `AWS::BillingConductor::BillingGroup` | 3 |
+| `AWS::BillingConductor::BillingGroup` | 1 |
 | `AWS::BillingConductor::CustomLineItem` | 3 |
 | `AWS::BillingConductor::PricingPlan` | 1 |
 | `AWS::BillingConductor::PricingRule` | 1 |
@@ -1415,55 +1567,43 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::CE::AnomalyMonitor` | 2 |
 | `AWS::CE::AnomalySubscription` | 1 |
 | `AWS::CE::CostCategory` | 1 |
-| `AWS::Cases::CaseRule` | 2 |
-| `AWS::Cases::Field` | 3 |
-| `AWS::Cases::Layout` | 2 |
-| `AWS::Cases::Template` | 2 |
+| `AWS::Cases::CaseRule` | 1 |
+| `AWS::Cases::Field` | 2 |
+| `AWS::Cases::Layout` | 1 |
+| `AWS::Cases::Template` | 1 |
 | `AWS::CertificateManager::AcmeEndpoint` | 1 |
-| `AWS::Chime::AppInstanceBot` | 1 |
 | `AWS::Chime::Channel` | 2 |
 | `AWS::Chime::ChannelFlow` | 1 |
-| `AWS::Chime::MediaPipelineKinesisVideoStreamPool` | 1 |
-| `AWS::Chime::SipMediaApplication` | 2 |
+| `AWS::Chime::SipMediaApplication` | 1 |
 | `AWS::Chime::VoiceConnector` | 1 |
 | `AWS::CleanRooms::AnalysisTemplate` | 4 |
-| `AWS::CleanRooms::ConfiguredTable` | 1 |
 | `AWS::CleanRooms::IdMappingTable` | 4 |
 | `AWS::CleanRooms::IdNamespaceAssociation` | 5 |
-| `AWS::CleanRooms::IntermediateTable` | 4 |
+| `AWS::CleanRooms::IntermediateTable` | 3 |
 | `AWS::CleanRooms::Membership` | 2 |
 | `AWS::CleanRooms::PrivacyBudgetTemplate` | 3 |
-| `AWS::Cloud9::EnvironmentEC2` | 1 |
-| `AWS::CloudFormation::GeneratedTemplate` | 3 |
+| `AWS::CloudFormation::GeneratedTemplate` | 1 |
 | `AWS::CloudFormation::HookDefaultVersion` | 1 |
-| `AWS::CloudFormation::HookTypeConfig` | 1 |
 | `AWS::CloudFormation::ResourceDefaultVersion` | 1 |
 | `AWS::CloudFormation::TypeActivation` | 1 |
 | `AWS::CloudFront::AnycastIpList` | 2 |
-| `AWS::CloudFront::ConnectionFunction` | 2 |
-| `AWS::CloudFront::ConnectionGroup` | 3 |
-| `AWS::CloudFront::DistributionTenant` | 2 |
+| `AWS::CloudFront::ConnectionFunction` | 1 |
+| `AWS::CloudFront::ConnectionGroup` | 2 |
+| `AWS::CloudFront::DistributionTenant` | 1 |
 | `AWS::CloudFront::Function` | 2 |
-| `AWS::CloudFront::KeyValueStore` | 1 |
-| `AWS::CloudFront::TrustStore` | 2 |
-| `AWS::CloudFront::VpcOrigin` | 2 |
-| `AWS::CloudHSM::Cluster` | 5 |
-| `AWS::CloudTrail::Dashboard` | 3 |
-| `AWS::CloudTrail::EventDataStore` | 1 |
-| `AWS::CloudWatch::AccessProfile` | 2 |
-| `AWS::CloudWatch::AlarmMuteRule` | 2 |
+| `AWS::CloudFront::TrustStore` | 1 |
+| `AWS::CloudFront::VpcOrigin` | 1 |
+| `AWS::CloudHSM::Cluster` | 4 |
+| `AWS::CloudTrail::Dashboard` | 2 |
+| `AWS::CloudWatch::AccessProfile` | 1 |
+| `AWS::CloudWatch::AlarmMuteRule` | 1 |
 | `AWS::CloudWatch::Alert` | 1 |
-| `AWS::CloudWatch::Domain` | 5 |
-| `AWS::CloudWatch::DomainForOrganization` | 8 |
-| `AWS::CloudWatch::Integration` | 1 |
-| `AWS::CloudWatch::MetricDataQueryDefinition` | 2 |
-| `AWS::CloudWatch::MetricStream` | 1 |
-| `AWS::CloudWatch::OTelEnrichment` | 1 |
-| `AWS::CloudWatch::Space` | 2 |
+| `AWS::CloudWatch::Domain` | 4 |
+| `AWS::CloudWatch::DomainForOrganization` | 6 |
+| `AWS::CloudWatch::Space` | 1 |
 | `AWS::CloudWatch::View` | 1 |
 | `AWS::CodeArtifact::Domain` | 2 |
 | `AWS::CodeArtifact::Repository` | 1 |
-| `AWS::CodeConnections::Host` | 1 |
 | `AWS::CodePipeline::Pipeline` | 1 |
 | `AWS::CodePipeline::Webhook` | 1 |
 | `AWS::CodeStarConnections::RepositoryLink` | 1 |
@@ -1471,36 +1611,25 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Cognito::UserPoolClient` | 2 |
 | `AWS::Cognito::UserPoolDomain` | 1 |
 | `AWS::Comprehend::DocumentClassifierEndpoint` | 1 |
-| `AWS::Comprehend::EntityRecognizerEndpoint` | 2 |
+| `AWS::Comprehend::EntityRecognizerEndpoint` | 1 |
 | `AWS::ComputeOptimizer::AutomationRule` | 3 |
 | `AWS::Config::ConfigRule` | 1 |
 | `AWS::Config::ConfigurationRecorder` | 1 |
 | `AWS::Config::ConformancePack` | 1 |
-| `AWS::Connect::AgentStatus` | 1 |
-| `AWS::Connect::ContactFlow` | 1 |
-| `AWS::Connect::ContactFlowModule` | 2 |
 | `AWS::Connect::ContactFlowModuleAlias` | 2 |
 | `AWS::Connect::DataTable` | 1 |
-| `AWS::Connect::EmailAddress` | 1 |
-| `AWS::Connect::HoursOfOperation` | 1 |
-| `AWS::Connect::Metric` | 14 |
+| `AWS::Connect::Metric` | 13 |
 | `AWS::Connect::PhoneNumber` | 1 |
-| `AWS::Connect::Prompt` | 1 |
-| `AWS::Connect::Queue` | 2 |
-| `AWS::Connect::QuickConnect` | 2 |
-| `AWS::Connect::RoutingProfile` | 1 |
-| `AWS::Connect::Rule` | 1 |
-| `AWS::Connect::TaskTemplate` | 1 |
-| `AWS::Connect::TestCase` | 1 |
-| `AWS::Connect::TrafficDistributionGroup` | 2 |
-| `AWS::Connect::UserHierarchyGroup` | 1 |
-| `AWS::Connect::View` | 3 |
-| `AWS::Connect::Workspace` | 2 |
-| `AWS::ControlTower::LandingZone` | 3 |
-| `AWS::CustomerProfiles::CalculatedAttributeDefinition` | 2 |
-| `AWS::CustomerProfiles::Domain` | 3 |
+| `AWS::Connect::Queue` | 1 |
+| `AWS::Connect::QuickConnect` | 1 |
+| `AWS::Connect::TrafficDistributionGroup` | 1 |
+| `AWS::Connect::View` | 2 |
+| `AWS::Connect::Workspace` | 1 |
+| `AWS::ControlTower::LandingZone` | 1 |
+| `AWS::CustomerProfiles::CalculatedAttributeDefinition` | 1 |
+| `AWS::CustomerProfiles::Domain` | 2 |
 | `AWS::CustomerProfiles::ObjectType` | 1 |
-| `AWS::CustomerProfiles::Recommender` | 4 |
+| `AWS::CustomerProfiles::Recommender` | 2 |
 | `AWS::CustomerProfiles::SegmentDefinition` | 1 |
 | `AWS::DAX::Cluster` | 2 |
 | `AWS::DMS::DataMigration` | 1 |
@@ -1509,104 +1638,91 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::DMS::InstanceProfile` | 1 |
 | `AWS::DMS::MigrationProject` | 3 |
 | `AWS::DMS::ReplicationInstance` | 2 |
-| `AWS::DRS::RecoveryPlan` | 3 |
-| `AWS::DSQL::Cluster` | 6 |
+| `AWS::DRS::RecoveryPlan` | 1 |
+| `AWS::DSQL::Cluster` | 5 |
 | `AWS::DataExchange::DataSet` | 1 |
-| `AWS::DataSync::Agent` | 2 |
+| `AWS::DataSync::Agent` | 1 |
 | `AWS::DataSync::LocationAzureBlob` | 2 |
 | `AWS::DataSync::LocationFSxONTAP` | 2 |
 | `AWS::DataSync::LocationFSxWindows` | 2 |
 | `AWS::DataSync::LocationHDFS` | 2 |
 | `AWS::DataSync::LocationObjectStorage` | 2 |
 | `AWS::DataSync::LocationSMB` | 2 |
-| `AWS::DataSync::Task` | 3 |
+| `AWS::DataSync::Task` | 2 |
 | `AWS::DataZone::Connection` | 5 |
-| `AWS::DataZone::DataSource` | 7 |
-| `AWS::DataZone::Domain` | 4 |
+| `AWS::DataZone::DataSource` | 5 |
+| `AWS::DataZone::Domain` | 3 |
 | `AWS::DataZone::DomainUnit` | 2 |
-| `AWS::DataZone::Environment` | 6 |
+| `AWS::DataZone::Environment` | 5 |
 | `AWS::DataZone::EnvironmentProfile` | 2 |
 | `AWS::DataZone::FormType` | 2 |
 | `AWS::DataZone::GroupProfile` | 2 |
-| `AWS::DataZone::Project` | 1 |
 | `AWS::DataZone::ProjectMembership` | 1 |
 | `AWS::DataZone::ProjectProfile` | 3 |
 | `AWS::DataZone::SubscriptionTarget` | 1 |
 | `AWS::DataZone::UserProfile` | 2 |
-| `AWS::Deadline::Budget` | 1 |
-| `AWS::Deadline::Fleet` | 6 |
+| `AWS::Deadline::Fleet` | 3 |
 | `AWS::Deadline::Limit` | 1 |
 | `AWS::Deadline::Monitor` | 1 |
 | `AWS::Deadline::QueueEnvironment` | 1 |
 | `AWS::DevOpsAgent::AgentSpace` | 8 |
 | `AWS::DevOpsAgent::Asset` | 1 |
 | `AWS::DevOpsAgent::Association` | 1 |
-| `AWS::DevOpsAgent::PrivateConnection` | 2 |
+| `AWS::DevOpsAgent::PrivateConnection` | 1 |
 | `AWS::DevOpsAgent::Service` | 2 |
 | `AWS::DevOpsGuru::ResourceCollection` | 1 |
-| `AWS::DirectConnect::Connection` | 1 |
-| `AWS::DirectConnect::Lag` | 1 |
 | `AWS::DirectoryService::MicrosoftAD` | 2 |
 | `AWS::DirectoryService::SimpleAD` | 2 |
 | `AWS::DocDB::GlobalCluster` | 1 |
 | `AWS::DocDBElastic::Cluster` | 1 |
-| `AWS::EC2::CapacityReservation` | 10 |
+| `AWS::EC2::CapacityReservation` | 9 |
 | `AWS::EC2::FcaPolicy` | 2 |
-| `AWS::EC2::FpgaImage` | 5 |
+| `AWS::EC2::FpgaImage` | 4 |
 | `AWS::EC2::IPAM` | 6 |
-| `AWS::EC2::IPAMPool` | 6 |
+| `AWS::EC2::IPAMPool` | 4 |
 | `AWS::EC2::IPAMPrefixListResolver` | 1 |
 | `AWS::EC2::IPAMPrefixListResolverTarget` | 1 |
-| `AWS::EC2::IPAMResourceDiscovery` | 4 |
+| `AWS::EC2::IPAMResourceDiscovery` | 3 |
 | `AWS::EC2::IPAMScope` | 4 |
-| `AWS::EC2::InstanceEventWindow` | 1 |
-| `AWS::EC2::LocalGatewayRoute` | 2 |
-| `AWS::EC2::NetworkInsightsAnalysis` | 9 |
+| `AWS::EC2::LocalGatewayRoute` | 1 |
+| `AWS::EC2::NetworkInsightsAnalysis` | 7 |
 | `AWS::EC2::NetworkInterface` | 5 |
 | `AWS::EC2::PrefixList` | 1 |
-| `AWS::EC2::SqlHaStandbyDetectedInstance` | 2 |
-| `AWS::EC2::TransitGateway` | 1 |
-| `AWS::EC2::TransitGatewayMeteringPolicy` | 2 |
+| `AWS::EC2::SqlHaStandbyDetectedInstance` | 1 |
+| `AWS::EC2::TransitGatewayMeteringPolicy` | 1 |
 | `AWS::EC2::TransitGatewayMeteringPolicyEntry` | 1 |
-| `AWS::EC2::TransitGatewayMulticastDomain` | 1 |
-| `AWS::EC2::TransitGatewayNetworkFunctionAttachment` | 2 |
-| `AWS::EC2::TransitGatewayPeeringAttachment` | 8 |
-| `AWS::EC2::TransitGatewayPolicyTableEntry` | 1 |
+| `AWS::EC2::TransitGatewayNetworkFunctionAttachment` | 1 |
+| `AWS::EC2::TransitGatewayPeeringAttachment` | 3 |
 | `AWS::EC2::VPCBlockPublicAccessOptions` | 1 |
-| `AWS::EC2::VPCEncryptionControl` | 27 |
-| `AWS::EC2::VPCEndpointService` | 4 |
-| `AWS::EC2::VerifiedAccessEndpoint` | 4 |
+| `AWS::EC2::VPCEncryptionControl` | 9 |
+| `AWS::EC2::VPCEndpointService` | 3 |
+| `AWS::EC2::VerifiedAccessEndpoint` | 3 |
 | `AWS::EC2::VerifiedAccessGroup` | 1 |
 | `AWS::EC2::VerifiedAccessInstance` | 1 |
-| `AWS::ECS::Daemon` | 2 |
-| `AWS::ECS::ExpressGatewayService` | 17 |
-| `AWS::ECS::Gateway` | 3 |
+| `AWS::ECS::Daemon` | 1 |
+| `AWS::ECS::ExpressGatewayService` | 16 |
+| `AWS::ECS::Gateway` | 2 |
 | `AWS::EKS::Addon` | 1 |
-| `AWS::EKS::Capability` | 3 |
+| `AWS::EKS::Capability` | 2 |
 | `AWS::EKS::Cluster` | 11 |
 | `AWS::EKS::Nodegroup` | 1 |
 | `AWS::EKS::PodIdentityAssociation` | 1 |
 | `AWS::EMR::Studio` | 1 |
-| `AWS::EVS::Environment` | 4 |
-| `AWS::ElastiCache::GlobalReplicationGroup` | 2 |
+| `AWS::EVS::Environment` | 2 |
+| `AWS::ElastiCache::GlobalReplicationGroup` | 1 |
 | `AWS::ElastiCache::ParameterGroup` | 1 |
 | `AWS::ElastiCache::ReplicationGroup` | 15 |
-| `AWS::ElastiCache::ServerlessCache` | 5 |
-| `AWS::ElastiCache::User` | 1 |
-| `AWS::ElastiCache::UserGroup` | 1 |
+| `AWS::ElastiCache::ServerlessCache` | 4 |
 | `AWS::ElasticBeanstalk::ConfigurationTemplate` | 1 |
 | `AWS::ElasticBeanstalk::Environment` | 1 |
 | `AWS::ElasticLoadBalancing::LoadBalancer` | 6 |
 | `AWS::ElasticLoadBalancingV2::ListenerRule` | 1 |
-| `AWS::ElasticLoadBalancingV2::TrustStore` | 2 |
+| `AWS::ElasticLoadBalancingV2::TrustStore` | 1 |
 | `AWS::Elasticsearch::Domain` | 2 |
 | `AWS::ElementalInference::Feed` | 1 |
-| `AWS::EventSchemas::Discoverer` | 1 |
 | `AWS::Events::ApiDestination` | 1 |
 | `AWS::Events::Connection` | 4 |
-| `AWS::Events::Endpoint` | 2 |
-| `AWS::EventsV2::EventBus` | 1 |
-| `AWS::EventsV2::EventSource` | 2 |
+| `AWS::EventsV2::EventSource` | 1 |
 | `AWS::EventsV2::Subscriber` | 1 |
 | `AWS::Evidently::Segment` | 1 |
 | `AWS::FSx::DataRepositoryAssociation` | 1 |
@@ -1614,22 +1730,21 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::FSx::Snapshot` | 1 |
 | `AWS::FSx::StorageVirtualMachine` | 1 |
 | `AWS::FSx::Volume` | 2 |
-| `AWS::FinSpace::Environment` | 4 |
+| `AWS::FinSpace::Environment` | 3 |
 | `AWS::FraudDetector::Detector` | 3 |
 | `AWS::GameLift::Build` | 1 |
-| `AWS::GameLift::ContainerFleet` | 5 |
-| `AWS::GameLift::ContainerGroupDefinition` | 3 |
+| `AWS::GameLift::ContainerFleet` | 4 |
+| `AWS::GameLift::ContainerGroupDefinition` | 1 |
 | `AWS::GameLift::GameServerGroup` | 2 |
 | `AWS::GameLift::Script` | 2 |
 | `AWS::GlobalAccelerator::Accelerator` | 4 |
-| `AWS::Glue::Blueprint` | 2 |
-| `AWS::Glue::Catalog` | 16 |
+| `AWS::Glue::Blueprint` | 1 |
+| `AWS::Glue::Catalog` | 7 |
 | `AWS::Glue::Classifier` | 1 |
 | `AWS::Glue::IdentityCenterConfiguration` | 1 |
-| `AWS::Glue::Integration` | 1 |
 | `AWS::Glue::Partition` | 1 |
 | `AWS::Glue::Schema` | 1 |
-| `AWS::Grafana::Workspace` | 4 |
+| `AWS::Grafana::Workspace` | 2 |
 | `AWS::Greengrass::ConnectorDefinition` | 1 |
 | `AWS::Greengrass::CoreDefinition` | 1 |
 | `AWS::Greengrass::DeviceDefinition` | 1 |
@@ -1638,115 +1753,89 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Greengrass::LoggerDefinition` | 1 |
 | `AWS::Greengrass::ResourceDefinition` | 1 |
 | `AWS::Greengrass::SubscriptionDefinition` | 1 |
-| `AWS::GroundStation::Config` | 3 |
+| `AWS::GroundStation::Config` | 2 |
 | `AWS::GroundStation::MissionProfile` | 1 |
 | `AWS::GuardDuty::CustomDetectionRuleAssociation` | 1 |
-| `AWS::GuardDuty::MalwareProtectionPlan` | 2 |
-| `AWS::GuardDuty::PublishingDestination` | 2 |
-| `AWS::GuardDuty::ThreatEntitySet` | 2 |
-| `AWS::GuardDuty::TrustedEntitySet` | 2 |
-| `AWS::HealthLake::FHIRDatastore` | 1 |
+| `AWS::GuardDuty::PublishingDestination` | 1 |
 | `AWS::IAM::ServiceLinkedRole` | 1 |
 | `AWS::IAM::VirtualMFADevice` | 1 |
 | `AWS::IVS::Channel` | 2 |
-| `AWS::IVS::IngestConfiguration` | 3 |
+| `AWS::IVS::IngestConfiguration` | 2 |
 | `AWS::IVS::Stage` | 1 |
-| `AWS::IVSChat::LoggingConfiguration` | 1 |
-| `AWS::IdentityStore::User` | 1 |
 | `AWS::ImageBuilder::Image` | 3 |
 | `AWS::ImageBuilder::ImagePipeline` | 1 |
-| `AWS::InspectorV2::CisScanConfiguration` | 1 |
-| `AWS::InspectorV2::CodeSecurityIntegration` | 4 |
-| `AWS::InspectorV2::Connector` | 9 |
-| `AWS::InspectorV2::Filter` | 1 |
-| `AWS::Interconnect::Connection` | 6 |
-| `AWS::InternetMonitor::Monitor` | 2 |
-| `AWS::Invoicing::ProcurementPortalPreference` | 3 |
+| `AWS::InspectorV2::CodeSecurityIntegration` | 1 |
+| `AWS::Interconnect::Connection` | 5 |
+| `AWS::Invoicing::ProcurementPortalPreference` | 1 |
 | `AWS::IoT::DomainConfiguration` | 2 |
 | `AWS::IoT::EncryptionConfiguration` | 1 |
 | `AWS::IoT::FleetMetric` | 1 |
-| `AWS::IoT::OTAUpdate` | 1 |
-| `AWS::IoT::SoftwarePackageVersion` | 4 |
-| `AWS::IoT::TopicRuleDestination` | 1 |
+| `AWS::IoT::SoftwarePackageVersion` | 1 |
 | `AWS::IoTAnalytics::Dataset` | 1 |
 | `AWS::IoTCoreDeviceAdvisor::SuiteDefinition` | 1 |
-| `AWS::IoTFleetHub::Application` | 7 |
-| `AWS::IoTFleetWise::Campaign` | 1 |
+| `AWS::IoTFleetHub::Application` | 5 |
 | `AWS::IoTFleetWise::SignalCatalog` | 5 |
-| `AWS::IoTSiteWise::Pipeline` | 1 |
 | `AWS::IoTSiteWise::Portal` | 2 |
-| `AWS::IoTSiteWise::Task` | 1 |
-| `AWS::IoTSiteWise::Workspace` | 1 |
-| `AWS::IoTTwinMaker::ComponentType` | 7 |
-| `AWS::IoTTwinMaker::Entity` | 7 |
+| `AWS::IoTTwinMaker::ComponentType` | 2 |
+| `AWS::IoTTwinMaker::Entity` | 2 |
 | `AWS::IoTTwinMaker::Scene` | 1 |
-| `AWS::IoTWireless::FuotaTask` | 2 |
-| `AWS::IoTWireless::MulticastGroup` | 3 |
+| `AWS::IoTWireless::FuotaTask` | 1 |
+| `AWS::IoTWireless::MulticastGroup` | 2 |
 | `AWS::IoTWireless::PartnerAccount` | 1 |
-| `AWS::IoTWireless::TaskDefinition` | 1 |
 | `AWS::IoTWireless::WirelessDevice` | 1 |
-| `AWS::IoTWireless::WirelessDeviceImportTask` | 7 |
+| `AWS::IoTWireless::WirelessDeviceImportTask` | 5 |
 | `AWS::Kendra::DataSource` | 1 |
-| `AWS::Kendra::FeaturedResultsSet` | 2 |
-| `AWS::Kendra::QuerySuggestionsBlockList` | 2 |
-| `AWS::Kendra::Thesaurus` | 2 |
-| `AWS::KendraRanking::ExecutionPlan` | 1 |
-| `AWS::Kinesis::Channel` | 2 |
-| `AWS::Lambda::CapacityProvider` | 1 |
-| `AWS::Lambda::Runtime` | 1 |
-| `AWS::Lambda::RuntimeAlias` | 2 |
-| `AWS::Lambda::RuntimeVersion` | 4 |
+| `AWS::Kendra::FeaturedResultsSet` | 1 |
+| `AWS::Kendra::QuerySuggestionsBlockList` | 1 |
+| `AWS::Kendra::Thesaurus` | 1 |
+| `AWS::Kinesis::Channel` | 1 |
+| `AWS::Lambda::RuntimeAlias` | 1 |
+| `AWS::Lambda::RuntimeVersion` | 3 |
 | `AWS::Lambda::Version` | 1 |
-| `AWS::LaunchWizard::Deployment` | 3 |
-| `AWS::Lex::BotAlias` | 1 |
+| `AWS::LaunchWizard::Deployment` | 2 |
 | `AWS::Lex::BotVersion` | 1 |
-| `AWS::LicenseManager::LicenseConfiguration` | 1 |
 | `AWS::LicenseManager::ReportGenerator` | 2 |
 | `AWS::Lightsail::Bucket` | 3 |
 | `AWS::Lightsail::Container` | 3 |
-| `AWS::Lightsail::Disk` | 10 |
-| `AWS::Lightsail::Distribution` | 2 |
+| `AWS::Lightsail::Disk` | 8 |
+| `AWS::Lightsail::Distribution` | 1 |
 | `AWS::Lightsail::Domain` | 3 |
 | `AWS::Lightsail::Instance` | 15 |
-| `AWS::Lightsail::LoadBalancerTlsCertificate` | 1 |
 | `AWS::Lightsail::StaticIp` | 2 |
-| `AWS::Logs::LogAnomalyDetector` | 2 |
-| `AWS::Logs::ScheduledQuery` | 2 |
-| `AWS::M2::Deployment` | 2 |
+| `AWS::Logs::LogAnomalyDetector` | 1 |
+| `AWS::Logs::ScheduledQuery` | 1 |
+| `AWS::M2::Deployment` | 1 |
 | `AWS::MGN::Application` | 1 |
 | `AWS::MGN::LaunchConfigurationTemplate` | 1 |
-| `AWS::MGN::Wave` | 2 |
-| `AWS::MPA::ApprovalTeam` | 5 |
-| `AWS::MSK::Channel` | 2 |
+| `AWS::MGN::Wave` | 1 |
+| `AWS::MPA::ApprovalTeam` | 2 |
 | `AWS::MSK::Configuration` | 3 |
 | `AWS::MWAA::Environment` | 10 |
-| `AWS::MWAAServerless::Workflow` | 3 |
-| `AWS::Macie::AllowList` | 2 |
-| `AWS::Macie::FindingsFilter` | 2 |
-| `AWS::Macie::Session` | 2 |
-| `AWS::MediaConnect::Bridge` | 2 |
-| `AWS::MediaConnect::DestinationEndpoint` | 8 |
+| `AWS::MWAAServerless::Workflow` | 2 |
+| `AWS::Macie::FindingsFilter` | 1 |
+| `AWS::Macie::Session` | 1 |
+| `AWS::MediaConnect::DestinationEndpoint` | 6 |
 | `AWS::MediaConnect::Flow` | 9 |
 | `AWS::MediaConnect::FlowMediaStream` | 1 |
 | `AWS::MediaConnect::FlowSource` | 5 |
 | `AWS::MediaConnect::FlowVpcInterface` | 1 |
-| `AWS::MediaConnect::RouterInput` | 14 |
-| `AWS::MediaConnect::RouterNetworkInterface` | 4 |
-| `AWS::MediaConnect::RouterOutput` | 6 |
-| `AWS::MediaConnect::SourceEndpoint` | 8 |
+| `AWS::MediaConnect::RouterInput` | 13 |
+| `AWS::MediaConnect::RouterNetworkInterface` | 3 |
+| `AWS::MediaConnect::RouterOutput` | 4 |
+| `AWS::MediaConnect::SourceEndpoint` | 6 |
 | `AWS::MediaLive::Channel` | 2 |
-| `AWS::MediaLive::ChannelPlacementGroup` | 3 |
+| `AWS::MediaLive::ChannelPlacementGroup` | 2 |
 | `AWS::MediaLive::CloudWatchAlarmTemplate` | 1 |
-| `AWS::MediaLive::Cluster` | 2 |
-| `AWS::MediaLive::EventBridgeRuleTemplate` | 3 |
-| `AWS::MediaLive::Input` | 8 |
+| `AWS::MediaLive::Cluster` | 1 |
+| `AWS::MediaLive::EventBridgeRuleTemplate` | 1 |
+| `AWS::MediaLive::Input` | 7 |
 | `AWS::MediaLive::InputSecurityGroup` | 1 |
-| `AWS::MediaLive::Multiplex` | 3 |
+| `AWS::MediaLive::Multiplex` | 2 |
 | `AWS::MediaLive::Multiplexprogram` | 1 |
-| `AWS::MediaLive::Network` | 2 |
-| `AWS::MediaLive::Node` | 6 |
-| `AWS::MediaLive::SdiSource` | 2 |
-| `AWS::MediaLive::SignalMap` | 12 |
+| `AWS::MediaLive::Network` | 1 |
+| `AWS::MediaLive::Node` | 3 |
+| `AWS::MediaLive::SdiSource` | 1 |
+| `AWS::MediaLive::SignalMap` | 9 |
 | `AWS::MediaPackage::OriginEndpoint` | 1 |
 | `AWS::MediaPackage::PackagingGroup` | 1 |
 | `AWS::MediaPackageV2::Channel` | 2 |
@@ -1755,42 +1844,25 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::MediaStore::Container` | 1 |
 | `AWS::MediaTailor::PlaybackConfiguration` | 4 |
 | `AWS::MediaTailor::Program` | 3 |
-| `AWS::MemoryDB::ACL` | 1 |
-| `AWS::MemoryDB::Cluster` | 4 |
-| `AWS::MemoryDB::MultiRegionCluster` | 2 |
+| `AWS::MemoryDB::Cluster` | 2 |
+| `AWS::MemoryDB::MultiRegionCluster` | 1 |
 | `AWS::MemoryDB::SubnetGroup` | 1 |
-| `AWS::MemoryDB::User` | 1 |
-| `AWS::NeptuneGraph::Graph` | 2 |
-| `AWS::NetworkFirewall::ContainerAssociation` | 2 |
+| `AWS::NeptuneGraph::Graph` | 1 |
+| `AWS::NetworkFirewall::ContainerAssociation` | 1 |
 | `AWS::NetworkFirewall::Firewall` | 3 |
-| `AWS::NetworkFlowMonitor::Monitor` | 1 |
-| `AWS::NetworkFlowMonitor::PerformanceMonitor` | 2 |
-| `AWS::NetworkManager::ConnectAttachment` | 9 |
-| `AWS::NetworkManager::ConnectPeer` | 1 |
-| `AWS::NetworkManager::Connection` | 1 |
-| `AWS::NetworkManager::ContextStore` | 1 |
-| `AWS::NetworkManager::CoreNetwork` | 4 |
-| `AWS::NetworkManager::Device` | 1 |
-| `AWS::NetworkManager::DirectConnectGatewayAttachment` | 10 |
-| `AWS::NetworkManager::Link` | 1 |
-| `AWS::NetworkManager::Site` | 1 |
-| `AWS::NetworkManager::SiteToSiteVpnAttachment` | 9 |
-| `AWS::NetworkManager::TransitGatewayPeering` | 1 |
-| `AWS::NetworkManager::TransitGatewayRouteTableAttachment` | 10 |
-| `AWS::NetworkManager::VpcAttachment` | 11 |
-| `AWS::NetworkMonitor::Monitor` | 1 |
-| `AWS::NetworkMonitor::Probe` | 3 |
-| `AWS::NetworkSecurityManager::Deployment` | 1 |
-| `AWS::NetworkSecurityManager::Policy` | 1 |
-| `AWS::NetworkSecurityManager::Rule` | 1 |
-| `AWS::NetworkSecurityManager::Scope` | 1 |
-| `AWS::NetworkSecurityManager::Template` | 1 |
+| `AWS::NetworkFlowMonitor::PerformanceMonitor` | 1 |
+| `AWS::NetworkManager::ConnectAttachment` | 7 |
+| `AWS::NetworkManager::CoreNetwork` | 3 |
+| `AWS::NetworkManager::DirectConnectGatewayAttachment` | 8 |
+| `AWS::NetworkManager::SiteToSiteVpnAttachment` | 7 |
+| `AWS::NetworkManager::TransitGatewayRouteTableAttachment` | 8 |
+| `AWS::NetworkManager::VpcAttachment` | 9 |
+| `AWS::NetworkMonitor::Probe` | 2 |
 | `AWS::NimbleStudio::LaunchProfile` | 1 |
 | `AWS::NimbleStudio::StreamingImage` | 7 |
 | `AWS::NimbleStudio::Studio` | 3 |
 | `AWS::NimbleStudio::StudioComponent` | 1 |
-| `AWS::Notifications::EventRule` | 2 |
-| `AWS::Notifications::NotificationConfiguration` | 1 |
+| `AWS::Notifications::EventRule` | 1 |
 | `AWS::ODB::CloudAutonomousVmCluster` | 26 |
 | `AWS::ODB::CloudExadataInfrastructure` | 17 |
 | `AWS::ODB::CloudVmCluster` | 13 |
@@ -1798,184 +1870,142 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::ODB::OdbPeeringConnection` | 3 |
 | `AWS::OSIS::Pipeline` | 3 |
 | `AWS::Oam::Link` | 1 |
-| `AWS::ObservabilityAdmin::OrganizationTelemetryRule` | 1 |
-| `AWS::ObservabilityAdmin::TelemetryPipelines` | 3 |
-| `AWS::ObservabilityAdmin::TelemetryRule` | 1 |
-| `AWS::Omics::AnnotationStore` | 3 |
-| `AWS::Omics::Configuration` | 1 |
-| `AWS::Omics::RunCache` | 1 |
-| `AWS::Omics::SequenceStore` | 4 |
-| `AWS::Omics::VariantStore` | 3 |
-| `AWS::Omics::Workflow` | 3 |
-| `AWS::Omics::WorkflowVersion` | 2 |
-| `AWS::OpenSearch::DataSource` | 1 |
+| `AWS::ObservabilityAdmin::TelemetryPipelines` | 1 |
+| `AWS::Omics::AnnotationStore` | 1 |
+| `AWS::Omics::SequenceStore` | 2 |
+| `AWS::Omics::VariantStore` | 1 |
+| `AWS::Omics::Workflow` | 2 |
+| `AWS::Omics::WorkflowVersion` | 1 |
 | `AWS::OpenSearchServerless::Collection` | 1 |
 | `AWS::OpenSearchServerless::SecurityConfig` | 3 |
-| `AWS::OpenSearchService::Domain` | 17 |
+| `AWS::OpenSearchService::Domain` | 16 |
 | `AWS::OpsWorks::Instance` | 4 |
 | `AWS::OpsWorksCM::Server` | 2 |
-| `AWS::Organizations::Account` | 6 |
+| `AWS::Organizations::Account` | 4 |
 | `AWS::Organizations::Organization` | 4 |
 | `AWS::Organizations::OrganizationalUnit` | 2 |
 | `AWS::Organizations::Policy` | 2 |
-| `AWS::Outposts::Outpost` | 3 |
-| `AWS::PCS::Cluster` | 2 |
-| `AWS::PCS::ComputeNodeGroup` | 4 |
-| `AWS::PCS::Queue` | 2 |
+| `AWS::Outposts::Outpost` | 2 |
+| `AWS::PCS::ComputeNodeGroup` | 1 |
 | `AWS::Panorama::Package` | 5 |
-| `AWS::Panorama::PackageVersion` | 6 |
-| `AWS::PaymentCryptography::Key` | 3 |
-| `AWS::Personalize::Campaign` | 1 |
-| `AWS::Personalize::MetricAttribution` | 1 |
-| `AWS::Personalize::Recommender` | 1 |
+| `AWS::Panorama::PackageVersion` | 4 |
+| `AWS::PaymentCryptography::Key` | 1 |
 | `AWS::Pinpoint::Campaign` | 1 |
 | `AWS::Pinpoint::Segment` | 1 |
 | `AWS::PinpointEmail::Identity` | 6 |
 | `AWS::Polly::Lexicon` | 4 |
-| `AWS::PricingPlanManager::Subscription` | 3 |
-| `AWS::Proton::EnvironmentAccountConnection` | 1 |
-| `AWS::QBusiness::Application` | 2 |
+| `AWS::PricingPlanManager::Subscription` | 1 |
+| `AWS::QBusiness::Application` | 1 |
 | `AWS::QBusiness::DataAccessor` | 2 |
-| `AWS::QBusiness::DataSource` | 3 |
-| `AWS::QBusiness::Index` | 3 |
-| `AWS::QBusiness::Plugin` | 2 |
-| `AWS::QBusiness::Retriever` | 2 |
-| `AWS::QBusiness::WebExperience` | 2 |
-| `AWS::QuickSight::ActionConnector` | 3 |
-| `AWS::QuickSight::Agent` | 4 |
+| `AWS::QBusiness::DataSource` | 2 |
+| `AWS::QBusiness::Index` | 2 |
+| `AWS::QBusiness::Plugin` | 1 |
+| `AWS::QBusiness::Retriever` | 1 |
+| `AWS::QBusiness::WebExperience` | 1 |
+| `AWS::QuickSight::ActionConnector` | 1 |
+| `AWS::QuickSight::Agent` | 1 |
 | `AWS::QuickSight::Analysis` | 1 |
-| `AWS::QuickSight::ApprovalPolicy` | 1 |
-| `AWS::QuickSight::Brand` | 1 |
-| `AWS::QuickSight::DLPSetting` | 2 |
 | `AWS::QuickSight::Dashboard` | 2 |
-| `AWS::QuickSight::DataSet` | 3 |
-| `AWS::QuickSight::DataSource` | 2 |
-| `AWS::QuickSight::Flow` | 3 |
+| `AWS::QuickSight::DataSet` | 2 |
+| `AWS::QuickSight::Flow` | 2 |
 | `AWS::QuickSight::Group` | 1 |
-| `AWS::QuickSight::KnowledgeBase` | 6 |
-| `AWS::QuickSight::LimitsProfile` | 1 |
-| `AWS::QuickSight::Space` | 1 |
+| `AWS::QuickSight::KnowledgeBase` | 4 |
 | `AWS::QuickSight::Template` | 1 |
 | `AWS::QuickSight::Theme` | 2 |
 | `AWS::QuickSight::Topic` | 1 |
 | `AWS::QuickSight::TopicV2` | 1 |
-| `AWS::QuickSight::VPCConnection` | 4 |
-| `AWS::RAM::PermissionAssociation` | 4 |
-| `AWS::RAM::ResourceShare` | 2 |
+| `AWS::QuickSight::VPCConnection` | 2 |
+| `AWS::RAM::PermissionAssociation` | 3 |
+| `AWS::RAM::ResourceShare` | 1 |
 | `AWS::RDS::CustomDBEngineVersion` | 1 |
-| `AWS::RDS::DBClusterEndpoint` | 4 |
+| `AWS::RDS::DBClusterEndpoint` | 3 |
 | `AWS::RDS::DBShardGroup` | 1 |
 | `AWS::RDS::GlobalCluster` | 1 |
-| `AWS::RTBFabric::InboundExternalLink` | 2 |
-| `AWS::RTBFabric::Link` | 2 |
-| `AWS::RTBFabric::LinkRoutingRule` | 1 |
-| `AWS::RTBFabric::OutboundExternalLink` | 1 |
-| `AWS::RTBFabric::RequesterGateway` | 4 |
-| `AWS::RTBFabric::ResponderGateway` | 3 |
-| `AWS::Rbin::Rule` | 2 |
+| `AWS::RTBFabric::InboundExternalLink` | 1 |
+| `AWS::RTBFabric::Link` | 1 |
+| `AWS::RTBFabric::RequesterGateway` | 3 |
+| `AWS::RTBFabric::ResponderGateway` | 1 |
+| `AWS::Rbin::Rule` | 1 |
 | `AWS::Redshift::Cluster` | 6 |
 | `AWS::Redshift::ClusterSubnetGroup` | 1 |
-| `AWS::Redshift::EndpointAccess` | 9 |
-| `AWS::Redshift::EndpointAuthorization` | 8 |
-| `AWS::Redshift::EventSubscription` | 6 |
-| `AWS::Redshift::QEV2IdcApplication` | 2 |
-| `AWS::Redshift::RedshiftIdcApplication` | 2 |
-| `AWS::Redshift::ScheduledAction` | 2 |
-| `AWS::Redshift::Snapshot` | 16 |
+| `AWS::Redshift::EndpointAccess` | 8 |
+| `AWS::Redshift::EndpointAuthorization` | 6 |
+| `AWS::Redshift::EventSubscription` | 5 |
+| `AWS::Redshift::QEV2IdcApplication` | 1 |
+| `AWS::Redshift::RedshiftIdcApplication` | 1 |
+| `AWS::Redshift::ScheduledAction` | 1 |
+| `AWS::Redshift::Snapshot` | 15 |
 | `AWS::Redshift::SnapshotSchedule` | 1 |
-| `AWS::RedshiftServerless::Namespace` | 12 |
-| `AWS::RedshiftServerless::Snapshot` | 11 |
-| `AWS::RedshiftServerless::Workgroup` | 18 |
+| `AWS::RedshiftServerless::Namespace` | 11 |
+| `AWS::RedshiftServerless::Snapshot` | 10 |
+| `AWS::RedshiftServerless::Workgroup` | 17 |
 | `AWS::RefactorSpaces::Route` | 1 |
-| `AWS::ResilienceHub::App` | 1 |
 | `AWS::ResilienceHubV2::Policy` | 1 |
 | `AWS::ResilienceHubV2::Service` | 1 |
 | `AWS::ResilienceHubV2::ServiceFunction` | 2 |
 | `AWS::ResourceExplorer2::DefaultViewAssociation` | 1 |
-| `AWS::ResourceExplorer2::Index` | 1 |
 | `AWS::Route53::TrafficPolicy` | 1 |
-| `AWS::Route53::TrafficPolicyInstance` | 2 |
-| `AWS::Route53GlobalResolver::AccessSource` | 2 |
-| `AWS::Route53GlobalResolver::AccessToken` | 4 |
-| `AWS::Route53GlobalResolver::DnsView` | 2 |
-| `AWS::Route53GlobalResolver::FirewallDomainList` | 3 |
-| `AWS::Route53GlobalResolver::FirewallRule` | 2 |
-| `AWS::Route53GlobalResolver::GlobalResolver` | 5 |
-| `AWS::Route53GlobalResolver::HostedZoneAssociation` | 2 |
+| `AWS::Route53::TrafficPolicyInstance` | 1 |
+| `AWS::Route53GlobalResolver::AccessToken` | 2 |
+| `AWS::Route53GlobalResolver::FirewallDomainList` | 1 |
+| `AWS::Route53GlobalResolver::FirewallRule` | 1 |
+| `AWS::Route53GlobalResolver::GlobalResolver` | 3 |
+| `AWS::Route53GlobalResolver::HostedZoneAssociation` | 1 |
 | `AWS::Route53Profiles::ProfileResourceAssociation` | 1 |
-| `AWS::Route53RecoveryControl::Cluster` | 2 |
-| `AWS::Route53RecoveryControl::ControlPanel` | 3 |
-| `AWS::Route53RecoveryControl::RoutingControl` | 2 |
-| `AWS::Route53RecoveryControl::SafetyRule` | 2 |
+| `AWS::Route53RecoveryControl::Cluster` | 1 |
+| `AWS::Route53RecoveryControl::ControlPanel` | 2 |
 | `AWS::Route53RecoveryReadiness::Cell` | 1 |
 | `AWS::Route53Resolver::FirewallConfig` | 1 |
-| `AWS::Route53Resolver::FirewallDomainList` | 4 |
-| `AWS::Route53Resolver::FirewallRuleGroup` | 5 |
-| `AWS::Route53Resolver::FirewallRuleGroupAssociation` | 3 |
-| `AWS::Route53Resolver::OutpostResolver` | 3 |
-| `AWS::Route53Resolver::ResolverEndpoint` | 3 |
+| `AWS::Route53Resolver::FirewallDomainList` | 2 |
+| `AWS::Route53Resolver::FirewallRuleGroup` | 2 |
+| `AWS::Route53Resolver::FirewallRuleGroupAssociation` | 1 |
+| `AWS::Route53Resolver::ResolverEndpoint` | 2 |
 | `AWS::S3::AccessGrant` | 1 |
 | `AWS::S3::AccessPoint` | 2 |
-| `AWS::S3::MultiRegionAccessPointPolicy` | 2 |
 | `AWS::S3::StorageLens` | 1 |
 | `AWS::S3Express::AccessPoint` | 1 |
-| `AWS::S3Files::FileSystem` | 4 |
-| `AWS::S3Files::MountTarget` | 6 |
-| `AWS::S3ObjectLambda::AccessPoint` | 10 |
-| `AWS::S3Outposts::Endpoint` | 3 |
+| `AWS::S3Files::FileSystem` | 2 |
+| `AWS::S3Files::MountTarget` | 4 |
+| `AWS::S3ObjectLambda::AccessPoint` | 7 |
+| `AWS::S3Outposts::Endpoint` | 2 |
 | `AWS::S3Tables::TablePolicy` | 3 |
-| `AWS::SCN::Instance` | 1 |
 | `AWS::SES::EmailIdentity` | 6 |
-| `AWS::SES::MailManagerArchive` | 1 |
-| `AWS::SES::MailManagerIngressPoint` | 2 |
+| `AWS::SES::MailManagerIngressPoint` | 1 |
 | `AWS::SES::ReceiptRule` | 1 |
-| `AWS::SMSVOICE::NotifyConfiguration` | 3 |
+| `AWS::SMSVOICE::NotifyConfiguration` | 1 |
 | `AWS::SMSVOICE::PhoneNumber` | 1 |
-| `AWS::SMSVOICE::RcsAgent` | 3 |
-| `AWS::SSM::DefaultHostManagementConfiguration` | 3 |
-| `AWS::SSM::OpsItem` | 3 |
+| `AWS::SMSVOICE::RcsAgent` | 2 |
+| `AWS::SSM::DefaultHostManagementConfiguration` | 2 |
+| `AWS::SSM::OpsItem` | 2 |
 | `AWS::SSM::ResourcePolicy` | 1 |
-| `AWS::SSM::ServiceSetting` | 1 |
-| `AWS::SSMContacts::ContactChannel` | 1 |
-| `AWS::SSMQuickSetup::ConfigurationManager` | 1 |
-| `AWS::SSO::Application` | 2 |
-| `AWS::SSO::Instance` | 2 |
-| `AWS::SSO::TrustedTokenIssuer` | 1 |
+| `AWS::SSO::Application` | 1 |
+| `AWS::SSO::Instance` | 1 |
 | `AWS::SageMaker::App` | 1 |
-| `AWS::SageMaker::Cluster` | 2 |
-| `AWS::SageMaker::ClusterSchedulerConfig` | 1 |
-| `AWS::SageMaker::ComputeQuota` | 1 |
 | `AWS::SageMaker::Domain` | 5 |
 | `AWS::SageMaker::ExperimentTrialComponent` | 1 |
-| `AWS::SageMaker::Extension` | 2 |
-| `AWS::SageMaker::FeatureGroup` | 1 |
-| `AWS::SageMaker::Hub` | 1 |
+| `AWS::SageMaker::Extension` | 1 |
 | `AWS::SageMaker::ImageVersion` | 4 |
-| `AWS::SageMaker::InferenceComponent` | 8 |
-| `AWS::SageMaker::InferenceExperiment` | 5 |
-| `AWS::SageMaker::MlflowApp` | 1 |
+| `AWS::SageMaker::InferenceComponent` | 5 |
+| `AWS::SageMaker::InferenceExperiment` | 3 |
 | `AWS::SageMaker::MlflowTrackingServer` | 1 |
-| `AWS::SageMaker::ModelCard` | 8 |
-| `AWS::SageMaker::ModelPackage` | 2 |
-| `AWS::SageMaker::ModelPackageGroup` | 1 |
+| `AWS::SageMaker::ModelCard` | 7 |
+| `AWS::SageMaker::ModelPackage` | 1 |
 | `AWS::SageMaker::PartnerApp` | 1 |
-| `AWS::SageMaker::Project` | 1 |
 | `AWS::SageMaker::TrialComponent` | 1 |
 | `AWS::SageMaker::Workforce` | 1 |
 | `AWS::SecurityAgent::Application` | 3 |
-| `AWS::SecurityAgent::PrivateConnection` | 8 |
-| `AWS::SecurityAgent::TargetDomain` | 4 |
+| `AWS::SecurityAgent::PrivateConnection` | 7 |
+| `AWS::SecurityAgent::TargetDomain` | 2 |
 | `AWS::SecurityHub::AggregatorV2` | 1 |
 | `AWS::SecurityHub::AutomationRuleV2` | 1 |
 | `AWS::SecurityHub::ConfigurationPolicy` | 1 |
-| `AWS::SecurityHub::Connector` | 5 |
-| `AWS::SecurityHub::ConnectorV2` | 7 |
+| `AWS::SecurityHub::Connector` | 3 |
+| `AWS::SecurityHub::ConnectorV2` | 4 |
 | `AWS::SecurityHub::FindingAggregator` | 1 |
 | `AWS::SecurityHub::Hub` | 1 |
 | `AWS::SecurityHub::HubV2` | 1 |
-| `AWS::SecurityHub::Insight` | 1 |
-| `AWS::SecurityHub::OrganizationConfiguration` | 3 |
-| `AWS::SecurityHub::PolicyAssociation` | 4 |
+| `AWS::SecurityHub::OrganizationConfiguration` | 1 |
+| `AWS::SecurityHub::PolicyAssociation` | 2 |
 | `AWS::SecurityLake::DataLake` | 1 |
 | `AWS::SecurityLake::Subscriber` | 4 |
 | `AWS::SecurityLake::SubscriberNotification` | 1 |
@@ -1984,54 +2014,47 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::ServiceCatalog::CloudFormationProvisionedProduct` | 3 |
 | `AWS::ServiceCatalog::Portfolio` | 1 |
 | `AWS::ServiceCatalogAppRegistry::Application` | 3 |
-| `AWS::StorageGateway::NFSFileShare` | 2 |
-| `AWS::StorageGateway::SMBFileShare` | 2 |
-| `AWS::Synthetics::Canary` | 3 |
-| `AWS::Timestream::InfluxDBCluster` | 9 |
-| `AWS::Timestream::InfluxDBInstance` | 7 |
+| `AWS::StorageGateway::NFSFileShare` | 1 |
+| `AWS::StorageGateway::SMBFileShare` | 1 |
+| `AWS::Synthetics::Canary` | 2 |
+| `AWS::Timestream::InfluxDBCluster` | 8 |
+| `AWS::Timestream::InfluxDBInstance` | 6 |
 | `AWS::Timestream::Table` | 1 |
-| `AWS::Transcribe::Vocabulary` | 1 |
-| `AWS::Transfer::Certificate` | 5 |
-| `AWS::Transfer::Connector` | 3 |
+| `AWS::Transfer::Certificate` | 4 |
+| `AWS::Transfer::Connector` | 1 |
 | `AWS::Transfer::HostKey` | 4 |
-| `AWS::Transfer::Server` | 2 |
+| `AWS::Transfer::Server` | 1 |
 | `AWS::Transfer::WebApp` | 2 |
-| `AWS::Translate::ParallelData` | 7 |
+| `AWS::Translate::ParallelData` | 6 |
 | `AWS::Translate::Terminology` | 6 |
 | `AWS::VerifiedPermissions::IdentitySource` | 5 |
 | `AWS::VerifiedPermissions::Policy` | 1 |
-| `AWS::VerifiedPermissions::PolicyStore` | 1 |
 | `AWS::VpcLattice::AccessLogSubscription` | 2 |
-| `AWS::VpcLattice::AuthPolicy` | 1 |
 | `AWS::VpcLattice::Listener` | 2 |
-| `AWS::VpcLattice::Service` | 3 |
-| `AWS::VpcLattice::ServiceNetworkServiceAssociation` | 9 |
-| `AWS::VpcLattice::ServiceNetworkVpcAssociation` | 5 |
-| `AWS::VpcLattice::TargetGroup` | 1 |
+| `AWS::VpcLattice::Service` | 2 |
+| `AWS::VpcLattice::ServiceNetworkServiceAssociation` | 8 |
+| `AWS::VpcLattice::ServiceNetworkVpcAssociation` | 4 |
 | `AWS::WAFv2::IPSet` | 1 |
 | `AWS::WAFv2::LoggingConfiguration` | 1 |
 | `AWS::WAFv2::RuleGroup` | 1 |
 | `AWS::WellArchitected::AgentContext` | 2 |
-| `AWS::WellArchitected::AgentOrganizationalProfile` | 1 |
 | `AWS::WellArchitected::Profile` | 1 |
-| `AWS::WellArchitected::ReviewTemplate` | 2 |
-| `AWS::WellArchitected::Workload` | 1 |
-| `AWS::Wickr::Network` | 2 |
+| `AWS::WellArchitected::ReviewTemplate` | 1 |
+| `AWS::Wickr::Network` | 1 |
 | `AWS::Wisdom::AIAgent` | 1 |
 | `AWS::Wisdom::AIGuardrail` | 1 |
 | `AWS::Wisdom::AIPrompt` | 1 |
-| `AWS::Wisdom::Content` | 5 |
-| `AWS::Wisdom::MessageTemplate` | 3 |
+| `AWS::Wisdom::Content` | 4 |
+| `AWS::Wisdom::MessageTemplate` | 2 |
 | `AWS::Wisdom::MessageTemplateVersion` | 2 |
-| `AWS::Wisdom::QuickResponse` | 4 |
-| `AWS::WorkSpaces::Directory` | 11 |
-| `AWS::WorkSpacesThinClient::Environment` | 6 |
+| `AWS::Wisdom::QuickResponse` | 2 |
+| `AWS::WorkSpaces::Directory` | 10 |
+| `AWS::WorkSpacesThinClient::Environment` | 5 |
 | `AWS::WorkSpacesWeb::BrowserSettings` | 1 |
 | `AWS::WorkSpacesWeb::DataProtectionSettings` | 1 |
-| `AWS::WorkSpacesWeb::IdentityProvider` | 1 |
 | `AWS::WorkSpacesWeb::IpAccessSettings` | 1 |
 | `AWS::WorkSpacesWeb::NetworkSettings` | 1 |
-| `AWS::WorkSpacesWeb::Portal` | 6 |
+| `AWS::WorkSpacesWeb::Portal` | 4 |
 | `AWS::WorkSpacesWeb::SessionLogger` | 1 |
 | `AWS::WorkSpacesWeb::TrustStore` | 1 |
 | `AWS::WorkSpacesWeb::UserAccessLoggingSettings` | 1 |
