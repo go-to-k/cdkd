@@ -495,7 +495,7 @@ export async function replaceCreateFirst(
     // go-to-k/cdkd#7084: under --replace no refusal carries the note, so a
     // rule left in place is named here.
     if (createdAnotherNote !== '' && !createdAnotherNote.includes('deleted again')) {
-      engine.logger.warn(`  ⚠ ${displaySafe(logicalId)}:${createdAnotherNote}`);
+      engine.logger.warn(safeMsg`  ⚠ ${logicalId}:${asIsMessage(createdAnotherNote)}`);
     }
     // --replace opt-in: same delete-first fallback as the
     // collision path — the "created" resource is the old one, so
@@ -660,16 +660,10 @@ async function retireCreatedAnother(
     );
     const skipped = deleteSkipReason(result);
     if (skipped !== undefined)
-      return leftNote(`its delete was not confirmed (${asIsMessage(skipped)})`);
+      return leftNote(safeMsg`its delete was not confirmed (${asIsMessage(skipped)})`);
     return ' The resource this create made under the same id was deleted again.';
   } catch (error) {
-    engine.logger.debug(
-      maskSecretsInText(
-        `retiring ${logicalId}'s created resource failed: ${String(error)}`,
-        input.updateSecrets
-      )
-    );
     const detail = maskSecretsInText(describeAwsFailure(error).summary, input.updateSecrets);
-    return leftNote(`its delete failed (${asIsMessage(detail)})`);
+    return leftNote(safeMsg`its delete failed (${asIsMessage(detail)})`);
   }
 }
