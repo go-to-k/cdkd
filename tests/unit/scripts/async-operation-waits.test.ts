@@ -108,6 +108,9 @@ const FROZEN_UNMEASURED: ReadonlySet<string> = new Set([
 const OUT_OF_SCOPE_SEND_SITES: readonly string[] = [
   'src/provisioning/cloud-control/create.ts cloudcontrol:CreateResource',
   'src/provisioning/cloud-control/delete.ts cloudcontrol:DeleteResource',
+  // #7125's location role switch, through the same `waitForOperation` poll.
+  'src/provisioning/cloud-control/lakeformation-role-switch.ts cloudcontrol:CreateResource',
+  'src/provisioning/cloud-control/lakeformation-role-switch.ts cloudcontrol:DeleteResource',
   'src/provisioning/cloud-control/protection.ts cloudcontrol:UpdateResource',
   'src/provisioning/cloud-control/update.ts cloudcontrol:UpdateResource',
   'src/provisioning/final-snapshot/ebs.ts ec2:CreateSnapshot',
