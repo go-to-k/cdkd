@@ -2,7 +2,7 @@ import { cdkdRemedy, proseQuoted } from '../../utils/pasteable-command.js';
 import { crossStackTaintOf, markCrossStackReadTainted } from './display-taint.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { describeAvailableOutputs } from './cfn-fallback.js';
-import { displayLeaf, displayMasked, displayMaskedIdent, logOperand } from './masking-display.js';
+import { displayLeaf, displayMaskedIdent, logOperand } from './masking-display.js';
 import { logTextOfLeaf, regionLogText } from './masking.js';
 import { getCrossAccountStackState, getSameAccountStackState } from './stack-state.js';
 import { reresolveCrossStackValue } from './cross-stack.js';
@@ -356,15 +356,10 @@ export async function resolveGetStackOutput(
   const shownRoleArn = roleArn
     ? displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })
     : '';
-  // go-to-k/cdkd#7077: the trio as the log lines print it, masked by
-  // provenance (`logOperand`); the throws keep the bindings above.
-  const logStackName = loggedStackName;
-  const logRegion = loggedRegion;
-  const logOutputName = loggedOutputName;
   // not-in-class(roleArn ? `, RoleArn=${shownRoleArn}` : ''): the RoleArn argument, refused unless it is a literal template string.
   resolver.logger.debug(
-    `Resolving Fn::GetStackOutput: StackName=${logStackName}, Region=${logRegion}, ` +
-      `OutputName=${logOutputName}${roleArn ? `, RoleArn=${shownRoleArn}` : ''}`
+    `Resolving Fn::GetStackOutput: StackName=${loggedStackName}, Region=${loggedRegion}, ` +
+      `OutputName=${loggedOutputName}${roleArn ? `, RoleArn=${shownRoleArn}` : ''}`
   );
 
   // go-to-k/cdkd#7077: an output the preview marks as derived from a secret
@@ -388,7 +383,7 @@ export async function resolveGetStackOutput(
       );
     }
     resolver.logger.info(
-      safeMsg`Resolved Fn::GetStackOutput: StackName=${logStackName}, OutputName=${logOutputName} (from this diff of the stack, which changes it)`
+      safeMsg`Resolved Fn::GetStackOutput: StackName=${loggedStackName}, OutputName=${loggedOutputName} (from this diff of the stack, which changes it)`
     );
     return previewed.value;
   }
@@ -502,7 +497,7 @@ export async function resolveGetStackOutput(
         // The pair's replacement is the MASKED spelling, not the bounded
         // one: it rewrites the name inside text another module already
         // rendered, where a second boundary would only nest quotes.
-        [stackName, displayMasked(resolver, stackName, context)],
+        [stackName, logOperand(resolver, stackName, context, { render: 'plain' })],
         [region, loggedRegion],
       ],
       context
@@ -541,8 +536,8 @@ export async function resolveGetStackOutput(
         // CloudFormation fallback: a CFn stack output never passed through
         // cdkd's redaction, so it is whatever the producer resolved.
         resolver.logger.info(
-          `Resolved Fn::GetStackOutput: StackName=${logStackName}, Region=${logRegion}, ` +
-            `OutputName=${logOutputName} ` +
+          `Resolved Fn::GetStackOutput: StackName=${loggedStackName}, Region=${loggedRegion}, ` +
+            `OutputName=${loggedOutputName} ` +
             `(from CloudFormation stack outputs; weak reference — producer is not cdkd-managed)`
         );
         // Deliberately NOT recorded into `recordedOutputReads` —
@@ -642,8 +637,8 @@ export async function resolveGetStackOutput(
   // before that, holding the plaintext.
   // not-in-class(roleArn ? `, RoleArn=${shownRoleArn}` : ''): the RoleArn argument, refused unless it is a literal template string.
   resolver.logger.info(
-    `Resolved Fn::GetStackOutput: StackName=${logStackName}, Region=${logRegion}, ` +
-      `OutputName=${logOutputName}${roleArn ? `, RoleArn=${shownRoleArn}` : ''} ` +
+    `Resolved Fn::GetStackOutput: StackName=${loggedStackName}, Region=${loggedRegion}, ` +
+      `OutputName=${loggedOutputName}${roleArn ? `, RoleArn=${shownRoleArn}` : ''} ` +
       `(${carriesDynamicReference(value) ? 'redacted dynamic reference' : 'literal value'})`
   );
   // Schema v8 (issue #668): record same-account reads so

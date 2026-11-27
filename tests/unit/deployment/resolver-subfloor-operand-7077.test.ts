@@ -53,6 +53,14 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
       }),
     },
     secretsManager: { send: vi.fn().mockRejectedValue(new Error('unused')) },
+    // go-to-k/cdkd#7105: an EC2 refusal naming the requested region.
+    ec2: {
+      send: vi.fn(async () => {
+        const e = new Error('You are not authorized to perform this operation.');
+        e.name = 'UnauthorizedOperation';
+        throw e;
+      }),
+    },
   }),
 }));
 
@@ -332,9 +340,48 @@ describe('thrown refusals print no sub-floor piece of a tainted operand (#7105)'
       const message = await refusal(route, pin, {
         'Fn::GetStackOutput': { StackName: { 'Fn::Join': ['', [PIECE, '-producer']] }, OutputName: 'Out' },
       });
-      expect(message.length).toBeGreaterThan(0);
+      expect(message).toContain('not found in region');
+      expect(outsideSpans(message).includes(pin), message).toBe(false);
+    });
+
+    it(`a state read failing on a key that quotes a stack built from the piece ("${pin}")`, async () => {
+      state.pin = pin;
+      const mixed = ROUTES['child-mixed']!;
+      const route: Route = {
+        ...mixed,
+        context: (p) => ({
+          ...mixed.context(p),
+          stateBackend: {
+            getState: async (name: string, region: string) => {
+              const e = new Error(`Access Denied for arn:aws:s3:::b/cdkd/${name}/${region}/state.json`);
+              e.name = 'AccessDenied';
+              throw e;
+            },
+            listStacks: async () => [],
+          },
+        }),
+      };
+      const message = await refusal(route, pin, {
+        'Fn::GetStackOutput': { StackName: { 'Fn::Join': ['', [PIECE, '-producer']] }, OutputName: 'Out' },
+      });
+      expect(message).toContain('Access Denied for arn:aws:s3:::b/cdkd/');
       expect(outsideSpans(message).includes(pin), message).toBe(false);
     });
   }
 });
 
+describe('an EC2 refusal names no region built from a sub-floor piece (#7105 review)', () => {
+  for (const pin of ['q7', 'q7z']) {
+    it(`Fn::GetAZs over "us-${pin}-1"`, async () => {
+      state.pin = pin;
+      const error = await resolveWith(ROUTES['child-mixed']!, pin, {
+        'Fn::GetAZs': { 'Fn::Join': ['', ['us-', PIECE, '-1']] },
+      }).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(Error);
+      const message = (error as Error).message;
+      expect(message).toContain('failed to describe availability zones');
+      expect(outsideSpans(message).includes(pin), message).toBe(false);
+      expect(debugLines().filter((line) => line.includes(pin))).toEqual([]);
+    });
+  }
+});

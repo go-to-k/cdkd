@@ -169,7 +169,9 @@ export async function resolveGetAZs(
     // assembled into the region, and the SDK quotes the region as SENT —
     // canonicalized, which is why the pair keys on `region` rather than on
     // the raw value `loggedRegionText` was derived from.
-    const loggedRegion = displayMasked(resolver, loggedRegionText ?? region, context);
+    const loggedRegion = logOperand(resolver, loggedRegionText ?? region, context, {
+      render: 'plain',
+    });
     const masks = namedRequestMasks(resolver, [[region, loggedRegion]], context);
     // go-to-k/cdkd#2319: a thrown message is persisted to
     // `deployments/{runId}.jsonl`, and an EC2 `UnauthorizedOperation` names

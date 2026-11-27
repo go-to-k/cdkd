@@ -158,8 +158,11 @@ export async function resolveSecretsManagerReference(
       resolver,
       [
         [secretId, loggedSecretId],
-        [versionStage, displayMasked(resolver, nameLogText(versionStage), context)],
-        [versionId, displayMasked(resolver, nameLogText(versionId), context)],
+        [
+          versionStage,
+          logOperand(resolver, nameLogText(versionStage), context, { render: 'plain' }),
+        ],
+        [versionId, logOperand(resolver, nameLogText(versionId), context, { render: 'plain' })],
       ],
       context
     )
