@@ -63,6 +63,8 @@ import {
 /** Each writer, keyed on the argument that carries the written value. */
 const TARGETS: ReadonlyMap<string, number> = new Map([
   ['saveState', 2],
+  // `scrub`'s exported save wrapper: a new caller of it writes a bag too.
+  ['saveScrubbedState', 3],
   ['appendRollbackJournalSegment', 2],
   ['setRollbackJournalFailedOperations', 2],
   ['rewriteRollbackJournalFailedOperations', 2],
@@ -142,6 +144,17 @@ const SITES: Record<string, Site> = {
   ['src/cli/commands/scrub/save-state.ts#saveScrubbedState#state']: {
     kind: 'scrubbed',
     via: [{ at: 'src/cli/commands/scrub/stack-rewrite.ts#scrubStackRewritePass', calls: 'scrubResourceRecord' }],
+    count: 1,
+  },
+  // ...and its callers, so a new caller handing it an arbitrary bag is seen.
+  ['src/cli/commands/scrub/stack-rewrite.ts#scrubStackRewritePass#nextState']: {
+    kind: 'scrubbed',
+    via: [{ at: 'src/cli/commands/scrub/stack-rewrite.ts#scrubStackRewritePass', calls: 'scrubResourceRecord' }],
+    count: 1,
+  },
+  ['src/cli/commands/scrub/nested.ts#repairParentOutputAttributes#{ ...locked.state, ...stackInstanceIdCarriedFrom(locked.state), resources: { ...locked.state.resources, [parentRow.logicalId]: { ...row, attributes: locked.attributes }, }, lastModified: Date.now(), }']: {
+    kind: 'carry',
+    why: 'writes back the parent record read under its lock, changing only `Outputs.*` attributes it replaces with the child output expression that resolves to exactly the stored plaintext',
     count: 1,
   },
   // AWS readbacks written into `observedProperties`.
