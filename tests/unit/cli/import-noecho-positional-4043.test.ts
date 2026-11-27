@@ -167,6 +167,12 @@ describe('cdkd import positions a NoEcho parameter (go-to-k/cdkd#4043 Phase C)',
     expect(record.observedMaskedLeaves).toEqual([['Echo'], ['Label']]);
   });
 
+  it('never learns the region as a needle (go-to-k/cdkd#7158)', async () => {
+    const record = await importOf('us-east-1', 'String', { Region: 'us-east-1' });
+    expect(record.observedProperties?.['Region']).toBe('us-east-1');
+    expect(record.observedMaskedLeaves).toBeUndefined();
+  });
+
   it('writes no noEchoLeaves where no NoEcho source serves a leaf', async () => {
     const tpl = template('x');
     (tpl.Resources['Param']!.Properties as Record<string, unknown>)['Value'] = 'literal';

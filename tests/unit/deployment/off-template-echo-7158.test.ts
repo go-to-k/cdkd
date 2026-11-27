@@ -137,8 +137,29 @@ function echoOf(s: Seeded, form: Form): string {
   return `pre-${s.plaintext}-post`;
 }
 
-function liveOf(s: Seeded, form: Form): Record<string, unknown> {
-  return { ...s.resolved, [ECHO_KEY]: echoOf(s, form) };
+/** Where the readback puts the echo: always under a key the template lacks. */
+type Placement = 'top' | 'deep' | 'list' | 'beside';
+const PLACEMENTS: readonly Placement[] = ['top', 'deep', 'list', 'beside'];
+
+function liveOf(s: Seeded, form: Form, placement: Placement = 'top'): Record<string, unknown> {
+  const echo = echoOf(s, form);
+  switch (placement) {
+    case 'top':
+      return { ...s.resolved, [ECHO_KEY]: echo };
+    case 'deep':
+      return { ...s.resolved, [ECHO_KEY]: { Inner: { Deep: echo } } };
+    case 'list':
+      return { ...s.resolved, [ECHO_KEY]: ['public-item-7158', echo] };
+    case 'beside': {
+      // Beside a template key, inside an object the template DOES set.
+      const [first] = Object.keys(s.resolved);
+      const node = s.resolved[first!];
+      if (node !== null && typeof node === 'object' && !Array.isArray(node)) {
+        return { ...s.resolved, [first!]: { ...(node as Record<string, unknown>), [ECHO_KEY]: echo } };
+      }
+      return { ...s.resolved, [ECHO_KEY]: echo };
+    }
+  }
 }
 
 function engineFor(s: Seeded, resolvedThisRun: boolean): DeployEngine {
@@ -175,12 +196,12 @@ function persisted(engine: DeployEngine, record: ResourceState): ResourceState {
 
 type Writer = 'deploy-persist' | 'unchanged-persist';
 
-function written(writer: Writer, s: Seeded, form: Form): ResourceState {
+function written(writer: Writer, s: Seeded, form: Form, placement: Placement): ResourceState {
   const memory = (): ResourceState => ({
     physicalId: 'physical-7158',
     resourceType: TYPE,
     properties: markWrittenFromDeployedTemplate(markSameGenerationBag({ ...s.resolved })),
-    observedProperties: markSameGenerationBag(liveOf(s, form)),
+    observedProperties: markSameGenerationBag(liveOf(s, form, placement)),
   });
   const first = persisted(engineFor(s, true), memory());
   if (writer === 'deploy-persist') return first;
@@ -188,7 +209,7 @@ function written(writer: Writer, s: Seeded, form: Form): ResourceState {
   // and its readback is fresh (the deploy-start refresh).
   return persisted(engineFor(s, false), {
     ...first,
-    observedProperties: markSameGenerationBag(liveOf(s, form)),
+    observedProperties: markSameGenerationBag(liveOf(s, form, placement)),
   });
 }
 
@@ -205,19 +226,24 @@ function resolvedBaseline(baseline: Record<string, unknown>): Record<string, unk
   return JSON.parse(text) as Record<string, unknown>;
 }
 
-/** Every coordinate of a whole `***` leaf under a top-level key the template lacks. */
+/** Every coordinate of a whole `***` leaf under a key the template lacks, at any depth. */
 function offTemplateMasks(record: ResourceState): string[] {
   const out: string[] = [];
-  const walk = (node: unknown, path: (string | number)[]): void => {
-    if (node === '***') out.push(JSON.stringify(path));
-    else if (Array.isArray(node)) node.forEach((v, i) => walk(v, [...path, i]));
-    else if (node !== null && typeof node === 'object') {
-      for (const [k, v] of Object.entries(node)) walk(v, [...path, k]);
+  const isObject = (v: unknown): v is Record<string, unknown> =>
+    v !== null && typeof v === 'object' && !Array.isArray(v);
+  const walk = (node: unknown, source: unknown, path: (string | number)[], off: boolean): void => {
+    if (node === '***') {
+      if (off) out.push(JSON.stringify(path));
+    } else if (Array.isArray(node)) {
+      node.forEach((v, i) => walk(v, Array.isArray(source) ? source[i] : undefined, [...path, i], off));
+    } else if (isObject(node)) {
+      for (const [k, v] of Object.entries(node)) {
+        const absent = isObject(source) && !Object.hasOwn(source, k);
+        walk(v, isObject(source) ? source[k] : undefined, [...path, k], off || absent);
+      }
     }
   };
-  for (const [key, value] of Object.entries(record.observedProperties ?? {})) {
-    if (!Object.hasOwn(record.properties, key)) walk(value, [key]);
-  }
+  walk(record.observedProperties ?? {}, record.properties, [], false);
   return out;
 }
 
@@ -235,24 +261,28 @@ describe('a secret echoed under a key the template lacks (go-to-k/cdkd#7158, #71
 
   const cases = Object.keys(SHAPES).flatMap((shape) =>
     FORMS.flatMap((form) =>
-      (['deploy-persist', 'unchanged-persist'] as const).map((writer) => ({ shape, form, writer }))
+      PLACEMENTS.flatMap((placement) =>
+        (['deploy-persist', 'unchanged-persist'] as const).map((writer) => ({ shape, form, placement, writer }))
+      )
     )
   );
 
   it('the generated population is the full product', () => {
-    expect(cases).toHaveLength(5 * 7 * 2);
+    expect(cases).toHaveLength(5 * 7 * 4 * 2);
   });
 
-  it.each(cases.map((c, i) => [c.writer, c.shape, c.form, i] as const))(
-    '%s, %s, %s: no plaintext, every off-template mask named, no drift',
-    async (writer, shape, form, index) => {
+  it.each(cases.map((c, i) => [c.writer, c.shape, c.form, c.placement, i] as const))(
+    '%s, %s, %s, echo %s: no plaintext, every off-template mask named, no drift',
+    async (writer, shape, form, placement, index) => {
       const s = await seeded(shape, form, index);
-      const record = written(writer, s, form);
+      const record = written(writer, s, form, placement);
       expect(JSON.stringify(record)).not.toContain(s.plaintext);
       const named = (observedMaskedLeavesOf(record) ?? []).map((c) => JSON.stringify(c));
       expect(offTemplateMasks(record).filter((c) => !named.includes(c))).toEqual([]);
       const baseline = resolvedBaseline(record.observedProperties ?? {});
-      const changes = calculateResourceDrift(baseline, liveOf(s, form), { unionWalkObjects: true });
+      const changes = calculateResourceDrift(baseline, liveOf(s, form, placement), {
+        unionWalkObjects: true,
+      });
       // The partitions in `compare.ts`'s order. An uncertified position (the
       // #2852 fail-closed mask of a list nothing pairs) is its own, older,
       // disposition and is reported as such.
@@ -299,6 +329,81 @@ describe('a secret echoed under a key the template lacks (go-to-k/cdkd#7158, #71
     );
     expect(out.observedProperties?.['Extra']).toBe('***');
     expect(out.observedMaskedLeaves).toEqual([['Extra']]);
+  });
+
+  it('learns from the resolved bag when the readback does not return the value at its position', () => {
+    const noEcho = withOffTemplateEchoesMasked<OffTemplateEchoRecord>(
+      { physicalId: 'p', properties: { Secret: '***' }, observedProperties: { Extra: 'pre-q7Z-post' }, noEchoLeaves: [['Secret']] },
+      { properties: { Secret: 'pre-q7Z-post' }, readback: { Extra: 'pre-q7Z-post' } }
+    );
+    expect(noEcho.observedProperties?.['Extra']).toBe('***');
+    const reference = withOffTemplateEchoesMasked<OffTemplateEchoRecord>(
+      {
+        physicalId: 'p',
+        properties: { Conn: 'pw={{resolve:ssm-secure:/c}};' },
+        observedProperties: { Extra: 'res0lved-7152' },
+      },
+      { properties: { Conn: 'pw=res0lved-7152;' }, readback: { Extra: 'res0lved-7152' } }
+    );
+    expect(reference.observedProperties?.['Extra']).toBe('***');
+  });
+
+  it('the deploy persist learns from the in-memory bag when the readback omits the position', async () => {
+    const s = await seeded('top', 'subfloor-embedded', 9001);
+    const record = persisted(engineFor(s, true), {
+      physicalId: 'physical-7158',
+      resourceType: TYPE,
+      properties: markWrittenFromDeployedTemplate(markSameGenerationBag({ ...s.resolved })),
+      observedProperties: markSameGenerationBag({ Name: 'public-name-7158', [ECHO_KEY]: 'pre-q7Z-post' }),
+    });
+    expect(JSON.stringify(record.observedProperties)).not.toContain('q7Z');
+    expect(record.observedMaskedLeaves).toEqual([[ECHO_KEY]]);
+  });
+
+  it('pairs a list AWS returned reordered through its identity field', () => {
+    const out = withOffTemplateEchoesMasked<OffTemplateEchoRecord>(
+      {
+        physicalId: 'p',
+        properties: { Items: [{ Name: 'a', Value: 'pub-a' }, { Name: 'b', Value: '{{resolve:ssm-secure:/b}}' }] },
+        observedProperties: { Items: [{ Name: 'b', Value: '{{resolve:ssm-secure:/b}}' }, { Name: 'a', Value: 'pub-a' }], Extra: 'reord3red-7152' },
+      },
+      { readback: { Items: [{ Name: 'b', Value: 'reord3red-7152' }, { Name: 'a', Value: 'pub-a' }], Extra: 'reord3red-7152' } }
+    );
+    expect(out.observedProperties?.['Extra']).toBe('***');
+  });
+
+  it('learns the whole readback leaf when the template leaf holds two references', () => {
+    const out = withOffTemplateEchoesMasked<OffTemplateEchoRecord>(
+      {
+        physicalId: 'p',
+        properties: { Conn: 'u={{resolve:ssm-secure:/u}};p={{resolve:secretsmanager:p}}' },
+        observedProperties: { Conn: 'u={{resolve:ssm-secure:/u}};p={{resolve:secretsmanager:p}}', Extra: 'u=us3r;p=pa55' },
+      },
+      { readback: { Conn: 'u=us3r;p=pa55', Extra: 'u=us3r;p=pa55' } }
+    );
+    expect(out.observedProperties?.['Extra']).toBe('***');
+  });
+
+  it('keeps an entry under an element a writer masked whole', () => {
+    const out = withOffTemplateEchoesMasked(
+      { properties: {}, observedProperties: { Echoes: ['***', '***'] }, observedMaskedLeaves: [['Echoes', 1, 'Value']] },
+      {}
+    );
+    expect(out.observedMaskedLeaves).toEqual([['Echoes', 1, 'Value']]);
+  });
+
+  it('the deploy persist never learns the region or the stack name', () => {
+    for (const token of ['us-east-1', 'Stack7158']) {
+      const engine = new DeployEngine({} as never, {} as never, {} as never, {} as never, {} as never, { dryRun: false }, 'us-east-1');
+      const record = persisted(engine, {
+        physicalId: 'p',
+        resourceType: TYPE,
+        properties: { Secret: '***' },
+        noEchoLeaves: [['Secret']],
+        observedProperties: markSameGenerationBag({ Secret: token, Echo: token }),
+      });
+      expect(record.observedProperties?.['Echo']).toBe(token);
+    }
   });
 
   describe('over-mask controls: never learned as a needle', () => {
@@ -463,6 +568,34 @@ describe('a custom resource attribute KEY holding a secret (go-to-k/cdkd#7153)',
     );
     expect(JSON.stringify(out)).not.toContain('gen3rated-v4lue');
     expect(out.noEchoAttributeNames).toEqual(['Generated']);
+  });
+
+  it('drops on the AWS::CloudFormation::CustomResource type CDK emits by default', () => {
+    const t = template();
+    const out = withSecretAttributeKeysDropped(
+      { ...record({ [`Endpoint.${SECRET}`]: 'v' }), resourceType: 'AWS::CloudFormation::CustomResource' },
+      {},
+      secrets,
+      templateGetAttNamesOf(t, 'Cr')
+    );
+    expect(out.attributes).toEqual({});
+  });
+
+  it('an escaped Fn::Sub literal is no Fn::GetAtt of the key', () => {
+    const t = template({ 'Fn::Sub': `x-\${!Cr.Endpoint.${SECRET}}` });
+    const out = withSecretAttributeKeysDropped(record({ [`Endpoint.${SECRET}`]: 'v' }), {}, secrets, templateGetAttNamesOf(t, 'Cr'));
+    expect(out.attributes).toEqual({});
+  });
+
+  it('a declared NoEcho value the physical id contains is no needle', () => {
+    const t = template();
+    const out = withSecretAttributeKeysDropped(
+      record({ Generated: '***', 'By-cr-1-name': 'x' }, { physicalId: 'cr-1-name', noEchoAttributeNames: ['Generated'] }),
+      { attributes: { Generated: 'cr-1-name' } },
+      new Map(),
+      templateGetAttNamesOf(t, 'Cr')
+    );
+    expect(Object.keys(out.attributes ?? {})).toEqual(['Generated', 'By-cr-1-name']);
   });
 
   it('leaves a non-custom resource, and a key holding no needle, alone', () => {

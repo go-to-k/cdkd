@@ -363,6 +363,30 @@ describe('cdkd state refresh-observed on a v11 record with NoEcho coordinates', 
     expect(saved.observedMaskedLeaves).toEqual([['Echo'], ['Login']]);
   });
 
+  it('never learns the region or the stack name, and drops a stale observedMaskedLeaves with the echo gone (go-to-k/cdkd#7158)', async () => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    const record = makeResource({
+      physicalId: 'db',
+      resourceType: 'AWS::RDS::DBInstance',
+      properties: { Value: '***', Stack: '***' },
+      observedProperties: { Value: '***', Stack: '***', Gone: '***' },
+    });
+    record.noEchoLeaves = [['Value'], ['Stack']];
+    record.observedMaskedLeaves = [['Gone']];
+    mockGetState.mockResolvedValueOnce(makeState({ Db: record }));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ Value: 'us-east-1', Stack: 'TestStack', Region: 'us-east-1', Name: 'TestStack' }),
+    });
+
+    const { error } = await runRefresh(['TestStack']);
+    expect(error).toBeUndefined();
+    const [, , savedState] = mockSaveState.mock.calls[0] as unknown as [string, string, StackState];
+    const saved = savedState.resources['Db']!;
+    expect(saved.observedProperties!['Region']).toBe('us-east-1');
+    expect(saved.observedProperties!['Name']).toBe('TestStack');
+    expect(saved.observedMaskedLeaves).toBeUndefined();
+  });
+
   it('masks a whole-*** leaf of a record that names NO coordinate (pre-v11 #2449 reader, import / scrub; review round 9 SECURITY)', async () => {
     mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
     mockGetState.mockResolvedValueOnce(
