@@ -1,3 +1,4 @@
+import { mentionsDynamicReference } from '../secret-redaction/recorded-secrecy.js';
 /**
  * The deploy engine's READ-PROVENANCE skip term (state schema v12,
  * go-to-k/cdkd#4852): which top-level properties of an UPDATE row MOVED
@@ -171,7 +172,7 @@ export async function sameValueAtVersions(
     // The recorded region's READER, never `resolver` itself.
     const now = await resolveDynamicReferences(reader, entry.token, context(served));
     const then = await resolveDynamicReferences(reader, entry.token, context(recorded));
-    if (now.includes('{{resolve:') || then.includes('{{resolve:')) return undefined;
+    if (mentionsDynamicReference(now) || mentionsDynamicReference(then)) return undefined;
     return now === then;
   } catch (err) {
     if (isDeliberateResolutionRefusal(err)) throw err;

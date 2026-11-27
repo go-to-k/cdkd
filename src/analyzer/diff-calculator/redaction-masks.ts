@@ -1,7 +1,10 @@
-import { isMaskLeaf, mentionsMask } from '../../deployment/secret-redaction/recorded-secrecy.js';
+import {
+  isMaskLeaf,
+  holdsMaskLeaf,
+  mentionsMask,
+} from '../../deployment/secret-redaction/recorded-secrecy.js';
 import {
   SECRET_MASK,
-  carriesSecretMask,
   dynamicReferenceTokens,
   isStaleNoEchoLeaf,
   noEchoLeavesOf,
@@ -87,11 +90,11 @@ export async function maskUnmovedRedactionMasks(
   let out: Record<string, unknown> | undefined;
   for (const key of Object.keys(current)) {
     if (!Object.hasOwn(desired, key) || !Object.hasOwn(rawDesired, key)) continue;
-    if (!carriesSecretMask(current[key])) continue;
+    if (!holdsMaskLeaf(current[key])) continue;
     // A desired value already carrying a mask is the `NoEcho` comparison's,
     // unless the record masked the key WHOLE: a nested child's read of a
     // masked parameter plans as `a-***` against a stored `***` (#7050 review).
-    if (carriesSecretMask(desired[key]) && !isMaskLeaf(current[key])) continue;
+    if (holdsMaskLeaf(desired[key]) && !isMaskLeaf(current[key])) continue;
     // A desired side already masked wherever the record is (a `NoEcho`
     // comparison's `***` its value MAC proved) leaves nothing to mask, nor to
     // warn of (#7050 review).

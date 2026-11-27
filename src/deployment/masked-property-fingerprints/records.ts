@@ -1,10 +1,10 @@
+import { holdsMaskLeaf } from '../secret-redaction/recorded-secrecy.js';
 /**
  * The record side: reading, comparing, stamping and backfilling the
  * fingerprint fields of a state record; split out of
  * `masked-property-fingerprints.ts` (#5835).
  */
 import {
-  carriesSecretMask,
   MIN_NEEDLE_LENGTH,
   printingCorpusOf,
   type RecordedSecretValues,
@@ -221,7 +221,7 @@ export function possiblyMaskedKeys(
   };
   return Object.keys(resolvedProps).filter((key) => {
     const value = resolvedProps[key];
-    if (carriesSecretMask(value) || wholeShortLeaf(value)) return true;
+    if (holdsMaskLeaf(value) || wholeShortLeaf(value)) return true;
     const text = canonicalJson(value);
     return long.some(
       (needle) => text.includes(needle) || text.includes(JSON.stringify(needle).slice(1, -1))
@@ -261,7 +261,7 @@ export function maskedPropertyFingerprintsFor(
   const entries: Array<[string, string]> = [];
   for (const key of Object.keys(recordedProperties)) {
     if (!Object.hasOwn(templateProps, key)) continue;
-    if (!carriesSecretMask(recordedProperties[key])) continue;
+    if (!holdsMaskLeaf(recordedProperties[key])) continue;
     entries.push([key, maskedPropertyFingerprint(templateProps[key])]);
   }
   return entries.length > 0 ? Object.fromEntries(entries) : undefined;
@@ -408,7 +408,7 @@ export async function movedMaskedProperties(
   const moved: string[] = [];
   for (const [key, fingerprint] of recorded) {
     if (!Object.hasOwn(templateProps, key) || !Object.hasOwn(properties, key)) continue;
-    if (!carriesSecretMask((properties as Record<string, unknown>)[key])) continue;
+    if (!holdsMaskLeaf((properties as Record<string, unknown>)[key])) continue;
     if (maskedPropertyFingerprint(templateProps[key]) !== fingerprint) {
       moved.push(key);
       continue;

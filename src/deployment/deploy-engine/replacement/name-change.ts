@@ -1,4 +1,4 @@
-import { isUsableRecordedName } from '../../secret-redaction/recorded-secrecy.js';
+import { usableRecordedName } from '../../secret-redaction/recorded-secrecy.js';
 /**
  * The replacement name-change checks run before a replacement's create.
  * Moved out of `deploy-engine/replacement.ts` (go-to-k/cdkd#5835), which
@@ -43,8 +43,8 @@ export function typeChangeNameQuestion(
 ): ReplacementNameChange | undefined {
   const property = explicitNamePropertyFor(resourceType);
   if (property === undefined) return undefined;
-  const desired = input.desiredProperties[property];
-  if (!isUsableRecordedName(desired)) return undefined;
+  const desired = usableRecordedName(input.desiredProperties[property]);
+  if (desired === undefined) return undefined;
   return {
     property,
     desiredName: desired,

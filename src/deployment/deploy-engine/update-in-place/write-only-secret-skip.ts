@@ -1,3 +1,4 @@
+import { holdsMaskLeaf } from '../../secret-redaction/recorded-secrecy.js';
 /**
  * go-to-k/cdkd#6824: a measured write-only key (a password Cloud Control
  * re-sets on every re-send, `getWriteOnlyKeysKeptWhenOmitted`) held as a
@@ -25,7 +26,7 @@ import { asIsMessage, safeMsg } from '../../../utils/display-safe.js';
 import { writeOnlyKeysKeptWhenOmittedCandidates } from '../../../provisioning/write-only-properties.js';
 import { onlySecretReferencesDiffer } from '../../../provisioning/secret-reference-immutable.js';
 import type { MaskerFn } from '../../../provisioning/masked-retry-logger.js';
-import { carriesSecretMask, createSecretMasker } from '../../secret-redaction.js';
+import { createSecretMasker } from '../../secret-redaction.js';
 import type { RecordedSecretValues } from '../../secret-redaction/pairs.js';
 import { passProvenanceFor } from '../../secret-redaction/reference-provenance.js';
 import {
@@ -80,7 +81,7 @@ function sameAttestedVersion(
 ): boolean {
   if (!Object.hasOwn(previous, key) || !Object.hasOwn(desired, key)) return false;
   const before = previous[key];
-  if (carriesSecretMask(before)) return false;
+  if (holdsMaskLeaf(before)) return false;
   if (!onlySecretReferencesDiffer(desired[key], before, maskSecrets)) return false;
   const tokens = referenceTokensIn(before);
   if (tokens.size === 0) return false;

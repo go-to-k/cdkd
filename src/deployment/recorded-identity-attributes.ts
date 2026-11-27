@@ -1,6 +1,6 @@
+import { mentionsMask } from './secret-redaction/recorded-secrecy.js';
 import { holdsSecretDerivedEntry } from '../provisioning/iam-policy-targets.js';
 import { isoTimestampAttribute } from '../provisioning/attribute-timestamp.js';
-import { SECRET_MASK } from './secret-redaction/pairs.js';
 
 /**
  * go-to-k/cdkd#6393 / #6655: per type, the recorded attribute holding the
@@ -189,7 +189,7 @@ export function isUsableIdentityValue(value: unknown): value is string {
   return (
     typeof value === 'string' &&
     value !== '' &&
-    !value.includes(SECRET_MASK) &&
+    !mentionsMask(value) &&
     !holdsSecretDerivedEntry(value)
   );
 }

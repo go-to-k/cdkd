@@ -1,3 +1,4 @@
+import { mentionsMask } from './secret-redaction/recorded-secrecy.js';
 /**
  * A custom resource's `ServiceToken` never changes in place
  * (go-to-k/cdkd#4749), matching CloudFormation, which refuses the update with
@@ -91,7 +92,7 @@ export function uncomparableToken(value: unknown): UncomparableToken | undefined
   if (value === undefined || value === null || value === '') return 'absent';
   if (typeof value !== 'string') return 'not-a-string';
   // Containment, not equality: no Lambda or SNS ARN can hold a `*`.
-  if (value.includes(SECRET_MASK)) return 'masked';
+  if (mentionsMask(value)) return 'masked';
   if (dynamicReferenceTokens(value).length > 0) return 'reference';
   return undefined;
 }

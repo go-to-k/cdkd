@@ -1,3 +1,7 @@
+import {
+  mentionsMaskedIdSegment,
+  valueMentionsDynamicReference,
+} from '../../deployment/secret-redaction/recorded-secrecy.js';
 /**
  * Cloud Control can answer an update with SUCCESS while the live value stays
  * what it was (go-to-k/cdkd#7099). Measured in us-east-1 on 2026-11-27:
@@ -87,8 +91,7 @@ export function unappliedUpdateKeys(input: {
 
 /** A secret reference or a mask: the read model never shows what was sent. */
 function holdsStandIn(value: unknown): boolean {
-  const text = JSON.stringify(value) ?? '';
-  return text.includes('{{resolve:') || text.includes('****');
+  return valueMentionsDynamicReference(value) || mentionsMaskedIdSegment(value);
 }
 
 type Plain = Record<string, unknown>;

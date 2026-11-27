@@ -1,3 +1,4 @@
+import { isMaskLeaf, holdsMaskLeaf } from '../secret-redaction/recorded-secrecy.js';
 import type { DeployEngine } from '../deploy-engine.js';
 import type { SecretsRunState } from './masking.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
@@ -7,7 +8,6 @@ import {
   MIN_NEEDLE_LENGTH,
   noEchoComparison,
   canonicalCoordinates,
-  carriesSecretMask,
   maskAtCoordinates,
   maskReadbackAtCoordinates,
   maskWholeValue,
@@ -335,9 +335,9 @@ function noEchoAttributeNamesFor(
   let echoed = false;
   for (const coordinate of leaves ?? []) {
     const value = valueAtCoordinate(record.properties, coordinate);
-    if (value === undefined || carriesSecretMask(value)) continue;
+    if (value === undefined || holdsMaskLeaf(value)) continue;
     for (const [name, attribute] of Object.entries(attributes)) {
-      if (carriesSecretMask(attribute)) continue;
+      if (holdsMaskLeaf(attribute)) continue;
       // The physical id only names the resource (kept in the clear); an ARN
       // that merely CONTAINS the value names it too, but one EQUAL to the
       // value is the value.
@@ -367,7 +367,7 @@ function noEchoAttributeNamesFor(
   }
   const prior = noEchoAttributeNamesOf(record);
   for (const name of prior ?? []) {
-    if (Object.hasOwn(attributes, name) && carriesSecretMask(attributes[name])) names.add(name);
+    if (Object.hasOwn(attributes, name) && holdsMaskLeaf(attributes[name])) names.add(name);
   }
   if (declared === undefined && prior === undefined && !echoed) return undefined;
   return [...names].sort();
@@ -423,7 +423,7 @@ export function withAttemptedItemsMasked<R extends ResourceState>(
 ): R {
   const items = (record as { unsettledItems?: unknown }).unsettledItems;
   if (typeof items !== 'object' || items === null || Array.isArray(items)) return record;
-  const usable = needles.filter((needle) => needle !== '' && needle !== '***');
+  const usable = needles.filter((needle) => needle !== '' && !isMaskLeaf(needle));
   if (usable.length === 0) return record;
   let changed = false;
   const masked: Record<string, unknown> = {};
@@ -597,7 +597,7 @@ export function maskOutputsByPosition(
       (key) =>
         !Object.hasOwn(templateValues, key) &&
         outputs[key] !== undefined &&
-        !carriesSecretMask(outputs[key]) &&
+        !holdsMaskLeaf(outputs[key]) &&
         maskedValues.has(keyOrderFreeJson(outputs[key]))
     )
     .map((key) => [key]);
@@ -673,7 +673,7 @@ export async function noEchoAttributeOverridesFor(
     const record = Object.hasOwn(stateResources, logicalId) ? stateResources[logicalId] : undefined;
     if (record === undefined) continue;
     if (noEchoAttributeNamesOf(record)?.includes(attribute) !== true) continue;
-    if (!carriesSecretMask(record.attributes?.[attribute])) continue;
+    if (!holdsMaskLeaf(record.attributes?.[attribute])) continue;
     if (!deps.perResourceSecrets().has(logicalId)) continue;
     const set = wanted.get(logicalId) ?? new Set<string>();
     set.add(attribute);

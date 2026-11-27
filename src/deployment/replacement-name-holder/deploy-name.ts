@@ -1,4 +1,4 @@
-import { isUsableRecordedName } from '../secret-redaction/recorded-secrecy.js';
+import { usableRecordedName } from '../secret-redaction/recorded-secrecy.js';
 import type { ProvisionedBy } from '../../provisioning/provider-registry.js';
 import { explicitNamePropertyFor } from '../../provisioning/resource-name.js';
 import { renderNameHeldElsewhere, isPlainName } from './holder.js';
@@ -26,9 +26,7 @@ export function nameValue(
   bag: Record<string, unknown> | undefined,
   property: string
 ): string | undefined {
-  const value = bag?.[property];
-  if (!isUsableRecordedName(value)) return undefined;
-  return value;
+  return usableRecordedName(bag?.[property]);
 }
 
 /** Does `physicalId` name `desired` (both folded alike)? See the module doc. */
@@ -322,9 +320,10 @@ const DEFAULT_EVENT_BUS = 'default';
 /** An EventBridge bus as a name: an ARN's `event-bus/<name>`, absent as `default`. */
 function eventBusName(value: unknown): string | undefined {
   if (value === undefined) return DEFAULT_EVENT_BUS;
-  if (!isUsableRecordedName(value)) return undefined;
-  const arn = /^arn:[^:]+:events:[^:]*:[^:]*:event-bus\/(.+)$/.exec(value);
-  return arn === null ? value : arn[1];
+  const name = usableRecordedName(value);
+  if (name === undefined) return undefined;
+  const arn = /^arn:[^:]+:events:[^:]*:[^:]*:event-bus\/(.+)$/.exec(name);
+  return arn === null ? name : arn[1];
 }
 
 /**

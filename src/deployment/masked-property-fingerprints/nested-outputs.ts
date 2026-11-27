@@ -1,3 +1,4 @@
+import { mentionsDynamicReference } from '../secret-redaction/recorded-secrecy.js';
 /**
  * Nested-stack output classification (go-to-k/cdkd#4565) and the
  * input-fingerprint entry points that start a walk; split out of
@@ -16,7 +17,6 @@ import {
 import {
   carriesSecretValue,
   conditionClosure,
-  DYNAMIC_REFERENCE_OPEN,
   getAttTarget,
   hasOpaqueAttributes,
   inputForm,
@@ -330,7 +330,7 @@ async function attributeClass(
  */
 async function expressionClass(value: unknown, scope: OutputScope): Promise<NestedOutputClass> {
   if (typeof value === 'string') {
-    return value.includes(DYNAMIC_REFERENCE_OPEN) ? 'secret' : 'clean';
+    return mentionsDynamicReference(value) ? 'secret' : 'clean';
   }
   const all = async (values: readonly unknown[]): Promise<NestedOutputClass> => {
     let result: NestedOutputClass = 'clean';
@@ -359,7 +359,7 @@ async function expressionClass(value: unknown, scope: OutputScope): Promise<Nest
       if (typeof text !== 'string')
         return worseOf('unknown', await expressionClass(operand, scope));
       const vars = Array.isArray(operand) && isPlainObject(operand[1]) ? operand[1] : {};
-      let result: NestedOutputClass = text.includes(DYNAMIC_REFERENCE_OPEN) ? 'secret' : 'clean';
+      let result: NestedOutputClass = mentionsDynamicReference(text) ? 'secret' : 'clean';
       result = worseOf(result, await all(Object.values(vars)));
       for (const name of subPlaceholders(text)) {
         if (Object.hasOwn(vars, name)) continue;

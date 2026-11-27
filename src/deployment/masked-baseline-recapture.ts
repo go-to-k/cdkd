@@ -1,7 +1,10 @@
-import { isMaskLeaf, mentionsDynamicReference } from './secret-redaction/recorded-secrecy.js';
+import {
+  isMaskLeaf,
+  holdsMaskLeaf,
+  mentionsDynamicReference,
+} from './secret-redaction/recorded-secrecy.js';
 import { isDeepStrictEqual } from 'node:util';
 import {
-  carriesSecretMask,
   dynamicReferenceTokens,
   mergeResolvedPairs,
   redactForState,
@@ -67,9 +70,9 @@ import type { ResolverContext } from './intrinsic-function-resolver.js';
 export function isMaskedBaselineRecaptureCandidate(record: ResourceState): boolean {
   if (record.observedBaselineRefused === true) return false;
   const observed = record.observedProperties;
-  if (observed === undefined || !carriesSecretMask(observed)) return false;
+  if (observed === undefined || !holdsMaskLeaf(observed)) return false;
   const properties = record.properties;
-  if (carriesSecretMask(properties)) return false;
+  if (holdsMaskLeaf(properties)) return false;
   return secretReferenceTokensOf(properties).length > 0;
 }
 
