@@ -180,7 +180,7 @@ function computeTaintedNames(
   // export or output holds its value in state, so a reader of it printed
   // before the read is marked (template order) is tainted too.
   passed.push(...resourcesReadingTaintedCrossStack(template, crossStackTaintOf(context)));
-  const key = passed.sort().join('\u0000');
+  const key = JSON.stringify(passed.sort());
   let byKey = namesByTemplate.get(template);
   if (byKey === undefined) {
     byKey = new Map();
