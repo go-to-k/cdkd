@@ -473,19 +473,9 @@ export async function refreshObservedForStack(
             // holds `***` in `properties`, which positions nothing for the walk
             // below, so the readback's live value there is masked FIRST (through
             // each list's identity field, the whole list where none pairs them).
-            // go-to-k/cdkd#7158 / #7152: a secret the readback echoes under a
-            // key the template lacks, learned from the raw readback at the
-            // positions the record marks, masked here and named in
-            // `observedMaskedLeaves` below.
-            const echoes = maskOffTemplateEchoes({
-              bag: observed,
-              properties: resource.properties ?? {},
-              noEchoLeaves: resource.noEchoLeaves,
-              physicalId: resource.physicalId,
-              publicTokens: new Set([region, stackName]),
-            });
-            resource.observedProperties = redactForState(
-              maskReadbackAtCoordinates(echoes.bag, resource.properties ?? {}, [
+            const publicSsmProof = await publicSsmProver.proofBagFor(resource.properties ?? {});
+            const redacted = redactForState(
+              maskReadbackAtCoordinates(observed, resource.properties ?? {}, [
                 // A record naming no coordinate (pre-v11, imported, scrubbed)
                 // still holds `***` where the value stood: mask there too, as
                 // the deploy-start refresh does.
@@ -494,10 +484,30 @@ export async function refreshObservedForStack(
               ]),
               {
                 provenance: 'state-baseline',
-                secrets: await publicSsmProver.proofBagFor(resource.properties ?? {}),
+                secrets: publicSsmProof,
                 source: resource.properties ?? {},
               }
             );
+            // go-to-k/cdkd#7158 / #7152: a secret the readback echoes under a
+            // key the template lacks, learned from the raw readback at the
+            // positions the record marks, masked in the redacted bag (an echo
+            // the value scan rewrote into its reference keeps it) and named in
+            // `observedMaskedLeaves`.
+            const echoes = maskOffTemplateEchoes({
+              bag: redacted,
+              readback: observed,
+              properties: resource.properties ?? {},
+              noEchoLeaves: resource.noEchoLeaves,
+              physicalId: resource.physicalId,
+              publicTokens: new Set([region, stackName]),
+            });
+            // Redacted again over the masked bag: the walk is idempotent on its own
+            // output, and the write keeps the redaction at the site.
+            resource.observedProperties = redactForState(echoes.bag, {
+              provenance: 'state-baseline',
+              secrets: publicSsmProof,
+              source: resource.properties ?? {},
+            });
             if (echoes.leaves.length > 0) resource.observedMaskedLeaves = echoes.leaves;
             else delete resource.observedMaskedLeaves;
             // Issue #3466: BOTH fields, and only once a baseline was captured —
