@@ -208,7 +208,9 @@ function resourcesReadingTaintedCrossStack(
 ): string[] {
   if (taint === undefined || !taint.holdsAnyTaint()) return [];
   const reads = (node: unknown, depth: number): boolean => {
-    if (node === null || typeof node !== 'object' || depth > 64) return false;
+    if (node === null || typeof node !== 'object') return false;
+    // Too deep to read: fail closed, as the docstring says.
+    if (depth > 64) return true;
     if (Array.isArray(node)) return node.some((item) => reads(item, depth + 1));
     const record = node as Record<string, unknown>;
     if (Object.hasOwn(record, 'Fn::ImportValue')) {
