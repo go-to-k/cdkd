@@ -15,7 +15,7 @@ what cdkd does; `update` and `baseline` rows keep the in-place update, and a `ha
 is decided by `src/analyzer/replacement-rules/rules.ts` or a provider-replacement planner.
 Evidence: `REPLACEMENT_EVIDENCE`.
 
-Candidates: 389 (replace 7, update 219, baseline 73, hand rule 90).
+Candidates: 389 (replace 25, update 245, baseline 29, hand rule 90).
 
 | Candidate | Spec | Verdict |
 | --- | --- | --- |
@@ -25,8 +25,8 @@ Candidates: 389 (replace 7, update 219, baseline 73, hand rule 90).
 | `AWS::AppConfig::ConfigurationProfile#Type` | yes | replace |
 | `AWS::AppConfig::Extension#Tags` | yes | update |
 | `AWS::AppConfig::ExtensionAssociation#Tags` | yes | update |
-| `AWS::AppStream::StackFleetAssociation#FleetName` | yes | baseline |
-| `AWS::AppStream::StackFleetAssociation#StackName` | yes | baseline |
+| `AWS::AppStream::StackFleetAssociation#FleetName` | yes | update |
+| `AWS::AppStream::StackFleetAssociation#StackName` | yes | update |
 | `AWS::AppSync::GraphQLSchema#ApiId` | yes | update |
 | `AWS::AuditManager::Assessment#Scope.AwsAccounts.*.EmailAddress` | maybe | update |
 | `AWS::AuditManager::Assessment#Scope.AwsAccounts.*.Id` | maybe | update |
@@ -76,21 +76,21 @@ Candidates: 389 (replace 7, update 219, baseline 73, hand rule 90).
 | `AWS::DataSync::LocationEFS#FileSystemAccessRoleArn` | yes | update |
 | `AWS::DataSync::LocationEFS#InTransitEncryption` | yes | update |
 | `AWS::DataSync::LocationEFS#Subdirectory` | yes | update |
-| `AWS::DataSync::LocationFSxLustre#Subdirectory` | yes | baseline |
+| `AWS::DataSync::LocationFSxLustre#Subdirectory` | yes | update |
 | `AWS::DataSync::LocationFSxONTAP#Protocol` | yes | baseline |
-| `AWS::DataSync::LocationFSxONTAP#Subdirectory` | yes | baseline |
-| `AWS::DataSync::LocationFSxOpenZFS#Protocol` | yes | baseline |
-| `AWS::DataSync::LocationFSxOpenZFS#Subdirectory` | yes | baseline |
-| `AWS::DataSync::LocationFSxWindows#Domain` | yes | baseline |
-| `AWS::DataSync::LocationFSxWindows#Password` | yes | baseline |
-| `AWS::DataSync::LocationFSxWindows#Subdirectory` | yes | baseline |
-| `AWS::DataSync::LocationFSxWindows#User` | yes | baseline |
-| `AWS::DataSync::LocationNFS#ServerHostname` | yes | baseline |
-| `AWS::DataSync::LocationObjectStorage#ServerHostname` | yes | baseline |
+| `AWS::DataSync::LocationFSxONTAP#Subdirectory` | yes | update |
+| `AWS::DataSync::LocationFSxOpenZFS#Protocol` | yes | update |
+| `AWS::DataSync::LocationFSxOpenZFS#Subdirectory` | yes | update |
+| `AWS::DataSync::LocationFSxWindows#Domain` | yes | update |
+| `AWS::DataSync::LocationFSxWindows#Password` | yes | update |
+| `AWS::DataSync::LocationFSxWindows#Subdirectory` | yes | update |
+| `AWS::DataSync::LocationFSxWindows#User` | yes | update |
+| `AWS::DataSync::LocationNFS#ServerHostname` | yes | update |
+| `AWS::DataSync::LocationObjectStorage#ServerHostname` | yes | update |
 | `AWS::DataSync::LocationS3#S3Config` | yes | update |
 | `AWS::DataSync::LocationS3#S3StorageClass` | yes | update |
 | `AWS::DataSync::LocationS3#Subdirectory` | yes | update |
-| `AWS::DataSync::LocationSMB#ServerHostname` | yes | baseline |
+| `AWS::DataSync::LocationSMB#ServerHostname` | yes | update |
 | `AWS::DocDB::DBCluster#EngineVersion` | yes | update |
 | `AWS::DynamoDB::GlobalTable#GlobalSecondaryIndexes.*.KeySchema.*.AttributeName` | maybe | update |
 | `AWS::DynamoDB::GlobalTable#GlobalSecondaryIndexes.*.KeySchema.*.KeyType` | maybe | update |
@@ -226,25 +226,25 @@ Candidates: 389 (replace 7, update 219, baseline 73, hand rule 90).
 | `AWS::Events::Rule#EventBusName` | yes | hand rule |
 | `AWS::FIS::ExperimentTemplate#Tags` | yes | update |
 | `AWS::FSx::FileSystem#FileSystemTypeVersion` | yes | update |
-| `AWS::FSx::FileSystem#LustreConfiguration.CopyTagsToBackups` | yes | baseline |
-| `AWS::FSx::FileSystem#LustreConfiguration.DeploymentType` | yes | baseline |
-| `AWS::FSx::FileSystem#LustreConfiguration.DriveCacheType` | yes | baseline |
-| `AWS::FSx::FileSystem#LustreConfiguration.ExportPath` | yes | baseline |
-| `AWS::FSx::FileSystem#LustreConfiguration.ImportPath` | yes | baseline |
-| `AWS::FSx::FileSystem#LustreConfiguration.ImportedFileChunkSize` | yes | baseline |
-| `AWS::FSx::FileSystem#LustreConfiguration.PerUnitStorageThroughput` | yes | baseline |
-| `AWS::FSx::FileSystem#OntapConfiguration.DeploymentType` | yes | baseline |
-| `AWS::FSx::FileSystem#OntapConfiguration.EndpointIpAddressRange` | yes | baseline |
-| `AWS::FSx::FileSystem#OntapConfiguration.PreferredSubnetId` | yes | baseline |
-| `AWS::FSx::FileSystem#OpenZFSConfiguration.DeploymentType` | yes | baseline |
-| `AWS::FSx::FileSystem#OpenZFSConfiguration.EndpointIpAddressRange` | yes | baseline |
-| `AWS::FSx::FileSystem#OpenZFSConfiguration.PreferredSubnetId` | yes | baseline |
-| `AWS::FSx::FileSystem#OpenZFSConfiguration.RootVolumeConfiguration.CopyTagsToSnapshots` | yes | baseline |
-| `AWS::FSx::FileSystem#OpenZFSConfiguration.RootVolumeConfiguration.DataCompressionType` | yes | baseline |
-| `AWS::FSx::FileSystem#OpenZFSConfiguration.RootVolumeConfiguration.NfsExports` | yes | baseline |
-| `AWS::FSx::FileSystem#OpenZFSConfiguration.RootVolumeConfiguration.ReadOnly` | yes | baseline |
-| `AWS::FSx::FileSystem#OpenZFSConfiguration.RootVolumeConfiguration.RecordSizeKiB` | yes | baseline |
-| `AWS::FSx::FileSystem#OpenZFSConfiguration.RootVolumeConfiguration.UserAndGroupQuotas` | yes | baseline |
+| `AWS::FSx::FileSystem#LustreConfiguration.CopyTagsToBackups` | yes | replace |
+| `AWS::FSx::FileSystem#LustreConfiguration.DeploymentType` | yes | replace |
+| `AWS::FSx::FileSystem#LustreConfiguration.DriveCacheType` | yes | replace |
+| `AWS::FSx::FileSystem#LustreConfiguration.ExportPath` | yes | replace |
+| `AWS::FSx::FileSystem#LustreConfiguration.ImportPath` | yes | replace |
+| `AWS::FSx::FileSystem#LustreConfiguration.ImportedFileChunkSize` | yes | replace |
+| `AWS::FSx::FileSystem#LustreConfiguration.PerUnitStorageThroughput` | yes | update |
+| `AWS::FSx::FileSystem#OntapConfiguration.DeploymentType` | yes | replace |
+| `AWS::FSx::FileSystem#OntapConfiguration.EndpointIpAddressRange` | yes | replace |
+| `AWS::FSx::FileSystem#OntapConfiguration.PreferredSubnetId` | yes | replace |
+| `AWS::FSx::FileSystem#OpenZFSConfiguration.DeploymentType` | yes | replace |
+| `AWS::FSx::FileSystem#OpenZFSConfiguration.EndpointIpAddressRange` | yes | replace |
+| `AWS::FSx::FileSystem#OpenZFSConfiguration.PreferredSubnetId` | yes | replace |
+| `AWS::FSx::FileSystem#OpenZFSConfiguration.RootVolumeConfiguration.CopyTagsToSnapshots` | yes | replace |
+| `AWS::FSx::FileSystem#OpenZFSConfiguration.RootVolumeConfiguration.DataCompressionType` | yes | replace |
+| `AWS::FSx::FileSystem#OpenZFSConfiguration.RootVolumeConfiguration.NfsExports` | yes | replace |
+| `AWS::FSx::FileSystem#OpenZFSConfiguration.RootVolumeConfiguration.ReadOnly` | yes | replace |
+| `AWS::FSx::FileSystem#OpenZFSConfiguration.RootVolumeConfiguration.RecordSizeKiB` | yes | replace |
+| `AWS::FSx::FileSystem#OpenZFSConfiguration.RootVolumeConfiguration.UserAndGroupQuotas` | yes | replace |
 | `AWS::FSx::FileSystem#WindowsConfiguration.ActiveDirectoryId` | yes | baseline |
 | `AWS::FSx::FileSystem#WindowsConfiguration.CopyTagsToBackups` | yes | baseline |
 | `AWS::FSx::FileSystem#WindowsConfiguration.DeploymentType` | yes | baseline |
@@ -255,11 +255,11 @@ Candidates: 389 (replace 7, update 219, baseline 73, hand rule 90).
 | `AWS::Glue::Database#CatalogId` | yes | update |
 | `AWS::Glue::Database#DatabaseInput.Name` | yes | update |
 | `AWS::GuardDuty::Member#Email` | yes | update |
-| `AWS::HealthLake::FHIRDatastore#DatastoreName` | yes | baseline |
-| `AWS::HealthLake::FHIRDatastore#IdentityProviderConfiguration` | yes | baseline |
+| `AWS::HealthLake::FHIRDatastore#DatastoreName` | yes | update |
+| `AWS::HealthLake::FHIRDatastore#IdentityProviderConfiguration` | yes | update |
 | `AWS::ImageBuilder::Component#Tags` | yes | update |
 | `AWS::ImageBuilder::ContainerRecipe#Tags` | yes | update |
-| `AWS::ImageBuilder::Image#Tags` | yes | baseline |
+| `AWS::ImageBuilder::Image#Tags` | yes | update |
 | `AWS::ImageBuilder::ImageRecipe#Tags` | yes | update |
 | `AWS::IoT::ThingType#ThingTypeProperties` | yes | hand rule |
 | `AWS::IoTWireless::NetworkAnalyzerConfiguration#Tags` | yes | update |
@@ -335,7 +335,7 @@ Candidates: 389 (replace 7, update 219, baseline 73, hand rule 90).
 | `AWS::SSM::Document#Requires.*.Version` | maybe | hand rule |
 | `AWS::SSM::Document#TargetType` | maybe | hand rule |
 | `AWS::SSM::Document#VersionName` | maybe | hand rule |
-| `AWS::SageMaker::App#Tags` | yes | baseline |
+| `AWS::SageMaker::App#Tags` | yes | update |
 | `AWS::SageMaker::AppImageConfig#Tags` | yes | update |
 | `AWS::SageMaker::Domain#AppNetworkAccessType` | yes | update |
 | `AWS::SageMaker::Domain#DefaultSpaceSettings.JupyterLabAppSettings.DefaultResourceSpec.InstanceType` | maybe | update |
@@ -376,20 +376,20 @@ Candidates: 389 (replace 7, update 219, baseline 73, hand rule 90).
 | `AWS::SageMaker::FeatureGroup#OnlineStoreConfig` | yes | baseline |
 | `AWS::SageMaker::ModelPackage#AdditionalInferenceSpecifications.*.Containers.*.ContainerHostname` | maybe | update |
 | `AWS::SageMaker::ModelPackage#AdditionalInferenceSpecifications.*.Containers.*.Environment` | maybe | update |
-| `AWS::SageMaker::ModelPackage#AdditionalInferenceSpecifications.*.Containers.*.Framework` | maybe | baseline |
+| `AWS::SageMaker::ModelPackage#AdditionalInferenceSpecifications.*.Containers.*.Framework` | maybe | update |
 | `AWS::SageMaker::ModelPackage#AdditionalInferenceSpecifications.*.Containers.*.FrameworkVersion` | maybe | update |
 | `AWS::SageMaker::ModelPackage#AdditionalInferenceSpecifications.*.Containers.*.Image` | maybe | update |
-| `AWS::SageMaker::ModelPackage#AdditionalInferenceSpecifications.*.Containers.*.ImageDigest` | maybe | baseline |
+| `AWS::SageMaker::ModelPackage#AdditionalInferenceSpecifications.*.Containers.*.ImageDigest` | maybe | update |
 | `AWS::SageMaker::ModelPackage#AdditionalInferenceSpecifications.*.Containers.*.ModelDataUrl` | maybe | update |
 | `AWS::SageMaker::ModelPackage#AdditionalInferenceSpecifications.*.Containers.*.ModelInput` | maybe | update |
 | `AWS::SageMaker::ModelPackage#AdditionalInferenceSpecifications.*.Containers.*.ModelInput.DataInputConfig` | maybe | update |
 | `AWS::SageMaker::ModelPackage#AdditionalInferenceSpecifications.*.Containers.*.NearestModelName` | maybe | update |
 | `AWS::SageMaker::ModelPackage#AdditionalInferenceSpecificationsToAdd.*.Containers.*.ContainerHostname` | maybe | update |
 | `AWS::SageMaker::ModelPackage#AdditionalInferenceSpecificationsToAdd.*.Containers.*.Environment` | maybe | update |
-| `AWS::SageMaker::ModelPackage#AdditionalInferenceSpecificationsToAdd.*.Containers.*.Framework` | maybe | baseline |
+| `AWS::SageMaker::ModelPackage#AdditionalInferenceSpecificationsToAdd.*.Containers.*.Framework` | maybe | update |
 | `AWS::SageMaker::ModelPackage#AdditionalInferenceSpecificationsToAdd.*.Containers.*.FrameworkVersion` | maybe | update |
 | `AWS::SageMaker::ModelPackage#AdditionalInferenceSpecificationsToAdd.*.Containers.*.Image` | maybe | update |
-| `AWS::SageMaker::ModelPackage#AdditionalInferenceSpecificationsToAdd.*.Containers.*.ImageDigest` | maybe | baseline |
+| `AWS::SageMaker::ModelPackage#AdditionalInferenceSpecificationsToAdd.*.Containers.*.ImageDigest` | maybe | update |
 | `AWS::SageMaker::ModelPackage#AdditionalInferenceSpecificationsToAdd.*.Containers.*.ModelDataUrl` | maybe | update |
 | `AWS::SageMaker::ModelPackage#AdditionalInferenceSpecificationsToAdd.*.Containers.*.ModelInput` | maybe | update |
 | `AWS::SageMaker::ModelPackage#AdditionalInferenceSpecificationsToAdd.*.Containers.*.ModelInput.DataInputConfig` | maybe | update |
@@ -401,10 +401,10 @@ Candidates: 389 (replace 7, update 219, baseline 73, hand rule 90).
 | `AWS::Timestream::ScheduledQuery#ClientToken` | yes | update |
 | `AWS::Transfer::Server#EndpointDetails.AddressAllocationIds` | maybe | update |
 | `AWS::Transfer::Server#IdentityProviderType` | yes | update |
-| `AWS::WorkSpaces::Workspace#BundleId` | maybe | baseline |
-| `AWS::WorkSpaces::Workspace#RootVolumeEncryptionEnabled` | maybe | baseline |
-| `AWS::WorkSpaces::Workspace#UserVolumeEncryptionEnabled` | maybe | baseline |
-| `AWS::WorkSpaces::Workspace#VolumeEncryptionKey` | maybe | baseline |
+| `AWS::WorkSpaces::Workspace#BundleId` | maybe | update |
+| `AWS::WorkSpaces::Workspace#RootVolumeEncryptionEnabled` | maybe | update |
+| `AWS::WorkSpaces::Workspace#UserVolumeEncryptionEnabled` | maybe | update |
+| `AWS::WorkSpaces::Workspace#VolumeEncryptionKey` | maybe | update |
 | `AWS::WorkSpacesWeb::UserSettings#AdditionalEncryptionContext` | yes | update |
 | `AWS::WorkSpacesWeb::UserSettings#CustomerManagedKey` | yes | update |
 | `AWS::XRay::SamplingRule#SamplingRuleRecord.SamplingRule.Version` | yes | update |

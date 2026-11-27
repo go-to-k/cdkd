@@ -33,6 +33,9 @@
 #      succeeds, the values stay (64 / SSD / IPV4), the same file system is
 #      kept, and ONE warning names all three. WeeklyMaintenanceStartTime is
 #      added in the same deploy, so UpdateFileSystem fires beside them.
+#   2e. (after 2c) CDKD_TEST_RECORDSIZE_CHANGE=true too (go-to-k/cdkd#7083):
+#       RecordSizeKiB 128 -> 64 shows as a replacement in cdkd diff, and the
+#       deploy refuses it (stateful); the file system and its record size stay.
 #   2c. Re-deploy with CDKD_TEST_TP_REMOVAL=true too (issue #1160):
 #      ThroughputCapacity leaves the template. The CFn A/B measured
 #      CloudFormation keeping it on MULTI_AZ_1 only, so on this SINGLE_AZ_1
@@ -311,7 +314,7 @@ output_value() {
 
 # --- Phase 1: deploy baseline ------------------------------------------
 echo "==> Phase 1: deploy OpenZFS SINGLE_AZ_1 file system (this takes ~5-15 min)"
-env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL -u CDKD_TEST_MAINT_ALT -u CDKD_TEST_TP_REMOVAL node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL -u CDKD_TEST_MAINT_ALT -u CDKD_TEST_TP_REMOVAL -u CDKD_TEST_RECORDSIZE_CHANGE node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 FS_ID_P1="$(output_value FileSystemId)"
@@ -377,7 +380,7 @@ echo "    file system routed via SDK provider (provisionedBy=sdk)"
 echo "==> Phase 2: re-deploy with CDKD_TEST_UPDATE=true (ThroughputCapacity 64->128, tag change + removal)"
 PHASE2_LOG="$(mktemp)"
 set +e
-env -u CDKD_TEST_REMOVAL -u CDKD_TEST_MAINT_ALT -u CDKD_TEST_TP_REMOVAL CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_REMOVAL -u CDKD_TEST_MAINT_ALT -u CDKD_TEST_TP_REMOVAL -u CDKD_TEST_RECORDSIZE_CHANGE CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${PHASE2_LOG}"
 PHASE2_RC=${PIPESTATUS[0]}
 set -e
@@ -491,7 +494,7 @@ if [ "${MAINT_P2}" = "${MAINT_TARGET}" ]; then
 fi
 PHASE2B_LOG="$(mktemp)"
 set +e
-env -u CDKD_TEST_TP_REMOVAL CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true CDKD_TEST_MAINT_ALT="${MAINT_ALT}" node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_TP_REMOVAL -u CDKD_TEST_RECORDSIZE_CHANGE CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true CDKD_TEST_MAINT_ALT="${MAINT_ALT}" node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${PHASE2B_LOG}"
 PHASE2B_RC=${PIPESTATUS[0]}
 set -e
@@ -549,7 +552,7 @@ if [ "${TP_P2C_BEFORE}" != "128" ]; then
 fi
 PHASE2C_LOG="$(mktemp)"
 set +e
-CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true CDKD_TEST_MAINT_ALT="${MAINT_ALT}" CDKD_TEST_TP_REMOVAL=true \
+env -u CDKD_TEST_RECORDSIZE_CHANGE CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true CDKD_TEST_MAINT_ALT="${MAINT_ALT}" CDKD_TEST_TP_REMOVAL=true \
   node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${PHASE2C_LOG}"
 PHASE2C_RC=${PIPESTATUS[0]}
@@ -585,6 +588,60 @@ if [ "${TP_P2C_AFTER}" != "${TP_P2C_BEFORE}" ]; then
   exit 1
 fi
 echo "    ThroughputCapacity left in place (${TP_P2C_AFTER})"
+
+# --- Phase 2e: a replacing RootVolumeConfiguration change (#7083) --------
+# CloudFormation replaced an OpenZFS file system on a RecordSizeKiB change
+# (measured on #7083), so the diff must plan the replacement and the deploy
+# must refuse it: the file system is stateful. Refusal only, never applied.
+# Before the fix the diff planned an update in place and the provider's
+# update() refused it after the fact.
+echo "==> Phase 2e: RecordSizeKiB 128 -> 64 is a replacement, refused without --force-stateful-recreation (#7083)"
+RS_P2E_BEFORE="$(aws fsx describe-volumes --volume-ids "${ROOTVOL_OUT}" --region "${REGION}" \
+  --query 'Volumes[0].OpenZFSConfiguration.RecordSizeKiB' --output text)"
+if [ "${RS_P2E_BEFORE}" != "128" ]; then
+  echo "FAIL [phase 2e]: #7083 premise: expected the root volume's RecordSizeKiB 128 before the change, got '${RS_P2E_BEFORE}'" >&2
+  exit 1
+fi
+P2E_DIFF_LOG="$(mktemp)"
+set +e
+env -u CDKD_TEST_RECORDSIZE_CHANGE CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true CDKD_TEST_MAINT_ALT="${MAINT_ALT}" CDKD_TEST_TP_REMOVAL=true \
+  CDKD_TEST_RECORDSIZE_CHANGE=true node "${LOCAL_DIST}" diff "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" >"${P2E_DIFF_LOG}" 2>&1
+set -e
+P2E_DIFF="$(sed 's/\x1b\[[0-9;]*m//g' "${P2E_DIFF_LOG}")"
+if ! grep -qE 'AWS::FSx::FileSystem .*Fs will be replaced' <<<"${P2E_DIFF}"; then
+  echo "FAIL [phase 2e]: #7083: cdkd diff does not show the file system replaced on a RecordSizeKiB change (CloudFormation replaces it)" >&2
+  exit 1
+fi
+P2E_LOG="$(mktemp)"
+set +e
+env -u CDKD_TEST_RECORDSIZE_CHANGE CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true CDKD_TEST_MAINT_ALT="${MAINT_ALT}" CDKD_TEST_TP_REMOVAL=true \
+  CDKD_TEST_RECORDSIZE_CHANGE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${P2E_LOG}"
+P2E_RC=${PIPESTATUS[0]}
+set -e
+P2E_PLAIN="$(sed 's/\x1b\[[0-9;]*m//g' "${P2E_LOG}")"
+if grep -qF 'UpdateFileSystem does not accept' <<<"${P2E_PLAIN}"; then
+  echo "FAIL [phase 2e]: #7083: the RecordSizeKiB change was sent as an in-place update (the provider refused it) instead of a planned replacement" >&2
+  exit 1
+fi
+if [ "${P2E_RC}" -eq 0 ]; then
+  echo "FAIL [phase 2e]: #7083: the RecordSizeKiB change deployed without --force-stateful-recreation (the stateful replacement gate did not refuse)" >&2
+  exit 1
+fi
+if ! grep -qF 'Fs (AWS::FSx::FileSystem) requires replacement (immutable property changed: OpenZFSConfiguration)' <<<"${P2E_PLAIN}" \
+  || ! grep -qF -- '--force-stateful-recreation' <<<"${P2E_PLAIN}"; then
+  echo "FAIL [phase 2e]: #7083: the deploy exited ${P2E_RC} without the stateful refusal naming Fs, OpenZFSConfiguration and --force-stateful-recreation" >&2
+  exit 1
+fi
+FS_ID_P2E="$(output_value FileSystemId)"
+RS_P2E_AFTER="$(aws fsx describe-volumes --volume-ids "${ROOTVOL_OUT}" --region "${REGION}" \
+  --query 'Volumes[0].OpenZFSConfiguration.RecordSizeKiB' --output text)"
+if [ "${FS_ID_P2E}" != "${FS_ID_P2C}" ] || [ "${RS_P2E_AFTER}" != "128" ]; then
+  echo "FAIL [phase 2e]: #7083: the refused deploy changed the file system (id ${FS_ID_P2C} -> '${FS_ID_P2E}', RecordSizeKiB '${RS_P2E_AFTER}')" >&2
+  exit 1
+fi
+echo "    diff shows the replacement; the deploy refused it; ${FS_ID_P2E} keeps RecordSizeKiB 128"
 
 # --- Phase 2d: a child volume outside the stack (issue #5431) ------------
 # FSx refuses DeleteFileSystem on a file system with child volumes unless it
