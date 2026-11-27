@@ -417,7 +417,7 @@ async function diffCommand(
         );
         if (owner !== undefined) {
           logger.warn(
-            safeMsg`--replace-resource ${id}: declared by ${owner.stackName}, which the deploy includes as a dependency; diff that stack to preview its replacement.`
+            safeMsg`--replace-resource ${id}: declared by ${owner.stackName}, a dependency stack the deploy includes unless -e is passed; diff that stack to preview its replacement.`
           );
         }
       }

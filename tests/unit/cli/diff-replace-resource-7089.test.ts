@@ -231,6 +231,8 @@ describe('cdkd diff --replace-resource previews cdkd deploy --replace-resource (
     const diff = await diffPlan(priorState(), template(128), ['Fn']);
     expect((deploy.error as { code?: string }).code).toBe('REPLACE_RESOURCE_REFUSED');
     expect(diff.blocking).toEqual([(deploy.error as Error).message]);
+    // The deploy shows no plan, so no reader is shown replaced.
+    expect(planOf(diff.changes)).toEqual({ Fn: 'NO_CHANGE', Perm: 'NO_CHANGE', RefParam: 'NO_CHANGE' });
   });
 
   it('blocks with the deploy refusal for a nested stack target', async () => {
@@ -311,6 +313,9 @@ describe('cdkd diff --replace-resource previews cdkd deploy --replace-resource (
     expect((deploy.error as { code?: string }).code).toBe('REPLACE_RESOURCE_REFUSED');
     expect(diff.blocking).toEqual([(deploy.error as Error).message]);
     expect(planOf(diff.changes)['Fn']).toBe('UPDATE');
+    // Nor are Fn's readers promoted: the deploy plans no replacement at all.
+    expect(planOf(diff.changes)['Perm']).toBe('NO_CHANGE');
+    expect(planOf(diff.changes)['RefParam']).toBe('NO_CHANGE');
   });
 
   it('warns once per target it does not replace', async () => {

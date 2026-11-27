@@ -210,7 +210,7 @@ describe('cdkd diff --replace-resource command wiring (go-to-k/cdkd#7089)', () =
     const reported = await runDiff([STACK, '--replace-resource', 'Fn']);
     expect(reported).toBe('');
     expect(warned.mock.calls.map((c) => String(c[0]))).toContain(
-      '--replace-resource Fn: declared by Dep, which the deploy includes as a dependency; diff that stack to preview its replacement.'
+      '--replace-resource Fn: declared by Dep, a dependency stack the deploy includes unless -e is passed; diff that stack to preview its replacement.'
     );
     // The dependency's template is expanded, as the deploy expands it.
     expect(mockExpandMacros.mock.calls.flatMap((c) => (c[0] as Array<{ stackName: string }>).map((s) => s.stackName))).toContain('Dep');
@@ -225,7 +225,7 @@ describe('cdkd diff --replace-resource command wiring (go-to-k/cdkd#7089)', () =
     );
     await runDiff([STACK, '--replace-resource', 'Fn']);
     expect(warned.mock.calls.map((c) => String(c[0]))).toContain(
-      '--replace-resource Fn: declared by Leaf, which the deploy includes as a dependency; diff that stack to preview its replacement.'
+      '--replace-resource Fn: declared by Leaf, a dependency stack the deploy includes unless -e is passed; diff that stack to preview its replacement.'
     );
   });
 

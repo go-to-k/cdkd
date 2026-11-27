@@ -154,7 +154,14 @@ grep -qF -- "--replace-resource Topic: this deploy changes no property of Topic"
   echo "FAIL: cdkd diff does not print the deploy's unchanged-target refusal (issue #7089)" >&2
   exit 1
 }
-echo "    OK: the diff blocks with the deploy's refusal"
+# The deploy refuses with no plan, so the diff shows no replacement either:
+# not of the target, and not of Sub, the reader a replaced Topic would replace.
+if grep -qF "[requires replacement]" <<<"${DIFF_REFUSED}"; then
+  printf '%s\n' "${DIFF_REFUSED}" >&2
+  echo "FAIL: the refused cdkd diff --replace-resource still shows a replacement the deploy never plans (issue #7089)" >&2
+  exit 1
+fi
+echo "    OK: the diff blocks with the deploy's refusal and shows no replacement"
 
 echo "==> Phase 3: THE ARM -- a DisplayName change, planned as a replacement by --replace-resource"
 # PREMISE: the change alone is an in-place update of Topic, whose readers stay
@@ -186,8 +193,10 @@ grep -qF "Found 2 destructive change(s)" <<<"${PREVIEW}" || {
   echo "FAIL: cdkd diff --replace-resource Topic does not preview Topic and Sub replaced (issue #7089)" >&2
   exit 1
 }
+# By logical id: the destructive line ends `<logicalId> will be replaced`, so
+# the type `AWS::SNS::Topic` (which also contains the word) never matches.
 for replaced in Topic Sub; do
-  grep -qw "${replaced}" <<<"${PREVIEW}" || { printf '%s\n' "${PREVIEW}" >&2; echo "FAIL: cdkd diff --replace-resource Topic does not list ${replaced} (issue #7089)" >&2; exit 1; }
+  grep -qE "[[:space:]]${replaced} will be replaced" <<<"${PREVIEW}" || { printf '%s\n' "${PREVIEW}" >&2; echo "FAIL: cdkd diff --replace-resource Topic does not list ${replaced} as replaced (issue #7089)" >&2; exit 1; }
 done
 echo "    OK: cdkd diff previews Topic and Sub replaced"
 OUT=$(env CDKD_TEST_PHASE=display node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \

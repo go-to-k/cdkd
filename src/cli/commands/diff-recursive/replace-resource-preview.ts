@@ -83,3 +83,28 @@ export async function previewReplaceResourceTargets(input: {
   );
   return [];
 }
+
+/**
+ * The diff, `settle` (the deploy's next step on the rows), then the plan
+ * above. The diff promotes each target's readers as a planned replacement's
+ * (`forcedReplacements`), as the deploy's does. When a target is refused the
+ * deploy shows no plan at all, so the rows are diffed again UNSEEDED: no
+ * reader is left shown as a replacement the deploy never plans. The verdict
+ * itself is the seeded diff's, as the deploy's is.
+ */
+export async function previewReplaceResourcePlan<T>(
+  input: Omit<Parameters<typeof previewReplaceResourceTargets>[0], 'changes'> & {
+    diff: (
+      forcedReplacements: ReadonlySet<string> | undefined
+    ) => Promise<Map<string, ResourceChange>>;
+    settle: (changes: Map<string, ResourceChange>) => Promise<T>;
+  }
+): Promise<{ changes: Map<string, ResourceChange>; settled: T; blocking: string[] }> {
+  const { diff, settle, ...plan } = input;
+  const changes = await diff(plan.targetIds);
+  const settled = await settle(changes);
+  const blocking = await previewReplaceResourceTargets({ ...plan, changes });
+  if (blocking.length === 0 || plan.targetIds === undefined) return { changes, settled, blocking };
+  const unseeded = await diff(undefined);
+  return { changes: unseeded, settled: await settle(unseeded), blocking };
+}
