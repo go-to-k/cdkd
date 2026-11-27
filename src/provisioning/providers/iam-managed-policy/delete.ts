@@ -7,7 +7,37 @@ import { maskerOrIdentity } from '../../masked-retry-logger.js';
 import type { ResourceDeleteResult } from '../../../types/resource.js';
 import { markDeleteStarted, type DeleteProgress } from '../../delete-started.js';
 import { assertRecordedIdentity, RecordedIdentityError } from '../../recorded-identity.js';
-import { policyIdentityToken } from './shared.js';
+import { markNonRetryable } from '../../../deployment/retryable-errors.js';
+import { declaredPrincipalsOf, policyIdentityToken, type UndeclaredPrincipal } from './shared.js';
+
+/** go-to-k/cdkd#7117: the delete refused over principals its record does not declare. */
+class UndeclaredPrincipalsRefusal extends ProvisioningError {
+  constructor(message: string, resourceType: string, logicalId: string, physicalId: string) {
+    super(message, resourceType, logicalId, physicalId);
+    this.name = 'UndeclaredPrincipalsRefusal';
+    markNonRetryable(this);
+  }
+}
+
+const PRINCIPAL_KIND = { Roles: 'role', Users: 'user', Groups: 'group' } as const;
+
+/**
+ * The refusal's text. It names no AWS-authored text and none of the phrases the
+ * already-deleted classifiers match, so the record is kept.
+ */
+function undeclaredPrincipalsMessage(
+  logicalId: string,
+  undeclared: readonly UndeclaredPrincipal[]
+): string {
+  const named = undeclared.map((p) => `${PRINCIPAL_KIND[p.kind]} ${p.name}`).join(', ');
+  return (
+    `Failed to delete IAM managed policy ${logicalId}: it is still attached to ${named}, ` +
+    `which the stack does not declare as its principals, so it was left in place, as ` +
+    `CloudFormation leaves it. Detach the policy from them (DetachRolePolicy / ` +
+    `DetachUserPolicy / DetachGroupPolicy), or remove the attachment from the stack that ` +
+    `owns them, then re-run.`
+  );
+}
 
 export async function deleteImpl(
   this: IAMManagedPolicyProvider,
@@ -57,11 +87,29 @@ export async function deleteImpl(
       context,
     });
 
-    // 1. Detach from every group / role / user (AWS refuses to delete an
-    //    attached managed policy). Use ListEntitiesForPolicy as the source
-    //    of truth rather than state's Groups/Roles/Users so a console-side
-    //    attach made after deploy is also cleaned up.
-    await this.detachAllPrincipals(physicalId, progress);
+    // 1. Detach from the groups / roles / users the record declares (AWS
+    //    refuses to delete an attached managed policy), read live from
+    //    ListEntitiesForPolicy. go-to-k/cdkd#7117: a principal attached
+    //    outside the record is left attached and refused over, as
+    //    CloudFormation's handler does (`Cannot delete a policy attached to
+    //    entities`): detaching it would take the policy's permissions from a
+    //    role another stack or an operator owns. The stack's own roles
+    //    attaching it by ARN have let go by now: a removal deletes after every
+    //    update, a destroy deletes them first (they reference the policy), and a
+    //    replacement's old copy is deleted in the cleanup phase.
+    const declared = context?.detachUndeclaredPrincipals
+      ? undefined
+      : declaredPrincipalsOf(_properties);
+    const undeclared = await this.detachAllPrincipals(physicalId, progress, declared);
+    if (undeclared.length > 0) {
+      const refusal = new UndeclaredPrincipalsRefusal(
+        mask(undeclaredPrincipalsMessage(logicalId, undeclared)),
+        resourceType,
+        logicalId,
+        physicalId
+      );
+      throw progress.stripped ? markDeleteStarted(refusal) : refusal;
+    }
 
     // 2. Delete every non-default policy version (AWS refuses to delete a
     //    policy with non-default versions).
@@ -74,6 +122,7 @@ export async function deleteImpl(
   } catch (error) {
     // The identity refusals: already worded (no AWS text) and marked.
     if (error instanceof RecordedIdentityError) throw error;
+    if (error instanceof UndeclaredPrincipalsRefusal) throw error;
     // Read back above but gone by `DeletePolicy` (a concurrent delete): the
     // same not-found arm as the read's.
     if (error instanceof NoSuchEntityException) {

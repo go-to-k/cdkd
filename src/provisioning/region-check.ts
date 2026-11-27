@@ -207,6 +207,16 @@ export interface DeleteContext extends SecretMaskingContext {
     | undefined;
 
   /**
+   * go-to-k/cdkd#7117: an `AWS::IAM::ManagedPolicy` delete detaches every
+   * attached principal, not only those its record declares. Set only by that
+   * provider's in-`update()` replacement, which deletes the old policy before
+   * the stack's roles, users and groups attaching it by ARN have moved to the
+   * new one. Every other delete detaches the declared principals and refuses
+   * over the rest, as CloudFormation does.
+   */
+  detachUndeclaredPrincipals?: boolean;
+
+  /**
    * The user passed `--skip-final-snapshot`: no final snapshot of any kind,
    * whatever the policy. Set by the destroy, deploy-removal and rollback
    * create deletes. `CloudControlProvider.delete` reads it to keep an RDS

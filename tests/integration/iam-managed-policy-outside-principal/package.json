@@ -1,0 +1,20 @@
+{
+  "name": "cdkd-example-iam-managed-policy-outside-principal",
+  "version": "1.0.0",
+  "private": true,
+  "description": "cdkd integration fixture: an IAM ManagedPolicy attached outside the stack is not detached by its delete (#7117)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.1112.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

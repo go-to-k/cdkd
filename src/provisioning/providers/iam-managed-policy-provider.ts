@@ -56,7 +56,11 @@ import {
   MANAGED_POLICY_READ_BACK_KEYS,
   managedPolicyAttributes,
 } from './iam-managed-policy/shared.js';
-import { policyIdentityToken } from './iam-managed-policy/shared.js';
+import {
+  policyIdentityToken,
+  type DeclaredPrincipals,
+  type UndeclaredPrincipal,
+} from './iam-managed-policy/shared.js';
 import {
   assertInlinePolicyAttachTargets,
   MANAGED_POLICY_OWNER,
@@ -593,7 +597,23 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     return live;
   }
 
-  async detachAllPrincipals(policyArn: string, progress?: DeleteProgress): Promise<void> {
+  /**
+   * Detach the policy from the principals AWS reports attached. With `declared`
+   * (go-to-k/cdkd#7117), only those the record names are detached, as
+   * CloudFormation's delete handler does; the others are returned, undetached,
+   * for the caller to refuse over. Without it, every one is detached.
+   */
+  async detachAllPrincipals(
+    policyArn: string,
+    progress?: DeleteProgress,
+    declared?: DeclaredPrincipals
+  ): Promise<UndeclaredPrincipal[]> {
+    const undeclared: UndeclaredPrincipal[] = [];
+    const keep = (kind: keyof DeclaredPrincipals, name: string): boolean => {
+      if (!declared || declared[kind].has(name.toLowerCase())) return false;
+      undeclared.push({ kind, name });
+      return true;
+    };
     try {
       let marker: string | undefined;
       // eslint-disable-next-line no-constant-condition
@@ -605,7 +625,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
           })
         );
         for (const g of resp.PolicyGroups ?? []) {
-          if (!g.GroupName) continue;
+          if (!g.GroupName || keep('Groups', g.GroupName)) continue;
           try {
             await this.iamClient.send(
               new DetachGroupPolicyCommand({ GroupName: g.GroupName, PolicyArn: policyArn })
@@ -616,7 +636,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
           }
         }
         for (const r of resp.PolicyRoles ?? []) {
-          if (!r.RoleName) continue;
+          if (!r.RoleName || keep('Roles', r.RoleName)) continue;
           try {
             await this.iamClient.send(
               new DetachRolePolicyCommand({ RoleName: r.RoleName, PolicyArn: policyArn })
@@ -627,7 +647,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
           }
         }
         for (const u of resp.PolicyUsers ?? []) {
-          if (!u.UserName) continue;
+          if (!u.UserName || keep('Users', u.UserName)) continue;
           try {
             await this.iamClient.send(
               new DetachUserPolicyCommand({ UserName: u.UserName, PolicyArn: policyArn })
@@ -641,9 +661,10 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
         marker = resp.Marker;
       }
     } catch (err) {
-      if (err instanceof NoSuchEntityException) return;
+      if (err instanceof NoSuchEntityException) return undeclared;
       throw err;
     }
+    return undeclared;
   }
 
   /**

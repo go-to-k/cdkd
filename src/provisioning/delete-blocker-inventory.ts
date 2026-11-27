@@ -162,15 +162,20 @@ export const DELETE_BLOCKER_INVENTORY: readonly DeleteBlockerRow[] = [
   {
     type: 'AWS::IAM::ManagedPolicy',
     source: perms(
-      'iam:ListEntitiesForPolicy, iam:DetachRolePolicy, iam:DetachGroupPolicy, iam:DetachUserPolicy, iam:ListPolicyVersions, iam:DeletePolicyVersion'
+      'iam:ListEntitiesForPolicy, iam:DetachRolePolicy, iam:DetachGroupPolicy, iam:DetachUserPolicy, iam:ListPolicyVersions, iam:DeletePolicyVersion (#7117 probe: the handler detaches only the declared Roles / Groups / Users; with a role attached outside the stack the delete failed with "Cannot delete a policy attached to entities")'
     ),
     blockers: [
       handled(
-        'attachments to roles, groups and users',
+        'attachments to the roles, groups and users the policy declares',
         `${P}iam-managed-policy-provider.ts`,
         'DetachRolePolicyCommand',
-        `${T}iam-managed-policy-provider.test.ts`,
-        'detaches every principal AWS-side and deletes non-default versions before DeletePolicy'
+        `${T}iam-managed-policy-undeclared-principals-7117.test.ts`,
+        'matches declared names ignoring case, as IAM does, and deletes'
+      ),
+      refused(
+        'a role, group or user attached outside the policy (destroy, removal, replacement cleanup)',
+        `${P}iam-managed-policy/delete.ts`,
+        'which the stack does not declare as its principals'
       ),
       handled(
         'non-default policy versions',
@@ -241,7 +246,10 @@ export const DELETE_BLOCKER_INVENTORY: readonly DeleteBlockerRow[] = [
         'an access key deleted'
       ),
     ],
-    beyondCfn: ['deletes the permissions boundary, which DeleteUser does not need removed'],
+    beyondCfn: [
+      'deletes the permissions boundary, which DeleteUser does not need removed',
+      'removes group memberships, managed-policy attachments, inline policies and a login profile made outside the stack, which the handler refuses over (#7117 probe: only an out-of-band access key was deleted); each ends with the user, so no other principal loses anything',
+    ],
   },
   {
     type: 'AWS::IAM::Group',
