@@ -1,3 +1,5 @@
+import { mentionsDynamicReference } from '../deployment/secret-redaction/recorded-secrecy.js';
+
 /**
  * The TOKEN-FREE fast path of state schema v12 (go-to-k/cdkd#4847 /
  * go-to-k/cdkd#4852).
@@ -17,7 +19,7 @@ const tokenFreeStates = new WeakSet<object>();
 /** Does `body` (a raw `state.json`) possibly carry a token or a provenance field? O(bytes). */
 export function bodyMayCarryReferences(body: string): boolean {
   return (
-    body.includes('{{resolve:') ||
+    mentionsDynamicReference(body) ||
     body.includes('"referenceProvenance"') ||
     body.includes('"outputReferenceProvenance"')
   );

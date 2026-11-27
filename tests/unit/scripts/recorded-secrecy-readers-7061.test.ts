@@ -7,12 +7,17 @@
  * {@link GROUPS}, parsed with a real parser, so a comment is never read. A
  * MARKER is `SECRET_MASK`, any constant bound anywhere under `src/` to a string
  * spelling `***` or `{{resolve` (`DYNAMIC_REFERENCE_OPENING`, ...), or such a
- * string or template literal itself. A HAND TEST is:
+ * string or template literal itself. Literals are FOLDED first: a `+` chain, a
+ * template literal, `[...].join(sep)` and `.concat(...)` over literal parts
+ * read as the text they build (`'{{' + 'resolve:'`). A marker FRAGMENT is a
+ * literal run of two or more `*` (`'**'`) or a prefix of the opener at least two
+ * characters long (`'{{'`). A HAND TEST is:
  * - an equality (`===`, `!==`, `==`, `!=`), an `Object.is` or a `switch` case
- *   with a marker;
+ *   with a marker or a fragment;
  * - a string search or edit (`includes`, `startsWith`, `endsWith`, `indexOf`,
  *   `lastIndexOf`, `search`, `match`, `matchAll`, `split`, `replace`,
- *   `replaceAll`), by name or computed key, whose first argument is a marker;
+ *   `replaceAll`, `localeCompare`), by name or computed key, whose first
+ *   argument is a marker or a fragment;
  * - an `includes` / `has` / `indexOf` on an array or `Set` literal holding one;
  * - a regular expression (a literal, or `RegExp(...)` of a marker) that
  *   matches a marker and not the same text with one character changed;
@@ -30,7 +35,8 @@
  * tests for a MARKER only: a reader that compares, sends or addresses a
  * recorded value with no secrecy test at all is not seen, and neither is a
  * marker reached through a value no constant names (a string built at run
- * time, `'{{' + 'resolve:'`), nor a marker handed as an argument to any other
+ * time from parts that are not literals), nor a one-character piece of one
+ * (`'*'`, which an IAM wildcard spells too), nor a marker handed as an argument to any other
  * function (a deep-equality helper, a local comparator `same(v, SECRET_MASK)`). The record-provenance entry point and the fence arm that routes
  * record readers onto it are later steps of the same plan.
  */
@@ -125,6 +131,10 @@ const GROUPS: Readonly<Record<string, readonly string[]>> = {
     'src/provisioning/providers/dynamodb-table/drift.ts',
     'src/provisioning/providers/ec2/drift.ts',
     'src/provisioning/providers/rds/drift.ts',
+    // The journal's readers of an attempted bag or name, and the token-free body test.
+    'src/deployment/deploy-engine/deploy-flow/journal-at-start.ts',
+    'src/state/unsettled-properties.ts',
+    'src/state/token-free-state.ts',
   ],
 };
 
@@ -177,25 +187,128 @@ function groupFiles(): string[] {
   return [...out].sort();
 }
 
-/** The text of a string literal or an expression-free template literal, else undefined. */
-function literalText(node: unknown): string | undefined {
+/** The operands of a `+` chain, left to right (`a + b + c` is `(a + b) + c`). */
+function plusOperands(raw: unknown): unknown[] {
+  const node = unwrap(raw);
+  if (isNode(node) && node.type === 'BinaryExpression' && node['operator'] === '+') {
+    return [...plusOperands(node['left']), ...plusOperands(node['right'])];
+  }
+  return [node];
+}
+
+/**
+ * The text a string expression folds to from literals alone, else undefined: a
+ * string literal, a template literal whose parts all fold, a `+` of folding
+ * operands, `[...].join(sep)` over folding elements and `s.concat(...)` of
+ * folding parts (`'{{' + 'resolve:'`, `['*', '**'].join('')`).
+ */
+function literalText(raw: unknown): string | undefined {
+  const node = unwrap(raw);
   if (!isNode(node)) return undefined;
   if (node.type === 'Literal' && typeof node['value'] === 'string') return node['value'];
-  if (node.type === 'TemplateLiteral' && (node['expressions'] as unknown[]).length === 0) {
-    return ((node['quasis'] as Node[])[0]?.['value'] as { cooked?: string } | undefined)?.cooked;
+  if (node.type === 'TemplateLiteral') {
+    const quasis = node['quasis'] as Node[];
+    const exprs = node['expressions'] as unknown[];
+    let out = '';
+    for (let i = 0; i < quasis.length; i++) {
+      const cooked = (quasis[i]!['value'] as { cooked?: string }).cooked;
+      if (cooked === undefined) return undefined;
+      out += cooked;
+      if (i < exprs.length) {
+        const part = literalText(exprs[i]);
+        if (part === undefined) return undefined;
+        out += part;
+      }
+    }
+    return out;
+  }
+  if (node.type === 'BinaryExpression' && node['operator'] === '+') {
+    const left = literalText(node['left']);
+    const right = left === undefined ? undefined : literalText(node['right']);
+    return left === undefined || right === undefined ? undefined : left + right;
+  }
+  if (node.type === 'CallExpression') {
+    const callee = unwrap(node['callee']);
+    if (!isNode(callee)) return undefined;
+    const name = memberName(callee);
+    const args = node['arguments'] as unknown[];
+    const parts = (list: unknown[]): string[] | undefined => {
+      const out: string[] = [];
+      for (const item of list) {
+        const t = literalText(item);
+        if (t === undefined) return undefined;
+        out.push(t);
+      }
+      return out;
+    };
+    const object = unwrap(callee['object']);
+    if (name === 'join' && isNode(object) && object.type === 'ArrayExpression') {
+      const elements = parts(object['elements'] as unknown[]);
+      const separator = args.length === 0 ? ',' : literalText(args[0]);
+      return elements === undefined || separator === undefined ? undefined : elements.join(separator);
+    }
+    if (name === 'concat') {
+      const base = literalText(object);
+      const rest = parts(args);
+      return base === undefined || rest === undefined ? undefined : base + rest.join('');
+    }
   }
   return undefined;
 }
 
-/** A literal spelling a marker: a string, or a template literal any of whose parts does. */
-function spellsMarkerLiteral(node: unknown): boolean {
-  if (!isNode(node)) return false;
-  const text = literalText(node);
-  if (text !== undefined) return MARKER_TEXT.test(text);
+/**
+ * The literal runs of a string expression: the text of each maximal stretch of
+ * a `+` chain or template literal that folds, with whatever does not fold
+ * breaking the run (`'{{' + 'resolve:' + x` holds the run `{{resolve:`).
+ */
+function literalRuns(raw: unknown): string[] {
+  const node = unwrap(raw);
+  if (!isNode(node)) return [];
+  const whole = literalText(node);
+  if (whole !== undefined) return [whole];
+  const pieces: Array<string | undefined> = [];
   if (node.type === 'TemplateLiteral') {
-    return (node['quasis'] as Node[]).some((q) => MARKER_TEXT.test((q['value'] as { cooked?: string }).cooked ?? ''));
+    const quasis = node['quasis'] as Node[];
+    const exprs = node['expressions'] as unknown[];
+    quasis.forEach((q, i) => {
+      pieces.push((q['value'] as { cooked?: string }).cooked ?? '');
+      if (i < exprs.length) pieces.push(literalText(exprs[i]));
+    });
+  } else if (node.type === 'BinaryExpression' && node['operator'] === '+') {
+    for (const operand of plusOperands(node)) pieces.push(literalText(operand));
+  } else {
+    return [];
   }
-  return false;
+  const runs: string[] = [];
+  let run: string | undefined;
+  for (const piece of pieces) {
+    if (piece === undefined) {
+      if (run !== undefined) runs.push(run);
+      run = undefined;
+    } else {
+      run = (run ?? '') + piece;
+    }
+  }
+  if (run !== undefined) runs.push(run);
+  return runs;
+}
+
+/** A literal spelling a marker: a string, a fold of literals, or a template literal or `+` chain any run of which does. */
+function spellsMarkerLiteral(node: unknown): boolean {
+  return literalRuns(node).some((run) => MARKER_TEXT.test(run));
+}
+
+/**
+ * A PIECE of a marker that only a marker test searches for: a run of two or
+ * more `*` (`v.startsWith('**')` answers for the mask), or a prefix of the
+ * reference opener at least two characters long (`'{{'`, `'{{resol'`). One
+ * character (`'*'`, `'{'`) is no such piece: an IAM wildcard or a brace test
+ * spells it too.
+ */
+function isMarkerFragment(raw: unknown): boolean {
+  const text = literalText(raw);
+  if (text === undefined || text.length < 2) return false;
+  return /^\*{2,}$/.test(text) || '{{resolve:'.startsWith(text);
 }
 
 /** Every module-level name bound under `src/` to a marker literal (the helper's own private one aside). */
@@ -204,8 +317,8 @@ function markerNames(): Set<string> {
   for (const abs of tsFiles(join(ROOT, 'src'))) {
     const rel = relative(ROOT, abs).split('\\').join('/');
     if (rel === HELPER) continue;
+    // No text prefilter: a folded constant (`'{{' + 'resolve:'`) spells no marker in its source.
     const text = readFileSync(abs, 'utf8');
-    if (!MARKER_TEXT.test(text)) continue;
     // MODULE-level bindings only (exported or not): a function's local of the
     // same name is no constant another module can import.
     for (const stmt of parseOrThrow(abs, text)['body'] as Node[]) {
@@ -306,14 +419,16 @@ function handTestsIn(file: string, text: string, globalNames: ReadonlySet<string
     if (node.type === 'MemberExpression' && node['computed'] !== true && isNode(node['property'])) {
       if (names.has(node['property']['name'] as string)) return true;
     }
-    // A template literal interpolating one (`${SECRET_MASK}`).
+    // A template literal interpolating one (`${SECRET_MASK}`), or a `+` chain holding one.
     if (node.type === 'TemplateLiteral' && (node['expressions'] as unknown[]).some(isMarker)) return true;
+    if (node.type === 'BinaryExpression' && node['operator'] === '+' && plusOperands(node).some(isMarker)) return true;
     return spellsMarkerLiteral(node);
   };
+  const isMarkerOrFragment = (raw: unknown): boolean => isMarker(raw) || isMarkerFragment(raw);
   const holdsMarker = (raw: Node): boolean => {
     const node = unwrap(raw) as Node;
     if (node.type === 'Identifier') return names.has(node['name'] as string);
-    if (node.type === 'ArrayExpression') return (node['elements'] as unknown[]).some(isMarker);
+    if (node.type === 'ArrayExpression') return (node['elements'] as unknown[]).some(isMarkerOrFragment);
     if (node.type === 'NewExpression' && isNode(node['callee']) && node['callee']['name'] === 'Set') {
       const first = (node['arguments'] as Node[])[0];
       return first !== undefined && first.type === 'ArrayExpression' && holdsMarker(first);
@@ -346,14 +461,14 @@ function handTestsIn(file: string, text: string, globalNames: ReadonlySet<string
       out.push(`${file}#${here}#${text.slice(node.start, node.end).replace(/\s+/g, ' ')}`);
     };
     if (node.type === 'BinaryExpression' && ['===', '!==', '==', '!='].includes(node['operator'] as string)) {
-      if (isMarker(node['left']) || isMarker(node['right'])) flag();
+      if (isMarkerOrFragment(node['left']) || isMarkerOrFragment(node['right'])) flag();
     }
-    if (node.type === 'SwitchCase' && isMarker(node['test'])) flag();
+    if (node.type === 'SwitchCase' && isMarkerOrFragment(node['test'])) flag();
     if (node.type === 'CallExpression' || node.type === 'NewExpression') {
       const callee = node['callee'] as Node;
       const args = node['arguments'] as Node[];
       const name = memberName(callee);
-      if (node.type === 'CallExpression' && name !== undefined && SEARCHES.has(name) && isMarker(args[0])) flag();
+      if (node.type === 'CallExpression' && name !== undefined && SEARCHES.has(name) && isMarkerOrFragment(args[0])) flag();
       else if (name !== undefined && COLLECTION_SEARCHES.has(name) && holdsMarker(callee['object'] as Node)) flag();
       else if (
         (callee.type === 'Identifier' && maskWalkers.has(callee['name'] as string)) ||
@@ -366,7 +481,7 @@ function handTestsIn(file: string, text: string, globalNames: ReadonlySet<string
         isNode(callee['object']) &&
         callee['object']['name'] === 'Object' &&
         name === 'is' &&
-        args.some(isMarker)
+        args.some(isMarkerOrFragment)
       ) {
         flag();
       } else if (callee.type === 'Identifier' && callee['name'] === 'RegExp') {
@@ -429,7 +544,7 @@ function violations(extra: Record<string, string> = {}): string[] {
 describe('readers ask recorded-secrecy, never test a marker by hand (go-to-k/cdkd#7061)', () => {
   it('no migrated group holds a hand test', () => {
     // A floor the scan does not read: a group that lost its files proves nothing.
-    expect(groupFiles().length).toBeGreaterThanOrEqual(158);
+    expect(groupFiles().length).toBeGreaterThanOrEqual(161);
     expect(violations()).toEqual([]);
   });
 
@@ -473,6 +588,19 @@ describe('readers ask recorded-secrecy, never test a marker by hand (go-to-k/cdk
     ['a list constant of markers', "const MASKS = ['***'];\nexport const j7 = (v: string) => MASKS.includes(v);"],
     ['a regex naming a reference service', 'export const j8 = (v: string) => /\\{\\{resolve:ssm:/.test(v);'],
     ['a regex naming a quoted mask', 'export const j9 = (v: string) => /"\\*\\*\\*"/.test(v);'],
+    ['a concatenated opener', "export const k = (v: string) => v.includes('{{' + 'resolve:');"],
+    ['a concatenated mask', "export const k2 = (v: unknown) => v === '*' + '**';"],
+    ['a joined opener', "export const k3 = (v: string) => v.startsWith(['{{', 'resolve:'].join(''));"],
+    ['a joined mask in a computed-key search', "export const k4 = (v: string) => v['inc' + 'ludes'](['**', '*'].join(''));"],
+    ['a concat() opener', "export const k5 = (v: string) => v.indexOf('{{'.concat('resolve:')) >= 0;"],
+    ['an opener concatenated before a variable', "export const k6 = (v: string, s: string) => v.startsWith('{{' + 'resolve:' + s);"],
+    ['a template of folded parts', "export const k7 = (v: string) => v.includes(`{{${'resolve'}:`);"],
+    ['a second opener constant built by concatenation', "const OPEN2 = '{{' + 'resolve:';\nexport const k8 = (v: string) => v.includes(OPEN2);"],
+    ['a second mask constant built by join', "const MASK2 = ['*', '*', '*'].join('');\nexport const k9 = (v: unknown) => v === MASK2;"],
+    ['a mask prefix search', "export const m = (v: string) => v.startsWith('**');"],
+    ['a mask prefix equality', "export const m2 = (v: string) => v.slice(0, 2) === '**';"],
+    ['an opener prefix search', "export const m3 = (v: string) => v.indexOf('{{') >= 0;"],
+    ['a mask prefix in a list', "export const m4 = (v: string) => ['**'].includes(v.slice(0, 2));"],
   ])('probe: %s fails', (_what, line) => {
     const problems = violations({ [NAME]: `${real(NAME)}\n${line}\n` });
     expect(problems.length).toBeGreaterThanOrEqual(1);
@@ -484,7 +612,8 @@ describe('readers ask recorded-secrecy, never test a marker by hand (go-to-k/cdk
   it('probe: a comment, an unrelated string or an unrelated pattern is no hand test', () => {
     const line =
       "// v === SECRET_MASK, v.includes('{{resolve:')\n" +
-      "export const i = (v: string) => v.includes('arn:') && /./.test(v) && /\\*/.test(v);";
+      "export const i = (v: string) => v.includes('arn:') && /./.test(v) && /\\*/.test(v);\n" +
+      "export const i2 = (v: string, s: string) => v.startsWith('*') && v === ['a', 'b'].join('') && v.includes('arn:' + s) && v === '{' + s;";
     expect(violations({ [NAME]: `${real(NAME)}\n${line}\n` })).toEqual([]);
   });
 

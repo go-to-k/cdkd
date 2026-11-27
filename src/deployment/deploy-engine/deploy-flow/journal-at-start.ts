@@ -1,7 +1,7 @@
 import { displayStackName, safeMsg } from '../../../utils/display-safe.js';
 import { pasteableCommand } from '../../../utils/pasteable-command.js';
 import { NESTED_PENDING_PARENT_REASON } from '../../nested-child-journal.js';
-import { carriesSecretMask } from '../../secret-redaction.js';
+import { holdsMaskLeaf } from '../../secret-redaction/recorded-secrecy.js';
 import { resolvePendingCloudControlRequests } from '../../cc-pending-requests.js';
 import type { LoadedStateData } from './types.js';
 import type { DeployEngine } from '../../deploy-engine.js';
@@ -79,7 +79,7 @@ export async function settleJournalAtStart(
         if (
           template.Resources?.[op.logicalId]?.Type !== op.resourceType ||
           attempted === undefined ||
-          carriesSecretMask(attempted) ||
+          holdsMaskLeaf(attempted) ||
           op.pendingCloudControlRequest === undefined ||
           // Another record already holds it (a `cdkd import` under another
           // logical id): taking it over would give it two owners.

@@ -8,6 +8,10 @@
  * Names only, never a value: a name is a top-level property of the resource
  * type's schema, so this field adds nothing a secret could reach.
  */
+import {
+  mentionsDynamicReference,
+  mentionsMask,
+} from '../deployment/secret-redaction/recorded-secrecy.js';
 import type { ResourceState } from '../types/state.js';
 
 /**
@@ -100,7 +104,7 @@ export function unsettledItemsOf(record: unknown): ReadonlyMap<string, ReadonlyS
  * names nothing, so its item is kept (and warned about), never removed.
  */
 export function isUsableAttemptedName(name: string): boolean {
-  return !name.includes('{{resolve:') && !name.includes('***');
+  return !mentionsDynamicReference(name) && !mentionsMask(name);
 }
 
 /**
