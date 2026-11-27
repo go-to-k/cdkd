@@ -33,7 +33,7 @@ import type { DagBuilder } from '../analyzer/dag-builder.js';
 import type { DiffCalculator } from '../analyzer/diff-calculator.js';
 import { ProviderRegistry } from '../provisioning/provider-registry.js';
 import { TemplateParser } from '../analyzer/template-parser.js';
-import { withRetry, type RetryLogger } from './retry.js';
+import { replaysAmbiguousCreate, withRetry, type RetryLogger } from './retry.js';
 import { maskingRetryLogger } from './masking-retry-logger.js';
 import {
   DEFAULT_RESOURCE_TIMEOUT_MS,
@@ -825,7 +825,13 @@ export class DeployEngine {
      * sibling's failure -- set by a re-create whose old resource is already
      * deleted, where an abort leaves neither copy.
      */
-    interruptOnlyByUser?: boolean
+    interruptOnlyByUser?: boolean,
+    /**
+     * go-to-k/cdkd#7141: the resource type, set only when `operation` is
+     * `provider.create()` of it. A type in `provider.idempotentCreateTypes`
+     * then also replays an ambiguous socket error.
+     */
+    createOfType?: string
   ): Promise<T> {
     if (provider?.disableOuterRetry) {
       // Single-shot — provider handles transient errors internally.
@@ -834,6 +840,7 @@ export class DeployEngine {
     return withRetry(operation, logicalId, {
       ...(maxRetries !== undefined && { maxRetries }),
       ...(initialDelayMs !== undefined && { initialDelayMs }),
+      ...(replaysAmbiguousCreate(provider, createOfType) && { replayAmbiguousSocketError: true }),
       logger: this.maskingRetryLogger(logicalId),
       isInterrupted: () => (interruptOnlyByUser === true ? this.userInterrupted : this.interrupted),
       onInterrupted: () =>

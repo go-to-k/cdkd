@@ -104,6 +104,11 @@ export class S3BucketPolicyProvider implements ResourceProvider {
   /** The wait between policy re-reads; replaced by tests. */
   sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+  // go-to-k/cdkd#7141: PutBucketPolicy replaces the bucket's whole policy, so a
+  // replay converges; a Put that ended ambiguous notes it, so the replay's
+  // look at the bucket accepts its own policy (decideOnExistingPolicy).
+  readonly idempotentCreateTypes: ReadonlySet<string> = new Set(['AWS::S3::BucketPolicy']);
+
   handledProperties = new Map<string, ReadonlySet<string>>([
     ['AWS::S3::BucketPolicy', new Set(['Bucket', 'PolicyDocument'])],
   ]);

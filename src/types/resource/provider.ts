@@ -120,6 +120,19 @@ export interface ResourceProvider {
   disableOuterRetry?: boolean;
 
   /**
+   * go-to-k/cdkd#7141: the types whose `create()` is IDEMPOTENT -- one put of
+   * the whole document keyed by the parent the template names (a bucket, a
+   * queue, a function), with no id AWS generates, so replaying it converges on
+   * what an attempt that landed already did. For these creates only, the
+   * engine's retry loop also replays an ambiguous socket error (a reset, a
+   * broken pipe, a client-side timeout after the send), within the same
+   * budget. Every other create keeps the no-replay rule, since one that may
+   * have landed can be made twice. When in doubt, leave a type out: that is
+   * the safe direction. Pinned by `idempotent-create-retry-7141.test.ts`.
+   */
+  idempotentCreateTypes?: ReadonlySet<string>;
+
+  /**
    * go-to-k/cdkd#5131: wait, bounded, until a resource this provider just
    * deleted no longer holds its name, for a type whose `delete()` returns
    * while AWS still holds it (a DynamoDB table stays `DELETING`). Called ONLY

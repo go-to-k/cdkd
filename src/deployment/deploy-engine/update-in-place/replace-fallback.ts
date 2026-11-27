@@ -554,7 +554,9 @@ export async function replaceFallbackFor(
                 // Delete-first: the old copy is gone unless Retain kept
                 // it, so only the user's interrupt stops this re-create
                 // (go-to-k/cdkd#5118).
-                !retainOldOnReplace
+                !retainOldOnReplace,
+                // go-to-k/cdkd#7141: an idempotent create replays a socket reset.
+                resourceType
               )
           );
   } catch (createError) {

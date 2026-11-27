@@ -194,9 +194,10 @@ export function isAmbiguousCcHandlerErrorCode(code: string | undefined): boolean
  *  - a Cloud Control handler code in {@link AMBIGUOUS_CC_HANDLER_ERROR_CODES}
  *    -- the handler may have made the resource before failing.
  *
- * The socket and `TimeoutError` arms reach no ENGINE replay today: no
- * classifier `withRetry` runs retries a socket error, so the error that armed
- * the latch is the one thrown. The AWS SDK does replay them inside one
+ * The socket and `TimeoutError` arms reach an ENGINE replay only for a create
+ * its provider declared idempotent (`isAmbiguousSocketError`, issue #7141):
+ * no default classifier retries a socket error, so elsewhere the error that
+ * armed the latch is the one thrown. The AWS SDK does replay them inside one
  * `send`, which `withoutServerErrorRetries` stamps (issue #4639).
  *
  * NOT ambiguous, because the service declared it did nothing: an SDK-level
@@ -259,6 +260,46 @@ export function isAmbiguousOutcomeError(error: unknown): boolean {
     }
   } catch {
     // Unreadable chain: not ambiguous, per the doc above.
+  }
+  return false;
+}
+
+/**
+ * The SOCKET arms of {@link isAmbiguousOutcomeError} alone (go-to-k/cdkd#7141):
+ * a link carrying a code in {@link AMBIGUOUS_SOCKET_ERROR_CODES} or the SDK's
+ * client-side `TimeoutError`, i.e. the request was sent and no answer was read.
+ * A throttle link ends the walk with `false`, as there.
+ *
+ * Read by `withRetry` only when its caller declared the wrapped call safe to
+ * replay (`replayAmbiguousSocketError`): an idempotent create, whose replay
+ * converges on what an attempt that landed already did. Not the 5xx arm (the
+ * default classifier retries that already) nor a Cloud Control handler code
+ * (a handler's create is no put).
+ *
+ * Never throws; an unreadable link reads as not a socket error.
+ */
+export function isAmbiguousSocketError(error: unknown): boolean {
+  try {
+    let current: unknown = error;
+    for (
+      let depth = 0;
+      depth < MAX_CAUSE_CHAIN_DEPTH && typeof current === 'object' && current !== null;
+      depth++
+    ) {
+      const link = current as {
+        name?: unknown;
+        code?: unknown;
+        $retryable?: { throttling?: unknown };
+        cause?: unknown;
+      };
+      if (typeof link.name === 'string' && THROTTLING_ERROR_NAMES.has(link.name)) return false;
+      if (link.$retryable?.throttling === true) return false;
+      if (typeof link.code === 'string' && AMBIGUOUS_SOCKET_ERROR_CODES.has(link.code)) return true;
+      if (link.name === 'TimeoutError') return true;
+      current = link.cause;
+    }
+  } catch {
+    // Unreadable chain: not a socket error, per the doc above.
   }
   return false;
 }

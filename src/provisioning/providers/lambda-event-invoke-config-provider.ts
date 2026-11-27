@@ -76,6 +76,10 @@ function stringOrUndefined(value: unknown): string | undefined {
 export class LambdaEventInvokeConfigProvider implements ResourceProvider {
   private lambdaClient: LambdaClient;
   private logger = getLogger().child('LambdaEventInvokeConfigProvider');
+  // go-to-k/cdkd#7141: one PutFunctionEventInvokeConfig keyed by the function
+  // and qualifier, with the physical id built from them before the call.
+  readonly idempotentCreateTypes: ReadonlySet<string> = new Set(['AWS::Lambda::EventInvokeConfig']);
+
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
       'AWS::Lambda::EventInvokeConfig',

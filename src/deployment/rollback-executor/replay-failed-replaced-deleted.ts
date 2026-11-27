@@ -150,6 +150,7 @@ export async function recreateFailedReplacedDeleted(s: ReplacedDeletedScope): Pr
     {
       isRetryable: isRecreateRetryableError,
       interruptedMessage: 'Rollback interrupted while re-creating the deleted old resource',
+      resourceType: oldType,
     }
   );
   // go-to-k/cdkd#4434: the create's NoEcho declaration first, as the reverse

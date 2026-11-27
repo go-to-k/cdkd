@@ -32,6 +32,8 @@ import {
   RETRY_AUXILIARY_OWNER,
 } from '../provisioning/auxiliary-failure.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
+import { isAmbiguousSocketError } from './retryable-errors/transient.js';
+import type { ResourceProvider } from '../types/resource.js';
 
 export interface RetryLogger {
   debug(message: string): void;
@@ -238,6 +240,16 @@ export interface WithRetryOptions {
    * use.
    */
   isRetryable?: (classificationText: string, error: unknown) => boolean;
+  /**
+   * go-to-k/cdkd#7141: also retry an AMBIGUOUS SOCKET error
+   * (`isAmbiguousSocketError`: a reset, a broken pipe or a client-side timeout
+   * after the send), within the same budget. Set ONLY around a create its
+   * provider declared idempotent (`ResourceProvider.idempotentCreateTypes`), a
+   * put of the whole document whose replay converges on what a landed attempt
+   * did. Every other call leaves it unset: a create that may have landed is
+   * not made twice. Not a schedule knob, so it keeps the default schedule.
+   */
+  replayAmbiguousSocketError?: boolean;
 }
 
 const defaultSleep = (ms: number): Promise<void> =>
@@ -380,8 +392,8 @@ export async function withRetry<T>(
   //
   // Issue #3978: an attempt that ended AMBIGUOUS (`isAmbiguousOutcomeError`: a
   // non-throttle 5xx, a Cloud Control handler failing mid-create, or a socket
-  // reset / timeout after the send -- that last arm reaches no replay today,
-  // since no classifier here retries a socket error) arms the
+  // reset / timeout after the send -- that last arm is replayed only for a
+  // caller passing `replayAmbiguousSocketError`, an idempotent create) arms the
   // same latch. Its main create may have SUCCEEDED server-side, so the replay
   // can collide with the resource that very request made -- the #3972 outcome
   // with no auxiliary call involved. An SDK-level throttle does not arm it:
@@ -500,9 +512,11 @@ export async function withRetry<T>(
         throw settle(error);
       }
 
-      const retryable = opts.isRetryable
-        ? opts.isRetryable(classifyText, error)
-        : isRetryableTransientError(error, classifyText);
+      const retryable =
+        (opts.isRetryable
+          ? opts.isRetryable(classifyText, error)
+          : isRetryableTransientError(error, classifyText)) ||
+        (opts.replayAmbiguousSocketError === true && isAmbiguousSocketError(error));
       const propagation = defaultSchedule && isIamPropagationError(classifyText);
       if (propagation) {
         sawPropagation = true;
@@ -766,4 +780,17 @@ function retryErrorClass(error: unknown): string {
     (part): part is string => part !== undefined
   );
   return parts.length > 0 ? `${name} (${parts.join(', ')})` : name;
+}
+
+/**
+ * go-to-k/cdkd#7141: whether a create of `resourceType` through `provider` may
+ * replay an ambiguous socket error (`WithRetryOptions.replayAmbiguousSocketError`):
+ * only a type the provider declared in `idempotentCreateTypes`. A caller that
+ * is not wrapping a create passes no type, and gets `false`.
+ */
+export function replaysAmbiguousCreate(
+  provider: Pick<ResourceProvider, 'idempotentCreateTypes'> | undefined,
+  resourceType: string | undefined
+): boolean {
+  return resourceType !== undefined && provider?.idempotentCreateTypes?.has(resourceType) === true;
 }

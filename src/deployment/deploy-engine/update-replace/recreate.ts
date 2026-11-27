@@ -309,7 +309,9 @@ export async function recreateDestroyThenCreate(
             undefined,
             replaceProvider,
             // The old resource is gone: only the user's interrupt stops it.
-            true
+            true,
+            // go-to-k/cdkd#7141: an idempotent create replays a socket reset.
+            resourceType
           ),
         logicalId,
         {
