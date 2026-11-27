@@ -748,6 +748,13 @@ function readsRecordField(raw: unknown): boolean {
  * Each text-predicate call on a record bag, keyed `<file>#<enclosing
  * function>#<source text>` (go-to-k/cdkd#7061, the narrowed fence). A reader
  * deciding whether a RECORDED position is a secret asks `recordedSecrecyOf`.
+ *
+ * A HEURISTIC, by name: a bag is recognised by the names `properties`,
+ * `attributes` and `observedProperties`. It follows one local copy, and one
+ * call hop into a SAME-FILE helper (argument to parameter). It does not follow
+ * a two-hop copy, a callback parameter fed by a bag's walk, a helper in another
+ * module, or a bag renamed before it reaches a helper. So the pinned table
+ * counts what the heuristic sees, not every reader of a record.
  */
 function recordFieldTextReadsIn(file: string, text: string): string[] {
   const out: string[] = [];
@@ -815,12 +822,56 @@ function recordFieldTextReadsIn(file: string, text: string): string[] {
       key === 'key' && n.type === 'Property' ? [] : Array.isArray(v) ? v.flatMap(namesRead) : namesRead(v)
     );
   };
+  // One call hop into a same-file helper: `f(record.properties)` makes `f`'s
+  // parameter at that position a record bag (`function f(bag) { holdsMaskLeaf(bag.K) }`).
+  const helpers = new Map<string, Node>();
+  const findHelpers = (node: Node): void => {
+    if (node.type === 'FunctionDeclaration' && isNode(node['id'])) helpers.set(node['id']['name'] as string, node);
+    if (
+      node.type === 'VariableDeclarator' &&
+      isNode(node['id']) &&
+      node['id'].type === 'Identifier' &&
+      isNode(node['init']) &&
+      FUNCTIONS.includes((node['init'] as Node).type)
+    ) {
+      helpers.set(node['id']['name'] as string, node['init'] as Node);
+    }
+    for (const v of Object.values(node)) {
+      if (Array.isArray(v)) {
+        for (const c of v) if (isNode(c)) findHelpers(c);
+      } else if (isNode(v)) {
+        findHelpers(v);
+      }
+    }
+  };
+  findHelpers(program);
+  const recordParams = new Map<Node, Set<string>>();
+  const findBagCalls = (node: Node): void => {
+    if (node.type === 'CallExpression' && isNode(node['callee']) && node['callee'].type === 'Identifier') {
+      const helper = helpers.get(node['callee']['name'] as string);
+      if (helper !== undefined) {
+        (node['arguments'] as unknown[]).forEach((arg, i) => {
+          const param = (helper['params'] as unknown[])[i];
+          if (!readsRecordField(arg)) return;
+          for (const name of patternNames(param)) recordParams.set(helper, (recordParams.get(helper) ?? new Set()).add(name));
+        });
+      }
+    }
+    for (const v of Object.values(node)) {
+      if (Array.isArray(v)) {
+        for (const c of v) if (isNode(c)) findBagCalls(c);
+      } else if (isNode(v)) {
+        findBagCalls(v);
+      }
+    }
+  };
+  findBagCalls(program);
   const copiedFromRecord = (name: string, chain: readonly Node[]): boolean => {
     for (let i = chain.length - 1; i >= 0; i--) {
       const { copies, params } = scopeOf(chain[i]!);
       const inits = copies.get(name);
       if (inits !== undefined) return inits.some(readsRecordField);
-      if (params.has(name)) return false;
+      if (params.has(name)) return recordParams.get(chain[i]!)?.has(name) === true;
     }
     return false;
   };
@@ -973,6 +1024,32 @@ const READS_RECORD_TEXT: Readonly<Record<string, { count: number; why: string }>
     count: 1,
     why: 'a wider `masked` would SKIP the delete, leaving the resource in place, for a payload the record holds in plaintext; that needs its own decision',
   },
+  // Reached through one call hop: a bag handed to a same-file helper.
+  'src/analyzer/orphan-rewriter/recorded-attributes.ts#secretIn#carriesSecretMask(value)': {
+    count: 1,
+    why: 'the helper sees only a recorded attribute value, not the record: a provenance answer needs the record threaded in, and would widen the refusal; that needs its own decision',
+  },
+  'src/cli/commands/scrub/noecho.ts#persisted#holdsMaskLeaf(value)': {
+    count: 1,
+    why: 'asks whether a value IS a persisted marker (the mask or a whole reference token): it needs the marker KIND',
+  },
+  'src/deployment/deploy-engine/update/helpers.ts#walk#mentionsDynamicReference(node)': {
+    count: 1,
+    why: 'finds a reference MIXED with other text: it needs the marker KIND',
+  },
+  'src/deployment/masked-property-fingerprints/input-walk.ts#visit#mentionsDynamicReference(value)': {
+    count: 1,
+    why: 'finds a reference in a value: it needs the marker KIND',
+  },
+  'src/deployment/masked-property-fingerprints/records.ts#maskedPropertyFingerprintsFor#holdsMaskLeaf(recordedProperties[key])': {
+    count: 1,
+    why: 'WRITES the `maskedPropertyFingerprints` provenance from the keys the record holds as the mask: reading that provenance here would be circular',
+  },
+  'src/deployment/nested-ssm-name-check.ts#holdsUnmarkedMask#mentionsMask(value)': { count: 1, why: BOTH },
+  'src/deployment/rollback-executor/replay-secrets.ts#keepPersistedPlainLeaves#isMaskLeaf(redacted)': {
+    count: 1,
+    why: 'the rollback replay keeps a persisted plain leaf where the redaction did not mask it: a wider `masked` would drop leaves the replay sends back, which changes what is written',
+  },
   'src/provisioning/providers/ssm-parameter/import.ts#importImpl#mentionsDynamicReference(declared)': {
     count: 1,
     why: "the import input's Value (the template's, or on the heal path the record's redacted properties): no provenance field arrives in the input",
@@ -1043,7 +1120,7 @@ describe(
 
   it('no reader tests a record bag by its text outside the pinned table', () => {
     // A floor the scan does not read: an empty table would pass a broken scan.
-    expect(Object.keys(READS_RECORD_TEXT).length).toBeGreaterThanOrEqual(29);
+    expect(Object.keys(READS_RECORD_TEXT).length).toBeGreaterThanOrEqual(36);
     expect(recordTextProblems()).toEqual([]);
   });
 
@@ -1059,6 +1136,7 @@ describe(
     ['a for-of entry', 'export function r10(record: { attributes: Record<string, unknown> }) { for (const [, value] of Object.entries(record.attributes)) if (holdsMaskLeaf(value)) return true; return false; }', 'r10#holdsMaskLeaf(value)'],
     ['a destructured value', 'export const r11 = (record: { attributes: Record<string, unknown> }) => { const { Arn } = record.attributes; return holdsMaskLeaf(Arn); };', 'r11#holdsMaskLeaf(Arn)'],
     ['a predicate as a callback', 'export const r12 = (record: { attributes: Record<string, unknown> }) => Object.values(record.attributes).some(holdsMaskLeaf);', 'r12#Object.values(record.attributes).some(holdsMaskLeaf)'],
+    ['a bag handed to a same-file helper', "function r13(bag: Record<string, unknown>) { return holdsMaskLeaf(bag['UserData']); }\nexport const r14 = (record: { properties: Record<string, unknown> }) => r13(record.properties);", "r13#holdsMaskLeaf(bag['UserData'])"],
     ['a namespace call', "import * as sr from './deployment/secret-redaction/recorded-secrecy.js';\nexport const r7 = (record: { attributes: Record<string, unknown> }) => sr.holdsMaskLeaf(record.attributes.Arn);", 'r7#sr.holdsMaskLeaf(record.attributes.Arn)'],
   ])('probe: a new text check of %s fails', (_what, line, key) => {
     const file = 'src/zz-probe-record-text.ts';
