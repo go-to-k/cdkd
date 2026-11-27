@@ -328,6 +328,34 @@ export interface ResourceState {
   noEchoLeaves?: (string | number)[][] | undefined;
 
   /**
+   * No bump (go-to-k/cdkd#7158, go-to-k/cdkd#7152): the coordinates, within
+   * `observedProperties`, under a key the template does NOT set, persisted as
+   * `***` because the readback echoed there a value the record marks as
+   * secret: a `NoEcho` value served at a `noEchoLeaves` coordinate, or the
+   * plaintext of an `ssm-secure` / `secretsmanager` reference. Each entry is a
+   * segment array of the READBACK (list indexes as AWS returned them).
+   * POSITIONS only, never values.
+   *
+   * Written by every writer of a readback through `withOffTemplateEchoesMasked`
+   * (the deploy persist, `cdkd state refresh-observed`, `cdkd import`,
+   * `cdkd state scrub`, the rollback's observed refresh); an entry is kept
+   * while the leaf there still holds the mask, and the field is omitted when
+   * empty. Read by `cdkd drift`, which reports a difference that is only the
+   * mask at such a coordinate as not compared (`maskedEcho`, exit 0: the value
+   * is masked by design), and by `--accept` / `--revert`, which re-mask it in
+   * the baselines they write. CloudFormation compares no property the template
+   * does not set, so nothing compared there is lost.
+   *
+   * ABSENT means "none known". An OLDER binary ignores the field: its
+   * `cdkd drift` reports each such `***` as drift (phantom drift, exit 1), and
+   * its own readback writers re-capture the leaf in plaintext, which is its
+   * pre-fix behaviour, never a destructive action or a skipped send — so no
+   * schema bump. This binary heals such a record on its next save.
+   * Read through `observedMaskedLeavesOf` (malformed reads as absent).
+   */
+  observedMaskedLeaves?: (string | number)[][] | undefined;
+
+  /**
    * No bump (go-to-k/cdkd#4656): the `noEchoLeaves` coordinates a `NoEcho`
    * PARAMETER serves at which this resource's provider has been seen to ECHO
    * the value exactly. It is derived from the provider's echo behaviour, never

@@ -2,6 +2,7 @@ import { getLogger } from '../../../utils/logger.js';
 import { ProviderRegistry } from '../../../provisioning/provider-registry.js';
 import {
   maskReadbackAtCoordinates,
+  withOffTemplateEchoesMasked,
   noEchoLeavesOf,
   redactForState,
   type RecordedSecretValues,
@@ -348,6 +349,26 @@ export async function captureObservedForImportedResources(
                 source: resource.properties ?? {},
               }
             );
+            // go-to-k/cdkd#7158 / #7152: a secret the readback echoed under a
+            // key the template lacks, learned from the raw readback at the
+            // positions the record marks, masked and recorded.
+            const echoesMasked = withOffTemplateEchoesMasked(
+              resource,
+              { properties: resource.properties, observedProperties: observed },
+              new Set(
+                [stackState.region, stackState.stackName].filter(
+                  (token): token is string => typeof token === 'string' && token !== ''
+                )
+              )
+            );
+            if (echoesMasked.observedProperties !== undefined) {
+              resource.observedProperties = echoesMasked.observedProperties;
+            }
+            if (echoesMasked.observedMaskedLeaves === undefined) {
+              delete resource.observedMaskedLeaves;
+            } else {
+              resource.observedMaskedLeaves = echoesMasked.observedMaskedLeaves;
+            }
           }
         } catch (err) {
           // NAME AND SHAPE, never the message. The sibling warn in

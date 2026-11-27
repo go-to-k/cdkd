@@ -5,7 +5,7 @@
 import { refusedBaselineRemedy } from '../refused-baseline-remedy.js';
 import type { ResourceState } from '../../../types/state.js';
 import type { NotComparedCause } from './outcome.js';
-import { noEchoPathsClause } from './redaction.js';
+import { maskedEchoPathsClause, noEchoPathsClause } from './redaction.js';
 
 /**
  * One-line human phrasing for a {@link NotComparedCause}, used per entry in the
@@ -52,6 +52,10 @@ export function notComparedReason(cause: NotComparedCause, record?: ResourceStat
       `its state holds a NoEcho parameter's value only as the redaction mask${noEchoPathsClause(record)}, ` +
       'so that value was not compared — every other property was (permanent by design; a ' +
       'deploy compares it with AWS)',
+    maskedEcho:
+      `AWS echoes a secret into a property the template does not set${maskedEchoPathsClause(record)}, ` +
+      'which its state holds only as the redaction mask, so that value was not compared — ' +
+      'every other property was (permanent by design)',
     uncertifiedBaseline:
       'its recorded baseline holds the redaction mask at a position cdkd could not pair ' +
       'with the secret reference there, so that position was not compared — every other ' +

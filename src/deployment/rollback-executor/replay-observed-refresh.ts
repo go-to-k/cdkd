@@ -8,6 +8,7 @@ import { withCurrentResourceSecrets } from '../resource-secrets-scope.js';
 import {
   maskedLeafCoordinatesOf,
   scrubResourceRecord,
+  withOffTemplateEchoesMasked,
   type RecordedSecretValues,
 } from '../secret-redaction.js';
 
@@ -151,5 +152,10 @@ export async function withRefreshedObservedBaseline(
     { observed: 'same-generation' }
   ).observedProperties;
   if (scrubbed === undefined) return record;
-  return { ...record, observedProperties: scrubbed };
+  // go-to-k/cdkd#7152: a secret reference's plaintext the readback echoed
+  // under a key the template lacks, learned from the raw readback.
+  return withOffTemplateEchoesMasked(
+    { ...record, observedProperties: scrubbed },
+    { properties: restored.properties, observedProperties: observed }
+  );
 }

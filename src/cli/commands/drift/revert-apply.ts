@@ -436,7 +436,11 @@ async function applyRevertUpdateInScope(args: ApplyRevertUpdateArgs): Promise<vo
                 secrets: secrets,
                 source: revertBaseline,
               }),
-              [...outcome.uncertifiedPaths, ...(outcome.noEchoParameterPaths ?? [])],
+              [
+                ...outcome.uncertifiedPaths,
+                ...(outcome.noEchoParameterPaths ?? []),
+                ...(outcome.maskedEchoPaths ?? []),
+              ],
               revertBaseline
             )
           );

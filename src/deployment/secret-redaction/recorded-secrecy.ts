@@ -139,8 +139,9 @@ export function isMaskRun(text: string): boolean {
  *   in it, an embedded piece included, or a dynamic reference), or a
  *   provenance field names
  *   the position: a `noEchoLeaves` coordinate under the key, a
- *   `maskedPropertyFingerprints` key (both `properties`), or a
- *   `noEchoAttributeNames` entry (`attributes`).
+ *   `maskedPropertyFingerprints` key (both `properties`), a
+ *   `noEchoAttributeNames` entry (`attributes`), or an `observedMaskedLeaves`
+ *   coordinate under the key (`observedProperties`, go-to-k/cdkd#7158).
  * - `unknown`: there is no record, or its bag is not an object.
  * - `clear`: everything else.
  *
@@ -155,7 +156,9 @@ export type RecordedSecrecy = 'masked' | 'clear' | 'unknown';
 export interface RecordedSecrecySource {
   readonly properties?: unknown;
   readonly attributes?: unknown;
+  readonly observedProperties?: unknown;
   readonly noEchoLeaves?: unknown;
+  readonly observedMaskedLeaves?: unknown;
   readonly noEchoAttributeNames?: unknown;
   readonly maskedPropertyFingerprints?: unknown;
 }
@@ -168,13 +171,25 @@ export type RecordedProvenanceFields = Pick<
 
 export function recordedSecrecyOf(
   record: RecordedSecrecySource | undefined,
-  at: { readonly field: 'properties' | 'attributes'; readonly key: string }
+  at: {
+    readonly field: 'properties' | 'attributes' | 'observedProperties';
+    readonly key: string;
+  }
 ): RecordedSecrecy {
   if (record === undefined || record === null || typeof record !== 'object') return 'unknown';
   const bag = record[at.field];
   if (bag === null || typeof bag !== 'object' || Array.isArray(bag)) return 'unknown';
   const value = Object.hasOwn(bag, at.key) ? (bag as Record<string, unknown>)[at.key] : undefined;
   if (mentionsMask(value) || valueMentionsDynamicReference(value)) return 'masked';
+  if (at.field === 'observedProperties') {
+    // `noEchoLeaves` coordinates hold the mask in the readback too.
+    const named = [record.observedMaskedLeaves, record.noEchoLeaves];
+    return named.some(
+      (field) => Array.isArray(field) && field.some((c) => Array.isArray(c) && c[0] === at.key)
+    )
+      ? 'masked'
+      : 'clear';
+  }
   if (at.field === 'attributes') {
     const names = record.noEchoAttributeNames;
     return Array.isArray(names) && names.includes(at.key) ? 'masked' : 'clear';

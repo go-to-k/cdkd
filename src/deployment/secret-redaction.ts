@@ -223,6 +223,16 @@ export {
   PREVIOUS_NOECHO_VALUE,
 } from './secret-redaction/noecho-leaves.js';
 export {
+  withOffTemplateEchoesMasked,
+  observedMaskedLeavesOf,
+  withoutObservedMaskedLeaves,
+  type OffTemplateEchoRecord,
+} from './secret-redaction/off-template-echo.js';
+export {
+  withSecretAttributeKeysDropped,
+  templateGetAttNamesOf,
+} from './secret-redaction/secret-attribute-keys.js';
+export {
   maskSecretsInText,
   maskRecordedSecretsInText,
   ERROR_CAUSE_MASK_MAX_DEPTH,

@@ -67,7 +67,8 @@ describe('DriftOutcome exhaustiveness (issue #2135)', () => {
       // Issues #2151 / #1945 added `readFailed`; issue #2952 added
       // `baselineRefused`; go-to-k/cdkd#3018 added `unreadableRecord`;
       // go-to-k/cdkd#3595 added `uncertifiedBaseline` (exit 2);
-      // go-to-k/cdkd#4043 added `noEchoParameter` (no exit). Kept as
+      // go-to-k/cdkd#4043 added `noEchoParameter` (no exit);
+      // go-to-k/cdkd#7158 added `maskedEcho` (no exit). Kept as
       // an EXACT union rather than widened to `string`: this line failing on a
       // cause addition is the fence working -- `outcomeExitSignal`,
       // `notComparedReason`, `UNCOMPARED_REASONS` and `ANY_OF_IT_COMPARED` all
@@ -89,6 +90,7 @@ describe('DriftOutcome exhaustiveness (issue #2135)', () => {
           | 'unreadableMap'
           | 'uncertifiedBaseline'
           | 'noEchoParameter'
+          | 'maskedEcho'
         >(),
       unsupported: () => {},
       skipped: () => {},

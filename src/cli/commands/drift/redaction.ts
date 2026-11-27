@@ -15,6 +15,7 @@ import {
 import { displaySafe } from '../../../utils/display-safe.js';
 import {
   noEchoLeavesOf,
+  observedMaskedLeavesOf,
   isMarkedCoordinate,
   pathCrossesDottedKey,
   SECRET_MASK,
@@ -38,7 +39,18 @@ import type { SecretPathSet } from './secret-resolution.js';
  * never a value.
  */
 export function noEchoPathsClause(record: ResourceState | undefined): string {
-  const marked = record === undefined ? undefined : noEchoLeavesOf(record);
+  return pathsClause(record === undefined ? undefined : noEchoLeavesOf(record));
+}
+
+/**
+ * The record's `observedMaskedLeaves` coordinates (go-to-k/cdkd#7158), as
+ * {@link noEchoPathsClause} renders its own. Paths only, never a value.
+ */
+export function maskedEchoPathsClause(record: ResourceState | undefined): string {
+  return pathsClause(record === undefined ? undefined : observedMaskedLeavesOf(record));
+}
+
+function pathsClause(marked: readonly (readonly (string | number)[])[] | undefined): string {
   if (marked === undefined || marked.length === 0) return '';
   const paths = marked.map((coordinate) =>
     coordinate
@@ -86,11 +98,48 @@ export function partitionNoEchoParameterChanges(
   record: ResourceState,
   baseline: Record<string, unknown>
 ): { kept: PropertyDrift[]; noEchoParameterPaths: string[] } {
-  const marked = noEchoLeavesOf(record);
+  const { kept, paths } = partitionMarkedMaskChanges(
+    changes,
+    noEchoLeavesOf(record),
+    record.properties ?? {},
+    baseline
+  );
+  return { kept, noEchoParameterPaths: paths };
+}
+
+/**
+ * Split off the changes whose ONLY difference is the mask at a coordinate the
+ * record's `observedMaskedLeaves` names (go-to-k/cdkd#7158, #7152): a secret
+ * the readback echoed under a key the template lacks, which state holds only
+ * as `***`. Reported as `notCompared: maskedEcho` by PATH, never drift, and
+ * neither side is printed. CloudFormation compares no property the template
+ * does not set, so nothing it compares is lost. Runs on the COMPARISON
+ * values, like {@link partitionNoEchoParameterChanges}.
+ */
+export function partitionMaskedEchoChanges(
+  changes: PropertyDrift[],
+  record: ResourceState,
+  baseline: Record<string, unknown>
+): { kept: PropertyDrift[]; maskedEchoPaths: string[] } {
+  const { kept, paths } = partitionMarkedMaskChanges(
+    changes,
+    observedMaskedLeavesOf(record),
+    record.properties ?? {},
+    baseline
+  );
+  return { kept, maskedEchoPaths: paths };
+}
+
+/** The shared walk of the two partitions above, over one set of marked coordinates. */
+function partitionMarkedMaskChanges(
+  changes: PropertyDrift[],
+  marked: readonly (readonly (string | number)[])[] | undefined,
+  properties: Record<string, unknown>,
+  baseline: Record<string, unknown>
+): { kept: PropertyDrift[]; paths: string[] } {
   if (marked === undefined || marked.length === 0) {
-    return { kept: changes, noEchoParameterPaths: [] };
+    return { kept: changes, paths: [] };
   }
-  const properties = record.properties ?? {};
   // Marked, or an ANCESTOR of a marked coordinate: a readback the save could
   // not pair by identity is masked as a whole list, so a wholly masked
   // subtree that holds a marked coordinate accepts any present live value
@@ -102,7 +151,7 @@ export function partitionNoEchoParameterChanges(
         leaf.length > coordinate.length &&
         coordinate.every((segment, i) => String(segment) === String(leaf[i]))
     );
-  // AT or inside a marked coordinate: the whole value there is the NoEcho one.
+  // AT or inside a marked coordinate: the whole value there is the masked one.
   const isWithinMarked = (coordinate: readonly (string | number)[]): boolean =>
     marked.some(
       (leaf) =>
@@ -110,7 +159,7 @@ export function partitionNoEchoParameterChanges(
         leaf.every((segment, i) => String(segment) === String(coordinate[i]))
     );
   const kept: PropertyDrift[] = [];
-  const noEchoParameterPaths: string[] = [];
+  const paths: string[] = [];
   for (const change of changes) {
     const coordinate = change.path.split('.');
     const touchesMarked = marked.some((leaf) => {
@@ -132,12 +181,12 @@ export function partitionNoEchoParameterChanges(
         isWithinMarked
       )
     ) {
-      noEchoParameterPaths.push(change.path);
+      paths.push(change.path);
       continue;
     }
     kept.push(change);
   }
-  return { kept, noEchoParameterPaths };
+  return { kept, paths };
 }
 
 /**
@@ -564,9 +613,28 @@ export function maskMarkedNoEchoBaseline(
   // the mask (as the deploy's capture masks it).
   if (observed) {
     const coordinates = [...marked, ...maskedLeafCoordinatesOf(record.properties ?? {})];
-    return coordinates.length === 0
-      ? baseline
-      : maskReadbackAtCoordinates(baseline, record.properties ?? {}, coordinates);
+    const positioned =
+      coordinates.length === 0
+        ? baseline
+        : maskReadbackAtCoordinates(baseline, record.properties ?? {}, coordinates);
+    // go-to-k/cdkd#7158 / #7152: a readback-only coordinate the record holds
+    // as the mask stays masked in the baseline written over it, so a changed
+    // parent path never brings the live secret into state.
+    // A coordinate through a list the write replaced (AWS's order, not the
+    // record's) masks the whole list, which the drift partition accepts as
+    // the ancestor of a named coordinate.
+    const named = observedMaskedLeavesOf(record) ?? [];
+    const byIndex = maskAtCoordinates(positioned, named);
+    const echoes = named.map((coordinate) => {
+      const list = coordinate.findIndex((segment) => typeof segment === 'number');
+      if (list < 0) return coordinate;
+      const path = coordinate.slice(0, list);
+      const recorded = valueAtCoordinate(record.observedProperties, path);
+      return JSON.stringify(valueAtCoordinate(byIndex, path)) === JSON.stringify(recorded)
+        ? coordinate
+        : path;
+    });
+    return echoes.length === 0 ? positioned : maskAtCoordinates(positioned, echoes);
   }
   if (marked.length === 0) return baseline;
   // By index, except where a written value REPLACED the list a coordinate

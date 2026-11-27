@@ -22,6 +22,7 @@ import {
   maskReadbackAtCoordinates,
   noEchoLeavesOf,
   maskedLeafCoordinatesOf,
+  withOffTemplateEchoesMasked,
 } from '../../../deployment/secret-redaction.js';
 import { PublicSsmProver } from '../../../deployment/public-ssm-proof.js';
 import { secretNamePrintingBags } from '../../../deployment/secret-name-needles.js';
@@ -486,6 +487,22 @@ export async function refreshObservedForStack(
                 source: resource.properties ?? {},
               }
             );
+            // go-to-k/cdkd#7158 / #7152: a secret the readback echoed under a
+            // key the template lacks, learned from the raw readback at the
+            // positions the record marks, masked and recorded.
+            const echoesMasked = withOffTemplateEchoesMasked(
+              resource,
+              { properties: resource.properties, observedProperties: observed },
+              new Set([region, stackName])
+            );
+            if (echoesMasked.observedProperties !== undefined) {
+              resource.observedProperties = echoesMasked.observedProperties;
+            }
+            if (echoesMasked.observedMaskedLeaves === undefined) {
+              delete resource.observedMaskedLeaves;
+            } else {
+              resource.observedMaskedLeaves = echoesMasked.observedMaskedLeaves;
+            }
             // Issue #3466: BOTH fields, and only once a baseline was captured —
             // a marker left without its reason is re-stamped by the next deploy,
             // and a failed read keeps the refusal.

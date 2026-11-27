@@ -10,6 +10,7 @@ import {
   redactForState,
   spanNamesResolvableService,
   wholeStringLeavesOf,
+  withoutObservedMaskedLeaves,
   type RecordedSecretValues,
 } from './secret-redaction.js';
 import type { ResourceState } from '../types/state.js';
@@ -70,7 +71,11 @@ import type { ResolverContext } from './intrinsic-function-resolver.js';
 export function isMaskedBaselineRecaptureCandidate(record: ResourceState): boolean {
   if (record.observedBaselineRefused === true) return false;
   const observed = record.observedProperties;
-  if (observed === undefined || !holdsMaskLeaf(observed)) return false;
+  // go-to-k/cdkd#7158: a mask the record names in `observedMaskedLeaves` is a
+  // secret echo masked by design, which no re-capture certifies.
+  if (observed === undefined || !holdsMaskLeaf(withoutObservedMaskedLeaves(observed, record))) {
+    return false;
+  }
   const properties = record.properties;
   if (holdsMaskLeaf(properties)) return false;
   return secretReferenceTokensOf(properties).length > 0;
