@@ -573,7 +573,8 @@ export const REPLACEMENT_EVIDENCE: ReadonlyMap<string, ReplacementEvidence> = ne
   ],
   // CloudFormation switched the registration between the service-linked role
   // and its own role in place, both ways (same ARN, new role read back).
-  // Cloud Control refuses the switch to its own role (#7121).
+  // Cloud Control refuses the switch to its own role, so cdkd deregisters and
+  // registers the location, as CloudFormation does (#7121).
   ['AWS::LakeFormation::Resource#UseServiceLinkedRole', update('cfn-measured', 7083, 7121)],
   // CloudFormation reported UPDATE_COMPLETE under the same session id, with
   // no replacement; its live interface was not read. Cloud Control reported
