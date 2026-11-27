@@ -555,8 +555,9 @@ function handTestsIn(file: string, text: string, globalNames: ReadonlySet<string
     return spellsMarkerLiteral(node);
   };
   // A value that IS a marker wherever it is read, so a binding of it is an
-  // alias: a marker name, or a template / `+` chain of one with token text. Not
-  // a ternary or `??` that MAY yield one (`const s = c ? SECRET_MASK : v`):
+  // alias: a marker name, or a template / `+` chain of one with token text, or a
+  // `??` / `||` fallback TO one (`const m = o ?? SECRET_MASK`: a marker by
+  // default). Not a ternary that MAY yield one (`const s = c ? SECRET_MASK : v`):
   // that binding is a value, and its uses compare a value.
   const isAlias = (raw: unknown): boolean => {
     const node = unwrap(raw);
@@ -564,6 +565,9 @@ function handTestsIn(file: string, text: string, globalNames: ReadonlySet<string
     if (node.type === 'Identifier' || node.type === 'MemberExpression') return isMarker(node);
     if (node.type === 'TemplateLiteral' || (node.type === 'BinaryExpression' && node['operator'] === '+')) {
       return isMarker(node) && literalRuns(node).every((run) => !/\s/.test(run));
+    }
+    if (node.type === 'LogicalExpression' && ['??', '||'].includes(node['operator'] as string)) {
+      return isAlias(node['right']) || spellsMarkerToken(node['right']);
     }
     return false;
   };
@@ -802,6 +806,50 @@ describe('readers ask recorded-secrecy, never test a marker by hand (go-to-k/cdk
     for (const p of problems) {
       expect(p).toMatch(/^hand test: src\/deployment\/deploy-engine\/replacement\/name-change\.ts#/);
     }
+  });
+
+  // Each line's ONLY hand test is the USE of a local binding: the binding is
+  // read as a marker alias, or the use passes unseen.
+  it.each([
+    ['a local alias behind ??', 'export const q1 = (v: string, o?: string) => { const m = o ?? SECRET_MASK; return v === m; };', 'q1#v === m'],
+    ['a local alias behind ||', 'export const q2 = (v: string, o?: string) => { const m = o || SECRET_MASK; return v.includes(m); };', 'q2#v.includes(m)'],
+    ['a default-parameter alias behind ??', 'export const q3 = (v: string, o?: string, m = o ?? SECRET_MASK) => v === m;', 'q3#v === m'],
+    ['a local template alias', 'export const q4 = (v: string) => { const quoted = `"${SECRET_MASK}"`; return v.includes(quoted); };', 'q4#v.includes(quoted)'],
+  ])('probe: %s fails at its use', (_what, line, key) => {
+    expect(violations({ [NAME]: `${real(NAME)}\n${line}\n` })).toEqual([`hand test: ${NAME}#${key}`]);
+  });
+
+  it('probe: a marker token inside other text is a second marker constant, and its use a hand test', () => {
+    const line = "export const q5 = (v: string) => { const P = 'arn:***'; return v.endsWith(P); };";
+    expect(violations({ [NAME]: `${real(NAME)}\n${line}\n` }).sort()).toEqual(
+      [`hand test: ${NAME}#q5#P = 'arn:***'`, `hand test: ${NAME}#q5#v.endsWith(P)`].sort()
+    );
+  });
+
+  it('probe: a default parameter that MAY yield a marker is a value, not an alias', () => {
+    const line = 'export const q6 = (v: string, c: boolean, s = c ? SECRET_MASK : v) => s === v;';
+    expect(violations({ [NAME]: `${real(NAME)}\n${line}\n` })).toEqual([]);
+  });
+
+  it("probe: another module's template constant of a marker name fails", () => {
+    const names = markerNames({
+      'src/zz-probe-tpl-a.ts': "export const PROBE_OPEN = '{{resolve:';",
+      'src/zz-probe-tpl-b.ts':
+        "import { PROBE_OPEN } from './zz-probe-tpl-a.js';\n" +
+        'export const PROBE_SSM_OPEN = `${PROBE_OPEN}ssm:`;\n' +
+        'export const PROBE_PROSE = `${PROBE_OPEN} names a reference`;',
+    });
+    expect(names.has('PROBE_SSM_OPEN')).toBe(true);
+    // A template holding prose names no marker.
+    expect(names.has('PROBE_PROSE')).toBe(false);
+    const problems = violations(
+      { [NAME]: `${real(NAME)}\nexport const q7 = (v: string) => v.startsWith(PROBE_SSM_OPEN);\n` },
+      {
+        'src/zz-probe-tpl-a.ts': "export const PROBE_OPEN = '{{resolve:';",
+        'src/zz-probe-tpl-b.ts': "import { PROBE_OPEN } from './zz-probe-tpl-a.js';\nexport const PROBE_SSM_OPEN = `${PROBE_OPEN}ssm:`;",
+      }
+    );
+    expect(problems).toEqual([`hand test: ${NAME}#q7#v.startsWith(PROBE_SSM_OPEN)`]);
   });
 
   it("probe: another module's opener constant fails", () => {
