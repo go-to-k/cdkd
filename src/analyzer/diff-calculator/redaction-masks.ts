@@ -1,3 +1,4 @@
+import { isMaskLeaf, mentionsMask } from '../../deployment/secret-redaction/recorded-secrecy.js';
 import {
   SECRET_MASK,
   carriesSecretMask,
@@ -90,7 +91,7 @@ export async function maskUnmovedRedactionMasks(
     // A desired value already carrying a mask is the `NoEcho` comparison's,
     // unless the record masked the key WHOLE: a nested child's read of a
     // masked parameter plans as `a-***` against a stored `***` (#7050 review).
-    if (carriesSecretMask(desired[key]) && current[key] !== SECRET_MASK) continue;
+    if (carriesSecretMask(desired[key]) && !isMaskLeaf(current[key])) continue;
     // A desired side already masked wherever the record is (a `NoEcho`
     // comparison's `***` its value MAC proved) leaves nothing to mask, nor to
     // warn of (#7050 review).
@@ -162,7 +163,7 @@ export async function maskUnmovedRedactionMasks(
     // removed and changed is seen (#7050 review).
     if (
       unprovable &&
-      !(JSON.stringify(desired[key]) ?? '').includes(SECRET_MASK) &&
+      !mentionsMask(desired[key]) &&
       (dynamicReferenceTokens(JSON.stringify(rawDesired[key]) ?? '').length === 0 ||
         holdsNoEchoLeafAt(record, key))
     ) {
@@ -196,7 +197,7 @@ function equalJson(a: unknown, b: unknown): boolean {
 
 /** `desired` with `SECRET_MASK` at every position `recorded` holds it; shape mismatches mask whole. */
 function maskedWhere(recorded: unknown, desired: unknown): unknown {
-  if (recorded === SECRET_MASK) return SECRET_MASK;
+  if (isMaskLeaf(recorded)) return SECRET_MASK;
   if (Array.isArray(recorded)) {
     if (!Array.isArray(desired) || desired.length !== recorded.length) return desired;
     return desired.map((item, i) => maskedWhere(recorded[i], item));

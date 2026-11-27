@@ -1,4 +1,4 @@
-import { SECRET_MASK } from '../../secret-redaction/pairs.js';
+import { mentionsMask } from '../../secret-redaction/recorded-secrecy.js';
 import { warnUnwaitedCreationPolicy } from '../signal-receiver-run.js';
 import { survivesParent } from '../../child-of-recreated-parent.js';
 import { type DeployEngine } from '../../deploy-engine.js';
@@ -410,7 +410,7 @@ function unmaskedUnchangedKeys(
   let out = previous;
   for (const key of Object.keys(previous)) {
     if (changed.has(key) || !Object.hasOwn(resolved, key)) continue;
-    if (!JSON.stringify(previous[key] ?? null).includes(SECRET_MASK)) continue;
+    if (!mentionsMask(previous[key] ?? null)) continue;
     if (out === previous) out = { ...previous };
     out[key] = resolved[key];
   }

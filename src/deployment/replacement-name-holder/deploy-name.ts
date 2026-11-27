@@ -1,6 +1,6 @@
+import { isUsableRecordedName } from '../secret-redaction/recorded-secrecy.js';
 import type { ProvisionedBy } from '../../provisioning/provider-registry.js';
 import { explicitNamePropertyFor } from '../../provisioning/resource-name.js';
-import { SECRET_MASK } from '../secret-redaction.js';
 import { renderNameHeldElsewhere, isPlainName } from './holder.js';
 import { CASE_INSENSITIVE_NAME_TYPES } from './name-keys.js';
 
@@ -27,8 +27,7 @@ export function nameValue(
   property: string
 ): string | undefined {
   const value = bag?.[property];
-  if (typeof value !== 'string' || value === '' || value === SECRET_MASK) return undefined;
-  if (value.includes('{{resolve:')) return undefined;
+  if (!isUsableRecordedName(value)) return undefined;
   return value;
 }
 
@@ -323,8 +322,7 @@ const DEFAULT_EVENT_BUS = 'default';
 /** An EventBridge bus as a name: an ARN's `event-bus/<name>`, absent as `default`. */
 function eventBusName(value: unknown): string | undefined {
   if (value === undefined) return DEFAULT_EVENT_BUS;
-  if (typeof value !== 'string' || value === '' || value === SECRET_MASK) return undefined;
-  if (value.includes('{{resolve:')) return undefined;
+  if (!isUsableRecordedName(value)) return undefined;
   const arn = /^arn:[^:]+:events:[^:]*:[^:]*:event-bus\/(.+)$/.exec(value);
   return arn === null ? value : arn[1];
 }

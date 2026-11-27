@@ -1,3 +1,4 @@
+import { isMaskLeaf } from '../../secret-redaction/recorded-secrecy.js';
 import { type DeployEngine } from '../../deploy-engine.js';
 import { resolveDynamicReferences } from '../../intrinsic-resolver/dynamic-refs.js';
 import type { ProvisionCounts } from '../../deploy-engine.js';
@@ -19,7 +20,6 @@ import { safeMsg } from '../../../utils/display-safe.js';
 import { formatResourceLine } from '../../../utils/resource-line.js';
 import { type FreshNoEchoReadback, keyOrderFreeJson } from '../../deploy-value-equality.js';
 import {
-  SECRET_MASK,
   carriesSecretMask,
   freshNoEchoLeafPositions,
   type FreshNoEchoLeaf,
@@ -419,7 +419,7 @@ export async function compareWithRecord(
       valueAtCoordinate(recordedAsWritten, coordinate),
       scalarLeavesOf(desiredAt),
       updateSecrets,
-      desiredAt !== SECRET_MASK
+      !isMaskLeaf(desiredAt)
     );
   }
   // The fresh `NoEcho` leaves, by class. The custom-resource class (a

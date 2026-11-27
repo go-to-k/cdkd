@@ -1,3 +1,4 @@
+import { valueMentionsDynamicReference } from '../secret-redaction/recorded-secrecy.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { markNonRetryable } from '../retryable-errors.js';
@@ -146,7 +147,7 @@ export async function resolveAliasUpdatePolicy(
         )
       )
     );
-  if (JSON.stringify(aliasPolicy).includes('{{resolve:')) throw refusal();
+  if (valueMentionsDynamicReference(aliasPolicy)) throw refusal();
   const isSecretBearing = secretGuard();
   const resolved = await resolve(aliasPolicy);
   if (isSecretBearing(resolved)) throw refusal();

@@ -1,3 +1,4 @@
+import { isMaskLeaf, mentionsDynamicReference } from '../../secret-redaction/recorded-secrecy.js';
 /**
  * Leaf helpers of the `UPDATE` arm (`provisionUpdate`), split out of
  * `deploy-engine/update.ts` (go-to-k/cdkd#5835).
@@ -8,7 +9,6 @@ import type { CloudFormationTemplate } from '../../../types/resource.js';
 import { type ResourceState } from '../../../types/state.js';
 import { keyOrderFreeJson } from '../../deploy-value-equality.js';
 import {
-  SECRET_MASK,
   maskAtCoordinates,
   isSingleDynamicReferenceToken,
   recordLogOnlyValue,
@@ -72,7 +72,7 @@ export function recordPreviousNoEchoLeaves(
   shapeMoved: boolean
 ): void {
   for (const leaf of scalarLeavesOf(stored)) {
-    if (leaf === SECRET_MASK || desiredLeaves.has(leaf)) continue;
+    if (isMaskLeaf(leaf) || desiredLeaves.has(leaf)) continue;
     if (shapeMoved && (leaf === 'true' || leaf === 'false')) continue;
     recordLogOnlyValue(registry, leaf);
     // A site masking with the resolution bag alone (a provider's capability,
@@ -80,7 +80,7 @@ export function recordPreviousNoEchoLeaves(
     // leaving a text the whole-leaf needle no longer matches: that spelling
     // is recorded too.
     const partlyMasked = maskSecretsInText(leaf, resolution);
-    if (partlyMasked !== leaf && partlyMasked !== SECRET_MASK) {
+    if (partlyMasked !== leaf && !isMaskLeaf(partlyMasked)) {
       recordLogOnlyValue(registry, partlyMasked);
     }
   }
@@ -100,7 +100,7 @@ export function recordHoldsEmbeddedReference(record: {
 }): boolean {
   const walk = (node: unknown): boolean => {
     if (typeof node === 'string') {
-      return node.includes('{{resolve:') && !isSingleDynamicReferenceToken(node);
+      return mentionsDynamicReference(node) && !isSingleDynamicReferenceToken(node);
     }
     if (node === null || typeof node !== 'object') return false;
     return Object.values(node as Record<string, unknown>).some(walk);
