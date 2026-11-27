@@ -1289,6 +1289,23 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       });
     });
 
+    it('a journaled bag holding the mask is never resumed, even where the CREATE would send the same text (#7061)', async () => {
+      // The mask stands for a secret the earlier CREATE sent; the bag cannot say
+      // which, so it is compared with nothing and the made resource is orphaned.
+      const { engine, provider } = resumingEngine({ p: '***' });
+      const changes = new Map([
+        ['B', { ...makeChange('B'), desiredProperties: { p: '***' } } as ResourceChange],
+      ]);
+      (
+        engine as unknown as { diffCalculator: { calculateDiff: ReturnType<typeof vi.fn> } }
+      ).diffCalculator.calculateDiff.mockResolvedValue(changes);
+      await engine
+        .deploy(stackName, { Resources: { B: { Type: 'AWS::S3::Bucket', Properties: { p: '***' } } } })
+        .catch(() => undefined);
+      expect(provider.resumeCreatedResource).not.toHaveBeenCalled();
+      expect(provider.create).toHaveBeenCalled();
+    });
+
     it('a resource that is gone is created as usual, and its request is dropped, not orphaned', async () => {
       // e.g. a takeover a failed deploy's rollback then deleted: nothing is left in AWS.
       const { engine, provider } = resumingEngine({});
