@@ -224,6 +224,7 @@ describe('AppSyncProvider reads a schema record migrated before the fix (issue #
     const provider = new AppSyncProvider();
     mockSend.mockReset();
     mockSend.mockResolvedValueOnce({});
+    mockSend.mockResolvedValueOnce({ status: 'SUCCESS' }); // GetSchemaCreationStatus (#7127)
 
     await provider.update(
       'L',

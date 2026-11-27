@@ -1,0 +1,19 @@
+{
+  "name": "cdkd-integ-appsync-schema-update-drift",
+  "version": "1.0.0",
+  "private": true,
+  "description": "An AppSync GraphQL schema change is waited for: drift stays clean and an invalid schema fails the deploy (#7127)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

@@ -109,8 +109,9 @@ export async function updateGraphQLSchema(
   }
 
   const apiId = (properties['ApiId'] ?? recordedApiId) as string;
+  let started: { status?: string | undefined } | undefined;
   try {
-    await this.getClient().send(
+    started = await this.getClient().send(
       new StartSchemaCreationCommand({
         apiId,
         definition: Buffer.from(definition, 'utf-8'),
@@ -119,6 +120,9 @@ export async function updateGraphQLSchema(
   } catch (error) {
     throw this.wrapUpdateError(error, resourceType, logicalId, physicalId, 'GraphqlSchema', mask);
   }
+  // go-to-k/cdkd#7127: the rollback replay and `cdkd drift --revert` reach
+  // here too, so each waits for its own schema to be applied (or refused).
+  await this.waitForSchemaCreation(apiId, logicalId, resourceType, 'update', mask, started?.status);
   return { physicalId, wasReplaced: false };
 }
 

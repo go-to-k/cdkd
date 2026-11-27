@@ -508,6 +508,11 @@
       "scenarios": []
     },
     {
+      "name": "appsync-schema-update-drift",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "asg-destroy-running-instances",
       "annotated": false,
       "scenarios": []
@@ -4376,6 +4381,7 @@
     "app-autoscaling-recreate",
     "appconfig",
     "appconfig-environment-delete-protection",
+    "appsync-schema-update-drift",
     "asg-destroy-running-instances",
     "asg-rolling-signals",
     "asg-update-policy",

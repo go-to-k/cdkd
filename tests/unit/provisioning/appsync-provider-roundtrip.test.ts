@@ -345,6 +345,7 @@ describe('AppSyncProvider.update', () => {
   describe('GraphQLSchema', () => {
     it('issues StartSchemaCreation when Definition diffs', async () => {
       mockSend.mockResolvedValueOnce({});
+      mockSend.mockResolvedValueOnce({ status: 'SUCCESS' }); // GetSchemaCreationStatus (#7127)
 
       const newProps = {
         ApiId: 'api-1',
@@ -357,7 +358,7 @@ describe('AppSyncProvider.update', () => {
 
       await provider.update('L', 'api-1', 'AWS::AppSync::GraphQLSchema', newProps, oldProps);
 
-      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend).toHaveBeenCalledTimes(2);
       const cmd = mockSend.mock.calls[0]?.[0];
       expect(cmd).toBeInstanceOf(StartSchemaCreationCommand);
       expect(cmd.input.apiId).toBe('api-1');
@@ -419,6 +420,7 @@ describe('AppSyncProvider.update', () => {
     it('a recorded secret reference resolving to the same API id is no ApiId change', async () => {
       // go-to-k/cdkd#4275: the physical id (the API id) decides.
       mockSend.mockResolvedValueOnce({});
+      mockSend.mockResolvedValueOnce({ status: 'SUCCESS' }); // GetSchemaCreationStatus (#7127)
       await provider.update(
         'L',
         'api-1',
@@ -429,7 +431,7 @@ describe('AppSyncProvider.update', () => {
           Definition: 'type Query { b: String }',
         }
       );
-      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend).toHaveBeenCalledTimes(2);
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(StartSchemaCreationCommand);
       expect(mockSend.mock.calls[0]?.[0].input.apiId).toBe('api-1');
     });
@@ -802,7 +804,8 @@ describe('AppSyncProvider.update', () => {
         { ApiId: 'api-1', Definition: 'type Query { b: String }' },
       ],
     ])('omits attributes on %s', async (resourceType, physicalId, next, previous) => {
-      mockSend.mockResolvedValue({});
+      // `status` answers the #7127 schema-status read.
+      mockSend.mockResolvedValue({ status: 'SUCCESS' });
       const result = await provider.update('L', physicalId, resourceType, next, previous);
       expect(Object.hasOwn(result, 'attributes')).toBe(false);
     });

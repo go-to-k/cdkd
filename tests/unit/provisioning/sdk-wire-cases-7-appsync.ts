@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vite-plus/test';
 import {
   ACCOUNT,
   TAG_THROWS,
+  addOutputOverrides,
   armFor,
   createOnlyOf,
   record,
@@ -179,7 +180,14 @@ const GRAPHQL_SCHEMA_CASE: TypeCase = {
   provider: () => new AppSyncProvider(),
   physicalId: API_ID,
   createOnly: createOnlyOf('AWS::AppSync::GraphQLSchema'),
-  arm: () => armS3Object(),
+  arm: () => {
+    armS3Object();
+    // A submitted schema is waited for until AppSync applies it (#7127).
+    addOutputOverrides({
+      StartSchemaCreationCommand: () => ({ status: 'PROCESSING' }),
+      GetSchemaCreationStatusCommand: () => ({ status: 'SUCCESS' }),
+    });
+  },
   exempt: {},
   targets: [],
   bags: [

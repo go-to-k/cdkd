@@ -872,6 +872,7 @@
       "resourceType": "AWS::AppSync::GraphQLApi",
       "integs": [
         "appsync",
+        "appsync-schema-update-drift",
         "cc-to-sdk-reroute-common-types-8",
         "drift-revert-readback-placeholders",
         "getatt-appsync-s3express-s3tables",
@@ -883,6 +884,9 @@
       "signals": {
         "appsync": [
           "l1"
+        ],
+        "appsync-schema-update-drift": [
+          "l2"
         ],
         "cc-to-sdk-reroute-common-types-8": [
           "l1",
