@@ -325,6 +325,12 @@ describe('unappliedUpdateKeys (go-to-k/cdkd#7099)', () => {
       },
       { A: [{ PrivateIpAddress: '10.0.0.5', Primary: true }, { PrivateIpAddress: '10.0.0.9' }] },
     ],
+    [
+      'a default omitted on one object of a list that mixes objects and scalars',
+      { A: [{ N: 'b', M: 'x' }, 's', { N: 'a' }] },
+      { A: [{ N: 'b', M: 'x' }, 's', { N: 'a', M: 'd' }] },
+      { A: [{ N: 'b', M: 'x' }, 's', { N: 'a' }] },
+    ],
   ])('does not name %s', (_label, previous, desired, live) => {
     expect(unappliedUpdateKeys({ previous, desired, live, writeOnly: none })).toEqual([]);
   });

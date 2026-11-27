@@ -132,7 +132,6 @@ function commonShape(values: readonly unknown[]): unknown {
     const arrays = values.filter(Array.isArray);
     return arrays.length > 0 && arrays.length === values.length ? arrays.flat() : values[0];
   }
-  if (objects.length !== values.length) return objects[0];
   const out: Plain = {};
   for (const key of Object.keys(objects[0]!)) {
     const members = objects.map((item) => item[key]);
