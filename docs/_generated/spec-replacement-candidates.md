@@ -15,7 +15,7 @@ what cdkd does; `update` and `baseline` rows keep the in-place update, and a `ha
 is decided by `src/analyzer/replacement-rules/rules.ts` or a provider-replacement planner.
 Evidence: `REPLACEMENT_EVIDENCE`.
 
-Candidates: 389 (replace 4, update 220, baseline 75, hand rule 90).
+Candidates: 389 (replace 4, update 219, baseline 76, hand rule 90).
 
 | Candidate | Spec | Verdict |
 | --- | --- | --- |
@@ -283,7 +283,7 @@ Candidates: 389 (replace 4, update 220, baseline 75, hand rule 90).
 | `AWS::Location::RouteCalculator#PricingPlan` | yes | update |
 | `AWS::Location::Tracker#Description` | yes | update |
 | `AWS::Location::Tracker#PositionFiltering` | yes | update |
-| `AWS::MediaLive::Channel#InputAttachments.*.InputId` | yes | update |
+| `AWS::MediaLive::Channel#InputAttachments.*.InputId` | yes | baseline |
 | `AWS::MediaStore::Container#CorsPolicy.*.AllowedMethods` | yes | update |
 | `AWS::Omics::SequenceStore#Description` | yes | update |
 | `AWS::Omics::SequenceStore#FallbackLocation` | yes | update |

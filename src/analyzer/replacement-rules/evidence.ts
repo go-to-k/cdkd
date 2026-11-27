@@ -587,17 +587,10 @@ export const REPLACEMENT_EVIDENCE: ReadonlyMap<string, ReplacementEvidence> = ne
   ['AWS::EC2::VPNConnection#VpnGatewayId', update('cc-measured', 7083)],
   ['AWS::EC2::VPNConnection#VpnTunnelOptionsSpecifications', update('cc-measured', 7083)],
   // Slice 3 of the #7083 baseline (us-east-1, 2026-11-28).
-  // CloudFormation A/B in us-west-2, the Recovery Control home Region.
-  ['AWS::Route53RecoveryControl::SafetyRule#Tags', update('cfn-measured', 7083)],
-  // CloudFormation A/B: each enabled in place under the same domain.
-  ['AWS::Elasticsearch::Domain#AdvancedSecurityOptions', update('cfn-measured', 7083)],
-  ['AWS::Elasticsearch::Domain#AdvancedSecurityOptions.Enabled', update('cfn-measured', 7083)],
-  ['AWS::Elasticsearch::Domain#EncryptionAtRestOptions.Enabled', update('cfn-measured', 7083)],
-  ['AWS::Elasticsearch::Domain#NodeToNodeEncryptionOptions', update('cfn-measured', 7083)],
-  ['AWS::Elasticsearch::Domain#NodeToNodeEncryptionOptions.Enabled', update('cfn-measured', 7083)],
   ['AWS::Connect::PhoneNumber#Description', update('cfn-measured', 7083)],
   // CloudFormation's handler refuses it in place ("Attempt to modify
-  // AWS::Connect::ViewVersion"), with no replacement: Cloud Control's too.
+  // AWS::Connect::ViewVersion"), with no replacement. Cloud Control runs the
+  // same handler (not measured).
   ['AWS::Connect::ViewVersion#VersionDescription', update('cfn-measured', 7083)],
   // ModifySpotFleetRequest: each applied under the same request id, read back.
   [
@@ -608,14 +601,18 @@ export const REPLACEMENT_EVIDENCE: ReadonlyMap<string, ReplacementEvidence> = ne
     'AWS::EC2::SpotFleet#SpotFleetRequestConfigData.OnDemandTargetCapacity',
     update('cfn-measured', 7083),
   ],
-  [
-    'AWS::MediaLive::Channel#InputAttachments.*.InputId',
-    cannotProbe(
-      'Cloud Control refuses CREATE for the type (UnsupportedActionException); CloudFormation replaced the channel'
-    ),
-  ],
-  // UpdateDomain: each applied under the same domain id and read back. The
-  // image ARNs are AWS-owned SageMaker images.
+  // CloudFormation A/B, each enabled (false -> true) in place under the same
+  // domain, AdvancedSecurityOptions with an internal master user; the
+  // disable direction was not measured.
+  ['AWS::Elasticsearch::Domain#AdvancedSecurityOptions', update('cfn-measured', 7083)],
+  ['AWS::Elasticsearch::Domain#AdvancedSecurityOptions.Enabled', update('cfn-measured', 7083)],
+  ['AWS::Elasticsearch::Domain#EncryptionAtRestOptions.Enabled', update('cfn-measured', 7083)],
+  ['AWS::Elasticsearch::Domain#NodeToNodeEncryptionOptions', update('cfn-measured', 7083)],
+  ['AWS::Elasticsearch::Domain#NodeToNodeEncryptionOptions.Enabled', update('cfn-measured', 7083)],
+  // Recovery Control: a CloudFormation A/B in us-west-2, its home Region.
+  ['AWS::Route53RecoveryControl::SafetyRule#Tags', update('cfn-measured', 7083)],
+  // UpdateDomain: each applied under the same domain id and read back (Tags by
+  // the domain ARN). The image ARNs are AWS-owned SageMaker images.
   ['AWS::SageMaker::Domain#AppNetworkAccessType', update('cc-measured', 7083)],
   [
     'AWS::SageMaker::Domain#DefaultSpaceSettings.JupyterLabAppSettings.DefaultResourceSpec.InstanceType',
@@ -818,7 +815,7 @@ export const REPLACEMENT_EVIDENCE: ReadonlyMap<string, ReplacementEvidence> = ne
   [
     'AWS::SageMaker::Workteam#MemberDefinitions.*.CognitoMemberDefinition.CognitoUserPool',
     cannotProbe(
-      'A Cognito work team needs the private workforce, one per account and Region: an account-level change'
+      "A Cognito work team's pool is the private workforce's, one per account and Region, and UpdateWorkforce cannot change its Cognito pool: no second pool can be named"
     ),
   ],
   // --- updateableProperties beyond the fixture or the spec

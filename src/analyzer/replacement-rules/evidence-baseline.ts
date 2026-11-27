@@ -86,10 +86,16 @@ export const UNMEASURED_SPEC_REPLACEMENT_CANDIDATES: ReadonlySet<string> = new S
   'AWS::KafkaConnect::Connector#ConnectorConfiguration',
   'AWS::KafkaConnect::Connector#Plugins',
   'AWS::KafkaConnect::Connector#WorkerConfiguration',
+  // Measured on #7083: CloudFormation replaced the channel (new id); Cloud
+  // Control refuses CREATE for the type, so cdkd cannot deploy it and no
+  // fixture can carry a `replace` row. An element member cannot be compared
+  // per element either.
+  'AWS::MediaLive::Channel#InputAttachments.*.InputId',
   // Measured on #7083 (CloudFormation A/B): the handler refuses either change
   // unless the rule's Name changes too ("requires changing the safety rule
-  // name"); with a new Name it applied under a NEW rule ARN. Neither verdict
-  // describes that, and Cloud Control's update was not measured.
+  // name"). A RuleConfig change with a new Name applied under a NEW rule ARN
+  // (the ControlPanelArn + Name pair was not run). Neither verdict describes
+  // that, and Cloud Control's update was not measured.
   'AWS::Route53RecoveryControl::SafetyRule#ControlPanelArn',
   'AWS::Route53RecoveryControl::SafetyRule#RuleConfig',
   // Measured on #7083: its one member, NonFilterableMetadataKeys, is
