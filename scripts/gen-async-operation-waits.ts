@@ -22,8 +22,9 @@
  * API, never executed):
  *
  *   - `start-operation`: the operation name starts with `Start`;
- *   - `transitional-enum`: the command's output shape, at the top level or one
- *     structure below it (a member typed as a structure, or an array of one),
+ *   - `transitional-enum`: the command's output shape, at the top level or up
+ *     to {@link WALK_DEPTH} structures below it (a member typed as a structure,
+ *     or an array of one),
  *     has a member typed as an SDK string enum with a transitional value
  *     ({@link isTransitionalValue}: `*ING`, `PROCESSING`, anything containing
  *     `IN_PROGRESS` (`CREATE_IN_PROGRESS`) or starting or ending with
@@ -38,35 +39,32 @@
  *
  * BOUND: only `src/provisioning/providers/**` is read, so an asynchronous send
  * from a shared helper outside it (the final-snapshot `CreateSnapshot` /
- * `CreateClusterSnapshot` calls, Cloud Control) is not in the population.
+ * `CreateClusterSnapshot` calls, Cloud Control) is not in the population. The
+ * test names those sites (`OUT_OF_SCOPE_SEND_SITES`).
  *
- * BOUND: the walk is one structure deep, so a status two levels down is
+ * BOUND: the walk is {@link WALK_DEPTH} structures deep, so a deeper status is
  * missed, and an operation whose output carries no status at all (a
  * `Modify*` answering `{}` while the change applies) is invisible to all three
  * rules. A waiter-only signal (the service ships `waitUntil*` for the
  * resource) is not used: it names a DESCRIBE operation, not the write.
- * Measured on the #7132 review, a two-level walk adds about 20 operations
- * (ELBv2 `CreateLoadBalancer`'s `LoadBalancers[].State.Code`, RDS
- * `RegisterDBProxyTargets`, EMR `PutAutoScalingPolicy`, EC2 `RunInstances` /
- * `StopInstances`, ...), left for #7132.
  *
- * BOUND: the helper check is a REFERENCE check: it holds that the provider
- * unit still names a helper, not that the helper runs after THIS operation. A
- * generic name another operation of the same unit also calls
- * (`waitForSettled`) keeps passing if this operation's wait is deleted.
+ * BOUND: the helper check ({@link unitCalls}) holds that the provider unit
+ * still CALLS a helper, not that the call runs after THIS operation. A generic
+ * name another operation of the same unit also calls (`waitForSettled`) keeps
+ * passing if this operation's wait is deleted.
  *
  * CLASSIFICATION
  * --------------
  * By hand, in `src/provisioning/async-operation-waits.ts`, one row per
- * `<client>:<Operation>` (`appsync:StartSchemaCreation`): `waits` (the helper
- * helpers each sending provider unit references, and the terminal failure
- * statuses it fails on), `no-wait-by-design` (the reason and its evidence) or
+ * `<client>:<Operation>` (`appsync:StartSchemaCreation`): `waits` (the
+ * helpers each sending provider unit calls, and the terminal failure statuses
+ * it fails on), `no-wait-by-design` (the reason and its evidence) or
  * `unmeasured` (needs a CloudFormation A/B; #7132 tracks it).
  *
  * `--check` (CI) FAILS on a population row with no classification, on a
  * classification naming an operation no provider sends any more (or one the
- * rules no longer flag), on a `waits` row whose helper a sending provider unit
- * no longer references, and on stale generated files. A provider UNIT is the
+ * rules no longer flag), on a `waits` row whose helpers a sending provider unit
+ * no longer calls, and on stale generated files. A provider UNIT is the
  * `<name>-provider.ts` file plus its `<name>/` companion directory.
  *
  *   node --experimental-strip-types scripts/gen-async-operation-waits.ts          # regenerate
@@ -364,6 +362,14 @@ const structureName = (node: ts.TypeNode | undefined): string | undefined => {
   return r;
 };
 
+/**
+ * How many structures below the output the walk descends. Two reaches a
+ * status held in a list of structures that each carry a state structure
+ * (ELBv2 `LoadBalancers[].State.Code`, EC2 `Instances[].State.Name`); one
+ * missed 20 operations (#7132 review). A deeper walk is unmeasured.
+ */
+export const WALK_DEPTH = 2;
+
 /** Every signal the model walk finds for one operation's output. */
 export function asyncEvidence(client: string, operation: string): AsyncEvidence[] {
   const evidence: AsyncEvidence[] = [];
@@ -384,18 +390,43 @@ export function asyncEvidence(client: string, operation: string): AsyncEvidence[
       evidence.push({ signal: 'state-string', detail: `${path}${member}: string` });
     }
   };
-  for (const [member, type] of outputMembers(client, operation, model)) {
-    inspect('', member, type);
-    const nested = structureName(type);
-    const shape = nested ? model.interfaces.get(nested) : undefined;
-    for (const [inner, innerType] of shape ?? []) inspect(`${member}.`, inner, innerType);
-  }
+  const walk = (
+    path: string,
+    members: ReadonlyMap<string, ts.TypeNode | undefined>,
+    depth: number
+  ): void => {
+    for (const [member, type] of members) {
+      inspect(path, member, type);
+      if (depth >= WALK_DEPTH) continue;
+      const nested = structureName(type);
+      const shape = nested ? model.interfaces.get(nested) : undefined;
+      if (shape) walk(`${path}${member}.`, shape, depth + 1);
+    }
+  };
+  walk('', outputMembers(client, operation, model), 0);
   return evidence;
 }
 
 /** Every send site under the providers directory. */
 export function collectAllSendSites(): SendSite[] {
   return walkTs(PROVIDERS_DIR).flatMap(collectSendSites);
+}
+
+/**
+ * Every asynchronous send under `src/provisioning/**` OUTSIDE `providers/`,
+ * as `<file> <client>:<Operation>`. Not classified: the test names them
+ * (`OUT_OF_SCOPE_SEND_SITES`) so a new one is a decision, not an accident.
+ */
+export function collectOutOfScopeAsyncSends(): string[] {
+  const root = resolve(repoRoot, 'src/provisioning');
+  const files = walkTs(root).filter((f) => !f.startsWith(PROVIDERS_DIR + sep));
+  const out = new Set<string>();
+  for (const site of files.flatMap(collectSendSites)) {
+    if (isRead(site.operation)) continue;
+    if (asyncEvidence(site.client, site.operation).length === 0) continue;
+    out.add(`${site.file} ${site.client}:${site.operation}`);
+  }
+  return [...out].sort();
 }
 
 const isRead = (operation: string): boolean =>
@@ -426,18 +457,94 @@ export function buildPopulation(sites: readonly SendSite[] = collectAllSendSites
   return rows.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
 }
 
-/** Whether any file of the unit names `identifier` as an identifier token. */
-export function unitReferences(unit: string, identifier: string): boolean {
+/** The name of the function-like member or declaration a node sits in. */
+const enclosingName = (node: ts.Node): string | undefined => {
+  for (let n: ts.Node | undefined = node.parent; n; n = n.parent) {
+    if (
+      (ts.isMethodDeclaration(n) || ts.isFunctionDeclaration(n) || ts.isPropertyDeclaration(n)) &&
+      n.name &&
+      (ts.isIdentifier(n.name) || ts.isStringLiteral(n.name))
+    ) {
+      return n.name.text;
+    }
+  }
+  return undefined;
+};
+
+const isFunctionLike = (n: ts.Node): boolean =>
+  ts.isFunctionDeclaration(n) ||
+  ts.isMethodDeclaration(n) ||
+  ts.isFunctionExpression(n) ||
+  ts.isArrowFunction(n);
+
+/** The innermost function-like node holding `node`. */
+const enclosingFunction = (node: ts.Node): ts.Node | undefined => {
+  for (let n: ts.Node | undefined = node.parent; n; n = n.parent) if (isFunctionLike(n)) return n;
+  return undefined;
+};
+
+/** Whether a node constructs `new <name>(...)` (by its local import name). */
+const constructs = (node: ts.Node, name: string): boolean =>
+  ts.isNewExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === name;
+
+/**
+ * Whether a function of the unit that sends `new <operation>Command(` also
+ * constructs `new <pollCommand>(` (an inline poll loop, e.g. RDS proxy
+ * `create()` polling `DescribeDBProxiesCommand`), in the SAME function body.
+ */
+export function unitPollsInline(unit: string, operation: string, pollCommand: string): boolean {
   return unitFiles(resolve(repoRoot, unit)).some((file) => {
+    const sends = new Set<ts.Node>();
+    const polls = new Set<ts.Node>();
+    const visit = (node: ts.Node): void => {
+      const fn = enclosingFunction(node);
+      if (fn && constructs(node, `${operation}Command`)) sends.add(fn);
+      if (fn && constructs(node, pollCommand)) polls.add(fn);
+      ts.forEachChild(node, visit);
+    };
+    visit(parse(file));
+    return [...sends].some((fn) => polls.has(fn));
+  });
+}
+
+/**
+ * Whether any file of the unit CALLS `helper`: `helper(...)`, `this.helper(...)`,
+ * `x.helper(...)`, or `helper.call(...)` / `.apply(...)`. A declaration, an
+ * import, a reference passed without a call and a self-delegation (a member
+ * named `helper` whose body calls `helper.call(this, ...)`) do not count: each
+ * survives deleting every real wait (#7132 review).
+ */
+export function unitCalls(unit: string, helper: string): boolean {
+  return unitFiles(resolve(repoRoot, unit)).some((file) => unitCallsInFile(file, helper));
+}
+
+/** {@link unitCalls} for one file (repo-relative or absolute). */
+export function unitCallsInFile(file: string, helper: string): boolean {
+  {
     let found = false;
     const visit = (node: ts.Node): void => {
       if (found) return;
-      if (ts.isIdentifier(node) && node.text === identifier) found = true;
-      else ts.forEachChild(node, visit);
+      if (ts.isCallExpression(node)) {
+        const callee = node.expression;
+        const direct =
+          (ts.isIdentifier(callee) && callee.text === helper) ||
+          (ts.isPropertyAccessExpression(callee) && callee.name.text === helper);
+        const viaCall =
+          ts.isPropertyAccessExpression(callee) &&
+          (callee.name.text === 'call' || callee.name.text === 'apply') &&
+          ((ts.isIdentifier(callee.expression) && callee.expression.text === helper) ||
+            (ts.isPropertyAccessExpression(callee.expression) &&
+              callee.expression.name.text === helper));
+        if ((direct || viaCall) && enclosingName(node) !== helper) {
+          found = true;
+          return;
+        }
+      }
+      ts.forEachChild(node, visit);
     };
-    visit(parse(file));
+    visit(parse(resolve(repoRoot, file)));
     return found;
-  });
+  }
 }
 
 export interface Findings {
@@ -461,14 +568,18 @@ export function checkClassification(
     if (verdict?.verdict !== 'waits') continue;
     const named = new Set<string>();
     for (const unit of row.units) {
-      const hits = verdict.helpers.filter((h) => unitReferences(unit, h));
+      // A helper named `<X>Command` is an INLINE poll: the describe command
+      // must be constructed in the same function as the send.
+      const hits = verdict.helpers.filter((h) =>
+        h.endsWith('Command') ? unitPollsInline(unit, row.operation, h) : unitCalls(unit, h)
+      );
       for (const h of hits) named.add(h);
       if (hits.length === 0) {
-        missingHelper.push(`${row.key}: ${unit} references none of ${verdict.helpers.join(', ')}`);
+        missingHelper.push(`${row.key}: ${unit} calls none of ${verdict.helpers.join(', ')}`);
       }
     }
     for (const h of verdict.helpers) {
-      if (!named.has(h)) missingHelper.push(`${row.key}: no sending provider references ${h}`);
+      if (!named.has(h)) missingHelper.push(`${row.key}: no sending provider calls ${h}`);
     }
   }
   return { unclassified, stale, missingHelper };
@@ -566,7 +677,7 @@ function main(): void {
     findings.unclassified
   );
   section('Rows for an operation no provider sends (or no rule flags) any more — delete them:', findings.stale);
-  section('`waits` rows whose helper a sending provider no longer references:', findings.missingHelper);
+  section('`waits` rows whose helper a sending provider no longer calls:', findings.missingHelper);
   if (check) {
     const stale =
       !existsSync(OUT_JSON) ||

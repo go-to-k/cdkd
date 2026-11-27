@@ -1,10 +1,10 @@
 {
   "issue": 7132,
-  "total": 153,
+  "total": 173,
   "counts": {
-    "unmeasured": 55,
-    "waits": 89,
-    "no-wait-by-design": 9
+    "unmeasured": 60,
+    "waits": 96,
+    "no-wait-by-design": 17
   },
   "rows": [
     {
@@ -378,6 +378,10 @@
         {
           "signal": "state-string",
           "detail": "Distribution.Status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "Distribution.AliasICPRecordals.ICPRecordalStatus: ICPRecordalStatus (PENDING)"
         }
       ],
       "files": [
@@ -399,6 +403,10 @@
         {
           "signal": "state-string",
           "detail": "Distribution.Status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "Distribution.AliasICPRecordals.ICPRecordalStatus: ICPRecordalStatus (PENDING)"
         }
       ],
       "files": [
@@ -420,6 +428,10 @@
         {
           "signal": "state-string",
           "detail": "Distribution.Status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "Distribution.AliasICPRecordals.ICPRecordalStatus: ICPRecordalStatus (PENDING)"
         }
       ],
       "files": [
@@ -457,6 +469,27 @@
       }
     },
     {
+      "key": "codebuild:CreateProject",
+      "client": "codebuild",
+      "operation": "CreateProject",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "project.webhook.status: WebhookStatus (CREATING, DELETING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/codebuild/create.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/codebuild-provider.ts"
+      ],
+      "classification": {
+        "verdict": "no-wait-by-design",
+        "reason": "settled once AWS answers: the flagged `project.webhook.status` belongs to the separate CreateWebhook call, its own row"
+      }
+    },
+    {
       "key": "codebuild:CreateWebhook",
       "client": "codebuild",
       "operation": "CreateWebhook",
@@ -475,6 +508,27 @@
       "classification": {
         "verdict": "unmeasured",
         "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+      }
+    },
+    {
+      "key": "codebuild:UpdateProject",
+      "client": "codebuild",
+      "operation": "UpdateProject",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "project.webhook.status: WebhookStatus (CREATING, DELETING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/codebuild/update.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/codebuild-provider.ts"
+      ],
+      "classification": {
+        "verdict": "no-wait-by-design",
+        "reason": "settled once AWS answers: the flagged `project.webhook.status` belongs to the separate CreateWebhook / UpdateWebhook calls, their own rows"
       }
     },
     {
@@ -506,6 +560,22 @@
         {
           "signal": "state-string",
           "detail": "DBCluster.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterMembers.DBClusterParameterGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.AssociatedRoles.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.MasterUserSecret.SecretStatus: string"
         }
       ],
       "files": [
@@ -541,6 +611,18 @@
         {
           "signal": "state-string",
           "detail": "DBInstance.DBInstanceStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StatusInfos.Status: string"
         }
       ],
       "files": [
@@ -576,6 +658,10 @@
         {
           "signal": "state-string",
           "detail": "DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBSubnetGroup.Subnets.SubnetStatus: string"
         }
       ],
       "files": [
@@ -597,6 +683,22 @@
         {
           "signal": "state-string",
           "detail": "DBCluster.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterMembers.DBClusterParameterGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.AssociatedRoles.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.MasterUserSecret.SecretStatus: string"
         }
       ],
       "files": [
@@ -621,6 +723,18 @@
         {
           "signal": "state-string",
           "detail": "DBInstance.DBInstanceStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StatusInfos.Status: string"
         }
       ],
       "files": [
@@ -645,6 +759,22 @@
         {
           "signal": "state-string",
           "detail": "DBCluster.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterMembers.DBClusterParameterGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.AssociatedRoles.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.MasterUserSecret.SecretStatus: string"
         }
       ],
       "files": [
@@ -684,6 +814,18 @@
         {
           "signal": "state-string",
           "detail": "DBInstance.DBInstanceStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StatusInfos.Status: string"
         }
       ],
       "files": [
@@ -709,6 +851,10 @@
         {
           "signal": "state-string",
           "detail": "DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBSubnetGroup.Subnets.SubnetStatus: string"
         }
       ],
       "files": [
@@ -730,6 +876,14 @@
         {
           "signal": "state-string",
           "detail": "GlobalCluster.Status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "GlobalCluster.GlobalClusterMembers.SynchronizationStatus: GlobalClusterMemberSynchronizationStatus (pending-resync)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "GlobalCluster.FailoverState.Status: FailoverStatus (cancelling, pending)"
         }
       ],
       "files": [
@@ -754,6 +908,22 @@
         {
           "signal": "state-string",
           "detail": "DBCluster.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterMembers.DBClusterParameterGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.AssociatedRoles.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.MasterUserSecret.SecretStatus: string"
         }
       ],
       "files": [
@@ -789,6 +959,22 @@
         {
           "signal": "state-string",
           "detail": "DBCluster.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterMembers.DBClusterParameterGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.AssociatedRoles.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.MasterUserSecret.SecretStatus: string"
         }
       ],
       "files": [
@@ -824,6 +1010,30 @@
         {
           "signal": "transitional-enum",
           "detail": "TableDescription.TableStatus: TableStatus (ARCHIVING, CREATING, DELETING, UPDATING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.GlobalSecondaryIndexes.IndexStatus: IndexStatus (CREATING, DELETING, UPDATING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.Replicas.ReplicaStatus: ReplicaStatus (ARCHIVING, CREATING, DELETING, UPDATING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.GlobalTableWitnesses.WitnessStatus: WitnessStatus (CREATING, DELETING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.SSEDescription.Status: SSEStatus (DISABLING, ENABLING, UPDATING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.WarmThroughput.Status: TableStatus (ARCHIVING, CREATING, DELETING, UPDATING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.VectorIndexes.IndexStatus: IndexStatus (CREATING, DELETING, UPDATING)"
         }
       ],
       "files": [
@@ -852,6 +1062,30 @@
         {
           "signal": "transitional-enum",
           "detail": "TableDescription.TableStatus: TableStatus (ARCHIVING, CREATING, DELETING, UPDATING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.GlobalSecondaryIndexes.IndexStatus: IndexStatus (CREATING, DELETING, UPDATING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.Replicas.ReplicaStatus: ReplicaStatus (ARCHIVING, CREATING, DELETING, UPDATING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.GlobalTableWitnesses.WitnessStatus: WitnessStatus (CREATING, DELETING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.SSEDescription.Status: SSEStatus (DISABLING, ENABLING, UPDATING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.WarmThroughput.Status: TableStatus (ARCHIVING, CREATING, DELETING, UPDATING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.VectorIndexes.IndexStatus: IndexStatus (CREATING, DELETING, UPDATING)"
         }
       ],
       "files": [
@@ -979,6 +1213,30 @@
         {
           "signal": "transitional-enum",
           "detail": "TableDescription.TableStatus: TableStatus (ARCHIVING, CREATING, DELETING, UPDATING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.GlobalSecondaryIndexes.IndexStatus: IndexStatus (CREATING, DELETING, UPDATING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.Replicas.ReplicaStatus: ReplicaStatus (ARCHIVING, CREATING, DELETING, UPDATING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.GlobalTableWitnesses.WitnessStatus: WitnessStatus (CREATING, DELETING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.SSEDescription.Status: SSEStatus (DISABLING, ENABLING, UPDATING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.WarmThroughput.Status: TableStatus (ARCHIVING, CREATING, DELETING, UPDATING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TableDescription.VectorIndexes.IndexStatus: IndexStatus (CREATING, DELETING, UPDATING)"
         }
       ],
       "files": [
@@ -1076,6 +1334,34 @@
       }
     },
     {
+      "key": "ec2:AssociateSubnetCidrBlock",
+      "client": "ec2",
+      "operation": "AssociateSubnetCidrBlock",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "Ipv6CidrBlockAssociation.Ipv6CidrBlockState.State: SubnetCidrBlockStateCode (associating, disassociating, failing)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/subnet-attributes.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForSubnetIpv6Association"
+        ],
+        "failureStatuses": [
+          "failed",
+          "failing"
+        ],
+        "note": "every mode (docs/cli-deploy.md edge cases)"
+      }
+    },
+    {
       "key": "ec2:AttachVolume",
       "client": "ec2",
       "operation": "AttachVolume",
@@ -1125,13 +1411,93 @@
       }
     },
     {
+      "key": "ec2:AuthorizeSecurityGroupEgress",
+      "client": "ec2",
+      "operation": "AuthorizeSecurityGroupEgress",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "SecurityGroupRules.ReferencedGroupInfo.PeeringStatus: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/security-group.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "no-wait-by-design",
+        "reason": "the flagged member is a referenced peering's PeeringStatus, not the rule's; the rule exists once AWS answers"
+      }
+    },
+    {
+      "key": "ec2:AuthorizeSecurityGroupIngress",
+      "client": "ec2",
+      "operation": "AuthorizeSecurityGroupIngress",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "SecurityGroupRules.ReferencedGroupInfo.PeeringStatus: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/security-group.ts",
+        "src/provisioning/providers/ec2/sg-ingress-create.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "no-wait-by-design",
+        "reason": "the flagged member is a referenced peering's PeeringStatus, not the rule's; the rule exists once AWS answers"
+      }
+    },
+    {
+      "key": "ec2:CreateInternetGateway",
+      "client": "ec2",
+      "operation": "CreateInternetGateway",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "InternetGateway.Attachments.State: AttachmentStatus (attaching, detaching)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/igw-eip.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "no-wait-by-design",
+        "reason": "a new gateway has no attachments: the flagged Attachments[].State belongs to AttachInternetGateway"
+      }
+    },
+    {
       "key": "ec2:CreateNatGateway",
       "client": "ec2",
       "operation": "CreateNatGateway",
       "evidence": [
         {
           "signal": "transitional-enum",
+          "detail": "NatGateway.NatGatewayAddresses.Status: NatGatewayAddressStatus (assigning, associating, disassociating, unassigning)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "NatGateway.ProvisionedBandwidth.Status: string"
+        },
+        {
+          "signal": "transitional-enum",
           "detail": "NatGateway.State: NatGatewayState (deleting, pending)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "NatGateway.AttachedAppliances.AttachmentState: NatGatewayApplianceState (attaching, detaching)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "NatGateway.AttachedAppliances.ModificationState: NatGatewayApplianceModifyState (modifying)"
         }
       ],
       "files": [
@@ -1179,6 +1545,14 @@
       "client": "ec2",
       "operation": "CreateVpc",
       "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "Vpc.EncryptionControl.State: VpcEncryptionControlState (creating, deleting, enforce-in-progress, monitor-in-progress)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "Vpc.NetworkFirewallAssociations.FirewallOnboardingStatus: FirewallOnboardingStatus (disabling, pending)"
+        },
         {
           "signal": "transitional-enum",
           "detail": "Vpc.State: VpcState (deleting, pending)"
@@ -1294,6 +1668,34 @@
       }
     },
     {
+      "key": "ec2:DisassociateSubnetCidrBlock",
+      "client": "ec2",
+      "operation": "DisassociateSubnetCidrBlock",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "Ipv6CidrBlockAssociation.Ipv6CidrBlockState.State: SubnetCidrBlockStateCode (associating, disassociating, failing)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/subnet-attributes.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForSubnetIpv6Association"
+        ],
+        "failureStatuses": [
+          "failed",
+          "failing"
+        ],
+        "note": "every mode (docs/cli-deploy.md edge cases)"
+      }
+    },
+    {
       "key": "ec2:ModifyInstanceMetadataOptions",
       "client": "ec2",
       "operation": "ModifyInstanceMetadataOptions",
@@ -1312,6 +1714,27 @@
       "classification": {
         "verdict": "unmeasured",
         "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+      }
+    },
+    {
+      "key": "ec2:MonitorInstances",
+      "client": "ec2",
+      "operation": "MonitorInstances",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "InstanceMonitorings.Monitoring.State: MonitoringState (disabling, pending)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/instance-update.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (monitoring answers pending)"
       }
     },
     {
@@ -1336,6 +1759,98 @@
       }
     },
     {
+      "key": "ec2:RevokeSecurityGroupEgress",
+      "client": "ec2",
+      "operation": "RevokeSecurityGroupEgress",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "UnknownIpPermissions.UserIdGroupPairs.PeeringStatus: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/security-group.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "no-wait-by-design",
+        "reason": "the flagged member is an unknown permission's peering PeeringStatus, not the rule's; the revoke is done once AWS answers"
+      }
+    },
+    {
+      "key": "ec2:RevokeSecurityGroupIngress",
+      "client": "ec2",
+      "operation": "RevokeSecurityGroupIngress",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "UnknownIpPermissions.UserIdGroupPairs.PeeringStatus: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/security-group.ts",
+        "src/provisioning/providers/ec2/sg-ingress-update.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "no-wait-by-design",
+        "reason": "the flagged member is an unknown permission's peering PeeringStatus, not the rule's; the revoke is done once AWS answers"
+      }
+    },
+    {
+      "key": "ec2:RunInstances",
+      "client": "ec2",
+      "operation": "RunInstances",
+      "evidence": [
+        {
+          "signal": "state-string",
+          "detail": "Instances.ElasticGpuAssociations.ElasticGpuAssociationState: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "Instances.ElasticInferenceAcceleratorAssociations.ElasticInferenceAcceleratorAssociationState: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "Instances.NetworkInterfaces.Status: NetworkInterfaceStatus (attaching, detaching)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "Instances.MetadataOptions.State: InstanceMetadataOptionsState (pending)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "Instances.State.Name: InstanceStateName (pending, stopping)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "Instances.Monitoring.State: MonitoringState (disabling, pending)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/instance-create.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitUntilInstanceRunning"
+        ],
+        "failureStatuses": [
+          "shutting-down",
+          "terminated",
+          "stopping"
+        ],
+        "note": "--no-wait defers it to deferReadiness (runs only if the deploy needs the resource), unless Volumes or SsmAssociations need running"
+      }
+    },
+    {
       "key": "ec2:StartInstances",
       "client": "ec2",
       "operation": "StartInstances",
@@ -1343,6 +1858,14 @@
         {
           "signal": "start-operation",
           "detail": "StartInstances"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "StartingInstances.CurrentState.Name: InstanceStateName (pending, stopping)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "StartingInstances.PreviousState.Name: InstanceStateName (pending, stopping)"
         }
       ],
       "files": [
@@ -1364,6 +1887,88 @@
       }
     },
     {
+      "key": "ec2:StopInstances",
+      "client": "ec2",
+      "operation": "StopInstances",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "StoppingInstances.CurrentState.Name: InstanceStateName (pending, stopping)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "StoppingInstances.PreviousState.Name: InstanceStateName (pending, stopping)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/instance-apply.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForInstanceState"
+        ],
+        "failureStatuses": [
+          "terminated",
+          "shutting-down"
+        ]
+      }
+    },
+    {
+      "key": "ec2:TerminateInstances",
+      "client": "ec2",
+      "operation": "TerminateInstances",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "TerminatingInstances.CurrentState.Name: InstanceStateName (pending, stopping)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "TerminatingInstances.PreviousState.Name: InstanceStateName (pending, stopping)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/instance-create.ts",
+        "src/provisioning/providers/ec2/instance-lifecycle.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitUntilInstanceTerminated"
+        ],
+        "failureStatuses": [],
+        "note": "the delete waits; a failed-launch cleanup waits only when an attached volume must be freed"
+      }
+    },
+    {
+      "key": "ec2:UnmonitorInstances",
+      "client": "ec2",
+      "operation": "UnmonitorInstances",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "InstanceMonitorings.Monitoring.State: MonitoringState (disabling, pending)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/instance-update.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (monitoring answers disabling)"
+      }
+    },
+    {
       "key": "ecs:CreateCluster",
       "client": "ecs",
       "operation": "CreateCluster",
@@ -1371,6 +1976,10 @@
         {
           "signal": "state-string",
           "detail": "cluster.status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "cluster.attachments.status: string"
         },
         {
           "signal": "state-string",
@@ -1396,6 +2005,26 @@
         {
           "signal": "state-string",
           "detail": "service.status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "service.deploymentConfiguration.strategy: DeploymentStrategy (ROLLING)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "service.taskSets.status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "service.taskSets.stabilityStatus: StabilityStatus (STABILIZING)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "service.deployments.status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "service.deployments.rolloutState: DeploymentRolloutState (IN_PROGRESS)"
         }
       ],
       "files": [
@@ -1429,6 +2058,10 @@
         },
         {
           "signal": "state-string",
+          "detail": "cluster.attachments.status: string"
+        },
+        {
+          "signal": "state-string",
           "detail": "cluster.attachmentsStatus: string"
         }
       ],
@@ -1451,6 +2084,26 @@
         {
           "signal": "state-string",
           "detail": "service.status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "service.deploymentConfiguration.strategy: DeploymentStrategy (ROLLING)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "service.taskSets.status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "service.taskSets.stabilityStatus: StabilityStatus (STABILIZING)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "service.deployments.status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "service.deployments.rolloutState: DeploymentRolloutState (IN_PROGRESS)"
         }
       ],
       "files": [
@@ -1499,6 +2152,10 @@
         {
           "signal": "state-string",
           "detail": "cluster.status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "cluster.attachments.status: string"
         },
         {
           "signal": "state-string",
@@ -1553,6 +2210,10 @@
         },
         {
           "signal": "state-string",
+          "detail": "cluster.attachments.status: string"
+        },
+        {
+          "signal": "state-string",
           "detail": "cluster.attachmentsStatus: string"
         }
       ],
@@ -1575,6 +2236,26 @@
         {
           "signal": "state-string",
           "detail": "service.status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "service.deploymentConfiguration.strategy: DeploymentStrategy (ROLLING)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "service.taskSets.status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "service.taskSets.stabilityStatus: StabilityStatus (STABILIZING)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "service.deployments.status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "service.deployments.rolloutState: DeploymentRolloutState (IN_PROGRESS)"
         }
       ],
       "files": [
@@ -1713,6 +2394,59 @@
       }
     },
     {
+      "key": "elastic-load-balancing-v2:CreateLoadBalancer",
+      "client": "elastic-load-balancing-v2",
+      "operation": "CreateLoadBalancer",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "LoadBalancers.State.Code: LoadBalancerStateEnum (provisioning)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/elbv2/load-balancer.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/elbv2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitUntilLoadBalancerAvailable"
+        ],
+        "failureStatuses": [],
+        "note": "--no-wait defers it to deferReadiness (runs only if the deploy needs the resource)"
+      }
+    },
+    {
+      "key": "elastic-load-balancing-v2:ModifyCapacityReservation",
+      "client": "elastic-load-balancing-v2",
+      "operation": "ModifyCapacityReservation",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "CapacityReservationState.State.Code: CapacityReservationStateEnum (pending, rebalancing)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/elbv2/load-balancer-update.ts",
+        "src/provisioning/providers/elbv2/load-balancer.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/elbv2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "waits",
+        "helpers": [
+          "waitForCapacityReservationProvisioned"
+        ],
+        "failureStatuses": [
+          "failed"
+        ],
+        "note": "skipped under --no-wait"
+      }
+    },
+    {
       "key": "elasticache:CreateCacheCluster",
       "client": "elasticache",
       "operation": "CreateCacheCluster",
@@ -1720,6 +2454,38 @@
         {
           "signal": "state-string",
           "detail": "CacheCluster.CacheClusterStatus: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "CacheCluster.PendingModifiedValues.AuthTokenStatus: AuthTokenUpdateStatus (ROTATING, SETTING)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.NotificationConfiguration.TopicStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.CacheSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.CacheParameterGroup.ParameterApplyStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.CacheNodes.CacheNodeStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.CacheNodes.ParameterGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.SecurityGroups.Status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "CacheCluster.LogDeliveryConfigurations.Status: LogDeliveryConfigurationStatus (disabling, enabling, modifying)"
         }
       ],
       "files": [
@@ -1748,6 +2514,38 @@
         {
           "signal": "state-string",
           "detail": "CacheCluster.CacheClusterStatus: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "CacheCluster.PendingModifiedValues.AuthTokenStatus: AuthTokenUpdateStatus (ROTATING, SETTING)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.NotificationConfiguration.TopicStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.CacheSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.CacheParameterGroup.ParameterApplyStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.CacheNodes.CacheNodeStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.CacheNodes.ParameterGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.SecurityGroups.Status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "CacheCluster.LogDeliveryConfigurations.Status: LogDeliveryConfigurationStatus (disabling, enabling, modifying)"
         }
       ],
       "files": [
@@ -1772,6 +2570,38 @@
         {
           "signal": "state-string",
           "detail": "CacheCluster.CacheClusterStatus: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "CacheCluster.PendingModifiedValues.AuthTokenStatus: AuthTokenUpdateStatus (ROTATING, SETTING)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.NotificationConfiguration.TopicStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.CacheSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.CacheParameterGroup.ParameterApplyStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.CacheNodes.CacheNodeStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.CacheNodes.ParameterGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "CacheCluster.SecurityGroups.Status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "CacheCluster.LogDeliveryConfigurations.Status: LogDeliveryConfigurationStatus (disabling, enabling, modifying)"
         }
       ],
       "files": [
@@ -1789,6 +2619,27 @@
           "restore-failed",
           "incompatible-network"
         ]
+      }
+    },
+    {
+      "key": "emr:PutAutoScalingPolicy",
+      "client": "emr",
+      "operation": "PutAutoScalingPolicy",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "AutoScalingPolicy.Status.State: AutoScalingPolicyState (ATTACHING, DETACHING, PENDING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/emr-instance-group-config-provider.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/emr-instance-group-config-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (the policy answers PENDING / ATTACHING)"
       }
     },
     {
@@ -1907,6 +2758,10 @@
         {
           "signal": "transitional-enum",
           "detail": "FileSystem.Lifecycle: FileSystemLifecycle (CREATING, DELETING, UPDATING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "FileSystem.AdministrativeActions.Status: Status (IN_PROGRESS, OPTIMIZING, PENDING, UPDATED_OPTIMIZING)"
         }
       ],
       "files": [
@@ -1934,6 +2789,10 @@
         {
           "signal": "transitional-enum",
           "detail": "FileSystem.Lifecycle: FileSystemLifecycle (CREATING, DELETING, UPDATING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "FileSystem.AdministrativeActions.Status: Status (IN_PROGRESS, OPTIMIZING, PENDING, UPDATED_OPTIMIZING)"
         }
       ],
       "files": [
@@ -2015,6 +2874,10 @@
         {
           "signal": "transitional-enum",
           "detail": "FileSystem.Lifecycle: FileSystemLifecycle (CREATING, DELETING, UPDATING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "FileSystem.AdministrativeActions.Status: Status (IN_PROGRESS, OPTIMIZING, PENDING, UPDATED_OPTIMIZING)"
         }
       ],
       "files": [
@@ -2705,6 +3568,22 @@
         {
           "signal": "state-string",
           "detail": "DBCluster.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterOptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterMembers.DBClusterParameterGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.AssociatedRoles.Status: string"
         }
       ],
       "files": [
@@ -2740,6 +3619,34 @@
         {
           "signal": "state-string",
           "detail": "DBInstance.DBInstanceStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBParameterGroups.ParameterApplyStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.OptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StatusInfos.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DomainMemberships.Status: string"
         }
       ],
       "files": [
@@ -2775,6 +3682,10 @@
         {
           "signal": "state-string",
           "detail": "DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBSubnetGroup.Subnets.SubnetStatus: string"
         }
       ],
       "files": [
@@ -2796,6 +3707,22 @@
         {
           "signal": "state-string",
           "detail": "DBCluster.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterOptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterMembers.DBClusterParameterGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.AssociatedRoles.Status: string"
         }
       ],
       "files": [
@@ -2820,6 +3747,34 @@
         {
           "signal": "state-string",
           "detail": "DBInstance.DBInstanceStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBParameterGroups.ParameterApplyStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.OptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StatusInfos.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DomainMemberships.Status: string"
         }
       ],
       "files": [
@@ -2844,6 +3799,22 @@
         {
           "signal": "state-string",
           "detail": "DBCluster.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterOptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterMembers.DBClusterParameterGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.AssociatedRoles.Status: string"
         }
       ],
       "files": [
@@ -2883,6 +3854,34 @@
         {
           "signal": "state-string",
           "detail": "DBInstance.DBInstanceStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBParameterGroups.ParameterApplyStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.OptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StatusInfos.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DomainMemberships.Status: string"
         }
       ],
       "files": [
@@ -2908,6 +3907,10 @@
         {
           "signal": "state-string",
           "detail": "DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBSubnetGroup.Subnets.SubnetStatus: string"
         }
       ],
       "files": [
@@ -2929,6 +3932,22 @@
         {
           "signal": "state-string",
           "detail": "DBCluster.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterOptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterMembers.DBClusterParameterGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.AssociatedRoles.Status: string"
         }
       ],
       "files": [
@@ -2964,6 +3983,22 @@
         {
           "signal": "state-string",
           "detail": "DBCluster.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterOptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterMembers.DBClusterParameterGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.AssociatedRoles.Status: string"
         }
       ],
       "files": [
@@ -3082,16 +4117,48 @@
           "detail": "DBCluster.Status: string"
         },
         {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterOptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.StatusInfos.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterMembers.DBClusterParameterGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.AssociatedRoles.Status: string"
+        },
+        {
           "signal": "transitional-enum",
           "detail": "DBCluster.ActivityStreamStatus: ActivityStreamStatus (starting, stopping)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DomainMemberships.Status: string"
         },
         {
           "signal": "transitional-enum",
           "detail": "DBCluster.GlobalWriteForwardingStatus: WriteForwardingStatus (disabling, enabling)"
         },
         {
+          "signal": "state-string",
+          "detail": "DBCluster.MasterUserSecret.SecretStatus: string"
+        },
+        {
           "signal": "transitional-enum",
           "detail": "DBCluster.LocalWriteForwardingStatus: LocalWriteForwardingStatus (disabling, enabling)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "DBCluster.LimitlessDatabase.Status: LimitlessDatabaseStatus (disabling, enabling)"
         }
       ],
       "files": [
@@ -3129,8 +4196,52 @@
           "detail": "DBInstance.DBInstanceStatus: string"
         },
         {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBParameterGroups.ParameterApplyStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.OptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StatusInfos.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DomainMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AssociatedRoles.Status: string"
+        },
+        {
           "signal": "transitional-enum",
           "detail": "DBInstance.ActivityStreamStatus: ActivityStreamStatus (starting, stopping)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.MasterUserSecret.SecretStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AdditionalStorageVolumes.StorageVolumeStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AdditionalStorageVolumes.StorageOperationStatus: string"
         },
         {
           "signal": "state-string",
@@ -3176,8 +4287,52 @@
           "detail": "DBInstance.DBInstanceStatus: string"
         },
         {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBParameterGroups.ParameterApplyStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.OptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StatusInfos.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DomainMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AssociatedRoles.Status: string"
+        },
+        {
           "signal": "transitional-enum",
           "detail": "DBInstance.ActivityStreamStatus: ActivityStreamStatus (starting, stopping)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.MasterUserSecret.SecretStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AdditionalStorageVolumes.StorageVolumeStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AdditionalStorageVolumes.StorageOperationStatus: string"
         },
         {
           "signal": "state-string",
@@ -3232,13 +4387,13 @@
       "classification": {
         "verdict": "waits",
         "helpers": [
-          "pauseBeforeNextPoll"
+          "DescribeDBProxiesCommand"
         ],
         "failureStatuses": [
           "incompatible-network",
           "insufficient-resource-limits"
         ],
-        "note": "an inline DescribeDBProxies poll, every mode"
+        "note": "an inline poll in create(), every mode"
       }
     },
     {
@@ -3260,13 +4415,13 @@
       "classification": {
         "verdict": "waits",
         "helpers": [
-          "pauseBeforeNextPoll"
+          "DescribeDBProxyEndpointsCommand"
         ],
         "failureStatuses": [
           "incompatible-network",
           "insufficient-resource-limits"
         ],
-        "note": "an inline DescribeDBProxyEndpoints poll, every mode"
+        "note": "an inline poll in create(), every mode"
       }
     },
     {
@@ -3277,6 +4432,10 @@
         {
           "signal": "state-string",
           "detail": "DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBSubnetGroup.Subnets.SubnetStatus: string"
         }
       ],
       "files": [
@@ -3300,16 +4459,48 @@
           "detail": "DBCluster.Status: string"
         },
         {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterOptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.StatusInfos.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterMembers.DBClusterParameterGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.AssociatedRoles.Status: string"
+        },
+        {
           "signal": "transitional-enum",
           "detail": "DBCluster.ActivityStreamStatus: ActivityStreamStatus (starting, stopping)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DomainMemberships.Status: string"
         },
         {
           "signal": "transitional-enum",
           "detail": "DBCluster.GlobalWriteForwardingStatus: WriteForwardingStatus (disabling, enabling)"
         },
         {
+          "signal": "state-string",
+          "detail": "DBCluster.MasterUserSecret.SecretStatus: string"
+        },
+        {
           "signal": "transitional-enum",
           "detail": "DBCluster.LocalWriteForwardingStatus: LocalWriteForwardingStatus (disabling, enabling)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "DBCluster.LimitlessDatabase.Status: LimitlessDatabaseStatus (disabling, enabling)"
         }
       ],
       "files": [
@@ -3338,8 +4529,52 @@
           "detail": "DBInstance.DBInstanceStatus: string"
         },
         {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBParameterGroups.ParameterApplyStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.OptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StatusInfos.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DomainMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AssociatedRoles.Status: string"
+        },
+        {
           "signal": "transitional-enum",
           "detail": "DBInstance.ActivityStreamStatus: ActivityStreamStatus (starting, stopping)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.MasterUserSecret.SecretStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AdditionalStorageVolumes.StorageVolumeStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AdditionalStorageVolumes.StorageOperationStatus: string"
         },
         {
           "signal": "state-string",
@@ -3431,16 +4666,48 @@
           "detail": "DBCluster.Status: string"
         },
         {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterOptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.StatusInfos.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterMembers.DBClusterParameterGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.AssociatedRoles.Status: string"
+        },
+        {
           "signal": "transitional-enum",
           "detail": "DBCluster.ActivityStreamStatus: ActivityStreamStatus (starting, stopping)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DomainMemberships.Status: string"
         },
         {
           "signal": "transitional-enum",
           "detail": "DBCluster.GlobalWriteForwardingStatus: WriteForwardingStatus (disabling, enabling)"
         },
         {
+          "signal": "state-string",
+          "detail": "DBCluster.MasterUserSecret.SecretStatus: string"
+        },
+        {
           "signal": "transitional-enum",
           "detail": "DBCluster.LocalWriteForwardingStatus: LocalWriteForwardingStatus (disabling, enabling)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "DBCluster.LimitlessDatabase.Status: LimitlessDatabaseStatus (disabling, enabling)"
         }
       ],
       "files": [
@@ -3482,8 +4749,52 @@
           "detail": "DBInstance.DBInstanceStatus: string"
         },
         {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBParameterGroups.ParameterApplyStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.OptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StatusInfos.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DomainMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AssociatedRoles.Status: string"
+        },
+        {
           "signal": "transitional-enum",
           "detail": "DBInstance.ActivityStreamStatus: ActivityStreamStatus (starting, stopping)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.MasterUserSecret.SecretStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AdditionalStorageVolumes.StorageVolumeStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AdditionalStorageVolumes.StorageOperationStatus: string"
         },
         {
           "signal": "state-string",
@@ -3608,6 +4919,10 @@
         {
           "signal": "state-string",
           "detail": "DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBSubnetGroup.Subnets.SubnetStatus: string"
         }
       ],
       "files": [
@@ -3631,8 +4946,52 @@
           "detail": "DBInstance.DBInstanceStatus: string"
         },
         {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBParameterGroups.ParameterApplyStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.OptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StatusInfos.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DomainMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AssociatedRoles.Status: string"
+        },
+        {
           "signal": "transitional-enum",
           "detail": "DBInstance.ActivityStreamStatus: ActivityStreamStatus (starting, stopping)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.MasterUserSecret.SecretStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AdditionalStorageVolumes.StorageVolumeStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AdditionalStorageVolumes.StorageOperationStatus: string"
         },
         {
           "signal": "state-string",
@@ -3678,8 +5037,52 @@
           "detail": "DBInstance.DBInstanceStatus: string"
         },
         {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBParameterGroups.ParameterApplyStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.OptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StatusInfos.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DomainMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AssociatedRoles.Status: string"
+        },
+        {
           "signal": "transitional-enum",
           "detail": "DBInstance.ActivityStreamStatus: ActivityStreamStatus (starting, stopping)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.MasterUserSecret.SecretStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AdditionalStorageVolumes.StorageVolumeStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AdditionalStorageVolumes.StorageOperationStatus: string"
         },
         {
           "signal": "state-string",
@@ -3716,6 +5119,32 @@
       }
     },
     {
+      "key": "rds:RegisterDBProxyTargets",
+      "client": "rds",
+      "operation": "RegisterDBProxyTargets",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "DBProxyTargets.TargetHealth.State: TargetState (REGISTERING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "DBProxyTargets.TargetHealth.Reason: TargetHealthReason (PENDING_PROXY_CAPACITY)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/rds-dbproxy-targetgroup/create.ts",
+        "src/provisioning/providers/rds-dbproxy-targetgroup/update.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/rds-dbproxy-targetgroup-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (targets answer REGISTERING)"
+      }
+    },
+    {
       "key": "rds:RemoveFromGlobalCluster",
       "client": "rds",
       "operation": "RemoveFromGlobalCluster",
@@ -3723,6 +5152,18 @@
         {
           "signal": "state-string",
           "detail": "GlobalCluster.Status: string"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "GlobalCluster.GlobalClusterMembers.GlobalWriteForwardingStatus: WriteForwardingStatus (disabling, enabling)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "GlobalCluster.GlobalClusterMembers.SynchronizationStatus: GlobalClusterMemberSynchronizationStatus (pending-resync)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "GlobalCluster.FailoverState.Status: FailoverStatus (cancelling, pending)"
         }
       ],
       "files": [
@@ -3749,16 +5190,48 @@
           "detail": "DBCluster.Status: string"
         },
         {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterOptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.StatusInfos.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterMembers.DBClusterParameterGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.AssociatedRoles.Status: string"
+        },
+        {
           "signal": "transitional-enum",
           "detail": "DBCluster.ActivityStreamStatus: ActivityStreamStatus (starting, stopping)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DomainMemberships.Status: string"
         },
         {
           "signal": "transitional-enum",
           "detail": "DBCluster.GlobalWriteForwardingStatus: WriteForwardingStatus (disabling, enabling)"
         },
         {
+          "signal": "state-string",
+          "detail": "DBCluster.MasterUserSecret.SecretStatus: string"
+        },
+        {
           "signal": "transitional-enum",
           "detail": "DBCluster.LocalWriteForwardingStatus: LocalWriteForwardingStatus (disabling, enabling)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "DBCluster.LimitlessDatabase.Status: LimitlessDatabaseStatus (disabling, enabling)"
         }
       ],
       "files": [
@@ -3796,16 +5269,48 @@
           "detail": "DBCluster.Status: string"
         },
         {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterOptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.StatusInfos.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DBClusterMembers.DBClusterParameterGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.AssociatedRoles.Status: string"
+        },
+        {
           "signal": "transitional-enum",
           "detail": "DBCluster.ActivityStreamStatus: ActivityStreamStatus (starting, stopping)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBCluster.DomainMemberships.Status: string"
         },
         {
           "signal": "transitional-enum",
           "detail": "DBCluster.GlobalWriteForwardingStatus: WriteForwardingStatus (disabling, enabling)"
         },
         {
+          "signal": "state-string",
+          "detail": "DBCluster.MasterUserSecret.SecretStatus: string"
+        },
+        {
           "signal": "transitional-enum",
           "detail": "DBCluster.LocalWriteForwardingStatus: LocalWriteForwardingStatus (disabling, enabling)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "DBCluster.LimitlessDatabase.Status: LimitlessDatabaseStatus (disabling, enabling)"
         }
       ],
       "files": [
@@ -3843,8 +5348,52 @@
           "detail": "DBInstance.DBInstanceStatus: string"
         },
         {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBParameterGroups.ParameterApplyStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.OptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StatusInfos.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DomainMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AssociatedRoles.Status: string"
+        },
+        {
           "signal": "transitional-enum",
           "detail": "DBInstance.ActivityStreamStatus: ActivityStreamStatus (starting, stopping)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.MasterUserSecret.SecretStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AdditionalStorageVolumes.StorageVolumeStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AdditionalStorageVolumes.StorageOperationStatus: string"
         },
         {
           "signal": "state-string",
@@ -3890,8 +5439,52 @@
           "detail": "DBInstance.DBInstanceStatus: string"
         },
         {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.VpcSecurityGroups.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBParameterGroups.ParameterApplyStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DBSubnetGroup.SubnetGroupStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.OptionGroupMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.StatusInfos.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.DomainMemberships.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AssociatedRoles.Status: string"
+        },
+        {
           "signal": "transitional-enum",
           "detail": "DBInstance.ActivityStreamStatus: ActivityStreamStatus (starting, stopping)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.MasterUserSecret.SecretStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AdditionalStorageVolumes.StorageVolumeStatus: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "DBInstance.AdditionalStorageVolumes.StorageOperationStatus: string"
         },
         {
           "signal": "state-string",
@@ -4054,6 +5647,14 @@
       "evidence": [
         {
           "signal": "transitional-enum",
+          "detail": "HostedZone.Features.AcceleratedRecoveryStatus: AcceleratedRecoveryStatus (DISABLING, ENABLING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "HostedZone.Features.PublicDNSFallbackStatus: FeatureStatus (DISABLING, ENABLING)"
+        },
+        {
+          "signal": "transitional-enum",
           "detail": "ChangeInfo.Status: ChangeStatus (PENDING)"
         }
       ],
@@ -4109,6 +5710,31 @@
       "classification": {
         "verdict": "unmeasured",
         "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (the change answers PENDING; nothing reads GetChange)"
+      }
+    },
+    {
+      "key": "route-53:UpdateHostedZoneComment",
+      "client": "route-53",
+      "operation": "UpdateHostedZoneComment",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "HostedZone.Features.AcceleratedRecoveryStatus: AcceleratedRecoveryStatus (DISABLING, ENABLING)"
+        },
+        {
+          "signal": "transitional-enum",
+          "detail": "HostedZone.Features.PublicDNSFallbackStatus: FeatureStatus (DISABLING, ENABLING)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/route53/hosted-zone.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/route53-provider.ts"
+      ],
+      "classification": {
+        "verdict": "no-wait-by-design",
+        "reason": "the call changes only the comment; the flagged feature statuses belong to UpdateHostedZoneFeatures"
       }
     },
     {
@@ -4194,6 +5820,35 @@
       "classification": {
         "verdict": "unmeasured",
         "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (replica regions answer InProgress)"
+      }
+    },
+    {
+      "key": "ssm:CreateAssociation",
+      "client": "ssm",
+      "operation": "CreateAssociation",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "AssociationDescription.Status.Name: AssociationStatusName (Pending)"
+        },
+        {
+          "signal": "state-string",
+          "detail": "AssociationDescription.Overview.Status: string"
+        },
+        {
+          "signal": "state-string",
+          "detail": "AssociationDescription.Overview.DetailedStatus: string"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ec2/instance-ssm.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ec2-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (the association answers Pending)"
       }
     }
   ]

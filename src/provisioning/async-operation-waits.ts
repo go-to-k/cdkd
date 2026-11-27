@@ -7,12 +7,14 @@
  * finds a provider sending and the SDK model marks asynchronous. The generator
  * and `tests/unit/scripts/async-operation-waits.test.ts` fail CI on an
  * operation with no row, on a row no provider sends any more, and on a `waits`
- * row whose helper a sending provider unit no longer references. The rendered
+ * row whose helper a sending provider unit no longer calls. The rendered
  * table is `docs/_generated/async-operation-waits.md`.
  *
  * - `waits`: the provider waits after the operation on its create / update /
- *   delete path, through one of `helpers` (every sending provider unit names at
- *   least one, and every helper is named by a sending unit), and fails on
+ *   delete path, through one of `helpers` (every sending provider unit calls at
+ *   least one, and every helper is called by a sending unit; a helper named
+ *   `<X>Command` is an inline poll constructed in the same function as the
+ *   send), and fails on
  *   `failureStatuses` (empty when the wait only times out or warns). Where the
  *   wait is scoped (`--no-wait` defers it, it covers only the settings that
  *   changed) or a cleanup send skips it, `note` says so.
@@ -22,7 +24,9 @@
  *   function's `Active`, #5002; NAT address associations, #2762); `reason`
  *   names the evidence.
  * - `unmeasured`: no wait on at least one create / update / delete path, and
- *   whether CloudFormation waits there needs an A/B run; #7132 tracks it.
+ *   whether CloudFormation waits there needs an A/B run; #7132 tracks it. The
+ *   set is frozen in the test and only shrinks: a NEW operation arrives as
+ *   `waits` or `no-wait-by-design`.
  *
  * A LEAF with no imports: the generator, run by Node's type stripping, reads it.
  */
@@ -380,14 +384,14 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
     `${DEFERRED}, unless a follow-up ModifyDBInstance needs it`
   ),
   'rds:CreateDBProxy': waits(
-    ['pauseBeforeNextPoll'],
+    ['DescribeDBProxiesCommand'],
     ['incompatible-network', 'insufficient-resource-limits'],
-    'an inline DescribeDBProxies poll, every mode'
+    'an inline poll in create(), every mode'
   ),
   'rds:CreateDBProxyEndpoint': waits(
-    ['pauseBeforeNextPoll'],
+    ['DescribeDBProxyEndpointsCommand'],
     ['incompatible-network', 'insufficient-resource-limits'],
-    'an inline DescribeDBProxyEndpoints poll, every mode'
+    'an inline poll in create(), every mode'
   ),
   'rds:CreateDBSubnetGroup': unmeasured(NO_WAIT),
   'rds:DeleteDBCluster': waits(
@@ -482,4 +486,64 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
   'secrets-manager:ReplicateSecretToRegions': unmeasured(
     `${NO_WAIT} (replica regions answer InProgress)`
   ),
+  'codebuild:CreateProject': byDesign(
+    'settled once AWS answers: the flagged `project.webhook.status` belongs to the separate CreateWebhook call, its own row'
+  ),
+  'codebuild:UpdateProject': byDesign(
+    'settled once AWS answers: the flagged `project.webhook.status` belongs to the separate CreateWebhook / UpdateWebhook calls, their own rows'
+  ),
+  'ec2:AssociateSubnetCidrBlock': waits(
+    ['waitForSubnetIpv6Association'],
+    ['failed', 'failing'],
+    'every mode (docs/cli-deploy.md edge cases)'
+  ),
+  'ec2:AuthorizeSecurityGroupEgress': byDesign(
+    "the flagged member is a referenced peering's PeeringStatus, not the rule's; the rule exists once AWS answers"
+  ),
+  'ec2:AuthorizeSecurityGroupIngress': byDesign(
+    "the flagged member is a referenced peering's PeeringStatus, not the rule's; the rule exists once AWS answers"
+  ),
+  'ec2:CreateInternetGateway': byDesign(
+    'a new gateway has no attachments: the flagged Attachments[].State belongs to AttachInternetGateway'
+  ),
+  'ec2:DisassociateSubnetCidrBlock': waits(
+    ['waitForSubnetIpv6Association'],
+    ['failed', 'failing'],
+    'every mode (docs/cli-deploy.md edge cases)'
+  ),
+  'ec2:MonitorInstances': unmeasured(`${NO_WAIT} (monitoring answers pending)`),
+  'ec2:RevokeSecurityGroupEgress': byDesign(
+    "the flagged member is an unknown permission's peering PeeringStatus, not the rule's; the revoke is done once AWS answers"
+  ),
+  'ec2:RevokeSecurityGroupIngress': byDesign(
+    "the flagged member is an unknown permission's peering PeeringStatus, not the rule's; the revoke is done once AWS answers"
+  ),
+  'ec2:RunInstances': waits(
+    ['waitUntilInstanceRunning'],
+    ['shutting-down', 'terminated', 'stopping'],
+    `${DEFERRED}, unless Volumes or SsmAssociations need running`
+  ),
+  'ec2:StopInstances': waits(['waitForInstanceState'], ['terminated', 'shutting-down']),
+  'ec2:TerminateInstances': waits(
+    ['waitUntilInstanceTerminated'],
+    [],
+    'the delete waits; a failed-launch cleanup waits only when an attached volume must be freed'
+  ),
+  'ec2:UnmonitorInstances': unmeasured(`${NO_WAIT} (monitoring answers disabling)`),
+  'elastic-load-balancing-v2:CreateLoadBalancer': waits(
+    ['waitUntilLoadBalancerAvailable'],
+    [],
+    DEFERRED
+  ),
+  'elastic-load-balancing-v2:ModifyCapacityReservation': waits(
+    ['waitForCapacityReservationProvisioned'],
+    ['failed'],
+    'skipped under --no-wait'
+  ),
+  'emr:PutAutoScalingPolicy': unmeasured(`${NO_WAIT} (the policy answers PENDING / ATTACHING)`),
+  'rds:RegisterDBProxyTargets': unmeasured(`${NO_WAIT} (targets answer REGISTERING)`),
+  'route-53:UpdateHostedZoneComment': byDesign(
+    'the call changes only the comment; the flagged feature statuses belong to UpdateHostedZoneFeatures'
+  ),
+  'ssm:CreateAssociation': unmeasured(`${NO_WAIT} (the association answers Pending)`),
 };
