@@ -88,13 +88,14 @@ describe('spec-replacement table (go-to-k/cdkd#7070)', () => {
       .filter((c) => !registry.isClassified(c.type, c.path[0]!))
       .map((c) => candidateKey(c.type, c.path));
     expect(rows.sort()).toEqual(replacing.sort());
-    // Floors: the #7070 seeds, so an empty table or population cannot pass.
+    // Floors: the #7070 and #7083 seeds, so an empty table or population cannot pass.
     expect(rows).toEqual(
       expect.arrayContaining([
         'AWS::Route53Resolver::ResolverRule#DomainName',
+        'AWS::AppConfig::ConfigurationProfile#Type',
       ])
     );
-    expect(measured.length).toBeGreaterThanOrEqual(30);
+    expect(measured.length).toBeGreaterThanOrEqual(90);
   });
 
   it('no table row is one a hand rule decides', () => {

@@ -23,7 +23,7 @@ apigw-stage-throttling	2026-11-12T11:22:31Z	PASS	191	verify.sh	rc ok, orph clean
 apigw-usage-plan-key	2026-11-12T11:22:31Z	PASS	120	verify.sh	rc ok, orph clean; #6140 (us-east-1)
 apigw-vpclink-integration-target	2026-11-12T11:22:31Z	PASS	346	verify.sh	rc ok, orph clean; #6140 (us-east-1)
 app-autoscaling-recreate	2026-11-19T14:40:15Z	PASS	122	verify.sh	#6626 HEAD 341ad3edc: rc ok, destroy 0 errors, orph clean
-appconfig	2026-11-09T08:45:43Z	PASS	70	verify.sh	maintainer merge-gate rerun of PR 6065 (head 4647d5ac3); Environment on SDK provider, 0 errors, 0 orphans
+appconfig	2026-11-27T06:40:05Z	PASS	145	verify.sh	PR 7101 head 21ca26d1d; Type change refuses w/o --force-stateful-recreation then replaces (#7083); 0 errors, 0 orphans
 appconfig-environment-delete-protection	2026-11-10T07:11:19Z	PASS	91	verify.sh	3 consecutive PASS after #6074 settle wait (95/91/91s); APPLY control refused each run, 0 errors, 0 orphans
 appsync	2026-11-22T05:45:00Z	PASS	204	verify.sh	PR6814 2ae78b7f6, us-east-1, rc ok, orph clean
 asg-destroy-running-instances	2026-11-17T03:39:15Z	PASS	305	verify.sh	rc ok, orph clean (#6437 PR #6469)
