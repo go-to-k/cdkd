@@ -2019,7 +2019,15 @@ if [ "${DEPLOY_RC_2B}" -ne 0 ]; then
   diag_output "${DEPLOY_OUT_2B}"
   exit 1
 fi
-scan_verbose_output "phase 2b redeploy" "${DEPLOY_OUT_2B}"
+# Not `scan_verbose_output`: a no-op redeploy runs no child engine, so the
+# child's `using user-provided value` / `Resolved Ref to parameter` lines
+# that guard expects never print here. The plaintext scan still runs, and
+# `scan_7077_arm` below asserts the parent's `Sep7077` line, so the capture
+# is not empty.
+if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${MIXED_PW_VALUE}|${SPANS_PW_VALUE}|${FALL_PW_VALUE}|${FALL_USER_VALUE}|${FALL2_PW_VALUE}|${FALL2_USER_VALUE}|${EMBED_PW_VALUE}|${MULTI_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_SSM_FRAMED_VALUE}|${PIN_TAG_FRAMED_VALUE}|${PIN_TAG_JOIN_FRAMED_VALUE}" <<<"${DEPLOY_OUT_2B}"; then
+  echo "FAIL: phase 2b redeploy: --verbose printed a resolved secret plaintext" >&2
+  exit 1
+fi
 scan_7077_arm "phase 2b same-value redeploy" "${DEPLOY_OUT_2B}" no-change
 
 CHILD_STATE2="$(aws s3 cp "s3://${STATE_BUCKET}/${CHILD_KEY}" - --region "${REGION}")"
