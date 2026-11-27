@@ -294,6 +294,49 @@ describe('cdkd drift: a secret echoed under a key the template lacks (go-to-k/cd
     }
   });
 
+  it.each([
+    ['a top-level key holding a dot', { 'Ex.tra': SECRET_MASK }, [['Ex.tra']], { 'Ex.tra': LIVE_SECRET }],
+    ['a nested key holding a dot', { Labels: { 'com.x': SECRET_MASK } }, [['Labels', 'com.x']], { Labels: { 'com.x': LIVE_SECRET } }],
+  ])('buckets %s by its recorded segments, never as drift', async (_label, extra, leaves, liveExtra) => {
+    const base = { Name: '/app/token', Type: 'String', Value: 'public-value' };
+    mockGetState.mockResolvedValueOnce(
+      makeState({ Token: param({ observedProperties: { ...base, ...extra }, observedMaskedLeaves: leaves }) })
+    );
+    readsBack({ ...base, ...liveExtra });
+
+    const { output } = await runDrift(['TestStack', '--json']);
+
+    expect(output).not.toContain(LIVE_SECRET);
+    const payload = JSON.parse(output) as DriftJson[];
+    expect(payload[0]!.drifted).toEqual([]);
+    expect(payload[0]!.notCompared.map((n) => n.cause)).toEqual(['maskedEcho']);
+    expect(exitSpy).not.toHaveBeenCalledWith(1);
+  });
+
+  it('--accept masks and names an echo a LEGACY record held in plaintext at the accepted path', async () => {
+    mockGetState.mockResolvedValue(
+      makeState({
+        Token: param({
+          properties: { Name: '/app/token', Type: 'String', Value: SECRET_MASK },
+          observedProperties: { Name: '/app/token', Type: 'String', Value: SECRET_MASK, Extra: 'old-public' },
+          noEchoLeaves: [['Value']],
+          observedMaskedLeaves: undefined,
+        }),
+      })
+    );
+    readsBack({ Name: '/app/token', Type: 'String', Value: LIVE_SECRET, Extra: LIVE_SECRET });
+
+    await runDrift(['TestStack', '--accept', '--yes']);
+
+    for (const call of mockSaveState.mock.calls) {
+      const saved = (call[2] as StackState).resources['Token']!;
+      expect(JSON.stringify(saved)).not.toContain(LIVE_SECRET);
+      expect(saved.observedProperties?.['Extra']).toBe(SECRET_MASK);
+      expect(saved.observedMaskedLeaves).toEqual([['Extra']]);
+    }
+    expect(mockSaveState).toHaveBeenCalled();
+  });
+
   it('--accept of another path keeps the named position masked and named', async () => {
     mockGetState.mockResolvedValue(makeState({ Token: param() }));
     readsBack({ Name: '/app/token', Type: 'SecureString', Value: 'public-value', Extra: LIVE_SECRET });
@@ -329,6 +372,22 @@ describe('maskMarkedNoEchoBaseline: the observedMaskedLeaves coordinates (go-to-
       true
     );
     expect(out).toEqual({ Name: 'n', Extra: SECRET_MASK, Nested: { Echo: SECRET_MASK } });
+  });
+
+  it('with the live readback, masks a list whose PUBLIC element changed by value, never whole', () => {
+    const named: ResourceState = {
+      physicalId: 'p',
+      resourceType: SSM_TYPE,
+      properties: { Name: 'n', Value: SECRET_MASK },
+      noEchoLeaves: [['Value']],
+      observedProperties: { Name: 'n', Value: SECRET_MASK, Echoes: ['public-a', SECRET_MASK] },
+      observedMaskedLeaves: [['Echoes', 1]],
+    };
+    const written = { Name: 'n', Value: SECRET_MASK, Echoes: ['public-b', LIVE_SECRET] };
+    const live = { Name: 'n', Value: LIVE_SECRET, Echoes: ['public-b', LIVE_SECRET] };
+    expect(maskMarkedNoEchoBaseline(written, named, true, live)['Echoes']).toEqual(['public-b', SECRET_MASK]);
+    // No value to learn: the whole list, the safe direction.
+    expect(maskMarkedNoEchoBaseline(written, named, true)['Echoes']).toEqual([SECRET_MASK, SECRET_MASK]);
   });
 
   it('masks a list AWS returned reordered WHOLE, by index only when it is unchanged', () => {

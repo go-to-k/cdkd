@@ -375,6 +375,19 @@ describe('a secret echoed under a key the template lacks (go-to-k/cdkd#7158, #71
     expect(noReadback.observedMaskedLeaves).toBeUndefined();
   });
 
+  it('drops a recorded entry once the template sets the key, and keeps one under a list masked whole', () => {
+    const owned = withOffTemplateEchoesMasked(
+      { properties: { Extra: '***' }, observedProperties: { Extra: '***' }, observedMaskedLeaves: [['Extra']] },
+      {}
+    );
+    expect(owned.observedMaskedLeaves).toBeUndefined();
+    const whole = withOffTemplateEchoesMasked(
+      { properties: {}, observedProperties: { Echoes: ['***', '***'] }, observedMaskedLeaves: [['Echoes', 1]] },
+      {}
+    );
+    expect(whole.observedMaskedLeaves).toEqual([['Echoes', 1]]);
+  });
+
   it('a named mask is no #3595 re-capture candidate; an unnamed one still is', () => {
     const record = (named: boolean): ResourceState => ({
       physicalId: 'p',

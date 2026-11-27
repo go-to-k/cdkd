@@ -18,6 +18,7 @@ import {
   redactForState,
   dynamicReferenceTokens,
   type RecordedSecretValues,
+  withSecretAttributeKeysDropped,
 } from '../secret-redaction.js';
 import { hasOwnKey, hasPlainPrototype } from '../../utils/own-keys.js';
 // `ReplayResolvers` below calls the classifier; `rollback-executor.ts`
@@ -445,10 +446,19 @@ export function redactRollbackRecord(
   const scrubbed = scrubResourceRecord(positioned, secrets, undefined, undefined, {
     observed: isSameGenerationBag(positioned.observedProperties) ? 'same-generation' : 'unproven',
   });
-  return keepPersistedPlainRecordLeaves(scrubbed, record, {
-    properties: journaledProps,
-    attributes: journaledAttributes,
-  });
+  // go-to-k/cdkd#7153: a custom resource attribute whose KEY holds a secret
+  // (a re-created resource's fresh `Data`) is not restored. With no template
+  // in hand, the keys the persisted record already held stand for the ones a
+  // template `Fn::GetAtt` spells: its own save kept only those.
+  return withSecretAttributeKeysDropped(
+    keepPersistedPlainRecordLeaves(scrubbed, record, {
+      properties: journaledProps,
+      attributes: journaledAttributes,
+    }),
+    record,
+    secrets,
+    journaledAttributes === undefined ? undefined : new Set(Object.keys(journaledAttributes))
+  );
 }
 
 /**

@@ -16,6 +16,7 @@ import { displaySafe } from '../../../utils/display-safe.js';
 import {
   noEchoLeavesOf,
   observedMaskedLeavesOf,
+  maskOffTemplateEchoes,
   isMarkedCoordinate,
   pathCrossesDottedKey,
   SECRET_MASK,
@@ -125,9 +126,31 @@ export function partitionMaskedEchoChanges(
     changes,
     observedMaskedLeavesOf(record),
     record.properties ?? {},
-    baseline
+    baseline,
+    true
   );
   return { kept, maskedEchoPaths: paths };
+}
+
+/**
+ * The segments of a marked coordinate's prefix whose dotted spelling is
+ * `path` (the comparator stops at a list, so a prefix is enough), else
+ * `undefined`.
+ */
+function segmentsOf(
+  path: string,
+  marked: readonly (readonly (string | number)[])[]
+): (string | number)[] | undefined {
+  for (const leaf of marked) {
+    let spelled = '';
+    for (let k = 0; k < leaf.length; k++) {
+      const segment = leaf[k]!;
+      if (typeof segment === 'number') break;
+      spelled = k === 0 ? segment : `${spelled}.${segment}`;
+      if (spelled === path) return leaf.slice(0, k + 1) as (string | number)[];
+    }
+  }
+  return undefined;
 }
 
 /** The shared walk of the two partitions above, over one set of marked coordinates. */
@@ -135,7 +158,8 @@ function partitionMarkedMaskChanges(
   changes: PropertyDrift[],
   marked: readonly (readonly (string | number)[])[] | undefined,
   properties: Record<string, unknown>,
-  baseline: Record<string, unknown>
+  baseline: Record<string, unknown>,
+  bySegments = false
 ): { kept: PropertyDrift[]; paths: string[] } {
   if (marked === undefined || marked.length === 0) {
     return { kept: changes, paths: [] };
@@ -161,17 +185,28 @@ function partitionMarkedMaskChanges(
   const kept: PropertyDrift[] = [];
   const paths: string[] = [];
   for (const change of changes) {
-    const coordinate = change.path.split('.');
-    const touchesMarked = marked.some((leaf) => {
-      const n = Math.min(leaf.length, coordinate.length);
-      for (let i = 0; i < n; i++) if (leaf[i] !== coordinate[i]) return false;
-      return true;
-    });
+    // `bySegments` (the `observedMaskedLeaves` partition): the recorded
+    // coordinates are SEGMENT arrays the writer took from the bag itself, so
+    // the comparator's dotted path is read back through them: the segments of
+    // a marked coordinate whose dotted spelling IS the path. A key holding a
+    // dot is then one segment, never ambiguous (ECS docker labels, Spark
+    // arguments), so the dotted-key exclusion is not needed there.
+    const segmented = bySegments ? segmentsOf(change.path, marked) : undefined;
+    const coordinate: (string | number)[] = segmented ?? change.path.split('.');
+    const touchesMarked =
+      segmented !== undefined ||
+      (!bySegments &&
+        marked.some((leaf) => {
+          const n = Math.min(leaf.length, coordinate.length);
+          for (let i = 0; i < n; i++) if (leaf[i] !== coordinate[i]) return false;
+          return true;
+        }));
     if (
       touchesMarked &&
       holdsMaskLeaf(change.stateValue) &&
-      !pathCrossesDottedKey(properties, change.path) &&
-      !pathCrossesDottedKey(baseline, change.path) &&
+      (bySegments ||
+        (!pathCrossesDottedKey(properties, change.path) &&
+          !pathCrossesDottedKey(baseline, change.path))) &&
       equalModuloMarkedMask(
         change.stateValue,
         change.awsValue,
@@ -605,7 +640,8 @@ export function redactDriftChanges(
 export function maskMarkedNoEchoBaseline(
   baseline: Record<string, unknown>,
   record: ResourceState,
-  observed: boolean
+  observed: boolean,
+  live?: Record<string, unknown>
 ): Record<string, unknown> {
   const marked = noEchoLeavesOf(record) ?? [];
   // An observed baseline also at every `***` leaf of `properties`, named or
@@ -623,18 +659,38 @@ export function maskMarkedNoEchoBaseline(
     // A coordinate through a list the write replaced (AWS's order, not the
     // record's) masks the whole list, which the drift partition accepts as
     // the ancestor of a named coordinate.
+    // With the `live` readback in hand, the secret values are learned from it
+    // at the record's own positions and every off-template echo of them is
+    // masked BY VALUE first (`maskOffTemplateEchoes`), so a list whose public
+    // element changed is not masked whole; the whole-list fallback stays only
+    // for a list no value was learned for.
     const named = observedMaskedLeavesOf(record) ?? [];
-    const byIndex = maskAtCoordinates(positioned, named);
+    const learned =
+      live === undefined || named.length === 0
+        ? { bag: positioned, leaves: [] as (string | number)[][] }
+        : maskOffTemplateEchoes({
+            bag: positioned,
+            readback: live,
+            properties: record.properties ?? {},
+            noEchoLeaves: record.noEchoLeaves,
+            physicalId: record.physicalId,
+          });
+    const byIndex = maskAtCoordinates(learned.bag, named);
     const echoes = named.map((coordinate) => {
       const list = coordinate.findIndex((segment) => typeof segment === 'number');
       if (list < 0) return coordinate;
       const path = coordinate.slice(0, list);
       const recorded = valueAtCoordinate(record.observedProperties, path);
-      return JSON.stringify(valueAtCoordinate(byIndex, path)) === JSON.stringify(recorded)
-        ? coordinate
-        : path;
+      if (JSON.stringify(valueAtCoordinate(byIndex, path)) === JSON.stringify(recorded)) {
+        return coordinate;
+      }
+      const maskedByValue = learned.leaves.some(
+        (leaf) => leaf.length > path.length && path.every((segment, i) => segment === leaf[i])
+      );
+      return maskedByValue ? undefined : path;
     });
-    return echoes.length === 0 ? positioned : maskAtCoordinates(positioned, echoes);
+    const remaining = echoes.filter((c): c is (string | number)[] => c !== undefined);
+    return remaining.length === 0 ? learned.bag : maskAtCoordinates(learned.bag, remaining);
   }
   if (marked.length === 0) return baseline;
   // By index, except where a written value REPLACED the list a coordinate

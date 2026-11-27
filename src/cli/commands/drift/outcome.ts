@@ -489,8 +489,10 @@ export class DriftDetectedError extends CdkdError {
  * re-run can clear it.
  *
  * NOT everything the report calls `notCompared`: `unresolvedToken` (a
- * `{{resolve:...}}` spelling cdkd resolves for nobody) and `noEchoParameter`
- * (a value state holds only as the mask) still exit 0. Both leave one masked
+ * `{{resolve:...}}` spelling cdkd resolves for nobody), `noEchoParameter`
+ * (a value state holds only as the mask) and `maskedEcho` (a secret echoed
+ * under a key the template lacks, held only as the mask) still exit 0. Each
+ * leaves one masked
  * or unresolvable POSITION of a resource cdkd otherwise compared, by design,
  * and exiting non-zero would fail every such stack forever. The report names
  * them all the same. See `NotComparedCause` and `outcomeExitSignal`.

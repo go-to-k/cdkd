@@ -2,6 +2,7 @@
  * `cdkd drift`: `--revert`: the per-stack driver and its summary.
  * Split out of `../drift.ts`, which re-exports the public names.
  */
+import { withOffTemplateEchoesMasked } from '../../../deployment/secret-redaction.js';
 import { getLogger, type ConsoleLogger } from '../../../utils/logger.js';
 import {
   cdkdRemedy,
@@ -355,6 +356,12 @@ export async function runRevert(
             settledCount++;
           }
           let recordedCount = 0;
+          // go-to-k/cdkd#7158: the live readback each reverted resource was
+          // compared against, to learn its secret values for the baseline mask.
+          const liveByLogicalId = new Map<string, Record<string, unknown>>();
+          for (const o of report.outcomes) {
+            if (o.kind === 'drifted') liveByLogicalId.set(o.logicalId, o.awsProperties);
+          }
           for (const [logicalId, delta] of narrowedByLogicalId) {
             const existing = resources[logicalId];
             if (!existing) continue;
@@ -399,9 +406,19 @@ export async function runRevert(
             // go-to-k/cdkd#4043 Phase C: the delta carries the value the revert
             // SENT at a marked coordinate (the live value kept there), which
             // the value arm misses for a number or a value under 4 characters.
-            const writtenBaseline = maskMarkedNoEchoBaseline(newBaseline, existing, hasObserved);
+            const live = liveByLogicalId.get(logicalId);
+            const writtenBaseline = maskMarkedNoEchoBaseline(
+              newBaseline,
+              existing,
+              hasObserved,
+              live
+            );
             resources[logicalId] = hasObserved
-              ? { ...existing, observedProperties: writtenBaseline }
+              ? withOffTemplateEchoesMasked(
+                  { ...existing, observedProperties: writtenBaseline },
+                  live === undefined ? {} : { readback: live },
+                  new Set([report.region, report.stackName])
+                )
               : { ...existing, properties: writtenBaseline };
           }
           let reRecordedCount = 0;

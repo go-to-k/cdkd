@@ -2,6 +2,7 @@
  * `cdkd drift`: `--accept`: write the AWS-current values into state.
  * Split out of `../drift.ts`, which re-exports the public names.
  */
+import { withOffTemplateEchoesMasked } from '../../../deployment/secret-redaction.js';
 import { getLogger } from '../../../utils/logger.js';
 import { S3StateBackend } from '../../../state/s3-state-backend.js';
 import { LockManager } from '../../../state/lock-manager.js';
@@ -438,7 +439,12 @@ export async function runAccept(
         // Readback-shaped on both record shapes since go-to-k/cdkd#6125 (a
         // seeded baseline IS the readback), so the readback arm: lists paired
         // by their identity field, as the deploy-start refresh masks them.
-        const written = maskMarkedNoEchoBaseline(redactedBaseline, existing, true);
+        const written = maskMarkedNoEchoBaseline(
+          redactedBaseline,
+          existing,
+          true,
+          outcome.awsProperties
+        );
         // go-to-k/cdkd#5380: the baseline now records what AWS holds, so what
         // a failed deploy left unsettled on this resource is settled, except a
         // key AWS is still changing (the readback is not where it will end).
@@ -454,7 +460,14 @@ export async function runAccept(
               provisionedBy: existing.provisionedBy,
             }).provider
         );
-        resources[outcome.logicalId] = { ...settled, observedProperties: written };
+        // go-to-k/cdkd#7158: an echo of a secret under a key the template
+        // lacks, in what this writes, is masked and named, as every other
+        // readback writer does.
+        resources[outcome.logicalId] = withOffTemplateEchoesMasked(
+          { ...settled, observedProperties: written },
+          { readback: outcome.awsProperties },
+          new Set([report.region, report.stackName])
+        );
       }
 
       // `skippedOutputs` (issue #2740) is dropped rather than spread through,

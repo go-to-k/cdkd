@@ -2,13 +2,14 @@ import { MIN_NEEDLE_LENGTH, isPlainObject } from './rules.js';
 import { identityKeyFor } from './identity-keys.js';
 import {
   canonicalCoordinates,
+  isWhollyMask,
   maskAtCoordinates,
   noEchoLeavesOf,
   replaceAtCoordinates,
   valueAtCoordinate,
   type NoEchoCoordinate,
 } from './noecho-leaves.js';
-import { isMaskLeaf, mentionsMask, opensDynamicReferenceTo } from './recorded-secrecy.js';
+import { mentionsMask, opensDynamicReferenceTo } from './recorded-secrecy.js';
 import { dynamicReferenceTokens } from './redact-path/reference-tokens.js';
 
 /**
@@ -267,6 +268,25 @@ function offTemplateEchoes(
   return hits;
 }
 
+/**
+ * Is `coordinate` under a key `properties` does not set? Lists are entered by
+ * index (a coordinate the writer recorded through a paired element).
+ */
+function isOffTemplate(properties: unknown, coordinate: NoEchoCoordinate): boolean {
+  let source = properties;
+  for (const segment of coordinate) {
+    if (typeof segment === 'number') {
+      if (!Array.isArray(source)) return false;
+      source = source[segment];
+      continue;
+    }
+    if (!isPlainObject(source)) return false;
+    if (!Object.hasOwn(source, segment)) return true;
+    source = source[segment];
+  }
+  return false;
+}
+
 /** What {@link maskOffTemplateEchoes} reads. */
 export interface OffTemplateEchoInput {
   /** The bag being written, the readback as this writer redacted it. */
@@ -345,9 +365,13 @@ export function maskOffTemplateEchoes(input: OffTemplateEchoInput): {
     );
   });
   const masked = hits.length === 0 ? bag : maskAtCoordinates(bag, hits);
+  // Kept while still under a key the template lacks (a template that now sets
+  // the key owns the position) and while the leaf, or an ancestor a writer
+  // masked whole, still holds the mask.
   const kept = (observedMaskedLeavesOf({ observedMaskedLeaves: input.previous }) ?? []).filter(
     (coordinate) =>
-      coordinate.some((_, i) => isMaskLeaf(valueAtCoordinate(masked, coordinate.slice(0, i + 1))))
+      isOffTemplate(properties, coordinate) &&
+      coordinate.some((_, i) => isWhollyMask(valueAtCoordinate(masked, coordinate.slice(0, i + 1))))
   );
   return { bag: masked, leaves: canonicalCoordinates([...kept, ...hits]) };
 }

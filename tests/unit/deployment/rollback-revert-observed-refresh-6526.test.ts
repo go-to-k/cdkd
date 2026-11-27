@@ -39,6 +39,7 @@ import { RESOURCE_NOT_FOUND, type ResourceProvider } from '../../../src/types/re
 import { getCurrentResourceSecrets } from '../../../src/deployment/resource-secrets-scope.js';
 import { isSameGenerationBag } from '../../../src/deployment/secret-redaction.js';
 import { withRefreshedObservedBaseline } from '../../../src/deployment/rollback-executor/replay-observed-refresh.js';
+import { redactRollbackRecord } from '../../../src/deployment/rollback-executor/replay-secrets.js';
 import type { ResourceState } from '../../../src/types/state.js';
 
 const BUCKET = 'AWS::S3::Bucket';
@@ -374,6 +375,21 @@ describe('withRefreshedObservedBaseline (go-to-k/cdkd#6526)', () => {
     expect(JSON.stringify(out)).not.toContain('pw-rollback-7152');
     expect(out.observedProperties?.['Login']).toBe('***');
     expect(out.observedMaskedLeaves).toEqual([['Login']]);
+  });
+
+  it('a restored custom resource drops a NEW attribute whose key holds a secret, and keeps a persisted one (go-to-k/cdkd#7153)', () => {
+    const secret = 'rollback-k3y-7153';
+    const record: ResourceState = {
+      physicalId: 'cr-1',
+      resourceType: 'Custom::Thing',
+      properties: {},
+      attributes: { [`New.${secret}`]: 'v', [`Kept.${secret}`]: 'w', Plain: 'ok' },
+    };
+    const out = redactRollbackRecord(record, new Map([[secret, '{{resolve:ssm-secure:/k}}']]), {}, {
+      [`Kept.${secret}`]: 'w',
+      Plain: 'ok',
+    });
+    expect(Object.keys(out.attributes ?? {})).toEqual([`Kept.${secret}`, 'Plain']);
   });
 
   it('never aliases the object the provider returned', async () => {
