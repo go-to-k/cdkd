@@ -24,6 +24,37 @@ import { markNonRetryable } from '../../retryable-errors.js';
  * of it (go-to-k/cdkd#5835): the stateful guard and the `--recreate-via-cc-api`
  * route checks, run before anything is created or deleted.
  */
+/**
+ * The CloudFormation-measured replacement paths (`SPEC_REPLACEMENT_CFN_MEASURED`)
+ * at or under the top-level `property`: the property itself, or each nested
+ * member whose value differs between the recorded and desired bags.
+ */
+function measuredPathsChanged(
+  resourceType: string,
+  property: string,
+  current: Readonly<Record<string, unknown>> | undefined,
+  desired: Readonly<Record<string, unknown>> | undefined
+): string[] {
+  if (SPEC_REPLACEMENT_CFN_MEASURED.has(`${resourceType}#${property}`)) return [property];
+  const prefix = `${resourceType}#${property}.`;
+  const at = (bag: Readonly<Record<string, unknown>> | undefined, path: string[]): unknown =>
+    path.reduce<unknown>(
+      (v, k) =>
+        typeof v === 'object' && v !== null && !Array.isArray(v)
+          ? (v as Record<string, unknown>)[k]
+          : undefined,
+      bag
+    );
+  return [...SPEC_REPLACEMENT_CFN_MEASURED]
+    .filter((key) => key.startsWith(prefix))
+    .map((key) => key.slice(resourceType.length + 1))
+    .filter((path) => {
+      const segments = path.split('.');
+      return JSON.stringify(at(current, segments)) !== JSON.stringify(at(desired, segments));
+    })
+    .sort();
+}
+
 export function refuseUnsafeReplacement(
   engine: DeployEngine,
   {
@@ -99,10 +130,19 @@ export function refuseUnsafeReplacement(
       // CloudFormation execution was measured replacing on. Say so, since the
       // user may expect the in-place update the schema suggests; only a
       // measured row may claim it.
+      // A nested measured row (go-to-k/cdkd#7083, an FSx file system's
+      // `LustreConfiguration.ImportPath`) names the member that changed: its
+      // property change is keyed by the top-level property.
       const measuredReplaced = (change.propertyChanges ?? [])
         .filter((pc) => pc.requiresReplacement)
-        .map((pc) => pc.path)
-        .filter((path) => SPEC_REPLACEMENT_CFN_MEASURED.has([oldResourceType, path].join('#')));
+        .flatMap((pc) =>
+          measuredPathsChanged(
+            oldResourceType,
+            pc.path,
+            change.currentProperties,
+            change.desiredProperties
+          )
+        );
       // go-to-k/cdkd#7126: measured replacing, but CloudFormation's
       // replacement then fails on the name it keeps, so no data is lost there.
       const replacing = (change.propertyChanges ?? []).filter((pc) => pc.requiresReplacement);

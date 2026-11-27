@@ -621,7 +621,7 @@ env -u CDKD_TEST_RECORDSIZE_CHANGE CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true 
 P2E_RC=${PIPESTATUS[0]}
 set -e
 P2E_PLAIN="$(sed 's/\x1b\[[0-9;]*m//g' "${P2E_LOG}")"
-if grep -qF 'UpdateFileSystem does not accept' <<<"${P2E_PLAIN}"; then
+if grep -qF 'UpdateFileSystem cannot change it after creation' <<<"${P2E_PLAIN}"; then
   echo "FAIL [phase 2e]: #7083: the RecordSizeKiB change was sent as an in-place update (the provider refused it) instead of a planned replacement" >&2
   exit 1
 fi
@@ -630,8 +630,9 @@ if [ "${P2E_RC}" -eq 0 ]; then
   exit 1
 fi
 if ! grep -qF 'Fs (AWS::FSx::FileSystem) requires replacement (immutable property changed: OpenZFSConfiguration)' <<<"${P2E_PLAIN}" \
+  || ! grep -qF 'CloudFormation was measured replacing it on a OpenZFSConfiguration.RootVolumeConfiguration.RecordSizeKiB change' <<<"${P2E_PLAIN}" \
   || ! grep -qF -- '--force-stateful-recreation' <<<"${P2E_PLAIN}"; then
-  echo "FAIL [phase 2e]: #7083: the deploy exited ${P2E_RC} without the stateful refusal naming Fs, OpenZFSConfiguration and --force-stateful-recreation" >&2
+  echo "FAIL [phase 2e]: #7083: the deploy exited ${P2E_RC} without the stateful refusal naming Fs, OpenZFSConfiguration, the measured RecordSizeKiB change and --force-stateful-recreation" >&2
   exit 1
 fi
 FS_ID_P2E="$(output_value FileSystemId)"

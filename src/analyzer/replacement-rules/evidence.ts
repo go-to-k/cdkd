@@ -858,7 +858,9 @@ export const REPLACEMENT_EVIDENCE: ReadonlyMap<string, ReplacementEvidence> = ne
   ],
   // FSx file systems (no Cloud Control handlers): CloudFormation A/B chains in
   // us-east-1 on #7083, one property per step, each replacement read as a
-  // new file system id. Lustre PERSISTENT_1 / SCRATCH_2 / HDD: every member
+  // new file system id. Lustre (CopyTagsToBackups, PerUnitStorageThroughput
+  // and DeploymentType on PERSISTENT_1; ImportPath, ExportPath and
+  // ImportedFileChunkSize on SCRATCH_2; DriveCacheType on HDD): every member
   // below replaced the file system except PerUnitStorageThroughput (50 ->
   // 100, same id). DeploymentType PERSISTENT_1 -> PERSISTENT_2 moved
   // PerUnitStorageThroughput too (the step before showed it alone is in
