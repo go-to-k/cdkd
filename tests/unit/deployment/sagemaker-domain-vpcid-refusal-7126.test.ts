@@ -11,6 +11,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { provisionResource } from '../../../src/deployment/deploy-engine/provision.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
+import { replacementOldHoldsSentName } from '../../../src/deployment/replacement-name-holder.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
 
@@ -165,6 +166,25 @@ describe('SageMaker domain VpcId replacement (go-to-k/cdkd#7126)', () => {
       { path: 'DomainName', oldValue: 'a', newValue: 'b', requiresReplacement: true },
     ]);
     expect(text).not.toContain('it keeps (AlreadyExists)');
+  });
+
+  // With the flag, the create-first replacement collides on the kept
+  // DomainName (probed: AlreadyExists). cdkd has no name key for the type, so
+  // it cannot prove the old domain holds that name, and `--replace` refuses
+  // rather than deleting it first.
+  it('never proves the old domain holds the colliding name, so --replace deletes nothing', () => {
+    const props = { DomainName: 'd', VpcId: 'vpc-b', AuthMode: 'IAM' };
+    const verdict = replacementOldHoldsSentName({
+      createType: 'AWS::SageMaker::Domain',
+      holderType: 'AWS::SageMaker::Domain',
+      requested: props,
+      recorded: { ...props, VpcId: 'vpc-a' },
+      observed: undefined,
+      physicalId: 'd-abc123',
+      createdVia: 'cc-api',
+      holderVia: 'cc-api',
+    });
+    expect(verdict.holds).toBe(false);
   });
 
   // A control: passes before the fix too. DomainName is schema create-only, so
