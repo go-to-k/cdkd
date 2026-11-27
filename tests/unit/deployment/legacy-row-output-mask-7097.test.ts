@@ -196,6 +196,9 @@ describe('the class: every child output shape over the mixed parameter reads as 
     ['GetAtt Arn of a resource reading X', { 'Fn::GetAtt': ['Fn', 'Arn'] }, false],
     ['Ref of a resource reading X', { Ref: 'Fn' }, false],
     ['Sub of an id of a resource reading X', { 'Fn::Sub': '${Fn.Arn}' }, false],
+    // A custom resource's handler may echo any input under any name (security review).
+    ['GetAtt of a custom resource reading X', { 'Fn::GetAtt': ['Echo', 'Result'] }, true],
+    ['GetAtt of a custom resource reading nothing mixed', { 'Fn::GetAtt': ['EchoOther', 'Result'] }, false],
   ];
   it.each(SHAPES)('%s', (_label, value, derived) => {
     const child = {
@@ -204,6 +207,8 @@ describe('the class: every child output shape over the mixed parameter reads as 
       Resources: {
         Reader: { Type: 'AWS::SSM::Parameter', Properties: { Type: 'String', Value: MIXED } },
         Other: { Type: 'AWS::SSM::Parameter', Properties: { Type: 'String', Value: OTHER } },
+        Echo: { Type: 'Custom::Echo', Properties: { ServiceToken: 'arn:token', Input: MIXED } },
+        EchoOther: { Type: 'Custom::Echo', Properties: { ServiceToken: 'arn:token', Input: OTHER } },
         Fn: {
           Type: 'AWS::Lambda::Function',
           Properties: { Handler: 'h', Environment: { Variables: { V: MIXED } } },
@@ -279,7 +284,7 @@ describe('a secret composed one level down: the row record holds no secret param
       childTemplateLoader({ Row: tree('d3-secret', SECRET_MIX) })
     );
     expect(state.resources['Row']!.attributes).toEqual({ 'Outputs.K': '***', 'Outputs.K2': 'grand-plain' });
-    expect([...(masked.get('Row') ?? [])]).toEqual(['Outputs.K']);
+    expect([...(masked.get('Row')?.keys() ?? [])]).toEqual(['Outputs.K']);
   });
 
   it('keeps every output when the child composes a PUBLIC ssm reference', () => {
@@ -605,7 +610,6 @@ describe('cdkd diff: a deleted nested row masks its subtree by its recorded tain
   });
 });
 
-
 describe('the export guard relaxation is scoped to the reads the legacy mask rewrote (review)', () => {
   const template = {
     Resources: { Row: { Type: 'AWS::CloudFormation::Stack', Properties: {} } },
@@ -613,12 +617,16 @@ describe('the export guard relaxation is scoped to the reads the legacy mask rew
       Out: { Value: { 'Fn::Join': ['', ['x-', { 'Fn::GetAtt': ['Row', 'Outputs.Secret'] }]] }, Export: { Name: 'e' } },
     },
   } as unknown as CloudFormationTemplate;
-  const judge = async (legacyMaskedReads: Map<string, Set<string>> | undefined, desired = 'x-***') =>
+  const judge = async (
+    legacyMaskedReads: Map<string, Map<string, string>> | undefined,
+    desired = 'x-***',
+    published = 'x-plain'
+  ) =>
     findAffectedExports({
       template,
       conditions: {},
       changes: new Map(),
-      currentState: { outputs: { Out: 'x-plain', e: 'x-plain' }, exportNames: ['e'] } as never,
+      currentState: { outputs: { Out: published, e: published }, exportNames: ['e'] } as never,
       resolve: () => Promise.resolve(desired),
       replaces: () => false,
       legacyMaskedReads,
@@ -626,15 +634,18 @@ describe('the export guard relaxation is scoped to the reads the legacy mask rew
 
   it('a non-legacy export that newly holds the mask is CHANGED', async () => {
     expect(await judge(undefined)).toEqual([{ exportName: 'e', reason: 'changed' }]);
-    expect(await judge(new Map([['Row', new Set(['Outputs.Other'])]]))).toEqual([
+    expect(await judge(new Map([['Row', new Map([['Outputs.Other', 'plain']])]]))).toEqual([
       { exportName: 'e', reason: 'changed' },
     ]);
   });
 
   it('an export reading a masked legacy read is unchanged, unless the text around the mask moved', async () => {
-    const masked = new Map([['Row', new Set(['Outputs.Secret'])]]);
+    const masked = new Map([['Row', new Map([['Outputs.Secret', 'plain']])]]);
     expect(await judge(masked)).toEqual([]);
     expect(await judge(masked, 'y-***')).toEqual([{ exportName: 'e', reason: 'changed' }]);
+    // Text ADJACENT to the mask dropped: an exact compare, not a wildcard (security review).
+    expect(await judge(masked, '***-xyz', 'abc-plain-xyz')).toEqual([{ exportName: 'e', reason: 'changed' }]);
+    expect(await judge(masked, 'abc-***-xyz', 'abc-plain-xyz')).toEqual([]);
   });
 });
 

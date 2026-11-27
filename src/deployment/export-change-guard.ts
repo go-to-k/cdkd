@@ -99,7 +99,7 @@ export async function findAffectedExports({
    * plaintext to the mask (`maskLegacyTaintedRowOutputs`). Only an export
    * reading one of them may move from plaintext to the mask unchanged.
    */
-  legacyMaskedReads?: ReadonlyMap<string, ReadonlySet<string>> | undefined;
+  legacyMaskedReads?: ReadonlyMap<string, ReadonlyMap<string, string>> | undefined;
 }): Promise<AffectedExport[]> {
   const published = importableOutputKeys(currentState);
   if (published.length === 0) return [];
@@ -158,7 +158,7 @@ async function valueMayChange(
   changes: ReadonlyMap<string, ResourceChange>,
   resolve: (value: unknown) => Promise<unknown>,
   replaces: (logicalId: string) => boolean,
-  legacyMaskedReads: ReadonlyMap<string, ReadonlySet<string>> | undefined
+  legacyMaskedReads: ReadonlyMap<string, ReadonlyMap<string, string>> | undefined
 ): Promise<'changed' | 'deferred' | 'unchanged'> {
   let touchesChangedResource = false;
   // A value known only after the update: a custom resource's (#6865), or a
@@ -166,12 +166,14 @@ async function valueMayChange(
   // stamps an update time is the handler's choice, and CloudFormation refuses
   // only a value that moved).
   let readsUpdatedCustomResource = false;
-  // go-to-k/cdkd#7097: does the value read a legacy row output this deploy masked?
-  let readsLegacyMasked = false;
+  // go-to-k/cdkd#7097: the legacy plaintexts of the row outputs this deploy
+  // masked that the value reads.
+  const legacyPlaintexts: string[] = [];
   for (const [logicalId, reads] of extractGetAttRefs(output.Value)) {
     const masked = legacyMaskedReads?.get(logicalId);
-    if (masked !== undefined && [...reads].some((read) => masked.has(read))) {
-      readsLegacyMasked = true;
+    for (const read of reads) {
+      const plaintext = masked?.get(read);
+      if (plaintext !== undefined) legacyPlaintexts.push(plaintext);
     }
     if (replaces(logicalId)) return 'changed';
     const change = changes.get(logicalId);
@@ -217,25 +219,34 @@ async function valueMayChange(
   // source's live value is judged unchanged, where the published side would
   // have shown the move; after it the published side holds the mask and the
   // rule above applies as always.
-  if (readsLegacyMasked && onlyTheMaskMoved(desired, publishedValue)) return 'unchanged';
+  if (onlyTheMaskMoved(desired, publishedValue, legacyPlaintexts)) return 'unchanged';
   if (!isDeepStrictEqual(desired, publishedValue)) return 'changed';
   return readsUpdatedCustomResource ? 'deferred' : 'unchanged';
 }
 
 /**
- * Does `desired` (holding the mask) spell `published` (holding none) once each
- * mask stands for whatever the published side holds there?
+ * Is `desired` exactly the published value once each legacy plaintext it
+ * reads is spelled as the mask? An exact compare: text around the mask that
+ * moved, or a sibling that was dropped, is a real move.
  */
-function onlyTheMaskMoved(desired: unknown, published: unknown): boolean {
-  const desiredText = JSON.stringify(desired);
+function onlyTheMaskMoved(
+  desired: unknown,
+  published: unknown,
+  legacyPlaintexts: readonly string[]
+): boolean {
+  if (legacyPlaintexts.length === 0) return false;
   const publishedText = JSON.stringify(published);
-  if (desiredText === undefined || publishedText === undefined) return false;
-  if (!desiredText.includes(SECRET_MASK) || publishedText.includes(SECRET_MASK)) return false;
-  const pattern = desiredText
-    .split(SECRET_MASK)
-    .map((piece) => piece.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-    .join('[\\s\\S]*?');
-  return new RegExp(`^${pattern}$`).test(publishedText);
+  const desiredText = JSON.stringify(desired);
+  if (publishedText === undefined || desiredText === undefined) return false;
+  if (publishedText.includes(SECRET_MASK)) return false;
+  let respelled = publishedText;
+  // Longest first, so a plaintext inside another is not replaced in it.
+  for (const plaintext of [...new Set(legacyPlaintexts)].sort((a, b) => b.length - a.length)) {
+    if (plaintext === '') continue;
+    const spelled = JSON.stringify(plaintext).slice(1, -1);
+    respelled = respelled.split(spelled).join(SECRET_MASK);
+  }
+  return respelled === desiredText;
 }
 
 function isCustomResourceType(type: string): boolean {

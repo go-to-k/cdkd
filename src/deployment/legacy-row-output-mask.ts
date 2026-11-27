@@ -53,7 +53,7 @@ export function maskLegacyTaintedRowOutputs(
     getCurrentNestedStackContext()?.nestedTemplates
   )
 ): LegacyMaskedReads {
-  const masked = new Map<string, Set<string>>();
+  const masked = new Map<string, Map<string, string>>();
   const rows = (template.Resources ?? {}) as Record<string, unknown>;
   for (const [logicalId, rawRow] of Object.entries(rows)) {
     const row = rawRow as { Type?: unknown; Properties?: Record<string, unknown> } | null;
@@ -93,21 +93,22 @@ export function maskLegacyTaintedRowOutputs(
     for (const key of plainOutputs) {
       const name = key.slice(OUTPUT_PREFIX.length);
       if (derived !== ALL_OUTPUTS && !derived.has(name)) continue;
-      attributes[key] = SECRET_MASK;
       let reads = masked.get(logicalId);
-      if (reads === undefined) masked.set(logicalId, (reads = new Set()));
-      reads.add(key);
+      if (reads === undefined) masked.set(logicalId, (reads = new Map()));
+      reads.set(key, attributes[key] as string);
+      attributes[key] = SECRET_MASK;
     }
   }
   return masked;
 }
 
 /**
- * The `Fn::GetAtt` reads (row logical id -> `Outputs.<K>` attribute names)
- * {@link maskLegacyTaintedRowOutputs} rewrote from a legacy plaintext to the
- * mask. The export guard relaxes its compare for exports reading these alone.
+ * The `Fn::GetAtt` reads (row logical id -> `Outputs.<K>` attribute name ->
+ * the legacy plaintext it held) {@link maskLegacyTaintedRowOutputs} rewrote
+ * to the mask. In memory only, for the export guard's exact compare: it is
+ * never logged, persisted or printed.
  */
-export type LegacyMaskedReads = ReadonlyMap<string, ReadonlySet<string>>;
+export type LegacyMaskedReads = ReadonlyMap<string, ReadonlyMap<string, string>>;
 
 /** Stands for every output of a stack whose template cannot be read. */
 const ALL_OUTPUTS = Symbol('all-outputs');
@@ -187,8 +188,26 @@ function derivedOutputsOf(
       const derived = rowDerived(id);
       return derived === ALL_OUTPUTS || derived.has(attribute.slice(OUTPUT_PREFIX.length));
     }
-    const property = attribute.split('.')[0]!;
     const properties = recordOf(resource['Properties']);
+    // A custom resource's handler may echo any input under any attribute
+    // name: the whole bag decides, as for a `NoEcho` custom resource (review).
+    const type = resource['Type'];
+    if (
+      typeof type === 'string' &&
+      (type.startsWith('Custom::') || type === 'AWS::CloudFormation::CustomResource')
+    ) {
+      return Object.keys(properties).some((property) =>
+        propertyIsDerived(id, properties, property)
+      );
+    }
+    const property = attribute.split('.')[0]!;
+    return propertyIsDerived(id, properties, property);
+  };
+  const propertyIsDerived = (
+    id: string,
+    properties: Record<string, unknown>,
+    property: string
+  ): boolean => {
     if (!Object.hasOwn(properties, property)) return false;
     let memo = attributeMemo.get(id);
     if (memo === undefined) attributeMemo.set(id, (memo = new Map()));
