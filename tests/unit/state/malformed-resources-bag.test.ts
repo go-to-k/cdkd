@@ -151,6 +151,8 @@ const DIFF_RECURSIVE_ORDER = [
   'noecho-macs.ts',
   // go-to-k/cdkd#7057: the SSM-name and zone heals moved out of compute-stack-diff.ts.
   'preview-record-heals.ts',
+  // go-to-k/cdkd#7089: the deploy's --replace-resource plan, run by compute-stack-diff.ts.
+  'replace-resource-preview.ts',
   'compute-stack-diff.ts',
   'trust.ts',
   'child-parameters.ts',

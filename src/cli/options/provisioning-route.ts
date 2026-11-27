@@ -351,8 +351,8 @@ export const replaceResourceOption = new Option(
  */
 export const diffReplaceResourceOption = new Option(
   '--replace-resource <logicalId>',
-  'Preview cdkd deploy --replace-resource: show the named resource (by ' +
-    'CloudFormation logical id) as the replacement that deploy plans, its readers ' +
+  'Preview the deploy option of the same name: show the named resource (by ' +
+    'CloudFormation logical id) as the replacement the deploy plans, its readers ' +
     'updated or replaced, and the refusals it makes. Repeatable — pass the flag once ' +
     'per resource.'
 ).argParser(cliArgParser(parseReplaceResourceToken));
