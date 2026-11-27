@@ -28,6 +28,7 @@ import {
   templateGetAttNamesOf,
   withOffTemplateEchoesMasked,
   withSecretAttributeKeysDropped,
+  type OffTemplateEchoRecord,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
 import { markWrittenFromDeployedTemplate } from '../../../src/deployment/masked-property-fingerprints.js';
@@ -262,7 +263,7 @@ describe('a secret echoed under a key the template lacks (go-to-k/cdkd#7158, #71
   );
 
   it('the #7152 repro: an unchanged record learns a list reference plaintext from its fresh readback', () => {
-    const record = withOffTemplateEchoesMasked(
+    const record = withOffTemplateEchoesMasked<OffTemplateEchoRecord>(
       {
         physicalId: 'p',
         properties: { Users: ['plain', { Password: '{{resolve:ssm-secure:/p}}' }] },
@@ -271,7 +272,7 @@ describe('a secret echoed under a key the template lacks (go-to-k/cdkd#7158, #71
       { readback: { Users: ['plain', { Password: 'pw-plain-7152' }], Extra: 'pw-plain-7152' } }
     );
     // The pre-scrub readback is what teaches the value; the bag being written already lost it.
-    const fresh = withOffTemplateEchoesMasked(
+    const fresh = withOffTemplateEchoesMasked<OffTemplateEchoRecord>(
       {
         physicalId: 'p',
         properties: { Users: ['plain', { Password: '{{resolve:ssm-secure:/p}}' }] },
