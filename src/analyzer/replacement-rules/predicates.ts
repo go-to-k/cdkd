@@ -836,7 +836,21 @@ export function thingTypeReplacingMemberChanged(oldValue: unknown, newValue: unk
     value !== null && typeof value === 'object' && !Array.isArray(value)
       ? (value as Record<string, unknown>)[key]
       : undefined;
-  return ['ThingTypeDescription', 'SearchableAttributes'].some(
-    (key) => !isDeepStrictEqual(member(oldValue, key), member(newValue, key))
+  // IoT keeps `SearchableAttributes` as an unordered set (an integ run
+  // declared `['serial', 'model']` and read back `model,serial`), so a
+  // template reorder alone names the same attributes and is not planned as a
+  // replacement: compare as a multiset. What CloudFormation does on a pure
+  // reorder was not measured.
+  const asMultiset = (value: unknown): unknown =>
+    Array.isArray(value) ? value.map((element) => JSON.stringify(element)).sort() : value;
+  return (
+    !isDeepStrictEqual(
+      member(oldValue, 'ThingTypeDescription'),
+      member(newValue, 'ThingTypeDescription')
+    ) ||
+    !isDeepStrictEqual(
+      asMultiset(member(oldValue, 'SearchableAttributes')),
+      asMultiset(member(newValue, 'SearchableAttributes'))
+    )
   );
 }

@@ -22,6 +22,30 @@ describe('thingTypeReplacingMemberChanged (go-to-k/cdkd#7083)', () => {
       { SearchableAttributes: ['a', 'b'] },
       true,
     ],
+    [
+      'searchable attributes reordered only',
+      { SearchableAttributes: ['serial', 'model'] },
+      { SearchableAttributes: ['model', 'serial'] },
+      false,
+    ],
+    [
+      'searchable attributes holding an intrinsic, reordered only',
+      { SearchableAttributes: ['a', { Ref: 'Attr' }] },
+      { SearchableAttributes: [{ Ref: 'Attr' }, 'a'] },
+      false,
+    ],
+    [
+      'a searchable attribute swapped for another',
+      { SearchableAttributes: ['serial', 'model'] },
+      { SearchableAttributes: ['model', 'color'] },
+      true,
+    ],
+    [
+      'a duplicate searchable attribute added',
+      { SearchableAttributes: ['serial', 'model'] },
+      { SearchableAttributes: ['model', 'serial', 'serial'] },
+      true,
+    ],
     ['searchable attributes removed', { SearchableAttributes: ['a'] }, {}, true],
     [
       'a Mqtt5Configuration change',
@@ -77,6 +101,14 @@ describe('thingTypeReplacingMemberChanged (go-to-k/cdkd#7083)', () => {
         'ThingTypeProperties',
         { Mqtt5Configuration: mqtt('k1') },
         { Mqtt5Configuration: mqtt('k2') }
+      )
+    ).toBe(false);
+    expect(
+      rules.requiresReplacement(
+        'AWS::IoT::ThingType',
+        'ThingTypeProperties',
+        { SearchableAttributes: ['serial', 'model'] },
+        { SearchableAttributes: ['model', 'serial'] }
       )
     ).toBe(false);
     // The schema fallback keeps deciding the create-only name.

@@ -266,7 +266,7 @@ SEARCH_TYPE="$(read_state "s['resources']['${SEARCH_TYPE_LOGICAL}']['physicalId'
 MQTT_TYPE="$(read_state "s['resources']['${MQTT_TYPE_LOGICAL}']['physicalId']")"
 [ -n "${SEARCH_TYPE}" ] && [ -n "${MQTT_TYPE}" ] ||
   { echo "FAIL: #7083 premise: state records no physical id for ${SEARCH_TYPE_LOGICAL} ('${SEARCH_TYPE}') or ${MQTT_TYPE_LOGICAL} ('${MQTT_TYPE}')" >&2; exit 1; }
-SEARCH_ATTRS="$(thing_type_field "${SEARCH_TYPE}" 'join(`,`, thingTypeProperties.searchableAttributes)')"
+SEARCH_ATTRS="$(thing_type_field "${SEARCH_TYPE}" 'join(`,`, sort(thingTypeProperties.searchableAttributes))')"
 MQTT_KEY="$(thing_type_field "${MQTT_TYPE}" 'thingTypeProperties.mqtt5Configuration.propagatingAttributes[0].userPropertyKey')"
 [ "${SEARCH_ATTRS}" = "serial" ] ||
   { echo "FAIL: #7083 premise: thing type ${SEARCH_TYPE} searchable attributes are '${SEARCH_ATTRS}', expected serial" >&2; exit 1; }
@@ -307,9 +307,11 @@ SEARCH_TYPE_AFTER="$(read_state "s['resources']['${SEARCH_TYPE_LOGICAL}']['physi
 MQTT_TYPE_AFTER="$(read_state "s['resources']['${MQTT_TYPE_LOGICAL}']['physicalId']")"
 [ -n "${SEARCH_TYPE_AFTER}" ] && [ "${SEARCH_TYPE_AFTER}" != "${SEARCH_TYPE}" ] ||
   { echo "FAIL: #7083: ${SEARCH_TYPE_LOGICAL} was not replaced on a SearchableAttributes change (physical id '${SEARCH_TYPE}' -> '${SEARCH_TYPE_AFTER}')" >&2; exit 1; }
-SEARCH_ATTRS_AFTER="$(thing_type_field "${SEARCH_TYPE_AFTER}" 'join(`,`, thingTypeProperties.searchableAttributes)')"
-[ "${SEARCH_ATTRS_AFTER}" = "serial,model" ] ||
-  { echo "FAIL: #7083: replacement thing type ${SEARCH_TYPE_AFTER} searchable attributes are '${SEARCH_ATTRS_AFTER}', expected serial,model" >&2; exit 1; }
+SEARCH_ATTRS_AFTER="$(thing_type_field "${SEARCH_TYPE_AFTER}" 'join(`,`, sort(thingTypeProperties.searchableAttributes))')"
+# Compared sorted: IoT does not keep the declared order (it read back
+# model,serial for a template declaring ['serial', 'model']).
+[ "${SEARCH_ATTRS_AFTER}" = "model,serial" ] ||
+  { echo "FAIL: #7083: replacement thing type ${SEARCH_TYPE_AFTER} searchable attributes (sorted) are '${SEARCH_ATTRS_AFTER}', expected model,serial" >&2; exit 1; }
 assert_gone "#7083: replaced thing type ${SEARCH_TYPE} still exists after the update" \
   aws iot describe-thing-type --thing-type-name "${SEARCH_TYPE}" --region "${REGION}"
 [ "${MQTT_TYPE_AFTER}" = "${MQTT_TYPE}" ] ||

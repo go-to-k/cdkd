@@ -48,6 +48,10 @@ export const CC_SILENT_NOOP_TAG = '[cc-silent-noop]';
 const FAILS_ON_UNAPPLIED: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ['AWS::EC2::NetworkInterface', new Set(['PrivateIpAddresses'])],
   ['AWS::EKS::Cluster', new Set(['KubernetesNetworkConfig'])],
+  // Measured in us-east-1 (go-to-k/cdkd#7083): SUCCESS, and the live session
+  // kept its old interface (EC2's ModifyTrafficMirrorSession has no member
+  // for it), while CloudFormation updates it in place.
+  ['AWS::EC2::TrafficMirrorSession', new Set(['NetworkInterfaceId'])],
 ]);
 
 export function failsOnUnappliedUpdate(resourceType: string, key: string): boolean {

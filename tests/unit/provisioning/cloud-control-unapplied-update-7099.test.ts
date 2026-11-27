@@ -195,6 +195,29 @@ describe('a Cloud Control update that reports success but did not apply (go-to-k
     );
   });
 
+  // Measured live (go-to-k/cdkd#7083): Cloud Control reported a
+  // NetworkInterfaceId change a success and the session kept its interface.
+  it('fails a Traffic Mirror session whose NetworkInterfaceId change did not apply', async () => {
+    schema();
+    const before = { NetworkInterfaceId: 'eni-old', TrafficMirrorTargetId: 't', SessionNumber: 1 };
+    serve({ Id: 'tms-1', ...before });
+    const err = await new CloudControlProvider()
+      .update(
+        'Session',
+        'tms-1',
+        'AWS::EC2::TrafficMirrorSession',
+        { ...before, NetworkInterfaceId: 'eni-new' },
+        before
+      )
+      .then(
+        () => null,
+        (e: unknown) => e
+      );
+    expect(String((err as Error | null)?.message)).toContain(
+      `${CC_SILENT_NOOP_TAG} Cloud Control reported success but NetworkInterfaceId still holds its previous value`
+    );
+  });
+
   it('fails a drift --revert that did not apply, for any type', async () => {
     schema();
     serve({ Id: 'x', Description: 'drifted' });
