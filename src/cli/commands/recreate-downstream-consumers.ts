@@ -1,3 +1,7 @@
+import {
+  mentionsMask,
+  mentionsDynamicReference,
+} from '../../deployment/secret-redaction/recorded-secrecy.js';
 /**
  * Downstream-consumer enumeration for the `--recreate-via-cc-api` /
  * `--recreate-via-sdk-provider` warn block.
@@ -41,7 +45,6 @@
 
 import type { S3StateBackend } from '../../state/s3-state-backend.js';
 import { getLogger } from '../../utils/logger.js';
-import { SECRET_MASK } from '../../deployment/secret-redaction.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { plainIdentOr } from '../../utils/display-safe.js';
 import { plainOrDescribed } from '../../utils/pasteable-command.js';
@@ -111,7 +114,7 @@ export interface DownstreamConsumer {
 // function, since a mask-only needle redacts to `***`, which this accepts and
 // that rejected.
 export function producerNameIsUnresolved(sourceStack: string): boolean {
-  return sourceStack.includes('{{resolve:') || sourceStack.includes(SECRET_MASK);
+  return mentionsDynamicReference(sourceStack) || mentionsMask(sourceStack);
 }
 
 /**

@@ -1,3 +1,4 @@
+import { mentionsDynamicReference } from '../secret-redaction/recorded-secrecy.js';
 import type { ProvisionedBy } from '../../provisioning/provider-registry.js';
 import { alternateNamePropertiesFor } from '../../provisioning/resource-name.js';
 import {
@@ -188,7 +189,7 @@ export function replacementSentNameMoves(input: {
   if (input.oldResourceType !== input.newResourceType) return undefined;
   if (!replacementCreateAdoptsName(input.newResourceType, input.createdVia)) return undefined;
   const sent = sentRewrittenName(input.newResourceType, input.desiredProperties, input.logicalId);
-  if (sent === undefined || sent.declared.includes('{{resolve:')) return undefined;
+  if (sent === undefined || mentionsDynamicReference(sent.declared)) return undefined;
   const held = ELBV2_ARN_NAME.exec(input.physicalId)?.[1];
   if (held === undefined || held === sent.sent) return undefined;
   return {

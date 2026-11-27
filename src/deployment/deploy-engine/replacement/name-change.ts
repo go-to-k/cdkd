@@ -1,3 +1,4 @@
+import { usableRecordedName } from '../../secret-redaction/recorded-secrecy.js';
 /**
  * The replacement name-change checks run before a replacement's create.
  * Moved out of `deploy-engine/replacement.ts` (go-to-k/cdkd#5835), which
@@ -27,11 +28,7 @@ import {
   replacementNameKeyMoves,
 } from '../../replacement-name-holder.js';
 import { markNonRetryable, markRedactedCause } from '../../retryable-errors.js';
-import {
-  type RecordedSecretValues,
-  SECRET_MASK,
-  maskSecretsInText,
-} from '../../secret-redaction.js';
+import { type RecordedSecretValues, maskSecretsInText } from '../../secret-redaction.js';
 import type { ReplacementDeps } from './run-state.js';
 
 /**
@@ -46,9 +43,8 @@ export function typeChangeNameQuestion(
 ): ReplacementNameChange | undefined {
   const property = explicitNamePropertyFor(resourceType);
   if (property === undefined) return undefined;
-  const desired = input.desiredProperties[property];
-  if (typeof desired !== 'string' || desired === '' || desired === SECRET_MASK) return undefined;
-  if (desired.includes('{{resolve:')) return undefined;
+  const desired = usableRecordedName(input.desiredProperties[property]);
+  if (desired === undefined) return undefined;
   return {
     property,
     desiredName: desired,

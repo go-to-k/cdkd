@@ -1,3 +1,4 @@
+import { dynamicReferenceOpeners } from '../secret-redaction/recorded-secrecy.js';
 /**
  * The PUBLIC `{{resolve:ssm:...}}` values behind a masked property
  * (go-to-k/cdkd#7050 security review).
@@ -45,7 +46,7 @@ import {
 import { isRecordedSecretExpression, provenPublicValue } from '../secret-redaction/mask-only.js';
 import { dynamicReferenceSpans } from '../secret-redaction/redact-path.js';
 import { canonicalJson, maskedPropertyFingerprint, REFERENCE_FINGERPRINT_PREFIX } from './core.js';
-import { DYNAMIC_REFERENCE_OPEN, intrinsicKey, isPlainObject } from './input-walk.js';
+import { intrinsicKey, isPlainObject } from './input-walk.js';
 import {
   boundReferenceFingerprints,
   maskedPropertyFingerprintsOf,
@@ -98,16 +99,13 @@ interface SpelledTokens {
 /** Adds `text`'s complete plain `ssm` tokens; an opener with no complete token is assembled. */
 function scanText(text: string, into: SpelledTokens): void {
   const ends = new Map(dynamicReferenceSpans(text).map(({ start, end }) => [start, end]));
-  let at = text.indexOf(DYNAMIC_REFERENCE_OPEN);
-  while (at >= 0) {
-    const rest = text.slice(at + DYNAMIC_REFERENCE_OPEN.length);
+  for (const { at, rest } of dynamicReferenceOpeners(text)) {
     if (!SECRET_SERVICES.some((service) => rest.startsWith(service))) {
       const end = ends.get(at);
       const token = end === undefined ? undefined : text.slice(at, end);
       if (token === undefined || token.includes('${')) into.assembled = true;
       else if (rest.startsWith('ssm:')) into.tokens.add(token);
     }
-    at = text.indexOf(DYNAMIC_REFERENCE_OPEN, at + DYNAMIC_REFERENCE_OPEN.length);
   }
 }
 

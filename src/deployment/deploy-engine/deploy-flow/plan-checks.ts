@@ -1,3 +1,4 @@
+import { mentionsDynamicReference } from '../../secret-redaction/recorded-secrecy.js';
 import { diffLogMasker } from '../masking.js';
 import { isSingleDynamicReferenceToken } from '../../secret-redaction.js';
 import { pasteableCommand, proseQuoted } from '../../../utils/pasteable-command.js';
@@ -508,7 +509,7 @@ export function replacesOnlyOnLegacyReferenceSpelling(change: ResourceChange | u
         typeof pc.oldValue === 'string' &&
         isSingleDynamicReferenceToken(pc.oldValue) &&
         typeof pc.newValue === 'string' &&
-        !pc.newValue.includes('{{resolve:')
+        !mentionsDynamicReference(pc.newValue)
     )
   );
 }

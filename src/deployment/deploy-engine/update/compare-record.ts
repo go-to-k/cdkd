@@ -1,3 +1,4 @@
+import { isMaskLeaf, holdsMaskLeaf } from '../../secret-redaction/recorded-secrecy.js';
 import { type DeployEngine } from '../../deploy-engine.js';
 import { resolveDynamicReferences } from '../../intrinsic-resolver/dynamic-refs.js';
 import type { ProvisionCounts } from '../../deploy-engine.js';
@@ -19,8 +20,6 @@ import { safeMsg } from '../../../utils/display-safe.js';
 import { formatResourceLine } from '../../../utils/resource-line.js';
 import { type FreshNoEchoReadback, keyOrderFreeJson } from '../../deploy-value-equality.js';
 import {
-  SECRET_MASK,
-  carriesSecretMask,
   freshNoEchoLeafPositions,
   type FreshNoEchoLeaf,
   maskAtCoordinates,
@@ -419,7 +418,7 @@ export async function compareWithRecord(
       valueAtCoordinate(recordedAsWritten, coordinate),
       scalarLeavesOf(desiredAt),
       updateSecrets,
-      desiredAt !== SECRET_MASK
+      !isMaskLeaf(desiredAt)
     );
   }
   // The fresh `NoEcho` leaves, by class. The custom-resource class (a
@@ -438,7 +437,7 @@ export async function compareWithRecord(
       .filter((coordinate) => coordinate[0] === key)
       .flatMap((coordinate) => {
         const plaintext = valueAtCoordinate(resolvedProps, coordinate);
-        return plaintext === undefined || carriesSecretMask(plaintext)
+        return plaintext === undefined || holdsMaskLeaf(plaintext)
           ? []
           : [{ path: coordinate.slice(1), plaintext }];
       });
@@ -450,7 +449,7 @@ export async function compareWithRecord(
     const stored = valueAtCoordinate(recordedAsWritten, full);
     return (
       stored !== undefined &&
-      !carriesSecretMask(stored) &&
+      !holdsMaskLeaf(stored) &&
       keyOrderFreeJson(stored) === keyOrderFreeJson(valueAtCoordinate(todayAsWritten, full))
     );
   };

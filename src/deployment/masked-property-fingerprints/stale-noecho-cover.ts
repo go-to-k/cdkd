@@ -1,3 +1,4 @@
+import { holdsMaskLeaf } from '../secret-redaction/recorded-secrecy.js';
 /**
  * go-to-k/cdkd#7050 review: the input fingerprint of a masked key holding a
  * STALE `NoEcho` leaf (the record holds the mask where no `NoEcho` source
@@ -6,11 +7,7 @@
  * fingerprint differs whatever moved. Re-hashed with the stale leaf's
  * parameters kept as written again, it says whether anything ELSE moved.
  */
-import {
-  carriesSecretMask,
-  noEchoParameterNodesAt,
-  noEchoParametersReadBy,
-} from '../secret-redaction.js';
+import { noEchoParameterNodesAt, noEchoParametersReadBy } from '../secret-redaction.js';
 import type { NoEchoCoordinate, NoEchoPositionSources } from '../secret-redaction.js';
 import { maskedPropertyFingerprint, splitInputFingerprint } from './core.js';
 import { isPlainObject, type MaskedInputSources } from './input-walk.js';
@@ -90,7 +87,7 @@ function everyMaskedLeafIsStale(
     return Object.entries(node).every(([child, value]) =>
       everyMaskedLeafIsStale(value, [...path, child], stale)
     );
-  return !carriesSecretMask(node);
+  return !holdsMaskLeaf(node);
 }
 
 /**

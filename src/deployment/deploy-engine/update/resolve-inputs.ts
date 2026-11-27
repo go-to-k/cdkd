@@ -1,3 +1,4 @@
+import { holdsMaskLeaf } from '../../secret-redaction/recorded-secrecy.js';
 import { childLostWithRecreatedParent } from '../../child-of-recreated-parent.js';
 import { type DeployEngine } from '../../deploy-engine.js';
 import { noteSecretNamedRecord, registerNoEchoAttributes, secretNameBagFor } from '../masking.js';
@@ -9,7 +10,6 @@ import { getLiveRenderer } from '../../../utils/live-renderer.js';
 import { keyOrderFreeJson } from '../../deploy-value-equality.js';
 import {
   canonicalCoordinates,
-  carriesSecretMask,
   isStaleNoEchoLeaf,
   noEchoCoordinatesOf,
   noEchoLeavesOf,
@@ -446,7 +446,7 @@ export async function resolveUpdateInputs(
       if (movedMasked.has(key) || !Object.hasOwn(desiredProps, key)) continue;
       const recorded = currentResource.properties as Record<string, unknown> | undefined;
       if (recorded === undefined || recorded === null || !Object.hasOwn(recorded, key)) continue;
-      if (!carriesSecretMask(recorded[key])) continue;
+      if (!holdsMaskLeaf(recorded[key])) continue;
       if (
         await publicReferencesMoved(
           currentResource,

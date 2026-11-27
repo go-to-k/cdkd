@@ -1,10 +1,13 @@
+import {
+  isMaskLeaf,
+  holdsMaskLeaf,
+  mentionsDynamicReference,
+} from './secret-redaction/recorded-secrecy.js';
 import { isDeepStrictEqual } from 'node:util';
 import {
-  carriesSecretMask,
   dynamicReferenceTokens,
   mergeResolvedPairs,
   redactForState,
-  SECRET_MASK,
   spanNamesResolvableService,
   wholeStringLeavesOf,
   type RecordedSecretValues,
@@ -67,9 +70,9 @@ import type { ResolverContext } from './intrinsic-function-resolver.js';
 export function isMaskedBaselineRecaptureCandidate(record: ResourceState): boolean {
   if (record.observedBaselineRefused === true) return false;
   const observed = record.observedProperties;
-  if (observed === undefined || !carriesSecretMask(observed)) return false;
+  if (observed === undefined || !holdsMaskLeaf(observed)) return false;
   const properties = record.properties;
-  if (carriesSecretMask(properties)) return false;
+  if (holdsMaskLeaf(properties)) return false;
   return secretReferenceTokensOf(properties).length > 0;
 }
 
@@ -84,7 +87,7 @@ export function secretReferenceTokensOf(bag: unknown): string[] {
   const seen = new Set<object>();
   const walk = (node: unknown): void => {
     if (typeof node === 'string') {
-      if (!node.includes('{{resolve:')) return;
+      if (!mentionsDynamicReference(node)) return;
       for (const token of dynamicReferenceTokens(node)) {
         if (spanNamesResolvableService(token)) tokens.add(token);
       }
@@ -167,8 +170,8 @@ function reproducesBaseline(
   admissible: ReadonlySet<string>
 ): boolean {
   const walk = (fresh: unknown, old: unknown): boolean => {
-    if (fresh === SECRET_MASK) {
-      return old === SECRET_MASK || (typeof old === 'string' && admissible.has(old));
+    if (isMaskLeaf(fresh)) {
+      return isMaskLeaf(old) || (typeof old === 'string' && admissible.has(old));
     }
     if (Array.isArray(fresh)) {
       return (
@@ -213,7 +216,7 @@ export function recaptureMaskedBaseline(args: {
   // holds whatever the map says.
   const admissible = new Set<string>(secretReferenceTokensOf(properties));
   for (const leaf of wholeStringLeavesOf(properties)) {
-    if (leaf.includes('{{resolve:')) admissible.add(leaf);
+    if (mentionsDynamicReference(leaf)) admissible.add(leaf);
   }
   // What an ordinary capture persists today: nothing resolved, fail closed.
   //
@@ -239,8 +242,8 @@ export function recaptureMaskedBaseline(args: {
   });
   let changed = false;
   const overlay = (old: unknown, fresh: unknown): unknown => {
-    if (old === SECRET_MASK) {
-      if (typeof fresh === 'string' && fresh !== SECRET_MASK && admissible.has(fresh)) {
+    if (isMaskLeaf(old)) {
+      if (typeof fresh === 'string' && !isMaskLeaf(fresh) && admissible.has(fresh)) {
         changed = true;
         return fresh;
       }

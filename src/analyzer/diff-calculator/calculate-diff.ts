@@ -1,3 +1,4 @@
+import { holdsMaskLeaf } from '../../deployment/secret-redaction/recorded-secrecy.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import { markUpdatePolicyReplacements } from './update-policy-replacement.js';
 import { keepOnlineReshardingInPlace } from './elasticache-online-resharding.js';
@@ -24,7 +25,6 @@ import {
   type PublicReferenceOf,
   type UnverifiedPassedSecret,
 } from '../../deployment/masked-property-fingerprints.js';
-import { carriesSecretMask } from '../../deployment/secret-redaction.js';
 import type { MaskerFn } from '../../provisioning/masked-retry-logger.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import type { LockRecoveryContext } from '../../state/lock-contention-message.js';
@@ -563,8 +563,7 @@ export async function calculateDiff(
         const recordedProps = (currentResource.properties ?? {}) as Record<string, unknown>;
         for (const key of maskedPropertyFingerprintsOf(currentResource).keys()) {
           if (moved.includes(key) || !Object.hasOwn(rawDesiredProps, key)) continue;
-          if (!Object.hasOwn(recordedProps, key) || !carriesSecretMask(recordedProps[key]))
-            continue;
+          if (!Object.hasOwn(recordedProps, key) || !holdsMaskLeaf(recordedProps[key])) continue;
           if (
             await publicReferencesMoved(
               currentResource,

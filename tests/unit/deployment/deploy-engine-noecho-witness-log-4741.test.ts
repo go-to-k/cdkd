@@ -420,6 +420,22 @@ describe('DeployEngine - a differing pre-v11 witness value is masked wherever it
     expect(debugLines).toContain('***');
   });
 
+  // go-to-k/cdkd#7061: the "true" / "false" skip is for a list compared whole;
+  // a whole-leaf position (the desired side is the mask) records the value
+  // itself, whatever it spells.
+  it('masks a whole-leaf value that spells "true", which only a shape-moved list skips', async () => {
+    stateBackend.getState.mockResolvedValue({ state: budgetRecord([email('true')]), etag: 'e' });
+    provider.update.mockImplementation((_l: string, physicalId: string) => {
+      say('true');
+      return Promise.resolve({ physicalId, wasReplaced: false });
+    });
+    await makeEngine().deploy(STACK, budgetTemplate(NEW));
+    expect(provider.update.mock.calls.filter((c) => c[0] === 'Bud')).toHaveLength(1);
+    const debugLines = logger.debug!.mock.calls.map((c) => String(c[0]));
+    expect(debugLines).not.toContain('true');
+    expect(debugLines).toContain('***');
+  });
+
   it('control: an EQUAL witness confirms the value, so nothing is sent and nothing changes', async () => {
     stateBackend.getState.mockResolvedValue({ state: budgetRecord([email(NEW)]), etag: 'e' });
     await makeEngine().deploy(STACK, budgetTemplate(NEW));

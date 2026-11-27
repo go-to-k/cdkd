@@ -1,13 +1,10 @@
+import { holdsMaskLeaf, mentionsDynamicReference } from '../secret-redaction/recorded-secrecy.js';
 /**
  * The input-fingerprint walk (layout 2, go-to-k/cdkd#4543): how a masked
  * property's template value is turned into the form its input fingerprint
  * hashes; split out of `masked-property-fingerprints.ts` (#5835).
  */
-import {
-  carriesSecretMask,
-  printingCorpusOf,
-  type RecordedSecretValues,
-} from '../secret-redaction.js';
+import { printingCorpusOf, type RecordedSecretValues } from '../secret-redaction.js';
 import { conditionsAssumedFalse } from '../assumed-conditions.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import { declaresNoEcho } from '../noecho-declared.js';
@@ -128,7 +125,6 @@ export function isPlainObject(value: unknown): value is Record<string, unknown> 
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-export const DYNAMIC_REFERENCE_OPEN = '{{resolve:';
 export const NESTED_STACK_TYPE = 'AWS::CloudFormation::Stack';
 export const NESTED_OUTPUT_PREFIX = 'Outputs.';
 
@@ -151,9 +147,9 @@ export function carriesSecretValue(
 ): boolean {
   // The mask is a WHOLE leaf wherever cdkd writes it, so only a whole leaf
   // counts: a cron or glob value containing `***` is ordinary text.
-  if (carriesSecretMask(value)) return true;
+  if (holdsMaskLeaf(value)) return true;
   const text = canonicalJson(value);
-  if (text.includes(DYNAMIC_REFERENCE_OPEN)) return true;
+  if (mentionsDynamicReference(text)) return true;
   for (const corpus of corpora) {
     if (corpus === undefined) continue;
     for (const needle of printingCorpusOf(corpus).keys()) {
@@ -262,7 +258,7 @@ export interface InputForm {
 
 /** Whether an intrinsic's operand joins a `{{resolve:...}}` reference into its result. */
 function carriesReference(operand: unknown): boolean {
-  return canonicalJson(operand).includes(DYNAMIC_REFERENCE_OPEN);
+  return mentionsDynamicReference(canonicalJson(operand));
 }
 
 /**
@@ -412,7 +408,7 @@ export function taintOf(logicalId: string, walk: Walk): Taint {
     return 'tainted';
   };
   const visit = (value: unknown): boolean => {
-    if (typeof value === 'string') return value.includes(DYNAMIC_REFERENCE_OPEN);
+    if (typeof value === 'string') return mentionsDynamicReference(value);
     if (Array.isArray(value)) return value.some(visit);
     if (!isPlainObject(value)) return false;
     const key = intrinsicKey(value);
@@ -500,7 +496,7 @@ export function conditionClosure(
   const pending = [name];
   const visit = (value: unknown): void => {
     if (typeof value === 'string') {
-      if (value.includes(DYNAMIC_REFERENCE_OPEN)) secret = true;
+      if (mentionsDynamicReference(value)) secret = true;
       return;
     }
     if (Array.isArray(value)) {
@@ -649,7 +645,7 @@ async function inputForms(values: readonly unknown[], walk: Walk): Promise<Input
  */
 export async function inputForm(value: unknown, walk: Walk): Promise<InputForm> {
   if (typeof value === 'string') {
-    return value.includes(DYNAMIC_REFERENCE_OPEN) && walk.tokensConcrete !== true
+    return mentionsDynamicReference(value) && walk.tokensConcrete !== true
       ? { form: value, concrete: false, ...proof(walk, () => true) }
       : { form: value, concrete: true };
   }
@@ -726,7 +722,7 @@ export async function inputForm(value: unknown, walk: Walk): Promise<InputForm> 
       const vars = await inputForm(explicit, walk);
       const placeholders: Array<[string, unknown]> = [];
       let concrete =
-        vars.concrete && (walk.tokensConcrete === true || !text.includes(DYNAMIC_REFERENCE_OPEN));
+        vars.concrete && (walk.tokensConcrete === true || !mentionsDynamicReference(text));
       // Computed only for a walk with a cover (`proof`).
       let proven = walk.covered !== undefined && isProven(vars) && !joinsReference(operand, walk);
       for (const name of subPlaceholders(text)) {

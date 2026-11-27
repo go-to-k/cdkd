@@ -1,3 +1,4 @@
+import { mentionsDynamicReference } from '../../secret-redaction/recorded-secrecy.js';
 /**
  * go-to-k/cdkd#6146: the UPDATE arm's reading of the record's `NoEcho` value
  * MACs, for the keys AWS gave no word on (a write-only property, a type with
@@ -87,7 +88,7 @@ export function readsOnlyNoEchoParameters(value: unknown, noEcho: ReadonlySet<st
   // CloudFormation compares it. Joined into a leaf by an intrinsic it shares
   // that leaf with the NoEcho value, which masks the whole leaf, so a newer
   // version of it would hide behind an equal MAC (final review of #6146).
-  const token = (text: string): boolean => text.includes('{{resolve:');
+  const token = (text: string): boolean => mentionsDynamicReference(text);
   const walk = (node: unknown, joined: boolean): boolean => {
     if (typeof node === 'string') return !(joined && token(node));
     if (node === null || typeof node !== 'object') return true;

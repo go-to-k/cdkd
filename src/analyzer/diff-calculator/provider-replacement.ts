@@ -1,3 +1,4 @@
+import { mentionsDynamicReference } from '../../deployment/secret-redaction/recorded-secrecy.js';
 import type { ResourceChange, ResourceState } from '../../types/state.js';
 import {
   planSubscriptionAttributes,
@@ -36,7 +37,7 @@ const snsSubscriptionReplacement: ProviderReplacementPlanner = (recorded, desire
  */
 const recordSetRenameReplacement: ProviderReplacementPlanner = (recorded, desired) => {
   const comparable = (value: unknown): value is string =>
-    typeof value === 'string' && value !== '' && !value.includes('{{resolve:');
+    typeof value === 'string' && value !== '' && !mentionsDynamicReference(value);
   const [prevName, name] = [recorded['Name'], desired['Name']];
   if (!comparable(prevName) || !comparable(name)) return undefined;
   if (!comparable(recorded['Type']) || !comparable(desired['Type'])) return undefined;

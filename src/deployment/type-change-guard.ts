@@ -1,3 +1,4 @@
+import { holdsMaskLeaf } from './secret-redaction/recorded-secrecy.js';
 /**
  * Plan-time refusal for a resource `Type` change that involves a NESTED STACK
  * row (issue [#2668](https://github.com/go-to-k/cdkd/issues/2668)).
@@ -39,7 +40,6 @@
 import type { ResourceChange, ResourceState } from '../types/state.js';
 import { isCustomResource } from '../provisioning/provider-registry.js';
 import { displayPhysicalId } from '../provisioning/secret-physical-id.js';
-import { carriesSecretMask } from './secret-redaction.js';
 import { segmentAfterAnchor } from '../provisioning/composite-id.js';
 import { parseLambdaFunctionAddress } from '../utils/lambda-function-name.js';
 import { ingressRuleSourceKey, recordedSgRuleId } from '../provisioning/sg-rule-identity.js';
@@ -113,7 +113,7 @@ export function equalIdNamesDifferentResources(input: {
   const oldDb = input.oldProperties?.['DatabaseName'];
   const newDb = input.newProperties?.['DatabaseName'];
   if (typeof oldDb !== 'string' || typeof newDb !== 'string') return false;
-  if (carriesSecretMask(oldDb) || carriesSecretMask(newDb)) return false;
+  if (holdsMaskLeaf(oldDb) || holdsMaskLeaf(newDb)) return false;
   if (
     segmentAfterAnchor(input.physicalId, oldDb) === undefined ||
     segmentAfterAnchor(input.physicalId, newDb) === undefined
@@ -141,7 +141,7 @@ function permissionsOnDifferentFunctions(
   const oldFn = oldProperties?.['FunctionName'];
   const newFn = newProperties?.['FunctionName'];
   if (typeof oldFn !== 'string' || typeof newFn !== 'string') return false;
-  if (carriesSecretMask(oldFn) || carriesSecretMask(newFn)) return false;
+  if (holdsMaskLeaf(oldFn) || holdsMaskLeaf(newFn)) return false;
   const oldName = parseLambdaFunctionAddress(oldFn)?.name;
   const newName = parseLambdaFunctionAddress(newFn)?.name;
   return oldName !== undefined && newName !== undefined && oldName !== newName;

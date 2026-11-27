@@ -1,3 +1,8 @@
+import {
+  isMaskLeaf,
+  mentionsMask,
+  valueMentionsDynamicReference,
+} from './secret-redaction/recorded-secrecy.js';
 import { isDeepStrictEqual } from 'node:util';
 import {
   extractGetAttRefs,
@@ -191,14 +196,11 @@ async function valueMayChange(
   // A custom resource's new value is known only after its update; a value
   // that cannot be compared then is judged now, as every in-place custom
   // resource read was before go-to-k/cdkd#6865.
-  if (publishedValue === SECRET_MASK) return readsUpdatedCustomResource ? 'changed' : 'unchanged';
+  if (isMaskLeaf(publishedValue)) return readsUpdatedCustomResource ? 'changed' : 'unchanged';
   // A value published with a mask inside it (a nested child's inherited
   // secret) compares the redacted plan-time value; the post-update compare
   // would see the real one and refuse a value that did not move.
-  if (
-    readsUpdatedCustomResource &&
-    JSON.stringify(publishedValue)?.includes(SECRET_MASK) === true
-  ) {
+  if (readsUpdatedCustomResource && mentionsMask(publishedValue)) {
     return 'changed';
   }
   if (holdsDynamicReference(output.Value)) return touchesChangedResource ? 'changed' : 'unchanged';
@@ -238,7 +240,7 @@ function onlyTheMaskMoved(
   const publishedText = JSON.stringify(published);
   const desiredText = JSON.stringify(desired);
   if (publishedText === undefined || desiredText === undefined) return false;
-  if (publishedText.includes(SECRET_MASK)) return false;
+  if (mentionsMask(publishedText)) return false;
   let respelled = publishedText;
   // Longest first, so a plaintext inside another is not replaced in it.
   for (const plaintext of [...new Set(legacyPlaintexts)].sort((a, b) => b.length - a.length)) {
@@ -330,7 +332,7 @@ function inPlaceUpdateMayMove(
 }
 
 function holdsDynamicReference(value: unknown): boolean {
-  return JSON.stringify(value)?.includes('{{resolve:') === true;
+  return valueMentionsDynamicReference(value);
 }
 
 /**
