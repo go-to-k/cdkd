@@ -1,3 +1,4 @@
+import { holdsMaskLeaf, mentionsDynamicReference } from './secret-redaction/recorded-secrecy.js';
 import * as fs from 'node:fs';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import type { ResourceState } from '../types/state.js';
@@ -5,7 +6,6 @@ import { IntrinsicFunctionResolver } from './intrinsic-function-resolver.js';
 import {
   type NoEchoCoordinate,
   type RecordedSecretValues,
-  carriesSecretMask,
   carryLogOnlyValues,
   carryLogOnlyValuesCarriedBy,
   createSecretMasker,
@@ -84,7 +84,7 @@ export function maskedNoEchoCoordinates(
   recordedLeaves: readonly NoEchoCoordinate[] | undefined
 ): NoEchoCoordinate[] {
   return (recordedLeaves ?? []).filter((coordinate) =>
-    carriesSecretMask(valueAtCoordinate(properties, coordinate))
+    holdsMaskLeaf(valueAtCoordinate(properties, coordinate))
   );
 }
 
@@ -211,7 +211,7 @@ export async function noEchoDeleteValuesFromResolved(options: {
     if (!nodes.has(canonicalJson(coordinate))) continue;
     if (!(await fingerprintsUnchanged(record, templateProps, coordinate, fingerprinter))) continue;
     const value = valueAtCoordinate(resolvedProperties, coordinate);
-    if (value === undefined || carriesSecretMask(value)) continue;
+    if (value === undefined || holdsMaskLeaf(value)) continue;
     recordLeaves(bag, value);
     leaves.push({ coordinate, value });
   }
@@ -252,7 +252,7 @@ function readsParametersOnly(
     typeof name === 'string' &&
     ((declared.has(name) && !refused.has(name)) || PSEUDO_PARAMETERS.has(name));
   const walk = (value: unknown): boolean => {
-    if (typeof value === 'string') return !value.includes('{{resolve:');
+    if (typeof value === 'string') return !mentionsDynamicReference(value);
     if (value === null || typeof value !== 'object') return true;
     if (Array.isArray(value)) return value.every(walk);
     const record = value as Record<string, unknown>;
@@ -268,7 +268,7 @@ function readsParametersOnly(
     if (intrinsic === 'Ref') return isParameter(argument);
     if (intrinsic === 'Fn::Sub') {
       const [text, variables] = Array.isArray(argument) ? argument : [argument, undefined];
-      if (typeof text !== 'string' || text.includes('{{resolve:')) return false;
+      if (typeof text !== 'string' || mentionsDynamicReference(text)) return false;
       const local =
         variables !== null && typeof variables === 'object' && !Array.isArray(variables)
           ? (variables as Record<string, unknown>)
@@ -559,7 +559,7 @@ export class TemplateNoEchoReresolver {
         );
         continue;
       }
-      if (value === undefined || carriesSecretMask(value)) continue;
+      if (value === undefined || holdsMaskLeaf(value)) continue;
       recordLeaves(bag, value);
       leaves.push({ coordinate, value });
     }
@@ -617,7 +617,7 @@ export class TemplateNoEchoReresolver {
           Object.hasOwn(rowParameters, name)
             ? (rowParameters as Record<string, unknown>)[name]
             : value;
-        if (carriesSecretMask(raw) || carriesSecretMask(value)) masked.add(name);
+        if (holdsMaskLeaf(raw) || holdsMaskLeaf(value)) masked.add(name);
       }
       // The child masks what it was handed, and every parent NoEcho value it
       // carries (one a row EMBEDS, e.g. `user:${Password}@host`), as a deploy

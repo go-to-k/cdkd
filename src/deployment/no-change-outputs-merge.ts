@@ -73,6 +73,7 @@
  * rules rather than a copy of them.
  */
 
+import { mentionsDynamicReferenceTo } from './secret-redaction/recorded-secrecy.js';
 import type { TemplateOutput } from '../types/resource.js';
 
 /**
@@ -91,7 +92,10 @@ import type { TemplateOutput } from '../types/resource.js';
  */
 export function isSecretBearingReferenceString(value: unknown): boolean {
   if (typeof value !== 'string') return false;
-  return value.includes('{{resolve:secretsmanager:') || value.includes('{{resolve:ssm-secure:');
+  return (
+    mentionsDynamicReferenceTo(value, 'secretsmanager') ||
+    mentionsDynamicReferenceTo(value, 'ssm-secure')
+  );
 }
 
 /**
@@ -113,7 +117,7 @@ export function bagHoldsSecretExpression(bag: Record<string, unknown> | null | u
   return Object.values(bag).some(
     (value) =>
       isSecretBearingReferenceString(value) ||
-      (typeof value === 'string' && value.includes('{{resolve:ssm:'))
+      (typeof value === 'string' && mentionsDynamicReferenceTo(value, 'ssm'))
   );
 }
 

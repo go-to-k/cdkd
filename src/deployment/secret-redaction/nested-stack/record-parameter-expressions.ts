@@ -1,3 +1,4 @@
+import { isMaskLeaf } from '../recorded-secrecy.js';
 import {
   SECRET_MASK,
   resolvedPlaintextOf,
@@ -924,11 +925,11 @@ function substitutionSpelling(
   // masks it too rather than keep the plaintext the parent would not.
   // CONTAINMENT too, so a child leaf embedding the value is masked whole,
   // and the PARAMETER is marked masked for every other child read (#7059).
-  if (spelled === SECRET_MASK) {
+  if (isMaskLeaf(spelled)) {
     recordDerivedMaskOnlyValue(secrets, resolvedValue);
     markAttributionRefusedParameter(secrets, name, 'masked');
   }
-  return spelled === undefined || spelled === SECRET_MASK || spelled === resolvedValue
+  return spelled === undefined || isMaskLeaf(spelled) || spelled === resolvedValue
     ? undefined
     : spelled;
 }
@@ -962,7 +963,7 @@ function holdsConsumedSubFloorSecret(
 function holdsSubFloorSecret(value: string, secrets: RecordedSecretValues): boolean {
   for (const [plaintext, expression] of secrets) {
     if (plaintext === '' || plaintext.length >= MIN_NEEDLE_LENGTH) continue;
-    if (expression !== SECRET_MASK && value.includes(plaintext)) return true;
+    if (!isMaskLeaf(expression) && value.includes(plaintext)) return true;
   }
   return false;
 }

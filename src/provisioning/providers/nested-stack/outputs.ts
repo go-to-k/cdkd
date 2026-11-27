@@ -1,3 +1,4 @@
+import { holdsMaskLeaf } from '../../../deployment/secret-redaction/recorded-secrecy.js';
 import type { NestedStackProvider } from '../nested-stack-provider.js';
 import { getCurrentResourceSecrets } from '../../../deployment/resource-secrets-scope.js';
 import { secretNamedAttributeNamesOf } from '../../../deployment/secret-name-needles.js';
@@ -7,7 +8,6 @@ import { refuseMalformedNestedChildOutputs } from '../../../state/malformed-reso
 import type { NestedStackProviderContext } from '../../nested-stack-context.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import {
-  carriesSecretMask,
   recordAttributeIdCopy,
   recoverMaskedOutput,
 } from '../../../deployment/secret-redaction.js';
@@ -144,7 +144,7 @@ export async function readChildOutputsAsAttributes(
   // current one (go-to-k/cdkd#3691).
   const identity = credentialFingerprint(ambientCredentialConfig());
   for (const [outputKey, persisted] of Object.entries(childStateData.state.outputs ?? {})) {
-    if (!carriesSecretMask(persisted)) continue;
+    if (!holdsMaskLeaf(persisted)) continue;
     const recovered = recoverMaskedOutput(identity, childStackName, childRegion, outputKey);
     if (recovered === undefined) continue;
     const attributeName = this.outputAttributeName(outputKey);

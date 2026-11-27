@@ -1,9 +1,9 @@
+import { holdsMaskLeaf, mentionsDynamicReference } from './secret-redaction/recorded-secrecy.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import type { StackState } from '../types/state.js';
 import { displayIdent, displayStackName } from '../utils/display-safe.js';
 import { cdkdRemedy, proseQuoted } from '../utils/pasteable-command.js';
 import { SECRET_MASK } from './secret-redaction.js';
-import { carriesSecretMask } from './secret-redaction/mask-only.js';
 import { readsNoEchoSource, type NoEchoPositionSources } from './secret-redaction/noecho-leaves.js';
 import { SPELLED_SECRET_REFERENCE_PREFIXES } from './secret-redaction/anchors.js';
 import { isCustomResourceType } from './export-change-guard.js';
@@ -72,7 +72,7 @@ export function maskLegacyTaintedRowOutputs(
       (key) =>
         key.startsWith(OUTPUT_PREFIX) &&
         typeof attributes[key] === 'string' &&
-        !carriesSecretMask(attributes[key])
+        !holdsMaskLeaf(attributes[key])
     );
     if (plainOutputs.length === 0) continue;
     const mixedKeys = recordedSecretKeys(record?.properties);
@@ -241,7 +241,7 @@ function plainParameterValues(parameters: unknown): Record<string, string | unde
   const values = Object.create(null) as Record<string, string | undefined>;
   for (const [key, value] of Object.entries(recordOf(parameters))) {
     const plain =
-      typeof value === 'string' && !value.includes('{{resolve:') && !carriesSecretMask(value);
+      typeof value === 'string' && !mentionsDynamicReference(value) && !holdsMaskLeaf(value);
     values[key] = plain ? value : undefined;
   }
   return values;
@@ -270,7 +270,7 @@ function knownConditions(
   // A string holding a dynamic reference is resolved by the engine before the
   // compare, so its written text decides nothing (review).
   const asWritten = (value: unknown): string | undefined =>
-    typeof value === 'string' && !value.includes('{{resolve:') ? value : undefined;
+    typeof value === 'string' && !mentionsDynamicReference(value) ? value : undefined;
   const valueOf = (node: unknown): string | undefined => {
     if (typeof node === 'string') return asWritten(node);
     const ref = recordOf(node)['Ref'];
@@ -363,7 +363,7 @@ function recordedSecretKeys(properties: Record<string, unknown> | undefined): Se
   }
   for (const [key, value] of Object.entries(parameters as Record<string, unknown>)) {
     if (typeof value !== 'string') continue;
-    if (mixesDynamicReference(value) || carriesSecretMask(value)) keys.add(key);
+    if (mixesDynamicReference(value) || holdsMaskLeaf(value)) keys.add(key);
   }
   return keys;
 }

@@ -1,7 +1,7 @@
+import { holdsMaskLeaf } from '../../../deployment/secret-redaction/recorded-secrecy.js';
 import { nullPrototypeRecord } from '../../../utils/own-keys.js';
 import {
   canonicalCoordinates,
-  carriesSecretMask,
   maskAtCoordinates,
   maskReadbackAtCoordinates,
   maskWholeValue,
@@ -96,7 +96,7 @@ export function planScrubNoEcho(
     ...(Object.keys(conditions).length > 0 && { conditions }),
   };
   const persisted = (value: unknown): boolean =>
-    carriesSecretMask(value) || (typeof value === 'string' && isSingleDynamicReferenceToken(value));
+    holdsMaskLeaf(value) || (typeof value === 'string' && isSingleDynamicReferenceToken(value));
   const templateResources = template.Resources ?? {};
   const eligible = Object.entries(resources).filter(
     ([logicalId, record]) =>

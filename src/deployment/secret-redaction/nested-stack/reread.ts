@@ -1,3 +1,4 @@
+import { mentionsDynamicReference } from '../recorded-secrecy.js';
 import { resolvedPlaintextOf, type RecordedSecretValues } from '../pairs.js';
 import { isPlainObject } from '../rules.js';
 import { redactForState } from '../context.js';
@@ -131,7 +132,7 @@ function evaluatePureRead(
   if (depth > MAX_REREAD_DEPTH) return undefined;
   const evaluate = (child: unknown): { value: unknown } | undefined =>
     evaluatePureRead(child, bind, pseudo, split, choose, depth + 1);
-  if (typeof node === 'string') return node.includes('{{resolve:') ? undefined : { value: node };
+  if (typeof node === 'string') return mentionsDynamicReference(node) ? undefined : { value: node };
   if (Array.isArray(node)) {
     const out: unknown[] = [];
     for (const element of node) {
@@ -215,7 +216,7 @@ function evaluatePureSub(
       : Array.isArray(args) && args.length === 2
         ? [args[0], args[1]]
         : [undefined, undefined];
-  if (typeof text !== 'string' || text.includes('{{resolve:') || !isPlainObject(variables)) {
+  if (typeof text !== 'string' || mentionsDynamicReference(text) || !isPlainObject(variables)) {
     return undefined;
   }
   const bound = new Map<string, string>();
@@ -418,7 +419,7 @@ function namesParameterOnBranches(
   depth = 0
 ): boolean {
   if (depth > MAX_REREAD_DEPTH) return true;
-  if (typeof node === 'string') return node.includes('{{resolve:');
+  if (typeof node === 'string') return mentionsDynamicReference(node);
   if (Array.isArray(node)) {
     return node.some((element) =>
       namesParameterOnBranches(element, choose, isParameter, depth + 1)

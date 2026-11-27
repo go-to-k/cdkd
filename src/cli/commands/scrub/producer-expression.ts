@@ -1,3 +1,4 @@
+import { valueMentionsDynamicReference } from '../../../deployment/secret-redaction/recorded-secrecy.js';
 import type { CloudFormationTemplate } from '../../../types/resource.js';
 import { producerCoordinateKey } from '../../../state/malformed-resources-bag.js';
 
@@ -207,7 +208,7 @@ export function producerPublishesSecretExpression(
       // {@link selectTakenConditionalBranches} for why an `Fn::If`'s untaken arm
       // must not answer either, and for the residual that accepts.
       const subject = selectTakenConditionalBranches(rawSubject);
-      if (JSON.stringify(subject ?? null).includes('{{resolve:')) {
+      if (valueMentionsDynamicReference(subject ?? null)) {
         // `via` is carried on the WIDENED verdict too (issue #2146 review).
         // Dropping it made the message assert the producer "publishes at least
         // one output from a {{resolve:...}} expression" in the one case the

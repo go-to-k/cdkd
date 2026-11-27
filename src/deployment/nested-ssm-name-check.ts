@@ -18,10 +18,10 @@
  * again. A stack with no nested-stack row is never checked, never marked, and
  * pays nothing.
  */
+import { mentionsMask } from './secret-redaction/recorded-secrecy.js';
 import { childTemplateLoader } from './nested-output-templates.js';
 import { healSlashedSsmParameterNames } from './ssm-slashed-name-heal.js';
 import { safeMsg } from '../utils/display-safe.js';
-import { SECRET_MASK } from './secret-redaction/pairs.js';
 import {
   isMarkedCoordinate,
   noEchoLeavesOf,
@@ -144,7 +144,7 @@ function holdsUnmarkedMask(
 ): boolean {
   if (path.length > 64) return true;
   if (marked.length > 0 && isMarkedCoordinate(path, marked)) return false;
-  if (typeof value === 'string') return value.includes(SECRET_MASK);
+  if (typeof value === 'string') return mentionsMask(value);
   if (Array.isArray(value)) {
     return value.some((item, i) => holdsUnmarkedMask(item, marked, [...path, i]));
   }

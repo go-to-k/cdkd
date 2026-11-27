@@ -1,6 +1,6 @@
+import { holdsMaskLeaf, isMaskLeaf } from '../recorded-secrecy.js';
 import { SECRET_MASK } from '../pairs.js';
 import { isDynamicReferenceString } from '../rules.js';
-import { carriesSecretMask } from '../mask-only.js';
 import { subtreeHasDynamicReference, pathCrossesDottedKey } from './subtree.js';
 import { RENDERED_DEFINITION_KEYS, definitionSourceCarriesSecret } from './definition.js';
 
@@ -73,7 +73,7 @@ export function isUncertifiedBaselineMaskPosition(
     cursor = (cursor as Record<string, unknown>)[segment];
   }
   if (typeof cursor === 'string') {
-    return isDynamicReferenceString(cursor) && cursor !== SECRET_MASK;
+    return isDynamicReferenceString(cursor) && !isMaskLeaf(cursor);
   }
-  return subtreeHasDynamicReference(cursor) && !carriesSecretMask(cursor);
+  return subtreeHasDynamicReference(cursor) && !holdsMaskLeaf(cursor);
 }

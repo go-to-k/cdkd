@@ -1,5 +1,7 @@
-/** The opener every dynamic reference starts with, secret-bearing or not. */
-export const DYNAMIC_REFERENCE_OPENER = '{{resolve:';
+import {
+  countDynamicReferenceOpenings,
+  mentionsDynamicReference,
+} from '../../../deployment/secret-redaction/recorded-secrecy.js';
 
 /**
  * How many dynamic-reference OPENERS a property bag carries, counted over its
@@ -21,13 +23,7 @@ export function countDynamicReferenceOpeners(bag: unknown): number | undefined {
   } catch {
     return undefined;
   }
-  let count = 0;
-  for (let from = 0; ;) {
-    const at = text.indexOf(DYNAMIC_REFERENCE_OPENER, from);
-    if (at === -1) return count;
-    count++;
-    from = at + DYNAMIC_REFERENCE_OPENER.length;
-  }
+  return countDynamicReferenceOpenings(text);
 }
 
 /**
@@ -59,7 +55,7 @@ function isIntrinsicShapedKey(key: string): boolean {
  * public template text this walk can read.
  */
 function isInertDiscardedSubtree(node: unknown): boolean {
-  if (typeof node === 'string') return !node.includes(DYNAMIC_REFERENCE_OPENER);
+  if (typeof node === 'string') return !mentionsDynamicReference(node);
   if (node === null || typeof node !== 'object') return true;
   if (Array.isArray(node)) return node.every((element) => isInertDiscardedSubtree(element));
   const record = node as Record<string, unknown>;
@@ -109,7 +105,7 @@ function isStaticSelectIndex(value: unknown): boolean {
  * template text this walk reads.
  */
 function isStaticLookupKey(value: unknown): boolean {
-  if (typeof value === 'string') return !value.includes(DYNAMIC_REFERENCE_OPENER);
+  if (typeof value === 'string') return !mentionsDynamicReference(value);
   return typeof value === 'number' || typeof value === 'boolean';
 }
 

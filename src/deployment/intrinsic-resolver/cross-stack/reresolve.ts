@@ -1,3 +1,7 @@
+import {
+  holdsMaskLeaf,
+  mentionsDynamicReference,
+} from '../../secret-redaction/recorded-secrecy.js';
 import type { IntrinsicFunctionResolver } from '../../intrinsic-function-resolver.js';
 import { displayMasked } from '../masking-display.js';
 import { resolveDynamicReferencesWithLogTwin } from '../dynamic-refs.js';
@@ -16,7 +20,6 @@ import {
   withoutProducerRegions,
 } from '../support.js';
 import {
-  carriesSecretMask,
   isSecretExpressionByVerdictOrSpelling,
   isSingleDynamicReferenceToken,
   recordCrossStackExpression,
@@ -189,7 +192,7 @@ export async function reresolveCrossStackValue(
   // (`stack-output.ts` for the `Fn::GetStackOutput` origins) —
   // so it is masked at the push below. An earlier revision of this sentence
   // claimed the opposite and was refuted by grep (issue #2827 review).
-  if (carriesSecretMask(value)) {
+  if (holdsMaskLeaf(value)) {
     const recovered =
       producerOutput === undefined || producerOutput.crossAccount === true
         ? undefined
@@ -261,7 +264,7 @@ export async function reresolveCrossStackValue(
     context.skipDynamicReferences !== true
   ) {
     const plain = [...wholeStringLeavesOf(value)].filter(
-      (leaf) => !leaf.includes('{{resolve:') && !carriesSecretMask(leaf)
+      (leaf) => !mentionsDynamicReference(leaf) && !holdsMaskLeaf(leaf)
     );
     if (plain.length > 0) {
       const ids = physicalIdsOf(
@@ -365,7 +368,7 @@ export async function reresolveCrossStackValue(
   };
   const walk = async (v: unknown): Promise<unknown> => {
     if (typeof v === 'string') {
-      if (!v.includes('{{resolve:')) return v;
+      if (!mentionsDynamicReference(v)) return v;
       // The PRODUCER-region resolver above, never the consumer's own; the
       // persisted-text route (`resolveDynamicReferences`).
       const pass = await resolveDynamicReferencesWithLogTwin(
