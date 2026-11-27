@@ -53,6 +53,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { parseSync } from 'vite-plus';
 import { describe, expect, it } from 'vite-plus/test';
+import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
 import {
   countDynamicReferenceOpenings,
   dynamicReferenceBody,
@@ -1028,7 +1029,12 @@ function violations(
   return problems;
 }
 
-describe('readers ask recorded-secrecy, never test a marker by hand (go-to-k/cdkd#7061)', () => {
+// Each probe re-parses all of `src/` (one or two whole-tree scans): a loaded
+// runner takes seconds per case, past the default 5 s.
+describe(
+  'readers ask recorded-secrecy, never test a marker by hand (go-to-k/cdkd#7061)',
+  { timeout: CONTENDED_CASE_TIMEOUT_MS },
+  () => {
   it('no migrated group holds a hand test', () => {
     // A floor the scan does not read: a group that lost its files proves nothing.
     expect(groupFiles().length).toBeGreaterThanOrEqual(332);
