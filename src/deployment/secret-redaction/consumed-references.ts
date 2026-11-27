@@ -61,16 +61,6 @@ export function noteReferenceConsumed(secrets: RecordedSecretValues, token: stri
   }
 }
 
-/**
- * The tokens the pass owning `secrets` replaced while resolving the INNERMOST
- * object on the path so far (go-to-k/cdkd#7077: a log render's provenance).
- */
-export function innermostConsumedReferences(secrets: RecordedSecretValues): ReadonlySet<string> {
-  const nodes = path.getStore();
-  const node = nodes?.[nodes.length - 1];
-  return node === undefined ? new Set() : referencesConsumedBy(secrets, node);
-}
-
 /** The tokens the pass owning `secrets` replaced while resolving `node`. */
 export function referencesConsumedBy(
   secrets: RecordedSecretValues,

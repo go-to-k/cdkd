@@ -5,7 +5,6 @@ import { logOnlyValuesOf } from '../secret-redaction/log-only.js';
 import { attributionRefusedParameters } from '../secret-redaction/nested-stack/parameter-tables.js';
 import { literalTextHoldsSubFloorSecret } from '../secret-redaction/positions.js';
 import { readsNoEchoSource } from '../secret-redaction/noecho-leaves.js';
-import { innermostConsumedReferences } from '../secret-redaction/consumed-references.js';
 import { boundPrintingBags } from '../resource-secrets-scope.js';
 import {
   mixesDynamicReference,
@@ -165,19 +164,13 @@ export interface OperandProvenance {
 }
 
 /**
- * Must the operand print as `***`? `shown` is its render AFTER the needle
- * mask. True when:
- *
- * - the innermost intrinsic call being resolved reads a tainted name
- *   ({@link withDisplayScope});
- * - the operand is a tainted parameter's bound value;
- * - the innermost call CONSUMED a secret reference (go-to-k/cdkd#7050's
- *   consumption stamps) and the render still holds a sub-floor secret's
- *   text: a root stack's piece of a value the resolver itself built around
- *   a secret.
+ * Must the operand print as `***`? True when the innermost intrinsic call
+ * being resolved reads a tainted name ({@link withDisplayScope}), or the
+ * operand is a tainted parameter's bound value. A root value the resolver
+ * itself built around a secret reference needs neither: the value scan
+ * already masks it by the substitution's position (go-to-k/cdkd#3100).
  */
 export function operandDisplayTainted(
-  shown: string,
   context: ResolverContext | undefined,
   provenance: OperandProvenance = {}
 ): boolean {
@@ -189,7 +182,5 @@ export function operandDisplayTainted(
   ) {
     return true;
   }
-  const own = context?.recordedSecretValues;
-  if (own === undefined || innermostConsumedReferences(own).size === 0) return false;
-  return visibleBags(context).some((bag) => literalTextHoldsSubFloorSecret(shown, bag));
+  return false;
 }

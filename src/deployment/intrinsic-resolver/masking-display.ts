@@ -342,7 +342,7 @@ export function logOperand(
       : typeof render === 'function'
         ? render(value)
         : logRender(masker, value, context, opts);
-  return operandDisplayTainted(shown, context, opts) ? SECRET_MASK : shown;
+  return operandDisplayTainted(context, opts) ? SECRET_MASK : shown;
 }
 
 /**

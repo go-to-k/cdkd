@@ -14,8 +14,9 @@
  *   reference beside other text, the `cdkd diff` shape (go-to-k/cdkd#7068);
  * - `grandchild-fed`: a parameter fed the piece, recorded as a log-only
  *   needle of the subtree's printing bags;
- * - `root-consumed`: a root value the resolver itself built around a secret
- *   reference, holding a sub-floor secret's text.
+ * - `root-consumed` (a regression net, no taint of its own): a root value the
+ *   resolver itself built around a secret reference, which the value scan
+ *   masks by the substitution's position.
  *
  * Each case asserts the resolved VALUE is the unmasked one (display only),
  * that a line for the shape was logged, and that no debug line carries the
