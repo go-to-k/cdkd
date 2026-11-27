@@ -298,8 +298,8 @@ function findNode(root: DiffTreeNode, name: string): DiffTreeNode | undefined {
 const SECRETS = ['ж', 'жщ', 'жщю', 'Q7', 'Q7Z'];
 
 
-/** The parent's lines printing its own CLI input `Sep` (out of scope: the user typed it). */
-const USER_INPUT_LINE = /\[IntrinsicFunctionResolver\] (Parameter Sep: using user-provided value |Resolved Ref to parameter: Sep resolved to )/;
+/** The parent's lines printing its own CLI input `Sep` / `TagParam` (out of scope: the user typed it). */
+const USER_INPUT_LINE = /\[IntrinsicFunctionResolver\] (Parameter (Sep|TagParam): using user-provided value |Resolved Ref to parameter: Sep resolved to )/;
 
 describe('cdkd diff --recursive --verbose: the resolver lines print no sub-floor piece (#7077)', () => {
   for (const sep of SECRETS) {

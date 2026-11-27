@@ -48,10 +48,10 @@ function visibleBags(context: ResolverContext | undefined): RecordedSecretValues
   return bags;
 }
 
-/** Is `text` WHOLE a sub-floor secret value one of `bags` recorded? */
+/** Is `text` WHOLE a sub-floor log-only needle one of `bags` recorded? */
 function isRecordedSubFloorValue(text: string, bags: readonly RecordedSecretValues[]): boolean {
   if (text === '' || text.length >= MIN_NEEDLE_LENGTH) return false;
-  return bags.some((bag) => bag.has(text) || logOnlyValuesOf.get(bag)?.has(text) === true);
+  return bags.some((bag) => logOnlyValuesOf.get(bag)?.has(text) === true);
 }
 
 /**
@@ -59,14 +59,18 @@ function isRecordedSubFloorValue(text: string, bags: readonly RecordedSecretValu
  * provenances, each recorded by an earlier stage, none inferred from the text
  * alone:
  *
- * - the value MIXES a dynamic reference with other text (`cdkd diff` holds an
- *   unresolved secret's token, go-to-k/cdkd#7068's `mixesDynamicReference`);
+ * - on a pass that leaves secret references unresolved (`cdkd diff`'s
+ *   `skipDynamicReferences`), the value MIXES a dynamic reference with other
+ *   text (go-to-k/cdkd#7068's `mixesDynamicReference`); a deploy resolves
+ *   that reference and masks it by position;
  * - the parent marked it `sub-floor` (go-to-k/cdkd#7050's
  *   `attributionRefusedParameters`) and it holds a sub-floor secret's text;
  * - the value IS, whole, a sub-floor secret value a visible bag recorded: a
  *   grandchild's parameter fed the piece, which the parent recorded as a
  *   log-only needle of the child's subtree (go-to-k/cdkd#7068's
- *   `passedSecretNeedles`) or as a pair.
+ *   `passedSecretNeedles`). A log-only needle has no position twins, so the
+ *   value scan masks it only whole; a recorded PAIR keeps the positional mask
+ *   it already has (`port:***`, go-to-k/cdkd#3100).
  */
 export function parameterDisplayTainted(
   name: string,
@@ -75,7 +79,12 @@ export function parameterDisplayTainted(
 ): boolean {
   const leaves = stringLeaves(value);
   if (leaves.length === 0) return false;
-  if (leaves.some((leaf) => mixesDynamicReference(leaf))) return true;
+  if (
+    context?.skipDynamicReferences === true &&
+    leaves.some((leaf) => mixesDynamicReference(leaf))
+  ) {
+    return true;
+  }
   const inherited = context?.inheritedSecrets;
   if (
     inherited !== undefined &&
