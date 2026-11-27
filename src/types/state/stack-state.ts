@@ -342,7 +342,8 @@ export interface StackState {
    *
    * A deploy's cleanup retries each entry once the deploy's creates, updates
    * and deletes are done (a no-change deploy included) and drops it once
-   * deleted; one still refused is kept, with a warning. `cdkd destroy`
+   * deleted; one using a resource the deploy removes goes before that delete
+   * (go-to-k/cdkd#7076); one still refused is kept, with a warning. `cdkd destroy`
    * deletes them in dependency order with the stack's own resources
    * (go-to-k/cdkd#7073), and keeps the state while one fails. An entry
    * whose physical id and type a record of `resources` holds is not deleted -- a rollback took it back -- and is dropped.

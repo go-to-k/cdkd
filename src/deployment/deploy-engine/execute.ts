@@ -7,6 +7,7 @@ import {
   runCleanupPhase,
   runOrQueueCleanups,
 } from './nested-cleanup.js';
+import { deleteCarriedUsersOfRemovalsFirst } from './carried-users-of-removals.js';
 import {
   NestedCleanupQueue,
   getNestedCleanupQueue,
@@ -267,7 +268,7 @@ async function executeDeploymentBody(
   // row's save persists it; the ones an earlier deploy recorded are retried at
   // the cleanup below.
   engine.replacementRun.supersededHost = currentState;
-  const carriedSuperseded = supersededResourcesOf(currentState).filter((entry) => {
+  let carriedSuperseded = supersededResourcesOf(currentState).filter((entry) => {
     // One a record holds again (`cdkd rollback` took it back) leaves the live
     // record too, so no later recording duplicates it.
     if (!isSupersededHeldBySameType(entry, currentState.resources)) return true;
@@ -433,6 +434,8 @@ async function executeDeploymentBody(
         currentState,
         completedOperations
       );
+      // go-to-k/cdkd#7076: so does one an earlier deploy kept.
+      carriedSuperseded = await deleteCarriedUsersOfRemovalsFirst(run, carriedSuperseded);
 
       engine.logger.info(safeMsg`${red('Deleting')} ${red(deleteChanges.size)} resource(s)`);
 

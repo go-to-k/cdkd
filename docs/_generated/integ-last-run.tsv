@@ -147,7 +147,7 @@ docdb-restore	2026-11-07T12:33:20Z	PASS	678	verify.sh	#6004 final-snapshot split
 docker-image-asset	2026-11-23T10:52:49Z	PASS	128	verify.sh	rc ok, orph clean (#6857 6852 normalization audit)
 drift-cc-read-only-props	2026-11-26T14:23:13Z	PASS	295	verify.sh	PR7065 3b336f1c7 us-east-1 rc ok, orph clean
 drift-ecs-capacity-association	2026-11-22T02:46:37Z	PASS	175	verify.sh	rc ok, orph clean, sha 3116c9288 (#6813 sub-read errors)
-drift-revert	2026-11-26T07:18:30Z	PASS	856	verify.sh	rc ok, orph clean; #7025 step 6 post-revert verification
+drift-revert	2026-11-27T05:22:02Z	PASS	916	verify.sh	rc ok, orph clean, #7092 e5aec88
 drift-revert-arrays	2026-11-23T08:26:12Z	PASS	267	verify.sh	PR6859 11e38d61f us-east-1 rc ok, orph clean
 drift-revert-firehose	2026-11-26T07:18:30Z	PASS	365	verify.sh	rc ok, orph clean; #7025 step 6 post-revert verification
 drift-revert-nested-write-only	2026-11-23T12:11:05Z	PASS	289	verify.sh	PR6876 828e1c821 us-east-1 rc ok, orph clean (duration not timed; see logs)
@@ -285,7 +285,7 @@ iot-topic-rule-role	2026-11-18T15:35:34Z	PASS	105	verify.sh	us-east-1, rc ok, or
 kinesis-esm-filter	2026-11-24T14:18:16Z	PASS	85	verify.sh	rc ok, orph clean (#6933 sweep)
 kinesis-stream-mode-switch	2026-11-24T15:50:36Z	PASS	259	verify.sh	rc ok, orph clean, sha a285cb7f0 (#6933 open shard count, Phase 1b)
 kms-encryption	2026-11-22T03:31:56Z	PASS	151	verify.sh	d2646a6f6 #6759 part a, rc 0, 0 leftovers
-lambda	2026-11-26T19:31:03Z	PASS	135	verify.sh	rc ok, orph clean; PR #7080
+lambda	2026-11-27T05:22:02Z	PASS	105	standard	deploy+destroy 0 errors, orph clean, #7092 e5aec88
 lambda-accelerator-config	2026-11-21T17:25:48Z	PASS	923	verify.sh	SDK route create/update/removal-refused/destroy; rc ok, orph clean (us-east-1, 1 subnet, 4-vCPU GPU)
 lambda-alias-provisioned-concurrency	2026-11-17T09:08:06Z	PASS	265	verify.sh	rc ok, orph clean (#6437 PR #6483)
 lambda-arch-switch	2026-11-06T18:48:58Z	PASS	66	verify.sh	#5901 lambda-function split head; rc ok, orph clean
@@ -364,7 +364,7 @@ logs-delivery	2026-11-21T11:32:56Z	PASS	137	verify.sh	rc 0, 0 orphans (PR #6763)
 logs-loggroup-fix-forward-orphan	2026-11-21T01:28:31Z	PASS	97	verify.sh	PR6710 260d5664a; rc ok, orph clean; own bucket
 lost-child-after-failed-deploy	2026-11-04T10:46:14Z	PASS	90	verify.sh	rc 0; phase-2 premise matches 'Sibling: ParameterPatternMismatchException', #4443 assertions pass; destroy 0 errors, orph clean
 macro-expansion	2026-11-10T12:50:06Z	PASS	80	verify.sh	rc ok, orph clean (#6080 marker re-set on branch tree)
-microservices	2026-11-26T19:31:03Z	PASS	59	standard	deploy+destroy 0 errors, orph clean; PR #7080
+microservices	2026-11-27T05:22:02Z	PASS	62	standard	deploy+destroy 0 errors, orph clean, #7092 e5aec88
 migrate-from-cfn	2026-11-22T22:07:36Z	PASS	341	run.sh	small only; #6848 AppConfig env composite id: rc ok, orph clean
 monitoring	2026-11-04T05:45:58Z	PASS	60	standard	1104 sweep b5; 7 del 0 err, 0 orph
 multi-asset	2026-11-04T06:01:56Z	PASS	95	verify.sh	rc 0, orph: 4 Lambda log groups leaked (deleted); #5747 fix: default docker credential store (expired cached ECR token), lazy re-login
@@ -549,7 +549,7 @@ stepfunctions-s3-definition	2026-11-07T00:18:55Z	PASS	70	verify.sh	#5936 stepfun
 stepfunctions-sync-managed-rule	2026-11-10T13:24:25Z	PASS	100	verify.sh	rc ok, orph clean, managed-rule window hit and retried (#6081), rebuilt tree rerun for marker
 stream-delete-redeploy	2026-11-26T03:14:44Z	PASS	977	verify.sh	PR7013 2de5a0442 us-east-1 rc ok, orph clean
 subnet-mappublicip-removal	2026-11-15T12:58:41Z	PASS	90	verify.sh	rc ok, orph clean; #6342 pre-fix RED at remove phase
-superseded-sg-destroy-order	2026-11-26T19:31:03Z	PASS	1544	verify.sh	rc ok, orph clean; PR #7080 (deploy v2 old-SG delete retry ~22 min)
+superseded-sg-destroy-order	2026-11-27T05:22:02Z	PASS	610	verify.sh	rc ok, orph clean, #7092 fix/7076 e5aec88
 synthetics-canary	2026-11-18T13:56:57Z	PASS	175	verify.sh	rc ok, orph clean; marker re-set after comment-only commit e44c0ae38 (#6553 PR #6554)
 tags-propagation	2026-11-23T19:48:57Z	PASS	396	verify.sh	rc ok, orph clean; #6886 deploy --tags replaces stack tags
 termination-protection	2026-11-05T10:11:05Z	PASS	60	verify.sh	rc ok, orph clean
