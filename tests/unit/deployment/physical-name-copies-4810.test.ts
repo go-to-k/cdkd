@@ -11,6 +11,7 @@ import {
   embeddedPhysicalNameRewrites,
   repairEmbeddedPhysicalNamesTowards,
   recordPhysicalNameCopy,
+  recordDerivedMaskOnlyValue,
   scrubResourceRecord,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
@@ -109,6 +110,14 @@ describe('a reader copy of a read physical id (#4810)', () => {
     const whole: RecordedSecretValues = new Map([[NAME, REF]]);
     recordPhysicalNameCopy(whole, NAME);
     expect(embeddedPhysicalNameRewrites(whole)).toEqual([]);
+  });
+
+  it('a legacy spelling the mask replaced whole is no repair (go-to-k/cdkd#7061)', () => {
+    // A containment needle inside the URL: the old walk wrote the whole leaf as `***`.
+    const bag: RecordedSecretValues = new Map([[NAME, REF]]);
+    recordDerivedMaskOnlyValue(bag, '123456789012');
+    recordPhysicalNameCopy(bag, URL);
+    expect(embeddedPhysicalNameRewrites(bag)).toEqual([]);
   });
 
   it('an empty physical id is never recorded, so the scan terminates', () => {
