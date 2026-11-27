@@ -12,17 +12,18 @@ vi.mock('../../../src/utils/logger.js', () => ({
     setLevel: vi.fn(),
     debug: vi.fn(),
     info: vi.fn(),
-    warn: vi.fn(),
+    warn: warned,
     error: mockLoggerError,
     child: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
   }),
 }));
 
 const mockSynthesize = vi.hoisted(() => vi.fn());
+const mockExpandMacros = vi.hoisted(() => vi.fn(async (_stacks: unknown[]) => undefined));
 vi.mock('../../../src/synthesis/synthesizer.js', () => ({
   Synthesizer: vi.fn(() => ({
     synthesize: mockSynthesize,
-    expandMacrosForStacks: vi.fn(async () => undefined),
+    expandMacrosForStacks: mockExpandMacros,
   })),
   synthesisStatusMessage: (_app: unknown, msg: string) => msg,
 }));
@@ -67,6 +68,7 @@ const record = (
   provisionedBy: 'sdk',
 });
 const state = vi.hoisted(() => ({ current: null as unknown }));
+const warned = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn(() => ({
@@ -110,9 +112,28 @@ async function runDiff(argv: string[]): Promise<string> {
   return mockLoggerError.mock.calls.map((c) => String(c[0])).join('\n');
 }
 
+function topTemplate() {
+  return {
+    Resources: {
+      Fn: { Type: 'AWS::Lambda::Function', Properties: { Runtime: 'nodejs22.x', MemorySize: 256 } },
+      Perm: {
+        Type: 'AWS::Lambda::Permission',
+        Properties: { ...PERMISSION_PROPS, FunctionName: { Ref: 'Fn' } },
+      },
+    },
+  };
+}
+
+function appStack(stackName: string, template: unknown, dependencyNames: string[] = []) {
+  return { stackName, displayName: stackName, artifactId: stackName, template, dependencyNames, region: 'us-east-1' };
+}
+
 describe('cdkd diff --replace-resource command wiring (go-to-k/cdkd#7089)', () => {
   beforeEach(() => {
     mockLoggerError.mockReset();
+    warned.mockReset();
+    mockExpandMacros.mockReset();
+    mockExpandMacros.mockImplementation(async () => undefined);
     state.current = {
       version: 16,
       region: 'us-east-1',
@@ -162,6 +183,59 @@ describe('cdkd diff --replace-resource command wiring (go-to-k/cdkd#7089)', () =
     const reported = await runDiff(['--replace-resource', 'Fn', '--fail-on', 'destructive']);
     expect(lastExitCode).toBe(1);
     expect(reported).toContain('Found 2 destructive change(s)');
+  });
+
+  const synthesized = (...stacks: unknown[]) =>
+    mockSynthesize.mockResolvedValue({ stacks, manifest: {}, assemblyDir: '/tmp/cdk.out' });
+
+  it('hands each stack only the targets its template declares', async () => {
+    synthesized(appStack(STACK, topTemplate()), appStack('Other', { Resources: { Q: { Type: 'AWS::SQS::Queue' } } }));
+    const reported = await runDiff(['--all', '--replace-resource', 'Fn', '--fail-on', 'destructive']);
+    expect(reported).toContain('Found 2 destructive change(s)');
+    expect(warned.mock.calls.map((c) => String(c[0])).filter((w) => w.includes('--replace-resource'))).toEqual([]);
+  });
+
+  it('refuses an id the selected stack and its dependency both declare, as the deploy does', async () => {
+    synthesized(appStack(STACK, topTemplate(), ['Dep']), appStack('Dep', topTemplate()));
+    const reported = await runDiff([STACK, '--replace-resource', 'Fn']);
+    expect(lastExitCode).toBe(1);
+    expect(reported).toContain('Fn: declared by TopStack, Dep');
+  });
+
+  it('names an id only a dependency declares, which the deploy replaces there', async () => {
+    synthesized(
+      appStack(STACK, { Resources: { Q: { Type: 'AWS::SQS::Queue' } } }, ['Dep']),
+      appStack('Dep', topTemplate())
+    );
+    const reported = await runDiff([STACK, '--replace-resource', 'Fn']);
+    expect(reported).toBe('');
+    expect(warned.mock.calls.map((c) => String(c[0]))).toContain(
+      '--replace-resource Fn: declared by Dep, which the deploy includes as a dependency; diff that stack to preview its replacement.'
+    );
+    // The dependency's template is expanded, as the deploy expands it.
+    expect(mockExpandMacros.mock.calls.flatMap((c) => (c[0] as Array<{ stackName: string }>).map((s) => s.stackName))).toContain('Dep');
+  });
+
+  it('checks the macro-expanded template', async () => {
+    synthesized(appStack(STACK, { Resources: {} }));
+    mockExpandMacros.mockImplementation(async (stacks: unknown[]) => {
+      for (const stack of stacks as Array<{ template: { Resources: Record<string, unknown> } }>) {
+        Object.assign(stack.template.Resources, topTemplate().Resources);
+      }
+    });
+    const reported = await runDiff(['--replace-resource', 'Fn', '--fail-on', 'destructive']);
+    expect(reported).not.toContain('no stack of this deploy declares it');
+    expect(reported).toContain('Found 2 destructive change(s)');
+  });
+
+  it('exits 3 for a target the deploy refuses at its plan', async () => {
+    const unchanged = topTemplate();
+    unchanged.Resources.Fn.Properties.MemorySize = 128;
+    synthesized(appStack(STACK, unchanged));
+    const reported = await runDiff(['--replace-resource', 'Fn']);
+    expect(lastExitCode).toBe(3);
+    // The reason itself is the unit file's (`blocking`); here, the exit.
+    expect(reported).toContain('cdkd deploy would refuse to start: 1 blocking condition(s)');
   });
 
   it('control: without the flag nothing is destructive', async () => {

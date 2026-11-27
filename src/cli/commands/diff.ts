@@ -90,6 +90,7 @@ import {
   checkReplaceResourceOptions,
   replaceResourcesForStack,
 } from './deploy/replace-resource-checks.js';
+import { withDependencyStacks } from './deploy/dependency-closure.js';
 import { producerLookupOver } from '../../deployment/intrinsic-resolver/cdk-cross-account-ref.js';
 
 /** This node and every descendant, DFS order. */
@@ -390,10 +391,37 @@ async function diffCommand(
     // Issue #1150: macro expansion was deferred at synthesize() time —
     // expand now for exactly the stacks being diffed, mutating each
     // template in place before the diff calculator consumes it.
+    // go-to-k/cdkd#7089: the stacks `cdkd deploy --replace-resource` runs (the
+    // selection plus its dependencies, as without -e), found as the deploy
+    // finds them, before macro expansion.
+    const replaceTargetIds = [...new Set(options.replaceResource ?? [])];
+    const deployStacks =
+      replaceTargetIds.length > 0 ? withDependencyStacks(targetStacks, allStacks) : targetStacks;
     await synthesizer.expandMacrosForStacks(targetStacks, synthOptions);
     // go-to-k/cdkd#7089: the deploy's run-level `--replace-resource` checks,
-    // over the same expanded templates, so a target the deploy refuses is refused here.
-    checkReplaceResourceOptions(options, targetStacks);
+    // over the stacks that deploy runs (the selection plus its dependencies,
+    // as without -e) with their expanded templates, so a target the deploy
+    // refuses is refused here. A target only an undiffed dependency declares
+    // is replaced by that deploy but not previewed here, which is said.
+    if (replaceTargetIds.length > 0) {
+      const dependencies = deployStacks.filter((stack) => !targetStacks.includes(stack));
+      if (dependencies.length > 0) {
+        await synthesizer.expandMacrosForStacks(dependencies, synthOptions);
+      }
+      checkReplaceResourceOptions(options, deployStacks);
+      for (const id of replaceTargetIds) {
+        if (targetStacks.some((stack) => Object.hasOwn(stack.template.Resources ?? {}, id)))
+          continue;
+        const owner = deployStacks.find((stack) =>
+          Object.hasOwn(stack.template.Resources ?? {}, id)
+        );
+        if (owner !== undefined) {
+          logger.warn(
+            safeMsg`--replace-resource ${id}: declared by ${owner.stackName}, which the deploy includes as a dependency; diff that stack to preview its replacement.`
+          );
+        }
+      }
+    }
 
     // 3. Initialize components
     const stateConfig = {

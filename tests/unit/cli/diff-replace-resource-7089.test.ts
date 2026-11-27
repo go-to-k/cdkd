@@ -301,6 +301,56 @@ describe('cdkd diff --replace-resource previews cdkd deploy --replace-resource (
     expect(stateful[0]).toContain((deploy.error as Error).message);
   });
 
+  it('leaves an earlier target unplanned when a later one is refused', async () => {
+    const t = template(256);
+    t.Resources['Same'] = { Type: PARAM_TYPE, Properties: { Name: 's', Type: 'String', Value: 'v' } };
+    const state = priorState();
+    state.resources['Same'] = rec('s', PARAM_TYPE, { Name: 's', Type: 'String', Value: 'v' }, []);
+    const deploy = await deployPlan(state, t, ['Fn', 'Same']);
+    const diff = await diffPlan(state, t, ['Fn', 'Same']);
+    expect((deploy.error as { code?: string }).code).toBe('REPLACE_RESOURCE_REFUSED');
+    expect(diff.blocking).toEqual([(deploy.error as Error).message]);
+    expect(planOf(diff.changes)['Fn']).toBe('UPDATE');
+  });
+
+  it('warns once per target it does not replace', async () => {
+    const t = template(256);
+    t.Resources['NewA'] = { Type: PARAM_TYPE, Properties: { Name: 'a', Type: 'String', Value: 'v' } };
+    t.Resources['NewB'] = { Type: PARAM_TYPE, Properties: { Name: 'b', Type: 'String', Value: 'v' } };
+    await diffPlan(priorState(), t, ['NewA', 'NewB']);
+    expect(warns().filter((w) => w.includes('--replace-resource'))).toEqual([
+      '--replace-resource NewA: not replaced, this deploy will create it instead.',
+      '--replace-resource NewB: not replaced, this deploy will create it instead.',
+    ]);
+  });
+
+  it("reads a stateful reader's Fn::If on the condition verdict the diff knows", async () => {
+    const withReader = (cond: string): { template: CloudFormationTemplate; state: StackState } => {
+      const t = template(256);
+      t.Conditions = { UseFn: { 'Fn::Equals': [cond, 'yes'] } };
+      t.Resources['Reader'] = {
+        Type: 'AWS::DynamoDB::Table',
+        Properties: { TableName: { 'Fn::If': ['UseFn', { Ref: 'Fn' }, 'fixed'] }, KeySchema: [] },
+      };
+      const state = priorState();
+      state.resources['Reader'] = rec(
+        'tbl',
+        'AWS::DynamoDB::Table',
+        { TableName: cond === 'yes' ? OLD_ID : 'fixed', KeySchema: [] },
+        cond === 'yes' ? ['Fn'] : []
+      );
+      return { template: t, state };
+    };
+    const stateful = (): string[] => warns().filter((w) => w.includes('--force-stateful-recreation'));
+    const off = withReader('no');
+    await diffPlan(off.state, off.template, ['Fn']);
+    expect(stateful()).toEqual([]);
+    vi.clearAllMocks();
+    const on = withReader('yes');
+    await diffPlan(on.state, on.template, ['Fn']);
+    expect(stateful()).toHaveLength(1);
+  });
+
   function tree(isNestedChild: boolean) {
     const state = priorState();
     return buildDiffTree({

@@ -23,7 +23,8 @@ import { CdkdError } from '../../../utils/error-handler.js';
  * WARNINGS: a stack always deployed with that flag would otherwise exit 3 on
  * every diff (the reason `findUnwrittenCreateOnlyRefusals` warns).
  *
- * Mutates `changes` in place, as the deploy's plan does.
+ * Mutates `changes` in place, as the deploy's plan does, and only when no
+ * target is refused.
  */
 export async function previewReplaceResourceTargets(input: {
   changes: Map<string, ResourceChange>;
@@ -38,8 +39,12 @@ export async function previewReplaceResourceTargets(input: {
   if (input.targetIds === undefined || input.targetIds.size === 0) return [];
   let replaced: string[];
   try {
-    const plan = planReplaceResourceTargets(input.changes, input.targetIds);
+    // Planned on a copy: a refusal of a later target must not leave the
+    // earlier ones shown as replacements, as the deploy shows no plan then.
+    const draft = new Map([...input.changes].map(([id, change]) => [id, { ...change }]));
+    const plan = planReplaceResourceTargets(draft, input.targetIds);
     replaced = plan.replaced;
+    for (const id of replaced) input.changes.set(id, draft.get(id)!);
     for (const target of plan.unreplaced)
       input.warn(renderUnreplacedTarget(input.stackName, target));
   } catch (error) {
