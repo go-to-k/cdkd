@@ -152,7 +152,8 @@ const GROUPS: Readonly<Record<string, readonly string[]>> = {
     'src/deployment/journaled-holder.ts',
     'src/deployment/nested-child-journal.ts',
     'src/deployment/cc-pending-requests.ts',
-  ],  'export and import, delete, nested child resolution and scrub': [
+  ],
+  'export and import, delete, nested child resolution and scrub': [
     'src/cli/commands/export',
     'src/cli/commands/export.ts',
     'src/cli/commands/import',
@@ -569,6 +570,11 @@ function handTestsIn(file: string, text: string, globalNames: ReadonlySet<string
     if (node.type === 'LogicalExpression' && ['??', '||'].includes(node['operator'] as string)) {
       return isAlias(node['right']) || spellsMarkerToken(node['right']);
     }
+    // A ternary yielding a marker on BOTH branches is one whichever it takes.
+    if (node.type === 'ConditionalExpression') {
+      const branch = (b: unknown): boolean => isAlias(b) || spellsMarkerToken(b);
+      return branch(node['consequent']) && branch(node['alternate']);
+    }
     return false;
   };
   const isMarkerOrFragment = (raw: unknown): boolean => {
@@ -815,6 +821,7 @@ describe('readers ask recorded-secrecy, never test a marker by hand (go-to-k/cdk
     ['a local alias behind ||', 'export const q2 = (v: string, o?: string) => { const m = o || SECRET_MASK; return v.includes(m); };', 'q2#v.includes(m)'],
     ['a default-parameter alias behind ??', 'export const q3 = (v: string, o?: string, m = o ?? SECRET_MASK) => v === m;', 'q3#v === m'],
     ['a local template alias', 'export const q4 = (v: string) => { const quoted = `"${SECRET_MASK}"`; return v.includes(quoted); };', 'q4#v.includes(quoted)'],
+    ['a ternary of a marker on both branches', 'export const q8 = (v: string, c: boolean) => { const m = c ? SECRET_MASK : `"${SECRET_MASK}"`; return v.includes(m); };', 'q8#v.includes(m)'],
   ])('probe: %s fails at its use', (_what, line, key) => {
     expect(violations({ [NAME]: `${real(NAME)}\n${line}\n` })).toEqual([`hand test: ${NAME}#${key}`]);
   });
