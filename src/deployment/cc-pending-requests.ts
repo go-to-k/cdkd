@@ -45,7 +45,10 @@ import { CdkdError } from '../utils/error-handler.js';
 import { cdkdRemedy } from '../utils/pasteable-command.js';
 import { dropFailedCommands } from './rollback-executor/journaled-orphans.js';
 import { displacedPhysicalIdShown } from './nested-child-journal.js';
-import { holdsMaskLeaf, valueMentionsDynamicReference } from './secret-redaction/recorded-secrecy.js';
+import {
+  holdsMaskLeaf,
+  valueMentionsDynamicReference,
+} from './secret-redaction/recorded-secrecy.js';
 import { getPrimaryIdentifierFields } from '../provisioning/cc-import-identifier.js';
 import { getTopLevelReadOnlyProperties } from '../provisioning/read-only-properties.js';
 import { isNameGeneration, looksLikeCdkdGeneratedName } from '../provisioning/resource-name.js';

@@ -103,6 +103,11 @@ describe('drift readers: marker arms (go-to-k/cdkd#7061)', () => {
         },
       }
     ) as Parameters<typeof resolveStateSecretExpressions>[1];
-    await expect(resolveStateSecretExpressions(props, resolvers, new Map(), {})).resolves.toBe(props);
+    await expect(resolveStateSecretExpressions(
+        props,
+        resolvers,
+        new Map(),
+        {} as Parameters<typeof resolveStateSecretExpressions>[3]
+      )).resolves.toBe(props);
   });
 });
