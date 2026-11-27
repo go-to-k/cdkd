@@ -189,7 +189,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::StepFunctions::StateMachine` | [`cc-to-sdk-reroute-common-types-2`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/cc-to-sdk-reroute-common-types-2/) (l1,literal)<br>[`iam-propagation-stress`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/iam-propagation-stress/) (l2)<br>[`import-attribute-readback-final`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/import-attribute-readback-final/) (l1)<br>[`replacement-immutable-name`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/replacement-immutable-name/) (l2,literal)<br>[`stepfunctions`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/stepfunctions/) (l2)<br>[`stepfunctions-logging`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/stepfunctions-logging/) (l2)<br>[`stepfunctions-s3-definition`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/stepfunctions-s3-definition/) (l1)<br>[`stepfunctions-sync-managed-rule`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/stepfunctions-sync-managed-rule/) (l2) |
 | `AWS::WAFv2::WebACL` | [`cc-to-sdk-reroute-common-types-10`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/cc-to-sdk-reroute-common-types-10/) (l1,literal)<br>[`getatt-iam-waf-s3vectors-evaluator`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/getatt-iam-waf-s3vectors-evaluator/) (l1,literal)<br>[`import-attribute-readback-final`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/import-attribute-readback-final/) (l1)<br>[`wafv2`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/wafv2/) (l1,literal) |
 
-## Resource types referenced in integs without an SDK Provider (126)
+## Resource types referenced in integs without an SDK Provider (127)
 
 These resource types appear in integ fixtures but no SDK Provider is registered for them — they fall through to the Cloud Control API fallback. Listed here for visibility; not actionable on its own.
 
@@ -244,6 +244,7 @@ These resource types appear in integ fixtures but no SDK Provider is registered 
 - `AWS::EC2::IPAMPool`
 - `AWS::EC2::IPAMPoolCidr`
 - `AWS::EC2::LaunchTemplate`
+- `AWS::EC2::NetworkInterface`
 - `AWS::EC2::PlacementGroup`
 - `AWS::EC2::PrefixList`
 - `AWS::EC2::SecurityGroupEgress`

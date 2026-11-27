@@ -10,6 +10,12 @@ import {
   failsOnUnappliedUpdate,
   unappliedUpdateKeys,
 } from './unapplied-update.js';
+import {
+  NETWORK_INTERFACE_TYPE,
+  SECONDARY_ADDRESS_KEY,
+  applyUnappliedSecondaryAddresses,
+} from './eni-secondary-addresses.js';
+import { assertEksAutoModeToggleComplete } from './eks-auto-mode-toggle.js';
 import { markNonRetryable, markRedactedCause } from '../../deployment/retryable-errors.js';
 import { describeAwsFailure, verbosePointerTail } from '../../utils/aws-failure-text.js';
 import { rebuildClientForBucketRegion } from '../../utils/bucket-region-client.js';
@@ -132,6 +138,16 @@ export async function updateInIdLogScope(
     logicalId,
     physicalId
   );
+
+  // go-to-k/cdkd#7099: a lone EKS Auto Mode load-balancing toggle no route
+  // applies; refused before any call (see the helper).
+  assertEksAutoModeToggleComplete({
+    resourceType,
+    logicalId,
+    physicalId,
+    properties,
+    previousProperties,
+  });
 
   try {
     // Strip null/undefined values and stringify JSON properties before generating patch
@@ -508,12 +524,28 @@ export async function updateInIdLogScope(
     // sparse read-back's GetResource), so this costs no call. Skipped when
     // nothing was sent to Cloud Control (a reimport-only update).
     if (progressEvent !== undefined) {
-      const unapplied = unappliedUpdateKeys({
+      let unapplied = unappliedUpdateKeys({
         previous: cleanPreviousProperties,
         desired: cleanProperties,
         live: result.attributes,
         writeOnly: writeOnlyProperties,
       });
+      // An interface's secondary addresses: applied through EC2 instead, as
+      // CloudFormation applies them in place (see the helper).
+      if (resourceType === NETWORK_INTERFACE_TYPE && unapplied.includes(SECONDARY_ADDRESS_KEY)) {
+        const fresh = await applyUnappliedSecondaryAddresses({
+          desired: cleanProperties,
+          live: result.attributes,
+          ids: { logicalId, physicalId },
+          regionOf: () => this.cloudControlClient.config.region(),
+          reread: () => this.readCcResourceModel(resourceType, physicalId, idLog),
+          debug: (message) => idLog.debug(message),
+        });
+        if (fresh !== undefined) {
+          result.attributes = { ...result.attributes, ...fresh };
+          unapplied = unapplied.filter((key) => key !== SECONDARY_ADDRESS_KEY);
+        }
+      }
       if (unapplied.length > 0) {
         // A `drift --revert` that did not apply fails, so it is never counted
         // reverted nor records the drifted value as the template's.

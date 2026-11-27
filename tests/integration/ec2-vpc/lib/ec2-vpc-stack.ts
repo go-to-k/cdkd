@@ -21,6 +21,7 @@ import * as route53 from 'aws-cdk-lib/aws-route53';
  * - VPC InstanceTenancy dedicated -> default in place, default -> dedicated replaced (issue #5449)
  * - VpcEncryptionControl on CreateVpc, on the SDK path (issue #5633)
  * - A private hosted zone whose `VPCs` the removal phase drops (issue #1160)
+ * - A network interface that gains a secondary private address in place (issue #7099)
  * - Fn::GetAtt for outputs (VPC ID, Security Group ID, Subnet IDs, NACL ID, EIP, Launch Template)
  *
  * Note: No EC2 instances are created to avoid costs.
@@ -29,6 +30,7 @@ import * as route53 from 'aws-cdk-lib/aws-route53';
  * covers: AWS::EC2::NetworkAclEntry
  * covers: AWS::Route53::HostedZone
  * covers: AWS::EC2::SubnetNetworkAclAssociation
+ * covers: AWS::EC2::NetworkInterface
  */
 export class Ec2VpcStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -167,6 +169,21 @@ export class Ec2VpcStack extends cdk.Stack {
       cdk.Tags.of(resource).add('cdkd-5448', isRemoval ? 'two' : 'one');
       if (!isRemoval) cdk.Tags.of(resource).add('cdkd-5448-gone', 'x');
     }
+
+    // go-to-k/cdkd#7099: the removal phase adds a secondary private address
+    // to this interface. Cloud Control reports that change SUCCESS without
+    // applying it; CloudFormation applies it in place (measured, us-east-1),
+    // and so does cdkd, through EC2 AssignPrivateIpAddresses. The interface
+    // has no SDK provider, so it is created and updated through Cloud Control.
+    // The public subnet is 10.0.0.0/24 (the VPC's first /24).
+    new ec2.CfnNetworkInterface(this, 'SecondaryIpEni', {
+      subnetId: vpc.publicSubnets[0]!.subnetId,
+      description: 'cdkd integ ec2-vpc (issue #7099)',
+      privateIpAddresses: [
+        { privateIpAddress: '10.0.0.200', primary: true },
+        ...(isRemoval ? [{ privateIpAddress: '10.0.0.201', primary: false }] : []),
+      ],
+    });
 
     // Elastic IP
     const eip = new ec2.CfnEIP(this, 'TestEip', {
