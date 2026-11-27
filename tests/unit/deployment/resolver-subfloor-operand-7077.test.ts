@@ -267,6 +267,24 @@ describe('resolver log operands with a sub-floor provenance print as *** (#7077)
     expect(boundPrintingBags()).toBe(boundPrintingBags());
   });
 
+  it('a tainted cross-stack value is a log-only needle on a diff pass only, never on a deploy', async () => {
+    const { recordTaintedCrossStackValue } = await import(
+      '../../../src/deployment/intrinsic-resolver/display-taint.js'
+    );
+    const { logOnlyValuesOf } = await import('../../../src/deployment/secret-redaction/log-only.js');
+    const taint = { exportTainted: () => true, stackOutputTainted: () => true, holdsAnyTaint: () => true };
+    const deployBag = new Map<string, string>();
+    recordTaintedCrossStackValue({ template: template('Q7'), resources: {}, recordedSecretValues: deployBag } as never, 'vpc-0abc');
+    // A deploy's write decisions read log-only needles (fingerprints, row tags).
+    expect(logOnlyValuesOf.get(deployBag)?.has('vpc-0abc') ?? false).toBe(false);
+    const diffBag = new Map<string, string>();
+    recordTaintedCrossStackValue(
+      { template: template('Q7'), resources: {}, recordedSecretValues: diffBag, crossStackTaint: taint } as never,
+      'vpc-0abc'
+    );
+    expect(logOnlyValuesOf.get(diffBag)?.has('vpc-0abc')).toBe(true);
+  });
+
   it('a value with no provenance still prints (the scan above can see it)', async () => {
     state.pin = 'Q7';
     const control: Route = { value: (pin) => pin, context: () => ({ recordedSecretValues: new Map() }) };

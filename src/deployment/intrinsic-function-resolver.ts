@@ -5,7 +5,7 @@ import {
 import { GetParameterCommand } from '@aws-sdk/client-ssm';
 import {
   displayScopeOpenFor,
-  innermostCallTainted,
+  innermostCrossStackReadTainted,
   recordTaintedCrossStackValue,
   withDisplayScope,
 } from './intrinsic-resolver/display-taint.js';
@@ -426,9 +426,12 @@ export class IntrinsicFunctionResolver {
     value: unknown,
     reresolved = false
   ): unknown {
-    // go-to-k/cdkd#7077: a read the preview marked tainted is a log-only
-    // needle of this pass too, for a line the resolver's scope does not cover.
-    if (reresolved && innermostCallTainted()) recordTaintedCrossStackValue(context, value);
+    // go-to-k/cdkd#7077: a read the diff's preview marked tainted is a
+    // log-only needle of this pass too, for a line the resolver's scope does
+    // not cover (`cdkd diff` only: a deploy's write decisions read the set).
+    if (reresolved && innermostCrossStackReadTainted()) {
+      recordTaintedCrossStackValue(context, value);
+    }
     if (typeof value === 'string') {
       // go-to-k/cdkd#7050: a cross-stack read whose producer value spelled a
       // token keeps that spelling and where each token was substituted.

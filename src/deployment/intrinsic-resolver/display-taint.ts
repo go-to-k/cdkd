@@ -202,6 +202,8 @@ const EMPTY: ReadonlySet<string> = new Set();
 interface DisplayFrame {
   readonly node: object;
   tainted: boolean;
+  /** The call itself READ a tainted export or output (not only an enclosing one). */
+  crossStackRead?: true;
   readonly parent: DisplayFrame | undefined;
 }
 const scope = new AsyncLocalStorage<DisplayFrame>();
@@ -246,7 +248,9 @@ export function withDisplayScope<T>(
  * to mask with, only these marks.
  */
 export function markCrossStackReadTainted(): void {
-  for (let frame = scope.getStore(); frame !== undefined; frame = frame.parent) {
+  const own = scope.getStore();
+  if (own !== undefined) own.crossStackRead = true;
+  for (let frame = own; frame !== undefined; frame = frame.parent) {
     frame.tainted = true;
   }
 }
@@ -258,18 +262,27 @@ export function crossStackTaintOf(
   return context.crossStackPreview ?? context.crossStackTaint;
 }
 
-/** Was the innermost call marked by {@link markCrossStackReadTainted}? */
-export function innermostCallTainted(): boolean {
-  return scope.getStore()?.tainted === true;
+/**
+ * Did the innermost call itself read an export or output the preview marks
+ * tainted ({@link markCrossStackReadTainted})? A frame tainted by template
+ * names only answers no: its read is no secret-fed producer value.
+ */
+export function innermostCrossStackReadTainted(): boolean {
+  return scope.getStore()?.crossStackRead === true;
 }
 
 /**
  * Record a tainted cross-stack read's string value as a log-only needle of
  * the pass (`recordLogOnlyValue`): masked whole at any length, and embedded
- * at or above the floor, on any line the pass prints. Masking only: nothing
- * persisted or compared reads a log-only needle.
+ * at or above the floor, on any line the pass prints.
+ *
+ * `cdkd diff` only (a context carrying the preview's marks): a log-only needle
+ * is NOT display-only everywhere. A deploy's write decisions read it (the
+ * masked-property fingerprint's `templateCarriesNeedle`, a nested row's
+ * `holdsRecordedSecret` tag withholding), so a deploy records nothing here.
  */
 export function recordTaintedCrossStackValue(context: ResolverContext, value: unknown): void {
+  if (crossStackTaintOf(context) === undefined) return;
   const bag = context.recordedSecretValues;
   if (bag === undefined || typeof value !== 'string' || value === '') return;
   recordLogOnlyValue(bag, value);
