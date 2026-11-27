@@ -530,7 +530,7 @@ export async function updateInIdLogScope(
           );
         }
         idLog.warn(
-          `${CC_SILENT_NOOP_TAG} ${logicalId} (${resourceType}): Cloud Control reported success but ${unapplied.join(', ')} still holds its previous value; the record keeps the previous value, so the next deploy sends the change again. If the template spells a value AWS normalizes, use AWS's spelling (go-to-k/cdkd#7099).`
+          `${CC_SILENT_NOOP_TAG} ${logicalId} (${resourceType}): Cloud Control reported success but ${unapplied.join(', ')} still holds its previous value; the record keeps the previous value, so the next deploy sends the change again (AWS may have applied it after this read; the re-send is then a no-op). If the template spells a value AWS normalizes, use AWS's spelling (go-to-k/cdkd#7099).`
         );
         // Record what AWS holds, so the next diff re-plans the change.
         const kept: Record<string, unknown> = { ...properties };

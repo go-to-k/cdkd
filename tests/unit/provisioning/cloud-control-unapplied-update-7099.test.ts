@@ -128,6 +128,35 @@ describe('a Cloud Control update that reports success but did not apply (go-to-k
     );
   });
 
+  it('does not fail an allow-listed pair whose change is a reorder only', async () => {
+    schema();
+    const live = {
+      SubnetId: 's',
+      PrivateIpAddresses: [
+        { PrivateIpAddress: '10.0.0.5', Primary: true },
+        { PrivateIpAddress: '10.0.0.9', Primary: false },
+      ],
+    };
+    serve({ Id: 'eni-1', ...live });
+    await expect(
+      new CloudControlProvider().update(
+        'Eni',
+        'eni-1',
+        'AWS::EC2::NetworkInterface',
+        {
+          SubnetId: 's',
+          PrivateIpAddresses: [
+            { PrivateIpAddress: '10.0.0.9', Primary: false },
+            { PrivateIpAddress: '10.0.0.5', Primary: true },
+          ],
+          Description: 'd',
+        },
+        live
+      )
+    ).resolves.toBeDefined();
+    expect(warned()).not.toContain(CC_SILENT_NOOP_TAG);
+  });
+
   it('fails the lone EKS load-balancing toggle, though the read model adds defaulted members', async () => {
     schema();
     serve({
@@ -237,6 +266,61 @@ describe('unappliedUpdateKeys (go-to-k/cdkd#7099)', () => {
         writeOnly: none,
       })
     ).toEqual([]);
+  });
+
+  // A value AWS only re-spells holds "live == previous" while the template
+  // differs: none of these may be named, or each deploy warns (or, for an
+  // allow-listed pair, fails) over a change that is already in place.
+  it.each([
+    ['a reordered list', { A: ['x', 'y'] }, { A: ['y', 'x'] }, { A: ['x', 'y'] }],
+    [
+      'a reordered interface address list (compared as a set)',
+      {
+        A: [
+          { PrivateIpAddress: '10.0.0.5', Primary: true },
+          { PrivateIpAddress: '10.0.0.9', Primary: false },
+        ],
+      },
+      {
+        A: [
+          { PrivateIpAddress: '10.0.0.9', Primary: 'false' },
+          { PrivateIpAddress: '10.0.0.5', Primary: 'true' },
+        ],
+      },
+      {
+        A: [
+          { PrivateIpAddress: '10.0.0.5', Primary: true },
+          { PrivateIpAddress: '10.0.0.9', Primary: false },
+        ],
+      },
+    ],
+    ['a case-only change', { A: 'ENABLED' }, { A: 'Enabled' }, { A: 'ENABLED' }],
+    ['a number format', { A: { N: 1 } }, { A: { N: '1.0' } }, { A: { N: 1 } }],
+    [
+      'whitespace inside a JSON string',
+      { A: '{"a":1,"b":[2]}' },
+      { A: '{ "b": [ 2 ], "a": 1 }' },
+      { A: '{"a":1,"b":[2]}' },
+    ],
+    [
+      'a member the template adds that the read model omits (an omitted default)',
+      { A: { X: 'x' } },
+      { A: { X: 'x', Flag: false } },
+      { A: { X: 'x' } },
+    ],
+  ])('does not name %s', (_label, previous, desired, live) => {
+    expect(unappliedUpdateKeys({ previous, desired, live, writeOnly: none })).toEqual([]);
+  });
+
+  it('still names a real change among re-spelled members', () => {
+    expect(
+      unappliedUpdateKeys({
+        previous: { A: { N: 1, S: 'on', L: ['x', 'y'] } },
+        desired: { A: { N: '1.0', S: 'ON', L: ['y', 'x', 'z'] } },
+        live: { A: { N: 1, S: 'on', L: ['x', 'y'] } },
+        writeOnly: none,
+      })
+    ).toEqual(['A']);
   });
 
   it('skips a removal, an addition, a key the model lacks, and a secret reference', () => {

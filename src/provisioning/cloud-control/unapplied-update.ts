@@ -22,9 +22,17 @@
  *  - the live value equals the PREVIOUS value, and differs from the desired
  *    one, after normalization.
  *
- * Normalization sorts object keys, renders scalars as strings (a read model
- * answers `1` for a template's `"1"`), and drops null members; the live value
- * keeps only the object members either side declares.
+ * Normalization is deliberately loose, so a value AWS only re-spells is
+ * never named (a missed no-op costs a warning nobody sees; a false one
+ * re-sends the change on every deploy, and fails it for an allow-listed
+ * pair). Object keys are sorted and null members dropped; every array is
+ * compared as a multiset, so a reorder is no change (an interface's
+ * secondary addresses compare as a set); a string holding JSON compares as
+ * the parsed value, a numeric string or number as its `Number` form
+ * (`"1.0"` is `1`), and any other scalar case-insensitively. Each side is
+ * also cut to the object members both the desired side and the read model
+ * hold, so a member the template adds that AWS never returns (a default the
+ * read model omits) is no change either.
  */
 /** The stable, greppable prefix of every report this module drives. */
 export const CC_SILENT_NOOP_TAG = '[cc-silent-noop]';
@@ -61,16 +69,16 @@ export function unappliedUpdateKeys(input: {
     const now = live[key];
     if (before === undefined || after === undefined || now === undefined) continue;
     if (holdsStandIn(before) || holdsStandIn(after)) continue;
-    const b = normalized(before);
-    const a = normalized(after);
-    if (b === a) continue;
-    // Compare in the space the desired side declares: a read model also
-    // returns members the template never declares (an EKS cluster's defaulted
-    // `ServiceIpv4Cidr`), and a nested member the template REMOVED may be kept
-    // by AWS by design, as a top-level removal is.
-    const p = normalized(declaredOnly(before, after, after));
+    if (normalized(before) === normalized(after)) continue;
+    // Compare in the space the desired side declares AND the read model
+    // returns: a read model also returns members the template never declares
+    // (an EKS cluster's defaulted `ServiceIpv4Cidr`), a nested member the
+    // template REMOVED may be kept by AWS by design, as a top-level removal
+    // is, and a member the read model omits cannot be judged at all.
+    const p = normalized(cut(before, after, now));
+    const a = normalized(cut(after, after, now));
     if (p === a) continue;
-    const n = normalized(declaredOnly(now, after, after));
+    const n = normalized(cut(now, after, now));
     if (n === p) out.push(key);
   }
   return out.sort();
@@ -82,41 +90,83 @@ function holdsStandIn(value: unknown): boolean {
   return text.includes('{{resolve:') || text.includes('****');
 }
 
-/** `live` cut down to the object members `a` or `b` declares, recursively. */
-function declaredOnly(live: unknown, a: unknown, b: unknown): unknown {
-  const isObject = (v: unknown): v is Record<string, unknown> =>
-    typeof v === 'object' && v !== null && !Array.isArray(v);
-  if (Array.isArray(live)) {
-    const as = Array.isArray(a) ? a : [];
-    const bs = Array.isArray(b) ? b : [];
-    return live.map((item, i) => declaredOnly(item, as[i], bs[i]));
+type Plain = Record<string, unknown>;
+const isObject = (v: unknown): v is Plain =>
+  typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/**
+ * `value` cut down to the object members BOTH `a` and `b` hold, recursively.
+ * An array's elements are cut by the union of the members the other side's
+ * elements hold, so a reordered list is cut the same way.
+ */
+function cut(value: unknown, a: unknown, b: unknown): unknown {
+  if (Array.isArray(value)) {
+    const sa = elementShape(a);
+    const sb = elementShape(b);
+    return value.map((item) => cut(item, sa, sb));
   }
-  if (!isObject(live) || (!isObject(a) && !isObject(b))) return live;
-  const out: Record<string, unknown> = {};
-  for (const key of Object.keys(live)) {
-    const ak = isObject(a) ? a[key] : undefined;
-    const bk = isObject(b) ? b[key] : undefined;
-    if (ak === undefined && bk === undefined) continue;
-    out[key] = declaredOnly(live[key], ak, bk);
+  if (!isObject(value) || !isObject(a) || !isObject(b)) return value;
+  const out: Plain = {};
+  for (const key of Object.keys(value)) {
+    if (a[key] === undefined || b[key] === undefined) continue;
+    out[key] = cut(value[key], a[key], b[key]);
   }
   return out;
+}
+
+/** The members any element of `list` holds, merged; `list` itself otherwise. */
+function elementShape(list: unknown): unknown {
+  if (!Array.isArray(list)) return list;
+  const objects = list.filter(isObject);
+  if (objects.length === 0) return list[0];
+  const merged: Plain = {};
+  for (const item of objects) {
+    for (const [key, member] of Object.entries(item)) {
+      if (member === undefined || member === null) continue;
+      const seen = merged[key];
+      merged[key] = isObject(seen) && isObject(member) ? { ...seen, ...member } : (seen ?? member);
+    }
+  }
+  return merged;
 }
 
 function normalized(value: unknown): string {
   return JSON.stringify(canonical(value));
 }
 
+const NUMERIC = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
+
 function canonical(value: unknown): unknown {
   if (value === null || value === undefined) return null;
-  if (Array.isArray(value)) return value.map(canonical);
+  if (Array.isArray(value)) {
+    return value
+      .map(canonical)
+      .map((item) => JSON.stringify(item))
+      .sort()
+      .map((item) => JSON.parse(item) as unknown);
+  }
   if (typeof value === 'object') {
-    const out: Record<string, unknown> = {};
-    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
-      const member = (value as Record<string, unknown>)[key];
+    const out: Plain = {};
+    for (const key of Object.keys(value as Plain).sort()) {
+      const member = (value as Plain)[key];
       if (member === null || member === undefined) continue;
       out[key] = canonical(member);
     }
     return out;
   }
-  return String(value);
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (text.startsWith('{') || text.startsWith('[')) {
+      try {
+        return canonical(JSON.parse(text) as unknown);
+      } catch {
+        // Not JSON: compared as text below.
+      }
+    }
+    if (NUMERIC.test(text)) return String(Number(text));
+    return text.toLowerCase();
+  }
+  if (typeof value === 'number' || typeof value === 'bigint') return String(Number(value));
+  if (typeof value === 'boolean') return String(value);
+  return null;
 }
