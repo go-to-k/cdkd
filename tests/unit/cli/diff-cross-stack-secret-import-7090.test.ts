@@ -370,6 +370,15 @@ describe('cdkd diff: a consumer reading a secret-fed producer output (#7090)', (
             } else {
               // The value reached the consumer: the scan above is not vacuous.
               expect(changeTypeOf(cons, 'Reader'), 'Reader').toBe('UPDATE');
+              // And its nested child, through the row's parameter: the value
+              // the row reads (the preview's, when the producer changes it,
+              // go-to-k/cdkd#7102) keeps its provenance, so the child's leaf is
+              // masked whatever its length. That the child reads the preview's
+              // value is proven by the NO_CHANGE arm above and the control below.
+              const child = cons.children.find((node) => node.stackName === 'Cons~Row2');
+              const inner = child?.changes.get('Inner');
+              expect(inner?.changeType, 'Inner').toBe('UPDATE');
+              expect(inner?.propertyChanges?.find((pc) => pc.path === 'Value')?.newValue).toBe('***');
             }
           });
         }
