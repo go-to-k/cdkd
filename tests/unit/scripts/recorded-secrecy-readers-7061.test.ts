@@ -1124,9 +1124,21 @@ const READS_RECORD_TEXT: Readonly<Record<string, { count: number; why: string }>
     count: 1,
     why: "a live read's attributes (the heal's outcome), not a record: no provenance field is in hand",
   },
-  'src/deployment/masked-baseline-recapture.ts#isMaskedBaselineRecaptureCandidate#holdsMaskLeaf(observed)': {
+  'src/deployment/masked-baseline-recapture.ts#isMaskedBaselineRecaptureCandidate#holdsMaskLeaf(withoutObservedMaskedLeaves(observed, record))': {
     count: 1,
-    why: 'the observed baseline holding the mask is what makes a recapture candidate; no provenance field describes observedProperties',
+    why: 'the observed baseline holding a mask the record does not name in `observedMaskedLeaves` (go-to-k/cdkd#7158) is what makes a recapture candidate',
+  },
+  'src/deployment/secret-redaction/off-template-echo.ts#plaintextFor#mentionsMask(readback)': {
+    count: 1,
+    why: 'a readback leaf already holding the mask teaches no needle (go-to-k/cdkd#7158); a wider `masked` would learn fewer needles and mask LESS',
+  },
+  'src/deployment/secret-redaction/off-template-echo.ts#learn#mentionsMask(value)': {
+    count: 1,
+    why: 'a readback or resolved leaf already holding the mask is no needle (go-to-k/cdkd#7158); a wider `masked` would learn fewer needles and mask LESS',
+  },
+  'src/deployment/secret-redaction/secret-attribute-keys.ts#learn#mentionsMask(value)': {
+    count: 1,
+    why: 'an attribute value already holding the mask is no needle for a key (go-to-k/cdkd#7153); a wider `masked` would drop fewer keys',
   },
   'src/deployment/rollback-executor/names.ts#secretDerivedNamePairs#mentionsDynamicReference(value)': {
     count: 1,

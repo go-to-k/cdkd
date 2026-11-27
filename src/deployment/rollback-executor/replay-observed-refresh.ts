@@ -156,6 +156,6 @@ export async function withRefreshedObservedBaseline(
   // under a key the template lacks, learned from the raw readback.
   return withOffTemplateEchoesMasked(
     { ...record, observedProperties: scrubbed },
-    { properties: restored.properties, observedProperties: observed }
+    { properties: restored.properties, readback: observed }
   );
 }

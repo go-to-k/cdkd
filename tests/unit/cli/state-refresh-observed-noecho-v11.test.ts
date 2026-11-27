@@ -325,6 +325,44 @@ describe('cdkd state refresh-observed on a v11 record with NoEcho coordinates', 
     expect(observed['Name']).toBe('kept');
   });
 
+  it('masks and names a NoEcho value or a secret reference plaintext the readback echoes under a key the template lacks (go-to-k/cdkd#7158, #7152)', async () => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    const record = makeResource({
+      physicalId: 'db',
+      resourceType: 'AWS::RDS::DBInstance',
+      properties: {
+        Value: '***',
+        Users: [{ Password: '{{resolve:ssm-secure:/db/pw}}' }],
+        Version: '{{resolve:ssm:/public/version}}',
+      },
+    });
+    record.noEchoLeaves = [['Value']];
+    mockGetState.mockResolvedValueOnce(makeState({ Db: record }));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        Value: 'hunter2-secret',
+        Users: [{ Password: 'pw-plain-7152' }],
+        Version: 'release-2026-11',
+        Echo: 'hunter2-secret',
+        Login: 'user:pw-plain-7152',
+        Release: 'release-2026-11',
+      }),
+    });
+
+    const { error } = await runRefresh(['TestStack']);
+    expect(error).toBeUndefined();
+    const [, , savedState] = mockSaveState.mock.calls[0] as unknown as [string, string, StackState];
+    const saved = savedState.resources['Db']!;
+    expect(JSON.stringify(savedState)).not.toContain('hunter2-secret');
+    expect(JSON.stringify(savedState)).not.toContain('pw-plain-7152');
+    expect(saved.observedProperties!['Echo']).toBe('***');
+    expect(saved.observedProperties!['Login']).toBe('***');
+    // A public ssm parameter's value is no secret: its echo is never masked
+    // (the baseline walk keeps or rewrites it into its reference, as before).
+    expect(saved.observedProperties!['Release']).not.toBe('***');
+    expect(saved.observedMaskedLeaves).toEqual([['Echo'], ['Login']]);
+  });
+
   it('masks a whole-*** leaf of a record that names NO coordinate (pre-v11 #2449 reader, import / scrub; review round 9 SECURITY)', async () => {
     mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
     mockGetState.mockResolvedValueOnce(

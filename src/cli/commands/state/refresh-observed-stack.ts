@@ -22,7 +22,7 @@ import {
   maskReadbackAtCoordinates,
   noEchoLeavesOf,
   maskedLeafCoordinatesOf,
-  withOffTemplateEchoesMasked,
+  maskOffTemplateEchoes,
 } from '../../../deployment/secret-redaction.js';
 import { PublicSsmProver } from '../../../deployment/public-ssm-proof.js';
 import { secretNamePrintingBags } from '../../../deployment/secret-name-needles.js';
@@ -473,8 +473,19 @@ export async function refreshObservedForStack(
             // holds `***` in `properties`, which positions nothing for the walk
             // below, so the readback's live value there is masked FIRST (through
             // each list's identity field, the whole list where none pairs them).
+            // go-to-k/cdkd#7158 / #7152: a secret the readback echoes under a
+            // key the template lacks, learned from the raw readback at the
+            // positions the record marks, masked here and named in
+            // `observedMaskedLeaves` below.
+            const echoes = maskOffTemplateEchoes({
+              bag: observed,
+              properties: resource.properties ?? {},
+              noEchoLeaves: resource.noEchoLeaves,
+              physicalId: resource.physicalId,
+              publicTokens: new Set([region, stackName]),
+            });
             resource.observedProperties = redactForState(
-              maskReadbackAtCoordinates(observed, resource.properties ?? {}, [
+              maskReadbackAtCoordinates(echoes.bag, resource.properties ?? {}, [
                 // A record naming no coordinate (pre-v11, imported, scrubbed)
                 // still holds `***` where the value stood: mask there too, as
                 // the deploy-start refresh does.
@@ -487,22 +498,8 @@ export async function refreshObservedForStack(
                 source: resource.properties ?? {},
               }
             );
-            // go-to-k/cdkd#7158 / #7152: a secret the readback echoed under a
-            // key the template lacks, learned from the raw readback at the
-            // positions the record marks, masked and recorded.
-            const echoesMasked = withOffTemplateEchoesMasked(
-              resource,
-              { properties: resource.properties, observedProperties: observed },
-              new Set([region, stackName])
-            );
-            if (echoesMasked.observedProperties !== undefined) {
-              resource.observedProperties = echoesMasked.observedProperties;
-            }
-            if (echoesMasked.observedMaskedLeaves === undefined) {
-              delete resource.observedMaskedLeaves;
-            } else {
-              resource.observedMaskedLeaves = echoesMasked.observedMaskedLeaves;
-            }
+            if (echoes.leaves.length > 0) resource.observedMaskedLeaves = echoes.leaves;
+            else delete resource.observedMaskedLeaves;
             // Issue #3466: BOTH fields, and only once a baseline was captured —
             // a marker left without its reason is re-stamped by the next deploy,
             // and a failed read keeps the refusal.

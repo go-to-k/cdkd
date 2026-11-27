@@ -224,9 +224,11 @@ export {
 } from './secret-redaction/noecho-leaves.js';
 export {
   withOffTemplateEchoesMasked,
+  maskOffTemplateEchoes,
   observedMaskedLeavesOf,
   withoutObservedMaskedLeaves,
   type OffTemplateEchoRecord,
+  type OffTemplateEchoInput,
 } from './secret-redaction/off-template-echo.js';
 export {
   withSecretAttributeKeysDropped,

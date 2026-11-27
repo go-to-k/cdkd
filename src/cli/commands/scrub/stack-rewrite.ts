@@ -464,7 +464,10 @@ export async function scrubStackRewritePass({
     const rewritten = keepHeldTokenProvenance(
       withOffTemplateEchoesMasked(
         applyScrubNoEcho(migrated, record, plan),
-        record,
+        {
+          properties: record.properties,
+          ...(record.observedProperties !== undefined && { readback: record.observedProperties }),
+        },
         noEchoPublicTokens
       )
     );

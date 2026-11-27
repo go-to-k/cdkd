@@ -313,7 +313,10 @@ export function redactStateForPersist(this: DeployEngine, state: StackState): St
         // go-to-k/cdkd#7158 / #7152: a secret the readback echoed under a key
         // the template lacks, learned from the readback before this save's
         // redaction, at the positions the persisted record marks.
-        healed,
+        {
+          properties: healed.properties,
+          ...(healed.observedProperties !== undefined && { readback: healed.observedProperties }),
+        },
         publicTokens
       ),
       // go-to-k/cdkd#7153: a custom resource attribute whose KEY holds a

@@ -8,7 +8,7 @@ import {
   valueAtCoordinate,
   type NoEchoCoordinate,
 } from './noecho-leaves.js';
-import { holdsMaskLeaf, isMaskLeaf, mentionsMask } from './recorded-secrecy.js';
+import { isMaskLeaf, mentionsMask, opensDynamicReferenceTo } from './recorded-secrecy.js';
 import { dynamicReferenceTokens } from './redact-path/reference-tokens.js';
 
 /**
@@ -42,7 +42,11 @@ export interface OffTemplateEchoRecord {
 }
 
 /** Only these references stand for a secret; a public `ssm` parameter's value is no secret. */
-const SECRET_REFERENCE = /^\{\{resolve:(?:ssm-secure|secretsmanager):/;
+function isSecretReference(token: string): boolean {
+  return (
+    opensDynamicReferenceTo(token, 'ssm-secure') || opensDynamicReferenceTo(token, 'secretsmanager')
+  );
+}
 
 /**
  * Read a persisted `observedMaskedLeaves` field, tolerating a malformed one as
@@ -106,7 +110,7 @@ function secretReferenceLeaves(
   const out: Array<{ coordinate: (string | number)[]; text: string }> = [];
   const walk = (node: unknown, path: (string | number)[]): void => {
     if (typeof node === 'string') {
-      if (dynamicReferenceTokens(node).some((token) => SECRET_REFERENCE.test(token))) {
+      if (dynamicReferenceTokens(node).some((token) => isSecretReference(token))) {
         out.push({ coordinate: path, text: node });
       }
       return;
@@ -131,8 +135,9 @@ function secretReferenceLeaves(
  */
 function corroborates(live: unknown, recorded: unknown): boolean {
   if (typeof recorded === 'string') {
+    // The recorded side holding the mask is a position being learned.
     if (mentionsMask(recorded)) return true;
-    if (dynamicReferenceTokens(recorded).some((token) => SECRET_REFERENCE.test(token))) {
+    if (dynamicReferenceTokens(recorded).some((token) => isSecretReference(token))) {
       return typeof live === 'string';
     }
     return live === recorded;
@@ -228,7 +233,7 @@ function offTemplateEchoes(
     offTemplate: boolean
   ): void => {
     if (typeof node === 'string') {
-      if (offTemplate && !isMaskLeaf(node) && needles.some((needle) => node.includes(needle))) {
+      if (offTemplate && needles.some((needle) => node.includes(needle))) {
         hits.push(path);
       }
       return;
@@ -262,32 +267,104 @@ function offTemplateEchoes(
   return hits;
 }
 
+/** What {@link maskOffTemplateEchoes} reads. */
+export interface OffTemplateEchoInput {
+  /** The bag being written, the readback as this writer redacted it. */
+  readonly bag: Record<string, unknown>;
+  /** The same readback before any redaction; `bag` when the writer has no other. */
+  readonly readback?: Record<string, unknown>;
+  /** The record's `properties` as persisted (references, masks). */
+  readonly properties: Record<string, unknown>;
+  /** The resolved `properties` this deploy sent, when it wrote the record. */
+  readonly resolvedProperties?: Record<string, unknown>;
+  readonly noEchoLeaves?: unknown;
+  readonly physicalId?: unknown;
+  /** The record's `observedMaskedLeaves` before this write. */
+  readonly previous?: unknown;
+  /** Values that name nothing secret (the region, the stack name). */
+  readonly publicTokens?: ReadonlySet<string> | undefined;
+}
+
 /**
- * Mask, in `record.observedProperties`, every string leaf under a key the
- * template lacks that echoes a value the record marks as secret, and record
- * where (`observedMaskedLeaves`). `raw` is the same record before this save's
- * redaction (its readback and, on a write, the resolved `properties`), which
- * is where the values are read; `record` is the redacted one being persisted.
+ * Mask, in `bag`, every string leaf under a key the template lacks that
+ * echoes a value the record marks as secret, and return where
+ * (`observedMaskedLeaves`, empty for none).
  *
- * The values learned:
- * - at each `noEchoLeaves` coordinate: the readback's leaf (through the list
- *   identity pairing) and the resolved leaf `raw` holds, each WHOLE, so a
- *   sub-floor value embedded in a longer leaf is covered by that leaf;
+ * The values are read off the RAW `readback` and the `resolvedProperties`:
+ * - at each `noEchoLeaves` coordinate: the readback's leaf (through
+ *   {@link listPairing}) and the resolved leaf, each WHOLE, so a sub-floor
+ *   value embedded in a longer leaf is covered by that leaf;
  * - at each leaf of `properties` holding an `ssm-secure` / `secretsmanager`
  *   reference: the readback's plaintext for it (the text between the
  *   template's literal prefix and suffix). A public `ssm` reference teaches
  *   nothing.
  *
  * A value is no needle when it is shorter than the needle floor, equals one of
- * `publicTokens` (the region, the stack name), or is contained in the
- * record's physical id, which AWS publishes and state keeps in the clear.
+ * `publicTokens`, or is contained in the physical id, which AWS publishes and
+ * state keeps in the clear.
  *
- * Every entry the record already holds is kept while the leaf there is still
- * the mask; the field is omitted when empty, and dropped with the readback.
+ * The echoes are FOUND in the raw readback too, so one this write already
+ * masked (a needle of the value scan) is named as well: a mask no field names
+ * is phantom drift. A leaf the scan rewrote into its reference keeps it (drift
+ * resolves it). A `previous` entry is kept while the leaf there, or an
+ * ancestor (a list a writer masked whole), still holds the mask.
+ */
+export function maskOffTemplateEchoes(input: OffTemplateEchoInput): {
+  bag: Record<string, unknown>;
+  leaves: (string | number)[][];
+} {
+  const { bag, properties, publicTokens } = input;
+  const readback = input.readback ?? bag;
+  const resolved = input.resolvedProperties ?? properties;
+  const physicalId = typeof input.physicalId === 'string' ? input.physicalId : '';
+  const needles = new Set<string>();
+  const learn = (value: unknown): void => {
+    if (typeof value !== 'string' || value.length < MIN_NEEDLE_LENGTH) return;
+    // A readback or resolved leaf, never a record bag: one carrying the mask
+    // already teaches nothing.
+    if (mentionsMask(value)) return;
+    if (publicTokens?.has(value) === true || physicalId.includes(value)) return;
+    needles.add(value);
+  };
+  for (const coordinate of noEchoLeavesOf({ noEchoLeaves: input.noEchoLeaves }) ?? []) {
+    learn(readbackValueAt(readback, resolved, coordinate));
+    learn(valueAtCoordinate(resolved, coordinate));
+  }
+  for (const { coordinate, text } of secretReferenceLeaves(properties)) {
+    learn(plaintextFor(text, readbackValueAt(readback, properties, coordinate)));
+    learn(plaintextFor(text, valueAtCoordinate(resolved, coordinate)));
+  }
+  const found = needles.size === 0 ? [] : offTemplateEchoes(readback, properties, [...needles]);
+  const hits = found.filter((coordinate) => {
+    const leaf = valueAtCoordinate(bag, coordinate);
+    if (leaf === undefined) return false;
+    return !(
+      typeof leaf === 'string' &&
+      !mentionsMask(leaf) &&
+      dynamicReferenceTokens(leaf).length > 0
+    );
+  });
+  const masked = hits.length === 0 ? bag : maskAtCoordinates(bag, hits);
+  const kept = (observedMaskedLeavesOf({ observedMaskedLeaves: input.previous }) ?? []).filter(
+    (coordinate) =>
+      coordinate.some((_, i) => isMaskLeaf(valueAtCoordinate(masked, coordinate.slice(0, i + 1))))
+  );
+  return { bag: masked, leaves: canonicalCoordinates([...kept, ...hits]) };
+}
+
+/**
+ * {@link maskOffTemplateEchoes} over a whole record about to be persisted:
+ * `record` is the redacted one, `raw` the same record before this save's
+ * redaction (its fresh readback and, on a write, the resolved `properties`).
+ * Sets `observedMaskedLeaves`, omitted when empty and dropped with the
+ * readback. Returns `record` by identity when nothing changed.
  */
 export function withOffTemplateEchoesMasked<R extends OffTemplateEchoRecord>(
   record: R,
-  raw: OffTemplateEchoRecord,
+  raw: {
+    readonly properties?: Record<string, unknown>;
+    readonly readback?: Record<string, unknown>;
+  },
   publicTokens?: ReadonlySet<string>
 ): R {
   const observed = record.observedProperties;
@@ -297,35 +374,18 @@ export function withOffTemplateEchoesMasked<R extends OffTemplateEchoRecord>(
     delete next.observedMaskedLeaves;
     return next;
   }
-  const properties = record.properties ?? {};
-  const rawObserved = raw.observedProperties ?? observed;
-  const rawProperties = raw.properties ?? properties;
-  const physicalId = typeof record.physicalId === 'string' ? record.physicalId : '';
-  const needles = new Set<string>();
-  const learn = (value: unknown): void => {
-    if (typeof value !== 'string' || value.length < MIN_NEEDLE_LENGTH) return;
-    if (holdsMaskLeaf(value) || mentionsMask(value)) return;
-    if (publicTokens?.has(value) === true || physicalId.includes(value)) return;
-    needles.add(value);
-  };
-  for (const coordinate of noEchoLeavesOf(record) ?? []) {
-    learn(readbackValueAt(rawObserved, rawProperties, coordinate));
-    learn(valueAtCoordinate(rawProperties, coordinate));
-  }
-  for (const { coordinate, text } of secretReferenceLeaves(properties)) {
-    learn(plaintextFor(text, readbackValueAt(rawObserved, properties, coordinate)));
-    learn(plaintextFor(text, valueAtCoordinate(rawProperties, coordinate)));
-  }
-  const hits = needles.size === 0 ? [] : offTemplateEchoes(observed, properties, [...needles]);
-  const masked = hits.length === 0 ? observed : maskAtCoordinates(observed, hits);
-  // At the coordinate or an ancestor: a writer that could not pair a list
-  // masks it whole (the drift baseline writers), and the entry still names it.
-  const kept = (observedMaskedLeavesOf(record) ?? []).filter((coordinate) =>
-    coordinate.some((_, i) => isMaskLeaf(valueAtCoordinate(masked, coordinate.slice(0, i + 1))))
-  );
-  const leaves = canonicalCoordinates([...kept, ...hits]);
+  const { bag, leaves } = maskOffTemplateEchoes({
+    bag: observed,
+    ...(raw.readback !== undefined && { readback: raw.readback }),
+    properties: record.properties ?? {},
+    ...(raw.properties !== undefined && { resolvedProperties: raw.properties }),
+    noEchoLeaves: record.noEchoLeaves,
+    physicalId: record.physicalId,
+    previous: record.observedMaskedLeaves,
+    publicTokens,
+  });
   const previous = JSON.stringify(observedMaskedLeavesOf(record) ?? []);
-  if (hits.length === 0 && JSON.stringify(leaves) === previous) {
+  if (bag === observed && JSON.stringify(leaves) === previous) {
     if (leaves.length === 0 && record.observedMaskedLeaves !== undefined) {
       const next = { ...record };
       delete next.observedMaskedLeaves;
@@ -333,7 +393,8 @@ export function withOffTemplateEchoesMasked<R extends OffTemplateEchoRecord>(
     }
     return record;
   }
-  const next = { ...record, observedProperties: masked };
+  // The bag `maskOffTemplateEchoes` returns is `observed` with leaves masked.
+  const next = { ...record, observedProperties: bag };
   if (leaves.length > 0) next.observedMaskedLeaves = leaves;
   else delete next.observedMaskedLeaves;
   return next;

@@ -2,7 +2,7 @@ import { getLogger } from '../../../utils/logger.js';
 import { ProviderRegistry } from '../../../provisioning/provider-registry.js';
 import {
   maskReadbackAtCoordinates,
-  withOffTemplateEchoesMasked,
+  maskOffTemplateEchoes,
   noEchoLeavesOf,
   redactForState,
   type RecordedSecretValues,
@@ -339,36 +339,33 @@ export async function captureObservedForImportedResources(
             // marks, through each list's identity field (the whole list where
             // nothing pairs), as the deploy's capture is.
             const marked = noEchoLeavesOf(resource) ?? [];
+            // go-to-k/cdkd#7158 / #7152: a secret the readback echoes under a
+            // key the template lacks, learned from the raw readback at the
+            // positions the record marks, masked here and named in
+            // `observedMaskedLeaves` below.
+            const echoes = maskOffTemplateEchoes({
+              bag: observed,
+              properties: resource.properties ?? {},
+              noEchoLeaves: resource.noEchoLeaves,
+              physicalId: resource.physicalId,
+              publicTokens: new Set(
+                [stackState.region, stackState.stackName].filter(
+                  (token): token is string => typeof token === 'string' && token !== ''
+                )
+              ),
+            });
             resource.observedProperties = redactForState(
               marked.length > 0
-                ? maskReadbackAtCoordinates(observed, resource.properties ?? {}, marked)
-                : observed,
+                ? maskReadbackAtCoordinates(echoes.bag, resource.properties ?? {}, marked)
+                : echoes.bag,
               {
                 provenance: 'state-baseline',
                 secrets: NO_RECORDED_SECRETS,
                 source: resource.properties ?? {},
               }
             );
-            // go-to-k/cdkd#7158 / #7152: a secret the readback echoed under a
-            // key the template lacks, learned from the raw readback at the
-            // positions the record marks, masked and recorded.
-            const echoesMasked = withOffTemplateEchoesMasked(
-              resource,
-              { properties: resource.properties, observedProperties: observed },
-              new Set(
-                [stackState.region, stackState.stackName].filter(
-                  (token): token is string => typeof token === 'string' && token !== ''
-                )
-              )
-            );
-            if (echoesMasked.observedProperties !== undefined) {
-              resource.observedProperties = echoesMasked.observedProperties;
-            }
-            if (echoesMasked.observedMaskedLeaves === undefined) {
-              delete resource.observedMaskedLeaves;
-            } else {
-              resource.observedMaskedLeaves = echoesMasked.observedMaskedLeaves;
-            }
+            if (echoes.leaves.length > 0) resource.observedMaskedLeaves = echoes.leaves;
+            else delete resource.observedMaskedLeaves;
           }
         } catch (err) {
           // NAME AND SHAPE, never the message. The sibling warn in
