@@ -127,8 +127,8 @@ CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${P2_LOG}"
 P2_RC=${PIPESTATUS[0]}
 set -e
-if grep -qF 'NotUpdatable' "${P2_LOG}"; then
-  echo "FAIL: #7098: a ComputeResources change was sent as an in-place update Batch refused (NotUpdatable) instead of a replacement" >&2
+if REFUSED="$(grep -E 'NotUpdatable|is not updatable with parameters provided' "${P2_LOG}")"; then
+  echo "FAIL: #7098: a ComputeResources change was sent as an in-place update Batch refused (NotUpdatable) instead of a replacement: ${REFUSED}" >&2
   exit 1
 fi
 if [ "${P2_RC}" -ne 0 ]; then
@@ -177,7 +177,13 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
 for arn in "${NEW_FARGATE_ARN}" "${EC2_ARN}"; do
-  if [ "$(aws batch describe-compute-environments --compute-environments "${arn}" --region "${REGION}" --query "length(computeEnvironments[?status!='DELETED'])" --output text)" != "0" ]; then
+  LEFT=""
+  for _ in $(seq 1 30); do
+    LEFT="$(aws batch describe-compute-environments --compute-environments "${arn}" --region "${REGION}" --query "length(computeEnvironments[?status!='DELETED'])" --output text)"
+    [ "${LEFT}" = "0" ] && break
+    sleep 10
+  done
+  if [ "${LEFT}" != "0" ]; then
     echo "FAIL: compute environment ${arn} still exists after destroy" >&2
     exit 1
   fi

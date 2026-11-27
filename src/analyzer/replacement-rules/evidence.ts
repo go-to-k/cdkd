@@ -169,7 +169,8 @@ export const REPLACEMENT_EVIDENCE: ReadonlyMap<string, ReplacementEvidence> = ne
   ],
   ['AWS::EMR::Cluster#Instances', conditional('cfn-measured', 5418)],
   // Measured through Cloud Control on #7083: in place with
-  // `ReplaceComputeEnvironment: false`, `NotUpdatable` without it.
+  // `ReplaceComputeEnvironment: false`, `NotUpdatable` without it; Batch
+  // refuses a Fargate or BEST_FIT environment either way (#7098).
   ['AWS::Batch::ComputeEnvironment#ComputeResources', conditional('cc-measured', 7083, 7098)],
   // --- provider-replacement planners
   ['AWS::SNS::Subscription#DeliveryPolicy', conditional('cfn-measured', 6509)],

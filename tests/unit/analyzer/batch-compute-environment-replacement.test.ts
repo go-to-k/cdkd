@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vite-plus/test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { ReplacementRulesRegistry } from '../../../src/analyzer/replacement-rules.js';
+import { CREATE_ONLY_PATHS } from '../../../src/analyzer/replacement-rules/batch-compute-environment.js';
 
 // go-to-k/cdkd#7098: a Batch compute environment's ComputeResources change that
 // needs an infrastructure update replaces unless the template sets
@@ -41,7 +44,7 @@ function replaces(
 
 describe('Batch compute environment ComputeResources replacement (go-to-k/cdkd#7098)', () => {
   const infrastructure: Array<[string, Record<string, unknown>]> = [
-    ['AllocationStrategy', { AllocationStrategy: 'BEST_FIT' }],
+    ['AllocationStrategy', { AllocationStrategy: 'SPOT_CAPACITY_OPTIMIZED' }],
     ['BidPercentage', { BidPercentage: 60 }],
     ['Ec2Configuration', { Ec2Configuration: [{ ImageType: 'ECS_AL2' }] }],
     ['Ec2KeyPair', { Ec2KeyPair: 'kp' }],
@@ -72,6 +75,26 @@ describe('Batch compute environment ComputeResources replacement (go-to-k/cdkd#7
     }
   });
 
+  // Batch refuses these any infrastructure update, ReplaceComputeEnvironment
+  // false or not (measured on #7098).
+  it('a Fargate environment replaces on an infrastructure member even under false', () => {
+    const fargate = { Type: 'FARGATE', MaxvCpus: 2, Subnets: ['subnet-a'], SecurityGroupIds: ['sg-a'] };
+    expect(replaces({ Type: 'FARGATE_SPOT' }, false, fargate)).toBe(true);
+    expect(replaces({ Tags: { k: 'v' } }, false, fargate)).toBe(true);
+    expect(replaces({ Subnets: ['subnet-b'] }, false, fargate)).toBe(false);
+    expect(replaces({ MaxvCpus: 4 }, undefined, fargate)).toBe(false);
+  });
+
+  it('a BEST_FIT environment (or no strategy) replaces on infrastructure and network changes', () => {
+    for (const strategy of ['BEST_FIT', undefined]) {
+      const bestFit = { ...base, AllocationStrategy: strategy };
+      expect(replaces({ InstanceTypes: ['m5.large'] }, false, bestFit)).toBe(true);
+      expect(replaces({ Subnets: ['subnet-b'] }, false, bestFit)).toBe(true);
+      expect(replaces({ SecurityGroupIds: ['sg-b'] }, false, bestFit)).toBe(true);
+      expect(replaces({ MaxvCpus: 8 }, false, bestFit)).toBe(false);
+    }
+  });
+
   it('a schema create-only member replaces even under ReplaceComputeEnvironment: false', () => {
     expect(replaces({ SpotIamFleetRole: 'arn:aws:iam::123456789012:role/b' }, false)).toBe(true);
     expect(
@@ -87,5 +110,19 @@ describe('Batch compute environment ComputeResources replacement (go-to-k/cdkd#7
     expect(
       registry.requiresReplacement(TYPE, 'ComputeResources', base, { ...base, InstanceTypes: ['m5.large'] })
     ).toBe(false);
+  });
+
+  // The hand rule owns ComputeResources, so the schema fallback never reads its
+  // nested create-only paths: the copy must match the committed snapshot.
+  it('the create-only member list matches the registry schema snapshot', () => {
+    const snapshot = JSON.parse(
+      readFileSync(join(__dirname, '../../fixtures/cfn-registry-create-only-paths.json'), 'utf8')
+    ) as { types: Record<string, string[][]> };
+    const fromSchema = snapshot.types[TYPE]!
+      .filter((p) => p[0] === 'ComputeResources')
+      .map((p) => p.slice(1).join('.'))
+      .sort();
+    expect(fromSchema.length).toBeGreaterThan(0);
+    expect(CREATE_ONLY_PATHS.map((p) => p.join('.')).sort()).toEqual(fromSchema);
   });
 });
