@@ -12,7 +12,6 @@
  * no longer an unsettled candidate. Read by that test and the generator only.
  */
 export const UNMEASURED_SPEC_REPLACEMENT_CANDIDATES: ReadonlySet<string> = new Set([
-  'AWS::Batch::ComputeEnvironment#EksConfiguration',
   // Measured on #7083 (Cloud Control): a member change applies in place
   // (SMB MountOptions Version AUTOMATIC -> SMB3), while DataSync refuses an
   // NFS -> SMB switch ("Cannot switch protocol from NFS to SMB"), and only
@@ -25,11 +24,6 @@ export const UNMEASURED_SPEC_REPLACEMENT_CANDIDATES: ReadonlySet<string> = new S
   // ElasticLoadBalancing toggle is left unapplied by CloudFormation too
   // (UPDATE_COMPLETE on the same cluster), and cdkd refuses it (#7099).
   'AWS::EKS::Cluster#KubernetesNetworkConfig',
-  'AWS::EMRServerless::Application#ImageConfiguration',
-  'AWS::EMRServerless::Application#ImageConfiguration.ImageUri',
-  'AWS::EMRServerless::Application#WorkerTypeSpecifications',
-  'AWS::EMRServerless::Application#WorkerTypeSpecifications.*.ImageConfiguration',
-  'AWS::EMRServerless::Application#WorkerTypeSpecifications.*.ImageConfiguration.ImageUri',
   // Members of NodeGroupConfiguration, whose own row is a CloudFormation-
   // measured `replace` (#7100): replacing on it already covers each of them,
   // and a member cannot be compared per element.
@@ -42,9 +36,6 @@ export const UNMEASURED_SPEC_REPLACEMENT_CANDIDATES: ReadonlySet<string> = new S
   // (#7130) and its Enabled member applies in place, so neither verdict
   // describes the whole property.
   'AWS::Elasticsearch::Domain#EncryptionAtRestOptions',
-  'AWS::KafkaConnect::Connector#ConnectorConfiguration',
-  'AWS::KafkaConnect::Connector#Plugins',
-  'AWS::KafkaConnect::Connector#WorkerConfiguration',
   // Measured on #7083: CloudFormation replaced the channel (new id); Cloud
   // Control refuses CREATE for the type, so cdkd cannot deploy it and no
   // fixture can carry a `replace` row. An element member cannot be compared

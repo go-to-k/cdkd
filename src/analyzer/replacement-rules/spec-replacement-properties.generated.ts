@@ -14,6 +14,7 @@ export const SPEC_REPLACEMENT_PATHS: ReadonlyMap<
   ReadonlyArray<readonly string[]>
 > = new Map<string, ReadonlyArray<readonly string[]>>([
   ['AWS::AppConfig::ConfigurationProfile', [['Type']]],
+  ['AWS::Batch::ComputeEnvironment', [['EksConfiguration']]],
   ['AWS::ElastiCache::ReplicationGroup', [['NodeGroupConfiguration'], ['NumNodeGroups']]],
   [
     'AWS::Elasticsearch::Domain',
@@ -63,6 +64,7 @@ export const SPEC_REPLACEMENT_PATHS: ReadonlyMap<
 
 /** `<Type>#<path>` of the rows above that a CloudFormation execution measured replacing (#7100). */
 export const SPEC_REPLACEMENT_CFN_MEASURED: ReadonlySet<string> = new Set([
+  'AWS::Batch::ComputeEnvironment#EksConfiguration',
   'AWS::ElastiCache::ReplicationGroup#NodeGroupConfiguration',
   'AWS::ElastiCache::ReplicationGroup#NumNodeGroups',
   'AWS::Elasticsearch::Domain#ElasticsearchVersion',

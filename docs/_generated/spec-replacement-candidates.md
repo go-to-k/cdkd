@@ -15,7 +15,7 @@ what cdkd does; `update` and `baseline` rows keep the in-place update, and a `ha
 is decided by `src/analyzer/replacement-rules/rules.ts` or a provider-replacement planner.
 Evidence: `REPLACEMENT_EVIDENCE`.
 
-Candidates: 389 (replace 32, update 245, baseline 22, hand rule 90).
+Candidates: 389 (replace 33, update 253, baseline 13, hand rule 90).
 
 | Candidate | Spec | Verdict |
 | --- | --- | --- |
@@ -50,7 +50,7 @@ Candidates: 389 (replace 32, update 245, baseline 22, hand rule 90).
 | `AWS::Batch::ComputeEnvironment#ComputeResources.Subnets` | maybe | hand rule |
 | `AWS::Batch::ComputeEnvironment#ComputeResources.Tags` | maybe | hand rule |
 | `AWS::Batch::ComputeEnvironment#ComputeResources.Type` | maybe | hand rule |
-| `AWS::Batch::ComputeEnvironment#EksConfiguration` | yes | baseline |
+| `AWS::Batch::ComputeEnvironment#EksConfiguration` | yes | replace |
 | `AWS::Batch::JobDefinition#Tags` | yes | update |
 | `AWS::Batch::JobQueue#Tags` | yes | update |
 | `AWS::Batch::SchedulingPolicy#Tags` | yes | update |
@@ -172,8 +172,8 @@ Candidates: 389 (replace 32, update 245, baseline 22, hand rule 90).
 | `AWS::EMRServerless::Application#AutoStopConfiguration` | maybe | update |
 | `AWS::EMRServerless::Application#AutoStopConfiguration.Enabled` | maybe | update |
 | `AWS::EMRServerless::Application#AutoStopConfiguration.IdleTimeoutMinutes` | maybe | update |
-| `AWS::EMRServerless::Application#ImageConfiguration` | maybe | baseline |
-| `AWS::EMRServerless::Application#ImageConfiguration.ImageUri` | maybe | baseline |
+| `AWS::EMRServerless::Application#ImageConfiguration` | maybe | update |
+| `AWS::EMRServerless::Application#ImageConfiguration.ImageUri` | maybe | update |
 | `AWS::EMRServerless::Application#InitialCapacity` | maybe | update |
 | `AWS::EMRServerless::Application#InitialCapacity.*.Key` | maybe | update |
 | `AWS::EMRServerless::Application#InitialCapacity.*.Value` | maybe | update |
@@ -190,9 +190,9 @@ Candidates: 389 (replace 32, update 245, baseline 22, hand rule 90).
 | `AWS::EMRServerless::Application#NetworkConfiguration.SecurityGroupIds` | maybe | update |
 | `AWS::EMRServerless::Application#NetworkConfiguration.SubnetIds` | maybe | update |
 | `AWS::EMRServerless::Application#ReleaseLabel` | maybe | update |
-| `AWS::EMRServerless::Application#WorkerTypeSpecifications` | maybe | baseline |
-| `AWS::EMRServerless::Application#WorkerTypeSpecifications.*.ImageConfiguration` | maybe | baseline |
-| `AWS::EMRServerless::Application#WorkerTypeSpecifications.*.ImageConfiguration.ImageUri` | maybe | baseline |
+| `AWS::EMRServerless::Application#WorkerTypeSpecifications` | maybe | update |
+| `AWS::EMRServerless::Application#WorkerTypeSpecifications.*.ImageConfiguration` | maybe | update |
+| `AWS::EMRServerless::Application#WorkerTypeSpecifications.*.ImageConfiguration.ImageUri` | maybe | update |
 | `AWS::ElastiCache::CacheCluster#AZMode` | maybe | hand rule |
 | `AWS::ElastiCache::CacheCluster#NumCacheNodes` | maybe | update |
 | `AWS::ElastiCache::CacheCluster#PreferredAvailabilityZone` | maybe | update |
@@ -263,9 +263,9 @@ Candidates: 389 (replace 32, update 245, baseline 22, hand rule 90).
 | `AWS::ImageBuilder::ImageRecipe#Tags` | yes | update |
 | `AWS::IoT::ThingType#ThingTypeProperties` | yes | hand rule |
 | `AWS::IoTWireless::NetworkAnalyzerConfiguration#Tags` | yes | update |
-| `AWS::KafkaConnect::Connector#ConnectorConfiguration` | yes | baseline |
-| `AWS::KafkaConnect::Connector#Plugins` | yes | baseline |
-| `AWS::KafkaConnect::Connector#WorkerConfiguration` | yes | baseline |
+| `AWS::KafkaConnect::Connector#ConnectorConfiguration` | yes | update |
+| `AWS::KafkaConnect::Connector#Plugins` | yes | update |
+| `AWS::KafkaConnect::Connector#WorkerConfiguration` | yes | update |
 | `AWS::KinesisAnalytics::ApplicationOutput#Output.Name` | yes | update |
 | `AWS::KinesisAnalyticsV2::Application#RuntimeEnvironment` | yes | update |
 | `AWS::KinesisAnalyticsV2::ApplicationOutput#Output.Name` | yes | update |

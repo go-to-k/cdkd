@@ -244,6 +244,24 @@ describe('spec-replacement table (go-to-k/cdkd#7070)', () => {
     );
   });
 
+  // go-to-k/cdkd#7083 slice 5: CloudFormation A/B chains. An EKS compute
+  // environment's EksConfiguration replaced it (a new ARN); the EMR Serverless
+  // image and KafkaConnect connector members applied in place.
+  it('a Batch EKS compute environment replaces on EksConfiguration, the in-place rows stay', async () => {
+    expect(await replacesOnChange('AWS::Batch::ComputeEnvironment', ['EksConfiguration'])).toBe(
+      true
+    );
+    for (const [type, path] of [
+      ['AWS::EMRServerless::Application', ['ImageConfiguration', 'ImageUri']],
+      ['AWS::EMRServerless::Application', ['WorkerTypeSpecifications']],
+      ['AWS::KafkaConnect::Connector', ['ConnectorConfiguration']],
+      ['AWS::KafkaConnect::Connector', ['Plugins']],
+      ['AWS::KafkaConnect::Connector', ['WorkerConfiguration']],
+    ] as const) {
+      expect(await replacesOnChange(type, [...path]), `${type}#${path.join('.')}`).toBe(false);
+    }
+  });
+
   // The rename CloudFormation fails rather than replaces stays the provider's
   // refusal (#3750), not a replacement of a stateful database.
   it('a nested measured update stays in place', async () => {

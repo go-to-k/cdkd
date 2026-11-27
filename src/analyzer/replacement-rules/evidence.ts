@@ -831,6 +831,35 @@ export const REPLACEMENT_EVIDENCE: ReadonlyMap<string, ReplacementEvidence> = ne
   ],
   ['AWS::AppStream::StackFleetAssociation#FleetName', APPSTREAM_ROLE],
   ['AWS::AppStream::StackFleetAssociation#StackName', APPSTREAM_ROLE],
+  // CloudFormation A/B (slice 5 of #7083), each image a private ECR image built
+  // on the EMR base under two tags: UPDATE_COMPLETE under the same application
+  // id, reading back the new ImageUri. EMR Serverless takes either the
+  // top-level ImageConfiguration or WorkerTypeSpecifications (with both Driver
+  // and Executor), never both, so each was measured alone; the
+  // WorkerTypeSpecifications row changed both workers' images.
+  ['AWS::EMRServerless::Application#ImageConfiguration', update('cfn-measured', 7083)],
+  ['AWS::EMRServerless::Application#ImageConfiguration.ImageUri', update('cfn-measured', 7083)],
+  ['AWS::EMRServerless::Application#WorkerTypeSpecifications', update('cfn-measured', 7083)],
+  [
+    'AWS::EMRServerless::Application#WorkerTypeSpecifications.*.ImageConfiguration',
+    update('cfn-measured', 7083),
+  ],
+  [
+    'AWS::EMRServerless::Application#WorkerTypeSpecifications.*.ImageConfiguration.ImageUri',
+    update('cfn-measured', 7083),
+  ],
+  // CloudFormation A/B on a connector to a provisioned MSK cluster: each
+  // change (a connector configuration value, another custom plugin, another
+  // worker configuration) UPDATE_COMPLETE under the same connector ARN, the
+  // connector RUNNING and reading back the new value.
+  ['AWS::KafkaConnect::Connector#ConnectorConfiguration', update('cfn-measured', 7083)],
+  ['AWS::KafkaConnect::Connector#Plugins', update('cfn-measured', 7083)],
+  ['AWS::KafkaConnect::Connector#WorkerConfiguration', update('cfn-measured', 7083)],
+  // CloudFormation A/B on an EKS compute environment: a KubernetesNamespace
+  // change and an EksClusterArn change (another cluster) each replaced it
+  // (a new compute environment ARN; with a ComputeEnvironmentName, the update
+  // failed "a custom-named resource requires replacing").
+  ['AWS::Batch::ComputeEnvironment#EksConfiguration', replace('cfn-measured', 7083)],
   // --- updateableProperties beyond the fixture or the spec
   ['AWS::Budgets::Budget#NotificationsWithSubscribers', update('deviation', 7038)],
   ['AWS::EC2::Subnet#Ipv6CidrBlock', update('cfn-measured', 5632)],
