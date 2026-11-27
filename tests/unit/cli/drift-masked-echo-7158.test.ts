@@ -337,6 +337,36 @@ describe('cdkd drift: a secret echoed under a key the template lacks (go-to-k/cd
     expect(mockSaveState).toHaveBeenCalled();
   });
 
+  it('--revert masks and names an echo the provider reports under a key the template lacks', async () => {
+    const update = vi.fn(async () => ({
+      physicalId: '/app/token',
+      effectiveProperties: { Name: '/app/token', Type: 'String', Value: LIVE_SECRET, Extra: LIVE_SECRET },
+    }));
+    mockGetState.mockResolvedValue(
+      makeState({
+        Token: param({
+          properties: { Name: '/app/token', Type: 'String', Value: SECRET_MASK },
+          observedProperties: { Name: '/app/token', Type: 'String', Value: SECRET_MASK, Extra: 'old-public' },
+          noEchoLeaves: [['Value']],
+          observedMaskedLeaves: undefined,
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ Name: '/app/token', Type: 'SecureString', Value: LIVE_SECRET, Extra: LIVE_SECRET }),
+      update,
+    });
+
+    await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(mockSaveState).toHaveBeenCalled();
+    for (const call of mockSaveState.mock.calls) {
+      const saved = (call[2] as StackState).resources['Token']!;
+      expect(JSON.stringify(saved)).not.toContain(LIVE_SECRET);
+      expect(saved.observedMaskedLeaves).toEqual([['Extra']]);
+    }
+  });
+
   it('--accept of another path keeps the named position masked and named', async () => {
     mockGetState.mockResolvedValue(makeState({ Token: param() }));
     readsBack({ Name: '/app/token', Type: 'SecureString', Value: 'public-value', Extra: LIVE_SECRET });
