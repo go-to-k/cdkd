@@ -156,7 +156,6 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 - [`app-autoscaling-recreate`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/app-autoscaling-recreate/)
 - [`appconfig`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/appconfig/)
 - [`appconfig-environment-delete-protection`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/appconfig-environment-delete-protection/)
-- [`appsync-schema-update-drift`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/appsync-schema-update-drift/)
 - [`asg-destroy-running-instances`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/asg-destroy-running-instances/)
 - [`asg-rolling-signals`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/asg-rolling-signals/)
 - [`asg-update-policy`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/asg-update-policy/)
