@@ -1,6 +1,19 @@
-import { resolvedPlaintextOf, substitutedSpellingOf, type RecordedSecretValues } from '../pairs.js';
+import {
+  SECRET_MASK,
+  resolvedPlaintextOf,
+  substitutedSpellingOf,
+  type RecordedSecretValues,
+} from '../pairs.js';
 import { storeAssociation } from '../cross-stack.js';
-import { isPlainObject, isSingleDynamicReferenceToken, MIN_NEEDLE_LENGTH } from '../rules.js';
+import { dynamicReferenceTokens } from '../redact-path/reference-tokens.js';
+import { referencesConsumedBy } from '../consumed-references.js';
+import { attributionRefusedReadsOf } from './refused-parameter-reads.js';
+import {
+  isPlainObject,
+  isSingleDynamicReferenceToken,
+  MIN_NEEDLE_LENGTH,
+  TEMPLATE_DERIVED_RULES,
+} from '../rules.js';
 import { redactForState, redactAtProvenance } from '../context.js';
 import { plaintextIndexOf } from '../certified-positions.js';
 import {
@@ -11,11 +24,16 @@ import {
   rendersLiteralTo,
 } from '../positions.js';
 import { dynamicReferenceSpans, withoutLiteralRendering } from '../redact-path.js';
+import {
+  TAINTED_WITHOUT_SPAN,
+  positionBySubstitutionSpans,
+} from '../redact-path/substitution-spans.js';
 import { SPELLED_SECRET_REFERENCE_PREFIXES } from '../anchors.js';
-import { wholeStringLeavesOf } from '../mask-only.js';
+import { recordDerivedMaskOnlyValue, wholeStringLeavesOf } from '../mask-only.js';
 import {
   NESTED_STACK_RESOURCE_TYPE,
   UNFRAMED_SPELLING,
+  markAttributionRefusedParameter,
   nestedStackParameterExpressions,
   renderedParameterSpellings,
 } from './parameter-tables.js';
@@ -382,17 +400,43 @@ export function recordNestedStackParameterExpressions(
   // --recursive` -- binding the literal -- never renders.
   for (const [name, resolvedValue] of Object.entries(resolvedParameters)) {
     const sourceLeaf = sourceParameters[name];
-    if (typeof resolvedValue !== 'string' || typeof sourceLeaf !== 'string') continue;
-    if (isSingleDynamicReferenceToken(sourceLeaf) || positioned[name] !== sourceLeaf) continue;
-    if (!rendersLiteralTo(sourceLeaf, secrets, resolvedValue)) continue;
+    if (typeof resolvedValue !== 'string') continue;
+    // go-to-k/cdkd#7050: an INTRINSIC source whose tokens the resolver's own
+    // record places (`positionBySubstitutionSpans`) is a rendered spelling
+    // too, so the child's `{Ref}` leaf persists it rather than the value
+    // scan's answer, which misses a sub-floor secret beside a parameter.
+    const spelling =
+      typeof sourceLeaf === 'string'
+        ? !isSingleDynamicReferenceToken(sourceLeaf) && positioned[name] === sourceLeaf
+          ? sourceLeaf
+          : undefined
+        : provenance === 'template-derived'
+          ? substitutionSpelling(resolvedValue, sourceLeaf, secrets, name)
+          : undefined;
+    // go-to-k/cdkd#7059: a value holding a sub-floor secret's text is one
+    // the child may read only as the certified spelling, else masked. By
+    // CONTAINMENT, fail closed: a public value equal to a secret's text cannot
+    // be told from one carrying it. A child that masks such a read plans it
+    // unchanged by its fingerprints (`redaction-masks.ts`), so the mark costs
+    // no phantom change (#7050 review).
+    // A row reading a parameter this stack itself holds marked passes the
+    // mark on (a nested grandchild).
+    if (
+      holdsSubFloorSecret(resolvedValue, secrets) ||
+      holdsConsumedSubFloorSecret(resolvedValue, sourceLeaf, secrets) ||
+      (isPlainObject(sourceLeaf) && attributionRefusedReadsOf(sourceLeaf, secrets) !== undefined)
+    ) {
+      markAttributionRefusedParameter(secrets, name, 'sub-floor');
+    }
+    if (spelling === undefined || !rendersLiteralTo(spelling, secrets, resolvedValue)) continue;
     let rendered = renderedParameterSpellings.get(secrets);
     if (rendered === undefined) {
       rendered = new Map();
       renderedParameterSpellings.set(secrets, rendered);
     }
     const previous = rendered.get(name);
-    if (previous === undefined) rendered.set(name, { spelling: sourceLeaf, value: resolvedValue });
-    else if (previous?.spelling !== sourceLeaf || previous.value !== resolvedValue) {
+    if (previous === undefined) rendered.set(name, { spelling, value: resolvedValue });
+    else if (previous?.spelling !== spelling || previous.value !== resolvedValue) {
       rendered.set(name, null);
     }
   }
@@ -853,4 +897,72 @@ export function recordNestedStackParameterExpressions(
     }
     storeAssociation(table, name, expression, plaintext);
   }
+}
+
+/**
+ * The spelling the substitution-span arm persists for an intrinsic parameter
+ * source (go-to-k/cdkd#7050), when it positions one: never the mask, never
+ * the value itself.
+ */
+function substitutionSpelling(
+  resolvedValue: string,
+  sourceLeaf: unknown,
+  secrets: RecordedSecretValues,
+  name: string
+): string | undefined {
+  const placed = positionBySubstitutionSpans(
+    resolvedValue,
+    sourceLeaf,
+    secrets,
+    TEMPLATE_DERIVED_RULES,
+    (text) => redactForState(text, { provenance: 'value-scan', secrets })
+  );
+  // A consumed secret with no span to place it by masks the row (fail closed).
+  const spelled = placed === TAINTED_WITHOUT_SPAN ? SECRET_MASK : placed;
+  // A row value the arm MASKS (two references share its secret text) is a
+  // mask-only needle of the row's bag, so a child reading the parameter whole
+  // masks it too rather than keep the plaintext the parent would not.
+  // CONTAINMENT too, so a child leaf embedding the value is masked whole,
+  // and the PARAMETER is marked masked for every other child read (#7059).
+  if (spelled === SECRET_MASK) {
+    recordDerivedMaskOnlyValue(secrets, resolvedValue);
+    markAttributionRefusedParameter(secrets, name, 'masked');
+  }
+  return spelled === undefined || spelled === SECRET_MASK || spelled === resolvedValue
+    ? undefined
+    : spelled;
+}
+
+/**
+ * Does `value` hold the text of a secret under the value scan's floor that
+ * `sourceLeaf`'s own resolution consumed (a token it spells, or one the
+ * resolver stamped on it, `consumed-references.ts`)?
+ */
+function holdsConsumedSubFloorSecret(
+  value: string,
+  sourceLeaf: unknown,
+  secrets: RecordedSecretValues
+): boolean {
+  const tokens =
+    typeof sourceLeaf === 'string'
+      ? dynamicReferenceTokens(sourceLeaf)
+      : isPlainObject(sourceLeaf)
+        ? [...referencesConsumedBy(secrets, sourceLeaf)]
+        : [];
+  for (const token of tokens) {
+    const plaintext = resolvedPlaintextOf(secrets, token);
+    if (plaintext === undefined || plaintext === '' || plaintext.length >= MIN_NEEDLE_LENGTH)
+      continue;
+    if (value.includes(plaintext)) return true;
+  }
+  return false;
+}
+
+/** Does `value` hold a recorded secret's text under the value scan's floor? */
+function holdsSubFloorSecret(value: string, secrets: RecordedSecretValues): boolean {
+  for (const [plaintext, expression] of secrets) {
+    if (plaintext === '' || plaintext.length >= MIN_NEEDLE_LENGTH) continue;
+    if (expression !== SECRET_MASK && value.includes(plaintext)) return true;
+  }
+  return false;
 }

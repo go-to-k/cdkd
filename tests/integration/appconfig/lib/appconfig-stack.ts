@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as appconfig from 'aws-cdk-lib/aws-appconfig';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 
 /**
  * AWS AppConfig full chain integ. Every type except Environment is
@@ -21,12 +22,22 @@ import * as appconfig from 'aws-cdk-lib/aws-appconfig';
  * UPDATE: bump the hosted config version content (new HostedConfigurationVersion
  * + Deployment referencing it).
  *
+ * TYPE CHANGE (CDKD_TEST_PROFILE_TYPE_CHANGE=true, go-to-k/cdkd#7083): a second
+ * profile flips `Type` from AWS.Freeform to AWS.AppConfig.FeatureFlags, which
+ * AppConfig refuses in place ("This Type change is not supported"), so cdkd
+ * must REPLACE it. Its `Name` moves with the type: AppConfig names are unique
+ * per application and a replacement creates first, so a kept name collides
+ * (CloudFormation fails the same way). An SSM parameter holding its `Ref` is
+ * the reader that must follow the new id.
+ *
  * covers: AWS::AppConfig::Application
  * covers: AWS::AppConfig::Environment
  * covers: AWS::AppConfig::ConfigurationProfile
- * covers: AWS::AppConfig::DeploymentStrategy
+ * covers: AWS::AppConfig::Deployment
+ * covers: AWS::SSM::ParameterStrategy
  * covers: AWS::AppConfig::HostedConfigurationVersion
  * covers: AWS::AppConfig::Deployment
+ * covers: AWS::SSM::Parameter
  */
 export class AppConfigStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -71,6 +82,19 @@ export class AppConfigStack extends cdk.Stack {
       deploymentStrategyId: strategy.ref,
     });
     deployment.addDependency(version);
+
+    const flagsType = process.env.CDKD_TEST_PROFILE_TYPE_CHANGE === 'true';
+    const flagsProfile = new appconfig.CfnConfigurationProfile(this, 'FlagsProfile', {
+      applicationId: app.ref,
+      name: `${id}-flags-${flagsType ? 'ff' : 'free'}`,
+      locationUri: 'hosted',
+      type: flagsType ? 'AWS.AppConfig.FeatureFlags' : 'AWS.Freeform',
+    });
+    new ssm.CfnParameter(this, 'FlagsProfileIdParam', {
+      name: `/${id}/flags-profile-id`,
+      type: 'String',
+      value: flagsProfile.ref,
+    });
 
     new cdk.CfnOutput(this, 'AppId', { value: app.ref });
     new cdk.CfnOutput(this, 'EnvId', { value: environment.ref });

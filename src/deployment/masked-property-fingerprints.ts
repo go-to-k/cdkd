@@ -83,6 +83,8 @@ export {
   maskedPropertyFingerprintsOf,
   maskedPropertyInputFingerprintsOf,
   movedMaskedProperties,
+  passedSecretVerdictOf,
+  isUnverifiedPassedSecret,
   withRebaselinedFingerprints,
   isWrittenFromDeployedTemplate,
   markWrittenFromDeployedTemplate,
@@ -92,4 +94,21 @@ export {
 export type {
   BindingFingerprinter,
   InputFingerprinter,
+  UnverifiedPassedSecret,
 } from './masked-property-fingerprints/records.js';
+export {
+  staleLeafInputsVerdict,
+  staleNoEchoNonProofs,
+} from './masked-property-fingerprints/stale-noecho-cover.js';
+export type { StaleLeafInputsVerdict } from './masked-property-fingerprints/stale-noecho-cover.js';
+export {
+  maskedPropertyReferenceFingerprintsOf,
+  maskedReferenceFingerprintsFor,
+  publicReferenceFingerprint,
+  publicReferencesMoved,
+  publicReferencesOf,
+} from './masked-property-fingerprints/public-references.js';
+export type {
+  PublicReferenceOf,
+  ReferenceInputs,
+} from './masked-property-fingerprints/public-references.js';

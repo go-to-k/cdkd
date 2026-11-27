@@ -8,7 +8,14 @@ import type { CloudFormationTemplate, UpdateContext } from '../../types/resource
 import type { ResourceState } from '../../types/state.js';
 import { noEchoParametersReadBy, type NoEchoPositionSources } from '../secret-redaction.js';
 import type { BindingFingerprinter } from '../masked-property-fingerprints.js';
-import { noEchoMacParametersOf } from '../noecho-value-macs.js';
+import {
+  DROPPED_PASSED_SECRET_MACS,
+  noEchoMacParametersOf,
+  noEchoValueMacsFor,
+  PASSED_SECRET_MACS,
+  rawPassedSecretMember,
+  type PassedSecretMacsMember,
+} from '../noecho-value-macs.js';
 import { noEchoPositionSources } from './noecho.js';
 import { readsOnlyNoEchoParameters } from './update/noecho-macs.js';
 
@@ -98,6 +105,35 @@ export async function noEchoMacInputBindingsFor(
 }
 
 /**
+ * go-to-k/cdkd#7050: records the passed-secret MAC member of each key of
+ * `stampable` (the input fingerprints the save may stamp for `logicalId`)
+ * that reads a parameter the parent passed as `secret`: today's MACs of those
+ * parameters, bound to the key's input fingerprint when it is proven over them
+ * and equal to the one stamped. A key short of that (unproven, no MAC this
+ * run) gets none, so the next deploy sends it. Replaces the logical id's
+ * previous entry. Makes the run's MACs (KMS) only when such a key exists.
+ */
+export async function passedSecretMacEntriesFor(
+  engine: Pick<DeployEngine, 'noEchoRun'>,
+  logicalId: string,
+  fingerprinter: BindingFingerprinter | undefined,
+  stampable: Readonly<Record<string, string>> | undefined
+): Promise<void> {
+  const run = engine.noEchoRun;
+  run.passedSecretMacEntries.delete(logicalId);
+  if (fingerprinter === undefined || stampable === undefined) return;
+  if (run.passedSecretParameters.size === 0 || run.noEchoMacs === undefined) return;
+  const entries = new Map<string, PassedSecretMacsMember>();
+  for (const [key, stamped] of Object.entries(stampable)) {
+    const bound = await fingerprinter.passedSecretBinding(key).catch(() => undefined);
+    if (bound?.fingerprint === undefined || bound.fingerprint !== stamped) continue;
+    const macs = noEchoValueMacsFor(bound.parameters, await run.noEchoMacs.macs());
+    if (macs !== undefined) entries.set(key, { fingerprint: bound.fingerprint, macs });
+  }
+  if (entries.size > 0) run.passedSecretMacEntries.set(logicalId, entries);
+}
+
+/**
  * The `UpdateContext.keptNoEchoOnlyProperty` sink of `logicalId`'s in-place
  * update: a key of `noEchoOnly` the provider left unsent keeps its previous
  * `NoEcho` value MAC at the save, which still describes what AWS holds. Built
@@ -173,7 +209,17 @@ export function dropFailedUpdateMacs(
     const record = Object.hasOwn(resources, logicalId) ? resources[logicalId] : undefined;
     const macs = record?.noEchoValueMacs;
     if (record === undefined || macs === undefined) continue;
-    const left = Object.fromEntries(Object.entries(macs).filter(([key]) => !sent.has(key)));
+    // A dropped passed-secret member stays as one (go-to-k/cdkd#7050 review):
+    // the key must never read as a record that never had one.
+    const left = Object.fromEntries(
+      Object.entries(macs).flatMap(([key, entry]) =>
+        !sent.has(key)
+          ? [[key, entry]]
+          : rawPassedSecretMember(record, key) !== undefined
+            ? [[key, { [PASSED_SECRET_MACS]: { ...DROPPED_PASSED_SECRET_MACS } }]]
+            : []
+      )
+    );
     const { noEchoValueMacs: _dropped, ...rest } = record;
     resources[logicalId] = (
       Object.keys(left).length > 0 ? { ...rest, noEchoValueMacs: left } : rest

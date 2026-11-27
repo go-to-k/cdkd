@@ -13,6 +13,7 @@ import {
   useCdkBootstrapAssetsOption,
   noCfnFallbackOption,
   diffUpdatePolicyOptions,
+  diffReplaceResourceOption,
 } from '../options.js';
 import { resolveStackTagsOverride, stackTagsOption } from '../options/stack-tags.js';
 import { getLogger } from '../../utils/logger.js';
@@ -59,6 +60,7 @@ import {
   stacksForDependency,
 } from '../stack-matcher.js';
 import { CrossStackPreview, orderProducersFirst } from '../../analyzer/cross-stack-preview.js';
+import { markAppProducerTaint } from './diff-recursive/cross-stack-taint.js';
 import { inferCrossStackDepsByStack } from '../../analyzer/cross-stack-deps.js';
 import {
   loadProviderClasses,
@@ -84,6 +86,11 @@ import {
   type DiffTreeNode,
 } from './diff-recursive.js';
 import { formatDestructiveChange } from '../../analyzer/destructive-changes.js';
+import {
+  checkReplaceResourceOptions,
+  replaceResourcesForStack,
+} from './deploy/replace-resource-checks.js';
+import { withDependencyStacks } from './deploy/dependency-closure.js';
 import { producerLookupOver } from '../../deployment/intrinsic-resolver/cdk-cross-account-ref.js';
 
 /** This node and every descendant, DFS order. */
@@ -237,6 +244,8 @@ async function diffCommand(
     useCdkBootstrapAssets?: boolean;
     cfnFallback?: boolean;
     updatePolicy?: boolean;
+    /** `--replace-resource <logicalId>` (go-to-k/cdkd#7089). */
+    replaceResource?: string[];
   }
 ): Promise<void> {
   // Awaited first, so provider construction below stays synchronous once the
@@ -382,7 +391,37 @@ async function diffCommand(
     // Issue #1150: macro expansion was deferred at synthesize() time —
     // expand now for exactly the stacks being diffed, mutating each
     // template in place before the diff calculator consumes it.
+    // go-to-k/cdkd#7089: the stacks `cdkd deploy --replace-resource` runs (the
+    // selection plus its dependencies, as without -e), found as the deploy
+    // finds them, before macro expansion.
+    const replaceTargetIds = [...new Set(options.replaceResource ?? [])];
+    const deployStacks =
+      replaceTargetIds.length > 0 ? withDependencyStacks(targetStacks, allStacks) : targetStacks;
     await synthesizer.expandMacrosForStacks(targetStacks, synthOptions);
+    // go-to-k/cdkd#7089: the deploy's run-level `--replace-resource` checks,
+    // over the stacks that deploy runs (the selection plus its dependencies,
+    // as without -e) with their expanded templates, so a target the deploy
+    // refuses is refused here. A target only an undiffed dependency declares
+    // is replaced by that deploy but not previewed here, which is said.
+    if (replaceTargetIds.length > 0) {
+      const dependencies = deployStacks.filter((stack) => !targetStacks.includes(stack));
+      if (dependencies.length > 0) {
+        await synthesizer.expandMacrosForStacks(dependencies, synthOptions);
+      }
+      checkReplaceResourceOptions(options, deployStacks);
+      for (const id of replaceTargetIds) {
+        if (targetStacks.some((stack) => Object.hasOwn(stack.template.Resources ?? {}, id)))
+          continue;
+        const owner = deployStacks.find((stack) =>
+          Object.hasOwn(stack.template.Resources ?? {}, id)
+        );
+        if (owner !== undefined) {
+          logger.warn(
+            safeMsg`--replace-resource ${id}: declared by ${owner.stackName}, a dependency stack the deploy includes unless -e is passed; diff that stack to preview its replacement.`
+          );
+        }
+      }
+    }
 
     // 3. Initialize components
     const stateConfig = {
@@ -569,6 +608,9 @@ async function diffCommand(
     // go-to-k/cdkd#6796: a producer is diffed before its consumers, as the
     // deploy orders them, and what its deploy publishes reaches theirs.
     const crossStackPreview = new CrossStackPreview();
+    // go-to-k/cdkd#7090: which outputs of the app derive from a secret, so a
+    // consumer masks them even when its producer is not diffed here.
+    markAppProducerTaint(crossStackPreview, allStacks);
     const inferredProducers = inferCrossStackDepsByStack(targetStacks);
     targetStacks = orderProducersFirst(targetStacks, (stack) => [
       ...stack.dependencyNames.flatMap((name) => stacksForDependency(name, stack, targetStacks)),
@@ -605,6 +647,11 @@ async function diffCommand(
         );
       }
       const stackTags = stackTagsOverride ?? stackInfo.tags;
+      const replaceResources = replaceResourcesForStack(
+        options.replaceResource,
+        stackInfo.stackName,
+        stackInfo.template
+      );
       trees.push(
         await buildDiffTree({
           stackName: stackInfo.stackName,
@@ -638,6 +685,8 @@ async function diffCommand(
           // go-to-k/cdkd#6437: preview the replacement `cdkd deploy --update-policy`
           // makes, with the deploy's precedence (CLI > cdk.json).
           ...(resolveUpdatePolicy(options.updatePolicy) === true && { updatePolicy: true }),
+          // go-to-k/cdkd#7089: the replacement `cdkd deploy --replace-resource` plans.
+          ...(replaceResources && { replaceResources: replaceResources.logicalIds }),
           // Consulted lazily, by a `Fn::GetStackOutput` carrying a `RoleArn` only.
           producerLookup,
           crossStackPreview,
@@ -840,6 +889,7 @@ export function createDiffCommand(): Command {
     .addOption(noCfnFallbackOption)
     .addOption(diffUpdatePolicyOptions[0]!)
     .addOption(diffUpdatePolicyOptions[1]!)
+    .addOption(diffReplaceResourceOption)
     .action(withErrorHandling(diffCommand));
 
   // Add options

@@ -42,7 +42,7 @@ import { displayPhysicalId } from '../provisioning/secret-physical-id.js';
 import { carriesSecretMask } from './secret-redaction.js';
 import { segmentAfterAnchor } from '../provisioning/composite-id.js';
 import { parseLambdaFunctionAddress } from '../utils/lambda-function-name.js';
-import { ingressRuleSourceKey } from '../provisioning/sg-rule-identity.js';
+import { ingressRuleSourceKey, recordedSgRuleId } from '../provisioning/sg-rule-identity.js';
 import { isUsableIdentityValue } from './recorded-identity-attributes.js';
 
 /**
@@ -191,6 +191,26 @@ function stagesOnDifferentApis(
   const newApi = newProperties?.[parentKey];
   if (!isUsableIdentityValue(oldApi) || !isUsableIdentityValue(newApi)) return false;
   return oldApi !== newApi;
+}
+
+/**
+ * go-to-k/cdkd#7084: do two records of one type under the same physical id
+ * carry DIFFERENT AWS-minted ids, which proves two resources whatever their
+ * properties say? A standalone ingress rule records its `sgr-` rule id at
+ * create; two different ones are two rules even when the source is a
+ * redaction mask or a secret reference the property compare cannot read. Any
+ * record without one (written before cdkd recorded it) answers `false`, the
+ * property-based reading.
+ */
+export function recordedIdsNameDifferentResources(
+  resourceType: string,
+  oldAttributes: Readonly<Record<string, unknown>> | undefined,
+  newAttributes: Readonly<Record<string, unknown>> | undefined
+): boolean {
+  if (resourceType !== 'AWS::EC2::SecurityGroupIngress') return false;
+  const oldId = recordedSgRuleId(oldAttributes);
+  const newId = recordedSgRuleId(newAttributes);
+  return oldId !== undefined && newId !== undefined && oldId !== newId;
 }
 
 /**

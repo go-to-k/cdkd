@@ -428,9 +428,10 @@ describe('nested-stack child: an EMBEDDED parameter leaf beside a WHOLE-VALUE si
     const persisted = redactSecretsForState({ P1: 'app:q7z:q7' }, childBag, {
       P1: { 'Fn::Sub': '${User}:${C}${Tail}' },
     }) as Record<string, unknown>;
-    // The value scan's answer: a sub-floor plaintext inside a longer leaf is
-    // left as it is (the floor), never a span cut at the wrong `:q7`.
-    expect(persisted['P1']).toBe('app:q7z:q7');
+    // Never a span cut at the wrong `:q7`, and never the sub-floor plaintext
+    // left in the clear either: the read of the marked parameter that no
+    // certified arm placed is masked (go-to-k/cdkd#7059).
+    expect(persisted['P1']).toBe('***');
   });
 
   describe('bounds the expansion of bound variables (#4448 security review S-1)', () => {

@@ -292,7 +292,9 @@ Four of these fields change what a command does:
   resource that was still in use when the deploy tried to delete it, such as a target group a
   listener still pointed at, and the old physical id of a custom resource whose
   update answered a new one, from the update until the deploy's `Delete` of it. Every later `cdkd deploy` retries the delete once
-  its own changes are done and drops the entry when it succeeds, and
+  its own changes are done, before deleting a resource its template removed
+  that the old copy uses (such as its VPC), and drops the entry when it
+  succeeds, and
   `cdkd destroy` deletes the resource in dependency order with the stack's own
   resources: before the resources its record depends on, such as an old
   security group before its VPC, and after the stack's own resources when it
@@ -355,6 +357,7 @@ record it. [`cdkd export`](cli-export.md) rebuilds a template from
 A record can also carry bookkeeping fields that no command asks you to read or
 edit: `noEchoLeaves`, `noEchoAttributeNames`, `noEchoExactEchoLeaves`,
 `maskedPropertyFingerprints`, `maskedPropertyInputFingerprints`,
+`maskedPropertyReferenceFingerprints`,
 `acceptedCreateOnlyDrops`, `observedBaselineRefusalReason`,
 `referenceProvenance`, `secretNamedAttributes`, and the stack's `conditionVerdicts` and
 `outputReferenceProvenance`. The contributor page

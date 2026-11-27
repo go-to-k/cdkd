@@ -10,7 +10,7 @@ import { physicalNameCopiesOf } from '../physical-name-copies.js';
  * a GAP, a part whose value the template does not spell (a `Ref`, a pseudo
  * parameter, `Fn::GetAtt`, `Fn::ImportValue`, an `Fn::If` inside a join...).
  */
-type Segment = { text: string } | { token: string } | { gap: true };
+export type Segment = { text: string } | { token: string } | { gap: true };
 
 /** The value scan of one string, as the caller's walk would persist it. */
 export type ValueScan = (text: string) => unknown;
@@ -151,6 +151,11 @@ let walking: RecordedSecretValues | undefined;
 /** Nesting depth of {@link withoutLiteralRendering} scopes. */
 let suspended = 0;
 
+/** Is a {@link withoutLiteralRendering} scope open? */
+export function literalRenderingSuspended(): boolean {
+  return suspended > 0;
+}
+
 /**
  * `run` with this arm switched off, for a caller that DERIVES needles from the
  * walk's answer rather than persisting it: the nested-stack parameter recorder
@@ -165,6 +170,92 @@ export function withoutLiteralRendering<T>(run: () => T): T {
   } finally {
     suspended--;
   }
+}
+
+/**
+ * The segments the template node `source` spells, for a reader positioning
+ * its tokens by other evidence (`substitution-spans.ts`, go-to-k/cdkd#7050):
+ * an inner `Fn::If` reads `secrets`' taken branch. `undefined` while the arm
+ * is switched off ({@link withoutLiteralRendering}) or where the node cannot
+ * be read. Saves and restores the rendering state, so it nests.
+ */
+export function templateSegmentsOf(
+  source: unknown,
+  secrets: RecordedSecretValues
+): Segment[] | undefined {
+  if (suspended > 0) return undefined;
+  const outer = walking;
+  const outerVisits = visits;
+  walking = secrets;
+  try {
+    return renderSegments(source, 0);
+  } finally {
+    walking = outer;
+    visits = outerVisits;
+  }
+}
+
+/**
+ * `region` split into the pieces `segments` spell, in order, when their
+ * anchors sit at exactly one set of positions; `undefined` when they do not
+ * (ambiguous, or absent). A piece is a GAP (bytes as the region holds them)
+ * or an anchor as PERSISTED: template text as written, and a token
+ * `plaintextOf` names, placed by that plaintext and spelled as the token.
+ */
+export function placeTextPieces(
+  segments: readonly Segment[],
+  region: string,
+  plaintextOf: ReadonlyMap<string, string> = new Map()
+): Array<{ text: string; gap: boolean }> | undefined {
+  const anchors: Anchor[] = [];
+  let leadingGap = false;
+  let trailingGap = false;
+  let current: Anchor | undefined;
+  for (const segment of segments) {
+    if ('gap' in segment) {
+      if (current !== undefined) {
+        anchors.push(current);
+        current = undefined;
+      } else if (anchors.length === 0) {
+        leadingGap = true;
+      }
+      trailingGap = true;
+      continue;
+    }
+    trailingGap = false;
+    current ??= { rendered: '', persisted: '' };
+    if ('token' in segment) {
+      const plaintext = plaintextOf.get(segment.token);
+      if (plaintext === undefined) return undefined;
+      current.rendered += plaintext;
+      current.persisted += segment.token;
+    } else {
+      current.rendered += segment.text;
+      current.persisted += segment.text;
+    }
+  }
+  if (current !== undefined) anchors.push(current);
+  if (!leadingGap && !trailingGap && anchors.length <= 1) {
+    const only = anchors[0] ?? { rendered: '', persisted: '' };
+    if (only.rendered !== region) return undefined;
+    return only.persisted === '' ? [] : [{ text: only.persisted, gap: false }];
+  }
+  if (anchors.length === 0) return [{ text: region, gap: true }];
+  const leftmost = placements(anchors, region, leadingGap, trailingGap, 'left');
+  const rightmost = placements(anchors, region, leadingGap, trailingGap, 'right');
+  if (leftmost === undefined || rightmost === undefined) return undefined;
+  if (leftmost.some((at, i) => at !== rightmost[i])) return undefined;
+  const out: Array<{ text: string; gap: boolean }> = [];
+  let cursor = 0;
+  for (let i = 0; i < anchors.length; i++) {
+    const at = leftmost[i]!;
+    if (i > 0 || leadingGap) out.push({ text: region.slice(cursor, at), gap: true });
+    out.push({ text: anchors[i]!.persisted, gap: false });
+    cursor = at + anchors[i]!.rendered.length;
+  }
+  if (trailingGap) out.push({ text: region.slice(cursor), gap: true });
+  else if (cursor !== region.length) return undefined;
+  return out;
 }
 
 /** An anchor's two spellings: as rendered (tokens as plaintext) and as persisted. */

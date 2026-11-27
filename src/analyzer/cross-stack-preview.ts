@@ -25,6 +25,88 @@ export type PreviewedValue =
 export class CrossStackPreview {
   private readonly exports = new Map<string, PreviewedValue>();
   private readonly outputs = new Map<string, PreviewedValue>();
+  /**
+   * go-to-k/cdkd#7090: PROVENANCE, beside the values and never in them. The
+   * exports and outputs whose template reads a secret-fed name
+   * (`passed-secret-display.ts`), changed or not, so a consumer MASKS what it
+   * prints from them while comparing on the real value (a masked comparison
+   * value plans phantom changes, go-to-k/cdkd#7060). Kept for EVERY region:
+   * a cross-region read is masked too (the safe side).
+   */
+  private readonly taintedExports = new Set<string>();
+  private readonly taintedOutputs = new Set<string>();
+  private readonly taintedTexts = new Set<string>();
+  /** A tainted output exports under a name that did not resolve: every export is. */
+  private everyExportTainted = false;
+  /**
+   * A nested child's output is tainted, and its stack name is the deploy's:
+   * every output of a stack outside these (the app's top-level names) is.
+   */
+  private nestedOutputsTaintedOutside: ReadonlySet<string> | undefined;
+
+  /** Is export `name` derived from a secret, by provenance (in any region)? */
+  exportTainted(_region: string, name: string): boolean {
+    return this.everyExportTainted || this.taintedExports.has(name);
+  }
+
+  /** Is `stackName`'s output `outputName` derived from a secret (in any region)? */
+  stackOutputTainted(_region: string, stackName: string, outputName: string): boolean {
+    return (
+      this.taintedOutputs.has(JSON.stringify([stackName, outputName])) ||
+      (this.nestedOutputsTaintedOutside !== undefined &&
+        !this.nestedOutputsTaintedOutside.has(stackName))
+    );
+  }
+
+  /**
+   * A nested child's output is tainted: taint every output of any stack not
+   * named in `topLevelStackNames`, since a child's generated stack name is not
+   * known before its deploy (fail closed).
+   */
+  markNestedOutputsTainted(topLevelStackNames: ReadonlySet<string>): void {
+    this.nestedOutputsTaintedOutside = topLevelStackNames;
+  }
+
+  /** Does this run hold any tainted export or output? */
+  anyTainted(): boolean {
+    return this.everyExportTainted || this.taintedOutputs.size > 0;
+  }
+
+  /**
+   * The string values (desired and stored) of every tainted export and
+   * output: mask-only print needles for a consumer's diff, whose lines can
+   * embed an imported value outside any template leaf.
+   */
+  taintedValues(): ReadonlySet<string> {
+    return this.taintedTexts;
+  }
+
+  /**
+   * Mark `stackName`'s output `outputName` (and its export) tainted; `values`
+   * become needles. `exportName` is `null` for an export whose name did not
+   * resolve, which taints every export (fail closed). Made by a diff of the
+   * stack, and before any diff from the app's templates alone
+   * (`markAppProducerTaint`), so a consumer whose producer this run does not
+   * diff still masks it. True when the output was not marked before.
+   */
+  markTainted(
+    stackName: string,
+    outputName: string,
+    exportName: string | null | undefined,
+    values: readonly unknown[] = []
+  ): boolean {
+    const outputKey = JSON.stringify([stackName, outputName]);
+    const added = !this.taintedOutputs.has(outputKey);
+    this.taintedOutputs.add(outputKey);
+    if (exportName === null) this.everyExportTainted = true;
+    else if (exportName !== undefined) this.taintedExports.add(exportName);
+    for (const value of values) {
+      if (isScalar(value) && value !== '' && value !== SECRET_MASK) {
+        this.taintedTexts.add(String(value));
+      }
+    }
+    return added;
+  }
 
   /** The previewed value of export `name` in `region`, if a producer in this run changes it. */
   exportValue(region: string, name: string): PreviewedValue | undefined {
@@ -183,14 +265,66 @@ export async function resolvedExportNames(
   return names;
 }
 
+/** What {@link markProducerTaint} reads from one stack's diff. */
+export interface ProducerTaintInput {
+  stackName: string;
+  template: CloudFormationTemplate;
+  desiredOutputs: Readonly<Record<string, unknown>>;
+  storedOutputs: Readonly<Record<string, unknown>> | undefined;
+  /**
+   * go-to-k/cdkd#7090: does this template value read a secret-fed name of the
+   * stack (by provenance)? Each output whose `Value` or `Export` does, and its
+   * export, is marked tainted whether or not the deploy changes it: a
+   * consumer reads an unchanged one from state, holding the same value.
+   */
+  readsSecretFedName?: (value: unknown) => boolean;
+}
+
+/**
+ * Mark the outputs and exports of one stack that derive from a secret, by
+ * provenance, with their desired and stored values as needles. Any stack of
+ * the run, a nested child included: provenance changes no previewed value.
+ */
+export async function markProducerTaint(
+  preview: CrossStackPreview,
+  resolve: (value: unknown) => Promise<unknown>,
+  input: ProducerTaintInput,
+  exportNames?: ReadonlyMap<string, string>
+): Promise<void> {
+  const reads = input.readsSecretFedName;
+  if (reads === undefined) return;
+  const exportNameOf = exportNames ?? (await resolvedExportNames(input.template, resolve));
+  const stored = input.storedOutputs ?? {};
+  for (const [outputName, definition] of Object.entries(input.template.Outputs ?? {})) {
+    const output = definition as { Value?: unknown; Export?: unknown } | undefined;
+    const secretName = reads(output?.Export);
+    if (!reads(output?.Value) && !secretName) continue;
+    // An export whose name did not resolve taints every export (fail closed).
+    const exportName =
+      exportNameOf.get(outputName) ?? (output?.Export === undefined ? undefined : null);
+    preview.markTainted(input.stackName, outputName, exportName, [
+      Object.hasOwn(input.desiredOutputs, outputName)
+        ? input.desiredOutputs[outputName]
+        : undefined,
+      Object.hasOwn(stored, outputName) ? stored[outputName] : undefined,
+      ...(typeof exportName === 'string'
+        ? [Object.hasOwn(stored, exportName) ? stored[exportName] : undefined]
+        : []),
+      // An export name built from the secret is itself one.
+      ...(secretName && typeof exportName === 'string' ? [exportName] : []),
+    ]);
+  }
+}
+
 /** Record a producer's {@link previewProducerValues} into `preview`, resolving its export names. */
 export async function recordProducerPreview(
   preview: CrossStackPreview,
   region: string,
   resolve: (value: unknown) => Promise<unknown>,
-  input: Omit<ProducerPreviewInput, 'exportNameOf'>
+  input: Omit<ProducerPreviewInput, 'exportNameOf'> & Pick<ProducerTaintInput, 'readsSecretFedName'>
 ): Promise<void> {
   const exportNameOf = await resolvedExportNames(input.template, resolve);
+  await markProducerTaint(preview, resolve, input, exportNameOf);
   const readsUnknownPreview = (value: unknown): boolean =>
     crossStackReads(value).some((read) => {
       const found =

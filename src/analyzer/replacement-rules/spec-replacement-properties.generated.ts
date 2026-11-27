@@ -13,5 +13,6 @@ export const SPEC_REPLACEMENT_PATHS: ReadonlyMap<
   string,
   ReadonlyArray<readonly string[]>
 > = new Map<string, ReadonlyArray<readonly string[]>>([
+  ['AWS::AppConfig::ConfigurationProfile', [['Type']]],
   ['AWS::Route53Resolver::ResolverRule', [['DomainName']]],
 ]);

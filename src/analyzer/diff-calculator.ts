@@ -10,11 +10,15 @@ import type {
 import { getLogger, type ConsoleLogger } from '../utils/logger.js';
 import { ReplacementRulesRegistry, type ReplacementSiblings } from './replacement-rules.js';
 import { TemplateParser } from './template-parser.js';
-import type { MaskedInputSources } from '../deployment/masked-property-fingerprints.js';
+import type {
+  MaskedInputSources,
+  PublicReferenceOf,
+} from '../deployment/masked-property-fingerprints.js';
 import type { MaskerFn } from '../provisioning/masked-retry-logger.js';
 import type { LockRecoveryContext } from '../state/lock-contention-message.js';
 import type { ReadProvenanceSources } from './read-provenance-promotion.js';
 import { calculateDiff } from './diff-calculator/calculate-diff.js';
+import type { PassedSecretBackfill } from './diff-calculator/redaction-masks.js';
 import {
   promoteReadProvenanceDependents,
   loadSyntheticCreateOnlyPaths,
@@ -89,6 +93,8 @@ export class DiffCalculator {
     maskedInputs?: {
       sources: MaskedInputSources;
       rebaselined?: Map<string, Record<string, string>>;
+      passedSecretBackfills?: Map<string, Record<string, PassedSecretBackfill>>;
+      publicReferences?: PublicReferenceOf;
     },
     refusalRecovery?: LockRecoveryContext,
     noEchoCompare?: NoEchoCompareFn,

@@ -93,6 +93,23 @@ export function labelOf(candidate: SpecReplacementCandidate): Label {
   return 'unclassified';
 }
 
+/**
+ * One table row, broken where `vp fmt` breaks it (go-to-k/cdkd#7083): the
+ * row at print width 100, then its paths, and always one path per line when
+ * every path has two or more segments (Prettier's matrix rule). Otherwise a
+ * formatter run reds the `--check` audit.
+ */
+export function renderRow(type: string, paths: readonly (readonly string[])[]): string[] {
+  const each = paths.map((p) => `[${p.map((s) => `'${s}'`).join(', ')}]`);
+  const flat = `  ['${type}', [${each.join(', ')}]],`;
+  const matrix = paths.length > 1 && paths.every((p) => p.length > 1);
+  if (!matrix && flat.length <= 100) return [flat];
+  if (!matrix && `    [${each.join(', ')}],`.length <= 100) {
+    return ['  [', `    '${type}',`, `    [${each.join(', ')}],`, '  ],'];
+  }
+  return ['  [', `    '${type}',`, '    [', ...each.map((p) => `      ${p},`), '    ],', '  ],'];
+}
+
 /** The `replace` rows as a `src/` module (formatted as `vp fmt` leaves it). */
 export function renderSrc(candidates: readonly SpecReplacementCandidate[]): string {
   const byType = new Map<string, string[][]>();
@@ -120,8 +137,7 @@ export function renderSrc(candidates: readonly SpecReplacementCandidate[]): stri
     '> = new Map<string, ReadonlyArray<readonly string[]>>([',
   ];
   for (const [type, paths] of byType) {
-    const rendered = paths.map((p) => `[${p.map((s) => `'${s}'`).join(', ')}]`).join(', ');
-    lines.push(`  ['${type}', [${rendered}]],`);
+    lines.push(...renderRow(type, paths));
   }
   lines.push(']);', '');
   return lines.join('\n');

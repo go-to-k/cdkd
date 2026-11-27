@@ -585,7 +585,7 @@ describe('the save-time stamp', () => {
     });
   });
 
-  it('names as possibly masked each key holding the mask, a long needle, or a short one as a WHOLE leaf', () => {
+  it('names as possibly masked each key holding the mask or a needle, a short one EMBEDDED too (#7050: such a leaf is masked whole)', () => {
     const bag = new Map([
       ['pw', SECRET],
       ['long-secret-value', SECRET],
@@ -602,7 +602,7 @@ describe('the save-time stamp', () => {
         },
         [bag, undefined]
       )
-    ).toEqual(['B', 'D', 'E', 'F']);
+    ).toEqual(['A', 'B', 'D', 'E', 'F']);
   });
 });
 

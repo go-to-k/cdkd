@@ -3275,6 +3275,11 @@
       ]
     },
     {
+      "name": "sg-ingress-secret-source",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "sg-ingress-source-replacement",
       "annotated": false,
       "scenarios": []
@@ -3432,6 +3437,11 @@
     },
     {
       "name": "superseded-sg-destroy-order",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "superseded-stage-equal-id",
       "annotated": false,
       "scenarios": []
     },
@@ -4627,6 +4637,7 @@
     "select-out-of-bounds",
     "servicediscovery",
     "servicediscovery-http-namespace-update",
+    "sg-ingress-secret-source",
     "sg-ingress-source-replacement",
     "sg-rule-description-update",
     "shared-stackname-multi-region",
@@ -4648,6 +4659,7 @@
     "stream-delete-redeploy",
     "subnet-mappublicip-removal",
     "superseded-sg-destroy-order",
+    "superseded-stage-equal-id",
     "synthetics-canary",
     "termination-protection",
     "unrecognized-key-autoroute",

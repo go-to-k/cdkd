@@ -1,8 +1,13 @@
+import {
+  consumptionScopeOpenFor,
+  withConsumptionScope,
+} from './secret-redaction/consumed-references.js';
 import { GetParameterCommand } from '@aws-sdk/client-ssm';
 import { getLogger } from '../utils/logger.js';
 import { canonicalizeRegion, sameRegion } from '../utils/aws-partition.js';
 import { withSharedDrainBudget } from './drain-budget.js';
-import { SECRET_MASK } from './secret-redaction.js';
+import { SECRET_MASK, crossStackSourceKey } from './secret-redaction.js';
+import { crossStackReadResolutionOf } from './intrinsic-resolver/cross-stack/read-resolutions.js';
 import { markNonRetryable } from './retryable-errors.js';
 import {
   type ResolverContext,
@@ -412,14 +417,22 @@ export class IntrinsicFunctionResolver {
   private recordCrossStackReadSpan(
     context: ResolverContext,
     source: Record<string, unknown>,
-    value: unknown
+    value: unknown,
+    reresolved = false
   ): unknown {
     if (typeof value === 'string') {
+      // go-to-k/cdkd#7050: a cross-stack read whose producer value spelled a
+      // token keeps that spelling and where each token was substituted.
+      const key = reresolved ? crossStackSourceKey(source) : undefined;
+      const read =
+        key !== undefined && context.recordedSecretValues !== undefined
+          ? crossStackReadResolutionOf(context.recordedSecretValues, key, value)
+          : undefined;
       recordLeafResolution(this, context, source, {
-        input: value,
+        input: read?.input ?? value,
         output: value,
-        substitutions: [],
-        complete: true,
+        substitutions: read?.substitutions ?? [],
+        complete: read?.complete ?? true,
         parameterSpans: wholeReferenceSpans(source, value),
       });
     }
@@ -429,6 +442,21 @@ export class IntrinsicFunctionResolver {
   /** Recursively resolve a value. */
   /** @internal */
   async resolveValue(value: unknown, context: ResolverContext): Promise<unknown> {
+    // go-to-k/cdkd#7050: every intrinsic CALL (one `Ref` / `Fn::*` /
+    // `Condition` key, whatever the function) is stamped with the references
+    // its resolution consumed (`consumed-references.ts`). Plain objects are
+    // not: their leaves are stamped at their own calls, and a scope per plain
+    // level would deepen the stack of a deep bag.
+    if (
+      context.recordedSecretValues !== undefined &&
+      value !== null &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      isIntrinsicCallShape(value) &&
+      !consumptionScopeOpenFor(value)
+    ) {
+      return withConsumptionScope(value, () => this.resolveValue(value, context));
+    }
     // Primitives: return as-is (but check strings for dynamic references)
     if (typeof value !== 'object' || value === null) {
       if (typeof value === 'string' && value.includes('{{resolve:')) {
@@ -572,7 +600,8 @@ export class IntrinsicFunctionResolver {
       return this.recordCrossStackReadSpan(
         context,
         obj,
-        await resolveImportValue(this, obj['Fn::ImportValue'], context)
+        await resolveImportValue(this, obj['Fn::ImportValue'], context),
+        true
       );
     }
 
@@ -580,7 +609,8 @@ export class IntrinsicFunctionResolver {
       return this.recordCrossStackReadSpan(
         context,
         obj,
-        await resolveGetStackOutput(this, obj['Fn::GetStackOutput'], context)
+        await resolveGetStackOutput(this, obj['Fn::GetStackOutput'], context),
+        true
       );
     }
 
@@ -769,4 +799,12 @@ export class IntrinsicFunctionResolver {
   evaluateConditions(context: ResolverContext): Promise<Record<string, boolean>> {
     return evaluateTemplateConditions(this, context);
   }
+}
+
+/** One key naming an intrinsic call, generically: `Ref`, `Condition`, or `Fn::*`. */
+function isIntrinsicCallShape(value: object): boolean {
+  const keys = Object.keys(value);
+  if (keys.length !== 1) return false;
+  const key = keys[0]!;
+  return key === 'Ref' || key === 'Condition' || key.startsWith('Fn::');
 }

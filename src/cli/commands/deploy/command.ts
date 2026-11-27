@@ -81,6 +81,7 @@ import { addStacksToWorkGraph, dryRunPredictsAutoCreatedStorage } from './work-g
 import { deployStackInScope, type DeployStackContext } from './stack-deploy.js';
 import { checkPinCcApiOptions } from './pin-cc-api-checks.js';
 import { checkReplaceResourceOptions } from './replace-resource-checks.js';
+import { withDependencyStacks } from './dependency-closure.js';
 import { confirmAutoAssetStorageCreate, createDeploySigintHandler } from './helpers.js';
 
 /**
@@ -437,43 +438,17 @@ export async function deployCommand(
       return deps;
     };
 
-    // STRONG-only edges (CDK manifest deps + `Fn::ImportValue`) for the
-    // auto-include-dependency walk below. `Fn::GetStackOutput` is a WEAK
-    // reference (it reads the producer's output opportunistically from cdkd
-    // state) and must NOT pull an unselected producer into the deploy:
-    // `cdkd deploy <consumer>` should deploy only the consumer, not silently
-    // re-deploy a producer it merely reads from (issue #751 conflated the two,
-    // which re-deployed — and so mutated the state of — the producer). The DAG
-    // ordering further down still uses the full (strong + weak) set, so when a
-    // producer IS in the deploy set it is correctly ordered before its
-    // GetStackOutput consumer.
-    const inferredStrongCrossStackDeps = inferCrossStackDepsByStack(allStacks, {
-      kinds: ['ImportValue'],
-    });
-
-    // Auto-include dependency stacks (CDK CLI compatible behavior)
-    // When deploying StackA that depends on StackB, also deploy StackB first.
-    // Use -e / --exclusively to skip this and deploy only the requested stacks.
+    // Auto-include dependency stacks (CDK CLI compatible behavior): deploying
+    // StackA that depends on StackB deploys StackB first. Strong edges only
+    // (`dependency-closure.ts`). Use -e / --exclusively to skip this and
+    // deploy only the requested stacks.
     if (!options.exclusively) {
-      // By stack OBJECT, not name: a dependency name two Stages share resolves
-      // to the producer in the dependent's own Stage (#5176).
-      const included = new Set(targetStacks);
-
-      const addDependencies = (stack: (typeof allStacks)[number]): void => {
-        for (const depStack of dependencyStacks(stack, inferredStrongCrossStackDeps, allStacks)) {
-          if (included.has(depStack)) continue;
-          included.add(depStack);
-          targetStacks.push(depStack);
-          logger.debug(
-            `Auto-including dependency stack: ${depStack.stackName} (required by ${stack.stackName})`
-          );
-          addDependencies(depStack); // Recursive
-        }
-      };
-
-      for (const stack of [...targetStacks]) {
-        addDependencies(stack);
-      }
+      const withDependencies = withDependencyStacks(targetStacks, allStacks, (dep, by) =>
+        logger.debug(
+          `Auto-including dependency stack: ${dep.stackName} (required by ${by.stackName})`
+        )
+      );
+      targetStacks.splice(0, targetStacks.length, ...withDependencies);
     }
     // A selected stack and another stack of the app with one physical name and
     // one region (and, for an unselected one, a possible shared account; two

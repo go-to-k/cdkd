@@ -15,51 +15,51 @@ what cdkd does; `update` and `baseline` rows keep the in-place update, and a `ha
 is decided by `src/analyzer/replacement-rules/rules.ts` or a provider-replacement planner.
 Evidence: `REPLACEMENT_EVIDENCE`.
 
-Candidates: 389 (replace 1, update 44, baseline 274, hand rule 70).
+Candidates: 389 (replace 2, update 103, baseline 195, hand rule 89).
 
 | Candidate | Spec | Verdict |
 | --- | --- | --- |
 | `AWS::AmplifyUIBuilder::Component#Tags` | yes | baseline |
 | `AWS::AmplifyUIBuilder::Form#Tags` | yes | baseline |
 | `AWS::AmplifyUIBuilder::Theme#Tags` | yes | baseline |
-| `AWS::AppConfig::ConfigurationProfile#Type` | yes | baseline |
-| `AWS::AppConfig::Extension#Tags` | yes | baseline |
-| `AWS::AppConfig::ExtensionAssociation#Tags` | yes | baseline |
+| `AWS::AppConfig::ConfigurationProfile#Type` | yes | replace |
+| `AWS::AppConfig::Extension#Tags` | yes | update |
+| `AWS::AppConfig::ExtensionAssociation#Tags` | yes | update |
 | `AWS::AppStream::StackFleetAssociation#FleetName` | yes | baseline |
 | `AWS::AppStream::StackFleetAssociation#StackName` | yes | baseline |
 | `AWS::AppSync::GraphQLSchema#ApiId` | yes | update |
 | `AWS::AuditManager::Assessment#Scope.AwsAccounts.*.EmailAddress` | maybe | baseline |
 | `AWS::AuditManager::Assessment#Scope.AwsAccounts.*.Id` | maybe | baseline |
 | `AWS::AuditManager::Assessment#Scope.AwsAccounts.*.Name` | maybe | baseline |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.AllocationStrategy` | maybe | baseline |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.BidPercentage` | maybe | baseline |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.Ec2Configuration` | maybe | baseline |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.Ec2Configuration.*.ImageIdOverride` | maybe | baseline |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.Ec2Configuration.*.ImageKubernetesVersion` | maybe | baseline |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.Ec2Configuration.*.ImageType` | maybe | baseline |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.Ec2KeyPair` | maybe | baseline |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.ImageId` | maybe | baseline |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.InstanceRole` | maybe | baseline |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.InstanceTypes` | maybe | baseline |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.LaunchTemplate` | maybe | baseline |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.LaunchTemplate.LaunchTemplateId` | maybe | baseline |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.LaunchTemplate.LaunchTemplateName` | maybe | baseline |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.LaunchTemplate.Version` | maybe | baseline |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.PlacementGroup` | maybe | baseline |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.SecurityGroupIds` | maybe | baseline |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.Subnets` | maybe | baseline |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.Tags` | maybe | baseline |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.Type` | maybe | baseline |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.AllocationStrategy` | maybe | hand rule |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.BidPercentage` | maybe | hand rule |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.Ec2Configuration` | maybe | hand rule |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.Ec2Configuration.*.ImageIdOverride` | maybe | hand rule |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.Ec2Configuration.*.ImageKubernetesVersion` | maybe | hand rule |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.Ec2Configuration.*.ImageType` | maybe | hand rule |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.Ec2KeyPair` | maybe | hand rule |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.ImageId` | maybe | hand rule |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.InstanceRole` | maybe | hand rule |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.InstanceTypes` | maybe | hand rule |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.LaunchTemplate` | maybe | hand rule |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.LaunchTemplate.LaunchTemplateId` | maybe | hand rule |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.LaunchTemplate.LaunchTemplateName` | maybe | hand rule |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.LaunchTemplate.Version` | maybe | hand rule |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.PlacementGroup` | maybe | hand rule |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.SecurityGroupIds` | maybe | hand rule |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.Subnets` | maybe | hand rule |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.Tags` | maybe | hand rule |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.Type` | maybe | hand rule |
 | `AWS::Batch::ComputeEnvironment#EksConfiguration` | yes | baseline |
-| `AWS::Batch::JobDefinition#Tags` | yes | baseline |
-| `AWS::Batch::JobQueue#Tags` | yes | baseline |
+| `AWS::Batch::JobDefinition#Tags` | yes | update |
+| `AWS::Batch::JobQueue#Tags` | yes | update |
 | `AWS::Batch::SchedulingPolicy#Tags` | yes | update |
 | `AWS::BedrockAgentCore::Dataset#SchemaType` | yes | baseline |
 | `AWS::Budgets::Budget#Budget.AutoAdjustData` | yes | hand rule |
 | `AWS::Budgets::Budget#Budget.PlannedBudgetLimits` | yes | hand rule |
-| `AWS::Cassandra::Keyspace#ReplicationSpecification` | yes | baseline |
-| `AWS::Cassandra::Table#RegularColumns.*.ColumnName` | maybe | baseline |
-| `AWS::Cassandra::Table#RegularColumns.*.ColumnType` | maybe | baseline |
+| `AWS::Cassandra::Keyspace#ReplicationSpecification` | yes | update |
+| `AWS::Cassandra::Table#RegularColumns.*.ColumnName` | maybe | update |
+| `AWS::Cassandra::Table#RegularColumns.*.ColumnType` | maybe | update |
 | `AWS::CertificateManager::Certificate#ValidationMethod` | yes | hand rule |
 | `AWS::CleanRooms::ConfiguredTable#AllowedColumns` | yes | baseline |
 | `AWS::CleanRooms::ConfiguredTable#AnalysisMethod` | yes | baseline |
@@ -87,15 +87,15 @@ Candidates: 389 (replace 1, update 44, baseline 274, hand rule 70).
 | `AWS::DataSync::LocationFSxWindows#User` | yes | baseline |
 | `AWS::DataSync::LocationNFS#ServerHostname` | yes | baseline |
 | `AWS::DataSync::LocationObjectStorage#ServerHostname` | yes | baseline |
-| `AWS::DataSync::LocationS3#S3Config` | yes | baseline |
-| `AWS::DataSync::LocationS3#S3StorageClass` | yes | baseline |
-| `AWS::DataSync::LocationS3#Subdirectory` | yes | baseline |
+| `AWS::DataSync::LocationS3#S3Config` | yes | update |
+| `AWS::DataSync::LocationS3#S3StorageClass` | yes | update |
+| `AWS::DataSync::LocationS3#Subdirectory` | yes | update |
 | `AWS::DataSync::LocationSMB#ServerHostname` | yes | baseline |
 | `AWS::DocDB::DBCluster#EngineVersion` | yes | update |
-| `AWS::DynamoDB::GlobalTable#GlobalSecondaryIndexes.*.KeySchema.*.AttributeName` | maybe | baseline |
-| `AWS::DynamoDB::GlobalTable#GlobalSecondaryIndexes.*.KeySchema.*.KeyType` | maybe | baseline |
-| `AWS::DynamoDB::GlobalTable#GlobalSecondaryIndexes.*.Projection.NonKeyAttributes` | maybe | baseline |
-| `AWS::DynamoDB::GlobalTable#GlobalSecondaryIndexes.*.Projection.ProjectionType` | maybe | baseline |
+| `AWS::DynamoDB::GlobalTable#GlobalSecondaryIndexes.*.KeySchema.*.AttributeName` | maybe | update |
+| `AWS::DynamoDB::GlobalTable#GlobalSecondaryIndexes.*.KeySchema.*.KeyType` | maybe | update |
+| `AWS::DynamoDB::GlobalTable#GlobalSecondaryIndexes.*.Projection.NonKeyAttributes` | maybe | update |
+| `AWS::DynamoDB::GlobalTable#GlobalSecondaryIndexes.*.Projection.ProjectionType` | maybe | update |
 | `AWS::DynamoDB::GlobalTable#KeySchema` | yes | update |
 | `AWS::DynamoDB::GlobalTable#LocalSecondaryIndexes` | yes | hand rule |
 | `AWS::DynamoDB::GlobalTable#VectorIndexes.*.Projection.NonKeyAttributes` | maybe | baseline |
@@ -135,8 +135,8 @@ Candidates: 389 (replace 1, update 44, baseline 274, hand rule 70).
 | `AWS::ECS::Service#DeploymentController` | yes | update |
 | `AWS::ECS::Service#LaunchType` | yes | hand rule |
 | `AWS::EKS::Cluster#KubernetesNetworkConfig` | yes | baseline |
-| `AWS::EKS::Cluster#ResourcesVpcConfig.SecurityGroupIds` | yes | baseline |
-| `AWS::EKS::Cluster#ResourcesVpcConfig.SubnetIds` | yes | baseline |
+| `AWS::EKS::Cluster#ResourcesVpcConfig.SecurityGroupIds` | yes | update |
+| `AWS::EKS::Cluster#ResourcesVpcConfig.SubnetIds` | yes | update |
 | `AWS::EMR::Cluster#Instances` | maybe | hand rule |
 | `AWS::EMR::Cluster#Instances.AdditionalMasterSecurityGroups` | yes | hand rule |
 | `AWS::EMR::Cluster#Instances.AdditionalSlaveSecurityGroups` | yes | hand rule |
@@ -166,30 +166,30 @@ Candidates: 389 (replace 1, update 44, baseline 274, hand rule 70).
 | `AWS::EMR::Cluster#Instances.TaskInstanceGroups.*.Market` | yes | hand rule |
 | `AWS::EMR::Cluster#Instances.TaskInstanceGroups.*.Name` | yes | hand rule |
 | `AWS::EMR::InstanceFleetConfig#InstanceTypeConfigs` | yes | update |
-| `AWS::EMRServerless::Application#Architecture` | maybe | baseline |
-| `AWS::EMRServerless::Application#AutoStartConfiguration` | maybe | baseline |
-| `AWS::EMRServerless::Application#AutoStartConfiguration.Enabled` | maybe | baseline |
-| `AWS::EMRServerless::Application#AutoStopConfiguration` | maybe | baseline |
-| `AWS::EMRServerless::Application#AutoStopConfiguration.Enabled` | maybe | baseline |
-| `AWS::EMRServerless::Application#AutoStopConfiguration.IdleTimeoutMinutes` | maybe | baseline |
+| `AWS::EMRServerless::Application#Architecture` | maybe | update |
+| `AWS::EMRServerless::Application#AutoStartConfiguration` | maybe | update |
+| `AWS::EMRServerless::Application#AutoStartConfiguration.Enabled` | maybe | update |
+| `AWS::EMRServerless::Application#AutoStopConfiguration` | maybe | update |
+| `AWS::EMRServerless::Application#AutoStopConfiguration.Enabled` | maybe | update |
+| `AWS::EMRServerless::Application#AutoStopConfiguration.IdleTimeoutMinutes` | maybe | update |
 | `AWS::EMRServerless::Application#ImageConfiguration` | maybe | baseline |
 | `AWS::EMRServerless::Application#ImageConfiguration.ImageUri` | maybe | baseline |
-| `AWS::EMRServerless::Application#InitialCapacity` | maybe | baseline |
-| `AWS::EMRServerless::Application#InitialCapacity.*.Key` | maybe | baseline |
-| `AWS::EMRServerless::Application#InitialCapacity.*.Value` | maybe | baseline |
-| `AWS::EMRServerless::Application#InitialCapacity.*.Value.WorkerConfiguration` | maybe | baseline |
-| `AWS::EMRServerless::Application#InitialCapacity.*.Value.WorkerConfiguration.Cpu` | maybe | baseline |
-| `AWS::EMRServerless::Application#InitialCapacity.*.Value.WorkerConfiguration.Disk` | maybe | baseline |
-| `AWS::EMRServerless::Application#InitialCapacity.*.Value.WorkerConfiguration.Memory` | maybe | baseline |
-| `AWS::EMRServerless::Application#InitialCapacity.*.Value.WorkerCount` | maybe | baseline |
-| `AWS::EMRServerless::Application#MaximumCapacity` | maybe | baseline |
-| `AWS::EMRServerless::Application#MaximumCapacity.Cpu` | maybe | baseline |
-| `AWS::EMRServerless::Application#MaximumCapacity.Disk` | maybe | baseline |
-| `AWS::EMRServerless::Application#MaximumCapacity.Memory` | maybe | baseline |
-| `AWS::EMRServerless::Application#NetworkConfiguration` | maybe | baseline |
-| `AWS::EMRServerless::Application#NetworkConfiguration.SecurityGroupIds` | maybe | baseline |
-| `AWS::EMRServerless::Application#NetworkConfiguration.SubnetIds` | maybe | baseline |
-| `AWS::EMRServerless::Application#ReleaseLabel` | maybe | baseline |
+| `AWS::EMRServerless::Application#InitialCapacity` | maybe | update |
+| `AWS::EMRServerless::Application#InitialCapacity.*.Key` | maybe | update |
+| `AWS::EMRServerless::Application#InitialCapacity.*.Value` | maybe | update |
+| `AWS::EMRServerless::Application#InitialCapacity.*.Value.WorkerConfiguration` | maybe | update |
+| `AWS::EMRServerless::Application#InitialCapacity.*.Value.WorkerConfiguration.Cpu` | maybe | update |
+| `AWS::EMRServerless::Application#InitialCapacity.*.Value.WorkerConfiguration.Disk` | maybe | update |
+| `AWS::EMRServerless::Application#InitialCapacity.*.Value.WorkerConfiguration.Memory` | maybe | update |
+| `AWS::EMRServerless::Application#InitialCapacity.*.Value.WorkerCount` | maybe | update |
+| `AWS::EMRServerless::Application#MaximumCapacity` | maybe | update |
+| `AWS::EMRServerless::Application#MaximumCapacity.Cpu` | maybe | update |
+| `AWS::EMRServerless::Application#MaximumCapacity.Disk` | maybe | update |
+| `AWS::EMRServerless::Application#MaximumCapacity.Memory` | maybe | update |
+| `AWS::EMRServerless::Application#NetworkConfiguration` | maybe | update |
+| `AWS::EMRServerless::Application#NetworkConfiguration.SecurityGroupIds` | maybe | update |
+| `AWS::EMRServerless::Application#NetworkConfiguration.SubnetIds` | maybe | update |
+| `AWS::EMRServerless::Application#ReleaseLabel` | maybe | update |
 | `AWS::EMRServerless::Application#WorkerTypeSpecifications` | maybe | baseline |
 | `AWS::EMRServerless::Application#WorkerTypeSpecifications.*.ImageConfiguration` | maybe | baseline |
 | `AWS::EMRServerless::Application#WorkerTypeSpecifications.*.ImageConfiguration.ImageUri` | maybe | baseline |
@@ -197,8 +197,8 @@ Candidates: 389 (replace 1, update 44, baseline 274, hand rule 70).
 | `AWS::ElastiCache::CacheCluster#NumCacheNodes` | maybe | update |
 | `AWS::ElastiCache::CacheCluster#PreferredAvailabilityZone` | maybe | update |
 | `AWS::ElastiCache::CacheCluster#PreferredAvailabilityZones` | maybe | hand rule |
-| `AWS::ElastiCache::ReplicationGroup#AuthToken` | maybe | baseline |
-| `AWS::ElastiCache::ReplicationGroup#Engine` | yes | baseline |
+| `AWS::ElastiCache::ReplicationGroup#AuthToken` | maybe | update |
+| `AWS::ElastiCache::ReplicationGroup#Engine` | yes | update |
 | `AWS::ElastiCache::ReplicationGroup#NodeGroupConfiguration` | maybe | baseline |
 | `AWS::ElastiCache::ReplicationGroup#NodeGroupConfiguration.*.NodeGroupId` | maybe | baseline |
 | `AWS::ElastiCache::ReplicationGroup#NodeGroupConfiguration.*.PrimaryAvailabilityZone` | yes | baseline |
@@ -206,12 +206,12 @@ Candidates: 389 (replace 1, update 44, baseline 274, hand rule 70).
 | `AWS::ElastiCache::ReplicationGroup#NodeGroupConfiguration.*.ReplicaCount` | yes | baseline |
 | `AWS::ElastiCache::ReplicationGroup#NodeGroupConfiguration.*.Slots` | yes | baseline |
 | `AWS::ElastiCache::ReplicationGroup#NumNodeGroups` | maybe | baseline |
-| `AWS::ElastiCache::ReplicationGroup#ReplicasPerNodeGroup` | yes | baseline |
+| `AWS::ElastiCache::ReplicationGroup#ReplicasPerNodeGroup` | yes | update |
 | `AWS::ElastiCache::User#Engine` | yes | update |
-| `AWS::ElastiCache::UserGroup#Engine` | yes | baseline |
-| `AWS::ElasticLoadBalancing::LoadBalancer#AvailabilityZones` | maybe | baseline |
-| `AWS::ElasticLoadBalancing::LoadBalancer#HealthCheck` | maybe | baseline |
-| `AWS::ElasticLoadBalancing::LoadBalancer#Subnets` | maybe | baseline |
+| `AWS::ElastiCache::UserGroup#Engine` | yes | update |
+| `AWS::ElasticLoadBalancing::LoadBalancer#AvailabilityZones` | maybe | update |
+| `AWS::ElasticLoadBalancing::LoadBalancer#HealthCheck` | maybe | update |
+| `AWS::ElasticLoadBalancing::LoadBalancer#Subnets` | maybe | update |
 | `AWS::Elasticsearch::Domain#AdvancedSecurityOptions` | maybe | baseline |
 | `AWS::Elasticsearch::Domain#AdvancedSecurityOptions.Enabled` | yes | baseline |
 | `AWS::Elasticsearch::Domain#ElasticsearchVersion` | maybe | baseline |
@@ -266,22 +266,22 @@ Candidates: 389 (replace 1, update 44, baseline 274, hand rule 70).
 | `AWS::KafkaConnect::Connector#ConnectorConfiguration` | yes | baseline |
 | `AWS::KafkaConnect::Connector#Plugins` | yes | baseline |
 | `AWS::KafkaConnect::Connector#WorkerConfiguration` | yes | baseline |
-| `AWS::KinesisAnalytics::ApplicationOutput#Output.Name` | yes | baseline |
-| `AWS::KinesisAnalyticsV2::Application#RuntimeEnvironment` | yes | baseline |
-| `AWS::KinesisAnalyticsV2::ApplicationOutput#Output.Name` | yes | baseline |
-| `AWS::KinesisAnalyticsV2::ApplicationReferenceDataSource#ReferenceDataSource.TableName` | yes | baseline |
+| `AWS::KinesisAnalytics::ApplicationOutput#Output.Name` | yes | update |
+| `AWS::KinesisAnalyticsV2::Application#RuntimeEnvironment` | yes | update |
+| `AWS::KinesisAnalyticsV2::ApplicationOutput#Output.Name` | yes | update |
+| `AWS::KinesisAnalyticsV2::ApplicationReferenceDataSource#ReferenceDataSource.TableName` | yes | update |
 | `AWS::LakeFormation::Resource#UseServiceLinkedRole` | maybe | baseline |
 | `AWS::Lambda::EventSourceMapping#AmazonManagedKafkaEventSourceConfig` | yes | update |
 | `AWS::Lambda::EventSourceMapping#SelfManagedKafkaEventSourceConfig` | yes | update |
 | `AWS::Location::GeofenceCollection#Description` | yes | update |
 | `AWS::Location::Map#Description` | yes | update |
-| `AWS::Location::Map#PricingPlan` | yes | baseline |
-| `AWS::Location::PlaceIndex#DataSourceConfiguration` | yes | baseline |
-| `AWS::Location::PlaceIndex#Description` | yes | baseline |
-| `AWS::Location::PlaceIndex#PricingPlan` | yes | baseline |
+| `AWS::Location::Map#PricingPlan` | yes | update |
+| `AWS::Location::PlaceIndex#DataSourceConfiguration` | yes | update |
+| `AWS::Location::PlaceIndex#Description` | yes | update |
+| `AWS::Location::PlaceIndex#PricingPlan` | yes | update |
 | `AWS::Location::RouteCalculator#Description` | yes | update |
-| `AWS::Location::RouteCalculator#PricingPlan` | yes | baseline |
-| `AWS::Location::Tracker#Description` | yes | baseline |
+| `AWS::Location::RouteCalculator#PricingPlan` | yes | update |
+| `AWS::Location::Tracker#Description` | yes | update |
 | `AWS::Location::Tracker#PositionFiltering` | yes | update |
 | `AWS::MediaLive::Channel#InputAttachments.*.InputId` | yes | baseline |
 | `AWS::MediaStore::Container#CorsPolicy.*.AllowedMethods` | yes | baseline |
@@ -397,17 +397,17 @@ Candidates: 389 (replace 1, update 44, baseline 274, hand rule 70).
 | `AWS::SageMaker::UserProfile#Tags` | yes | baseline |
 | `AWS::SageMaker::Workteam#MemberDefinitions.*.CognitoMemberDefinition.CognitoUserPool` | yes | baseline |
 | `AWS::ServiceCatalog::PortfolioShare#AcceptLanguage` | yes | baseline |
-| `AWS::ServiceDiscovery::Service#DnsConfig.NamespaceId` | yes | baseline |
+| `AWS::ServiceDiscovery::Service#DnsConfig.NamespaceId` | yes | update |
 | `AWS::Timestream::ScheduledQuery#ClientToken` | yes | baseline |
-| `AWS::Transfer::Server#EndpointDetails.AddressAllocationIds` | maybe | baseline |
-| `AWS::Transfer::Server#IdentityProviderType` | yes | baseline |
+| `AWS::Transfer::Server#EndpointDetails.AddressAllocationIds` | maybe | update |
+| `AWS::Transfer::Server#IdentityProviderType` | yes | update |
 | `AWS::WorkSpaces::Workspace#BundleId` | maybe | baseline |
 | `AWS::WorkSpaces::Workspace#RootVolumeEncryptionEnabled` | maybe | baseline |
 | `AWS::WorkSpaces::Workspace#UserVolumeEncryptionEnabled` | maybe | baseline |
 | `AWS::WorkSpaces::Workspace#VolumeEncryptionKey` | maybe | baseline |
 | `AWS::WorkSpacesWeb::UserSettings#AdditionalEncryptionContext` | yes | baseline |
 | `AWS::WorkSpacesWeb::UserSettings#CustomerManagedKey` | yes | baseline |
-| `AWS::XRay::SamplingRule#SamplingRuleRecord.SamplingRule.Version` | yes | baseline |
+| `AWS::XRay::SamplingRule#SamplingRuleRecord.SamplingRule.Version` | yes | update |
 
 ## Spec types with no registry schema
 

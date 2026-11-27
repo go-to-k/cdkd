@@ -607,6 +607,11 @@ only where the template spells a `{{resolve:...}}` reference, so such a value
 is stored as AWS returned it, by design; see
 [`cdkd import`'s note on it](import.md#a-value-your-template-never-references-is-recorded-as-aws-holds-it)
 and [Values that are stored in the clear](state-management-secrets.md#values-that-are-stored-in-the-clear).
+A readback list element no template element resolved to that contains the
+text of a 1-3 character secret the template's references consumed is
+stored as `***` (fail closed: `upgrade` holding the secret `pg` cannot be
+told apart from `pgabc`), so `cdkd drift` reports such a resource's baseline
+as uncertified on every run.
 
 **v2 → v3 upgrade is automatic on the next `cdkd deploy`.** When the
 deploy engine loads state and finds resources without
@@ -1927,6 +1932,102 @@ stack with no instance id.
   record it does not write keeps the binding beside the MACs it describes.
   `cdkd diff` also marks such a key whose MAC differs as changed when its
   other inputs resolve to values holding no `NoEcho` value.
+- **Passed-secret MACs** (`cdkd:passed`, issue #7050): in a
+  nested child, a key the record holds masked that reads a parameter the
+  parent passed as `secret` (`passedParameterClasses`) gets
+  `{ "fingerprint": "inputs-sha256:...", "macs": { "<Parameter>": "kms-hmac-sha256:..." } }`.
+  The MACs use the same key and message as the `NoEcho` ones. The fingerprint is
+  the key's input fingerprint, stamped only when every input other than
+  those parameters and `{{resolve:...}}` text was resolved and hashed, and
+  only while equal to the same save's `maskedPropertyInputFingerprints`
+  entry. The input walk keeps such a parameter as written, so the
+  fingerprints alone hash the same whatever its value. The deploy's plan and
+  its update path (`movedMaskedProperties`) count the key unchanged only
+  when the binding equals today's and every MAC equals today's. A differing
+  MAC is a move. With no usable MAC, the key's recorded input fingerprint
+  decides: if it differs from today's, the key is a move. If it is equal,
+  or none is recorded (it is then re-baselined to today's), the key is
+  unchanged and the plan warns, naming the resource and the key, never a
+  value. A move would never settle there: a stateful create-only key
+  (RDS `DBName`) is refused, and only a sent value gets a MAC. A record
+  holding no member for the key (written before #7050, with no KMS, or by
+  an older binary's rebuild that dropped it) is backfilled: the same deploy
+  stamps today's member, bound to the input fingerprint the record holds or
+  the plan re-baselines, and the key is compared from then on. With no KMS
+  this run, or in a dry run, nothing is stamped, and the warning repeats on
+  every deploy. A member that exists but proves nothing (malformed, under
+  another key, bound to another input fingerprint, or no KMS this run) is
+  never backfilled. It warns on every deploy until the key is sent again. A
+  key whose other inputs are not all proven (kept as written, or unknown
+  here) can bind no MAC: it is a move only when its recorded input
+  fingerprint differs from today's. Otherwise it is unchanged, warned of on
+  every deploy, and re-baselined when it holds no input fingerprint. A
+  masked key with no passed-secret parameter whose inputs prove nothing
+  either way is likewise compared masked by the plan, with the same
+  warning, where the plan's own value holds a mask too, or where it is in
+  the clear but the template spells a `{{resolve:...}}`. A plan value in
+  the clear is compared as is when the template spells no reference, or
+  when the record's mask is a `NoEcho` leaf's (`noEchoLeaves`), so a value
+  whose `NoEcho` was removed and then changed is planned. Such a stale
+  `NoEcho` leaf is decided by the engine's readback alone: its input
+  fingerprint is never re-baselined (stamped unsent, it would read a later
+  deploy unchanged), and a recorded one that differs is no move (it hashed
+  the `NoEcho` input as written). Only that non-proof is dropped: a key
+  whose text fingerprint moved (the template itself was edited), or whose
+  public `ssm` value moved, or whose passed-secret value MAC proves a
+  move, is still a move. A key that holds another masked leaf is re-hashed
+  with some of the parameters its stale leaves read kept as written, as the
+  record hashed the ones that were `NoEcho` then (every subset, largest
+  first, since a plain parameter beside them was hashed by its value).
+  Equal to the recorded input fingerprint, only the stale leaves moved and
+  the readback decides them (the settle re-stamps today's fingerprint, so
+  the next deploy compares it). A parameter the key also reads outside its
+  stale leaves (a live `NoEcho` sibling's, say) is never kept as written on
+  the hash's word, since no readback compares it there: a match only with
+  it kept as written makes the key UNPROVABLE (no value MAC decides it: a
+  parameter's MAC is recorded only while it is `NoEcho`). An unprovable key
+  is treated as unchanged from its record and warned of on every deploy,
+  naming the resource and the key, never a value: it is never refused, its
+  stale leaves stay marked, and its input fingerprint is never re-stamped,
+  so no stamp ever rests on that evidence. A create-only key is then never
+  sent, so a change to such a parameter is not applied there (the warning
+  names the `--recreate-via-*` remedy); an updatable one is decided by its
+  readback. When no subset matched, it is a move (its input fingerprint
+  still covers that leaf's inputs), refused or sent as the plan reports it.
+  Known limit: the whole set of the stale leaves' parameters, with and
+  without the ones the key also reads outside them, is always tried; the
+  walk over their other subsets stops after 1024 re-hashes (every subset of
+  up to ten parameters) and then reads the key as a move, never unchanged,
+  so a key whose stale leaves read more parameters than that, some of them
+  plain when recorded (the matching subset is then a strict one), can be
+  refused (create-only) or sent on every deploy. The plan needs no such
+  drop: the stale leaf's key is planned from its masked record anyway. An
+  updatable key is sent, as
+  any planned key is, and its record settles. For a create-only key, a
+  readback holding today's value settles the leaf and unmarks it; one
+  holding another value, which the provider reports exactly, is a change
+  (a stateful key is refused); with no usable readback the deploy warns on
+  every run that the value is not applied, and the plan keeps showing it.
+  A key the `NoEcho`
+  comparison already masked (its value MAC proved it) is not warned of. An unsent key carries its previous member. A
+  sent key with no new member (no KMS this run) carries it only while it is
+  bound to the input fingerprint the same save stamps. Otherwise the key
+  holds none, and the next run with the MACs backfills it once. A failed
+  update, or a written record with no template, leaves
+  `{ "fingerprint": "cdkd:dropped" }`. So outside such a send, a key that
+  once held a member never reads as one that never had one, and the
+  backfill fires at most once per record. The entry may hold no `NoEcho`
+  MAC at all. An older binary never reads the object member. `cdkd diff`
+  holds no passed-secret MACs, and a nested child's preview holds no input
+  fingerprints either, so it shows such a key as a change whether or not
+  its value moved. It never hides a move; the deploy decides with its MACs.
+  An entry holding only this member
+  still sets `noEchoValueMacs`, so a save of such a nested child writes
+  [`version: 17`](#version-17-adds-noechovaluemacs-written-only-with-a-mac)
+  where it would otherwise write 16, and a binary older than #6146 refuses
+  that child's state. That bump is kept on purpose: the older binary's failure
+  save would carry these MACs verbatim past a value it had sent, the hazard
+  the version 17 section describes.
 - **Not an oracle**: testing a guess needs `kms:GenerateMac` on the key, which
   reading `state.json` (a cross-account `Fn::GetStackOutput` consumer, a
   noncurrent S3 version) does not grant. This is why it is not the salted
@@ -1964,6 +2065,23 @@ CloudFormation does.
   cross-stack read, and the branch an evaluated condition selects. So a new
   parameter value, a replaced resource's new name and a flipped condition
   are sent too.
+- `maskedPropertyReferenceFingerprints` (`refs-sha256:`, then after a `+`
+  the property's input fingerprint, or its text hash when the record holds
+  none, issue #7050) is written for a property whose template spells a
+  plain `{{resolve:ssm:...}}` reference, or one whose name an intrinsic
+  assembles (`Fn::Sub` / `Fn::Join` over a parameter, the CDK
+  `valueForStringParameter` shape: its tokens are read from the input walk's
+  resolved form). It hashes each such reference with the PUBLIC
+  (`String` / `StringList`) value it resolved to, so a changed public
+  parameter is sent: CloudFormation documents the skip of a value change
+  only for Secrets Manager and `ssm-secure`. A `SecureString` read through
+  `ssm` enters as a marker, and `secretsmanager` / `ssm-secure` references
+  are left out. A value that cannot be told (no proof, as for a read in a
+  producer's other region, or a name that stays assembled) enters as an
+  `unknown` marker: the first deploy that meets it, like one reading a
+  record without the entry or with one bound to another input or text
+  fingerprint, plans the property as changed; once stamped it settles on the
+  text and input comparison.
 
 Secrets stay in their template form and never reach the hash, decided by
 where an input comes from, never by comparing its value with a secret it did
@@ -2548,7 +2666,8 @@ interface ResourceState {
   acceptedCreateOnlyDrops?: string[] // optional, no bump: create-only properties the SDK route was told to drop, so never sent
   maskedPropertyFingerprints?: Record<string, string> // optional, no bump: per property `properties` holds as `***`, a hash of its template text (issue #4451)
   maskedPropertyInputFingerprints?: Record<string, string> // optional, no bump: per such property, a hash of its template value with its non-secret inputs resolved, bound to the text hash (issue #4543)
-  noEchoValueMacs?: Record<string, Record<string, string | { fingerprint: string }>> // v17+, written only with a MAC: per property reading a NoEcho parameter, per parameter, a KMS HMAC of the value last sent (issue #6146); `cdkd:inputs` binds it to the input fingerprint it was sent with (no bump, issue #6209)
+  maskedPropertyReferenceFingerprints?: Record<string, string> // optional, no bump: per such property spelling (or assembling) a plain `ssm` reference, a hash of each with its public value, bound to the input fingerprint or else the text hash (issue #7050)
+  noEchoValueMacs?: Record<string, Record<string, string | { fingerprint: string; macs?: Record<string, string> }>> // v17+, written only with a MAC: per property reading a NoEcho parameter, per parameter, a KMS HMAC of the value last sent (issue #6146); `cdkd:inputs` binds it to the input fingerprint it was sent with (no bump, issue #6209); `cdkd:passed` holds the MACs of passed-secret nested-child parameters a masked key reads (issue #7050; an entry holding only it still writes v17)
   secretNamedAttributes?: string[] // optional, no bump: on a nested-stack row, the `Outputs.<Key>` attributes holding a child resource's name taken from a secret; keys only, read only to mask log lines (issue #3869)
   nameGeneration?: number                      // v13+, id stacks only: the generation its generated name was derived at; absent = 0
   nameGenerationHigh?: number                  // v13+, id stacks only: the highest generation a replacement created, when above nameGeneration (a rollback restored this record); absent = none

@@ -1,11 +1,16 @@
-import type { RecordedSecretValues } from '../pairs.js';
+import { SECRET_MASK, type RecordedSecretValues } from '../pairs.js';
 import { storeAssociation, crossStackAssociations, crossStackSourceKey } from '../cross-stack.js';
 import { isSingleDynamicReferenceToken } from '../rules.js';
 import { redactForState } from '../context.js';
 import { certifiedListForLeaf, certifiedExpressionForLeaf } from '../certified-positions.js';
-import { rendersLiteralTo, renderedTokenOf } from '../positions.js';
+import { literalTextHoldsSubFloorSecret, rendersLiteralTo, renderedTokenOf } from '../positions.js';
 import { deepEqualJsonValue } from '../redact-path.js';
-import { nestedStackParameterExpressions, renderedParameterSpellings } from './parameter-tables.js';
+import {
+  attributionRefusedParameters,
+  markAttributionRefusedParameter,
+  nestedStackParameterExpressions,
+  renderedParameterSpellings,
+} from './parameter-tables.js';
 import { carriesChildOnlyPlaintext } from './child-only-plaintext.js';
 
 /**
@@ -29,6 +34,10 @@ export function inheritNestedStackParameterAssociations(
   childSecrets: RecordedSecretValues,
   parentSecrets: RecordedSecretValues
 ): void {
+  // go-to-k/cdkd#7050: the parameters the child may not attribute by search.
+  for (const [name, kind] of attributionRefusedParameters.get(parentSecrets) ?? []) {
+    markAttributionRefusedParameter(childSecrets, name, kind);
+  }
   const table = nestedStackParameterExpressions.get(parentSecrets);
   if (table === undefined || table.size === 0) return;
   let associations = crossStackAssociations.get(childSecrets);
@@ -402,6 +411,40 @@ export function redactInheritedParameterValue(
 }
 
 /**
+ * {@link redactInheritedParameterValue} as the PERSIST side may write it
+ * (go-to-k/cdkd#7050): the `{Ref}` arm ({@link positionByInheritedParameter})
+ * and the re-read's bindings (`reread.ts`). A parameter the parent marked
+ * `sub-floor` holds a secret's text the value scan cannot see, so with no
+ * certified spelling the scan's answer is masked wherever its text still
+ * holds one, never persisted ("a sub-floor one is read only as the parent's
+ * certified spelling, or masked", `redact-path.ts`). A value the scan leaves
+ * free of such text stands: the save's second walk meets the certified
+ * spelling the first persisted (#4913). A list keeps its shape.
+ *
+ * NOT the diff side's binding: an embedding read the placeholder arms keep
+ * as resolved (a public row holding a secret's text) must still compare
+ * equal, and a masked leaf is compared by its fingerprints
+ * (`redaction-masks.ts`), so the mask costs no phantom change.
+ */
+export function persistedInheritedParameterValue(
+  parentSecrets: RecordedSecretValues,
+  parameterName: string,
+  value: unknown
+): unknown {
+  if (attributionRefusedParameters.get(parentSecrets)?.get(parameterName) !== 'sub-floor') {
+    return redactInheritedParameterValue(parentSecrets, parameterName, value);
+  }
+  const certified = inheritedParameterExpression(parentSecrets, parameterName, value);
+  if (certified !== undefined) return certified;
+  const scanned = redactForState(value, { provenance: 'value-scan', secrets: parentSecrets });
+  const masked = (text: unknown): unknown =>
+    typeof text === 'string' && literalTextHoldsSubFloorSecret(text, parentSecrets)
+      ? SECRET_MASK
+      : text;
+  return Array.isArray(scanned) ? scanned.map(masked) : masked(scanned);
+}
+
+/**
  * Persist a nested-stack child leaf spelled exactly `{Ref: <Param>}` as
  * {@link redactInheritedParameterValue} answers it, so the persisted value is
  * the diff side's desired value by construction (issue #2349).
@@ -447,7 +490,8 @@ export function positionByInheritedParameter(
   // parent-bag scan could cut apart (a parent needle overlapping it) would
   // leave fragments the answer's own re-scan can no longer find.
   if (carriesChildOnlyPlaintext(bag, secrets, reads.parent)) return undefined;
-  const answer = redactInheritedParameterValue(reads.parent, name, bag);
+  // go-to-k/cdkd#7050: masked where a sub-floor secret's text would stay.
+  const answer = persistedInheritedParameterValue(reads.parent, name, bag);
   // ...and of the answer, for a parent expression that itself spells a
   // child needle. Deep equality, not identity: the value walk rebuilds every
   // array it visits, so `!==` would refuse every list leaf.

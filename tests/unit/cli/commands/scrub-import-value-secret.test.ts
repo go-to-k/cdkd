@@ -1613,7 +1613,8 @@ describe('THE DISCRIMINATOR reads the PRODUCER STATE, not the needle count (issu
     // the embedded plaintext. `MasterUsername`'s stored value is the bare
     // password, reachable only by the substring needle.
     const saved = savedState();
-    expect(saved.resources['Db']!.properties['MasterUsername']).toBe(SECRET_EXPR);
+    // go-to-k/cdkd#7050: the stored plaintext is not what the import resolves to, so no span places it: masked, never searched for.
+    expect(saved.resources['Db']!.properties['MasterUsername']).toBe('***');
     expect(JSON.stringify(saved)).not.toContain(PLAINTEXT);
     expect(res.recordsChanged).toBe(1);
   });
@@ -1639,8 +1640,9 @@ describe('THE DISCRIMINATOR reads the PRODUCER STATE, not the needle count (issu
     );
 
     const saved = savedState();
-    expect(saved.resources['Db']!.properties['MasterUsername']).toBe(SECRET_EXPR);
-    expect(saved.resources['Db']!.properties['MasterUserPassword']).toBe(SECRET_EXPR);
+    // go-to-k/cdkd#7050: the stored plaintext is not what the import resolves to, so no span places it: masked, never searched for.
+    expect(saved.resources['Db']!.properties['MasterUsername']).toBe('***');
+    expect(saved.resources['Db']!.properties['MasterUserPassword']).toBe('***');
     expect(res.recordsChanged).toBe(1);
   });
 

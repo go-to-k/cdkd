@@ -103,7 +103,7 @@ function holdsDynamicReference(value: unknown): boolean {
  * a lookup that fails) cannot be told from a public `String` here, and a
  * reader of the row's outputs masked over a public one is the safe side.
  */
-function templateMixesDynamicReference(value: unknown, depth = 0): boolean {
+export function templateMixesDynamicReference(value: unknown, depth = 0): boolean {
   if (typeof value === 'string') return mixesDynamicReference(value);
   if (!isRecord(value) || depth > 64) return holdsDynamicReference(value);
   const branches = value['Fn::If'];
@@ -134,16 +134,94 @@ export const ANY_TAG_KEY = '*';
 /** Every tag KEY is tainted too: a key built from the secret. */
 export const TAG_KEYS_TAINTED = '*key*';
 
-/** Does `node` read any of `tainted` (a parameter or a resource id), through any intrinsic? */
-function readsTainted(node: unknown, tainted: ReadonlySet<string>): boolean {
+/** A literal cross-stack read: an export by name, or a stack's output. */
+export type CrossStackSource =
+  | { kind: 'export'; name: string }
+  | { kind: 'output'; stackName: string; outputName: string; region?: string };
+
+/**
+ * Every `Fn::ImportValue` / `Fn::GetStackOutput` under `node`; `undefined`
+ * for one whose name, stack or output is not a literal string, which this
+ * cannot match to a producer (go-to-k/cdkd#7090).
+ */
+function crossStackSourcesOf(node: unknown): Array<CrossStackSource | undefined> {
+  const sources: Array<CrossStackSource | undefined> = [];
+  const pending: unknown[] = [node];
+  const seen = new Set<object>();
+  while (pending.length > 0) {
+    const next = pending.pop();
+    if (next === null || typeof next !== 'object' || seen.has(next)) continue;
+    seen.add(next);
+    if (Array.isArray(next)) {
+      pending.push(...(next as unknown[]));
+      continue;
+    }
+    for (const [key, arg] of Object.entries(next)) {
+      if (key === 'Fn::ImportValue') {
+        sources.push(typeof arg === 'string' ? { kind: 'export', name: arg } : undefined);
+      } else if (key === 'Fn::GetStackOutput') {
+        const { StackName, OutputName, Region } = recordOf(arg);
+        sources.push(
+          typeof StackName === 'string' && typeof OutputName === 'string'
+            ? {
+                kind: 'output',
+                stackName: StackName,
+                outputName: OutputName,
+                ...(typeof Region === 'string' && { region: Region }),
+              }
+            : undefined
+        );
+      }
+      pending.push(arg);
+    }
+  }
+  return sources;
+}
+
+/**
+ * The tainted name standing for a cross-stack read. Never a logical id or a
+ * parameter name (those are alphanumeric); the region is left out, so a read
+ * of the same name in another region is masked too (the safe side).
+ */
+function crossStackTaintKey(source: CrossStackSource | undefined): string {
+  if (source === undefined) return 'Fn::ImportValue|Fn::GetStackOutput *';
+  return source.kind === 'export'
+    ? `Fn::ImportValue ${JSON.stringify(source.name)}`
+    : `Fn::GetStackOutput ${JSON.stringify([source.stackName, source.outputName])}`;
+}
+
+/**
+ * go-to-k/cdkd#7090: the tainted names a node's own template seeds from the
+ * cross-stack reads it makes: each read `isTainted` answers true for (a
+ * producer's output or export deriving from a secret, by provenance). A read
+ * whose target is not a literal is asked as `undefined`.
+ */
+export function crossStackTaintSeeds(
+  template: CloudFormationTemplate,
+  isTainted: (source: CrossStackSource | undefined) => boolean
+): Set<string> {
+  const seeds = new Set<string>();
+  for (const source of crossStackSourcesOf(template)) {
+    if (isTainted(source)) seeds.add(crossStackTaintKey(source));
+  }
+  return seeds;
+}
+
+/**
+ * Does `node` read any of `tainted` (a parameter, a resource id, or a
+ * cross-stack read {@link crossStackTaintSeeds} seeded), through any intrinsic?
+ */
+export function readsTainted(node: unknown, tainted: ReadonlySet<string>): boolean {
   if (tainted.size === 0) return false;
-  return readsNoEchoSource(node, {
-    // A `Ref` / `${Name}` to a tainted parameter OR resource, and any
-    // `Fn::GetAtt` of a tainted resource. No condition verdicts, so an
-    // `Fn::If` counts both branches.
-    parameters: tainted,
-    attributeIsNoEcho: (logicalId) => tainted.has(logicalId),
-  });
+  return (
+    readsNoEchoSource(node, {
+      // A `Ref` / `${Name}` to a tainted parameter OR resource, and any
+      // `Fn::GetAtt` of a tainted resource. No condition verdicts, so an
+      // `Fn::If` counts both branches.
+      parameters: tainted,
+      attributeIsNoEcho: (logicalId) => tainted.has(logicalId),
+    }) || crossStackSourcesOf(node).some((source) => tainted.has(crossStackTaintKey(source)))
+  );
 }
 
 /**
@@ -178,7 +256,7 @@ export function mixedSecretRowKeys(
  */
 export function taintedNamesOf(
   template: CloudFormationTemplate,
-  passed: ReadonlySet<string> | undefined
+  passed: Iterable<string> | undefined
 ): Set<string> {
   const tainted = new Set<string>(passed ?? []);
   const resources = recordOf(template.Resources as unknown);

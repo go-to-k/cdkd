@@ -33,6 +33,7 @@ import {
   redactInheritedParameterValue,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { attributionRefusedParameters } from '../../../src/deployment/secret-redaction/nested-stack/parameter-tables.js';
 import { poisonRenderedSpellingsCollidingIn } from '../../../src/deployment/intrinsic-resolver/parameter-secrets.js';
 import { scrubStack } from '../../../src/cli/commands/scrub.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -81,14 +82,26 @@ const SUB_SEL_B = { 'Fn::Select': [0, [{ 'Fn::Sub': `\${${PARAM_B}}` }]] };
 const OPAQUE_SEL_A = { 'Fn::Select': [0, [{ Ref: PARAM_A }, { 'Fn::Base64': 'x' }]] };
 const OPAQUE_SEL_B = { 'Fn::Select': [0, [{ Ref: PARAM_B }, { 'Fn::Base64': 'x' }]] };
 
+/**
+ * A 2-character secret of the same row whose text occurs inside `SHARED`
+ * (`sh4red`), as the fixture's `w4` occurs inside `fall2pw4644`: the parent
+ * marks `ConnA` `sub-floor` by containment (go-to-k/cdkd#7059).
+ */
+const PIN_EXPR = '{{resolve:secretsmanager:prod/db/cred:SecretString:pintag4913::}}';
+const PIN = '4r';
+
 /** One parent row's bag; `reversed` resolves `ConnA` first, so `EXPR_B` survives. */
-function parentRow(reversed: boolean): RecordedSecretValues {
+function parentRow(reversed: boolean, subFloorPin = false): RecordedSecretValues {
   const conn = [
     [USER_EXPR, USER],
     [EXPR_A, SHARED],
   ] as const;
   const order = reversed ? [...conn, [EXPR_B, SHARED] as const] : [[EXPR_B, SHARED] as const, ...conn];
   const parent: RecordedSecretValues = new Map();
+  if (subFloorPin) {
+    parent.set(PIN, PIN_EXPR);
+    recordResolvedPair(parent, PIN_EXPR, PIN);
+  }
   for (const [expression, plaintext] of order) {
     parent.set(plaintext, expression);
     recordResolvedPair(parent, expression, plaintext);
@@ -262,6 +275,36 @@ describe("a nested child's Outputs reading BOTH parameters keep each spelling (#
           expect(JSON.stringify(persisted)).not.toContain(USER);
         });
       }
+    }
+  }
+});
+
+describe('a re-read output of a sub-floor-marked parameter survives the save re-redaction (#4913, go-to-k/cdkd#7050)', () => {
+  // The nested-stack-secret integ's shape: `ChildFallSelectOutput` is a
+  // Select over a Split of the literal, whose value holds the text of the
+  // row's 2-character pin secret. The first walk places it by the re-read;
+  // the save's second walk saw the placed tokens, refused the re-read, and
+  // the `sub-floor` mark masked the leaf whole.
+  for (const reversed of [true, false]) {
+    for (const literalLast of [true, false]) {
+      it(`${reversed ? 'reversed' : 'forward'} parent order, ${literalLast ? 'literal' : 'sibling'} read last`, async () => {
+        const outputs = { OA: { Ref: PARAM_A }, OS: SPLIT_A, OB: { Ref: PARAM_B } };
+        const ordered = literalLast
+          ? { OB: outputs.OB, OA: outputs.OA, OS: outputs.OS }
+          : { OA: outputs.OA, OS: outputs.OS, OB: outputs.OB };
+        const parent = parentRow(reversed, true);
+        // Premise: the parent marked the literal `sub-floor`, not `masked`.
+        expect(attributionRefusedParameters.get(parent)?.get(PARAM_A)).toBe('sub-floor');
+        const { persisted, desired, literal } = await persistAndDesired(
+          parent,
+          childTemplate(ordered)
+        );
+        expect(persisted['OS']).toBe(`postgres://${USER_EXPR}:${EXPR_A}`);
+        expect(persisted).toEqual(literal);
+        expect(persisted).toEqual(desired);
+        const serialized = JSON.stringify(persisted);
+        for (const plaintext of [SHARED, USER]) expect(serialized).not.toContain(plaintext);
+      });
     }
   }
 });

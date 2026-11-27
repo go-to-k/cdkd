@@ -44,6 +44,17 @@ export type ReplacementEvidenceKind =
    * CloudFormation runs for the type.
    */
   | 'cc-measured'
+  /**
+   * Cloud Control refused a change of this array or map member, recorded on
+   * `refs` (go-to-k/cdkd#7083). A member cannot be compared per element, so
+   * the verdict stays `update`: the deploy fails loudly and loses no data.
+   */
+  | 'element-refused'
+  /**
+   * No Cloud Control probe can reach the change, for the reason in
+   * `unmeasurable` (go-to-k/cdkd#7083). The verdict stays today's `update`.
+   */
+  | 'cannot-probe'
   /** A nested create-only path the committed fixture lists under the property. */
   | 'schema-nested'
   /** A deliberate, safer difference from CloudFormation, decided on `refs`. */
@@ -66,9 +77,10 @@ export type ReplacementVerdict = 'replace' | 'update' | 'conditional' | 'nested'
 
 export interface ReplacementEvidence {
   /**
-   * Why a `cfn-docs` row was not measured (go-to-k/cdkd#7048). Only such a row
-   * may rest on the CloudFormation reference; every other verdict cites an
-   * execution, the handler, the AWS API or the schema.
+   * Why a `cfn-docs` or `cannot-probe` row was not measured
+   * (go-to-k/cdkd#7048, #7083). Only a `cfn-docs` row may rest on the
+   * CloudFormation reference; every other verdict cites an execution, the
+   * handler, the AWS API or the schema.
    */
   readonly unmeasurable?: string;
   /**
@@ -94,6 +106,13 @@ const unmeasurable = (why: string, ...refs: number[]): ReplacementEvidence => ({
   verdict: 'update',
   kind: 'cfn-docs',
   refs: [...refs, 7048],
+  unmeasurable: why,
+});
+/** A candidate no probe can reach (go-to-k/cdkd#7083): today's update stays. */
+const cannotProbe = (why: string, ...refs: number[]): ReplacementEvidence => ({
+  verdict: 'update',
+  kind: 'cannot-probe',
+  refs: [...refs, 7083],
   unmeasurable: why,
 });
 const replace = row('replace');
@@ -149,6 +168,10 @@ export const REPLACEMENT_EVIDENCE: ReadonlyMap<string, ReplacementEvidence> = ne
     conditional('cfn-measured', 5458, 5558, 7038, 7045),
   ],
   ['AWS::EMR::Cluster#Instances', conditional('cfn-measured', 5418)],
+  // Measured through Cloud Control on #7083: in place with
+  // `ReplaceComputeEnvironment: false`, `NotUpdatable` without it; Batch
+  // refuses a Fargate or BEST_FIT environment either way (#7098).
+  ['AWS::Batch::ComputeEnvironment#ComputeResources', conditional('cc-measured', 7083, 7098)],
   // --- provider-replacement planners
   ['AWS::SNS::Subscription#DeliveryPolicy', conditional('cfn-measured', 6509)],
   ['AWS::SNS::Subscription#FilterPolicy', conditional('cfn-measured', 6509)],
@@ -291,6 +314,126 @@ export const REPLACEMENT_EVIDENCE: ReadonlyMap<string, ReplacementEvidence> = ne
   ['AWS::Location::Tracker#PositionFiltering', update('cc-measured', 7070)],
   ['AWS::RedshiftServerless::Namespace#Tags', update('cc-measured', 7070)],
   ['AWS::SageMaker::AppImageConfig#Tags', update('cc-measured', 7070)],
+  // The baseline measured on #7083 (Cloud Control, us-east-1). `replace` only
+  // where the service API itself refuses the change, so CloudFormation cannot
+  // apply it in place either; a Cloud Control-only refusal stays in the
+  // baseline with its measurement noted there.
+  // AppConfig: "This Type change is not supported".
+  ['AWS::AppConfig::ConfigurationProfile#Type', replace('aws-api', 7083)],
+  ['AWS::AppConfig::Extension#Tags', update('cc-measured', 7083)],
+  ['AWS::AppConfig::ExtensionAssociation#Tags', update('cc-measured', 7083)],
+  // A new revision under the same name: CloudFormation's update, too.
+  ['AWS::Batch::JobDefinition#Tags', update('cc-measured', 7083)],
+  ['AWS::Batch::JobQueue#Tags', update('cc-measured', 7083)],
+  ['AWS::Cassandra::Keyspace#ReplicationSpecification', update('cc-measured', 7083)],
+  // Keyspaces cannot drop a column; adding one applies in place.
+  ['AWS::Cassandra::Table#RegularColumns.*.ColumnName', update('element-refused', 7083)],
+  ['AWS::Cassandra::Table#RegularColumns.*.ColumnType', update('element-refused', 7083)],
+  ['AWS::DataSync::LocationS3#S3Config', update('cc-measured', 7083)],
+  ['AWS::DataSync::LocationS3#S3StorageClass', update('cc-measured', 7083)],
+  ['AWS::DataSync::LocationS3#Subdirectory', update('cc-measured', 7083)],
+  // "Cannot update a GSI's KeySchema or Projection": a new index name is the
+  // way, as under CloudFormation.
+  [
+    'AWS::DynamoDB::GlobalTable#GlobalSecondaryIndexes.*.KeySchema.*.AttributeName',
+    update('element-refused', 7083),
+  ],
+  [
+    'AWS::DynamoDB::GlobalTable#GlobalSecondaryIndexes.*.KeySchema.*.KeyType',
+    update('element-refused', 7083),
+  ],
+  [
+    'AWS::DynamoDB::GlobalTable#GlobalSecondaryIndexes.*.Projection.NonKeyAttributes',
+    update('element-refused', 7083),
+  ],
+  [
+    'AWS::DynamoDB::GlobalTable#GlobalSecondaryIndexes.*.Projection.ProjectionType',
+    update('element-refused', 7083),
+  ],
+  ['AWS::EKS::Cluster#ResourcesVpcConfig.SecurityGroupIds', update('cc-measured', 7083)],
+  // EKS takes new subnets in the cluster's original Availability Zones only.
+  ['AWS::EKS::Cluster#ResourcesVpcConfig.SubnetIds', update('cc-measured', 7083)],
+  ['AWS::EMRServerless::Application#Architecture', update('cc-measured', 7083)],
+  ['AWS::EMRServerless::Application#AutoStartConfiguration', update('cc-measured', 7083)],
+  ['AWS::EMRServerless::Application#AutoStartConfiguration.Enabled', update('cc-measured', 7083)],
+  ['AWS::EMRServerless::Application#AutoStopConfiguration', update('cc-measured', 7083)],
+  ['AWS::EMRServerless::Application#AutoStopConfiguration.Enabled', update('cc-measured', 7083)],
+  [
+    'AWS::EMRServerless::Application#AutoStopConfiguration.IdleTimeoutMinutes',
+    update('cc-measured', 7083),
+  ],
+  ['AWS::EMRServerless::Application#InitialCapacity', update('cc-measured', 7083)],
+  ['AWS::EMRServerless::Application#InitialCapacity.*.Key', update('cc-measured', 7083)],
+  ['AWS::EMRServerless::Application#InitialCapacity.*.Value', update('cc-measured', 7083)],
+  [
+    'AWS::EMRServerless::Application#InitialCapacity.*.Value.WorkerConfiguration',
+    update('cc-measured', 7083),
+  ],
+  [
+    'AWS::EMRServerless::Application#InitialCapacity.*.Value.WorkerConfiguration.Cpu',
+    update('cc-measured', 7083),
+  ],
+  [
+    'AWS::EMRServerless::Application#InitialCapacity.*.Value.WorkerConfiguration.Disk',
+    update('cc-measured', 7083),
+  ],
+  [
+    'AWS::EMRServerless::Application#InitialCapacity.*.Value.WorkerConfiguration.Memory',
+    update('cc-measured', 7083),
+  ],
+  [
+    'AWS::EMRServerless::Application#InitialCapacity.*.Value.WorkerCount',
+    update('cc-measured', 7083),
+  ],
+  ['AWS::EMRServerless::Application#MaximumCapacity', update('cc-measured', 7083)],
+  ['AWS::EMRServerless::Application#MaximumCapacity.Cpu', update('cc-measured', 7083)],
+  ['AWS::EMRServerless::Application#MaximumCapacity.Disk', update('cc-measured', 7083)],
+  ['AWS::EMRServerless::Application#MaximumCapacity.Memory', update('cc-measured', 7083)],
+  ['AWS::EMRServerless::Application#NetworkConfiguration', update('cc-measured', 7083)],
+  [
+    'AWS::EMRServerless::Application#NetworkConfiguration.SecurityGroupIds',
+    update('cc-measured', 7083),
+  ],
+  ['AWS::EMRServerless::Application#NetworkConfiguration.SubnetIds', update('cc-measured', 7083)],
+  ['AWS::EMRServerless::Application#ReleaseLabel', update('cc-measured', 7083)],
+  // Write-only: read back as AuthTokenLastModifiedDate moving.
+  ['AWS::ElastiCache::ReplicationGroup#AuthToken', update('cc-measured', 7083)],
+  // Redis to Valkey applies with the EngineVersion and parameter group AWS requires.
+  ['AWS::ElastiCache::ReplicationGroup#Engine', update('cc-measured', 7083)],
+  ['AWS::ElastiCache::ReplicationGroup#ReplicasPerNodeGroup', update('cc-measured', 7083)],
+  // Valkey refuses a password-less user; with a password user it applies.
+  ['AWS::ElastiCache::UserGroup#Engine', update('cc-measured', 7083)],
+  ['AWS::ElasticLoadBalancing::LoadBalancer#AvailabilityZones', update('cc-measured', 7083)],
+  ['AWS::ElasticLoadBalancing::LoadBalancer#HealthCheck', update('cc-measured', 7083)],
+  ['AWS::ElasticLoadBalancing::LoadBalancer#Subnets', update('cc-measured', 7083)],
+  [
+    'AWS::KinesisAnalytics::ApplicationOutput#Output.Name',
+    cannotProbe('SQL applications can no longer be created (UnsupportedOperationException)'),
+  ],
+  ['AWS::KinesisAnalyticsV2::Application#RuntimeEnvironment', update('cc-measured', 7083)],
+  [
+    'AWS::KinesisAnalyticsV2::ApplicationOutput#Output.Name',
+    cannotProbe('SQL applications can no longer be created (UnsupportedOperationException)'),
+  ],
+  [
+    'AWS::KinesisAnalyticsV2::ApplicationReferenceDataSource#ReferenceDataSource.TableName',
+    cannotProbe('SQL applications can no longer be created (UnsupportedOperationException)'),
+  ],
+  // The registry schema allows only RequestBasedUsage.
+  ['AWS::Location::Map#PricingPlan', update('single-value', 7083)],
+  ['AWS::Location::PlaceIndex#DataSourceConfiguration', update('cc-measured', 7083)],
+  ['AWS::Location::PlaceIndex#Description', update('cc-measured', 7083)],
+  ['AWS::Location::PlaceIndex#PricingPlan', update('single-value', 7083)],
+  ['AWS::Location::RouteCalculator#PricingPlan', update('single-value', 7083)],
+  ['AWS::Location::Tracker#Description', update('cc-measured', 7083)],
+  // Cloud Control and CloudFormation (#5373) both report success and leave the
+  // service in its namespace; the SDK provider names the member in a warning.
+  ['AWS::ServiceDiscovery::Service#DnsConfig.NamespaceId', update('cfn-measured', 5373, 7083)],
+  ['AWS::Transfer::Server#EndpointDetails.AddressAllocationIds', update('cc-measured', 7083)],
+  // Applied with the IdentityProviderDetails the new type needs.
+  ['AWS::Transfer::Server#IdentityProviderType', update('cc-measured', 7083)],
+  // X-Ray answers "Sampling rule version must be 1".
+  ['AWS::XRay::SamplingRule#SamplingRuleRecord.SamplingRule.Version', update('single-value', 7083)],
   // --- updateableProperties beyond the fixture or the spec
   ['AWS::Budgets::Budget#NotificationsWithSubscribers', update('deviation', 7038)],
   ['AWS::EC2::Subnet#Ipv6CidrBlock', update('cfn-measured', 5632)],

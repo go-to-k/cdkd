@@ -421,6 +421,14 @@ export const EXCEPTIONS: readonly Exception[] = [
     })
   ),
   {
+    shape: 'provider-delete-call',
+    key: 'src/deployment/deploy-engine/update-replace/create-first.ts:retireCreatedAnother',
+    count: 1,
+    kind: 'not-a-replacement',
+    reason:
+      'deletes what a refused create-first attempt just made, proven new by its AWS-minted id (go-to-k/cdkd#7084), not a replaced old copy',
+  },
+  {
     shape: 'provider-own-delete',
     key: 'src/provisioning/cloud-control/create.ts:cleanupFailedCreateRemnant',
     count: 1,

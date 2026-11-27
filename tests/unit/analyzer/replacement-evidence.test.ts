@@ -31,7 +31,7 @@ import {
   readRegistryCreateOnlySnapshot,
   SPEC_TYPES_WITHOUT_REGISTRY_SCHEMA,
 } from '../../../scripts/spec-replacement-candidates.ts';
-import { labelOf } from '../../../scripts/gen-spec-replacement-properties.ts';
+import { labelOf, renderRow } from '../../../scripts/gen-spec-replacement-properties.ts';
 
 const FIXTURES = join(__dirname, '../../fixtures/cfn-schemas');
 
@@ -240,6 +240,35 @@ describe('replacement verdict evidence (go-to-k/cdkd#7024, #7038)', () => {
     expect(candidates.filter((c) => c.path.includes('*')).length).toBeGreaterThanOrEqual(30);
   });
 
+  // The generated table must be what `vp fmt` leaves (#7083), or a formatter
+  // run reds `audit:spec-replacement-properties:check`. Each branch below was
+  // checked stable under `vp fmt`.
+  it('a generated row breaks where the formatter breaks it', () => {
+    expect(renderRow('AWS::A::B', [['X']])).toEqual(["  ['AWS::A::B', [['X']]],"]);
+    expect(renderRow('AWS::A::B', [['X'], ['Y', 'Z']])).toEqual([
+      "  ['AWS::A::B', [['X'], ['Y', 'Z']]],",
+    ]);
+    // Every path two segments or more: one per line, however short.
+    expect(renderRow('AWS::A::B', [['X', 'Y'], ['X', 'Z']])).toEqual([
+      '  [',
+      "    'AWS::A::B',",
+      '    [',
+      "      ['X', 'Y'],",
+      "      ['X', 'Z'],",
+      '    ],',
+      '  ],',
+    ]);
+    const mid = [['A'.repeat(30)], ['B'.repeat(25)], ['C'.repeat(20)]];
+    expect(renderRow('AWS::Batch::ComputeEnvironment', mid)).toEqual([
+      '  [',
+      "    'AWS::Batch::ComputeEnvironment',",
+      `    [['${'A'.repeat(30)}'], ['${'B'.repeat(25)}'], ['${'C'.repeat(20)}']],`,
+      '  ],',
+    ]);
+    const long = [['A'.repeat(45)], ['B'.repeat(40)], ['C'.repeat(35)]];
+    expect(renderRow('AWS::Batch::ComputeEnvironment', long)).toHaveLength(8);
+  });
+
   // The skip set is pinned whole: a type dropping out of the snapshot (a
   // truncated refresh) or gaining a schema must be a deliberate edit.
   it('the spec types with no registry schema are exactly the committed list', () => {
@@ -282,8 +311,10 @@ describe('replacement verdict evidence (go-to-k/cdkd#7024, #7038)', () => {
     const docsOnly = [...REPLACEMENT_EVIDENCE]
       .filter(
         ([, evidence]) =>
-          (evidence.kind === 'cfn-docs') !== (evidence.unmeasurable !== undefined) ||
-          (evidence.kind === 'cfn-docs' &&
+          // A `cannot-probe` row (#7083) owes the same stated reason.
+          ['cfn-docs', 'cannot-probe'].includes(evidence.kind) !==
+            (evidence.unmeasurable !== undefined) ||
+          (['cfn-docs', 'cannot-probe'].includes(evidence.kind) &&
             (evidence.verdict !== 'update' || !evidence.unmeasurable?.trim()))
       )
       .map(([key]) => key);

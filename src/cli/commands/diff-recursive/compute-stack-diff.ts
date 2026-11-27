@@ -46,15 +46,12 @@ import {
 } from '../../../deployment/secret-name-needles.js';
 import type { MaskerFn } from '../../../provisioning/masked-retry-logger.js';
 import type { S3StateBackend } from '../../../state/s3-state-backend.js';
-import { parameterInputsFor } from '../../../deployment/masked-property-fingerprints.js';
+import {
+  parameterInputsFor,
+  publicReferencesOf,
+} from '../../../deployment/masked-property-fingerprints.js';
 import { diffSecurity } from '../../../analyzer/security-diff.js';
 import { childTemplateLoader } from '../../../deployment/nested-output-templates.js';
-import { findNestedStackTypeChanges } from '../../../deployment/type-change-guard.js';
-import {
-  deferredServiceTokenWarning,
-  findServiceTokenRefusals,
-  serviceTokenBlockingReason,
-} from '../../../deployment/custom-resource-service-token.js';
 import type { CrossStackRead } from '../../../deployment/intrinsic-resolver/context.js';
 import { crossStackOutputProvenanceSource } from '../../../deployment/read-provenance-sources.js';
 import { logger } from './logger.js';
@@ -66,7 +63,7 @@ import {
 } from './preview-record-heals.js';
 import type { StackDiffResult, ComputeStackDiffOptions } from './types.js';
 import {
-  nestedStackTypeChangeReason,
+  previewTypeAndServiceTokenRefusals,
   findUnroutableDropRefusals,
   findUnwrittenCreateOnlyRefusals,
 } from './refusals.js';
@@ -84,7 +81,9 @@ import { trustedResourceNames } from './trust.js';
 import { healerUnderRecordPrintingBag } from './child-parameters.js';
 import { stackIdTailOf } from '../../../state/stack-id-tail.js';
 import { previewNoEchoMacChanges } from './noecho-macs.js';
-import { recordProducerPreview } from '../../../analyzer/cross-stack-preview.js';
+import { markProducerTaint, recordProducerPreview } from '../../../analyzer/cross-stack-preview.js';
+import { producerReadsSecretFedName } from './cross-stack-taint.js';
+import { previewReplaceResourcePlan, withoutWarnings } from './replace-resource-preview.js';
 
 /**
  * Compute the per-resource diff for one stack: `currentState` (cdkd state)
@@ -136,6 +135,7 @@ export async function computeStackDiff(
     ssmNameHeal = 'apply',
     crossStackPreview,
     recordCrossStackPreview,
+    secretFedNames,
   } = options;
   // go-to-k/cdkd#6274: the deploy's SSM parameter name heal, before its diff.
   const currentState = previewSsmNameHeal(loadedState, template, stackName, ssmNameHeal);
@@ -489,60 +489,87 @@ export async function computeStackDiff(
           return { value, secrets };
         },
       },
+      // go-to-k/cdkd#7050: the public `ssm` values this preview resolved.
+      // The deploy's refusal corpora: its `NoEcho` seed and the parent's.
+      publicReferences: publicReferencesOf(diffSecrets, [
+        diffSecrets,
+        noEchoParameterValueSeed(
+          effectiveTemplate.Parameters,
+          mergedParameters,
+          inheritedForResolver,
+          parameters
+        ),
+        inheritedSecrets,
+      ]),
     };
   }
-  const changes = await diffCalculator.calculateDiff(
-    stateForDiff,
-    effectiveTemplate,
-    resolveFn,
-    canonicalizeProperties,
-    undefined,
-    undefined,
-    // `--verbose`'s replacement line prints resolved values (go-to-k/cdkd#4049).
-    maskForLog,
-    undefined,
-    maskedInputs,
-    options.refusalRecovery,
-    // go-to-k/cdkd#4043: compare what the deploy persists for a value a
-    // `NoEcho` source served (`***`), reading a pre-v11 record's plaintext as
-    // the migration witness. Only the verdicts this diff knows position an
-    // `Fn::If`; an unknown one masks the whole leaf.
-    noEchoComparisonForTemplate(
+  const diffWith = (forcedReplacements: ReadonlySet<string> | undefined, quiet?: boolean) =>
+    (quiet === true ? withoutWarnings(diffCalculator) : diffCalculator).calculateDiff(
+      stateForDiff,
       effectiveTemplate,
-      namingConditions,
-      mergedParameters,
-      stateForDiff.resources,
-      new Set([region, stackName]),
-      inheritedNoEchoParameters
-    ),
-    // State schema v12 (go-to-k/cdkd#4852): the deploy diff's read-provenance
-    // members: a nested child's snapshot (`inheritedProvenanceForChildDiff`) and
-    // each producer output a cross-stack read of this diff read (one state read
-    // per producer, only for a reader holding read versions).
-    {
-      ...(options.inheritedReferenceProvenance && {
-        inherited: options.inheritedReferenceProvenance,
-      }),
-      crossStackOutputs: crossStackOutputProvenanceSource(
-        crossStackReads,
-        crossStackReads,
-        stateBackend
+      resolveFn,
+      canonicalizeProperties,
+      undefined,
+      undefined,
+      // `--verbose`'s replacement line prints resolved values (go-to-k/cdkd#4049).
+      maskForLog,
+      // go-to-k/cdkd#7089: a `--replace-resource` target's readers.
+      forcedReplacements,
+      maskedInputs,
+      options.refusalRecovery,
+      // go-to-k/cdkd#4043: compare what the deploy persists for a value a
+      // `NoEcho` source served (`***`), reading a pre-v11 record's plaintext as
+      // the migration witness. Only the verdicts this diff knows position an
+      // `Fn::If`; an unknown one masks the whole leaf.
+      noEchoComparisonForTemplate(
+        effectiveTemplate,
+        namingConditions,
+        mergedParameters,
+        stateForDiff.resources,
+        new Set([region, stackName]),
+        inheritedNoEchoParameters
       ),
-    },
-    options.forcedNestedChildRuns,
-    // go-to-k/cdkd#6437: the deploy's diff takes the same flag.
-    options.updatePolicy === true
-  );
-  warnLegacySpelling(changes, effectiveTemplate, stackName, logger); // go-to-k/cdkd#7037
-  // go-to-k/cdkd#6871: the rows the deploy updates for their child's tags.
-  const childStackTags = await settleStackTagChildRuns({
-    changes,
-    template: effectiveTemplate,
-    stackTags: options.stackTags,
+      // State schema v12 (go-to-k/cdkd#4852): the deploy diff's read-provenance
+      // members: a nested child's snapshot (`inheritedProvenanceForChildDiff`) and
+      // each producer output a cross-stack read of this diff read (one state read
+      // per producer, only for a reader holding read versions).
+      {
+        ...(options.inheritedReferenceProvenance && {
+          inherited: options.inheritedReferenceProvenance,
+        }),
+        crossStackOutputs: crossStackOutputProvenanceSource(
+          crossStackReads,
+          crossStackReads,
+          stateBackend
+        ),
+      },
+      options.forcedNestedChildRuns,
+      // go-to-k/cdkd#6437: the deploy's diff takes the same flag.
+      options.updatePolicy === true
+    );
+  // go-to-k/cdkd#6871: the rows the deploy updates for their child's tags, then
+  // go-to-k/cdkd#7089's `--replace-resource` plan, as the deploy's flow runs them.
+  const planned = await previewReplaceResourcePlan({
+    diff: diffWith,
+    settle: (rows) =>
+      settleStackTagChildRuns({
+        changes: rows,
+        template: effectiveTemplate,
+        stackTags: options.stackTags,
+        state: stateForDiff,
+        resolve: resolveFn,
+        secrets: diffSecrets,
+      }),
+    targetIds: options.replaceResources,
+    stackName,
     state: stateForDiff,
-    resolve: resolveFn,
-    secrets: diffSecrets,
+    template: effectiveTemplate,
+    conditions: namingConditions ?? {},
+    warn: (message) => logger.warn(printing.mask(message)),
   });
+  const { changes, settled: childStackTags } = planned;
+  blocking = [...blocking, ...planned.blocking];
+  warnLegacySpelling(changes, effectiveTemplate, stackName, logger); // go-to-k/cdkd#7037
   // go-to-k/cdkd#6146: a property whose recorded NoEcho value MACs prove the
   // value moved is a change, as the deploy sends it. No KMS call unless a
   // record carries MACs; none in a nested child.
@@ -597,40 +624,11 @@ export async function computeStackDiff(
     );
   }
 
-  // The deploy's nested-stack Type-change refusal (go-to-k/cdkd#3453), read
-  // through the SAME finder over the same two inputs the engine hands it —
-  // this diff's `changes` and the state after the orphan splice — so the
-  // preview cannot disagree with it about which rows it refuses. Joins
-  // `blocking` at every node, beside the adoption refusals: in a CDK
-  // assembly a change to a child's template moves the parent row's
-  // `TemplateURL` hash, so the deploy reaches the child engine where this
-  // refusal runs.
-  const nestedStackTypeChanges = findNestedStackTypeChanges({
-    changes,
-    stateResources: stateForDiff.resources,
-  });
-  if (nestedStackTypeChanges.length > 0) {
-    blocking = [...blocking, ...nestedStackTypeChanges.map(nestedStackTypeChangeReason)];
-  }
-
-  // The deploy's ServiceToken refusal (go-to-k/cdkd#4749), through the SAME
-  // finder over the same inputs. The diff takes no `--recreate-via-*`, so it
-  // previews the flag-less deploy. A row the preview cannot judge (the token
-  // reads a resource this deploy replaces, or a value it could not resolve)
-  // is decided by the deploy once resolved, so it is a warning, not blocking.
-  const serviceTokens = findServiceTokenRefusals({
-    changes,
-    stateResources: stateForDiff.resources,
-  });
-  if (serviceTokens.refused.length > 0) {
-    blocking = [
-      ...blocking,
-      ...serviceTokens.refused.map((refusal) => serviceTokenBlockingReason(refusal, maskForLog)),
-    ];
-  }
-  for (const row of serviceTokens.deferred) {
-    logger.warn(printing.mask(deferredServiceTokenWarning(row)));
-  }
+  // The deploy's nested-stack Type-change and ServiceToken refusals, through
+  // the SAME finders over the same inputs (`refusals.ts`).
+  const previewed = previewTypeAndServiceTokenRefusals(changes, stateForDiff.resources, maskForLog);
+  blocking = [...blocking, ...previewed.blocking];
+  for (const warning of previewed.warnings) logger.warn(printing.mask(warning));
 
   // The deploy's create-only drop refusal (issue #2790), through the SAME
   // predicate the engine refuses on, over this diff's rows and records. The
@@ -887,17 +885,25 @@ export async function computeStackDiff(
     });
   }
 
-  // go-to-k/cdkd#6796: what this deploy publishes, for a consumer diffed after it.
+  // go-to-k/cdkd#6796: what this deploy publishes, for a consumer diffed after
+  // it; go-to-k/cdkd#7090: and, on any node, which of it derives from a secret.
+  const readsSecretFed = producerReadsSecretFedName(secretFedNames);
+  const producer = {
+    stackName,
+    template: effectiveTemplate,
+    desiredOutputs: resolved.outputs,
+    storedOutputs: currentState.outputs,
+    ...(readsSecretFed && { readsSecretFedName: readsSecretFed }),
+  };
   if (crossStackPreview && recordCrossStackPreview) {
     await recordProducerPreview(crossStackPreview, region, resolveFn, {
-      stackName,
-      template: effectiveTemplate,
+      ...producer,
       changes,
-      desiredOutputs: resolved.outputs,
-      storedOutputs: currentState.outputs,
       ...(knownConditions !== undefined && { conditions: knownConditions }),
       holdsSecret: (text) => printing.mask(text) !== text,
     });
+  } else if (crossStackPreview && readsSecretFed) {
+    await markProducerTaint(crossStackPreview, resolveFn, producer);
   }
 
   // go-to-k/cdkd#4049: mask what this node PRINTS, at the value, once every

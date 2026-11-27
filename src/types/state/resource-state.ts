@@ -484,6 +484,20 @@ export interface ResourceState {
   maskedPropertyInputFingerprints?: Record<string, string> | undefined;
 
   /**
+   * go-to-k/cdkd#7050: per masked property whose template value spells a
+   * plain `{{resolve:ssm:...}}` reference (or one an intrinsic assembles),
+   * `refs-sha256:<hex>+<binding>`: a hash of each such token with its PROVEN
+   * public value (a `SecureString` one as a marker, never its value; one no
+   * proof tells as an `unknown` marker; `secretsmanager` / `ssm-secure` left
+   * out), bound to the input fingerprint (the text fingerprint when the record
+   * holds none). Optional, no schema bump. A moved
+   * public value, or no bound entry, moves the property. Read through
+   * `maskedPropertyReferenceFingerprintsOf`
+   * (`masked-property-fingerprints/public-references.ts`).
+   */
+  maskedPropertyReferenceFingerprints?: Record<string, string> | undefined;
+
+  /**
    * go-to-k/cdkd#6146: per top-level property that reads a `NoEcho` parameter,
    * per such parameter, `kms-hmac-sha256:<keyArn>:<base64>`: a KMS
    * `GenerateMac` (`HMAC_SHA_256`) of the value the property was last SENT,
@@ -521,8 +535,23 @@ export interface ResourceState {
    * equal to it. An older cdkd reads only the string members: it never counts
    * the binding, drops it from an entry it rebuilds or keeps, and leaves it
    * beside the MACs it describes in a record it does not write.
+   *
+   * go-to-k/cdkd#7050: an entry may also hold `cdkd:passed`, an
+   * OBJECT `{ fingerprint, macs }`: the MACs (same key, same message) of the
+   * nested-child parameters the parent passed as `secret` that a key the
+   * record holds MASKED reads, bound to the input fingerprint proven over
+   * them. The input walk keeps such a parameter as written, so only an equal
+   * MAC lets the plan and the deploy compare that key as unchanged; without
+   * one (absent, malformed, an older cdkd's rebuild) the key is sent. Such an
+   * entry may hold no `NoEcho` MAC at all, and still writes v17 (the
+   * failed-update hazard above applies to these MACs too).
    */
-  noEchoValueMacs?: Record<string, Record<string, string | { fingerprint: string }>> | undefined;
+  noEchoValueMacs?:
+    | Record<
+        string,
+        Record<string, string | { fingerprint: string; macs?: Record<string, string> }>
+      >
+    | undefined;
 
   /**
    * No bump (go-to-k/cdkd#6309): on a custom resource, the coordinates of

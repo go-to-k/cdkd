@@ -10,6 +10,7 @@ import { keyOrderFreeJson } from '../../deploy-value-equality.js';
 import {
   canonicalCoordinates,
   carriesSecretMask,
+  isStaleNoEchoLeaf,
   noEchoCoordinatesOf,
   noEchoLeavesOf,
   recordNestedStackParameterExpressions,
@@ -20,9 +21,14 @@ import {
   classifyPassedParameters,
   inputFingerprinter,
   maskedInputFingerprintsFor,
+  maskedPropertyFingerprintsOf,
+  maskedReferenceFingerprintsFor,
   movedMaskedProperties,
   possiblyMaskedKeys,
+  publicReferencesMoved,
+  publicReferencesOf,
   recordPassedParameterClasses,
+  staleNoEchoNonProofs,
 } from '../../masked-property-fingerprints.js';
 import {
   buildResolverContext,
@@ -30,8 +36,11 @@ import {
   printNestedStackReadsOnly,
 } from '../resolver-context.js';
 import { noEchoAttributeOverridesFor, noEchoPositionSources } from '../noecho.js';
-import { noEchoMacCover, noEchoMacInputBindingsFor } from '../noecho-macs.js';
-import { isWhollyMask } from './helpers.js';
+import {
+  noEchoMacCover,
+  noEchoMacInputBindingsFor,
+  passedSecretMacEntriesFor,
+} from '../noecho-macs.js';
 import { aliasPolicySecretGuard, resolveAliasUpdatePolicy } from '../update-policy.js';
 
 /**
@@ -349,9 +358,7 @@ export async function resolveUpdateInputs(
   const staleCoordinates = (noEchoLeavesOf(currentResource) ?? []).filter((coordinate) => {
     if (noEchoCoordinates.some((known) => keyOrderFreeJson(known) === keyOrderFreeJson(coordinate)))
       return false;
-    if (!isWhollyMask(valueAtCoordinate(currentProps, coordinate))) return false;
-    const resolved = valueAtCoordinate(resolvedProps, coordinate);
-    return resolved !== undefined && !carriesSecretMask(resolved);
+    return isStaleNoEchoLeaf(currentProps, resolvedProps, coordinate);
   });
   const comparisonCoordinates = canonicalCoordinates([...noEchoCoordinates, ...staleCoordinates]);
   if (parameterCoordinates.length > 0) {
@@ -392,19 +399,78 @@ export async function resolveUpdateInputs(
   const movedMasked = new Set(
     await movedMaskedProperties(currentResource, desiredProps, fingerprints)
   );
+  const corpora = [
+    updateSecrets,
+    engine.secretsRun.fingerprintNoEchoValues,
+    engine.options.inheritedSecrets,
+  ];
+  const publicReferences = publicReferencesOf(updateSecrets, corpora);
+  // go-to-k/cdkd#7050 review: a STALE `NoEcho` leaf's input fingerprint was
+  // hashed with the `NoEcho` input kept as written and is hashed with its value
+  // today, so it differs whatever the value: no proof of a move. Only that
+  // non-proof is dropped, and the readback below decides the leaf, as it does
+  // for a record with no fingerprint. A key whose TEXT fingerprint moved (the
+  // template itself changed) stays moved, and the public `ssm` check below
+  // runs after this, so a moved public value moves the key again. A key whose
+  // passed-secret MAC proves a move stays moved, and so does one holding any
+  // masked leaf that is not a stale `NoEcho` leaf: its input fingerprint
+  // still proves that leaf's inputs (go-to-k/cdkd#4543), unless the key's
+  // inputs re-hashed with some of the stale leaves' parameters kept as written
+  // (as the record hashed its `NoEcho` ones) equal the recorded ones, none of
+  // them read outside the stale leaves: then only the stale leaves
+  // moved, and the readback decides them. Such a key is in `staleUnmovedKeys`:
+  // the skip that settles its stale leaves re-stamps its input fingerprint,
+  // else it would read moved again on every later deploy (only a send stamps).
+  // The plan needs no such drop: its masked record plans a stale leaf's key anyway.
+  const recordedText = maskedPropertyFingerprintsOf(currentResource);
+  const staleNonProofs = await staleNoEchoNonProofs({
+    record: currentResource,
+    templateProps: desiredProps,
+    resolvedProps,
+    staleCoordinates,
+    moved: movedMasked,
+    fingerprinter: fingerprints,
+    sources: fingerprintSources,
+  });
+  for (const key of staleNonProofs.unmoved) movedMasked.delete(key);
+  const staleUnmovedKeys = staleNonProofs.proven;
+  // Neither proven nor moved: read unmoved, warned of on every deploy (by the
+  // caller, which knows whether the key is create-only), and its stale leaves
+  // kept and its fingerprint never re-stamped, so the same evidence is weighed
+  // again next time and no stamp ever rests on it.
+  const staleUnprovableKeys = staleNonProofs.unprovable;
+  // go-to-k/cdkd#7050: a masked key whose public `ssm` value moved (or cannot
+  // be told unmoved) is sent, as CloudFormation would; a secret's is not.
+  if (fingerprints !== undefined) {
+    for (const key of recordedText.keys()) {
+      if (movedMasked.has(key) || !Object.hasOwn(desiredProps, key)) continue;
+      const recorded = currentResource.properties as Record<string, unknown> | undefined;
+      if (recorded === undefined || recorded === null || !Object.hasOwn(recorded, key)) continue;
+      if (!carriesSecretMask(recorded[key])) continue;
+      if (
+        await publicReferencesMoved(
+          currentResource,
+          key,
+          desiredProps[key],
+          publicReferences,
+          fingerprints
+        )
+      ) {
+        movedMasked.add(key);
+      }
+    }
+  }
   // What the save stamps if this deploy writes the record: the input
   // fingerprint of each property it may record as the mask.
   if (fingerprints !== undefined) {
+    const keys = possiblyMaskedKeys(resolvedProps, corpora);
     engine.secretsRun.perResourceInputFingerprints.set(
       logicalId,
-      await maskedInputFingerprintsFor(
-        possiblyMaskedKeys(resolvedProps, [
-          updateSecrets,
-          engine.secretsRun.fingerprintNoEchoValues,
-          engine.options.inheritedSecrets,
-        ]),
-        fingerprints
-      )
+      await maskedInputFingerprintsFor(keys, fingerprints)
+    );
+    engine.secretsRun.perResourceReferenceFingerprints.set(
+      logicalId,
+      await maskedReferenceFingerprintsFor(keys, desiredProps, publicReferences, fingerprints)
     );
   }
   // go-to-k/cdkd#6209: today's fully resolved input fingerprints of the keys
@@ -414,6 +480,13 @@ export async function resolveUpdateInputs(
     engine,
     logicalId,
     macCover,
+    fingerprints,
+    fingerprints && engine.secretsRun.perResourceInputFingerprints.get(logicalId)
+  );
+  // go-to-k/cdkd#7050: and the passed-secret MACs of each key it may record masked.
+  await passedSecretMacEntriesFor(
+    engine,
+    logicalId,
     fingerprints,
     fingerprints && engine.secretsRun.perResourceInputFingerprints.get(logicalId)
   );
@@ -455,6 +528,8 @@ export async function resolveUpdateInputs(
     staleCoordinates,
     comparisonCoordinates,
     movedMasked,
+    staleUnmovedKeys,
+    staleUnprovableKeys,
   };
 }
 
