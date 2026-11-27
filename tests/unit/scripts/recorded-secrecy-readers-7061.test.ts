@@ -30,8 +30,8 @@
  * tests for a MARKER only: a reader that compares, sends or addresses a
  * recorded value with no secrecy test at all is not seen, and neither is a
  * marker reached through a value no constant names (a string built at run
- * time, `'{{' + 'resolve:'`), nor a deep-equality helper handed one
- * (`isDeepStrictEqual(v, SECRET_MASK)`). The record-provenance entry point and the fence arm that routes
+ * time, `'{{' + 'resolve:'`), nor a marker handed as an argument to any other
+ * function (a deep-equality helper, a local comparator `same(v, SECRET_MASK)`). The record-provenance entry point and the fence arm that routes
  * record readers onto it are later steps of the same plan.
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -116,6 +116,7 @@ const SEARCHES = new Set([
   'split',
   'replace',
   'replaceAll',
+  'localeCompare',
 ]);
 const COLLECTION_SEARCHES = new Set(['includes', 'has', 'indexOf']);
 const MARKER_TEXT = /\*\*\*|\{\{resolve/;
@@ -265,6 +266,8 @@ function handTestsIn(file: string, text: string, globalNames: ReadonlySet<string
   const out: string[] = [];
   const program = parseOrThrow(file, text);
   const names = aliasesIn(program, globalNames);
+  // `carriesSecretMask` under any local name (a renamed import, a destructured alias).
+  const maskWalkers = aliasesIn(program, new Set(['carriesSecretMask']));
   const isMarker = (raw: unknown): boolean => {
     const node = unwrap(raw);
     if (!isNode(node)) return false;
@@ -322,7 +325,12 @@ function handTestsIn(file: string, text: string, globalNames: ReadonlySet<string
       const name = memberName(callee);
       if (node.type === 'CallExpression' && name !== undefined && SEARCHES.has(name) && isMarker(args[0])) flag();
       else if (name !== undefined && COLLECTION_SEARCHES.has(name) && holdsMarker(callee['object'] as Node)) flag();
-      else if (callee.type === 'Identifier' && callee['name'] === 'carriesSecretMask') flag();
+      else if (
+        (callee.type === 'Identifier' && maskWalkers.has(callee['name'] as string)) ||
+        name === 'carriesSecretMask'
+      ) {
+        flag();
+      }
       else if (
         callee.type === 'MemberExpression' &&
         isNode(callee['object']) &&
@@ -423,6 +431,9 @@ describe('readers ask recorded-secrecy, never test a marker by hand (go-to-k/cdk
     ['an array literal search', "export const h3 = (v: string) => ['***'].includes(v);"],
     ['a Set literal search', 'export const h4 = (v: string) => new Set([SECRET_MASK]).has(v);'],
     ['a direct carriesSecretMask call', 'export const h5 = (v: unknown) => carriesSecretMask(v);'],
+    ['a renamed carriesSecretMask import', "import { carriesSecretMask as hasMask } from '../../secret-redaction/mask-only.js';\nexport const h6 = (v: unknown) => hasMask(v);"],
+    ['a namespace carriesSecretMask call', "import * as mo from '../../secret-redaction/mask-only.js';\nexport const h7 = (v: unknown) => mo.carriesSecretMask(v);"],
+    ['a localeCompare with the mask', 'export const h8 = (v: string) => v.localeCompare(SECRET_MASK) === 0;'],
     ['a renamed import of the mask', "import { SECRET_MASK as M } from '../../secret-redaction/pairs.js';\nexport const j = (v: unknown) => v === M;"],
     ['a destructured alias', "import * as pairs from '../../secret-redaction/pairs.js';\nconst { SECRET_MASK: M2 } = pairs;\nexport const j2 = (v: unknown) => v === M2;"],
     ['a namespace member', "import * as sr from '../../secret-redaction/pairs.js';\nexport const j3 = (v: unknown) => v === sr.SECRET_MASK;"],
