@@ -384,6 +384,19 @@ describe('a secret echoed under a key the template lacks (go-to-k/cdkd#7158, #71
     expect(out.observedProperties?.['Extra']).toBe('***');
   });
 
+  it('leaves an echo the redaction rewrote into its reference alone, so drift still compares it', () => {
+    const out = withOffTemplateEchoesMasked<OffTemplateEchoRecord>(
+      {
+        physicalId: 'p',
+        properties: { Password: '{{resolve:ssm-secure:/pw}}' },
+        observedProperties: { Password: '{{resolve:ssm-secure:/pw}}', Extra: '{{resolve:ssm-secure:/pw}}' },
+      },
+      { readback: { Password: 'rewr1tten-7152', Extra: 'rewr1tten-7152' } }
+    );
+    expect(out.observedProperties?.['Extra']).toBe('{{resolve:ssm-secure:/pw}}');
+    expect(out.observedMaskedLeaves).toBeUndefined();
+  });
+
   it('keeps an entry under an element a writer masked whole', () => {
     const out = withOffTemplateEchoesMasked(
       { properties: {}, observedProperties: { Echoes: ['***', '***'] }, observedMaskedLeaves: [['Echoes', 1, 'Value']] },
