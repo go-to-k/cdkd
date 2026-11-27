@@ -366,6 +366,11 @@ export interface ComputeStackDiffOptions {
   /** True on a top-level stack, whose exports other stacks import. */
   recordCrossStackPreview?: boolean;
   /**
+   * go-to-k/cdkd#7090: this node's secret-fed names (`taintedNamesOf`); an
+   * output reading one is marked tainted in {@link crossStackPreview}.
+   */
+  secretFedNames?: ReadonlySet<string>;
+  /**
    * go-to-k/cdkd#6146: a caller diffing one stack several times in one run
    * (`cdkd refactor`) shares its NoEcho value MACs here, so they are made once.
    */

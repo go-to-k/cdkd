@@ -156,6 +156,8 @@ const DIFF_RECURSIVE_ORDER = [
   'child-parameters.ts',
   // go-to-k/cdkd#7068: what a node prints of a passed mixed secret.
   'passed-secret-display.ts',
+  // go-to-k/cdkd#7090: that provenance carried across stacks by the preview.
+  'cross-stack-taint.ts',
   'build-tree.ts',
   'routes.ts',
   'tree.ts',

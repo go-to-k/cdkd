@@ -70,6 +70,7 @@ import {
   securityDiffWithPassedSecretWithheld,
   taintedNamesOf,
 } from './passed-secret-display.js';
+import { subtreeTaintedNames } from './cross-stack-taint.js';
 import { computeStackDiff } from './compute-stack-diff.js';
 import type { CrossStackPreview } from '../../../analyzer/cross-stack-preview.js';
 import {
@@ -385,14 +386,33 @@ export async function buildDiffTree(args: {
   for (const row of nestedSsmCheck?.deferredRows ?? []) logger.info(nestedSsmNameDeferredNote(row));
   // go-to-k/cdkd#7068: every name of this node deriving from a passed mixed
   // secret, read off the unpruned template (a superset of the diffed one).
-  const passedSecretNames = taintedNamesOf(template, inheritedMixedSecretParameters);
-  // What the records of those names store (a physical id built from the
-  // value), as mask-only needles of this node's own lines.
+  // go-to-k/cdkd#7090: and every cross-stack read of a producer output this
+  // run's preview marks as secret-fed, and each nested row whose subtree
+  // makes one, so an imported value is masked by provenance as a passed one is.
+  const ownSecretNames = taintedNamesOf(template, inheritedMixedSecretParameters);
+  const passedSecretNames = crossStackPreview?.anyTainted()
+    ? subtreeTaintedNames(
+        template,
+        nestedTemplates,
+        inheritedMixedSecretParameters ?? [],
+        crossStackPreview,
+        ancestorTemplatePaths ? { ancestors: ancestorTemplatePaths } : {}
+      )
+    : ownSecretNames;
+  const readsTaintedCrossStack = passedSecretNames.size > ownSecretNames.size;
   const passedSecretRecordNeedles = recordedValuesOf(state.resources ?? {}, passedSecretNames);
-  const runComputeStackDiff = (run: () => Promise<StackDiffResult>): Promise<StackDiffResult> =>
+  // The tainted outputs' values, on a node reading one: its lines can embed
+  // the imported value outside any template leaf.
+  for (const value of readsTaintedCrossStack ? (crossStackPreview?.taintedValues() ?? []) : []) {
+    recordLogOnlyValue(passedSecretRecordNeedles, value);
+  }
+  // Every resolution of this node's values runs under them: its diff, and its
+  // rows' child parameters (go-to-k/cdkd#7090: an imported value they embed).
+  const underPassedSecretNeedles = <T>(run: () => Promise<T>): Promise<T> =>
     hasMaskableValues(passedSecretRecordNeedles)
       ? withPrintingSecrets(passedSecretRecordNeedles, run)
       : run();
+  const runComputeStackDiff = underPassedSecretNeedles<StackDiffResult>;
   let stackDiff: StackDiffResult;
   try {
     stackDiff = await runComputeStackDiff(() =>
@@ -413,7 +433,11 @@ export async function buildDiffTree(args: {
           ...(createRouteOf && { createRouteOf }),
           ...(producerLookup && { producerLookup }),
           ...(consumerAccount && { consumerAccount }),
-          ...(crossStackPreview && { crossStackPreview, recordCrossStackPreview: !isNestedChild }),
+          ...(crossStackPreview && {
+            crossStackPreview,
+            recordCrossStackPreview: !isNestedChild,
+            secretFedNames: passedSecretNames,
+          }),
           ...(previewOrphanAdoption && { previewOrphanAdoption }),
           ...(inheritedSecrets && { inheritedSecrets }),
           ...(inheritedDerivedNames && { inheritedDerivedNames }),
@@ -653,35 +677,37 @@ export async function buildDiffTree(args: {
     // deploy's parent resolves to plaintext, so the child's `Fn::Split` keeps
     // them whole as the deploy's child keeps the plaintext.
     const childSecretTokens = new Map<string, ReadonlySet<string>>();
-    const childParameters = await resolveChildStackParameters(
-      resource,
-      effectiveTemplate,
-      stateAfterAdoption,
-      region,
-      stackName,
-      stateBackend,
-      resolvedParameters,
-      conditions,
-      cfnFallback,
-      printingSecrets,
-      // Load-bearing (go-to-k/cdkd#3869): the healers share one in-flight read
-      // per record, which runs in the context of whichever caller asks FIRST.
-      // A nested row the parent's state does not hold yet (a CREATE) has its
-      // Parameters resolved here only, so this pass heals first and only this
-      // binds the bag.
-      // Judged with the node's per-record `NoEcho` bags, as its own heals are.
-      attributeHealer &&
-        healerUnderRecordPrintingBag(
-          attributeHealer,
-          () => stateAfterAdoption.resources ?? {},
-          namingSecretsFor
-        ),
-      childUnresolvedParameters,
-      trust,
-      rowDerivedNames,
-      producerLookup,
-      consumerAccount,
-      { inherited: inheritedSecretTokens, child: childSecretTokens }
+    const childParameters = await underPassedSecretNeedles(() =>
+      resolveChildStackParameters(
+        resource,
+        effectiveTemplate,
+        stateAfterAdoption,
+        region,
+        stackName,
+        stateBackend,
+        resolvedParameters,
+        conditions,
+        cfnFallback,
+        printingSecrets,
+        // Load-bearing (go-to-k/cdkd#3869): the healers share one in-flight read
+        // per record, which runs in the context of whichever caller asks FIRST.
+        // A nested row the parent's state does not hold yet (a CREATE) has its
+        // Parameters resolved here only, so this pass heals first and only this
+        // binds the bag.
+        // Judged with the node's per-record `NoEcho` bags, as its own heals are.
+        attributeHealer &&
+          healerUnderRecordPrintingBag(
+            attributeHealer,
+            () => stateAfterAdoption.resources ?? {},
+            namingSecretsFor
+          ),
+        childUnresolvedParameters,
+        trust,
+        rowDerivedNames,
+        producerLookup,
+        consumerAccount,
+        { inherited: inheritedSecretTokens, child: childSecretTokens }
+      )
     );
     // go-to-k/cdkd#7068: the row keys passing a mixed secret, masked on every
     // child leaf reading them (this node's row masks them by itself).

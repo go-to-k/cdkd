@@ -59,6 +59,7 @@ import {
   stacksForDependency,
 } from '../stack-matcher.js';
 import { CrossStackPreview, orderProducersFirst } from '../../analyzer/cross-stack-preview.js';
+import { markAppProducerTaint } from './diff-recursive/cross-stack-taint.js';
 import { inferCrossStackDepsByStack } from '../../analyzer/cross-stack-deps.js';
 import {
   loadProviderClasses,
@@ -569,6 +570,9 @@ async function diffCommand(
     // go-to-k/cdkd#6796: a producer is diffed before its consumers, as the
     // deploy orders them, and what its deploy publishes reaches theirs.
     const crossStackPreview = new CrossStackPreview();
+    // go-to-k/cdkd#7090: which outputs of the app derive from a secret, so a
+    // consumer masks them even when its producer is not diffed here.
+    markAppProducerTaint(crossStackPreview, allStacks);
     const inferredProducers = inferCrossStackDepsByStack(targetStacks);
     targetStacks = orderProducersFirst(targetStacks, (stack) => [
       ...stack.dependencyNames.flatMap((name) => stacksForDependency(name, stack, targetStacks)),
