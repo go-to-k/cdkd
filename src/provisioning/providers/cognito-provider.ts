@@ -49,6 +49,7 @@ import {
   restoreMfaConfig,
   retryOnTransientControlPlane,
   turnOffRemovedMfa,
+  resetMfaConfigOff,
 } from './cognito/mfa-apply.js';
 import {
   canonicalizeDesiredProperties,
@@ -375,14 +376,16 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    previousIsLiveReadback = false
   ): void {
     return warnOnKeptRemovedMembers.call(
       this,
       logicalId,
       physicalId,
       properties,
-      previousProperties
+      previousProperties,
+      previousIsLiveReadback
     );
   }
 
@@ -392,6 +395,14 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     previousMfaConfiguration: string
   ): Promise<void> {
     return turnOffRemovedMfa.call(this, logicalId, physicalId, previousMfaConfiguration);
+  }
+
+  resetMfaConfigOff(
+    logicalId: string,
+    physicalId: string,
+    onReadFailure: 'bare' | 'skip'
+  ): Promise<void> {
+    return resetMfaConfigOff.call(this, logicalId, physicalId, onReadFailure);
   }
 
   update(

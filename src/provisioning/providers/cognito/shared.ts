@@ -521,15 +521,18 @@ export function sendsKeptMember(member: string, value: unknown): boolean {
 
 /**
  * The `MfaConfiguration` a previous property bag left the pool at, or `''`
- * when it was OFF or unknown. An `EnabledMfas` factor without a declared
- * value resolved to `OPTIONAL` (`buildMfaConfigRequest`).
+ * when it was OFF or unknown. An `EnabledMfas` factor or an email-OTP
+ * message / subject without a declared value resolved to `OPTIONAL`
+ * (`buildMfaConfigRequest`'s `enablesMfaFactor`).
  */
 export function previousMfaOn(previous: Record<string, unknown>): string {
   const declared = previous['MfaConfiguration'];
   if (declared === 'ON' || declared === 'OPTIONAL') return declared;
   if (
     (declared === undefined || declared === null || declared === '') &&
-    readEnabledMfas(previous).declaresFactor
+    (readEnabledMfas(previous).declaresFactor ||
+      !!(previous['EmailAuthenticationMessage'] as string | undefined) ||
+      !!(previous['EmailAuthenticationSubject'] as string | undefined))
   ) {
     return 'OPTIONAL';
   }

@@ -12,6 +12,11 @@ import * as cognito from 'aws-cdk-lib/aws-cognito';
 //   signInCaseSensitive, a UsernameConfiguration change UpdateUserPool has no
 //   member for. CloudFormation refuses it ("Updates are not allowed for
 //   property"); cdkd must refuse too instead of dropping it (issue #5358).
+// Phase 2c (CDKD_TEST_UPDATE=true + CDKD_TEST_MFA=optional): add OPTIONAL
+//   software-token MFA back. Phase 2d (CDKD_TEST_MFA=off): set `mfa: OFF`
+//   explicitly, which drops EnabledMfas while MfaConfiguration stays declared.
+//   CloudFormation clears the software-token factor; cdkd used to leave it
+//   enabled under OFF (issue #7128).
 //
 // AWS supports adding a custom attribute in place (AddCustomAttributes), but
 // cdkd's cognito-provider.update() previously ignored Schema entirely, so the
@@ -25,6 +30,7 @@ export class CognitoCustomAttributeAddStack extends cdk.Stack {
 
     const addAttr = process.env.CDKD_TEST_UPDATE === 'true';
     const usernameChange = process.env.CDKD_TEST_USERNAME_CHANGE === 'true';
+    const mfaStep = process.env.CDKD_TEST_MFA;
 
     const customAttributes: Record<string, cognito.ICustomAttribute> = {
       tenantId: new cognito.StringAttribute({ minLen: 1, maxLen: 64, mutable: true }),
@@ -44,7 +50,11 @@ export class CognitoCustomAttributeAddStack extends cdk.Stack {
       customAttributes,
       ...(usernameChange ? { signInCaseSensitive: false } : {}),
       ...(addAttr
-        ? {}
+        ? mfaStep === 'optional'
+          ? { mfa: cognito.Mfa.OPTIONAL, mfaSecondFactor: { sms: false, otp: true } }
+          : mfaStep === 'off'
+            ? { mfa: cognito.Mfa.OFF }
+            : {}
         : {
             mfa: cognito.Mfa.OPTIONAL,
             mfaSecondFactor: { sms: false, otp: true },

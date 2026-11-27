@@ -183,10 +183,11 @@ describe('CognitoUserPoolProvider.update — removed members (#1160)', () => {
       expect(sent('SetUserPoolMfaConfigCommand')).toHaveLength(0);
     });
 
+    // A previous side that also declared a factor block is #7128's reset
+    // (cognito-provider-mfa-factor-removal-7128.test.ts), not this arm.
     it('sends nothing extra when the previous side was OFF or undeclared', async () => {
       await update({}, { MfaConfiguration: 'OFF' });
       await update({}, {});
-      await update({}, { MfaConfiguration: 'OFF', EnabledMfas: ['SOFTWARE_TOKEN_MFA'] });
 
       expect(sent('SetUserPoolMfaConfigCommand')).toHaveLength(0);
       expect(warnings().filter((w) => w.includes('turned MFA OFF'))).toHaveLength(0);

@@ -184,6 +184,45 @@ export function hasMfaConfigProps(properties: Record<string, unknown>): boolean 
 }
 
 /**
+ * True when an update must reset the pool's MFA factor blocks itself (issue
+ * #7128): the previous bag declared an MFA factor or the email-OTP
+ * message / subject, the desired bag declares no MFA-config-routed property,
+ * and the desired `MfaConfiguration` is `OFF` or absent.
+ * `buildMfaConfigRequest` then builds nothing, and the `OFF` that reaches AWS
+ * through `UpdateUserPool` leaves `SoftwareTokenMfaConfiguration` in place.
+ * CloudFormation clears it.
+ *
+ * MEASURED us-east-1 2026-11-28 on a throwaway pool: `UpdateUserPool` OFF
+ * over OPTIONAL + software token read back `{SoftwareTokenMfaConfiguration:
+ * {Enabled: true}, MfaConfiguration: OFF}`; a bare `SetUserPoolMfaConfig`
+ * with `MfaConfiguration: OFF` read back `{MfaConfiguration: OFF}`.
+ *
+ * A previous bag holding ONLY WebAuthn properties does not trigger it: there
+ * is no factor to clear, and the reset carries the live WebAuthn
+ * configuration rather than dropping it (`resetMfaConfigOff`).
+ *
+ * Absent `MfaConfiguration` is the #1160 removal when the previous pool had
+ * MFA on (`previousMfaOn`), which `turnOffRemovedMfa` sends with its
+ * warning; the caller sends one reset either way. `ON` / `OPTIONAL` with no
+ * factor is left to `UpdateUserPool` as before, and so is a blank or refused
+ * value, which the shape guard reports.
+ */
+export function clearsRemovedMfaConfig(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  declaredMfaConfiguration: string
+): boolean {
+  const resolvesOff =
+    declaredMfaConfiguration === 'OFF' ||
+    classifyDeclaredMfaConfiguration(properties['MfaConfiguration']) === 'absent';
+  const previousDeclaresFactor =
+    readEnabledMfas(previousProperties).declaresFactor ||
+    !!(previousProperties['EmailAuthenticationMessage'] as string | undefined) ||
+    !!(previousProperties['EmailAuthenticationSubject'] as string | undefined);
+  return resolvesOff && !hasMfaConfigProps(properties) && previousDeclaresFactor;
+}
+
+/**
  * Build the `SetUserPoolMfaConfig` request from the CFn-level MFA properties,
  * or return `undefined` when none of the MFA-config-API-routed properties are
  * present (so the caller skips the extra control-plane call entirely).
