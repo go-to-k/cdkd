@@ -31,8 +31,9 @@
  * the parsed value, a numeric string or number as its `Number` form
  * (`"1.0"` is `1`), and any other scalar case-insensitively. Each side is
  * also cut to the object members both the desired side and the read model
- * hold, so a member the template adds that AWS never returns (a default the
- * read model omits) is no change either.
+ * hold (for a list, the members every element holds), so a member the
+ * template adds that AWS never returns (a default the read model omits) is no
+ * change either.
  */
 /** The stable, greppable prefix of every report this module drives. */
 export const CC_SILENT_NOOP_TAG = '[cc-silent-noop]';
@@ -114,20 +115,31 @@ function cut(value: unknown, a: unknown, b: unknown): unknown {
   return out;
 }
 
-/** The members any element of `list` holds, merged; `list` itself otherwise. */
+/**
+ * The members EVERY object element of `list` holds, recursively; `list`
+ * itself when it is no array. An intersection, not a union: a read model may
+ * omit a defaulted member on one element and return it on another, and a
+ * member any element lacks cannot be judged on that element.
+ */
 function elementShape(list: unknown): unknown {
   if (!Array.isArray(list)) return list;
-  const objects = list.filter(isObject);
-  if (objects.length === 0) return list[0];
-  const merged: Plain = {};
-  for (const item of objects) {
-    for (const [key, member] of Object.entries(item)) {
-      if (member === undefined || member === null) continue;
-      const seen = merged[key];
-      merged[key] = isObject(seen) && isObject(member) ? { ...seen, ...member } : (seen ?? member);
-    }
+  return commonShape(list);
+}
+
+function commonShape(values: readonly unknown[]): unknown {
+  const objects = values.filter(isObject);
+  if (objects.length === 0) {
+    const arrays = values.filter(Array.isArray);
+    return arrays.length > 0 && arrays.length === values.length ? arrays.flat() : values[0];
   }
-  return merged;
+  if (objects.length !== values.length) return objects[0];
+  const out: Plain = {};
+  for (const key of Object.keys(objects[0]!)) {
+    const members = objects.map((item) => item[key]);
+    if (members.some((member) => member === undefined || member === null)) continue;
+    out[key] = commonShape(members);
+  }
+  return out;
 }
 
 function normalized(value: unknown): string {

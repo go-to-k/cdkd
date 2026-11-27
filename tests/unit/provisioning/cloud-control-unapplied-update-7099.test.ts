@@ -308,6 +308,23 @@ describe('unappliedUpdateKeys (go-to-k/cdkd#7099)', () => {
       { A: { X: 'x', Flag: false } },
       { A: { X: 'x' } },
     ],
+    [
+      'a default the read model omits on one list element and returns on another',
+      { A: [{ N: 'a' }, { N: 'b', M: 'x' }] },
+      { A: [{ N: 'a', M: 'default' }, { N: 'b', M: 'x' }] },
+      { A: [{ N: 'a' }, { N: 'b', M: 'x' }] },
+    ],
+    [
+      'an interface list whose template spells Primary: false the read model omits',
+      { A: [{ PrivateIpAddress: '10.0.0.5', Primary: true }, { PrivateIpAddress: '10.0.0.9' }] },
+      {
+        A: [
+          { PrivateIpAddress: '10.0.0.5', Primary: true },
+          { PrivateIpAddress: '10.0.0.9', Primary: false },
+        ],
+      },
+      { A: [{ PrivateIpAddress: '10.0.0.5', Primary: true }, { PrivateIpAddress: '10.0.0.9' }] },
+    ],
   ])('does not name %s', (_label, previous, desired, live) => {
     expect(unappliedUpdateKeys({ previous, desired, live, writeOnly: none })).toEqual([]);
   });
