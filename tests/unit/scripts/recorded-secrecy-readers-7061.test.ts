@@ -849,6 +849,17 @@ function recordFieldTextReadsIn(file: string, text: string): string[] {
       if (name !== undefined && TEXT_PREDICATES.has(name) && (node['arguments'] as unknown[]).some((arg) => readsRecord(arg, inChain))) {
         out.push(`${file}#${here}#${text.slice(node.start, node.end).replace(/\s+/g, ' ')}`);
       }
+      // A predicate handed over as a callback of a record bag's walk:
+      // `Object.values(record.attributes).some(holdsMaskLeaf)`.
+      else if (
+        callee.type === 'MemberExpression' &&
+        readsRecord(callee['object'], inChain) &&
+        (node['arguments'] as unknown[]).some(
+          (arg) => isNode(arg) && arg.type === 'Identifier' && TEXT_PREDICATES.has(arg['name'] as string)
+        )
+      ) {
+        out.push(`${file}#${here}#${text.slice(node.start, node.end).replace(/\s+/g, ' ')}`);
+      }
     }
     for (const v of Object.values(node)) {
       if (Array.isArray(v)) {
@@ -955,7 +966,7 @@ const READS_RECORD_TEXT: Readonly<Record<string, { count: number; why: string }>
   },
   'src/deployment/orphan-adoption.ts#planOrphanAdoption#carriesSecretMask(value)': {
     count: 1,
-    why: "drops the mask from a found record's refreshed attributes: a wider `masked` would drop attributes it holds in plaintext, which changes what is written",
+    why: "an import read's attributes (masked by `maskUncertifiedModelValues`), not a record: no provenance field is in hand",
   },
   'src/provisioning/providers/custom-resource/delete.ts#deleteImpl#holdsMaskLeaf(payload)': {
     count: 1,
@@ -1041,6 +1052,7 @@ describe('readers ask recorded-secrecy, never test a marker by hand (go-to-k/cdk
     ['a copy used in a callback', 'export const r9 = (record: { attributes: Record<string, unknown> }, ks: string[]) => { const v = record.attributes.Arn; return ks.some(() => holdsMaskLeaf(v)); };', 'r9#holdsMaskLeaf(v)'],
     ['a for-of entry', 'export function r10(record: { attributes: Record<string, unknown> }) { for (const [, value] of Object.entries(record.attributes)) if (holdsMaskLeaf(value)) return true; return false; }', 'r10#holdsMaskLeaf(value)'],
     ['a destructured value', 'export const r11 = (record: { attributes: Record<string, unknown> }) => { const { Arn } = record.attributes; return holdsMaskLeaf(Arn); };', 'r11#holdsMaskLeaf(Arn)'],
+    ['a predicate as a callback', 'export const r12 = (record: { attributes: Record<string, unknown> }) => Object.values(record.attributes).some(holdsMaskLeaf);', 'r12#Object.values(record.attributes).some(holdsMaskLeaf)'],
     ['a namespace call', "import * as sr from './deployment/secret-redaction/recorded-secrecy.js';\nexport const r7 = (record: { attributes: Record<string, unknown> }) => sr.holdsMaskLeaf(record.attributes.Arn);", 'r7#sr.holdsMaskLeaf(record.attributes.Arn)'],
   ])('probe: a new text check of %s fails', (_what, line, key) => {
     const file = 'src/zz-probe-record-text.ts';
