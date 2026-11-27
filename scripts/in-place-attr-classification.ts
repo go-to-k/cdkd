@@ -84,6 +84,9 @@ const FIXED_ENDPOINT = never('derived from the create-only identifier');
  * Description-only update, measured), so no "settles back" premise holds
  * unmeasured. A row of shared.ts `HAND_IN_PLACE_UPDATE_STATUS_ATTRS`.
  */
+const OPERATIONAL_STATUS = anyUpdate(
+  'an operational status; the stable value after an update can differ from the recorded one'
+);
 /**
  * An RDS instance's point-in-time status: `dbInstanceAttributes` records it
  * only from a settled read of an `available` instance (CloudFormation serves
@@ -93,9 +96,6 @@ const FIXED_ENDPOINT = never('derived from the create-only identifier');
  */
 const RDS_SETTLED_STATUS = never(
   'recorded only from a settled read of an `available` instance, as CloudFormation serves its stabilized instance'
-);
-const OPERATIONAL_STATUS = anyUpdate(
-  'an operational status; the stable value after an update can differ from the recorded one'
 );
 
 /**
