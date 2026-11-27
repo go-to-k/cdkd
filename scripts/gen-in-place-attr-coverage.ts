@@ -334,7 +334,9 @@ const OWN_IDENTITY = /^(.*?)(Arn|ARN|Id|ID|Uuid|UUID)$/;
  *   `Status` `STOPPED_INGESTION`), or the service reports the update itself
  *   (`UPDATE_COMPLETE`). Proving neither per type takes its handler, so any
  *   in-place update may move it. A wrong `moving` costs only a speculative
- *   promotion, which the deploy skips when the value is unchanged.
+ *   promotion, which the deploy skips when the value is unchanged. A type
+ *   whose only in-place property is `Tags` keeps `no-in-place-update`, which
+ *   runs first: a tag edit reconfigures nothing a status reports.
  */
 export function classifyByRule(input: TypeInput, attribute: string): RuleName | undefined {
   if (RULE_HELD_OUT.has(`${input.type}.${attribute}`)) return undefined;

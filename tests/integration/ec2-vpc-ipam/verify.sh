@@ -549,7 +549,7 @@ rm -f "${DRIFT_JSON}"
 echo "    OK: ${VPC_ID}, ${SUBNET_ID} and ${IPV6_SUBNET_ID} read back drift-clean"
 
 # --- Phase 2: in-place update keeps the CidrBlock attribute --------------
-echo "==> Phase 2: CDKD_TEST_UPDATE=true (tag the VPC in place)"
+echo "==> Phase 2: CDKD_TEST_UPDATE=true (tag the VPC and subnets, change the pool Description, in place)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
