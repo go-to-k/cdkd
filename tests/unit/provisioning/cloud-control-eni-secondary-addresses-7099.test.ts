@@ -187,12 +187,46 @@ describe('an interface secondary-address change Cloud Control did not apply (go-
     expect(ec2Calls().map(([name]) => name)).toEqual(['AssignPrivateIpAddressesCommand']);
   });
 
-  it('keeps the failure when the re-read still lacks the address', async () => {
+  it('fails, saying EC2 accepted it, when the re-read still lacks the address', async () => {
     serve([], { stale: true });
     const message = await failure(update([], ['10.0.0.9']));
     expect(message).toContain(
-      `${CC_SILENT_NOOP_TAG} Cloud Control reported success but PrivateIpAddresses still holds its previous value`
+      "EC2 accepted the PrivateIpAddresses change Cloud Control left unapplied, but Cloud Control's read of the interface does not show it yet"
     );
+    expect(message).not.toContain('still holds its previous value');
+  });
+
+  // The live list holds both sides after a run whose unassignment was refused
+  // (or after an address added outside cdkd), so it no longer equals the
+  // previous list and the detector names nothing: the template's change still
+  // has to be applied.
+  it('converges after a run that assigned but failed to unassign', async () => {
+    const held = serve(['10.0.0.8', '10.0.0.9']);
+    await update(['10.0.0.8'], ['10.0.0.9']);
+    expect(ec2Calls()).toEqual([['UnassignPrivateIpAddressesCommand', ['10.0.0.8']]]);
+    expect(held).toEqual(['10.0.0.9']);
+  });
+
+  it('applies the template addition over an address added outside cdkd', async () => {
+    const held = serve(['10.0.0.7']);
+    await update([], ['10.0.0.9']);
+    expect(ec2Calls()).toEqual([
+      ['AssignPrivateIpAddressesCommand', ['10.0.0.9']],
+      ['UnassignPrivateIpAddressesCommand', ['10.0.0.7']],
+    ]);
+    expect(held).toEqual(['10.0.0.9']);
+  });
+
+  it('leaves the addresses alone when the template did not change them', async () => {
+    serve(['10.0.0.7']);
+    await new CloudControlProvider().update(
+      'Eni',
+      'eni-1',
+      ENI,
+      { SubnetId: 's', PrivateIpAddresses: list([]), Description: 'new' },
+      { SubnetId: 's', PrivateIpAddresses: list([]), Description: 'old' }
+    );
+    expect(mockEc2Send).not.toHaveBeenCalled();
   });
 
   it('leaves a list that also declares SecondaryPrivateIpAddressCount to the failure', async () => {

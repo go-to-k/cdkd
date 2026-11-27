@@ -14,6 +14,7 @@ import {
   NETWORK_INTERFACE_TYPE,
   SECONDARY_ADDRESS_KEY,
   applyUnappliedSecondaryAddresses,
+  secondaryAddressesNeedApplying,
 } from './eni-secondary-addresses.js';
 import { assertEksAutoModeToggleComplete } from './eks-auto-mode-toggle.js';
 import { markNonRetryable, markRedactedCause } from '../../deployment/retryable-errors.js';
@@ -531,8 +532,20 @@ export async function updateInIdLogScope(
         writeOnly: writeOnlyProperties,
       });
       // An interface's secondary addresses: applied through EC2 instead, as
-      // CloudFormation applies them in place (see the helper).
-      if (resourceType === NETWORK_INTERFACE_TYPE && unapplied.includes(SECONDARY_ADDRESS_KEY)) {
+      // CloudFormation applies them in place (see the helper). Also when the
+      // detector did not name the key but the template changed it and the
+      // live list differs from it (a previous run that failed halfway, or an
+      // address added outside cdkd): the live list no longer equals the
+      // previous one, so only this comparison sees the gap.
+      if (
+        resourceType === NETWORK_INTERFACE_TYPE &&
+        (unapplied.includes(SECONDARY_ADDRESS_KEY) ||
+          secondaryAddressesNeedApplying(
+            cleanPreviousProperties,
+            cleanProperties,
+            result.attributes
+          ))
+      ) {
         const fresh = await applyUnappliedSecondaryAddresses({
           desired: cleanProperties,
           live: result.attributes,

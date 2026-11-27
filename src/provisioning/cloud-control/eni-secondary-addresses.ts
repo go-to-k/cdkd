@@ -10,9 +10,13 @@
  * at once, and Cloud Control's GetResource returns the new list right after.
  *
  * The difference is taken from the LIVE list, not the previous record, so a
- * run that failed halfway converges on the next deploy. Addresses are assigned
- * before any is unassigned: a refused assignment then leaves the interface as
- * it was, never short of an address it serves. `AllowReassignment` stays off,
+ * run that failed halfway converges on the next deploy: the caller runs this
+ * also when the template changed the list and the live list differs from it,
+ * whether or not the live list still equals the previous one. Addresses are
+ * assigned before any is unassigned: a refused assignment then leaves the
+ * interface as it was, never short of an address it serves. (Measured on an
+ * unattached interface; on an attached one at its instance type's address
+ * limit, a swap is refused at the assignment and changes nothing.) `AllowReassignment` stays off,
  * so an address another interface holds is refused, never taken from it.
  *
  * Only an explicit secondary list is handled. A desired side that also
@@ -78,6 +82,21 @@ export function secondaryAddressPlan(
     assign: [...want.secondaries].filter((a) => !have.secondaries.has(a)).sort(),
     unassign: [...have.secondaries].filter((a) => !want.secondaries.has(a)).sort(),
   };
+}
+
+/**
+ * The template changed the secondary-address list (`previous` and `desired`
+ * differ as sets) and the live list is not yet `desired`'s.
+ */
+export function secondaryAddressesNeedApplying(
+  previous: Readonly<Record<string, unknown>>,
+  desired: Readonly<Record<string, unknown>>,
+  live: Readonly<Record<string, unknown>> | undefined
+): boolean {
+  const changed = secondaryAddressPlan(desired, previous);
+  if (changed === undefined || changed.assign.length + changed.unassign.length === 0) return false;
+  const plan = secondaryAddressPlan(desired, live);
+  return plan !== undefined && plan.assign.length + plan.unassign.length > 0;
 }
 
 /** The EC2 calls this fixup sends; a seam for tests. */
@@ -161,9 +180,9 @@ const READBACK_DELAY_MS = 1000;
  * Apply an unapplied `PrivateIpAddresses` change through EC2, then re-read the
  * interface. Returns the fresh read model once its secondary addresses are the
  * desired ones, so the caller drops the key from its unapplied list; undefined
- * when this fixup does not cover the shape, the region cannot be resolved, or
- * the re-read still differs, leaving the caller's `[cc-silent-noop]` failure.
- * A refused EC2 call throws.
+ * when this fixup does not cover the shape or the region cannot be resolved,
+ * leaving the caller's `[cc-silent-noop]` failure. A refused EC2 call throws,
+ * and so does a re-read that still lacks the change EC2 accepted.
  */
 export async function applyUnappliedSecondaryAddresses(input: {
   desired: Readonly<Record<string, unknown>>;
@@ -198,5 +217,10 @@ export async function applyUnappliedSecondaryAddresses(input: {
       await new Promise((resolve) => setTimeout(resolve, input.delayMs ?? READBACK_DELAY_MS));
     }
   }
-  return undefined;
+  throw new ProvisioningError(
+    `Failed to update resource ${input.ids.logicalId}: EC2 accepted the ${SECONDARY_ADDRESS_KEY} change Cloud Control left unapplied, but Cloud Control's read of the interface does not show it yet (go-to-k/cdkd#7099). The record keeps the previous values; the next deploy compares the live addresses again.`,
+    NETWORK_INTERFACE_TYPE,
+    input.ids.logicalId,
+    input.ids.physicalId
+  );
 }

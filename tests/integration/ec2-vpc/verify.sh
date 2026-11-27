@@ -333,6 +333,14 @@ CDKD_SDK_CALL_LOG="${P2_CALLS}" CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" depl
 P2_RC=${PIPESTATUS[0]}
 set -e
 if [ "${P2_RC}" -ne 0 ]; then
+  # go-to-k/cdkd#7099: Cloud Control left the interface's added secondary
+  # address unapplied and cdkd did not apply it through EC2 (#7115 fails the
+  # update with this tag).
+  if grep -qF '[cc-silent-noop]' "${P2_LOG}"; then
+    echo "FAIL: Phase 2 failed with [cc-silent-noop]: Cloud Control left a change unapplied and cdkd did not apply it; CloudFormation adds the SecondaryIpEni secondary address in place (issue #7099)" >&2
+    grep -F '[cc-silent-noop]' "${P2_LOG}" >&2
+    exit 1
+  fi
   # Issue #5448: a tag change on these three was refused as not updatable.
   if grep -qE 'AWS::EC2::(InternetGateway|RouteTable|NetworkAcl) \([^)]*\) cannot be updated in place' "${P2_LOG}"; then
     echo "FAIL: Phase 2 refused an in-place tag change on an InternetGateway / RouteTable / NetworkAcl; CloudFormation applies it in place (issue #5448)" >&2
@@ -454,9 +462,11 @@ echo "    OK: VPCs removal kept ${MAIN_VPC} on the private zone, sent no Disasso
 # SUCCESS without applying it. CloudFormation applies it in place (measured),
 # and cdkd applies it through one EC2 AssignPrivateIpAddresses on the same
 # interface. Before the fix the deploy reported success with the address
-# absent, or (after #7115) failed with the [cc-silent-noop] tag.
+# absent (the AssignPrivateIpAddresses count below fails), or, over #7115,
+# failed with the [cc-silent-noop] tag (the failed-deploy branch above). This
+# grep catches the tag at WARN level, where the deploy still succeeds.
 if grep -qF '[cc-silent-noop]' "${P2_LOG}"; then
-  echo "FAIL: Phase 2 logged [cc-silent-noop]: Cloud Control left a change unapplied and cdkd did not apply it (issue #7099)" >&2
+  echo "FAIL: Phase 2 warned [cc-silent-noop]: Cloud Control left a change unapplied on some resource (issue #7099)" >&2
   grep -F '[cc-silent-noop]' "${P2_LOG}" >&2
   exit 1
 fi
