@@ -94,6 +94,15 @@ export const PROMO_QUEUE_ARN_EXPORT_NAME = 'CdkdCrossStackPromoQueueArn';
 export const PROMO_PARAMETER_NAME = '/cdkd-integ/cross-stack-secret-import/promo-import-reader';
 
 /**
+ * go-to-k/cdkd#7106 (step 11f, only under `CSSI_PROMO_BLOCK=true`): the name
+ * `PromoImportReader` is renamed to, a create-only change cdkd refuses for a
+ * stateful SSM parameter without `--force-stateful-recreation`. That refusal
+ * stops the consumer before its reader is written, so the joint deploy that
+ * replaces the producer's queue leaves the reader on the old one. Never created.
+ */
+export const PROMO_BLOCKED_PARAMETER_NAME = `${PROMO_PARAMETER_NAME}-blocked`;
+
+/**
  * `Output.Export.Name` on the CONSUMER, which RE-EXPORTS the value it imported
  * from the producer (issue
  * [#2146](https://github.com/go-to-k/cdkd/issues/2146)).
