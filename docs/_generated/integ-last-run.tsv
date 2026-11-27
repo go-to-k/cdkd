@@ -453,7 +453,7 @@ replacement-immutable-name	2026-11-16T08:22:27Z	PASS	140	verify.sh	rc ok, orph c
 replacement-rename-onto-holder	2026-11-16T08:22:27Z	PASS	636	verify.sh	rc ok, orph clean (#6374 sweep)
 require-approval-broadening	2026-11-04T17:48:59Z	PASS	81	verify.sh	rc ok, destroy 0 errors, orph clean (state keys + IAM/Lambda/log groups), own state bucket; main-based re-run on wrasse
 retain-orphan-redeploy	2026-11-20T19:04:37Z	PASS	201	verify.sh	rc ok, orph clean, own state bucket, head 870be8d13 (#6702)
-retain-orphan-secret	2026-11-04T22:39:07Z	PASS	85	verify.sh	rc ok, no plaintext in any S3 version, orph clean, own temp state bucket
+retain-orphan-secret	2026-11-27T19:17:25Z	PASS	130	verify.sh	rc ok, orph clean, 0 state versions survive (#7142 6d7b0277c)
 rollback-attribute-only-revert	2026-11-18T05:18:35Z	PASS	90	verify.sh	rc ok, orph clean (PR #6531)
 rollback-command	2026-11-24T14:31:41Z	PASS	890	verify.sh	rc ok, orph clean (#6933 sweep)
 rollback-cross-region-secret	2026-11-20T11:50:48Z	PASS	298	verify.sh	PR6652 be63cc056, us-west-2+us-east-1; own state bucket (deleted); rc 0, kept identity x2, orph clean
