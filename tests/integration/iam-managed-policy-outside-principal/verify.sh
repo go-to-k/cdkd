@@ -16,7 +16,7 @@
 #      still attached there, and its record is kept; RoleSide is deleted (the
 #      role's own update let go of it);
 #   3. detach Removed from the outside role and redeploy: Removed is deleted;
-#   4. destroy: refused over Declared's outside attachment (Declared and its
+#   4. destroy: refused over Declared's outside attachment, detaching nothing (Declared and its
 #      record kept, and Role, which it references, with it, as CloudFormation
 #      leaves them); detach it, destroy again: nothing of the stack left, the
 #      outside role untouched.
@@ -156,9 +156,9 @@ set -e
 # A refused template-removal delete is kept, not rolled back (go-to-k/cdkd#6969): exit 2.
 [ "${rc}" = "2" ] || { echo "FAIL: phase 2: the deploy exited ${rc}, expected 2 (a kept removal delete)" >&2; exit 1; }
 # Sentinel: the refusal's own line, and the role it names on it.
-plain | grep -q "which the stack does not declare as its principals" || {
+plain | grep -q "which the policy does not list in its Roles / Users / Groups" || {
   echo "FAIL: phase 2: the deploy failed without the #7117 refusal (if cdkd reworded it, update this check)" >&2; exit 1; }
-plain | grep "which the stack does not declare as its principals" | grep -q "role ${OUTSIDE_ROLE}" || {
+plain | grep "which the policy does not list in its Roles / Users / Groups" | grep -q "role ${OUTSIDE_ROLE}" || {
   echo "FAIL: phase 2: the refusal does not name role ${OUTSIDE_ROLE}" >&2; exit 1; }
 policy_exists "${REMOVED}" || { echo "FAIL: phase 2: Removed was deleted" >&2; exit 1; }
 [ "$(outside_attached)" = "$(printf '%s\n' "${DECLARED}" "${REMOVED}" | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')" ] || {
@@ -183,12 +183,17 @@ node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --regio
 rc=${PIPESTATUS[0]}
 set -e
 [ "${rc}" != "0" ] || { echo "FAIL: phase 4: destroy succeeded although Declared is attached outside the stack" >&2; exit 1; }
-plain | grep "which the stack does not declare as its principals" | grep -q "role ${OUTSIDE_ROLE}" || {
+plain | grep "which the policy does not list in its Roles / Users / Groups" | grep -q "role ${OUTSIDE_ROLE}" || {
   echo "FAIL: phase 4: destroy failed without the #7117 refusal naming ${OUTSIDE_ROLE}" >&2; exit 1; }
 policy_exists "${DECLARED}" || { echo "FAIL: phase 4: Declared was deleted" >&2; exit 1; }
 [ "$(outside_attached)" = "${DECLARED}" ] || {
   echo "FAIL: phase 4: ${OUTSIDE_ROLE} no longer holds Declared: '$(outside_attached)'" >&2; exit 1; }
 [ "$(arn_of Declared)" = "${DECLARED}" ] || { echo "FAIL: phase 4: Declared's record was dropped" >&2; exit 1; }
+# The refusal detached nothing: the kept record's Roles: [Role] still matches AWS.
+ROLE_HELD="$(aws iam list-attached-role-policies --role-name "${ROLE_NAME}" \
+  --query 'AttachedPolicies[].PolicyArn' --output text)" || { echo "FAIL: phase 4: could not read ${ROLE_NAME}" >&2; exit 1; }
+grep -qF "${DECLARED}" <<<"${ROLE_HELD}" || {
+  echo "FAIL: phase 4: the refused delete detached Declared from the stack's role ${ROLE_NAME}" >&2; exit 1; }
 aws iam detach-role-policy --role-name "${OUTSIDE_ROLE}" --policy-arn "${DECLARED}"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 assert_gone "Declared still exists after destroy" aws iam get-policy --policy-arn "${DECLARED}"

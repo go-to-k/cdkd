@@ -32,10 +32,10 @@ function undeclaredPrincipalsMessage(
   const named = undeclared.map((p) => `${PRINCIPAL_KIND[p.kind]} ${p.name}`).join(', ');
   return (
     `Failed to delete IAM managed policy ${logicalId}: it is still attached to ${named}, ` +
-    `which the stack does not declare as its principals, so it was left in place, as ` +
-    `CloudFormation leaves it. Detach the policy from them (DetachRolePolicy / ` +
-    `DetachUserPolicy / DetachGroupPolicy), or remove the attachment from the stack that ` +
-    `owns them, then re-run.`
+    `which the policy does not list in its Roles / Users / Groups, so nothing was detached ` +
+    `and the policy was left in place, as CloudFormation leaves it. Detach the policy from ` +
+    `them (DetachRolePolicy / DetachUserPolicy / DetachGroupPolicy) or remove the attachment ` +
+    `where it is made (another stack, or a role's ManagedPolicyArns), then re-run.`
   );
 }
 
@@ -93,7 +93,8 @@ export async function deleteImpl(
     //    outside the record is left attached and refused over, as
     //    CloudFormation's handler does (`Cannot delete a policy attached to
     //    entities`): detaching it would take the policy's permissions from a
-    //    role another stack or an operator owns. The stack's own roles
+    //    role another stack or an operator owns. Nothing is detached then,
+    //    so the kept record still matches AWS. The stack's own roles
     //    attaching it by ARN have let go by now: a removal deletes after every
     //    update, a destroy deletes them first (they reference the policy), and a
     //    replacement's old copy is deleted in the cleanup phase.

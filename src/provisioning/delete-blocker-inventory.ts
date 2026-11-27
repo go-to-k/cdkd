@@ -175,7 +175,7 @@ export const DELETE_BLOCKER_INVENTORY: readonly DeleteBlockerRow[] = [
       refused(
         'a role, group or user attached outside the policy (destroy, removal, replacement cleanup)',
         `${P}iam-managed-policy/delete.ts`,
-        'which the stack does not declare as its principals'
+        'which the policy does not list in its Roles / Users / Groups'
       ),
       handled(
         'non-default policy versions',

@@ -82,7 +82,7 @@ describe('IAMManagedPolicyProvider.delete: undeclared principals (#7117)', () =>
     provider = new IAMManagedPolicyProvider();
   });
 
-  it('detaches the declared principals and refuses over a role attached outside the record', async () => {
+  it('refuses over a role attached outside the record without detaching the declared one', async () => {
     respond({
       PolicyRoles: [{ RoleName: 'stack-role' }, { RoleName: 'outside-role' }],
       PolicyUsers: [{ UserName: 'outside-user' }],
@@ -99,11 +99,58 @@ describe('IAMManagedPolicyProvider.delete: undeclared principals (#7117)', () =>
     expect(message).not.toContain('stack-role');
     expect(message).not.toMatch(/not found|does not exist|NoSuchEntity/i);
     expect(isMarkedNonRetryable(err)).toBe(true);
-    // The declared role was detached before the refusal.
-    expect(isDeleteStarted(err)).toBe(true);
-    expect(names(sent(DetachRolePolicyCommand), 'RoleName')).toEqual(['stack-role']);
+    // Nothing was detached, so the kept record (Roles: [stack-role]) still
+    // matches AWS, and the error carries no delete-started mark.
+    expect(isDeleteStarted(err)).toBe(false);
+    expect(sent(DetachRolePolicyCommand)).toHaveLength(0);
     expect(sent(DetachUserPolicyCommand)).toHaveLength(0);
     expect(sent(DeletePolicyCommand)).toHaveLength(0);
+  });
+
+  it('lists every page before acting: an outside principal on a later page detaches nothing', async () => {
+    let page = 0;
+    mockSend.mockImplementation(async (command: unknown) => {
+      if (command instanceof GetPolicyCommand) return { Policy: { Arn: ARN } };
+      if (command instanceof ListEntitiesForPolicyCommand) {
+        page += 1;
+        return page === 1
+          ? { PolicyRoles: [{ RoleName: 'stack-role' }], IsTruncated: true, Marker: 'm1' }
+          : { PolicyGroups: [{ GroupName: 'ops' }], IsTruncated: false };
+      }
+      return {};
+    });
+
+    const err = await provider
+      .delete('MyPolicy', ARN, TYPE, { Roles: ['stack-role'] })
+      .catch((e: unknown) => e);
+
+    expect((err as Error).message).toContain('group ops');
+    expect(sent(ListEntitiesForPolicyCommand)).toHaveLength(2);
+    expect(sent(DetachRolePolicyCommand)).toHaveLength(0);
+    expect(sent(DeletePolicyCommand)).toHaveLength(0);
+  });
+
+  it('marks the delete started when a declared detach went out before DeletePolicy failed', async () => {
+    mockSend.mockImplementation(async (command: unknown) => {
+      if (command instanceof GetPolicyCommand) return { Policy: { Arn: ARN } };
+      if (command instanceof ListEntitiesForPolicyCommand) {
+        return { PolicyRoles: [{ RoleName: 'stack-role' }], IsTruncated: false };
+      }
+      if (command instanceof ListPolicyVersionsCommand) {
+        return { Versions: [{ VersionId: 'v1', IsDefaultVersion: true }], IsTruncated: false };
+      }
+      if (command instanceof DeletePolicyCommand) {
+        throw Object.assign(new Error('conflict'), { name: 'DeleteConflictException' });
+      }
+      return {};
+    });
+
+    const err = await provider
+      .delete('MyPolicy', ARN, TYPE, { Roles: ['stack-role'] })
+      .catch((e: unknown) => e);
+
+    expect(names(sent(DetachRolePolicyCommand), 'RoleName')).toEqual(['stack-role']);
+    expect(isDeleteStarted(err)).toBe(true);
   });
 
   it('refuses before any detach when no principal is declared, without the delete-started mark', async () => {
