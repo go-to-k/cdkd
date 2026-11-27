@@ -14,6 +14,9 @@ import { declaredPrincipalsOf, policyIdentityToken, type UndeclaredPrincipal } f
 class UndeclaredPrincipalsRefusal extends ProvisioningError {
   constructor(message: string, resourceType: string, logicalId: string, physicalId: string) {
     super(message, resourceType, logicalId, physicalId);
+    // `ProvisioningError` pins its own prototype; without this `instanceof`
+    // answers false and the catch below wraps the refusal a second time.
+    Object.setPrototypeOf(this, new.target.prototype);
     this.name = 'UndeclaredPrincipalsRefusal';
     markNonRetryable(this);
   }
@@ -98,9 +101,13 @@ export async function deleteImpl(
     //    attaching it by ARN have let go by now: a removal deletes after every
     //    update, a destroy deletes them first (they reference the policy), and a
     //    replacement's old copy is deleted in the cleanup phase.
-    const declared = context?.detachUndeclaredPrincipals
-      ? undefined
-      : declaredPrincipalsOf(_properties);
+    // A failed CREATE's orphan (`failedCreateOrphan`) is a policy this stack
+    // made seconds ago from the attempted bag, never a record's: whatever is
+    // attached is what that create attached, so every principal is detached.
+    const declared =
+      context?.detachUndeclaredPrincipals || context?.failedCreateOrphan
+        ? undefined
+        : declaredPrincipalsOf(_properties);
     const undeclared = await this.detachAllPrincipals(physicalId, progress, declared);
     if (undeclared.length > 0) {
       const refusal = new UndeclaredPrincipalsRefusal(

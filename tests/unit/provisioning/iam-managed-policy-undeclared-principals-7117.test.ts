@@ -71,8 +71,8 @@ function sent<T>(ctor: new (...args: never[]) => T): T[] {
   return mockSend.mock.calls.map(([c]) => c).filter((c): c is T => c instanceof ctor);
 }
 
-const names = (calls: { input: Record<string, unknown> }[], key: string) =>
-  calls.map((c) => c.input[key]);
+const names = (calls: readonly { input: object }[], key: string) =>
+  calls.map((c) => (c.input as Record<string, unknown>)[key]);
 
 describe('IAMManagedPolicyProvider.delete: undeclared principals (#7117)', () => {
   let provider: IAMManagedPolicyProvider;
@@ -94,6 +94,9 @@ describe('IAMManagedPolicyProvider.delete: undeclared principals (#7117)', () =>
 
     expect(err).toBeInstanceOf(Error);
     const message = (err as Error).message;
+    // The refusal itself, not re-wrapped by the delete's AWS-failure catch.
+    expect((err as Error).name).toBe('UndeclaredPrincipalsRefusal');
+    expect(message.startsWith('Failed to delete IAM managed policy MyPolicy: it is still attached')).toBe(true);
     expect(message).toContain('role outside-role');
     expect(message).toContain('user outside-user');
     expect(message).not.toContain('stack-role');
@@ -205,6 +208,15 @@ describe('IAMManagedPolicyProvider.delete: undeclared principals (#7117)', () =>
     );
 
     expect(names(sent(DetachRolePolicyCommand), 'RoleName')).toEqual(['stack-role', 'other']);
+    expect(sent(DeletePolicyCommand)).toHaveLength(1);
+  });
+
+  it("detaches every principal of a failed CREATE's orphan, whose bag is the attempt's", async () => {
+    respond({ PolicyGroups: [{ GroupName: 'group-x' }] });
+
+    await provider.delete('MyPolicy', ARN, TYPE, {}, { failedCreateOrphan: true });
+
+    expect(names(sent(DetachGroupPolicyCommand), 'GroupName')).toEqual(['group-x']);
     expect(sent(DeletePolicyCommand)).toHaveLength(1);
   });
 
