@@ -81,7 +81,8 @@ import { trustedResourceNames } from './trust.js';
 import { healerUnderRecordPrintingBag } from './child-parameters.js';
 import { stackIdTailOf } from '../../../state/stack-id-tail.js';
 import { previewNoEchoMacChanges } from './noecho-macs.js';
-import { recordProducerPreview } from '../../../analyzer/cross-stack-preview.js';
+import { markProducerTaint, recordProducerPreview } from '../../../analyzer/cross-stack-preview.js';
+import { producerReadsSecretFedName } from './cross-stack-taint.js';
 
 /**
  * Compute the per-resource diff for one stack: `currentState` (cdkd state)
@@ -133,6 +134,7 @@ export async function computeStackDiff(
     ssmNameHeal = 'apply',
     crossStackPreview,
     recordCrossStackPreview,
+    secretFedNames,
   } = options;
   // go-to-k/cdkd#6274: the deploy's SSM parameter name heal, before its diff.
   const currentState = previewSsmNameHeal(loadedState, template, stackName, ssmNameHeal);
@@ -867,17 +869,25 @@ export async function computeStackDiff(
     });
   }
 
-  // go-to-k/cdkd#6796: what this deploy publishes, for a consumer diffed after it.
+  // go-to-k/cdkd#6796: what this deploy publishes, for a consumer diffed after
+  // it; go-to-k/cdkd#7090: and, on any node, which of it derives from a secret.
+  const readsSecretFed = producerReadsSecretFedName(secretFedNames);
+  const producer = {
+    stackName,
+    template: effectiveTemplate,
+    desiredOutputs: resolved.outputs,
+    storedOutputs: currentState.outputs,
+    ...(readsSecretFed && { readsSecretFedName: readsSecretFed }),
+  };
   if (crossStackPreview && recordCrossStackPreview) {
     await recordProducerPreview(crossStackPreview, region, resolveFn, {
-      stackName,
-      template: effectiveTemplate,
+      ...producer,
       changes,
-      desiredOutputs: resolved.outputs,
-      storedOutputs: currentState.outputs,
       ...(knownConditions !== undefined && { conditions: knownConditions }),
       holdsSecret: (text) => printing.mask(text) !== text,
     });
+  } else if (crossStackPreview && readsSecretFed) {
+    await markProducerTaint(crossStackPreview, region, resolveFn, producer);
   }
 
   // go-to-k/cdkd#4049: mask what this node PRINTS, at the value, once every
