@@ -136,6 +136,20 @@ export function notUpdatableRemedy(input: {
       )
     );
   }
+  // go-to-k/cdkd#7100: the diff keeps a shard change in place only under
+  // `UseOnlineResharding`, which CloudFormation honours by resharding online.
+  if (
+    input.resourceType === 'AWS::ElastiCache::ReplicationGroup' &&
+    properties.some((p) => p === 'NumNodeGroups' || p === 'NodeGroupConfiguration')
+  ) {
+    return (
+      safeMsg`\n${input.logicalId} (${input.resourceType}): Cloud Control refused this update in place (${CC_NOT_UPDATABLE_CODE})${changes}.` +
+      ' Under UpdatePolicy UseOnlineResharding, CloudFormation reshards the group online and keeps its data;' +
+      ' cdkd has no online-resharding path, and never replaces the group here.' +
+      ' Reshard it with `aws elasticache modify-replication-group-shard-configuration`' +
+      ' (or `increase-replica-count` / `decrease-replica-count`), then deploy the matching template.'
+    );
+  }
   const issueUrl = replacementRuleIssueUrl(input.resourceType, properties);
   return (
     safeMsg`\n${input.logicalId} (${input.resourceType}): Cloud Control refused this update in place (${CC_NOT_UPDATABLE_CODE})${changes}; CloudFormation replaces the resource for such a change.` +

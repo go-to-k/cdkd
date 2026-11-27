@@ -140,6 +140,24 @@ export function renderSrc(candidates: readonly SpecReplacementCandidate[]): stri
     lines.push(...renderRow(type, paths));
   }
   lines.push(']);', '');
+  // go-to-k/cdkd#7100: the rows a CloudFormation execution measured, which
+  // alone may say "CloudFormation was measured replacing" in a refusal.
+  const measured = candidates
+    .filter(
+      (c) =>
+        labelOf(c) === 'replace' &&
+        !c.path.includes('*') &&
+        REPLACEMENT_EVIDENCE.get(candidateKey(c.type, c.path))?.kind === 'cfn-measured'
+    )
+    .map((c) => candidateKey(c.type, c.path))
+    .sort();
+  lines.push(
+    '/** `<Type>#<path>` of the rows above that a CloudFormation execution measured replacing (#7100). */',
+    'export const SPEC_REPLACEMENT_CFN_MEASURED: ReadonlySet<string> = new Set([',
+    ...measured.map((k) => `  '${k}',`),
+    ']);',
+    ''
+  );
   return lines.join('\n');
 }
 

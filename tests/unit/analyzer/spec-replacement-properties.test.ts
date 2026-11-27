@@ -119,6 +119,49 @@ describe('spec-replacement table (go-to-k/cdkd#7070)', () => {
     expect(wrong).toEqual([]);
   });
 
+  // go-to-k/cdkd#7100: CloudFormation reshards online under UseOnlineResharding
+  // (same physical id) and replaces without it, so the policy keeps the diff
+  // in place, and only for the two shard properties.
+  it('UseOnlineResharding keeps a shard change in place, and nothing else', async () => {
+    const TYPE = 'AWS::ElastiCache::ReplicationGroup';
+    const diff = async (
+      updatePolicy: Record<string, unknown> | undefined,
+      prop: string,
+      from: unknown,
+      to: unknown
+    ) => {
+      const state: StackState = {
+        version: 1,
+        stackName: 'S',
+        resources: {
+          R: { physicalId: 'p', resourceType: TYPE, properties: { [prop]: from }, attributes: {} },
+        },
+        outputs: {},
+        lastModified: 0,
+      };
+      const template = {
+        Resources: {
+          R: {
+            Type: TYPE,
+            ...(updatePolicy === undefined ? {} : { UpdatePolicy: updatePolicy }),
+            Properties: { [prop]: to },
+          },
+        },
+      };
+      const changes = await new DiffCalculator().calculateDiff(state, template);
+      return changes.get('R')!.propertyChanges!.find((c) => c.path === prop)!.requiresReplacement;
+    };
+    const ngc = (n: number) => [{ NodeGroupId: '0001', ReplicaCount: n }];
+    expect(await diff(undefined, 'NumNodeGroups', 1, 2)).toBe(true);
+    expect(await diff({ UseOnlineResharding: false }, 'NumNodeGroups', 1, 2)).toBe(true);
+    expect(await diff({ UseOnlineResharding: true }, 'NumNodeGroups', 1, 2)).toBe(false);
+    expect(await diff({ UseOnlineResharding: 'true' }, 'NumNodeGroups', 1, 2)).toBe(false);
+    expect(await diff(undefined, 'NodeGroupConfiguration', ngc(1), ngc(2))).toBe(true);
+    expect(await diff({ UseOnlineResharding: true }, 'NodeGroupConfiguration', ngc(1), ngc(2))).toBe(false);
+    // A schema create-only property still replaces under the policy.
+    expect(await diff({ UseOnlineResharding: true }, 'Port', 6379, 6380)).toBe(true);
+  });
+
   // The rename CloudFormation fails rather than replaces stays the provider's
   // refusal (#3750), not a replacement of a stateful database.
   it('a nested measured update stays in place', async () => {

@@ -8,6 +8,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { provisionResource } from '../../../src/deployment/deploy-engine/provision.js';
+import { notUpdatableRemedy } from '../../../src/deployment/deploy-engine/update-in-place/update-failure-remedy.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
@@ -132,10 +133,10 @@ async function refusal(type: string, path: string, oldValue: unknown, newValue: 
 }
 
 describe('ElastiCache replication group shard-count replacement (go-to-k/cdkd#7100)', () => {
-  it('refuses a NumNodeGroups replacement without the flag, saying CloudFormation replaces too', async () => {
+  it('refuses a NumNodeGroups replacement without the flag, citing the CloudFormation measurement', async () => {
     const text = await refusal('AWS::ElastiCache::ReplicationGroup', 'NumNodeGroups', 1, 2);
     expect(text).toContain('Rg (AWS::ElastiCache::ReplicationGroup) requires replacement (immutable property changed: NumNodeGroups)');
-    expect(text).toContain('CloudFormation replaces it for this change too, so the data is lost there as well.');
+    expect(text).toContain('CloudFormation was measured replacing it on a NumNodeGroups change, so the data is lost there as well.');
     expect(text).toContain(SHORT_ADVICE);
   });
 
@@ -147,11 +148,27 @@ describe('ElastiCache replication group shard-count replacement (go-to-k/cdkd#71
       [{ NodeGroupId: '0001', ReplicaCount: 2 }]
     );
     expect(text).toContain('immutable property changed: NodeGroupConfiguration');
-    expect(text).toContain('CloudFormation replaces it for this change too');
+    expect(text).toContain('CloudFormation was measured replacing it on a NodeGroupConfiguration change');
   });
 
   it('does not claim CloudFormation replaces for a schema create-only property', async () => {
     const text = await refusal('AWS::ElastiCache::ReplicationGroup', 'Port', 6379, 6380);
-    expect(text).not.toContain('CloudFormation replaces it for this change too');
+    expect(text).not.toContain('CloudFormation was measured replacing');
+  });
+
+  it('the NotUpdatable remedy for a shard change names online resharding, never a replacement', () => {
+    const text = notUpdatableRemedy({
+      logicalId: 'Rg',
+      resourceType: 'AWS::ElastiCache::ReplicationGroup',
+      stackName: 'S',
+      changedProperties: new Set(['NumNodeGroups']),
+      record: { physicalId: 'p', resourceType: 'AWS::ElastiCache::ReplicationGroup', properties: {} } as never,
+      updateReplacePolicy: undefined,
+      nestedChild: false,
+    });
+    expect(text).toContain('Under UpdatePolicy UseOnlineResharding, CloudFormation reshards the group online');
+    expect(text).toContain('modify-replication-group-shard-configuration');
+    expect(text).not.toContain('--replace-resource');
+    expect(text).not.toContain('CloudFormation replaces the resource');
   });
 });

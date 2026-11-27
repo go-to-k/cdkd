@@ -401,11 +401,14 @@ export const REPLACEMENT_EVIDENCE: ReadonlyMap<string, ReplacementEvidence> = ne
   // Redis to Valkey applies with the EngineVersion and parameter group AWS requires.
   ['AWS::ElastiCache::ReplicationGroup#Engine', update('cc-measured', 7083)],
   ['AWS::ElastiCache::ReplicationGroup#ReplicasPerNodeGroup', update('cc-measured', 7083)],
-  // CloudFormation executed each change as a replacement (new physical id,
-  // old group deleted), with and without UseOnlineResharding: NumNodeGroups
-  // 1 -> 2 (change set `Replacement: False`) and a NodeGroupConfiguration
-  // ReplicaCount 1 -> 2 (change set `Conditional`) (#7100). Stateful: the
-  // replacement stays behind --force-stateful-recreation.
+  // Measured against CloudFormation on a cluster-mode-enabled group (#7100):
+  // without `UseOnlineResharding`, NumNodeGroups 1 -> 2 and a
+  // NodeGroupConfiguration ReplicaCount change each REPLACED it (new physical
+  // id), though the change sets read `Replacement: False` / `Conditional`.
+  // Under the policy, NumNodeGroups resharded in place and the ReplicaCount
+  // change failed, so the diff keeps both in place there
+  // (`elasticache-online-resharding.ts`). Stateful: a replacement stays behind
+  // --force-stateful-recreation.
   [
     'AWS::ElastiCache::ReplicationGroup#NodeGroupConfiguration',
     replace('cfn-measured', 7083, 7100),

@@ -17,3 +17,10 @@ export const SPEC_REPLACEMENT_PATHS: ReadonlyMap<
   ['AWS::ElastiCache::ReplicationGroup', [['NodeGroupConfiguration'], ['NumNodeGroups']]],
   ['AWS::Route53Resolver::ResolverRule', [['DomainName']]],
 ]);
+
+/** `<Type>#<path>` of the rows above that a CloudFormation execution measured replacing (#7100). */
+export const SPEC_REPLACEMENT_CFN_MEASURED: ReadonlySet<string> = new Set([
+  'AWS::ElastiCache::ReplicationGroup#NodeGroupConfiguration',
+  'AWS::ElastiCache::ReplicationGroup#NumNodeGroups',
+  'AWS::Route53Resolver::ResolverRule#DomainName',
+]);
