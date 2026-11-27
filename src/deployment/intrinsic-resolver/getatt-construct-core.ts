@@ -373,7 +373,7 @@ export async function constructAttributeForCoreTypes(
           throw markNonRetryable(
             new IntrinsicResolutionRefusalError(
               `Cannot resolve Fn::GetAtt [${displayMasked(resolver, logicalId, context)}, DefaultSecurityGroup] for AWS::EC2::VPC: the ` +
-                `state record's physical id ${quotedRender(displayMasked(resolver, displayPhysicalId(resourceType, physicalId), context).slice(0, 64), '"')} ` +
+                `state record's physical id ${quotedRender(logOperand(resolver, displayPhysicalId(resourceType, physicalId), context, { render: 'plain' }).slice(0, 64), '"')} ` +
                 `is not a VPC id (vpc-<hex>), so cdkd will not use it as an EC2 filter value. Repair the ` +
                 `record (cdkd import, or re-create the VPC) and deploy again.`
             )
@@ -430,7 +430,7 @@ export async function constructAttributeForCoreTypes(
           throw markNonRetryable(
             new IntrinsicResolutionRefusalError(
               `Cannot resolve Fn::GetAtt [${displayMasked(resolver, logicalId, context)}, DefaultNetworkAcl] for AWS::EC2::VPC: the ` +
-                `state record's physical id ${quotedRender(displayMasked(resolver, displayPhysicalId(resourceType, physicalId), context).slice(0, 64), '"')} ` +
+                `state record's physical id ${quotedRender(logOperand(resolver, displayPhysicalId(resourceType, physicalId), context, { render: 'plain' }).slice(0, 64), '"')} ` +
                 `is not a VPC id (vpc-<hex>), so cdkd will not use it as an EC2 filter value. Repair the ` +
                 `record (cdkd import, or re-create the VPC) and deploy again.`
             )

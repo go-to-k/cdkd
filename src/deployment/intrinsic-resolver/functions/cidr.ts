@@ -32,7 +32,7 @@ export async function resolveCidr(
   if (!ipBlock || typeof ipBlock !== 'string') {
     throw markNonRetryable(
       new Error(
-        `Fn::Cidr: ipBlock must be a string, got ${typeof ipBlock}: ${JSON.stringify(maskValueLeaves(resolver, ipBlock, context))}`
+        `Fn::Cidr: ipBlock must be a string, got ${typeof ipBlock}: ${logOperand(resolver, JSON.stringify(maskValueLeaves(resolver, ipBlock, context)), context, { render: String })}`
       )
     );
   }

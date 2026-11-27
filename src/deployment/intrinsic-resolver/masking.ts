@@ -1,7 +1,7 @@
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { displayOnlyBagOf } from './display-taint.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
-import { displayMasked } from './masking-display.js';
+import { displayMasked, logOperand } from './masking-display.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { IntrinsicResolutionRefusalError } from '../../utils/error-handler.js';
 import {
@@ -535,7 +535,7 @@ export function refuseSecretAssembledReference(
   if (!tokenAssembledForRecording(resolver, fullMatch, tokenLogText, context)) return;
   throw markNonRetryable(
     new IntrinsicResolutionRefusalError(
-      `Refusing to resolve ${displayMasked(resolver, tokenLogText, context)}: the reference was ` +
+      `Refusing to resolve ${logOperand(resolver, tokenLogText, context, { render: 'plain' })}: the reference was ` +
         `assembled from a secret value and resolves to a secret, so recording it would write ` +
         `that value into state inside the reference. Build the reference name from non-secret values.`
     )

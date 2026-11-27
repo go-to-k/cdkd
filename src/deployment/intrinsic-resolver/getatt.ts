@@ -117,7 +117,7 @@ export async function resolveGetAtt(
     if (typeof resolvedAttributeName !== 'string') {
       throw markNonRetryable(
         new Error(
-          `Fn::GetAtt attribute name for ${displayMasked(resolver, logicalId, context)} must resolve to a string, got ${typeof resolvedAttributeName}: ${stringifyValue(maskValueLeaves(resolver, resolvedAttributeName, context))}`
+          `Fn::GetAtt attribute name for ${displayMasked(resolver, logicalId, context)} must resolve to a string, got ${typeof resolvedAttributeName}: ${logOperand(resolver, stringifyValue(maskValueLeaves(resolver, resolvedAttributeName, context)), context, { render: String })}`
         )
       );
     }
@@ -160,7 +160,9 @@ export async function resolveGetAtt(
       // so being pre-resolution answers the secret question but not the
       // control-character one.
       throw markNonRetryable(
-        new Error(`Invalid Fn::GetAtt format: ${displayMasked(resolver, getAtt, context)}`)
+        new Error(
+          `Invalid Fn::GetAtt format: ${logOperand(resolver, getAtt, context, { render: 'plain' })}`
+        )
       );
     }
     logicalId = split.logicalId;
@@ -551,8 +553,8 @@ export async function resolveGetAtt(
         // the unknown-account refusal in `constructGuardedAttribute`.
         `Cannot resolve Fn::GetAtt [${loggedLogicalId}, ${displayMasked(resolver, attributeName, context)}]: the nested stack ` +
           `${quotedRender(loggedLogicalId, "'")} declares no output named ` +
-          `${quotedRender(displayMasked(resolver, outputNameLogText(resolver, attributeName, context), context), "'")}. ` +
-          `Its outputs are ${displayMasked(resolver, declaredText, context)}. ` +
+          `${quotedRender(logOperand(resolver, outputNameLogText(resolver, attributeName, context), context, { render: 'plain' }), "'")}. ` +
+          `Its outputs are ${logOperand(resolver, declaredText, context, { render: 'plain' })}. ` +
           `Check the output name in the nested stack's template, and deploy the child ` +
           `stack again if you have just added it.`
       )
@@ -636,7 +638,7 @@ export function rejectPlaceholderArnAttribute(
   throw markNonRetryable(
     new IntrinsicResolutionRefusalError(
       `Cannot resolve Fn::GetAtt [${displayMasked(resolver, logicalId, context)}, ${displayMasked(resolver, attributeName, context)}] for ` +
-        `${resource.resourceType}: the recorded value ${quotedRender(stringifyValue(maskValueLeaves(resolver, value, context)), '"')} is a placeholder ` +
+        `${resource.resourceType}: the recorded value ${quotedRender(logOperand(resolver, stringifyValue(maskValueLeaves(resolver, value, context)), context, { render: String }), '"')} is a placeholder ` +
         `written by an older cdkd version — its region and account ` +
         `fields are literal wildcards, so it is not a usable ARN. ` +
         staleRecordRemedy(resolver, healOutcome, context)

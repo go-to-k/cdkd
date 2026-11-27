@@ -242,7 +242,7 @@ export function subListRefusal(
   const count = `${value.length} item${value.length === 1 ? '' : 's'}`;
   return markNonRetryable(
     new IntrinsicResolutionRefusalError(
-      `Fn::Sub: ${displayMasked(resolver, subject, context)} resolves to a list (an array of ${count}), ` +
+      `Fn::Sub: ${logOperand(resolver, subject, context, { render: 'plain' })} resolves to a list (an array of ${count}), ` +
         `not a string. CloudFormation rejects this template too, because every Fn::Sub ` +
         `variable must resolve to a string. Render the list with Fn::Join in the variable ` +
         `map instead, for example ["ids=\${Ids}", {"Ids": {"Fn::Join": [",", {"Ref": "SubnetIds"}]}}].`

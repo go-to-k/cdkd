@@ -311,7 +311,9 @@ export async function resolveSelect(
   const position = selectIndexPosition(resolvedIndex);
   if (position === undefined) {
     const source = describeSplitValueSource(resolver, index);
-    const sourceClause = source ? ` (from ${displayMasked(resolver, source.label, context)})` : '';
+    const sourceClause = source
+      ? ` (from ${logOperand(resolver, source.label, context, { render: 'plain' })})`
+      : '';
     throw markNonRetryable(
       new IntrinsicResolutionRefusalError(
         `Fn::Select: the index${sourceClause} must resolve to a non-negative integer ` +
@@ -363,7 +365,7 @@ export async function resolveSelect(
     // state kept wherever AWS accepts free text (a parameter value, a tag).
     throw markNonRetryable(
       new SelectOutOfBoundsRefusalError(
-        `Fn::Select: the index ${loggedPosition} is out of bounds (array length: ` +
+        `Fn::Select: the index ${logOperand(resolver, String(position), context, { render: () => loggedPosition })} is out of bounds (array length: ` +
           `${resolvedList.length}). CloudFormation refuses this template too ("Fn::Select ` +
           'cannot select nonexistent value"); select an index inside the list.'
       )
@@ -412,9 +414,9 @@ export function describeOperandShape(
   if (value === null) return 'null';
   if (Array.isArray(value)) return `an array of ${value.length}`;
   if (typeof value === 'string')
-    return `string ${quotedRender(displayMasked(resolver, value, context), '"')}`;
+    return `string ${quotedRender(logOperand(resolver, value, context, { render: 'plain' }), '"')}`;
   if (typeof value === 'number' || typeof value === 'boolean') {
-    return `${typeof value} ${displayMasked(resolver, String(value), context)}`;
+    return `${typeof value} ${logOperand(resolver, String(value), context, { render: 'plain' })}`;
   }
   return typeof value;
 }
@@ -591,7 +593,9 @@ export async function resolveSplit(
     // contradicted by `describeSplitValueSource`'s own doc comment one method
     // up ("interpolates template-controlled text"). Wrapped once here rather
     // than at each throw, so a THIRD consumer of the clause inherits it.
-    const sourceClause = source ? ` (from ${displayMasked(resolver, source.label, context)})` : '';
+    const sourceClause = source
+      ? ` (from ${logOperand(resolver, source.label, context, { render: 'plain' })})`
+      : '';
     if (Array.isArray(resolvedValue)) {
       // The remedy is per-source, and the DEFAULT is the neutral one. Only a
       // value that IS an Fn::GetAtt gets the Route 53 example and the #1868
