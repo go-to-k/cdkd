@@ -28,6 +28,19 @@
  *    (`noEchoComparisonForTemplate`) makes of both sides. It equals the
  *    persisted bag.
  *
+ * Each case runs under both writer claims: none, and the same-generation
+ * claim every deploy-written record states (`sameGenerationClaimsOf`). An array
+ * item sits SECOND in its list, after a plain one. The plaintext is also echoed
+ * as an attribute, and by the readback under a key the template lacks.
+ *
+ * NOT claimed here:
+ * - the unchanged-resource arm with no template bag (covered by its own tests);
+ * - a `NoEcho` value embedded in text, which needs the fresh / containment
+ *   side-sets;
+ * - a sub-floor (under four characters) `NoEcho` value, which `applyNoEchoPersist`
+ *   positions after this choke point.
+ * The `create-only` shape is a label: the redaction reads nothing create-only.
+ *
  * The redaction reads values and provenance, never a property's name or path,
  * so today every case runs the same code path. The path dimension guards
  * against path-specific logic landing later.
@@ -93,11 +106,11 @@ function casesOf(): Case[] {
   return out;
 }
 
-/** `value` placed at `path` (`*` is the first item of a one-item list). */
+/** `value` placed at `path` (`*` is the SECOND item of a list, after a plain one). */
 function placed(path: readonly string[], value: unknown): Record<string, unknown> {
   const build = (i: number): unknown => {
     if (i === path.length) return value;
-    return path[i] === '*' ? [build(i + 1)] : { [path[i]!]: build(i + 1) };
+    return path[i] === '*' ? ['plain-item-7061', build(i + 1)] : { [path[i]!]: build(i + 1) };
   };
   return build(0) as Record<string, unknown>;
 }
@@ -109,10 +122,14 @@ function placed(path: readonly string[], value: unknown): Record<string, unknown
 type Form = 'whole' | 'embedded' | 'noecho';
 const FORMS: readonly Form[] = ['whole', 'embedded', 'noecho'];
 type Scrub = typeof scrubResourceRecord;
+/** The writer's same-generation claim: none, or the one every deploy-written record states. */
+type Claims = 'unclaimed' | 'same-generation';
+const CLAIMS: readonly Claims[] = ['unclaimed', 'same-generation'];
 function scrubbed(
   c: Case,
   index: number,
   form: Form,
+  claims: Claims,
   scrub: Scrub = scrubResourceRecord
 ): { persisted: unknown; source: Record<string, unknown>; resolved: Record<string, unknown>; plaintext: string } {
   const plaintext = `inv7061-pl4intext-${index}-${form}`;
@@ -128,15 +145,19 @@ function scrubbed(
   const source = placed(c.path, form === 'noecho' ? { Ref: 'SecretParam' } : wrap(expression));
   const record = {
     properties: placed(c.path, wrap(plaintext)),
-    attributes: {},
-    observedProperties: placed(c.path, wrap(plaintext)),
+    // A provider echoing the value as an attribute (`Fn::GetAtt`).
+    attributes: { Echo: wrap(plaintext) },
+    // The readback echoes it at the path, and under a key the template lacks.
+    observedProperties: { ...placed(c.path, wrap(plaintext)), ReadbackOnly7061: wrap(plaintext) },
   };
   const resolved = placed(c.path, wrap(plaintext));
-  return { persisted: scrub(record, secrets, source), source, resolved, plaintext };
+  const claim =
+    claims === 'same-generation' ? ({ properties: 'same-generation', observed: 'same-generation' } as const) : {};
+  return { persisted: scrub(record, secrets, source, undefined, claim), source, resolved, plaintext };
 }
 
 /**
- * Cases allowed to break the invariant, keyed `<type> <path> <form>`, with why.
+ * Cases allowed to break the invariant, keyed `<type> <path> <form> <claims>`, with why.
  * Empty: every generated case holds.
  */
 const EXCEPTIONS: Readonly<Record<string, string>> = {};
@@ -171,9 +192,9 @@ function invariantFailures(cases: readonly Case[], scrub: Scrub = scrubResourceR
   const failures: string[] = [];
   const excepted = new Set<string>();
   cases.forEach((c, index) => {
-    for (const form of FORMS) {
-      const key = `${c.type} ${c.path.join('/')} ${form}`;
-      const { persisted, source, resolved, plaintext } = scrubbed(c, index, form, scrub);
+    for (const form of FORMS) for (const claims of CLAIMS) {
+      const key = `${c.type} ${c.path.join('/')} ${form} ${claims}`;
+      const { persisted, source, resolved, plaintext } = scrubbed(c, index, form, claims, scrub);
       const record = persisted as { properties: Record<string, unknown> };
       const problems: string[] = [];
       if (JSON.stringify(persisted).includes(plaintext)) problems.push('plaintext persisted');
@@ -213,7 +234,7 @@ describe('schema redaction invariant (go-to-k/cdkd#7061 slice (c))', { timeout: 
     const passThrough = ((record: unknown) => record) as Scrub;
     const sample = cases.slice(0, 20);
     const { failures } = invariantFailures(sample, passThrough);
-    expect(failures).toHaveLength(sample.length * FORMS.length);
+    expect(failures).toHaveLength(sample.length * FORMS.length * CLAIMS.length);
     for (const f of failures) expect(f).toMatch(/plaintext persisted/);
   });
 });
