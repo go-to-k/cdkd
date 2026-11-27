@@ -88,6 +88,8 @@ interface Found {
   fnEnd: number;
   /** Where the reference is. */
   at: number;
+  /** Each enclosing statement list (by its start) and the index of the statement holding the save. */
+  blocks: Array<{ block: number; index: number }>;
 }
 
 type Node = { type: string; start: number; end: number; [k: string]: unknown };
@@ -106,7 +108,11 @@ function functionName(node: Node, parent: Node | undefined): string | undefined 
     isNode(n) && n.type === 'Identifier' ? (n['name'] as string) : undefined;
   if (node.type === 'FunctionDeclaration') return named(node['id']);
   if (node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression') {
-    if (parent?.type === 'MethodDefinition' || parent?.type === 'Property') {
+    if (
+      parent?.type === 'MethodDefinition' ||
+      parent?.type === 'Property' ||
+      parent?.type === 'PropertyDefinition'
+    ) {
       return named(parent['key']);
     }
     if (parent?.type === 'VariableDeclarator') return named(parent['id']);
@@ -115,22 +121,75 @@ function functionName(node: Node, parent: Node | undefined): string | undefined 
   return undefined;
 }
 
-/** A reference to a choke-point function, never a declaration, an import or a type. */
-function isReference(node: Node, parent: Node | undefined, key: string): boolean {
-  if (node.type !== 'Identifier' || !TARGETS.has(node['name'] as string)) return false;
-  if (parent === undefined) return false;
-  if (parent.type.startsWith('TS')) return false;
+/** Nodes whose subtree is a TYPE position: a name there is no reference. */
+const TYPE_POSITIONS = new Set([
+  'TSTypeAnnotation',
+  'TSTypeQuery',
+  'TSTypeReference',
+  'TSQualifiedName',
+  'TSInterfaceDeclaration',
+  'TSTypeAliasDeclaration',
+  'TSTypeParameterInstantiation',
+]);
+
+/** Whether `node` names a choke-point function: an identifier, or a computed key spelled as a string. */
+function namesTarget(node: Node, parent: Node | undefined, key: string): boolean {
+  if (node.type === 'Identifier') return TARGETS.has(node['name'] as string);
+  // `engine['withParentInfo'](x)` and `` engine[`withParentInfo`](x) ``.
+  if (parent?.type !== 'MemberExpression' || parent['computed'] !== true || key !== 'property') {
+    return false;
+  }
+  if (node.type === 'Literal') return TARGETS.has(node['value'] as string);
+  if (node.type === 'TemplateLiteral' && (node['expressions'] as unknown[]).length === 0) {
+    const quasi = (node['quasis'] as Node[])[0];
+    return TARGETS.has((quasi?.['value'] as { cooked?: string } | undefined)?.cooked ?? '');
+  }
+  return false;
+}
+
+/**
+ * A reference to a choke-point function, never a declaration, an import or a
+ * type. Value-position TypeScript (`x!`, `x as T`, `x satisfies T`) counts.
+ */
+function isReference(node: Node, chain: Array<{ node: Node; key: string }>): boolean {
+  const parentEntry = chain[chain.length - 1];
+  const parent = parentEntry?.node;
+  const key = parentEntry?.key ?? '';
+  if (parent === undefined || !namesTarget(node, parent, key)) return false;
+  if (chain.some((c) => TYPE_POSITIONS.has(c.node.type))) return false;
   if (
     parent.type === 'ImportSpecifier' ||
     parent.type === 'ExportSpecifier' ||
-    parent.type === 'FunctionDeclaration' ||
-    parent.type === 'MethodDefinition' ||
-    parent.type === 'PropertyDefinition'
+    parent.type === 'TSMethodSignature' ||
+    parent.type === 'TSPropertySignature' ||
+    (parent.type === 'FunctionDeclaration' && key === 'id') ||
+    ((parent.type === 'MethodDefinition' || parent.type === 'PropertyDefinition') &&
+      key === 'key')
   ) {
     return false;
   }
-  if (parent.type === 'Property' && key === 'key' && parent['shorthand'] !== true) return false;
+  // An object literal's key names nothing; a destructuring pattern's key reads
+  // the function off the object (`const { withParentInfo: save } = engine`).
+  if (parent.type === 'Property' && key === 'key' && parent['shorthand'] !== true) {
+    return chain[chain.length - 2]?.node.type === 'ObjectPattern';
+  }
   return true;
+}
+
+/** Each statement list around the end of `chain`, with the index of the statement holding it. */
+function statementBlocks(
+  chain: Array<{ node: Node; key: string }>,
+  child: Node
+): Array<{ block: number; index: number }> {
+  const out: Array<{ block: number; index: number }> = [];
+  for (let i = chain.length - 1; i >= 0; i--) {
+    const holder = chain[i]!.node;
+    if ((holder.type === 'BlockStatement' || holder.type === 'Program') && chain[i]!.key === 'body') {
+      const inner = i + 1 < chain.length ? chain[i + 1]!.node : child;
+      out.push({ block: holder.start, index: (holder['body'] as Node[]).indexOf(inner) });
+    }
+  }
+  return out;
 }
 
 function sitesIn(file: string, text: string): Found[] {
@@ -142,7 +201,7 @@ function sitesIn(file: string, text: string): Found[] {
     const parent = parentEntry?.node;
     const ownName = functionName(node, parent);
     const here = ownName !== undefined ? { name: ownName, node } : fn;
-    if (isReference(node, parent, parentEntry?.key ?? '')) {
+    if (isReference(node, chain)) {
       // The call this reference is the callee of (anything else is a bare
       // reference, keyed `<ref>`): `x(…)`, `a.x(…)`, `a.x?.(…)`.
       let callee: Node = node;
@@ -163,6 +222,7 @@ function sitesIn(file: string, text: string): Found[] {
         fnStart: here?.node.start ?? 0,
         fnEnd: here?.node.end ?? text.length,
         at: node.start,
+        blocks: statementBlocks(chain, node),
       });
     }
     for (const [k, v] of Object.entries(node)) {
@@ -177,17 +237,29 @@ function sitesIn(file: string, text: string): Found[] {
   return out;
 }
 
-/** `carryReadOutputs(<arg>)` calls in `text`, with where each sits. */
-function carriesIn(file: string, text: string): Array<{ arg: string; at: number }> {
+/**
+ * `carryReadOutputs(<arg>);` STATEMENTS in `text`: each one's statement list
+ * and index there. A call inside a condition, an expression or a closure is no
+ * such statement, so it cannot stand in for an unconditional carry.
+ */
+function carriesIn(
+  file: string,
+  text: string
+): Array<{ arg: string; at: number; block: number; index: number }> {
   const parsed = parseSync(file, text);
-  const out: Array<{ arg: string; at: number }> = [];
+  const out: Array<{ arg: string; at: number; block: number; index: number }> = [];
   const walk = (node: Node): void => {
-    if (node.type === 'CallExpression') {
-      const callee = node['callee'] as Node;
-      const args = node['arguments'] as Node[];
-      if (callee.type === 'Identifier' && callee['name'] === 'carryReadOutputs' && args[0] !== undefined) {
-        out.push({ arg: text.slice(args[0].start, args[0].end), at: node.start });
-      }
+    if (node.type === 'BlockStatement' || node.type === 'Program') {
+      (node['body'] as Node[]).forEach((stmt, index) => {
+        if (stmt.type !== 'ExpressionStatement') return;
+        const call = stmt['expression'] as Node;
+        if (call.type !== 'CallExpression') return;
+        const callee = call['callee'] as Node;
+        const args = call['arguments'] as Node[];
+        if (callee.type === 'Identifier' && callee['name'] === 'carryReadOutputs' && args[0] !== undefined) {
+          out.push({ arg: text.slice(args[0].start, args[0].end), at: stmt.start, block: node.start, index });
+        }
+      });
     }
     for (const v of Object.values(node)) {
       if (Array.isArray(v)) {
@@ -246,7 +318,12 @@ function violations(sites: Found[], texts: Map<string, string>): string[] {
     if (site.outputs !== 'written-back-read') continue;
     for (const s of sites.filter((x) => x.key === key)) {
       const carried = carriesIn(s.file, texts.get(s.file)!).some(
-        (c) => c.arg === site.read && c.at > s.fnStart && c.at < s.at && c.at < s.fnEnd
+        (c) =>
+          c.arg === site.read &&
+          c.at > s.fnStart &&
+          c.at < s.fnEnd &&
+          // An EARLIER statement of a statement list around the save.
+          s.blocks.some((b) => b.block === c.block && c.index < b.index)
       );
       if (!carried) problems.push(`${key}: no carryReadOutputs(${site.read}) before the save in its function`);
     }
@@ -327,6 +404,36 @@ describe('engine saves carry output reference provenance (go-to-k/cdkd#7110)', (
     const text = `export const f = (engine: { withParentInfo: unknown }) => engine.withParentInfo;\n`;
     expect(probe(rel, text)).toEqual([
       'unclassified save site: src/deployment/deploy-engine/zz-probe.ts#f#<ref>',
+    ]);
+  });
+
+  const ZZ = 'src/deployment/deploy-engine/zz-probe.ts';
+  it.each([
+    ['a renamed destructuring', `export function a(engine: E) { const { withParentInfo: w } = engine; return w; }\n`, `${ZZ}#a#<ref>`],
+    ['an element access', `export function b(engine: E, s: S) { return engine['withParentInfo'](s); }\n`, `${ZZ}#b#s`],
+    ['a template-literal element access', `export function c(engine: E, s: S) { return engine[\`withParentInfo\`](s); }\n`, `${ZZ}#c#s`],
+    ['a non-null reference', `export function d(engine: E) { return engine.withParentInfo!.call(engine, s); }\n`, `${ZZ}#d#<ref>`],
+    ['an as-cast reference', `export function e(engine: E) { return (engine.withParentInfo as F).call(engine, s); }\n`, `${ZZ}#e#<ref>`],
+    ['a class field value', `export class G { save = withParentInfo; }\n`, `${ZZ}#<module>#<ref>`],
+  ])('probe: %s is a site', (_what, text, key) => {
+    expect(probe(ZZ, text)).toEqual([`unclassified save site: ${key}`]);
+  });
+
+  it('probe: a type-position name is no site', () => {
+    expect(
+      probe(ZZ, `type T = typeof withParentInfo; interface I { withParentInfo(s: unknown): unknown }\n`)
+    ).toEqual([]);
+  });
+
+  it.each([
+    ['inside a never-taken branch', 'if (Math.random() < 0) carryReadOutputs(current.state);'],
+    ['inside a closure never called', 'const later = () => { carryReadOutputs(current.state); };'],
+  ])('probe: a carry %s does not count', (_what, carry) => {
+    const rel = 'src/deployment/deploy-engine/nested-cleanup.ts';
+    const text = real(rel).replace('carryReadOutputs(current.state);', carry);
+    expect(text).not.toBe(real(rel));
+    expect(probe(rel, text)).toEqual([
+      'src/deployment/deploy-engine/nested-cleanup.ts#persistDropped#next: no carryReadOutputs(current.state) before the save in its function',
     ]);
   });
 
