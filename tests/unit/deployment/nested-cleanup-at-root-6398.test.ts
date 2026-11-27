@@ -922,6 +922,44 @@ describe('a nested child cleanup phase runs at the root (go-to-k/cdkd#6398)', ()
     expect(printed.warn).toEqual([]);
   });
 
+  // go-to-k/cdkd#7110: the retry writes back the RE-READ, so it carries the
+  // re-read's output provenance, not the first read's.
+  it("an ETag conflict's retry carries the re-read's outputReferenceProvenance", async () => {
+    const child = childEngine();
+    const queue = new NestedCleanupQueue();
+    await withNestedCleanupQueue(queue, () => deployStack(child, CHILD, 'C'));
+    const token = '{{resolve:secretsmanager:s:SecretString:k::}}';
+    const withProvenance = (state: StackState, version: string): StackState =>
+      ({
+        ...state,
+        outputs: { QueueArn: `arn:aws:sqs:us-east-1:1:${token}` },
+        outputReferenceProvenance: { QueueArn: { [token]: { versions: [version] } } },
+      }) as StackState;
+    const first = store.get(CHILD)!;
+    store.set(CHILD, { ...first, state: withProvenance(first.state, 'v1') });
+    const before = store.get(CHILD)!;
+    let refused = 0;
+    // Another writer moved the record (and its output versions) once.
+    refuseSave = (stack, expectedEtag) => {
+      if (stack !== CHILD || expectedEtag !== before.etag || refused > 0) return false;
+      refused++;
+      store.set(CHILD, { state: withProvenance(structuredClone(before.state), 'v2'), etag: 'moved' });
+      return true;
+    };
+    const savesBefore = saves.length;
+
+    await queue.runAll({ interrupted: () => false }, { info: vi.fn(), warn: vi.fn() });
+
+    const written = saves.slice(savesBefore);
+    expect(written.map((w) => w.expectedEtag)).toEqual([before.etag, 'moved']);
+    expect(written[0]!.state.outputReferenceProvenance).toEqual({
+      QueueArn: { [token]: { versions: ['v1'] } },
+    });
+    expect(store.get(CHILD)!.state.outputReferenceProvenance).toEqual({
+      QueueArn: { [token]: { versions: ['v2'] } },
+    });
+  });
+
   it('an ETag conflict on every write-back warns with the ids and counts them partial', async () => {
     const child = childEngine();
     const queue = new NestedCleanupQueue();
