@@ -143,6 +143,7 @@ export async function calculateDeployDiff(
     diffParameters,
     engine.options.inheritedSecrets
   );
+  engine.secretsRun.subFloorTainted = subFloorTainted;
   const diffCalculator = deployCalculatorMaskingSubFloorLines(
     engine.diffCalculator,
     effectiveTemplate,
@@ -270,8 +271,6 @@ export async function calculateDeployDiff(
     changes,
     expectedChildTags,
     zonelessRecordsHealed: zonelessRecordsHealed.length > 0,
-    // The same taint set the approval's broadening table is withheld on.
-    subFloorTainted,
   };
 }
 
