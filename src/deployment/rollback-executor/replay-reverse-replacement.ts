@@ -1,5 +1,6 @@
 import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
-import type { SupersededResourceRecord } from '../../types/state.js';
+import type { ResourceState, SupersededResourceRecord } from '../../types/state.js';
+import { namesSameResource } from '../superseded-resources.js';
 import { nameGenerationOf } from '../../state/name-generation.js';
 import { cdkdRemedy, deployReplaceCommand, proseQuoted } from '../../utils/pasteable-command.js';
 import type { ResourceProvider } from '../../types/resource.js';
@@ -907,13 +908,15 @@ function modifiedSurvivorRefusal(
  * awaits its delete, per the state the replay started from. No state handed
  * over (the in-process rollback) answers yes: that deploy sent no cleanup.
  */
-function deferredDeleteStillPending(
+export function deferredDeleteStillPending(
   superseded: readonly SupersededResourceRecord[] | undefined,
-  prev: { physicalId?: unknown },
+  prev: ResourceState,
   oldType: string
 ): boolean {
   if (superseded === undefined) return true;
-  return superseded.some(
-    (entry) => entry.state.physicalId === prev.physicalId && entry.state.resourceType === oldType
+  // go-to-k/cdkd#7088: an entry of another resource under the id (a stage on
+  // another API) is not this op's old resource.
+  return superseded.some((entry) =>
+    namesSameResource({ ...prev, resourceType: oldType }, entry.state)
   );
 }
