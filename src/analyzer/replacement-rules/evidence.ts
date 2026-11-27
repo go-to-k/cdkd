@@ -447,6 +447,129 @@ export const REPLACEMENT_EVIDENCE: ReadonlyMap<string, ReplacementEvidence> = ne
   ['AWS::Transfer::Server#IdentityProviderType', update('cc-measured', 7083)],
   // X-Ray answers "Sampling rule version must be 1".
   ['AWS::XRay::SamplingRule#SamplingRuleRecord.SamplingRule.Version', update('single-value', 7083)],
+  // Slice 2 of the #7083 baseline (Cloud Control, us-east-1, 2026-11-27).
+  ['AWS::AmplifyUIBuilder::Component#Tags', update('cc-measured', 7083)],
+  ['AWS::AmplifyUIBuilder::Form#Tags', update('cc-measured', 7083)],
+  ['AWS::AmplifyUIBuilder::Theme#Tags', update('cc-measured', 7083)],
+  // Write-only, and deprecated in the registry schema (ignored by the service): the update applies under the same id.
+  ['AWS::BedrockAgentCore::Dataset#SchemaType', update('cc-measured', 7083)],
+  ['AWS::CleanRooms::ConfiguredTable#AllowedColumns', update('cc-measured', 7083)],
+  // Applied with the SelectedAnalysisMethods that MULTIPLE requires.
+  ['AWS::CleanRooms::ConfiguredTable#AnalysisMethod', update('cc-measured', 7083)],
+  ['AWS::CleanRooms::ConfiguredTable#TableReference', update('cc-measured', 7083)],
+  ['AWS::DataBrew::Dataset#Tags', update('cc-measured', 7083)],
+  ['AWS::DataBrew::Job#Tags', update('cc-measured', 7083)],
+  ['AWS::DataBrew::Project#Tags', update('cc-measured', 7083)],
+  ['AWS::DataBrew::Schedule#Tags', update('cc-measured', 7083)],
+  ['AWS::DataSync::LocationEFS#AccessPointArn', update('cc-measured', 7083)],
+  ['AWS::DataSync::LocationEFS#FileSystemAccessRoleArn', update('cc-measured', 7083)],
+  ['AWS::DataSync::LocationEFS#InTransitEncryption', update('cc-measured', 7083)],
+  // Write-only: read back as the LocationUri's path.
+  ['AWS::DataSync::LocationEFS#Subdirectory', update('cc-measured', 7083)],
+  // "Cannot update VI's properties. You can create a new VI with a different
+  // name": as for a GSI's projection.
+  [
+    'AWS::DynamoDB::GlobalTable#VectorIndexes.*.Projection.NonKeyAttributes',
+    update('element-refused', 7083),
+  ],
+  [
+    'AWS::DynamoDB::GlobalTable#VectorIndexes.*.Projection.ProjectionType',
+    update('element-refused', 7083),
+  ],
+  ['AWS::EC2::CapacityReservation#InstanceMatchCriteria', update('cc-measured', 7083)],
+  ['AWS::EC2::CapacityReservation#TagSpecifications', update('cc-measured', 7083)],
+  ['AWS::EC2::CapacityReservationFleet#TagSpecifications', update('cc-measured', 7083)],
+  ['AWS::EC2::TransitGatewayRouteTable#Tags', update('cc-measured', 7083)],
+  ['AWS::EntityResolution::SchemaMapping#MappedInputFields', update('cc-measured', 7083)],
+  ['AWS::FIS::ExperimentTemplate#Tags', update('cc-measured', 7083)],
+  ['AWS::ImageBuilder::ContainerRecipe#Tags', update('cc-measured', 7083)],
+  ['AWS::ImageBuilder::ImageRecipe#Tags', update('cc-measured', 7083)],
+  [
+    'AWS::MediaStore::Container#CorsPolicy.*.AllowedMethods',
+    cannotProbe('Cloud Control refuses CREATE for the type (UnsupportedActionException)'),
+  ],
+  ['AWS::Omics::SequenceStore#Description', update('cc-measured', 7083)],
+  // Applied once the bucket policy lets Omics write there.
+  ['AWS::Omics::SequenceStore#FallbackLocation', update('cc-measured', 7083)],
+  ['AWS::Omics::SequenceStore#Name', update('cc-measured', 7083)],
+  ['AWS::Omics::SequenceStore#Tags', update('cc-measured', 7083)],
+  ['AWS::OpenSearchServerless::Collection#Tags', update('cc-measured', 7083)],
+  [
+    'AWS::WorkSpacesWeb::UserSettings#AdditionalEncryptionContext',
+    cannotProbe(
+      'WorkSpaces Secure Browser is in maintenance mode: new resources cannot be created (AccessDeniedException)'
+    ),
+  ],
+  [
+    'AWS::WorkSpacesWeb::UserSettings#CustomerManagedKey',
+    cannotProbe(
+      'WorkSpaces Secure Browser is in maintenance mode: new resources cannot be created (AccessDeniedException)'
+    ),
+  ],
+  // Audit Manager.
+  [
+    'AWS::AuditManager::Assessment#Scope.AwsAccounts.*.EmailAddress',
+    cannotProbe(
+      'Audit Manager is not enabled for the account (INACTIVE); enabling it is an account-level change'
+    ),
+  ],
+  [
+    'AWS::AuditManager::Assessment#Scope.AwsAccounts.*.Id',
+    cannotProbe(
+      'Audit Manager is not enabled for the account (INACTIVE); enabling it is an account-level change'
+    ),
+  ],
+  [
+    'AWS::AuditManager::Assessment#Scope.AwsAccounts.*.Name',
+    cannotProbe(
+      'Audit Manager is not enabled for the account (INACTIVE); enabling it is an account-level change'
+    ),
+  ],
+  // Measured against CloudFormation (#7083, #7099): a secondary-address
+  // change applied in place under the same interface id; a primary change was
+  // attempted in place and failed ("is already assigned"), with no
+  // replacement. Cloud Control reports the secondary change success and
+  // applies nothing; cdkd applies it through EC2 (#7099).
+  ['AWS::EC2::NetworkInterface#PrivateIpAddresses', update('cfn-measured', 7083, 7099)],
+  ['AWS::EC2::NetworkInterface#PrivateIpAddresses.*.Primary', update('cfn-measured', 7083)],
+  [
+    'AWS::EC2::NetworkInterface#PrivateIpAddresses.*.PrivateIpAddress',
+    update('cfn-measured', 7083),
+  ],
+  [
+    'AWS::EC2::VPCPeeringConnection#PeerRoleArn',
+    cannotProbe('A peer role is for a peer in another account; this account has no second one'),
+  ],
+  [
+    'AWS::GuardDuty::Member#Email',
+    cannotProbe('A member is another account; this account has no second one, nor a detector'),
+  ],
+  [
+    'AWS::RDS::DBSecurityGroup#DBSecurityGroupIngress.*.EC2SecurityGroupId',
+    cannotProbe('Cloud Control refuses CREATE for the type (UnsupportedActionException)'),
+  ],
+  [
+    'AWS::RDS::DBSecurityGroup#DBSecurityGroupIngress.*.EC2SecurityGroupName',
+    cannotProbe('Cloud Control refuses CREATE for the type (UnsupportedActionException)'),
+  ],
+  [
+    'AWS::RDS::DBSecurityGroup#DBSecurityGroupIngress.*.EC2SecurityGroupOwnerId',
+    cannotProbe('Cloud Control refuses CREATE for the type (UnsupportedActionException)'),
+  ],
+  [
+    'AWS::SES::DedicatedIpPool#ScalingMode',
+    cannotProbe(
+      'A MANAGED pool subscribes the account to managed dedicated IPs, a billed account-level change'
+    ),
+  ],
+  [
+    'AWS::ServiceCatalog::PortfolioShare#AcceptLanguage',
+    cannotProbe('A share targets another account; this account has no second one'),
+  ],
+  [
+    'AWS::Timestream::ScheduledQuery#ClientToken',
+    cannotProbe('Only existing Timestream for LiveAnalytics customers can use the service'),
+  ],
   // --- updateableProperties beyond the fixture or the spec
   ['AWS::Budgets::Budget#NotificationsWithSubscribers', update('deviation', 7038)],
   ['AWS::EC2::Subnet#Ipv6CidrBlock', update('cfn-measured', 5632)],
