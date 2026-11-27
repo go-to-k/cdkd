@@ -433,17 +433,35 @@ describe('nested subtrees, read from disk (#7090)', () => {
         Outputs: { O: { Value: { 'Fn::ImportValue': 'child-export' } } },
       })
     );
+    // Each child visit reports its tainted output: a walk that re-enters the
+    // cycle would report it without bound, so fail fast past a small budget.
+    const marked = previewWith((p) => p.markTainted('Prod', 'Piece', 'child-export'));
+    let visits = 0;
+    subtreeTaintedNames(
+      { Resources: { A: nestedRow('cyclic.json'), B: nestedRow('cyclic.json') } } as never,
+      { A: cyclic, B: cyclic },
+      [],
+      marked,
+      {
+        onChildOutput: () => {
+          visits += 1;
+          if (visits > 100) throw new Error('the walk re-entered a cyclic template');
+        },
+      }
+    );
+    expect(visits).toBe(2);
+    // ...and the app-wide pass over such a stack terminates too.
     const preview = new CrossStackPreview();
-    const started = Date.now();
     markAppProducerTaint(preview, [
       ...app(),
       {
         stackName: 'Loop',
-        template: { Resources: { A: nestedRow('cyclic.json'), B: nestedRow('cyclic.json') } } as unknown as CloudFormationTemplate,
+        template: {
+          Resources: { A: nestedRow('cyclic.json'), B: nestedRow('cyclic.json') },
+        } as unknown as CloudFormationTemplate,
         nestedTemplates: { A: cyclic, B: cyclic },
       },
     ]);
-    expect(Date.now() - started).toBeLessThan(5000);
     expect(preview.exportTainted(REGION, 'child-export')).toBe(true);
   });
 
