@@ -9,7 +9,12 @@ import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { STACK_REF_MAX_CODE_POINTS, displayAwsMessage } from '../../utils/display-safe.js';
 import { MAX_LISTED_AVAILABLE_OUTPUTS, type ResolverContext, quotedRender } from './support.js';
 import type { ResolverClients } from './clients.js';
-import { type ResolverMasker, displayMasked, displayMaskedIdent } from './masking-display.js';
+import {
+  type ResolverMasker,
+  displayMasked,
+  displayMaskedIdent,
+  logOperand,
+} from './masking-display.js';
 import { positionalNameMask } from './stack-output.js';
 import { DescribeStacksCommand, ListExportsCommand } from '@aws-sdk/client-cloudformation';
 import type { Export as CfnExport } from '@aws-sdk/client-cloudformation';
@@ -117,7 +122,7 @@ export class CfnFallbackCache {
         // MASKED for the reason `resolveImportValue`'s own lines are (issue
         // #2133 review), and this one prints at DEFAULT verbosity.
         `Fn::ImportValue: CloudFormation ListExports fallback failed for export ` +
-          `${quotedRender(displayMasked(this.deps.resolver, exportName, context), "'")} ` +
+          `${quotedRender(logOperand(this.deps.resolver, exportName, context, { render: 'plain' }), "'")} ` +
           // The caught message is masked too since issue #2827, and this is
           // the one site of the five where that half is DEFENCE IN DEPTH
           // rather than a closed leak — recorded rather than left for the next
@@ -131,7 +136,7 @@ export class CfnFallbackCache {
           // so the two are spelled the same on purpose: a uniform pair is what
           // stops a future reader deciding this one may be dropped.
           `(region ${this.deps.resolverRegion}): ` +
-          `${displayMasked(this.deps.resolver, describeAwsFailure(error).detail, context)}. ` +
+          `${logOperand(this.deps.resolver, describeAwsFailure(error).detail, context, { render: 'plain' })}. ` +
           `Grant cloudformation:ListExports to resolve exports from CloudFormation-managed stacks, ` +
           `or pass --no-cfn-fallback to disable the fallback.`
       );
@@ -248,12 +253,12 @@ export class CfnFallbackCache {
           // prints at DEFAULT verbosity where a throw at least accompanies a
           // failure. Measured emitting a live `ESC[2K` + CR from a hostile
           // `StackName`.
-          `${displayMaskedIdent(resolver, stackName, context, STACK_REF_MAX_CODE_POINTS)} ` +
-          `(${displayMaskedIdent(resolver, loggedRegionText, context)}): ` +
+          `${logOperand(resolver, stackName, context, { render: (text) => displayMaskedIdent(resolver, text, context, STACK_REF_MAX_CODE_POINTS) })} ` +
+          `(${logOperand(resolver, loggedRegionText, context, { render: (text) => displayMaskedIdent(resolver, text, context) })}): ` +
           // The AWS text is BOUNDED as well: `DescribeStacks` quotes the
           // submitted stack name back, so its length is the template author's
           // choice — the same reason `role-arn.ts` bounds STS's reply.
-          `${displayAwsMessage(displayMasked(resolver, cfnNameMask ? cfnNameMask(message) : message, context))}. ` +
+          `${logOperand(resolver, message, context, { render: (text) => displayAwsMessage(displayMasked(resolver, cfnNameMask ? cfnNameMask(text) : text, context)) })}. ` +
           `Grant cloudformation:DescribeStacks to resolve outputs from CloudFormation-managed ` +
           `stacks, or pass --no-cfn-fallback to disable the fallback.`
       );

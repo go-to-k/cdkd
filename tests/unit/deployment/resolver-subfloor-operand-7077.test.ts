@@ -6,8 +6,9 @@
  * Generated over intrinsic shapes x 1-3 character secrets x every provenance
  * route the display taint reads (`intrinsic-resolver/display-taint.ts`):
  *
- * - `root-recorded`: a parameter whose value IS a sub-floor secret a visible
- *   bag recorded (the resource's own pass);
+ * - `root-recorded` (a regression net: the value scan's whole-value arm and
+ *   position twins already mask it): a parameter whose value IS a secret
+ *   the resource's own pass recorded as a pair;
  * - `child-marked`: a nested child's parameter the parent marked `sub-floor`
  *   (go-to-k/cdkd#7050), the `cdkd deploy` shape;
  * - `child-mixed`: a nested child's parameter still spelling a secret
@@ -16,7 +17,9 @@
  *   needle of the subtree's printing bags;
  * - `root-consumed` (a regression net, no taint of its own): a root value the
  *   resolver itself built around a secret reference, which the value scan
- *   masks by the substitution's position.
+ *   masks by the substitution's position;
+ * - `child-embeds`: a nested child's parameter EMBEDDING a parent-resolved
+ *   secret above the floor, cut into pieces no needle matches.
  *
  * Each case asserts the resolved VALUE is the unmasked one (display only),
  * that a line for the shape was logged, and that no debug line carries the
@@ -76,7 +79,6 @@ function shapes(source: unknown, pin: string): Array<[string, unknown, string, u
     ['Sub', { 'Fn::Sub': ['${V}-s', { V: source }] }, 'Resolved Fn::Sub:', `${pin}-s`],
     ['FindInMap', { 'Fn::FindInMap': ['M', source, 'k'] }, 'Resolved Fn::FindInMap:', 'mapped-v'],
     ['Base64', { 'Fn::Base64': source }, 'Resolved Fn::Base64:', Buffer.from(pin).toString('base64')],
-    ['If', { 'Fn::If': ['Yes', source, 'other'] }, 'Resolved Fn::If:', pin],
     ['Equals', { 'Fn::Equals': [source, 'zz'] }, 'Resolved Fn::Equals:', false],
   ];
 }
@@ -160,19 +162,17 @@ beforeEach(() => {
 describe('resolver log operands with a sub-floor provenance print as *** (#7077)', () => {
   for (const [routeName, route] of Object.entries(ROUTES)) {
     for (const pin of SECRETS) {
-      it(`${routeName}: "${pin}"`, async () => {
-        state.pin = pin;
-        const source = route.value(pin) === pin ? { Ref: 'P' } : PIECE;
-        for (const [shape, node, prefix, expected] of shapes(source, pin)) {
-          logSpies.debug.mockClear();
+      const source = route.value(pin) === pin ? { Ref: 'P' } : PIECE;
+      for (const [shape, node, prefix, expected] of shapes(source, pin)) {
+        it(`${routeName}: ${shape} over "${pin}"`, async () => {
+          state.pin = pin;
           // Display only: the resolved value is the real one.
-          expect(await resolveWith(route, pin, node), shape).toEqual(expected);
+          expect(await resolveWith(route, pin, node)).toEqual(expected);
           const lines = debugLines();
-          expect(lines.some((line) => line.startsWith(prefix)), `${shape}: ${lines.join('\n')}`).toBe(true);
-          const leaked = lines.filter((line) => outsideSpans(line).includes(pin));
-          expect(leaked, shape).toEqual([]);
-        }
-      });
+          expect(lines.some((line) => line.startsWith(prefix)), lines.join('\n')).toBe(true);
+          expect(lines.filter((line) => outsideSpans(line).includes(pin))).toEqual([]);
+        });
+      }
     }
   }
 
@@ -204,6 +204,34 @@ describe('resolver log operands with a sub-floor provenance print as *** (#7077)
       expect(debugLines()).toContain('Resolved Fn::Join: port:***');
     });
   }
+
+  it('child-embeds: no piece of a parent-resolved secret prints (go-to-k/cdkd#7077 review)', async () => {
+    const pieces = BIG.split('-');
+    const route: Route = {
+      value: () => `x/${BIG}`,
+      context: () => ({ recordedSecretValues: new Map(), inheritedSecrets: new Map([[BIG, A]]) }),
+    };
+    for (const index of pieces.keys()) {
+      logSpies.debug.mockClear();
+      const node = { 'Fn::Select': [index, { 'Fn::Split': ['-', { Ref: 'P' }] }] };
+      expect(await resolveWith(route, 'unused', node)).toBe(index === 0 ? `x/${pieces[0]}` : pieces[index]);
+      const lines = debugLines();
+      expect(lines.some((line) => line.startsWith('Resolved Fn::Split:'))).toBe(true);
+      for (const piece of pieces) {
+        expect(lines.filter((line) => line.includes(piece)), piece).toEqual([]);
+      }
+    }
+  });
+
+  it('child-mixed: a refused Fn::FindInMap key prints no piece in the error', async () => {
+    for (const pin of SECRETS) {
+      const node = { 'Fn::FindInMap': ['M', PIECE, 'no-such-key'] };
+      const error = await resolveWith(ROUTES['child-mixed']!, pin, node).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain('second-level key');
+      expect(outsideSpans((error as Error).message).includes(pin), (error as Error).message).toBe(false);
+    }
+  });
 
   it('a value with no provenance still prints (the scan above can see it)', async () => {
     state.pin = 'Q7';

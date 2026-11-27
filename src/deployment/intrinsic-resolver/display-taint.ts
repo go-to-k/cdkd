@@ -69,7 +69,10 @@ function isRecordedSubFloorValue(text: string, bags: readonly RecordedSecretValu
  *   log-only needle of the child's subtree (go-to-k/cdkd#7068's
  *   `passedSecretNeedles`). A log-only needle has no position twins, so the
  *   value scan masks it only whole; a recorded PAIR keeps the positional mask
- *   it already has (`port:***`, go-to-k/cdkd#3100).
+ *   it already has (`port:***`, go-to-k/cdkd#3100);
+ * - the value EMBEDS a parent-resolved secret at or above the floor (an
+ *   inherited pair): the child holds it as plain text, with no substitution
+ *   span, so a `Fn::Split` / `Fn::Select` piece of it matches no needle.
  */
 export function parameterDisplayTainted(
   name: string,
@@ -92,8 +95,19 @@ export function parameterDisplayTainted(
   ) {
     return true;
   }
+  if (inherited !== undefined && leaves.some((leaf) => embedsInheritedSecret(leaf, inherited))) {
+    return true;
+  }
   const bags = visibleBags(context);
   return leaves.some((leaf) => isRecordedSubFloorValue(leaf, bags));
+}
+
+/** Does `text` hold an inherited secret's plaintext at or above the floor? */
+function embedsInheritedSecret(text: string, inherited: RecordedSecretValues): boolean {
+  for (const plaintext of inherited.keys()) {
+    if (plaintext.length >= MIN_NEEDLE_LENGTH && text.includes(plaintext)) return true;
+  }
+  return false;
 }
 
 /** `taintedNamesOf` per template, keyed by the tainted parameter set. */
@@ -108,9 +122,24 @@ const namesByTemplate = new WeakMap<CloudFormationTemplate, Map<string, Readonly
  */
 export function displayTaintedNames(context: ResolverContext | undefined): ReadonlySet<string> {
   const template = context?.template;
-  if (template === undefined) return EMPTY;
+  if (context === undefined || template === undefined) return EMPTY;
+  // Once per resolution context: `resolveValue` asks at every intrinsic call,
+  // and every input below is fixed before the walk starts.
+  const memo = namesByContext.get(context);
+  if (memo !== undefined) return memo;
+  const names = computeTaintedNames(context, template);
+  namesByContext.set(context, names);
+  return names;
+}
+
+const namesByContext = new WeakMap<ResolverContext, ReadonlySet<string>>();
+
+function computeTaintedNames(
+  context: ResolverContext,
+  template: CloudFormationTemplate
+): ReadonlySet<string> {
   const passed: string[] = [];
-  for (const [name, value] of Object.entries(context?.parameters ?? {})) {
+  for (const [name, value] of Object.entries(context.parameters ?? {})) {
     if (parameterDisplayTainted(name, value, context)) passed.push(name);
   }
   const key = passed.sort().join('\u0000');

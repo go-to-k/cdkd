@@ -1,5 +1,5 @@
 import type { IntrinsicFunctionResolver } from '../../intrinsic-function-resolver.js';
-import { displayMasked, logOperand, maskValueLeaves } from '../masking-display.js';
+import { logOperand, maskValueLeaves } from '../masking-display.js';
 import { markNonRetryable } from '../../retryable-errors.js';
 import { type ResolverContext, quotedRender } from '../support.js';
 
@@ -75,7 +75,7 @@ export async function resolveFindInMap(
     // value, which is what reaches the floorless whole-value arm.
     throw markNonRetryable(
       new Error(
-        `Fn::FindInMap: mapping ${quotedRender(displayMasked(resolver, mapName, context), "'")} not found in Mappings section`
+        `Fn::FindInMap: mapping ${quotedRender(logOperand(resolver, mapName, context, { render: 'plain' }), "'")} not found in Mappings section`
       )
     );
   }
@@ -87,8 +87,8 @@ export async function resolveFindInMap(
     }
     throw markNonRetryable(
       new Error(
-        `Fn::FindInMap: top-level key ${quotedRender(displayMasked(resolver, topLevelKey, context), "'")} ` +
-          `not found in mapping ${quotedRender(displayMasked(resolver, mapName, context), "'")}`
+        `Fn::FindInMap: top-level key ${quotedRender(logOperand(resolver, topLevelKey, context, { render: 'plain' }), "'")} ` +
+          `not found in mapping ${quotedRender(logOperand(resolver, mapName, context, { render: 'plain' }), "'")}`
       )
     );
   }
@@ -99,12 +99,12 @@ export async function resolveFindInMap(
     }
     throw markNonRetryable(
       new Error(
-        `Fn::FindInMap: second-level key ${quotedRender(displayMasked(resolver, secondLevelKey, context), "'")} ` +
-          `not found in mapping ${quotedRender(displayMasked(resolver, mapName, context), "'")} under ` +
+        `Fn::FindInMap: second-level key ${quotedRender(logOperand(resolver, secondLevelKey, context, { render: 'plain' }), "'")} ` +
+          `not found in mapping ${quotedRender(logOperand(resolver, mapName, context, { render: 'plain' }), "'")} under ` +
           // `under`, not `->`: pasted, `->` is `-` plus a `>` redirect onto the
           // quoted top-level key, which `QUOTABLE_RENDER` admits as a path
           // (`../x`, go-to-k/cdkd#4100 review M1).
-          `top-level key ${quotedRender(displayMasked(resolver, topLevelKey, context), "'")}`
+          `top-level key ${quotedRender(logOperand(resolver, topLevelKey, context, { render: 'plain' }), "'")}`
       )
     );
   }

@@ -37,7 +37,7 @@ const NOT_AN_OPERAND: Readonly<Record<string, string>> = {
   'logRender(this, key, context)': NAME,
   'maskInherited(name)': NAME,
   // `resolvePseudoParameter`'s own literal case label, never template text.
-  logicalId: NAME,
+  'refs.ts: logicalId': NAME,
   'maskInherited(ssmPath)': "the SSM path of a parameter's Default: template text, not a resolution",
   'displayMasked(resolver, origin, context)': 'a description of where a re-read value came from (names only)',
   'logRender(resolver, String(conditionName), context)': CONDITION,
@@ -45,7 +45,6 @@ const NOT_AN_OPERAND: Readonly<Record<string, string>> = {
   'displayMasked(resolver, conditionName, context)': CONDITION,
   'displayMasked(resolver, name, maskingContext)': CONDITION,
   'context.conditions[conditionName]': CONDITION,
-  'JSON.stringify(resolved1) === JSON.stringify(resolved2)': CONDITION,
   'results.every((r) => r === true)': CONDITION,
   'results.some((r) => r === true)': CONDITION,
   "results.join(', ')": CONDITION,
@@ -60,35 +59,39 @@ const NOT_AN_OPERAND: Readonly<Record<string, string>> = {
   'displayMasked(resolver, producerOutput.stackName, context)': PRODUCER,
   'cfnExport.exportingStackId': PRODUCER,
   'displayMasked(this, regionText, context)': 'a region the `producerRegions` option names (CLI input)',
+  'this.deps.resolverRegion': "the resolver's own region (operator --region or a state field)",
+  'displaySafe(loggedTarget)': 'the region a region-scoped client set targets, display-safe',
   'displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })':
     'the RoleArn argument, refused unless it is a literal template string',
   'displayIdent(readRoleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS, })':
     'the lookup role ARN cdkd derives from the account id',
   'response.Account': "STS's own account id",
   'displayMasked(resolver, String(paramType), context)': 'the SSM parameter Type AWS returned',
-  service: "the typed reference service ('ssm' | 'ssm-secure')",
+  'dynamic-ref-lookups.ts: service': "the typed reference service ('ssm' | 'ssm-secure')",
   // An index over `AWS::StackId` only, gated on `loggedPosition === String(position)`.
   'selectIndexPosition(resolvedIndex)': 'a Select index no mask altered, over AWS::StackId only',
-  SECRET_MASK: 'the mask itself',
+  'base64.ts: SECRET_MASK': 'the mask itself',
   'allStacks.length': COUNT,
   'resolvedList.length': COUNT,
-  attempts: COUNT,
-  pending: COUNT,
+  'getatt-construct-compute.ts: attempts': COUNT,
+  'getatt-construct-compute.ts: attempt': COUNT,
+  'getatt-construct-core.ts: attempt': COUNT,
+  'intrinsic-function-resolver.ts: pending': COUNT,
   '(concurrentDrainCap.ms ?? DRAIN_AFTER_REJECTION_MS) / 1000': COUNT,
-  read: 'the AWS API name the calling arm issued, a literal at every call site',
+  'getatt-refusals.ts: read': 'the AWS API name the calling arm issued, a literal at every call site',
   "displaySafe(err instanceof Error && err.name ? err.name : 'Error', { asciiOnly: true }) .slice(0, 64) .trim() || 'Error'":
     ERROR,
   '(err as { $metadata?: { httpStatusCode?: unknown } } | null)?.$metadata ?.httpStatusCode': ERROR,
   'described.detail': "STS GetCallerIdentity's failure text (no operand reaches the call)",
-  reason: "the account-id fallback's reason, built from STS failure text",
+  'account-drain.ts: reason': "the account-id fallback's reason, built from STS failure text",
   'message(failure.detail)': "EC2 DescribeAvailabilityZones' failure text, masked by the builder",
   'line(message)': "`retry.ts`'s own retry line over the masked request names",
   'staleRecordRemedy(resolver, healOutcome, context)': ERROR,
   'withheldRemedy(resolver, context)': ERROR,
   'displayMasked( resolver, subPlaceholderWarning(resolver, varNameStr, getAttError), context )': ERROR,
   'displayMasked( resolver, subPlaceholderWarning(resolver, varNameStr, refError), context )': ERROR,
-  'displayMasked( resolver, `Unsupported dynamic reference service: ${displayMasked(resolver, nameLogText(String(service)), context)}`, context )':
-    ERROR,
+  'displayMasked( resolver, `Unsupported dynamic reference service: ${logOperand(resolver, nameLogText(String(service)), context, { render: \'plain\' })}`, context )':
+    'the service parsed off a token, its interpolation routed through logOperand',
   'displayMasked( resolver, `Failed to evaluate condition ${name}: ${describeAwsFailure(error).detail}, assuming false`, maskingContext )':
     ERROR,
 };
@@ -98,6 +101,8 @@ interface Site {
   readonly file: string;
   readonly line: number;
   readonly text: string;
+  /** The allow-list key that admitted it. */
+  readonly key?: string;
   readonly verdict: 'operand' | 'allowed' | 'unclassified';
 }
 
@@ -116,31 +121,55 @@ function isOperandCall(node: ts.Node): boolean {
   );
 }
 
-/** Is `call` a log call: `<x>.logger.<m>(...)`, `logger.<m>(...)`? */
+/**
+ * Is `call` a log call? `<x>.logger.<m>(...)`, `logger.<m>(...)`, a logger
+ * GETTER (`this.deps.logger().<m>(...)`) and a `getLogger()` chain
+ * (`getLogger().child('X').<m>(...)`).
+ */
 function isLogCall(call: ts.CallExpression, source: ts.SourceFile): boolean {
   const callee = call.expression;
   if (!ts.isPropertyAccessExpression(callee) || !LOG_METHODS.has(callee.name.text)) return false;
-  return /(^|\.)logger$/.test(callee.expression.getText(source));
+  const receiver = normalize(callee.expression.getText(source));
+  return /(^|\.)logger(\(\))?$/.test(receiver) || /(^|\.)getLogger\(\)(\.child\([^)]*\))?$/.test(receiver);
+}
+
+/** A bare identifier: allow-listed only with its file named (`<basename>: <name>`). */
+const isBareIdentifier = (text: string): boolean => /^[A-Za-z_$][\w$]*$/.test(text);
+
+/**
+ * The initializer of the `const` an identifier at `use` refers to: the
+ * nearest enclosing block, function or file declaring it. `undefined` when
+ * the name is a parameter, a `let` / `var`, or declared nowhere in scope.
+ */
+function constInitializerFor(use: ts.Identifier): ts.Expression | undefined | 'unresolved' {
+  for (let node: ts.Node | undefined = use.parent; node !== undefined; node = node.parent) {
+    if (ts.isFunctionLike(node)) {
+      if (node.parameters.some((p) => ts.isIdentifier(p.name) && p.name.text === use.text)) {
+        return 'unresolved';
+      }
+    }
+    const statements = ts.isBlock(node) || ts.isSourceFile(node) ? node.statements : undefined;
+    for (const statement of statements ?? []) {
+      if (!ts.isVariableStatement(statement)) continue;
+      for (const declaration of statement.declarationList.declarations) {
+        if (!ts.isIdentifier(declaration.name) || declaration.name.text !== use.text) continue;
+        const isConst = (statement.declarationList.flags & ts.NodeFlags.Const) !== 0;
+        return isConst && declaration.initializer ? declaration.initializer : 'unresolved';
+      }
+    }
+  }
+  return 'unresolved';
 }
 
 /** Scan one source text; `file` labels the sites. */
 function scanLogOperands(file: string, text: string): Site[] {
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
-  // Every `const <name> = <init>` in the file, by name.
-  const bindings = new Map<string, ts.Expression[]>();
-  const collect = (node: ts.Node): void => {
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
-      const list = bindings.get(node.name.text) ?? [];
-      list.push(node.initializer);
-      bindings.set(node.name.text, list);
-    }
-    ts.forEachChild(node, collect);
-  };
-  collect(source);
+  const basename = path.basename(file);
 
   const sites: Site[] = [];
-  const record = (node: ts.Node, verdict: Site['verdict']): void => {
+  const record = (node: ts.Node, verdict: Site['verdict'], key?: string): void => {
     sites.push({
+      ...(key !== undefined && { key }),
       file,
       line: source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1,
       text: normalize(node.getText(source)),
@@ -153,7 +182,8 @@ function scanLogOperands(file: string, text: string): Site[] {
     if (ts.isParenthesizedExpression(expr)) return classify(expr.expression, seen);
     if (isOperandCall(expr)) return record(expr, 'operand');
     const text = normalize(expr.getText(source));
-    if (Object.hasOwn(NOT_AN_OPERAND, text)) return record(expr, 'allowed');
+    const key = isBareIdentifier(text) ? `${basename}: ${text}` : text;
+    if (Object.hasOwn(NOT_AN_OPERAND, key)) return record(expr, 'allowed', key);
     if (
       ts.isNoSubstitutionTemplateLiteral(expr) ||
       ts.isStringLiteral(expr) ||
@@ -187,11 +217,9 @@ function scanLogOperands(file: string, text: string): Site[] {
       return;
     }
     if (ts.isIdentifier(expr) && !seen.has(expr.text)) {
-      const inits = bindings.get(expr.text);
-      if (inits !== undefined) {
-        const next = new Set(seen).add(expr.text);
-        for (const init of inits) classify(init, next);
-        return;
+      const init = constInitializerFor(expr);
+      if (init !== 'unresolved' && init !== undefined) {
+        return classify(init, new Set(seen).add(expr.text));
       }
     }
     record(expr, 'unclassified');
@@ -219,8 +247,12 @@ describe('every resolver log operand goes through logOperand (#7077)', () => {
     expect(unclassified).toEqual([]);
   });
 
+  it('names the file of every allow-listed bare identifier', () => {
+    expect(Object.keys(NOT_AN_OPERAND).filter(isBareIdentifier)).toEqual([]);
+  });
+
   it('keeps no allow-list entry that no site uses', () => {
-    const used = new Set(SITES.filter((s) => s.verdict === 'allowed').map((s) => s.text));
+    const used = new Set(SITES.filter((s) => s.verdict === 'allowed').map((s) => s.key));
     expect(Object.keys(NOT_AN_OPERAND).filter((key) => !used.has(key))).toEqual([]);
   });
 
@@ -245,6 +277,19 @@ describe('every resolver log operand goes through logOperand (#7077)', () => {
       )
     ).toEqual(['unclassified']);
     expect(verdicts("logger.warn('a ' + `${String(value)}`);")).toEqual(['unclassified']);
+    // A logger getter and a `getLogger()` chain are log calls too.
+    expect(verdicts('this.deps.logger().warn(`v ${value}`);')).toEqual(['unclassified']);
+    expect(verdicts("getLogger().child('R').debug(`v ${value}`);")).toEqual(['unclassified']);
+    // A binding is resolved in ITS scope: another function's `const` of the
+    // same name, a parameter, or a reassignable `let` classifies nothing.
+    expect(
+      verdicts(
+        'function a() { const v = logOperand(r, x, c); }\nfunction b(v) { logger.debug(`${v}`); }'
+      )
+    ).toEqual(['unclassified']);
+    expect(
+      verdicts('let v = logOperand(r, x, c);\nv = raw;\nlogger.debug(`${v}`);')
+    ).toEqual(['unclassified']);
     // The chokepoint, called or bound.
     expect(verdicts('resolver.logger.debug(`v ${logOperand(resolver, v, c)}`);')).toEqual([
       'operand',
