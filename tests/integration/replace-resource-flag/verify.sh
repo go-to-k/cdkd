@@ -142,6 +142,20 @@ grep -qF -- "--replace-resource Topic: this deploy changes no property of Topic"
 [ "$(record_field Topic .physicalId)" = "${T0}" ] || { echo "FAIL: the refused deploy moved the Topic record" >&2; exit 1; }
 echo "    OK: refused, nothing moved"
 
+echo "==> Phase 2b: cdkd diff --replace-resource previews the same refusal (exit 3, issue #7089)"
+set +e
+DIFF_REFUSED=$(env -u CDKD_TEST_PHASE node "${LOCAL_DIST}" diff "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+  --replace-resource Topic 2>&1)
+DIFF_REFUSED_RC=$?
+set -e
+[ "${DIFF_REFUSED_RC}" -eq 3 ] || { printf '%s\n' "${DIFF_REFUSED}" >&2; echo "FAIL: cdkd diff --replace-resource on an unchanged Topic exited ${DIFF_REFUSED_RC}, expected 3 (issue #7089)" >&2; exit 1; }
+grep -qF -- "--replace-resource Topic: this deploy changes no property of Topic" <<<"${DIFF_REFUSED}" || {
+  printf '%s\n' "${DIFF_REFUSED}" >&2
+  echo "FAIL: cdkd diff does not print the deploy's unchanged-target refusal (issue #7089)" >&2
+  exit 1
+}
+echo "    OK: the diff blocks with the deploy's refusal"
+
 echo "==> Phase 3: THE ARM -- a DisplayName change, planned as a replacement by --replace-resource"
 # PREMISE: the change alone is an in-place update of Topic, whose readers stay
 # unchanged in the plan (a type name also contains the word, so the readers'
@@ -159,6 +173,23 @@ for reader in TopicArnParam Sub; do
     exit 1
   }
 done
+# go-to-k/cdkd#7089: `cdkd diff --replace-resource` previews the replacement
+# this deploy then makes: the target and its create-only reader replaced.
+set +e
+PREVIEW=$(env CDKD_TEST_PHASE=display node "${LOCAL_DIST}" diff "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+  --replace-resource Topic --fail-on destructive 2>&1)
+PREVIEW_RC=$?
+set -e
+[ "${PREVIEW_RC}" -eq 1 ] || { printf '%s\n' "${PREVIEW}" >&2; echo "FAIL: cdkd diff --replace-resource Topic --fail-on destructive exited ${PREVIEW_RC}, expected 1 (issue #7089)" >&2; exit 1; }
+grep -qF "Found 2 destructive change(s)" <<<"${PREVIEW}" || {
+  printf '%s\n' "${PREVIEW}" >&2
+  echo "FAIL: cdkd diff --replace-resource Topic does not preview Topic and Sub replaced (issue #7089)" >&2
+  exit 1
+}
+for replaced in Topic Sub; do
+  grep -qw "${replaced}" <<<"${PREVIEW}" || { printf '%s\n' "${PREVIEW}" >&2; echo "FAIL: cdkd diff --replace-resource Topic does not list ${replaced} (issue #7089)" >&2; exit 1; }
+done
+echo "    OK: cdkd diff previews Topic and Sub replaced"
 OUT=$(env CDKD_TEST_PHASE=display node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
   --replace-resource Topic --yes 2>&1) || {
   printf '%s\n' "${OUT}" >&2
