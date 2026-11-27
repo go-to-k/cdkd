@@ -172,6 +172,58 @@ describe('spec-replacement table (go-to-k/cdkd#7070)', () => {
     expect(await replacesOnChange(TYPE, ['AppNetworkAccessType'])).toBe(false);
   });
 
+  // go-to-k/cdkd#7130: CloudFormation replaces an Elasticsearch domain on a
+  // version change without EnableVersionUpgrade and upgrades it in place under
+  // the policy; a KmsKeyId change replaces whatever the policy says.
+  it('EnableVersionUpgrade keeps an Elasticsearch version change in place, and nothing else', async () => {
+    const TYPE = 'AWS::Elasticsearch::Domain';
+    const diff = async (
+      updatePolicy: Record<string, unknown> | undefined,
+      from: Record<string, unknown>,
+      to: Record<string, unknown>,
+      prop: string
+    ) => {
+      const state: StackState = {
+        version: 1,
+        stackName: 'S',
+        resources: { R: { physicalId: 'p', resourceType: TYPE, properties: from, attributes: {} } },
+        outputs: {},
+        lastModified: 0,
+      };
+      const template = {
+        Resources: {
+          R: {
+            Type: TYPE,
+            ...(updatePolicy === undefined ? {} : { UpdatePolicy: updatePolicy }),
+            Properties: to,
+          },
+        },
+      };
+      const changes = await new DiffCalculator().calculateDiff(state, template);
+      return changes.get('R')!.propertyChanges!.find((c) => c.path === prop)!.requiresReplacement;
+    };
+    const v = (version: string) => ({ ElasticsearchVersion: version });
+    const V = 'ElasticsearchVersion';
+    expect(await diff(undefined, v('7.9'), v('7.10'), V)).toBe(true);
+    expect(await diff({ EnableVersionUpgrade: false }, v('7.9'), v('7.10'), V)).toBe(true);
+    expect(await diff({ EnableVersionUpgrade: { 'Fn::If': ['C', true, false] } }, v('7.9'), v('7.10'), V)).toBe(true);
+    expect(await diff({ EnableVersionUpgrade: true }, v('7.9'), v('7.10'), V)).toBe(false);
+    expect(await diff({ EnableVersionUpgrade: 'true' }, v('7.9'), v('7.10'), V)).toBe(false);
+    // The AWS-managed key (no KmsKeyId) -> a customer key, as measured, and
+    // one customer key -> another; the policy does not cover either.
+    const enc = (kms?: string) => ({
+      EncryptionAtRestOptions: { Enabled: true, ...(kms === undefined ? {} : { KmsKeyId: kms }) },
+    });
+    const E = 'EncryptionAtRestOptions';
+    expect(await diff(undefined, enc(), enc('k1'), E)).toBe(true);
+    expect(await diff(undefined, enc('k1'), enc('k2'), E)).toBe(true);
+    expect(await diff({ EnableVersionUpgrade: true }, enc('k1'), enc('k2'), E)).toBe(true);
+    // Enabled alone applies in place (measured on #7083).
+    expect(
+      await diff(undefined, { [E]: { Enabled: false } }, { [E]: { Enabled: true } }, E)
+    ).toBe(false);
+  });
+
   // The rename CloudFormation fails rather than replaces stays the provider's
   // refusal (#3750), not a replacement of a stateful database.
   it('a nested measured update stays in place', async () => {

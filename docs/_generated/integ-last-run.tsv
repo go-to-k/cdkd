@@ -462,7 +462,7 @@ rollback-explicit-name-rewrite	2026-11-20T16:18:33Z	PASS	195	verify.sh	rc ok, or
 rollback-failure-injection	2026-11-19T06:52:45Z	PASS	376	verify.sh	#6600 final: rc ok, destroy 0 errors, orph clean
 rollback-nested-cross-region-secret	2026-11-20T11:50:48Z	PASS	458	verify.sh	PR6652 be63cc056, us-west-2+us-east-1; own state bucket (deleted); rc 0, kept identity x2, orph clean
 rollback-observed-baseline-refresh	2026-11-18T05:18:35Z	PASS	101	verify.sh	rc ok, orph clean (PR #6531, #6526)
-rollback-regenerated-secret	2026-11-19T06:52:45Z	PASS	121	verify.sh	#6600 final: rc ok, destroy 0 errors, orph clean
+rollback-regenerated-secret	2026-11-27T18:42:37Z	PASS	196	verify.sh	#7131 a8123005: rc ok, destroy 0 errors, orph clean
 rollback-replacement-retain	2026-11-21T01:28:31Z	PASS	87	verify.sh	PR6710 260d5664a; rc ok, orph clean
 rollback-replay-cc-generated-name	2026-11-20T14:40:31Z	PASS	172	verify.sh	rc ok, orph clean (#6675)
 rollback-replay-effective-props	2026-11-18T06:37:13Z	PASS	326	verify.sh	PR #6531 re-run after rebase onto 40868290f; rc ok, orph clean

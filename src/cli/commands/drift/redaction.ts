@@ -3,6 +3,11 @@
  * Split out of `../drift.ts`, which re-exports the public names.
  */
 import {
+  holdsMaskLeaf,
+  isMaskLeaf,
+  mentionsMask,
+} from '../../../deployment/secret-redaction/recorded-secrecy.js';
+import {
   type PropertyDrift,
   equalModuloMarkedMask,
   equalModuloMask,
@@ -11,7 +16,6 @@ import { displaySafe } from '../../../utils/display-safe.js';
 import {
   noEchoLeavesOf,
   isMarkedCoordinate,
-  carriesSecretMask,
   pathCrossesDottedKey,
   SECRET_MASK,
   isUncertifiedBaselineMaskPosition,
@@ -116,7 +120,7 @@ export function partitionNoEchoParameterChanges(
     });
     if (
       touchesMarked &&
-      carriesSecretMask(change.stateValue) &&
+      holdsMaskLeaf(change.stateValue) &&
       !pathCrossesDottedKey(properties, change.path) &&
       !pathCrossesDottedKey(baseline, change.path) &&
       equalModuloMarkedMask(
@@ -184,7 +188,7 @@ export function partitionUncertifiedBaselineChanges(
   const uncertifiedPaths: string[] = [];
   for (const change of changes) {
     if (
-      carriesSecretMask(change.stateValue) &&
+      holdsMaskLeaf(change.stateValue) &&
       isUncertifiedBaselineMaskPosition(properties, change.path) &&
       // ...and the coordinate is unambiguous in the BASELINE too: a
       // readback-only key containing a dot is invisible to `properties`.
@@ -308,7 +312,7 @@ export function acceptRefusalReason(
   maskedPaths: SecretPathSet
 ): string | undefined {
   if (!maskedPaths.has(change.path)) return undefined;
-  if (change.path.includes(SECRET_MASK)) {
+  if (mentionsMask(change.path)) {
     return (
       'its property NAME came back carrying a secret value, so cdkd cannot name the key to ' +
       'write — and no redaction pass can clear it either, since they all walk values and never ' +
@@ -322,7 +326,7 @@ export function acceptRefusalReason(
       'push it back, or re-deploy'
     );
   }
-  if (change.stateValue === SECRET_MASK) {
+  if (isMaskLeaf(change.stateValue)) {
     // Issue #2274. The BASELINE is the mask, so there is nothing to persist
     // over it: writing the AWS value would undo a redaction, and writing the
     // mask would corrupt the baseline into a literal `***`. cdkd cannot recover
@@ -408,7 +412,7 @@ export function redactDriftChanges(
     !hasMaskableValues(secrets) &&
     secretPaths.size === 0 &&
     maskPaths.size === 0 &&
-    !changes.some((change) => carriesSecretMask(change.stateValue))
+    !changes.some((change) => holdsMaskLeaf(change.stateValue))
   ) {
     return { changes, maskedPaths: new Set<string>() };
   }
@@ -483,7 +487,7 @@ export function redactDriftChanges(
     // evidence to narrow it further — a durable per-attribute `NoEcho` flag on
     // the state record is issue #2449 — and the alternative is printing a
     // secret.
-    const stateValueIsMask = carriesSecretMask(change.stateValue);
+    const stateValueIsMask = holdsMaskLeaf(change.stateValue);
     const secretBearing = positionIsSecret || nameCarriesSecret || stateValueIsMask;
     // EXACT, not the prefix match above. `isSecretBearingPath` deliberately
     // matches ANCESTORS so a drift reported above a secret is masked — but that
@@ -522,7 +526,7 @@ export function redactDriftChanges(
     // indistinguishable, so refusing is right there.
     if (
       maskedPath !== change.path ||
-      (secretBearing && awsValue === SECRET_MASK) ||
+      (secretBearing && isMaskLeaf(awsValue)) ||
       // An ABSENT value that survived the drop above — a subtree that vanished
       // from AWS, or an ancestor of a secret. It IS real drift and is reported,
       // but `--accept` must not persist it: `setAtPath(bag, path, undefined)`

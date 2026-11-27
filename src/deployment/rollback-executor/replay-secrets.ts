@@ -1,3 +1,4 @@
+import { isMaskLeaf } from '../secret-redaction/recorded-secrecy.js';
 import {
   cdkdRemedy,
   plainOrDescribed,
@@ -16,7 +17,6 @@ import {
   scrubResourceRecord,
   redactForState,
   dynamicReferenceTokens,
-  SECRET_MASK,
   type RecordedSecretValues,
 } from '../secret-redaction.js';
 import { hasOwnKey, hasPlainPrototype } from '../../utils/own-keys.js';
@@ -516,7 +516,7 @@ export function keepPersistedPlainLeaves(
   if (typeof raw === 'string') {
     return typeof persisted === 'string' &&
       raw === persisted &&
-      redacted !== SECRET_MASK &&
+      !isMaskLeaf(redacted) &&
       dynamicReferenceTokens(persisted).length === 0
       ? persisted
       : redacted;
