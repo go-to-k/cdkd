@@ -10,6 +10,8 @@ import { isSecretValuedAttribute, isSensitiveAttributeName } from '../../utils/s
 import { isCustomResourceType } from '../../provisioning/custom-resource-secure-references.js';
 import { isReadableBag } from '../../types/state.js';
 import { isReadableResourceEntry } from '../../state/malformed-resources-bag.js';
+import { containsSecretDynamicReference } from '../outputs-diff/values.js';
+import { secretPhysicalIdSegment } from '../../provisioning/secret-physical-id.js';
 
 /**
  * Why a reference to an orphaned record that is NOT a readable resource record
@@ -187,5 +189,118 @@ export function unsplicableCachedAttribute(
   if (carriesSecretMask(cached)) return `the redaction mask ('${SECRET_MASK}')`;
   if (carriesDynamicReference(cached)) return 'an unresolved dynamic reference';
   if (carriesSensitiveNamedLeaf(cached)) return 'a value with a credential-named field';
+  return undefined;
+}
+
+/**
+ * The record's own value for `attribute`: an own key, else the dotted walk
+ * {@link servableRecordedAttribute} mirrors. A value that records nothing (an
+ * impossible `''`, a pre-#1681 placeholder ARN) reads as absent, as there.
+ */
+function recordedAttributeValue(
+  orphan: ResourceState,
+  attributes: Record<string, unknown>,
+  attribute: string
+): unknown {
+  if (Object.hasOwn(attributes, attribute)) {
+    const stored = attributes[attribute];
+    if (isImpossibleEmptyStoredAttribute(orphan.resourceType, attribute, stored)) return undefined;
+    if (
+      stored !== undefined &&
+      isStalePlaceholderArnAttribute(orphan.resourceType, attribute, stored)
+    ) {
+      return undefined;
+    }
+    return stored;
+  }
+  if (!attribute.includes('.')) return undefined;
+  let cursor: unknown = attributes;
+  for (const part of attribute.split('.')) {
+    if (cursor === null || typeof cursor !== 'object' || !Object.hasOwn(cursor, part)) {
+      return undefined;
+    }
+    cursor = (cursor as Record<string, unknown>)[part];
+  }
+  return cursor;
+}
+
+/** A non-empty array or object: a provenance field that names something. */
+function namesAnything(field: unknown): boolean {
+  if (Array.isArray(field)) return field.length > 0;
+  return field !== null && typeof field === 'object' && Object.keys(field).length > 0;
+}
+
+/**
+ * Why the answer for `attribute` must not be written into the referring
+ * resources (go-to-k/cdkd#7061), or `undefined` when it may. Asked before the
+ * live read and before {@link servableRecordedAttribute}'s recorded value is
+ * taken: a recorded value can be plaintext by design (a nested row's
+ * `secretNamedAttributes` output is log-only masked) while its record is the
+ * needle every later reader masks it with, and that record is the one
+ * `cdkd orphan` drops.
+ *
+ * `cdkd orphan` splices the answer into other records' persisted
+ * `properties`, `attributes` and `outputs`, and its audit table prints it. No
+ * redaction pass runs on that path: the command resolves no secret, so it has
+ * no needles. The record's PROVENANCE is therefore the only thing that can say
+ * the answer is secret-derived, and when it does, the answer is the plaintext
+ * the record kept out of state. Refused with or without `--force`: the
+ * intrinsic stays in place and the site is reported unresolved, as for an
+ * empty cache. Never decided from the live text, which cannot tell.
+ *
+ * The record says so when:
+ * - its physical id carries a bearer credential ({@link secretPhysicalIdSegment}:
+ *   an AppSync API key, a wait condition's pre-signed URL), which its ARN and
+ *   other attributes embed;
+ * - the attribute's NAME is credential-bearing, the attribute is one
+ *   {@link isSecretValuedAttribute} names, or it is a custom resource's;
+ * - the provider declared it `NoEcho` (`noEchoAttributeNames`), or it holds a
+ *   secret-derived resource name (`secretNamedAttributes`);
+ * - its recorded value carries the mask, a secret dynamic reference or a
+ *   credential-named leaf: what state kept stands for a secret, and the live
+ *   answer is that secret;
+ * - the record holds no value for it and carries a secret anywhere (a mask or
+ *   a secret dynamic reference in a bag, a `NoEcho` leaf, a masked-property
+ *   fingerprint or MAC): the record cannot tell whether the attribute embeds
+ *   it, so it is read as if it did.
+ */
+export function secretDerivedLiveAttribute(
+  orphan: ResourceState,
+  attribute: string
+): string | undefined {
+  if (secretPhysicalIdSegment(orphan.resourceType, orphan.physicalId) !== undefined) {
+    return 'an attribute of a resource whose identifier is a credential';
+  }
+  if (isSensitiveAttributeName(attribute)) return 'a credential-named attribute';
+  if (isCustomResourceType(orphan.resourceType)) return "a custom resource's attribute";
+  if (isSecretValuedAttribute(orphan.resourceType, attribute)) return 'a secret-valued attribute';
+  const top = attribute.split('.')[0]!;
+  const declared = (field: unknown): boolean =>
+    Array.isArray(field) && field.some((name) => name === attribute || name === top);
+  if (declared(orphan.noEchoAttributeNames)) return 'an attribute its provider declared NoEcho';
+  if (declared(orphan.secretNamedAttributes)) return 'an attribute holding a secret-derived name';
+  const bag: unknown = orphan.attributes;
+  const recorded = isReadableBag(bag)
+    ? recordedAttributeValue(orphan, bag as Record<string, unknown>, attribute)
+    : undefined;
+  const secretIn = (value: unknown): boolean =>
+    carriesSecretMask(value) || containsSecretDynamicReference(value);
+  if (recorded !== undefined) {
+    return secretIn(recorded) || carriesSensitiveNamedLeaf(recorded)
+      ? 'an attribute state recorded as secret-derived'
+      : undefined;
+  }
+  if (
+    secretIn(orphan.properties) ||
+    secretIn(orphan.attributes) ||
+    secretIn(orphan.observedProperties) ||
+    namesAnything(orphan.noEchoLeaves) ||
+    namesAnything(orphan.noEchoAttributeNames) ||
+    namesAnything(orphan.secretNamedAttributes) ||
+    namesAnything(orphan.maskedPropertyFingerprints) ||
+    namesAnything(orphan.noEchoValueMacs)
+  ) {
+    return 'an attribute of a secret-carrying record that does not record it';
+  }
   return undefined;
 }

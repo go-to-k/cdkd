@@ -2148,11 +2148,14 @@ echo "==> Step 5k: cdkd orphan --dry-run withholds a secret-named resource's id 
 # rewrite to act on; one SURVIVES only from an import that could not resolve it
 # or a pre-v3 record (tests/integration/orphan-getatt-takeover does the same by
 # hand). Two probe properties are added to SecretQueueReaderPolicy's record: a
-# `Ref` (rewritten to the queue's URL, its physical id) and an `Fn::GetAtt Arn`
-# (a live SQS read, rewritten to the ARN). Both carry the queue name, and the
-# audit prints both at default verbosity. --dry-run writes nothing, and the
-# record is put back byte-for-byte before any assertion, so a failure below
-# never leaves the probe for the destroy.
+# `Ref` (rewritten to the queue's URL, its physical id, which state keeps in
+# plaintext and the audit masks) and an `Fn::GetAtt Arn`. The queue's record
+# keeps its ARN as secret-derived, so the GetAtt is REFUSED by that provenance
+# before any live read (go-to-k/cdkd#7061): a live read would write the
+# plaintext ARN into the sibling's state, past what the record kept out. The
+# refusal aborts the run (exit 1). --dry-run writes nothing, and the record is
+# put back byte-for-byte before any assertion, so a failure below never leaves
+# the probe for the destroy.
 ORIG_STATE_FILE="$(mktemp -t secret-derived-immutable-names-state.XXXXXX)"
 PROBE_STATE_FILE="$(mktemp -t secret-derived-immutable-names-probe.XXXXXX)"
 aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${ORIG_STATE_FILE}" --region "${REGION}" >/dev/null
@@ -2183,26 +2186,34 @@ if [ "${RESTORED_STATE}" != "${ORIG_STATE}" ]; then
   echo "FAIL: the state record was not restored after the orphan probe; ${STATE_KEY} still carries the probe properties" >&2
   exit 1
 fi
-if [ "${ORPHAN_DRY_RC}" -ne 0 ]; then
-  echo "FAIL: cdkd orphan --dry-run exited ${ORPHAN_DRY_RC}" >&2
+# go-to-k/cdkd#7061: the GetAtt of the secret-derived ARN is refused, so the
+# run aborts; anything else (an answered GetAtt, a clean exit) is the leak.
+if [ "${ORPHAN_DRY_RC}" -ne 1 ]; then
+  echo "FAIL: cdkd orphan --dry-run exited ${ORPHAN_DRY_RC}, not 1: the GetAtt of SecretQueue's secret-derived Arn was not refused (go-to-k/cdkd#7061)" >&2
   log_tail
   exit 1
 fi
-# PREMISE: both rewrites are in the audit, and the GetAtt one was answered.
-for audit_line in "[ref] SecretQueueReaderPolicy.properties.CdkdOrphanProbeRef: " \
-  "[getAtt] SecretQueueReaderPolicy.properties.CdkdOrphanProbeArn: "; do
-  if ! grep -qF -- "${audit_line}" "${DEPLOY_LOG}"; then
-    echo "FAIL: premise: the cdkd orphan --dry-run log has no '${audit_line}' audit line (the probe was not rewritten, or the wording drifted)" >&2
-    log_tail
-    exit 1
-  fi
-done
+if ! grep -qF -- "SecretQueueReaderPolicy.properties.CdkdOrphanProbeArn: SecretQueue.Arn — the value of SecretQueue.Arn is an attribute state recorded as secret-derived, so cdkd does not write it into the referring resource's state" "${DEPLOY_LOG}"; then
+  echo "FAIL: the cdkd orphan --dry-run log has no secret-derived refusal for CdkdOrphanProbeArn (go-to-k/cdkd#7061, or the wording drifted)" >&2
+  log_tail
+  exit 1
+fi
+if grep -qF -- "[getAtt] SecretQueueReaderPolicy.properties.CdkdOrphanProbeArn: " "${DEPLOY_LOG}"; then
+  echo "FAIL: the cdkd orphan --dry-run audit rewrote CdkdOrphanProbeArn: the secret-derived ARN was substituted (go-to-k/cdkd#7061)" >&2
+  exit 1
+fi
+# PREMISE: the Ref rewrite is still in the audit (the physical id, masked).
+if ! grep -qF -- "[ref] SecretQueueReaderPolicy.properties.CdkdOrphanProbeRef: " "${DEPLOY_LOG}"; then
+  echo "FAIL: premise: the cdkd orphan --dry-run log has no '[ref] SecretQueueReaderPolicy.properties.CdkdOrphanProbeRef: ' audit line (the probe was not rewritten, or the wording drifted)" >&2
+  log_tail
+  exit 1
+fi
 if grep -qF -- "${QUEUE_NAME}" "${DEPLOY_LOG}"; then
   HIT_LINES="$(grep -nF -- "${QUEUE_NAME}" "${DEPLOY_LOG}" | cut -d: -f1 | paste -sd ' ' -)"
   echo "FAIL: the cdkd orphan --dry-run log names SecretQueue, a secret-named resource, in plaintext: \${QUEUE_NAME} on log line(s) ${HIT_LINES} (go-to-k/cdkd#3869)" >&2
   exit 1
 fi
-echo "    OK: the orphan audit withholds the secret-named queue's URL and ARN"
+echo "    OK: the orphan audit withholds the secret-named queue's URL, and the secret-derived ARN is refused"
 
 echo "==> Step 5l (LOAD-BEARING): a rotated secret under SecretApi's unchanged Name reference does not rename it (go-to-k/cdkd#5359)"
 # PREMISE: the API still has its seeded name, so the assertions below compare

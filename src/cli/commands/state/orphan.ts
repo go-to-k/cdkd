@@ -632,7 +632,8 @@ async function stateOrphanResources(
           throw new Error(
             `Orphan aborted: ${result.unresolvable.length} reference(s) could not be resolved.\n` +
               `Re-run with --force to fall back to cached attribute values from state, ` +
-              `or fix the underlying provider/AWS issue and retry.`
+              `or fix the underlying provider/AWS issue and retry. A reference refused as secret-derived ` +
+              `stays in place under --force too.`
           );
         }
         if (result.unresolvable.length > 0) {

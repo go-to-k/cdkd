@@ -15,19 +15,29 @@
  * (oxc, via `vite-plus`), so comments, strings and regex literals are never
  * read as code.
  */
-import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
-import { parseSync } from 'vite-plus';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vite-plus/test';
 import {
   carryReadOutputs,
   outputReferenceProvenanceFor,
 } from '../../../src/deployment/deploy-engine/state-persist.js';
 import type { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import {
+  ROOT,
+  SRC,
+  isNode,
+  parseOrThrow,
+  scanSites,
+  type Found,
+  type Node,
+} from '../_choke-point-sites.js';
 
-const ROOT = join(__dirname, '..', '..', '..');
-const SRC = join(ROOT, 'src');
-const TARGETS = new Set(['withParentInfo', 'redactStateForPersist']);
+// Each choke-point function, keyed on its first argument (the state it saves).
+const TARGETS: ReadonlyMap<string, number> = new Map([
+  ['withParentInfo', 0],
+  ['redactStateForPersist', 0],
+]);
 
 type Site =
   /** Saves a state built from the deploy's own state (baseline or this run's outputs). */
@@ -80,165 +90,6 @@ const SITES: Record<string, Site & { count: number }> = {
   },
 };
 
-interface Found {
-  key: string;
-  file: string;
-  /** The enclosing function's body span. */
-  fnStart: number;
-  fnEnd: number;
-  /** Where the reference is. */
-  at: number;
-  /** Each enclosing statement list (by its start) and the index of the statement holding the save. */
-  blocks: Array<{ block: number; index: number }>;
-}
-
-type Node = { type: string; start: number; end: number; [k: string]: unknown };
-
-function isNode(v: unknown): v is Node {
-  return typeof v === 'object' && v !== null && typeof (v as Node).type === 'string';
-}
-
-/**
- * The name a function is known by, or undefined for a node that is no function
- * or an anonymous one (a callback): a site in a callback belongs to the named
- * function around it.
- */
-function functionName(node: Node, parent: Node | undefined): string | undefined {
-  const named = (n: unknown): string | undefined =>
-    isNode(n) && n.type === 'Identifier' ? (n['name'] as string) : undefined;
-  if (node.type === 'FunctionDeclaration') return named(node['id']);
-  if (node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression') {
-    if (
-      parent?.type === 'MethodDefinition' ||
-      parent?.type === 'Property' ||
-      parent?.type === 'PropertyDefinition'
-    ) {
-      return named(parent['key']);
-    }
-    if (parent?.type === 'VariableDeclarator') return named(parent['id']);
-    return named(node['id']);
-  }
-  return undefined;
-}
-
-/** Nodes whose subtree is a TYPE position: a name there is no reference. */
-const TYPE_POSITIONS = new Set([
-  'TSTypeAnnotation',
-  'TSTypeQuery',
-  'TSTypeReference',
-  'TSQualifiedName',
-  'TSInterfaceDeclaration',
-  'TSTypeAliasDeclaration',
-  'TSTypeParameterInstantiation',
-]);
-
-/** Whether `node` names a choke-point function: an identifier, or a computed key spelled as a string. */
-function namesTarget(node: Node, parent: Node | undefined, key: string): boolean {
-  if (node.type === 'Identifier') return TARGETS.has(node['name'] as string);
-  // `engine['withParentInfo'](x)`, `` engine[`withParentInfo`](x) ``, and a
-  // computed destructuring key (`const { ['withParentInfo']: w } = engine`).
-  const computedMember =
-    parent?.type === 'MemberExpression' && parent['computed'] === true && key === 'property';
-  const computedKey = parent?.type === 'Property' && parent['computed'] === true && key === 'key';
-  if (!computedMember && !computedKey) return false;
-  if (node.type === 'Literal') return TARGETS.has(node['value'] as string);
-  if (node.type === 'TemplateLiteral' && (node['expressions'] as unknown[]).length === 0) {
-    const quasi = (node['quasis'] as Node[])[0];
-    return TARGETS.has((quasi?.['value'] as { cooked?: string } | undefined)?.cooked ?? '');
-  }
-  return false;
-}
-
-/**
- * A reference to a choke-point function, never a declaration, an import or a
- * type. Value-position TypeScript (`x!`, `x as T`, `x satisfies T`) counts.
- */
-function isReference(node: Node, chain: Array<{ node: Node; key: string }>): boolean {
-  const parentEntry = chain[chain.length - 1];
-  const parent = parentEntry?.node;
-  const key = parentEntry?.key ?? '';
-  if (parent === undefined || !namesTarget(node, parent, key)) return false;
-  if (chain.some((c) => TYPE_POSITIONS.has(c.node.type))) return false;
-  if (
-    parent.type === 'ImportSpecifier' ||
-    parent.type === 'ExportSpecifier' ||
-    parent.type === 'TSMethodSignature' ||
-    parent.type === 'TSPropertySignature' ||
-    (parent.type === 'FunctionDeclaration' && key === 'id') ||
-    ((parent.type === 'MethodDefinition' || parent.type === 'PropertyDefinition') &&
-      key === 'key')
-  ) {
-    return false;
-  }
-  // An object literal's key names nothing; a destructuring pattern's key reads
-  // the function off the object (`const { withParentInfo: save } = engine`).
-  if (parent.type === 'Property' && key === 'key' && parent['shorthand'] !== true) {
-    return chain[chain.length - 2]?.node.type === 'ObjectPattern';
-  }
-  return true;
-}
-
-/** Each statement list around the end of `chain`, with the index of the statement holding it. */
-function statementBlocks(
-  chain: Array<{ node: Node; key: string }>,
-  child: Node
-): Array<{ block: number; index: number }> {
-  const out: Array<{ block: number; index: number }> = [];
-  for (let i = chain.length - 1; i >= 0; i--) {
-    const holder = chain[i]!.node;
-    if ((holder.type === 'BlockStatement' || holder.type === 'Program') && chain[i]!.key === 'body') {
-      const inner = i + 1 < chain.length ? chain[i + 1]!.node : child;
-      out.push({ block: holder.start, index: (holder['body'] as Node[]).indexOf(inner) });
-    }
-  }
-  return out;
-}
-
-function sitesIn(file: string, text: string): Found[] {
-  const parsed = parseSync(file, text);
-  if (parsed.errors.length > 0) throw new Error(`cannot parse ${file}: ${parsed.errors[0]!.message}`);
-  const out: Found[] = [];
-  const walk = (node: Node, chain: Array<{ node: Node; key: string }>, fn: { name: string; node: Node } | undefined): void => {
-    const parentEntry = chain[chain.length - 1];
-    const parent = parentEntry?.node;
-    const ownName = functionName(node, parent);
-    const here = ownName !== undefined ? { name: ownName, node } : fn;
-    if (isReference(node, chain)) {
-      // The call this reference is the callee of (anything else is a bare
-      // reference, keyed `<ref>`): `x(…)`, `a.x(…)`, `a.x?.(…)`.
-      let callee: Node = node;
-      let i = chain.length - 1;
-      if (chain[i]?.node.type === 'MemberExpression' && chain[i]!.key === 'property') {
-        callee = chain[i]!.node;
-        i--;
-      }
-      if (chain[i]?.node.type === 'ChainExpression') i--;
-      const call = chain[i]?.node;
-      const args = call?.type === 'CallExpression' && call['callee'] === callee ? (call['arguments'] as Node[]) : undefined;
-      const saved = args !== undefined && args[0] !== undefined ? text.slice(args[0].start, args[0].end) : '<ref>';
-      const name = here?.name ?? '<module>';
-      const rel = relative(ROOT, file).split('\\').join('/');
-      out.push({
-        key: `${rel}#${name}#${saved.replace(/\s+/g, ' ')}`,
-        file: rel,
-        fnStart: here?.node.start ?? 0,
-        fnEnd: here?.node.end ?? text.length,
-        at: node.start,
-        blocks: statementBlocks(chain, node),
-      });
-    }
-    for (const [k, v] of Object.entries(node)) {
-      if (Array.isArray(v)) {
-        for (const c of v) if (isNode(c)) walk(c, [...chain, { node, key: k }], here);
-      } else if (isNode(v)) {
-        walk(v, [...chain, { node, key: k }], here);
-      }
-    }
-  };
-  walk(parsed.program as unknown as Node, [], undefined);
-  return out;
-}
-
 /**
  * `carryReadOutputs(<arg>);` STATEMENTS in `text`: each one's statement list
  * and index there. A call inside a condition, an expression or a closure is no
@@ -248,7 +99,7 @@ function carriesIn(
   file: string,
   text: string
 ): Array<{ arg: string; at: number; block: number; index: number }> {
-  const parsed = parseSync(file, text);
+  const program = parseOrThrow(file, text);
   const out: Array<{ arg: string; at: number; block: number; index: number }> = [];
   const walk = (node: Node): void => {
     if (node.type === 'BlockStatement' || node.type === 'Program') {
@@ -271,38 +122,13 @@ function carriesIn(
       }
     }
   };
-  walk(parsed.program as unknown as Node);
-  return out;
-}
-
-function tsFiles(dir: string): string[] {
-  const out: string[] = [];
-  for (const name of readdirSync(dir)) {
-    const path = join(dir, name);
-    if (statSync(path).isDirectory()) out.push(...tsFiles(path));
-    else if (name.endsWith('.ts')) out.push(path);
-  }
+  walk(program);
   return out;
 }
 
 /** Every site under `srcDir`, with `extra` (path -> text) overriding or adding files. */
 function scan(srcDir: string, extra: Record<string, string> = {}): { sites: Found[]; texts: Map<string, string> } {
-  const sites: Found[] = [];
-  const texts = new Map<string, string>();
-  const files = new Map<string, string>();
-  for (const path of tsFiles(srcDir)) {
-    const text = readFileSync(path, 'utf8');
-    // A file naming neither function holds no site: skip parsing it.
-    if (![...TARGETS].some((t) => text.includes(t))) continue;
-    files.set(path, text);
-  }
-  for (const [path, text] of Object.entries(extra)) files.set(path, text);
-  for (const [path, text] of files) {
-    const found = sitesIn(path, text);
-    if (found.length > 0) texts.set(relative(ROOT, path).split('\\').join('/'), text);
-    sites.push(...found);
-  }
-  return { sites, texts };
+  return scanSites(TARGETS, srcDir, extra);
 }
 
 /** The fence's verdicts: unclassified or miscounted sites, and unregistered write-backs. */
