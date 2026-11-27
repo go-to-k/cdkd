@@ -12,7 +12,10 @@ import {
   type RecordedSecretValues,
 } from '../../../deployment/secret-redaction.js';
 import { NESTED_STACK_RESOURCE_TYPE } from '../retire-cfn-stack.js';
-import { isMaskLeaf, mentionsDynamicReference } from '../../../deployment/secret-redaction/recorded-secrecy.js';
+import {
+  isMaskLeaf,
+  mentionsDynamicReference,
+} from '../../../deployment/secret-redaction/recorded-secrecy.js';
 import { displayIdent, displaySafe } from '../../../utils/display-safe.js';
 import { displayPhysicalId } from '../../../provisioning/secret-physical-id.js';
 

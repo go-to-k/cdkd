@@ -13,7 +13,10 @@
 import type { CloudFormationTemplate } from '../types/resource.js';
 import type { ResourceChange } from '../types/state.js';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
-import { isMaskLeaf, mentionsDynamicReference } from '../deployment/secret-redaction/recorded-secrecy.js';
+import {
+  isMaskLeaf,
+  mentionsDynamicReference,
+} from '../deployment/secret-redaction/recorded-secrecy.js';
 import { referencedLogicalIds } from './refactor-pairing.js';
 
 /** A previewed value: known, or decided only by the producer's deploy. */
