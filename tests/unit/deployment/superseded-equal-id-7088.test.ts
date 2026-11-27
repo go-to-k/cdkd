@@ -13,6 +13,7 @@ import {
   addSuperseded,
   isSupersededHeldBySameType,
   namesSameResource,
+  supersededAfterRollback,
   supersededHolderOf,
   supersededResourcesOf,
 } from '../../../src/deployment/superseded-resources.js';
@@ -255,5 +256,27 @@ describe('namesSameResource and the holder checks (#7088)', () => {
     // The same stage re-recorded still replaces its entry.
     addSuperseded(host, kept('Stage', stageOn('api-a')));
     expect(supersededResourcesOf(host)).toHaveLength(2);
+  });
+
+  it("a rollback save keeps an own entry beside a pending one naming another stage", () => {
+    const own = kept('Stage', stageOn('api-a'));
+    const pending = kept('Stage', stageOn('api-b'));
+    const after = supersededAfterRollback(
+      { supersededResources: [own] },
+      { supersededResources: [pending] },
+      { Stage: stageOn('api-c') }
+    );
+    expect(supersededResourcesOf(after).map((e) => e.state.properties['RestApiId'])).toEqual([
+      'api-a',
+      'api-b',
+    ]);
+  });
+
+  it('a rollback save drops an own entry the restored record holds, not one it does not', () => {
+    const base = { supersededResources: [kept('Stage', stageOn('api-a'))] };
+    expect(supersededAfterRollback(base, {}, { Stage: stageOn('api-a') }).supersededResources).toBeUndefined();
+    expect(
+      supersededResourcesOf(supersededAfterRollback(base, {}, { Stage: stageOn('api-b') }))
+    ).toHaveLength(1);
   });
 });
