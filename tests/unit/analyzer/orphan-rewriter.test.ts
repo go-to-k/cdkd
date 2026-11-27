@@ -656,10 +656,19 @@ describe('rewriteResourceReferences', () => {
       Value: { 'Fn::GetAtt': ['Src', attribute] },
     });
     expect(result.unresolvable).toHaveLength(1);
-    expect(result.unresolvable[0]!.reason).toContain(`holds ${why}`);
     const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
-    expect(warned).toContain(why);
     expect(warned).not.toContain('falling back to cached value');
+    if (why === 'a value with a credential-named field') {
+      // No provenance names this record secret, so the live read runs and the
+      // `--force` cache refusal decides.
+      expect(result.unresolvable[0]!.reason).toContain(`holds ${why}`);
+      expect(warned).toContain(why);
+    } else {
+      // go-to-k/cdkd#7061: the record's provenance refuses the attribute
+      // before the live read, so the cache fallback is never reached.
+      expect(result.unresolvable[0]!.reason).toContain('so cdkd does not write it');
+      expect(getAttribute).not.toHaveBeenCalled();
+    }
     // Neither the warning nor the reason carries the cached value itself.
     if (typeof cached === 'string' && cached !== SECRET_MASK) {
       expect(warned).not.toContain(cached);
@@ -1485,19 +1494,20 @@ describe('a recorded attribute replaces a live answer (#4186)', () => {
     ['a list holding the mask', ['a', SECRET_MASK]],
     ['an object holding the mask', { Inner: SECRET_MASK }],
   ] as const) {
-    it(`never writes ${label} into a sibling on the default path; reads live instead`, async () => {
+    // go-to-k/cdkd#7061: the mask says the value is secret-derived, so the
+    // live answer is the plaintext state kept out. Neither is written: the
+    // intrinsics stay and the sites are unresolved.
+    it(`never writes ${label} into a sibling on the default path, nor the live value it stands for`, async () => {
       const getAttribute = vi.fn(async () => 'live-value');
-      const result = await rewriteResourceReferences(
-        repoState({ KmsKeyId: masked }),
-        ['Repo'],
-        fakeRegistry(getAttribute)
+      const state = repoState({ KmsKeyId: masked });
+      const result = await rewriteResourceReferences(state, ['Repo'], fakeRegistry(getAttribute));
+      expect(result.state.resources['Other']?.properties).toEqual(
+        state.resources['Other']?.properties
       );
-      expect(result.state.resources['Other']?.properties).toEqual({
-        Array: 'live-value',
-        String: 'live-value',
-        Sub: 'k=live-value',
-      });
-      expect(JSON.stringify(result.state)).not.toContain(SECRET_MASK);
+      expect(result.unresolvable).toHaveLength(3);
+      expect(getAttribute).not.toHaveBeenCalled();
+      expect(JSON.stringify(result.state)).not.toContain('live-value');
+      expect(JSON.stringify(result.state.resources['Other'])).not.toContain(SECRET_MASK);
     });
   }
 
@@ -1514,7 +1524,10 @@ describe('a recorded attribute replaces a live answer (#4186)', () => {
     expect(JSON.stringify(result.state.resources['Other'])).not.toContain(SECRET_MASK);
   });
 
-  it('reads live past a recorded {{resolve:...}} reference (issue #2055)', async () => {
+  // go-to-k/cdkd#7061: the recorded secret reference says the live answer is
+  // the secret it resolves to, so it is not read past (issue #2055's arm read
+  // it and wrote the password into the sibling's state).
+  it('does not read live past a recorded secret {{resolve:...}} reference', async () => {
     const TOKEN = '{{resolve:secretsmanager:prod/db:SecretString:password::}}';
     const getAttribute = vi.fn(async () => 'live-value');
     const result = await rewriteResourceReferences(
@@ -1522,10 +1535,9 @@ describe('a recorded attribute replaces a live answer (#4186)', () => {
       ['Repo'],
       fakeRegistry(getAttribute)
     );
-    expect((result.state.resources['Other']?.properties as { Array: unknown }).Array).toBe(
-      'live-value'
-    );
-    expect(JSON.stringify(result.state)).not.toContain('{{resolve:');
+    expect(getAttribute).not.toHaveBeenCalled();
+    expect(result.unresolvable).toHaveLength(3);
+    expect(JSON.stringify(result.state)).not.toContain('live-value');
   });
 
   it('reads live past a pre-#1681 placeholder ARN, and serves a real recorded ARN', async () => {
@@ -1619,16 +1631,15 @@ describe('a recorded attribute replaces a live answer (#4186)', () => {
     expect(getAttribute).toHaveBeenCalledTimes(1);
   });
 
-  it('does not serve a masked leaf through the nested walk', async () => {
+  it('does not serve a masked leaf through the nested walk, nor read it live (#7061)', async () => {
     const getAttribute = vi.fn(async () => 'live-value');
     const result = await rewriteResourceReferences(
       repoState({ Endpoint: { Password: SECRET_MASK } }, 'Endpoint.Password', 'AWS::RDS::DBCluster'),
       ['Repo'],
       fakeRegistry(getAttribute)
     );
-    expect((result.state.resources['Other']?.properties as { Array: unknown }).Array).toBe(
-      'live-value'
-    );
+    expect(getAttribute).not.toHaveBeenCalled();
+    expect(JSON.stringify(result.state)).not.toContain('live-value');
   });
 
   // GATED ON A LIVE ANSWER (security review of go-to-k/cdkd#4189): a record
@@ -1731,7 +1742,7 @@ describe('a recorded attribute replaces a live answer (#4186)', () => {
   it('does not serve a credential-named attribute (IAM AccessKey SecretAccessKey)', async () => {
     const SECRET = 'PLAINTEXT-SECRET-ACCESS-KEY';
     // A provider that DID answer (the real one refuses): the name rule alone
-    // must withhold the record, and the live answer decides as before #4186.
+    // withholds the record, and (go-to-k/cdkd#7061) the live answer too.
     const getAttribute = vi.fn(async () => 'live-answer');
     const result = await rewriteResourceReferences(
       repoState({ SecretAccessKey: SECRET }, 'SecretAccessKey', 'AWS::IAM::AccessKey'),
@@ -1740,9 +1751,8 @@ describe('a recorded attribute replaces a live answer (#4186)', () => {
     );
     expect(JSON.stringify(result.rewrites)).not.toContain(SECRET);
     expect(JSON.stringify(result.state.resources['Other'])).not.toContain(SECRET);
-    expect((result.state.resources['Other']?.properties as { Array: unknown }).Array).toBe(
-      'live-answer'
-    );
+    expect(getAttribute).not.toHaveBeenCalled();
+    expect(JSON.stringify(result.state.resources['Other'])).not.toContain('live-answer');
   });
 
   it('CONTROL: a credential-looking name ending in an identifier suffix IS served', async () => {
@@ -1758,16 +1768,15 @@ describe('a recorded attribute replaces a live answer (#4186)', () => {
   for (const type of ['AWS::CloudFormation::CustomResource', 'Custom::Thing']) {
     it(`does not serve a recorded custom-resource value (${type})`, async () => {
       const PLAIN = 'legacy-noecho-plaintext';
-      // A provider that DID answer: the type rule alone must withhold it.
+      // A provider that DID answer: the type rule alone must withhold it, the
+      // live answer included (go-to-k/cdkd#7061).
       const result = await rewriteResourceReferences(
         repoState({ Token: PLAIN }, 'Token', type),
         ['Repo'],
         fakeRegistry(vi.fn(async () => 'live-answer'))
       );
       expect(JSON.stringify(result.rewrites)).not.toContain(PLAIN);
-      expect((result.state.resources['Other']?.properties as { Array: unknown }).Array).toBe(
-        'live-answer'
-      );
+      expect(JSON.stringify(result.state.resources['Other'])).not.toContain('live-answer');
     });
   }
 

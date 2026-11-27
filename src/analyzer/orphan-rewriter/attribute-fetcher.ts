@@ -18,6 +18,7 @@ import { isUnexposedRecordedIdentity } from '../../deployment/unexposed-identity
 import {
   UNREADABLE_ORPHAN_RECORD_REASON,
   isResolvableOrphanRecord,
+  secretDerivedLiveAttribute,
   servableRecordedAttribute,
   unsplicableCachedAttribute,
 } from './recorded-attributes.js';
@@ -212,6 +213,20 @@ export class AttributeFetcher {
     // name rule can recognise) or a live read that fails keeps its pre-#4186
     // outcome: unresolvable without `--force`.
     const recorded = servableRecordedAttribute(orphan, attribute);
+    // go-to-k/cdkd#7061: no redaction pass runs on this path, so a live answer
+    // the record's provenance calls secret-derived is never spliced, nor read:
+    // refused with or without `--force`, before the provider is looked up.
+    const secretDerived = recorded.served
+      ? undefined
+      : secretDerivedLiveAttribute(orphan, attribute);
+    if (secretDerived !== undefined) {
+      return {
+        ok: false,
+        reason:
+          `the live value of ${displayIdent(orphanLogicalId)}.${displayIdent(attribute)} is ` +
+          `${secretDerived}, so cdkd does not write it into the referring resource's state`,
+      };
+    }
 
     let provider;
     try {
