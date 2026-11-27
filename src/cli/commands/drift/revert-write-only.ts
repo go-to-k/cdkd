@@ -19,8 +19,11 @@
  * restores: an `--accept`ed `ApiKeyName` stays accepted.
  *
  * Coupling: nothing writes these values into state. That holds while the
- * Cloud Control `update()` returns no `effectiveProperties`; one that did
- * would read each as narrowed in `collectNarrowedTopLevelKeys`.
+ * Cloud Control `update()` returns no `effectiveProperties` on a revert. It
+ * returns one only for a key it judged unapplied (`[cc-silent-noop]`,
+ * go-to-k/cdkd#7099), and on a revert (`desiredFromAwsReadback`) that key
+ * fails the update instead, so a revert never gets one. A revert path that
+ * did would read each key as narrowed in `collectNarrowedTopLevelKeys`.
  */
 import { hasOwnKey, defineOwnKey } from '../../../utils/own-keys.js';
 import { carriesSecretMask } from '../../../deployment/secret-redaction.js';

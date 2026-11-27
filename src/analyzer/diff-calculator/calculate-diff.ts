@@ -359,9 +359,12 @@ export async function calculateDiff(
       // it. That residue is the (#1612) already-junk class.
       //
       // The CURRENT side is left alone for a cc-api-routed resource:
-      // `CloudControlProvider` sends and records the FULL bag and reports no
-      // `effectiveProperties`, so its record is not a narrowing artifact and
-      // narrowing it here would hide a real difference.
+      // `CloudControlProvider` sends and records the FULL bag, so its record is
+      // not a narrowing artifact and narrowing it here would hide a real
+      // difference. Its only `effectiveProperties` is that full bag with an
+      // unapplied key's previous value put back (`[cc-silent-noop]`,
+      // go-to-k/cdkd#7099): still no narrowing, and the kept value is what
+      // must re-diff.
       // Issue #2750, applied BEFORE the provider narrowing above and gated on
       // the SAME `provisionedBy !== 'cc-api'` question, because it asks the
       // same thing one layer down: does this bag describe the SDK route, on

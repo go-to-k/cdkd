@@ -5,6 +5,11 @@ import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import {
+  CC_SILENT_NOOP_TAG,
+  failsOnUnappliedUpdate,
+  unappliedUpdateKeys,
+} from './unapplied-update.js';
 import { markNonRetryable, markRedactedCause } from '../../deployment/retryable-errors.js';
 import { describeAwsFailure, verbosePointerTail } from '../../utils/aws-failure-text.js';
 import { rebuildClientForBucketRegion } from '../../utils/bucket-region-client.js';
@@ -497,6 +502,42 @@ export async function updateInIdLogScope(
       result.attributes || {},
       idLog
     );
+
+    // go-to-k/cdkd#7099: a SUCCESS whose read model still holds the previous
+    // value. The model is the one already read above (the event's, or the
+    // sparse read-back's GetResource), so this costs no call. Skipped when
+    // nothing was sent to Cloud Control (a reimport-only update).
+    if (progressEvent !== undefined) {
+      const unapplied = unappliedUpdateKeys({
+        previous: cleanPreviousProperties,
+        desired: cleanProperties,
+        live: result.attributes,
+        writeOnly: writeOnlyProperties,
+      });
+      if (unapplied.length > 0) {
+        // A `drift --revert` that did not apply fails, so it is never counted
+        // reverted nor records the drifted value as the template's.
+        const escalated =
+          context?.desiredFromAwsReadback === true
+            ? unapplied
+            : unapplied.filter((key) => failsOnUnappliedUpdate(resourceType, key));
+        if (escalated.length > 0) {
+          throw new ProvisioningError(
+            `Failed to update resource ${logicalId}: ${CC_SILENT_NOOP_TAG} Cloud Control reported success but ${escalated.join(', ')} still holds its previous value on AWS (go-to-k/cdkd#7099). Other changes in this update may have applied; the record keeps the previous values.`,
+            resourceType,
+            logicalId,
+            physicalId
+          );
+        }
+        idLog.warn(
+          `${CC_SILENT_NOOP_TAG} ${logicalId} (${resourceType}): Cloud Control reported success but ${unapplied.join(', ')} still holds its previous value; the record keeps the previous value, so the next deploy sends the change again (AWS may have applied it after this read; the re-send is then a no-op). If the template spells a value AWS normalizes, use AWS's spelling (go-to-k/cdkd#7099).`
+        );
+        // Record what AWS holds, so the next diff re-plans the change.
+        const kept: Record<string, unknown> = { ...properties };
+        for (const key of unapplied) kept[key] = previousProperties[key];
+        result.effectiveProperties = kept;
+      }
+    }
 
     // See `create()`: only the MODEL keys are narrowed (issue #2925).
     const modelKeys = Object.keys(result.attributes);
