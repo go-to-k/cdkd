@@ -40,7 +40,8 @@ export async function previewReplaceResourceTargets(input: {
   try {
     const plan = planReplaceResourceTargets(input.changes, input.targetIds);
     replaced = plan.replaced;
-    for (const target of plan.unreplaced) input.warn(renderUnreplacedTarget(input.stackName, target));
+    for (const target of plan.unreplaced)
+      input.warn(renderUnreplacedTarget(input.stackName, target));
   } catch (error) {
     if (error instanceof CdkdError && error.code === 'REPLACE_RESOURCE_REFUSED') {
       return [error.message];

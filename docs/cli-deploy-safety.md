@@ -296,6 +296,13 @@ declare (deploy that stack alone), or one `--recreate-via-*` also names is
 refused (`REPLACE_RESOURCE_INVALID`). It names a top-level stack's resources
 only.
 
+`cdkd diff --replace-resource <LogicalId>` previews this plan. The target
+shows as a replacement and its readers are promoted, as in
+`cdkd deploy --dry-run`. An id the deploy refuses as invalid fails the diff
+too. A `REPLACE_RESOURCE_REFUSED` target is a blocking reason (exit `3`).
+`cdkd diff` has no `--force-stateful-recreation`, so a stateful target or
+reader the deploy would refuse without that flag is only a warning.
+
 ### Under `UpdateReplacePolicy: Retain`
 
 `Retain` exempts a resource from the guard, because the old resource is kept.
