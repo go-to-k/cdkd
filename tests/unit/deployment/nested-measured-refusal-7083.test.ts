@@ -184,6 +184,26 @@ describe('nested measured replacement in the stateful refusal (go-to-k/cdkd#7083
     );
   });
 
+  it('reads the resolved values: an intrinsic or a number spelled as a string is no change', async () => {
+    const TYPE_Z = 'AWS::FSx::FileSystem';
+    const ozfs = (rs: unknown, subnet: unknown, ro: unknown) => ({
+      OpenZFSConfiguration: {
+        PreferredSubnetId: subnet,
+        RootVolumeConfiguration: { RecordSizeKiB: rs, ReadOnly: ro },
+      },
+    });
+    const from = ozfs(128, 'subnet-a', true);
+    const to = ozfs('64', 'subnet-a', 'true');
+    const text = await refusalOf(TYPE_Z, from, ozfs('64', { Ref: 'Subnet' }, 'true'), [
+      { path: 'OpenZFSConfiguration', oldValue: from.OpenZFSConfiguration, newValue: to.OpenZFSConfiguration, requiresReplacement: true },
+    ]);
+    expect(text).toContain(
+      'CloudFormation was measured replacing it on a OpenZFSConfiguration.RootVolumeConfiguration.RecordSizeKiB change, so the data is lost there as well.'
+    );
+    expect(text).not.toContain('PreferredSubnetId');
+    expect(text).not.toContain('ReadOnly');
+  });
+
   it('names no member that did not change', async () => {
     const text = await refusalOf(TYPE, lustre(1024, 50), lustre(2048, 100), change(lustre(1024, 50), lustre(2048, 100)));
     expect(text).not.toContain('PerUnitStorageThroughput change');
