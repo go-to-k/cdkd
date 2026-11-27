@@ -82,13 +82,14 @@ function isExplicitFalse(value: unknown): boolean {
  * place. On a BEST_FIT environment (the default when unset), which Batch never
  * updates that way, a subnet or security-group change replaces too.
  *
- * An explicit `false` NEVER replaces, on either side of the change, even where
- * Batch refuses the update (a Fargate environment, BEST_FIT): CloudFormation
- * attempts the update and fails rather than replacing, and a replacement would
- * delete the environment and drain its queue. CDK's L2 compute environments
- * emit `false` by default. Reading both sides keeps a rollback replay, whose
- * diff runs backward, from replacing what the forward deploy updated in place
- * (an RCE flip to `false` beside an InstanceTypes change).
+ * An explicit `false` in the template being deployed NEVER replaces, even
+ * where Batch refuses the update (a Fargate environment, BEST_FIT):
+ * CloudFormation attempts the update and fails rather than replacing, and a
+ * replacement would delete the environment and drain its queue. CDK's L2
+ * compute environments emit `false` by default. Only the desired side is read,
+ * as CloudFormation reads the template it deploys: dropping `false` beside an
+ * infrastructure change replaces. A cdkd rollback replays the journal through
+ * the providers and never runs this predicate backward.
  *
  * Without the sibling bags the common case answers in place, as the other
  * sibling predicates do. Known residue: a synthetic probe with no values (an
@@ -114,8 +115,5 @@ export function batchComputeResourcesChangeReplaces(
     INFRASTRUCTURE_UPDATE_MEMBERS.some(changed) ||
     (bestFit && (changed('Subnets') || changed('SecurityGroupIds')));
   if (!needsReplacement || siblings === undefined) return false;
-  return !(
-    isExplicitFalse(siblings.oldProperties['ReplaceComputeEnvironment']) ||
-    isExplicitFalse(siblings.newProperties['ReplaceComputeEnvironment'])
-  );
+  return !isExplicitFalse(siblings.newProperties['ReplaceComputeEnvironment']);
 }

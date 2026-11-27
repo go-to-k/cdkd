@@ -104,9 +104,8 @@ describe('Batch compute environment ComputeResources replacement (go-to-k/cdkd#7
     expect(replaces({ AllocationStrategy: 'BEST_FIT', Subnets: ['subnet-b'] }, undefined)).toBe(true);
   });
 
-  // The rollback replay of a deploy that set false and changed InstanceTypes
-  // runs the diff backward: old false, new absent. It must not replace.
-  it('an explicit false on either side keeps the update in place', () => {
+  // Only the template being deployed decides, as in CloudFormation.
+  it('the desired side decides ReplaceComputeEnvironment', () => {
     const change = { InstanceTypes: ['m5.large'] };
     const withRce = (rce: unknown): Record<string, unknown> =>
       rce === undefined ? {} : { ReplaceComputeEnvironment: rce };
@@ -116,8 +115,9 @@ describe('Batch compute environment ComputeResources replacement (go-to-k/cdkd#7
         newProperties: { ComputeResources: { ...base, ...change }, ...withRce(newRce) },
       });
     expect(run(undefined, false)).toBe(false);
-    expect(run(false, undefined)).toBe(false);
-    expect(run(false, true)).toBe(false);
+    expect(run(true, false)).toBe(false);
+    expect(run(false, undefined)).toBe(true);
+    expect(run(false, true)).toBe(true);
     expect(run(true, undefined)).toBe(true);
   });
 
@@ -161,11 +161,13 @@ describe('Batch compute environment ComputeResources replacement (go-to-k/cdkd#7
         resourceType: TYPE,
         stackName: 'S',
         changedProperties: new Set(['ComputeResources']),
+        // The record says the opposite: the template being deployed decides.
         record: {
           physicalId: 'arn',
           resourceType: TYPE,
-          properties: rce === undefined ? {} : { ReplaceComputeEnvironment: rce },
+          properties: rce === undefined ? { ReplaceComputeEnvironment: false } : {},
         } as never,
+        desiredProperties: rce === undefined ? {} : { ReplaceComputeEnvironment: rce },
         updateReplacePolicy: undefined,
         nestedChild: false,
       });

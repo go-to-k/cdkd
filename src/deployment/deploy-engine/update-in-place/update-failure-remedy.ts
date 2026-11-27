@@ -92,6 +92,8 @@ export function notUpdatableRemedy(input: {
   /** The top-level keys this update changed, template to template. */
   changedProperties: ReadonlySet<string>;
   record: ResourceState;
+  /** The properties this update sent: the template being deployed. */
+  desiredProperties?: Record<string, unknown> | undefined;
   /** The template's `UpdateReplacePolicy`: `Retain` keeps the old resource and its data. */
   updateReplacePolicy: string | undefined;
   nestedChild: boolean;
@@ -118,11 +120,12 @@ export function notUpdatableRemedy(input: {
       (stateful
         ? safeMsg` ${input.logicalId} is stateful: replacing it deletes its data, which the deploy asks you to confirm with --force-stateful-recreation.`
         : '');
-  // go-to-k/cdkd#7098: under `ReplaceComputeEnvironment: false` CloudFormation
-  // does not replace a Batch compute environment either; it fails the same way.
+  // go-to-k/cdkd#7098: under `ReplaceComputeEnvironment: false` in the
+  // template being deployed, CloudFormation does not replace a Batch compute
+  // environment either; it fails the same way.
   if (
     input.resourceType === 'AWS::Batch::ComputeEnvironment' &&
-    isExplicitFalse(input.record.properties?.['ReplaceComputeEnvironment'])
+    isExplicitFalse(input.desiredProperties?.['ReplaceComputeEnvironment'])
   ) {
     return (
       safeMsg`\n${input.logicalId} (${input.resourceType}): Batch refused this update in place (${CC_NOT_UPDATABLE_CODE})${changes}. ReplaceComputeEnvironment is false, so neither cdkd nor CloudFormation replaces the environment.` +
