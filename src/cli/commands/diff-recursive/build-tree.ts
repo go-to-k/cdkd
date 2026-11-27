@@ -1,4 +1,5 @@
 import { applyStackTagsToTemplate } from '../../../provisioning/stack-tag-targets.js';
+import { deletedRowRecordTainted, maskDeletedSubtree } from './deleted-subtree-taint.js';
 import { childStackTags } from '../../../provisioning/stack-tags.js';
 import { hintSidesOf, rollbackOrphanIds } from '../../../analyzer/refactor-hints.js';
 import type { CreateRouteOf } from '../../../deployment/deploy-engine/update-policy.js';
@@ -841,25 +842,26 @@ export async function buildDiffTree(args: {
   for (const [logicalId, resource] of Object.entries(state.resources ?? {})) {
     if (resource.resourceType !== NESTED_STACK_RESOURCE_TYPE) continue;
     if (templateChildIds.has(logicalId)) continue;
-    node.children.push(
-      await buildDeletedSubtree(
-        `${stackName}~${logicalId}`,
-        region,
-        stateBackend,
-        diffCalculator,
-        // The nearest LIVE template is the evidence the deleted child cannot
-        // supply for itself (issue #1948 review): the child diffs against an
-        // empty template, so without this its whole stored bag renders with
-        // values. Accumulated from above, so an intermediate template that
-        // happens to carry no reference cannot break the chain.
-        secretBearingAbove,
-        printingSecrets,
-        refusalRecovery,
-        // A deleted child's stored values can hold a name this node's records
-        // spell from a secret even when no live row reads it any more.
-        diffPrintingSecrets([nodeDerivedNames, nodeStateNames])
-      )
+    const deleted = await buildDeletedSubtree(
+      `${stackName}~${logicalId}`,
+      region,
+      stateBackend,
+      diffCalculator,
+      // The nearest LIVE template is the evidence the deleted child cannot
+      // supply for itself (issue #1948 review): the child diffs against an
+      // empty template, so without this its whole stored bag renders with
+      // values. Accumulated from above, so an intermediate template that
+      // happens to carry no reference cannot break the chain.
+      secretBearingAbove,
+      printingSecrets,
+      refusalRecovery,
+      // A deleted child's stored values can hold a name this node's records
+      // spell from a secret even when no live row reads it any more.
+      diffPrintingSecrets([nodeDerivedNames, nodeStateNames])
     );
+    // go-to-k/cdkd#7097: the deleted row's recorded taint masks its subtree.
+    if (deletedRowRecordTainted(resource, crossStackPreview)) maskDeletedSubtree(deleted);
+    node.children.push(deleted);
   }
 
   return node;

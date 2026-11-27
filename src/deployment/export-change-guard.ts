@@ -192,6 +192,15 @@ async function valueMayChange(
     return touchesChangedResource ? 'changed' : 'unchanged';
   }
   if (desired === undefined) return touchesChangedResource ? 'changed' : 'unchanged';
+  // go-to-k/cdkd#7097: a value published in plaintext by a record from before
+  // cdkd masked it, now resolving to (or composed over) the mask, moves only
+  // its persisted spelling: no import blocks it. One bound, stated: such a
+  // first deploy that ALSO edits the masked source's live value is judged
+  // unchanged, where the published side would have shown the move; after it
+  // the published side holds the mask and the rule above applies as always.
+  const holdsMask = (value: unknown): boolean =>
+    JSON.stringify(value)?.includes(SECRET_MASK) === true;
+  if (holdsMask(desired) && !holdsMask(publishedValue)) return 'unchanged';
   if (!isDeepStrictEqual(desired, publishedValue)) return 'changed';
   return readsUpdatedCustomResource ? 'deferred' : 'unchanged';
 }

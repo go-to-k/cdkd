@@ -304,6 +304,16 @@ INDEX_KEY="cdkd/_index/${REGION}/exports.json"
 # cannot satisfy assertion 2 — it carries the old run id and fails.
 RUN_ID="${CDKD_INTEG_RUN_ID:-$(date -u +%Y%m%d%H%M%S)}"
 export CDKD_INTEG_RUN_ID="${RUN_ID}"
+# go-to-k/cdkd#7097's step: its own stacks, SecureStrings and temp state bucket.
+P7097="CdkdCrossStackSecret7097Producer"
+C7097="CdkdCrossStackSecret7097Consumer"
+# A 2-character secret of letters no hex id, version id or ETag spells in this
+# pair ("q" and "z" are not hex), so a scan for it is not fooled by an id.
+PIN_7097="qz"
+PIN_7097_PARAM="/cdkd-integ-7097/${RUN_ID:-pre}/pin"
+LONG_7097_PARAM="/cdkd-integ-7097/${RUN_ID:-pre}/long"
+READER_7097_PARAM="/cdkd-integ-7097/${RUN_ID:-pre}/reader"
+EXPORT_7097="cdkd-7097-piece-${RUN_ID:-pre}"
 EXPECTED_PLAINTEXT="integ-1934-${RUN_ID}"
 # The secret's `queue` value, which NAMES the producer's queue (go-to-k/cdkd#4819).
 QUEUE_NAME="integ-1934q-${RUN_ID}"
@@ -411,6 +421,18 @@ sweep() {
     done
     aws secretsmanager delete-secret --secret-id "${SECRET_NAME}" \
       --force-delete-without-recovery --region "${REGION}" >/dev/null 2>&1
+    # go-to-k/cdkd#7097's step: its stacks, SecureStrings and temp state bucket.
+    if [ -n "${BUCKET_7097:-}" ]; then
+      CDKD_TEST_7097=1 node "${LOCAL_DIST}" state destroy "${C7097}" --state-bucket "${BUCKET_7097}" \
+        --region "${REGION}" --yes >/dev/null 2>&1
+      CDKD_TEST_7097=1 node "${LOCAL_DIST}" state destroy "${P7097}" --state-bucket "${BUCKET_7097}" \
+        --region "${REGION}" --yes >/dev/null 2>&1
+      s3_purge_prefix_versions "${BUCKET_7097}" "cdkd/" all || true
+      aws s3api delete-bucket --bucket "${BUCKET_7097}" --region "${REGION}" >/dev/null 2>&1
+    fi
+    aws ssm delete-parameter --name "${READER_7097_PARAM:-}" --region "${REGION}" >/dev/null 2>&1
+    aws ssm delete-parameter --name "${PIN_7097_PARAM:-}" --region "${REGION}" >/dev/null 2>&1
+    aws ssm delete-parameter --name "${LONG_7097_PARAM:-}" --region "${REGION}" >/dev/null 2>&1
     if [ -n "${STATE_BUCKET:-}" ]; then
       aws s3 rm "s3://${STATE_BUCKET}/cdkd/${CHAIN_CONSUMER}/${REGION}/lock.json" >/dev/null 2>&1
       aws s3 rm "s3://${STATE_BUCKET}/cdkd/${CONSUMER}/${REGION}/lock.json" >/dev/null 2>&1
@@ -2571,6 +2593,149 @@ cssi_deploy "${CONSUMER}" "step 11f steady-state consumer"
 cssi_assert_not_sent "step 11f steady-state consumer" \
   "PromoImportReader was promoted again on the next deploy (go-to-k/cdkd#4852): nothing upstream moved since it was sent"
 pass "11f: the steady-state consumer deploy left PromoImportReader alone"
+
+# --- go-to-k/cdkd#7097: a legacy mixed-fed nested row persists no plaintext ---
+# The producer's nested row passes `X = <pin>/<long>`, a parameter mixing a
+# secret reference with other text; the child's `Piece` output IS the pin
+# (2 characters, under the value scan's floor) and the root re-exports it. A
+# deploy before cdkd masked such an output left the row record holding the
+# PIN in `Outputs.Piece`; this step seeds that record, then asserts that no
+# later deploy writes the pin to any state object version (producer,
+# consumer, the exports index) and that the consumer's plan and
+# `--require-approval` summary never print it. Its own state bucket, so the
+# version scan reads only this step's objects.
+echo ""
+echo "==> Step 11g (go-to-k/cdkd#7097): a legacy mixed-fed nested row's output persists no plaintext"
+ACCOUNT_7097=$(aws sts get-caller-identity --query Account --output text)
+BUCKET_7097="cdkd-integ-7097-${ACCOUNT_7097}-$(printf '%s' "${RUN_ID}" | tr -cd 'a-z0-9' | tail -c 20)"
+if [ "${REGION}" = "us-east-1" ]; then
+  aws s3api create-bucket --bucket "${BUCKET_7097}" --region "${REGION}" >/dev/null
+else
+  aws s3api create-bucket --bucket "${BUCKET_7097}" --region "${REGION}" \
+    --create-bucket-configuration "LocationConstraint=${REGION}" >/dev/null
+fi
+aws s3api put-bucket-versioning --bucket "${BUCKET_7097}" \
+  --versioning-configuration Status=Enabled --region "${REGION}"
+aws ssm put-parameter --name "${PIN_7097_PARAM}" --type SecureString --value "${PIN_7097}" \
+  --overwrite --region "${REGION}" >/dev/null
+aws ssm put-parameter --name "${LONG_7097_PARAM}" --type SecureString \
+  --value "l0ng-s3cret-7097-${RUN_ID}" --overwrite --region "${REGION}" >/dev/null
+export CDKD_7097_PIN_PARAM="${PIN_7097_PARAM}" CDKD_7097_LONG_PARAM="${LONG_7097_PARAM}" \
+  CDKD_7097_READER_PARAM="${READER_7097_PARAM}" CDKD_7097_EXPORT_NAME="${EXPORT_7097}"
+P7097_KEY="cdkd/${P7097}/${REGION}/state.json"
+C7097_PREFIX="cdkd/${C7097}/${REGION}/"
+# The pin, as a scan sees it, outside every `{{resolve:...}}` span: a JSON
+# string of it, or it beside the `/` of the mixed value.
+leaks_7097() { # leaks_7097 <text> -- 0 when the pin appears outside a span
+  sed -E 's/\{\{resolve:[^}]*\}\}//g' <<<"$1" \
+    | grep -qE "(^|[^A-Za-z0-9])${PIN_7097}([^A-Za-z0-9]|$)|pre-${PIN_7097}"
+}
+# Every version of every object under <prefix> newer than <after-epoch>, scanned.
+scan_versions_7097() { # scan_versions_7097 <label> <prefix> <after-epoch>
+  local label="$1" prefix="$2" after="$3" scanned=0 key vid modified body
+  while IFS=$'\t' read -r key vid modified; do
+    [ -n "${key}" ] || continue
+    local stamp="${modified%%.*}"
+    stamp="${stamp%%+*}"
+    stamp="${stamp%Z}"
+    [ "$(date -u -d "${stamp}" +%s 2>/dev/null || date -u -j -f '%Y-%m-%dT%H:%M:%S' "${stamp}" +%s)" -gt "${after}" ] || continue
+    local fetched
+    fetched=$(mktemp)
+    if ! aws s3api get-object --bucket "${BUCKET_7097}" --key "${key}" --version-id "${vid}" \
+      --region "${REGION}" "${fetched}" >/dev/null; then
+      rm -f "${fetched}"
+      fail "#7097: ${label}: could not read ${key} (version ${vid}), so the scan cannot vouch for it"
+    fi
+    body=$(head -c 2000000 "${fetched}")
+    rm -f "${fetched}"
+    scanned=$((scanned + 1))
+    if leaks_7097 "${body}"; then
+      fail "#7097: ${label}: state object ${key} (version ${vid}) holds the sub-floor pin outside a {{resolve:...}} span"
+    fi
+  done < <(aws s3api list-object-versions --bucket "${BUCKET_7097}" --prefix "${prefix}" --region "${REGION}" \
+    --query 'Versions[].[Key,VersionId,LastModified]' --output text 2>/dev/null | grep -v '^None$' || true)
+  if [ "${scanned}" -eq 0 ]; then
+    fail "#7097: ${label}: premise: no state object version under ${prefix} was written after the seed, so the scan read nothing"
+  fi
+  pass "#7097: ${label}: ${scanned} state object version(s) carry no plaintext pin"
+}
+
+CDKD_TEST_7097=1 node "${LOCAL_DIST}" deploy "${P7097}" --state-bucket "${BUCKET_7097}" \
+  --region "${REGION}" --yes
+# Seed the LEGACY record: the row's `Outputs.Piece` and the root output / its
+# export alias in plaintext, as a deploy before the masking left them.
+P7097_SEEDED="$(aws s3 cp "s3://${BUCKET_7097}/${P7097_KEY}" - --region "${REGION}" \
+  | jq --arg pin "${PIN_7097}" --arg exp "${EXPORT_7097}" \
+    '.resources.Row.attributes["Outputs.Piece"] = $pin | .outputs.Out = $pin | .outputs[$exp] = $pin')"
+if [ "$(jq -r '.resources.Row.attributes["Outputs.Piece"]' <<<"${P7097_SEEDED}")" != "${PIN_7097}" ]; then
+  fail "#7097: premise: the seeded producer record does not hold the pin in Row's Outputs.Piece"
+fi
+aws s3 cp - "s3://${BUCKET_7097}/${P7097_KEY}" --region "${REGION}" <<<"${P7097_SEEDED}" >/dev/null
+sleep 2
+SEED_EPOCH_7097=$(date -u +%s)
+sleep 2
+
+# The producer's unchanged redeploy: the outputs resolve from the legacy row.
+set +e
+P7097_OUT="$(CDKD_TEST_7097=1 node "${LOCAL_DIST}" deploy "${P7097}" --state-bucket "${BUCKET_7097}" \
+  --region "${REGION}" --yes --verbose 2>&1)"
+P7097_RC=$?
+set -e
+if [ "${P7097_RC}" -ne 0 ]; then
+  echo "${P7097_OUT}" | tail -40 >&2
+  fail "#7097: the producer's redeploy over the legacy row record exited ${P7097_RC}"
+fi
+if leaks_7097 "${P7097_OUT}"; then
+  fail "#7097: the producer's --verbose redeploy printed the sub-floor pin outside a {{resolve:...}} span"
+fi
+P7097_STATE="$(aws s3 cp "s3://${BUCKET_7097}/${P7097_KEY}" - --region "${REGION}")"
+if [ "$(jq -r --arg exp "${EXPORT_7097}" '.outputs[$exp]' <<<"${P7097_STATE}")" != "***" ]; then
+  fail "#7097: the producer persisted its export alias ${EXPORT_7097} as something other than *** (the legacy row's plaintext reached state)"
+fi
+if [ "$(jq -r '.outputs.Out' <<<"${P7097_STATE}")" != "***" ]; then
+  fail "#7097: the producer persisted Out as '$(jq -r '.outputs.Out' <<<"${P7097_STATE}" | sed "s/${PIN_7097}/<pin>/g")', not *** (the legacy row's plaintext reached state)"
+fi
+
+# The consumer: its `--require-approval` summary (printed, then refused: stdin
+# is no terminal), then the deploy itself.
+set +e
+C7097_APPROVAL="$(CDKD_TEST_7097=1 node "${LOCAL_DIST}" deploy "${C7097}" --state-bucket "${BUCKET_7097}" \
+  --region "${REGION}" --require-approval any-change </dev/null 2>&1)"
+set -e
+if ! grep -qF "${C7097}" <<<"${C7097_APPROVAL}"; then
+  echo "${C7097_APPROVAL}" | tail -20 >&2
+  fail "#7097: premise: the consumer's --require-approval run printed no summary naming ${C7097}"
+fi
+if leaks_7097 "${C7097_APPROVAL}"; then
+  fail "#7097: the consumer's --require-approval summary printed the sub-floor pin"
+fi
+set +e
+C7097_OUT="$(CDKD_TEST_7097=1 node "${LOCAL_DIST}" deploy "${C7097}" --state-bucket "${BUCKET_7097}" \
+  --region "${REGION}" --yes --verbose 2>&1)"
+C7097_RC=$?
+set -e
+if [ "${C7097_RC}" -ne 0 ]; then
+  echo "${C7097_OUT}" | tail -40 >&2
+  fail "#7097: the consumer's deploy exited ${C7097_RC}"
+fi
+if leaks_7097 "${C7097_OUT}"; then
+  fail "#7097: the consumer's deploy plan / --verbose output printed the sub-floor pin"
+fi
+scan_versions_7097 "producer state" "cdkd/${P7097}/" "${SEED_EPOCH_7097}"
+scan_versions_7097 "consumer state" "${C7097_PREFIX}" 0
+scan_versions_7097 "exports index" "cdkd/_index/" "${SEED_EPOCH_7097}"
+pass "#7097: the legacy row's pin reached no state version, plan or approval summary"
+
+CDKD_TEST_7097=1 node "${LOCAL_DIST}" destroy "${C7097}" --state-bucket "${BUCKET_7097}" \
+  --region "${REGION}" --force
+CDKD_TEST_7097=1 node "${LOCAL_DIST}" destroy "${P7097}" --state-bucket "${BUCKET_7097}" \
+  --region "${REGION}" --force
+s3_purge_prefix_versions "${BUCKET_7097}" "cdkd/" all || true
+aws s3api delete-bucket --bucket "${BUCKET_7097}" --region "${REGION}"
+BUCKET_7097=""
+aws ssm delete-parameter --name "${PIN_7097_PARAM}" --region "${REGION}" >/dev/null 2>&1 || true
+aws ssm delete-parameter --name "${LONG_7097_PARAM}" --region "${REGION}" >/dev/null 2>&1 || true
+unset CDKD_7097_PIN_PARAM CDKD_7097_LONG_PARAM CDKD_7097_READER_PARAM CDKD_7097_EXPORT_NAME
 
 # --- Assertion 11: TEARDOWN ------------------------------------------------
 echo ""
