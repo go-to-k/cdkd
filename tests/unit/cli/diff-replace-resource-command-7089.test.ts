@@ -216,6 +216,19 @@ describe('cdkd diff --replace-resource command wiring (go-to-k/cdkd#7089)', () =
     expect(mockExpandMacros.mock.calls.flatMap((c) => (c[0] as Array<{ stackName: string }>).map((s) => s.stackName))).toContain('Dep');
   });
 
+  it("walks a dependency's dependencies too, as the deploy does", async () => {
+    const queue = { Resources: { Q: { Type: 'AWS::SQS::Queue' } } };
+    synthesized(
+      appStack(STACK, structuredClone(queue), ['Mid']),
+      appStack('Mid', structuredClone(queue), ['Leaf']),
+      appStack('Leaf', topTemplate())
+    );
+    await runDiff([STACK, '--replace-resource', 'Fn']);
+    expect(warned.mock.calls.map((c) => String(c[0]))).toContain(
+      '--replace-resource Fn: declared by Leaf, which the deploy includes as a dependency; diff that stack to preview its replacement.'
+    );
+  });
+
   it('checks the macro-expanded template', async () => {
     synthesized(appStack(STACK, { Resources: {} }));
     mockExpandMacros.mockImplementation(async (stacks: unknown[]) => {

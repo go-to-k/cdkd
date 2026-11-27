@@ -299,8 +299,8 @@ only.
 `cdkd diff --replace-resource <LogicalId>` previews this plan. The target
 shows as a replacement and its readers are promoted, as in
 `cdkd deploy --dry-run`. An id the deploy refuses as invalid fails the diff
-too, checked over the stacks that deploy runs: the selection plus its
-dependency stacks. An id only such a dependency declares is named in a
+too, checked over the stacks that deploy runs without `-e`: the selection
+plus its dependency stacks. An id only such a dependency declares is named in a
 warning, since the diff does not diff that stack. A `REPLACE_RESOURCE_REFUSED` target is a blocking reason (exit `3`).
 `cdkd diff` has no `--force-stateful-recreation`, so a stateful target or
 reader the deploy would refuse without that flag is only a warning.
