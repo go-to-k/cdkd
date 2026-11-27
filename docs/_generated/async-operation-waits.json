@@ -1,10 +1,10 @@
 {
   "issue": 7132,
-  "total": 149,
+  "total": 153,
   "counts": {
-    "unmeasured": 53,
+    "unmeasured": 55,
     "waits": 89,
-    "no-wait-by-design": 7
+    "no-wait-by-design": 9
   },
   "rows": [
     {
@@ -26,6 +26,27 @@
       "classification": {
         "verdict": "unmeasured",
         "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+      }
+    },
+    {
+      "key": "api-gateway:CreateStage",
+      "client": "api-gateway",
+      "operation": "CreateStage",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "cacheClusterStatus: CacheClusterStatus (CREATE_IN_PROGRESS, DELETE_IN_PROGRESS, FLUSH_IN_PROGRESS)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/apigateway/stage.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/apigateway-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (a cache cluster answers CREATE_IN_PROGRESS)"
       }
     },
     {
@@ -89,6 +110,27 @@
       "classification": {
         "verdict": "unmeasured",
         "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+      }
+    },
+    {
+      "key": "api-gateway:UpdateStage",
+      "client": "api-gateway",
+      "operation": "UpdateStage",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "cacheClusterStatus: CacheClusterStatus (CREATE_IN_PROGRESS, DELETE_IN_PROGRESS, FLUSH_IN_PROGRESS)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/apigateway/stage.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/apigateway-provider.ts"
+      ],
+      "classification": {
+        "verdict": "unmeasured",
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (a CacheClusterEnabled change answers CREATE_IN_PROGRESS / DELETE_IN_PROGRESS)"
       }
     },
     {
@@ -1160,7 +1202,7 @@
       "evidence": [
         {
           "signal": "transitional-enum",
-          "detail": "VpcEndpoint.State: State (Deleting, Pending)"
+          "detail": "VpcEndpoint.State: State (Deleting, Pending, PendingAcceptance)"
         }
       ],
       "files": [
@@ -1429,6 +1471,27 @@
       }
     },
     {
+      "key": "ecs:DeregisterTaskDefinition",
+      "client": "ecs",
+      "operation": "DeregisterTaskDefinition",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "taskDefinition.status: TaskDefinitionStatus (DELETE_IN_PROGRESS)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ecs/cluster-task-definition.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ecs-provider.ts"
+      ],
+      "classification": {
+        "verdict": "no-wait-by-design",
+        "reason": "settled once AWS answers: the revision is INACTIVE at once; DELETE_IN_PROGRESS belongs to DeleteTaskDefinitions, which no provider sends (ECS API reference)"
+      }
+    },
+    {
       "key": "ecs:PutClusterCapacityProviders",
       "client": "ecs",
       "operation": "PutClusterCapacityProviders",
@@ -1456,6 +1519,27 @@
         "failureStatuses": [
           "UPDATE_FAILED"
         ]
+      }
+    },
+    {
+      "key": "ecs:RegisterTaskDefinition",
+      "client": "ecs",
+      "operation": "RegisterTaskDefinition",
+      "evidence": [
+        {
+          "signal": "transitional-enum",
+          "detail": "taskDefinition.status: TaskDefinitionStatus (DELETE_IN_PROGRESS)"
+        }
+      ],
+      "files": [
+        "src/provisioning/providers/ecs/cluster-task-definition.ts"
+      ],
+      "units": [
+        "src/provisioning/providers/ecs-provider.ts"
+      ],
+      "classification": {
+        "verdict": "no-wait-by-design",
+        "reason": "settled once AWS answers: the revision is ACTIVE at once; DELETE_IN_PROGRESS belongs to DeleteTaskDefinitions (ECS API reference)"
       }
     },
     {
@@ -2094,7 +2178,7 @@
       "evidence": [
         {
           "signal": "transitional-enum",
-          "detail": "KeyMetadata.KeyState: KeyState (Creating, Updating)"
+          "detail": "KeyMetadata.KeyState: KeyState (Creating, PendingDeletion, PendingImport, PendingReplicaDeletion, Updating)"
         }
       ],
       "files": [
@@ -2115,7 +2199,7 @@
       "evidence": [
         {
           "signal": "transitional-enum",
-          "detail": "KeyState: KeyState (Creating, Updating)"
+          "detail": "KeyState: KeyState (Creating, PendingDeletion, PendingImport, PendingReplicaDeletion, Updating)"
         }
       ],
       "files": [

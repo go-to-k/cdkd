@@ -25,8 +25,9 @@
  *   - `transitional-enum`: the command's output shape, at the top level or one
  *     structure below it (a member typed as a structure, or an array of one),
  *     has a member typed as an SDK string enum with a transitional value
- *     ({@link isTransitionalValue}: `*ING`, `PENDING`, `PROCESSING`,
- *     `IN_PROGRESS`, compared case- and separator-insensitively);
+ *     ({@link isTransitionalValue}: `*ING`, `PROCESSING`, anything containing
+ *     `IN_PROGRESS` (`CREATE_IN_PROGRESS`) or starting or ending with
+ *     `PENDING`, compared case- and separator-insensitively);
  *   - `state-string`: the same walk finds a member named `State` / `Status` /
  *     `*State` / `*Status` typed plain `string`. The SDK models some status
  *     members without an enum (Lambda's `EventSourceMappingConfiguration.State`,
@@ -35,11 +36,24 @@
  * Read operations (`Describe*`, `Get*`, `List*`, ...: {@link READ_PREFIXES}) are
  * left out: they start nothing; they are what a wait SENDS.
  *
+ * BOUND: only `src/provisioning/providers/**` is read, so an asynchronous send
+ * from a shared helper outside it (the final-snapshot `CreateSnapshot` /
+ * `CreateClusterSnapshot` calls, Cloud Control) is not in the population.
+ *
  * BOUND: the walk is one structure deep, so a status two levels down is
  * missed, and an operation whose output carries no status at all (a
  * `Modify*` answering `{}` while the change applies) is invisible to all three
  * rules. A waiter-only signal (the service ships `waitUntil*` for the
  * resource) is not used: it names a DESCRIBE operation, not the write.
+ * Measured on the #7132 review, a two-level walk adds about 20 operations
+ * (ELBv2 `CreateLoadBalancer`'s `LoadBalancers[].State.Code`, RDS
+ * `RegisterDBProxyTargets`, EMR `PutAutoScalingPolicy`, EC2 `RunInstances` /
+ * `StopInstances`, ...), left for #7132.
+ *
+ * BOUND: the helper check is a REFERENCE check: it holds that the provider
+ * unit still names a helper, not that the helper runs after THIS operation. A
+ * generic name another operation of the same unit also calls
+ * (`waitForSettled`) keeps passing if this operation's wait is deleted.
  *
  * CLASSIFICATION
  * --------------
@@ -102,12 +116,12 @@ export const READ_PREFIXES = [
  * `INTELLIGENT_TIERING`, SSM `Intelligent-Tiering`), a throughput mode (EFS
  * `bursting`), a load balancer scheme (`internet-facing`), a steady state
  * (Pipes' requested `RUNNING`) or a replica's protection setting (EFS
- * `REPLICATING`). `STRING` / `WARNING` are pre-emptive: a data type and a
- * severity.
+ * `REPLICATING`). `WARNING` / `THROTTLING` are pre-emptive: a severity and an
+ * error code. Any value ending in `STRING` (`SINGLE_STRING`) is a data type.
  */
 const NON_TRANSITIONAL_ING = new Set([
-  'STRING',
   'WARNING',
+  'THROTTLING',
   'INTELLIGENTTIERING',
   'BURSTING',
   'INTERNETFACING',
@@ -118,8 +132,9 @@ const NON_TRANSITIONAL_ING = new Set([
 /** Whether an enum value names an in-progress state. */
 export function isTransitionalValue(value: string): boolean {
   const v = value.toUpperCase().replace(/[^A-Z]/g, '');
-  if (v === 'PENDING' || v === 'PROCESSING' || v === 'INPROGRESS') return true;
-  return v.endsWith('ING') && !NON_TRANSITIONAL_ING.has(v);
+  if (v.includes('INPROGRESS') || v.startsWith('PENDING') || v.endsWith('PENDING')) return true;
+  if (v === 'PROCESSING') return true;
+  return v.endsWith('ING') && !v.endsWith('STRING') && !NON_TRANSITIONAL_ING.has(v);
 }
 
 const STATE_MEMBER = /^(?:.*State|.*Status|state|status)$/;

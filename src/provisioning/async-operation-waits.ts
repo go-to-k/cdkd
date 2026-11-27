@@ -16,8 +16,11 @@
  *   `failureStatuses` (empty when the wait only times out or warns). Where the
  *   wait is scoped (`--no-wait` defers it, it covers only the settings that
  *   changed) or a cleanup send skips it, `note` says so.
- * - `no-wait-by-design`: the operation is settled once AWS answers, or
- *   CloudFormation does not wait either; `reason` names the evidence.
+ * - `no-wait-by-design`: the operation is settled once AWS answers,
+ *   CloudFormation does not wait either, or cdkd decided and documented not to
+ *   wait where CloudFormation does (CloudFront `Deployed`, #1282; a Lambda
+ *   function's `Active`, #5002; NAT address associations, #2762); `reason`
+ *   names the evidence.
  * - `unmeasured`: no wait on at least one create / update / delete path, and
  *   whether CloudFormation waits there needs an A/B run; #7132 tracks it.
  *
@@ -66,10 +69,14 @@ const DEFERRED =
 const FLIP = 'a DeletionProtection flip or re-enable around a delete does not wait after the call';
 
 export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperationVerdict>> = {
+  'api-gateway:CreateStage': unmeasured(`${NO_WAIT} (a cache cluster answers CREATE_IN_PROGRESS)`),
   'api-gateway:CreateRestApi': unmeasured(NO_WAIT),
   'api-gateway:ImportRestApi': unmeasured(NO_WAIT),
   'api-gateway:PutRestApi': unmeasured(NO_WAIT),
   'api-gateway:UpdateRestApi': unmeasured(NO_WAIT),
+  'api-gateway:UpdateStage': unmeasured(
+    `${NO_WAIT} (a CacheClusterEnabled change answers CREATE_IN_PROGRESS / DELETE_IN_PROGRESS)`
+  ),
   'appconfig:CreateEnvironment': unmeasured(NO_WAIT),
   'appconfig:UpdateEnvironment': unmeasured(NO_WAIT),
   'appsync:StartSchemaCreation': unmeasured(
@@ -215,6 +222,12 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
     'every mode; the failed-create cleanup delete does not wait (DRAINING outlives the call, #1291)'
   ),
   'ecs:PutClusterCapacityProviders': waits(['waitForOwnCapacityProviderPut'], ['UPDATE_FAILED']),
+  'ecs:DeregisterTaskDefinition': byDesign(
+    'settled once AWS answers: the revision is INACTIVE at once; DELETE_IN_PROGRESS belongs to DeleteTaskDefinitions, which no provider sends (ECS API reference)'
+  ),
+  'ecs:RegisterTaskDefinition': byDesign(
+    'settled once AWS answers: the revision is ACTIVE at once; DELETE_IN_PROGRESS belongs to DeleteTaskDefinitions (ECS API reference)'
+  ),
   'ecs:UpdateCluster': unmeasured(`${NO_WAIT} (it waits only before a refused write)`),
   'ecs:UpdateService': waits(
     ['settleService'],

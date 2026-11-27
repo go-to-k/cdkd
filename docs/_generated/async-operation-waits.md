@@ -12,14 +12,16 @@ Every SDK command a provider sends whose operation the SDK model marks as asynch
 (issue [#7132](https://github.com/go-to-k/cdkd/issues/7132)), with its hand classification
 from `src/provisioning/async-operation-waits.ts`.
 
-Total: 149 (no-wait-by-design 7, unmeasured 53, waits 89).
+Total: 153 (no-wait-by-design 9, unmeasured 55, waits 89).
 
 | Operation | Signal | Verdict | Detail | Providers |
 | --- | --- | --- | --- | --- |
 | api-gateway:CreateRestApi | apiStatus: ApiStatus (PENDING, UPDATING) | unmeasured | returns after the call; no code comment says why; needs a CloudFormation A/B | apigateway-provider.ts |
+| api-gateway:CreateStage | cacheClusterStatus: CacheClusterStatus (CREATE_IN_PROGRESS, DELETE_IN_PROGRESS, FLUSH_IN_PROGRESS) | unmeasured | returns after the call; no code comment says why; needs a CloudFormation A/B (a cache cluster answers CREATE_IN_PROGRESS) | apigateway-provider.ts |
 | api-gateway:ImportRestApi | apiStatus: ApiStatus (PENDING, UPDATING) | unmeasured | returns after the call; no code comment says why; needs a CloudFormation A/B | apigateway-provider.ts |
 | api-gateway:PutRestApi | apiStatus: ApiStatus (PENDING, UPDATING) | unmeasured | returns after the call; no code comment says why; needs a CloudFormation A/B | apigateway-provider.ts |
 | api-gateway:UpdateRestApi | apiStatus: ApiStatus (PENDING, UPDATING) | unmeasured | returns after the call; no code comment says why; needs a CloudFormation A/B | apigateway-provider.ts |
+| api-gateway:UpdateStage | cacheClusterStatus: CacheClusterStatus (CREATE_IN_PROGRESS, DELETE_IN_PROGRESS, FLUSH_IN_PROGRESS) | unmeasured | returns after the call; no code comment says why; needs a CloudFormation A/B (a CacheClusterEnabled change answers CREATE_IN_PROGRESS / DELETE_IN_PROGRESS) | apigateway-provider.ts |
 | appconfig:CreateEnvironment | State: EnvironmentState (DEPLOYING) | unmeasured | returns after the call; no code comment says why; needs a CloudFormation A/B | appconfig-environment-provider.ts |
 | appconfig:UpdateEnvironment | State: EnvironmentState (DEPLOYING) | unmeasured | returns after the call; no code comment says why; needs a CloudFormation A/B | appconfig-environment-provider.ts |
 | appsync:StartSchemaCreation | StartSchemaCreation; status: SchemaStatus (DELETING, PROCESSING) | unmeasured | returns while the schema is PROCESSING; CloudFormation fails NotStabilized on an invalid schema (#7127, whose open fix adds the wait) | appsync-provider.ts |
@@ -62,7 +64,7 @@ Total: 149 (no-wait-by-design 7, unmeasured 53, waits 89).
 | ec2:CreateNatGateway | NatGateway.State: NatGatewayState (deleting, pending) | waits | `waitUntilNatGatewayAvailable`; fails on failed, deleting, deleted; --no-wait defers it to deferReadiness (runs only if the deploy needs the resource) | ec2-provider.ts |
 | ec2:CreateSubnet | Subnet.State: SubnetState (pending) | unmeasured | returns after the call; no code comment says why; needs a CloudFormation A/B (only an IPv6 association and attribute read-back wait) | ec2-provider.ts |
 | ec2:CreateVpc | Vpc.State: VpcState (deleting, pending) | unmeasured | returns after the call; no code comment says why; needs a CloudFormation A/B | ec2-provider.ts |
-| ec2:CreateVpcEndpoint | VpcEndpoint.State: State (Deleting, Pending) | waits | `waitForSettled`; fails on failed, rejected, expired, partial, deleting, deleted; --no-wait defers it to deferReadiness (runs only if the deploy needs the resource) | ec2-vpc-endpoint-provider.ts |
+| ec2:CreateVpcEndpoint | VpcEndpoint.State: State (Deleting, Pending, PendingAcceptance) | waits | `waitForSettled`; fails on failed, rejected, expired, partial, deleting, deleted; --no-wait defers it to deferReadiness (runs only if the deploy needs the resource) | ec2-vpc-endpoint-provider.ts |
 | ec2:DetachVolume | State: VolumeAttachmentState (attaching, detaching) | waits | `waitForVolumeAttachment`; fails on (none: times out only) | ec2-provider.ts |
 | ec2:DisassociateIamInstanceProfile | IamInstanceProfileAssociation.State: IamInstanceProfileAssociationState (associating, disassociating) | unmeasured | returns after the call; no code comment says why; needs a CloudFormation A/B | ec2-provider.ts |
 | ec2:DisassociateNatGatewayAddress | NatGatewayAddresses.Status: NatGatewayAddressStatus (assigning, associating, disassociating, unassigning) | no-wait-by-design | CloudFormation waits, cdkd deliberately does not: the gateway keeps serving its other zones (ec2/nat-gateway.ts comment, measured on #2762) | ec2-provider.ts |
@@ -73,7 +75,9 @@ Total: 149 (no-wait-by-design 7, unmeasured 53, waits 89).
 | ecs:CreateService | service.status: string | waits | `settleService`; fails on MISSING, DRAINING, INACTIVE, a FAILED deployment; --no-wait defers it to deferReadiness (runs only if the deploy needs the resource); a non-ECS deployment controller skips it | ecs-provider.ts |
 | ecs:DeleteCluster | cluster.status: string; cluster.attachmentsStatus: string | unmeasured | returns after the call; no code comment says why; needs a CloudFormation A/B | ecs-provider.ts |
 | ecs:DeleteService | service.status: string | waits | `waitForServiceInactive`; fails on (none: times out only); every mode; the failed-create cleanup delete does not wait (DRAINING outlives the call, #1291) | ecs-provider.ts |
+| ecs:DeregisterTaskDefinition | taskDefinition.status: TaskDefinitionStatus (DELETE_IN_PROGRESS) | no-wait-by-design | settled once AWS answers: the revision is INACTIVE at once; DELETE_IN_PROGRESS belongs to DeleteTaskDefinitions, which no provider sends (ECS API reference) | ecs-provider.ts |
 | ecs:PutClusterCapacityProviders | cluster.status: string; cluster.attachmentsStatus: string | waits | `waitForOwnCapacityProviderPut`; fails on UPDATE_FAILED | ecs-provider.ts |
+| ecs:RegisterTaskDefinition | taskDefinition.status: TaskDefinitionStatus (DELETE_IN_PROGRESS) | no-wait-by-design | settled once AWS answers: the revision is ACTIVE at once; DELETE_IN_PROGRESS belongs to DeleteTaskDefinitions (ECS API reference) | ecs-provider.ts |
 | ecs:UpdateCluster | cluster.status: string; cluster.attachmentsStatus: string | unmeasured | returns after the call; no code comment says why; needs a CloudFormation A/B (it waits only before a refused write) | ecs-provider.ts |
 | ecs:UpdateService | service.status: string | waits | `settleService`; fails on MISSING, DRAINING, INACTIVE, a FAILED deployment; --no-wait defers it to deferReadiness (runs only if the deploy needs the resource); drift revert, a non-ECS controller and the scale-down before a delete skip it | ecs-provider.ts |
 | efs:CreateAccessPoint | LifeCycleState: LifeCycleState (creating, deleting, updating) | unmeasured | returns after the call; no code comment says why; needs a CloudFormation A/B (the provider has no access-point waiter) | efs-provider.ts |
@@ -99,8 +103,8 @@ Total: 149 (no-wait-by-design 7, unmeasured 53, waits 89).
 | glue:UpdateTrigger | Trigger.State: TriggerState (ACTIVATING, CREATING, DEACTIVATING, DELETING, UPDATING) | unmeasured | returns after the call; no code comment says why; needs a CloudFormation A/B (it waits only for the deactivation before) | glue-provider.ts |
 | kinesis:RegisterStreamConsumer | Consumer.ConsumerStatus: ConsumerStatus (CREATING, DELETING) | waits | `waitForConsumerActive`; fails on any status other than CREATING / ACTIVE | kinesis-streamconsumer-provider.ts |
 | kinesis:StartStreamEncryption | StartStreamEncryption | waits | `waitForStreamActive`; fails on any status other than ACTIVE / CREATING / UPDATING | kinesis-provider.ts |
-| kms:CreateKey | KeyMetadata.KeyState: KeyState (Creating, Updating) | unmeasured | returns after the call; no code comment says why; needs a CloudFormation A/B | kms-provider.ts |
-| kms:ScheduleKeyDeletion | KeyState: KeyState (Creating, Updating) | no-wait-by-design | the call sets PendingDeletion, which holds for the whole 7-30 day window: nothing is in progress to wait for | kms-provider.ts |
+| kms:CreateKey | KeyMetadata.KeyState: KeyState (Creating, PendingDeletion, PendingImport, PendingReplicaDeletion, Updating) | unmeasured | returns after the call; no code comment says why; needs a CloudFormation A/B | kms-provider.ts |
+| kms:ScheduleKeyDeletion | KeyState: KeyState (Creating, PendingDeletion, PendingImport, PendingReplicaDeletion, Updating) | no-wait-by-design | the call sets PendingDeletion, which holds for the whole 7-30 day window: nothing is in progress to wait for | kms-provider.ts |
 | lambda-core:CreateNetworkConnector | State: NetworkConnectorState (DELETING, PENDING) | waits | `waitForSettled`; fails on FAILED, DELETING, DELETE_FAILED, INACTIVE; every mode | lambda-network-connector-provider.ts |
 | lambda-core:DeleteNetworkConnector | State: NetworkConnectorState (DELETING, PENDING) | waits | `waitForGone`; fails on DELETE_FAILED | lambda-network-connector-provider.ts |
 | lambda-core:UpdateNetworkConnector | State: NetworkConnectorState (DELETING, PENDING); LastUpdateStatus: NetworkConnectorLastUpdateStatus (InProgress) | waits | `waitForSettled`; fails on FAILED, DELETING, DELETE_FAILED, INACTIVE | lambda-network-connector-provider.ts |

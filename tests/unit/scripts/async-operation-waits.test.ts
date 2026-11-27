@@ -80,10 +80,28 @@ describe('the population rules', () => {
   });
 
   it('reads a transitional value case- and separator-insensitively, and not a steady -ING word', () => {
-    for (const v of ['CREATING', 'Creating', 'pending', 'IN_PROGRESS', 'InProgress', 'PROCESSING']) {
+    for (const v of [
+      'CREATING',
+      'Creating',
+      'pending',
+      'PENDING_ACCEPTANCE',
+      'IN_PROGRESS',
+      'InProgress',
+      'CREATE_IN_PROGRESS',
+      'PROCESSING',
+    ]) {
       expect(isTransitionalValue(v), v).toBe(true);
     }
-    for (const v of ['ACTIVE', 'STRING', 'INTELLIGENT_TIERING', 'internet-facing', 'RUNNING', 'FAILED']) {
+    for (const v of [
+      'ACTIVE',
+      'STRING',
+      'SINGLE_STRING',
+      'Throttling',
+      'INTELLIGENT_TIERING',
+      'internet-facing',
+      'RUNNING',
+      'FAILED',
+    ]) {
       expect(isTransitionalValue(v), v).toBe(false);
     }
   });
