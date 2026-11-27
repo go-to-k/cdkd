@@ -442,7 +442,7 @@ export function classifyByRule(input: TypeInput, attribute: string): RuleName | 
     !VERSIONED.test(attribute) &&
     primaryIdentifier.includes(attribute) &&
     !(isArn && templateNamesWritable) &&
-    !(isArn && input.arnTemplate === undefined && mutableName && (versioned || !ownNameOnly));
+    !(isArn && input.arnTemplate === undefined && ((mutableName && versioned) || !ownNameOnly));
   const m = OWN_IDENTITY.exec(attribute);
   const prefix = m?.[1]!.toLowerCase();
   const own = prefix !== undefined && (prefix === '' || typeName.toLowerCase().endsWith(prefix));

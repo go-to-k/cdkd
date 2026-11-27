@@ -459,7 +459,10 @@ describe('an export of a Cloud Control update time is judged after the update (#
     const rows = Object.entries(HAND_IN_PLACE_UPDATE_STATUS_ATTRS).flatMap(([type, attrs]) =>
       [...attrs].map((attribute) => `${type}.${attribute}`)
     );
-    expect(rows.length).toBeGreaterThanOrEqual(24);
+    expect(rows.length).toBeGreaterThanOrEqual(20);
+    // An RDS instance's point-in-time status is recorded only from a settled
+    // `available` read: it stays never (a re-resolve would be refused).
+    expect(HAND_IN_PLACE_UPDATE_STATUS_ATTRS['AWS::RDS::DBInstance']?.has('DBInstanceStatus')).toBe(false);
     expect(statusRows.map((r) => `${r.type}.${r.attribute}`).sort()).toEqual(rows.sort());
   });
 

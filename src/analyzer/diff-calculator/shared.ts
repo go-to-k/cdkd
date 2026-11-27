@@ -147,13 +147,10 @@ export const HAND_IN_PLACE_UPDATE_STATUS_ATTRS: Readonly<Record<string, Readonly
     'AWS::Lambda::WebFunctionRevision': new Set(['State', 'StateReason']),
     'AWS::Logs::DeliverySource': new Set(['Status', 'StatusReason']),
     'AWS::Pipes::Pipe': new Set(['StateReason']),
-    'AWS::RDS::DBInstance': new Set([
-      'DBInstanceStatus',
-      'PercentProgress',
-      'StatusInfos',
-      'StorageOperationStatus',
-      'StorageOperationPercentProgress',
-    ]),
+    // DBInstanceStatus / PercentProgress / StorageOperation* stay out: the
+    // record holds them only from a settled `available` read, so a reader
+    // re-resolved after an update read mid-modification would be refused.
+    'AWS::RDS::DBInstance': new Set(['StatusInfos']),
   });
 
 export const IN_PLACE_UPDATE_DERIVED_ATTRS: Readonly<Record<string, ReadonlySet<string>>> =

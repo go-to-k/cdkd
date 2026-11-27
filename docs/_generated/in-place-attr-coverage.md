@@ -12,8 +12,8 @@ Whether an in-place update moves each read-only `Fn::GetAtt` attribute (issue [#
 
 Source: `@aws-cdk/aws-service-spec` 0.1.235; create-only properties from the live-registry snapshot `tests/fixtures/cfn-registry-create-only-paths.json`.
 
-- SDK-provider types: **131**, pairs classified by hand: **390** (moving: **90**)
-- Cloud Control types: **1584**, pairs: **5545** — by rule: `no-in-place-update` 974, `creation-timestamp` 381, `own-identity` 816, `primary-identifier` 493, `arn-template` 96, `update-timestamp` 372, `creator` 26, `owner-account` 30, `identifier-arn-member` 68, `update-marker` 143, `parent-fixed` 2, `operational-status` 624; by hand: **87**; in the baseline: **1433**
+- SDK-provider types: **131**, pairs classified by hand: **390** (moving: **86**)
+- Cloud Control types: **1584**, pairs: **5545** — by rule: `no-in-place-update` 974, `creation-timestamp` 381, `own-identity` 816, `primary-identifier` 485, `arn-template` 96, `update-timestamp` 372, `creator` 26, `owner-account` 30, `identifier-arn-member` 68, `update-marker` 143, `parent-fixed` 2, `operational-status` 624; by hand: **94**; in the baseline: **1434**
 
 ## SDK-provider types (hand classification)
 
@@ -642,7 +642,7 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235; create-only properties from the liv
 - `CertificateDetails.CAIdentifier`: moved by `CACertificateIdentifier` — the server certificate of the CA
 - `CertificateDetails.ValidTill`: moved by `CACertificateIdentifier` — the server certificate of the CA
 - `DBInstanceArn`: never — the ARN is built from create-only inputs
-- `DBInstanceStatus`: any-update — an operational status; the stable value after an update can differ from the recorded one
+- `DBInstanceStatus`: never — recorded only from a settled read of an `available` instance, as CloudFormation serves its stabilized instance
 - `DbiResourceId`: never — an id AWS mints at create, fixed for the resource life
 - `Endpoint`: moved by `Port` — the endpoint object carries the port, modified in place
 - `Endpoint.Address`: never — derived from the create-only identifier
@@ -656,14 +656,14 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235; create-only properties from the liv
 - `ListenerEndpoint.HostedZoneId`: never — the regional zone of the endpoint
 - `ListenerEndpoint.Port`: moved by `Port` — follows the instance port
 - `MasterUserSecret.SecretArn`: moved by `ManageMasterUserPassword` — turning the managed password off and on mints a new secret (#6913)
-- `PercentProgress`: any-update — an operational status; the stable value after an update can differ from the recorded one
+- `PercentProgress`: never — recorded only from a settled read of an `available` instance, as CloudFormation serves its stabilized instance
 - `ReadReplicaDBClusterIdentifiers`: never — replicas created elsewhere move it
 - `ReadReplicaDBInstanceIdentifiers`: never — replicas created elsewhere move it
 - `ResumeFullAutomationModeTime`: never — RDS Custom automation mode, which no property sets
 - `SecondaryAvailabilityZone`: moved by `MultiAZ` — a Multi-AZ instance gains a standby zone
 - `StatusInfos`: any-update — an operational status; the stable value after an update can differ from the recorded one
-- `StorageOperationPercentProgress`: any-update — an operational status; the stable value after an update can differ from the recorded one
-- `StorageOperationStatus`: any-update — an operational status; the stable value after an update can differ from the recorded one
+- `StorageOperationPercentProgress`: never — recorded only from a settled read of an `available` instance, as CloudFormation serves its stabilized instance
+- `StorageOperationStatus`: never — recorded only from a settled read of an `available` instance, as CloudFormation serves its stabilized instance
 
 ### `AWS::RDS::DBProxy`
 
@@ -805,6 +805,8 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235; create-only properties from the liv
 - `AWS::APS::Workspace` `PrometheusEndpoint`: never — `aps-workspaces.<region>.../workspaces/<id>/`
 - `AWS::Amplify::Branch` `Arn`: never — `apps/<app>/branches/<create-only BranchName>`; PullRequestEnvironmentName is a backend
 - `AWS::Amplify::Webhook` `WebhookUrl`: never — built from the webhook id and its creation token
+- `AWS::ApiGateway::BasePathMappingV2` `BasePathMappingArn`: never — under the create-only domain and BasePath; RestApiId and Stage are its target
+- `AWS::ApiGateway::DomainNameV2` `DomainNameArn`: never — `/domainnames/<create-only DomainName>+<id>`; CertificateArn and Policy are fields
 - `AWS::AppSync::Api` `Dns`: never — the api id hosts, fixed for the api life
 - `AWS::AppSync::DomainName` `AppSyncDomainName`: never — the CloudFront host for the create-only DomainName
 - `AWS::Chatbot::MicrosoftTeamsChannelConfiguration` `Arn`: never — built from the create-only ConfigurationName; TeamsChannelName labels the channel
@@ -819,6 +821,7 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235; create-only properties from the liv
 - `AWS::Connect::ViewVersion` `ViewVersionArn`: never — the primary identifier, kept by an update; only VersionDescription is in place
 - `AWS::ControlTower::LandingZone` `LatestAvailableVersion`: never — the newest landing zone version AWS offers, a service catalog
 - `AWS::DataSync::LocationAzureBlob` `LocationUri`: moved by `Subdirectory` — the container URL and subdirectory
+- `AWS::DataSync::LocationEFS` `LocationArn`: never — `location/loc-<id>`; AccessPointArn and the role are fields UpdateLocationEfs takes
 - `AWS::DataSync::LocationEFS` `LocationUri`: moved by `Subdirectory` — `efs://<region>.<file system>/<subdirectory>/`
 - `AWS::DataSync::LocationFSxLustre` `LocationUri`: moved by `Subdirectory` — `fsxl://<region>.<file system>/<subdirectory>/`
 - `AWS::DataSync::LocationFSxONTAP` `FsxFilesystemArn`: never — the file system of the create-only StorageVirtualMachineArn
@@ -839,6 +842,7 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235; create-only properties from the liv
 - `AWS::EC2::LaunchTemplate` `DefaultVersionNumber`: any-update — the new version becomes the default when the update sets it
 - `AWS::EC2::LaunchTemplate` `LatestVersionNumber`: any-update — a LaunchTemplateData edit mints the next version
 - `AWS::EC2::PrefixList` `Arn`: never — measured (cdkd-probe-7007-s1): PrefixListName in place left it prefix-list/pl-0d520b78fc4478f52
+- `AWS::EKS::Capability` `Arn`: never — `capability/<cluster>/<create-only name>/<uuid>`; RoleArn is a field
 - `AWS::ElastiCache::ServerlessCache` `ARN`: never — `serverlesscache:<create-only name>`; FinalSnapshotName names the final snapshot
 - `AWS::EntityResolution::SchemaMapping` `HasWorkflows`: never — set by a matching workflow that uses the mapping; an update of the mapping creates none
 - `AWS::EntityResolution::SchemaMapping` `SchemaArn`: never — `schemamapping/<create-only SchemaName>`
@@ -874,6 +878,8 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235; create-only properties from the liv
 - `AWS::RDS::DBShardGroup` `Endpoint`: never — built from the create-only identifier; PubliclyAccessible is create-only
 - `AWS::Redshift::Snapshot` `ClusterVersion`: never — the source cluster version, captured when the snapshot was taken
 - `AWS::Redshift::Snapshot` `EngineFullVersion`: never — the source engine version, captured when the snapshot was taken
+- `AWS::RoboMaker::RobotApplication` `Arn`: never — `robot-application/<create-only name>/<creation time>`; CurrentRevisionId selects a revision
+- `AWS::RoboMaker::SimulationApplication` `Arn`: never — `simulation-application/<create-only name>/<creation time>`; CurrentRevisionId selects a revision
 - `AWS::Route53RecoveryReadiness::ReadinessCheck` `ReadinessCheckArn`: never — built from the create-only ReadinessCheckName; ResourceSetName names a set
 - `AWS::SageMaker::Space` `SpaceArn`: never — `space/<create-only domain>/<create-only SpaceName>`; SpaceDisplayName is a label
 - `AWS::SageMaker::Space` `Url`: never — built from the create-only domain and space name
@@ -888,6 +894,7 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235; create-only properties from the liv
 - `AWS::Timestream::ScheduledQuery` `SQScheduledQueryExecutionRoleArn`: never — echoes the create-only ScheduledQueryExecutionRoleArn
 - `AWS::Timestream::ScheduledQuery` `SQTargetConfiguration`: never — echoes the create-only TargetConfiguration
 - `AWS::WellArchitected::Workload` `WorkloadId`: never — measured (cdkd-probe-7007-s3c): WorkloadName in place left it d407459bb0b58e882b630018989ed8fb
+- `AWS::Wisdom::Content` `ContentArn`: never — `content/<knowledge base id>/<content id>`; UploadId replaces the body, not the content
 - `AWS::XRay::SamplingRule` `RuleARN`: never — measured (cdkd-probe-7007-s1): SamplingRule.RuleName in place left it sampling-rule/<old name>
 
 ## Cloud Control pairs a moving rule settles
@@ -1719,6 +1726,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Connect::ContactFlowModuleAlias` | 2 |
 | `AWS::Connect::DataTable` | 1 |
 | `AWS::Connect::EmailAddress` | 1 |
+| `AWS::Connect::EvaluationForm` | 1 |
 | `AWS::Connect::HoursOfOperation` | 1 |
 | `AWS::Connect::Metric` | 13 |
 | `AWS::Connect::PhoneNumber` | 1 |

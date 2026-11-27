@@ -548,6 +548,16 @@ describe('the #7007 rules, on real spec inputs', () => {
       const withProp = { ...t(['Arn']), properties: { Name: undefined, [prop]: undefined } };
       expect(classifyByRule(withProp, 'Arn'), prop).toBeUndefined();
     }
+    // ...with no in-place name at all, too (an ARN that is not the type's
+    // own-identity shape, so only primary-identifier can reach it).
+    const configured = (properties: Record<string, undefined>): TypeInput => ({
+      type: 'AWS::X::Widget',
+      attributes: ['ConfigurationArn'],
+      properties,
+      primaryIdentifier: ['ConfigurationArn'],
+    });
+    expect(classifyByRule(configured({ ParentArn: undefined }), 'ConfigurationArn')).toBeUndefined();
+    expect(classifyByRule(configured({ Config: undefined }), 'ConfigurationArn')).toBe('primary-identifier');
     for (const prop of ['DisplayName', 'Path', 'WidgetName']) {
       const own = { ...t(['Arn']), properties: { [prop]: undefined } };
       expect(classifyByRule(own, 'Arn'), prop).toBe('primary-identifier');
@@ -559,6 +569,8 @@ describe('the #7007 rules, on real spec inputs', () => {
       ['AWS::Route53RecoveryControl::SafetyRule', 'SafetyRuleArn'],
       ['AWS::Connect::TestCase', 'TestCaseArn'],
       ['AWS::Connect::ContactFlow', 'ContactFlowArn'],
+      // No in-place name, but an in-place InstanceArn the ARN embeds.
+      ['AWS::Connect::EvaluationForm', 'EvaluationFormArn'],
     ] as const) {
       expect(real(type).arnTemplate, type).toBeUndefined();
       expect(classifyByRule(real(type), attr), type).toBeUndefined();

@@ -84,6 +84,16 @@ const FIXED_ENDPOINT = never('derived from the create-only identifier');
  * Description-only update, measured), so no "settles back" premise holds
  * unmeasured. A row of shared.ts `HAND_IN_PLACE_UPDATE_STATUS_ATTRS`.
  */
+/**
+ * An RDS instance's point-in-time status: `dbInstanceAttributes` records it
+ * only from a settled read of an `available` instance (CloudFormation serves
+ * its stabilized instance). After an update read mid-modification the record
+ * drops it, so a re-resolved reader would be refused where CloudFormation
+ * serves `available`: it stays `never`.
+ */
+const RDS_SETTLED_STATUS = never(
+  'recorded only from a settled read of an `available` instance, as CloudFormation serves its stabilized instance'
+);
 const OPERATIONAL_STATUS = anyUpdate(
   'an operational status; the stable value after an update can differ from the recorded one'
 );
@@ -198,6 +208,27 @@ const REASONED: Classification = {
   'AWS::MediaConnect::FlowSource': {
     SourceArn: never('`source:<id>:<create-only Name>`; VpcInterfaceName names an interface'),
   },
+  // A template-less primary-identifier ARN whose type has an in-place
+  // foreign reference (a role, a certificate, a target): the ARN carries the
+  // minted id or create-only names, not the reference (go-to-k/cdkd#7007).
+  'AWS::ApiGateway::DomainNameV2': {
+    DomainNameArn: never('`/domainnames/<create-only DomainName>+<id>`; CertificateArn and Policy are fields'),
+  },
+  'AWS::ApiGateway::BasePathMappingV2': {
+    BasePathMappingArn: never('under the create-only domain and BasePath; RestApiId and Stage are its target'),
+  },
+  'AWS::EKS::Capability': {
+    Arn: never('`capability/<cluster>/<create-only name>/<uuid>`; RoleArn is a field'),
+  },
+  'AWS::Wisdom::Content': {
+    ContentArn: never('`content/<knowledge base id>/<content id>`; UploadId replaces the body, not the content'),
+  },
+  'AWS::RoboMaker::RobotApplication': {
+    Arn: never('`robot-application/<create-only name>/<creation time>`; CurrentRevisionId selects a revision'),
+  },
+  'AWS::RoboMaker::SimulationApplication': {
+    Arn: never('`simulation-application/<create-only name>/<creation time>`; CurrentRevisionId selects a revision'),
+  },
   'AWS::MemoryDB::Cluster': {
     ARN: never('`cluster/<create-only ClusterName>`; the in-place names are a parameter group, ACL and snapshot'),
   },
@@ -294,6 +325,8 @@ const REASONED: Classification = {
   },
   'AWS::DataSync::LocationEFS': {
     LocationUri: movedBy(['Subdirectory'], '`efs://<region>.<file system>/<subdirectory>/`'),
+    // A template-less primary-identifier ARN with in-place foreign references.
+    LocationArn: never('`location/loc-<id>`; AccessPointArn and the role are fields UpdateLocationEfs takes'),
   },
   'AWS::DataSync::LocationFSxLustre': {
     LocationUri: movedBy(['Subdirectory'], '`fsxl://<region>.<file system>/<subdirectory>/`'),
@@ -807,16 +840,16 @@ const HAND_CLASSIFICATION: Classification = {
     'CertificateDetails.*': movedBy(['CACertificateIdentifier'], 'the server certificate of the CA'),
     SecondaryAvailabilityZone: movedBy(['MultiAZ'], 'a Multi-AZ instance gains a standby zone'),
     AutomaticRestartTime: never('set only while the instance is stopped, which no property does'),
-    DBInstanceStatus: OPERATIONAL_STATUS,
+    DBInstanceStatus: RDS_SETTLED_STATUS,
     IsStorageConfigUpgradeAvailable: never('an AWS recommendation, no property sets it'),
     LatestRestorableTime: never('advances with time, never by an update'),
-    PercentProgress: OPERATIONAL_STATUS,
+    PercentProgress: RDS_SETTLED_STATUS,
     ReadReplicaDBClusterIdentifiers: never('replicas created elsewhere move it'),
     ReadReplicaDBInstanceIdentifiers: never('replicas created elsewhere move it'),
     ResumeFullAutomationModeTime: never('RDS Custom automation mode, which no property sets'),
     StatusInfos: OPERATIONAL_STATUS,
-    StorageOperationStatus: OPERATIONAL_STATUS,
-    StorageOperationPercentProgress: OPERATIONAL_STATUS,
+    StorageOperationStatus: RDS_SETTLED_STATUS,
+    StorageOperationPercentProgress: RDS_SETTLED_STATUS,
   },
   'AWS::RDS::DBProxy': {
     DBProxyArn: ARN,
