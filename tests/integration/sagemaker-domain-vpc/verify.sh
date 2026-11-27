@@ -65,7 +65,9 @@ cd "$(dirname "$0")"
 STACK="CdkdSageMakerDomainVpcExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
-DOMAIN_NAME="cdkd-integ-sm-domain-vpc"
+# Per run, so the cleanup's by-name sweep only ever finds this run's domains.
+DOMAIN_NAME="cdkd-integ-sm-dvpc-$(date +%s)-$$"
+export CDKD_TEST_DOMAIN_NAME="${DOMAIN_NAME}"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
@@ -156,6 +158,12 @@ wait_domain_gone() { # usage: wait_domain_gone <domain-id>
 DOMAIN_ID=""
 EFS_ID=""
 
+cdkd_state_destroy() {
+  if [ -f "${LOCAL_DIST}" ]; then
+    node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
+  fi
+}
+
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
@@ -167,9 +175,7 @@ cleanup() {
       --query HomeEfsFileSystemId --output text 2>/dev/null)"
     pairs="${pairs} ${id}:${efs}"
   done
-  if [ -x "${LOCAL_DIST}" ] || [ -f "${LOCAL_DIST}" ]; then
-    node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
-  fi
+  cdkd_state_destroy
   for pair in ${pairs}; do
     id="${pair%%:*}"
     efs="${pair#*:}"
@@ -181,6 +187,10 @@ cleanup() {
   done
   # A domain this run deleted itself (destroy) leaves its EFS and groups.
   [ -n "${DOMAIN_ID}" ] && sweep_domain_leftovers "${DOMAIN_ID}" "${EFS_ID}"
+  # Again, now the sweep is done: a domain a replacement put in the stack's
+  # target VPC leaves an EFS and groups there that block that VPC's delete
+  # in the first pass.
+  [ -n "${pairs}" ] && cdkd_state_destroy
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true

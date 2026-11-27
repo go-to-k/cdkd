@@ -35,8 +35,12 @@ export class SageMakerDomainVpcStack extends cdk.Stack {
 
     const defaultVpcId = process.env.CDKD_TEST_DEFAULT_VPC_ID;
     const defaultSubnetId = process.env.CDKD_TEST_DEFAULT_SUBNET_ID;
-    if (!defaultVpcId || !defaultSubnetId) {
-      throw new Error('CDKD_TEST_DEFAULT_VPC_ID and CDKD_TEST_DEFAULT_SUBNET_ID are required (verify.sh sets them)');
+    // Per run (verify.sh), so its by-name cleanup never touches another run's domain.
+    const domainName = process.env.CDKD_TEST_DOMAIN_NAME;
+    if (!defaultVpcId || !defaultSubnetId || !domainName) {
+      throw new Error(
+        'CDKD_TEST_DEFAULT_VPC_ID, CDKD_TEST_DEFAULT_SUBNET_ID and CDKD_TEST_DOMAIN_NAME are required (verify.sh sets them)'
+      );
     }
     const move = process.env.CDKD_TEST_VPC_MOVE === 'true';
 
@@ -52,7 +56,7 @@ export class SageMakerDomainVpcStack extends cdk.Stack {
     });
 
     const domain = new sagemaker.CfnDomain(this, 'Domain', {
-      domainName: 'cdkd-integ-sm-domain-vpc',
+      domainName,
       authMode: 'IAM',
       defaultUserSettings: { executionRole: role.roleArn },
       vpcId: move ? targetVpc.ref : defaultVpcId,

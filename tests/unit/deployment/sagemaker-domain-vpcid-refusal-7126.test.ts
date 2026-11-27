@@ -46,6 +46,10 @@ vi.mock('../../../src/deployment/resource-deadline.js', () => ({
 }));
 
 const SHORT_ADVICE = 'Re-run with --force-stateful-recreation to confirm the data loss';
+const KEPT_NAME_ADVICE =
+  '--force-stateful-recreation alone cannot replace it: the new resource would keep the same DomainName and collide with the old one (AlreadyExists). Change DomainName as well and re-run with --force-stateful-recreation to confirm the data loss';
+const LEFTOVERS =
+  "On a replacement, the old domain's home EFS file system and its security groups are retained by AWS and keep billing.";
 
 let provider: ResourceProvider;
 
@@ -60,7 +64,10 @@ beforeEach(() => {
   };
 });
 
-function makeEngine(opts: { replace?: boolean }): InstanceType<typeof DeployEngine> {
+function makeEngine(opts: {
+  replace?: boolean;
+  forceStatefulRecreation?: boolean;
+}): InstanceType<typeof DeployEngine> {
   const registry = {
     getProvider: vi.fn().mockReturnValue(provider),
     getProviderFor: vi.fn().mockReturnValue({ provider, provisionedBy: 'sdk' as const }),
@@ -82,7 +89,12 @@ function makeEngine(opts: { replace?: boolean }): InstanceType<typeof DeployEngi
       filterByType: vi.fn().mockReturnValue([]),
     } as unknown as never,
     registry as unknown as never,
-    { ...(opts.replace !== undefined && { replace: opts.replace }) },
+    {
+      ...(opts.replace !== undefined && { replace: opts.replace }),
+      ...(opts.forceStatefulRecreation !== undefined && {
+        forceStatefulRecreation: opts.forceStatefulRecreation,
+      }),
+    },
     'us-east-1'
   );
 }
@@ -94,6 +106,20 @@ async function refusal(type: string, path: string, oldValue: unknown, newValue: 
 }
 
 async function refusalOf(
+  type: string,
+  recorded: Record<string, unknown>,
+  desired: Record<string, unknown>,
+  propertyChanges: NonNullable<ResourceChange['propertyChanges']>
+): Promise<string> {
+  const text = await failureOf(makeEngine({}), type, recorded, desired, propertyChanges);
+  expect(text).toContain('STATEFUL_REPLACE_BLOCKED');
+  expect(provider.create).not.toHaveBeenCalled();
+  return text;
+}
+
+/** The deploy's failure text (every message and code down the cause chain). */
+async function failureOf(
+  engine: InstanceType<typeof DeployEngine>,
   type: string,
   recorded: Record<string, unknown>,
   desired: Record<string, unknown>,
@@ -119,7 +145,7 @@ async function refusalOf(
   };
   const template: CloudFormationTemplate = { Resources: { Rg: { Type: type, Properties: desired } } };
   const err = await provisionResource(
-    makeEngine({}),
+    engine,
     'Rg',
     change,
     stateResources as unknown as Record<string, never>,
@@ -137,9 +163,7 @@ async function refusalOf(
     cur = (cur as { cause?: unknown }).cause;
   }
   const text = parts.join('\n');
-  expect(text).toContain('STATEFUL_REPLACE_BLOCKED');
   expect(provider.delete).not.toHaveBeenCalled();
-  expect(provider.create).not.toHaveBeenCalled();
   return text;
 }
 
@@ -153,7 +177,11 @@ describe('SageMaker domain VpcId replacement (go-to-k/cdkd#7126)', () => {
     // CloudFormation keeps the domain's data on this change, so the refusal
     // must not say it is lost there.
     expect(text).not.toContain('so the data is lost there as well');
-    expect(text).toContain(SHORT_ADVICE);
+    // The flag alone would collide on the kept name, so the refusal must not
+    // advise it alone.
+    expect(text).not.toContain(SHORT_ADVICE);
+    expect(text).toContain(KEPT_NAME_ADVICE);
+    expect(text).toContain(LEFTOVERS);
   });
 
   // When the same deploy renames the domain, CloudFormation's replacement
@@ -166,7 +194,35 @@ describe('SageMaker domain VpcId replacement (go-to-k/cdkd#7126)', () => {
       { path: 'DomainName', oldValue: 'a', newValue: 'b', requiresReplacement: true },
     ]);
     expect(text).not.toContain('it keeps (AlreadyExists)');
+    expect(text).not.toContain(KEPT_NAME_ADVICE);
+    expect(text).toContain(SHORT_ADVICE);
+    expect(text).toContain(LEFTOVERS);
   });
+
+  // With the flag, a create that collides (AlreadyExists) on the kept name is
+  // refused and deletes nothing, with or without --replace.
+  for (const replace of [false, true]) {
+    it(`with --force-stateful-recreation${replace ? ' and --replace' : ''}, an AlreadyExists create never deletes`, async () => {
+      provider.create = vi.fn().mockRejectedValue(
+        Object.assign(new Error('Resource of type AWS::SageMaker::Domain with identifier d already exists.'), {
+          ccErrorCode: 'AlreadyExists',
+        })
+      );
+      const recorded = { DomainName: 'd', VpcId: 'vpc-a', AuthMode: 'IAM' };
+      const desired = { ...recorded, VpcId: 'vpc-b' };
+      const text = await failureOf(
+        makeEngine({ forceStatefulRecreation: true, replace }),
+        'AWS::SageMaker::Domain',
+        recorded,
+        desired,
+        [{ path: 'VpcId', oldValue: 'vpc-a', newValue: 'vpc-b', requiresReplacement: true }]
+      );
+      expect(provider.create).toHaveBeenCalledTimes(1);
+      expect(text).not.toContain('STATEFUL_REPLACE_BLOCKED');
+      expect(text).toContain('requires replacement, but the create-first attempt collided');
+      expect(provider.delete).not.toHaveBeenCalled();
+    });
+  }
 
   // With the flag, the create-first replacement collides on the kept
   // DomainName (probed: AlreadyExists). cdkd has no name key for the type, so
