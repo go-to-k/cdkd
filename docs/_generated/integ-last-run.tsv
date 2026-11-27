@@ -382,7 +382,7 @@ nested-stack-3level	2026-11-16T12:51:14Z	PASS	559	verify.sh	rc ok, orph clean (#
 nested-stack-deep	2026-11-16T12:51:14Z	PASS	132	verify.sh	rc ok, orph clean (#6398)
 nested-stack-replace-guard	2026-11-16T12:51:14Z	PASS	85	verify.sh	rc ok, orph clean (#6398)
 nested-stack-rollback	2026-11-21T12:35:54Z	PASS	95	verify.sh	rc ok, orph clean (#6762 run)
-nested-stack-secret	2026-11-27T09:15:46Z	PASS	371	verify.sh	rc ok, orph clean (#7103 f7e934c48; early PASS 366s, probe FAIL at #7077 arm)
+nested-stack-secret	2026-11-27T10:17:19Z	PASS	380	verify.sh	rc ok, orph clean (#7103 517fbd2c3; early PASS, probe FAIL at #7077 arm)
 nested-stack-transform	2026-11-16T09:13:05Z	PASS	150	verify.sh	rc ok, orph clean
 nlb-quic-server-id	2026-11-10T17:00:47Z	PASS	241	verify.sh	rc ok, orph clean
 nlb-source-nat	2026-11-21T21:07:36Z	PASS	350	verify.sh	rc ok, orph clean (PR 6795 0162f3918)
