@@ -16,10 +16,24 @@ import * as batch from 'aws-cdk-lib/aws-batch';
  * - Resource dependencies (Compute Env → Job Queue, Role → Job Definition)
  *
  * Uses L1 (Cfn) constructs for Batch resources.
+ *
+ * UPDATE (CDKD_TEST_UPDATE=true, go-to-k/cdkd#7098): the Fargate environment's
+ * `ComputeResources.Type` goes FARGATE -> FARGATE_SPOT with no
+ * `ReplaceComputeEnvironment`, so it is REPLACED (Batch refuses it in place);
+ * the job queue that references it must follow. An EC2 environment with
+ * `ReplaceComputeEnvironment: false` (min 0 vCPUs, so no instance runs) changes
+ * `InstanceTypes` and must be UPDATED in place.
+ *
+ * FALSE ARM (CDKD_TEST_FARGATE_FALSE_TYPE=true, #7098): a second Fargate
+ * environment declares `ReplaceComputeEnvironment: false` (what CDK's L2
+ * emits). Its Type change must NOT replace it: Batch refuses the update and the
+ * deploy fails, as under CloudFormation, deleting nothing.
  */
 export class BatchStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
+    const updating = process.env.CDKD_TEST_UPDATE === 'true';
+    const falseTypeChange = process.env.CDKD_TEST_FARGATE_FALSE_TYPE === 'true';
 
     // VPC with 1 AZ and public subnet only (no NAT for cost saving)
     const vpc = new ec2.Vpc(this, 'Vpc', {
@@ -57,10 +71,55 @@ export class BatchStack extends cdk.Stack {
     const computeEnv = new batch.CfnComputeEnvironment(this, 'ComputeEnv', {
       type: 'MANAGED',
       computeResources: {
-        type: 'FARGATE',
+        type: updating ? 'FARGATE_SPOT' : 'FARGATE',
         maxvCpus: 2,
         subnets: vpc.publicSubnets.map((s) => s.subnetId),
         securityGroupIds: [sg.securityGroupId],
+      },
+    });
+
+    // Fargate environment under ReplaceComputeEnvironment: false (#7098).
+    const fargateKept = new batch.CfnComputeEnvironment(this, 'FargateKeptEnv', {
+      type: 'MANAGED',
+      replaceComputeEnvironment: false,
+      computeResources: {
+        type: falseTypeChange ? 'FARGATE_SPOT' : 'FARGATE',
+        maxvCpus: 2,
+        subnets: vpc.publicSubnets.map((s) => s.subnetId),
+        securityGroupIds: [sg.securityGroupId],
+      },
+    });
+    const keptQueue = new batch.CfnJobQueue(this, 'KeptJobQueue', {
+      priority: 1,
+      computeEnvironmentOrder: [{ order: 1, computeEnvironment: fargateKept.ref }],
+    });
+
+    // EC2 compute environment updated in place (go-to-k/cdkd#7098).
+    const instanceRole = new iam.Role(this, 'Ec2InstanceRole', {
+      assumedBy: new iam.ServicePrincipal('ec2.amazonaws.com'),
+      managedPolicies: [
+        iam.ManagedPolicy.fromManagedPolicyArn(
+          this,
+          'EcsForEc2Policy',
+          'arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role'
+        ),
+      ],
+    });
+    const instanceProfile = new iam.CfnInstanceProfile(this, 'Ec2InstanceProfile', {
+      roles: [instanceRole.roleName],
+    });
+    const ec2Env = new batch.CfnComputeEnvironment(this, 'Ec2ComputeEnv', {
+      type: 'MANAGED',
+      replaceComputeEnvironment: false,
+      computeResources: {
+        type: 'EC2',
+        allocationStrategy: 'BEST_FIT_PROGRESSIVE',
+        minvCpus: 0,
+        maxvCpus: 2,
+        instanceTypes: updating ? ['m5.large'] : ['optimal'],
+        subnets: vpc.publicSubnets.map((s) => s.subnetId),
+        securityGroupIds: [sg.securityGroupId],
+        instanceRole: instanceProfile.attrArn,
       },
     });
 
@@ -98,6 +157,15 @@ export class BatchStack extends cdk.Stack {
       value: computeEnv.attrComputeEnvironmentArn,
       description: 'Batch Compute Environment ARN',
     });
+
+    new cdk.CfnOutput(this, 'Ec2ComputeEnvironmentArn', {
+      value: ec2Env.attrComputeEnvironmentArn,
+    });
+
+    new cdk.CfnOutput(this, 'FargateKeptEnvironmentArn', {
+      value: fargateKept.attrComputeEnvironmentArn,
+    });
+    new cdk.CfnOutput(this, 'KeptJobQueueArn', { value: keptQueue.attrJobQueueArn });
 
     new cdk.CfnOutput(this, 'JobQueueArn', {
       value: jobQueue.attrJobQueueArn,

@@ -36,7 +36,7 @@ athena-workgroup-update	2026-11-18T21:22:04Z	PASS	170	verify.sh	rc ok, orph clea
 aws-custom-resource	2026-11-25T07:06:26Z	PASS	100	verify.sh	rc ok, orph clean, PR #6968 f350f555
 backup	2026-11-04T19:21:11Z	PASS	83	verify.sh	rc ok, orph clean; no Backup vault/recovery-point leak, no lambda log groups
 basic	2026-11-25T03:30:44Z	PASS	102	standard	rc ok, orph clean; #6970
-batch	2026-11-04T05:26:26Z	PASS	94	standard	batch 3 (rc=0, destroy 12 deleted 0 errors); no CE/queue/ENI/VPC leftovers; account clean
+batch	2026-11-27T08:17:43Z	PASS	266	verify.sh	rc ok, orph clean
 bedrock-agentcore	2026-11-26T03:14:44Z	PASS	756	verify.sh	PR7013 2de5a0442 us-east-1 rc ok, orph clean
 bench-ccapi	2026-11-05T11:21:32Z	PASS	82	standard	sweep n7 own bucket; destroy 0 errors, 0 orphans
 bench-cdk-sample	2026-11-25T15:18:54Z	PASS	448	standard	rc ok, orph clean

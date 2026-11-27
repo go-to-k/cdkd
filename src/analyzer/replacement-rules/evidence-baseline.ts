@@ -20,29 +20,6 @@ export const UNMEASURED_SPEC_REPLACEMENT_CANDIDATES: ReadonlySet<string> = new S
   'AWS::AuditManager::Assessment#Scope.AwsAccounts.*.EmailAddress',
   'AWS::AuditManager::Assessment#Scope.AwsAccounts.*.Id',
   'AWS::AuditManager::Assessment#Scope.AwsAccounts.*.Name',
-  // Measured on #7083: with `ReplaceComputeEnvironment: false` in the update
-  // model, Cloud Control applies a ComputeResources change in place (the
-  // InstanceTypes and Tags probes); with it true or absent (the schema default
-  // is true), each row below answers `NotUpdatable`, where CloudFormation
-  // replaces. That is a predicate on ReplaceComputeEnvironment, a hand rule,
-  // not a table verdict (#7098). EksConfiguration was not probed.
-  'AWS::Batch::ComputeEnvironment#ComputeResources.AllocationStrategy',
-  'AWS::Batch::ComputeEnvironment#ComputeResources.BidPercentage',
-  'AWS::Batch::ComputeEnvironment#ComputeResources.Ec2Configuration',
-  'AWS::Batch::ComputeEnvironment#ComputeResources.Ec2Configuration.*.ImageIdOverride',
-  'AWS::Batch::ComputeEnvironment#ComputeResources.Ec2Configuration.*.ImageKubernetesVersion',
-  'AWS::Batch::ComputeEnvironment#ComputeResources.Ec2Configuration.*.ImageType',
-  'AWS::Batch::ComputeEnvironment#ComputeResources.Ec2KeyPair',
-  'AWS::Batch::ComputeEnvironment#ComputeResources.ImageId',
-  'AWS::Batch::ComputeEnvironment#ComputeResources.InstanceRole',
-  'AWS::Batch::ComputeEnvironment#ComputeResources.InstanceTypes',
-  'AWS::Batch::ComputeEnvironment#ComputeResources.LaunchTemplate',
-  'AWS::Batch::ComputeEnvironment#ComputeResources.LaunchTemplate.LaunchTemplateId',
-  'AWS::Batch::ComputeEnvironment#ComputeResources.LaunchTemplate.LaunchTemplateName',
-  'AWS::Batch::ComputeEnvironment#ComputeResources.LaunchTemplate.Version',
-  'AWS::Batch::ComputeEnvironment#ComputeResources.PlacementGroup',
-  'AWS::Batch::ComputeEnvironment#ComputeResources.Tags',
-  'AWS::Batch::ComputeEnvironment#ComputeResources.Type',
   'AWS::Batch::ComputeEnvironment#EksConfiguration',
   'AWS::BedrockAgentCore::Dataset#SchemaType',
   'AWS::CleanRooms::ConfiguredTable#AllowedColumns',
