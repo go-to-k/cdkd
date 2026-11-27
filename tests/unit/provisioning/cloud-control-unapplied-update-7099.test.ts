@@ -101,6 +101,9 @@ describe('a Cloud Control update that reports success but did not apply (go-to-k
     expect(result.effectiveProperties).toEqual({ Description: 'old', Name: 'n' });
   });
 
+  // An explicit secondary list is applied through EC2 instead
+  // (`cloud-control-eni-secondary-addresses-7099.test.ts`); one beside
+  // `SecondaryPrivateIpAddressCount` is not, so it still fails here.
   it('fails the update for an allow-listed type and property', async () => {
     schema();
     const before = { SubnetId: 's', PrivateIpAddresses: [{ PrivateIpAddress: '10.0.0.5', Primary: true }] };
@@ -116,6 +119,7 @@ describe('a Cloud Control update that reports success but did not apply (go-to-k
             { PrivateIpAddress: '10.0.0.5', Primary: true },
             { PrivateIpAddress: '10.0.0.9', Primary: false },
           ],
+          SecondaryPrivateIpAddressCount: 1,
         },
         before
       )
@@ -172,7 +176,14 @@ describe('a Cloud Control update that reports success but did not apply (go-to-k
         'Cluster',
         'c',
         'AWS::EKS::Cluster',
-        { Name: 'c', KubernetesNetworkConfig: { ElasticLoadBalancing: { Enabled: true } } },
+        // With its Auto Mode companions, so the lone-toggle pre-flight refusal
+        // (`cloud-control-eks-auto-mode-toggle-7099.test.ts`) lets it through.
+        {
+          Name: 'c',
+          KubernetesNetworkConfig: { ElasticLoadBalancing: { Enabled: true } },
+          ComputeConfig: { Enabled: true },
+          StorageConfig: { BlockStorage: { Enabled: true } },
+        },
         { Name: 'c', KubernetesNetworkConfig: { ElasticLoadBalancing: { Enabled: false } } }
       )
       .then(

@@ -12421,6 +12421,7 @@
     "AWS::EC2::IPAMPool",
     "AWS::EC2::IPAMPoolCidr",
     "AWS::EC2::LaunchTemplate",
+    "AWS::EC2::NetworkInterface",
     "AWS::EC2::PlacementGroup",
     "AWS::EC2::PrefixList",
     "AWS::EC2::SecurityGroupEgress",
