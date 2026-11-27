@@ -168,12 +168,13 @@
 #                      producer and the consumer in ONE run, with the reader
 #                      renamed (CSSI_PROMO_BLOCK=true), which cdkd refuses for a
 #                      stateful SSM parameter: the queue is replaced, the reader
-#                      is not written (#4852's interrupted-deploy shape). Then
-#                      both again, unblocked (11f-iii): the producer re-spells its
+#                      is not written (#4852's interrupted-deploy shape), and the
+#                      replaced queue is kept for the consumer (#7012). Then
+#                      both again, unblocked (11f): the producer re-spells its
 #                      output, and the consumer, whose reference text now equals
 #                      its record, is promoted and sent (its `is sent` info line),
 #                      its live value the new queue's ARN. Before, it equalled
-#                      its record and kept the deleted queue's ARN. Its record
+#                      its record and kept the replaced queue's ARN. Its record
 #                      then holds the output's new versions, and one more
 #                      consumer deploy sends it nothing (steady state).
 #  11. TEARDOWN     — down the chain (each destroy is refused while the stack
@@ -2467,8 +2468,10 @@ echo "==> Step 11f-ii (go-to-k/cdkd#4852 INTERRUPTED): one run replaces the prod
 # renamed here (CSSI_PROMO_BLOCK=true), a create-only change cdkd refuses for a
 # stateful SSM parameter without --force-stateful-recreation, so the consumer
 # fails after the producer finished: the queue is replaced, the reader keeps the
-# deleted queue's ARN and the version it read. This is #4852's "deploy
-# interrupted between the replacement and the reader's update".
+# old queue's ARN and the version it read. This is #4852's "deploy interrupted
+# between the replacement and the reader's update". The old queue survives this
+# run: a replaced resource is deleted only once every in-run consumer of its
+# stack deployed (go-to-k/cdkd#7012), so the next joint run deletes it.
 CSSI_ENV+=(CSSI_PROMO_BLOCK=true)
 cssi_run "step 11f-ii joint (consumer blocked)" "${PRODUCER}" "${CONSUMER}"
 cssi_assert_none_sent "${PRODUCER}" "step 11f-ii joint (after the pqueue rotation)"
@@ -2488,31 +2491,35 @@ fi
 CSSI_ENV=("${CSSI_ENV[@]/CSSI_PROMO_BLOCK=true/CSSI_PROMO_BLOCK=false}")
 assert_gone "premise: the refused rename created ${PROMO_BLOCKED_PARAMETER_NAME}" \
   aws ssm get-parameter --name "${PROMO_BLOCKED_PARAMETER_NAME}" --region "${REGION}"
-# SQS may answer for a deleted queue for up to 60 seconds.
-wait_gone 14 "premise: the replaced PromoQueue still exists 70s after the step 11f-ii joint deploy" \
-  aws sqs get-queue-url --queue-name "${PROMO_QUEUE_NAME}" --region "${REGION}"
+if ! cssi_out_has "Keeping the replaced resources of stack ${PRODUCER}:" "${CONSUMER}" "did not deploy"; then
+  diag "${CSSI_OUT}"
+  fail "premise: the step 11f-ii joint deploy has no 'Keeping the replaced resources of stack ${PRODUCER}: ${CONSUMER} ... did not deploy' line (the producer did not finish before the consumer failed, or the wording drifted)"
+fi
+cssi_capture PROMO_GOT "the replaced PromoQueue's live ARN after the blocked joint deploy" cssi_queue_arn "${PROMO_QUEUE_NAME}"
+if [ "${PROMO_GOT}" != "${PROMO_ARN_1}" ]; then
+  fail "premise: the replaced PromoQueue was not kept for the consumer that did not deploy (go-to-k/cdkd#7012)"
+fi
 cssi_capture PROMO_ARN_2 "the replacement PromoQueue's live ARN" cssi_queue_arn "${PROMO_QUEUE_NAME_2}"
 if [ "${PROMO_ARN_2##*:}" != "${PROMO_QUEUE_NAME_2}" ]; then
   fail "premise: the replacement PromoQueue's live ARN does not end with the rotated pqueue value"
 fi
 cssi_capture PROMO_GOT "PromoImportReader's live SSM value" cssi_reader_value
 if [ "${PROMO_GOT}" != "${PROMO_ARN_1}" ]; then
-  fail "premise: PromoImportReader's SSM value is not the deleted queue's ARN after the blocked joint deploy (the reader was written)"
+  fail "premise: PromoImportReader's SSM value is not the replaced queue's ARN after the blocked joint deploy (the reader was written)"
 fi
 cssi_capture PROMO_GOT "PromoImportReader's recorded readVersions" cssi_reader_read_versions
 if [ "${PROMO_GOT}" != "${PROMO_READ_1}" ]; then
   fail "premise: PromoImportReader's recorded readVersions moved across the blocked joint deploy (read ${PROMO_GOT}, was ${PROMO_READ_1})"
 fi
-pass "11f-ii: the queue was replaced and the blocked consumer kept the deleted queue's ARN"
+pass "11f-ii: the queue was replaced and the blocked consumer kept the replaced queue's ARN"
 
 echo ""
 echo "==> Step 11f (go-to-k/cdkd#4852 THE FIX): the next joint run re-spells the producer's output; the consumer is promoted and sent the new queue"
 # As in 11d: the replacing deploy stored the output as the new plain ARN. This
 # run's producer half stores it back in the SAME {{resolve: spelling, now at
-# the rotated version, and the consumer, unblocked and in the same run (the
-# guard refuses that re-spelling with the consumer outside it), reads it: its
-# reference text equals its record, the shape only the read-provenance
-# promotion sees.
+# the rotated version, and the consumer, unblocked and in the same run, reads
+# it: its reference text equals its record, the shape only the read-provenance
+# promotion sees. The producer's cleanup then deletes the replaced queue.
 cssi_run "step 11f joint" "${PRODUCER}" "${CONSUMER}"
 if [ "${CSSI_RC}" -ne 0 ]; then
   diag "${CSSI_OUT}"
@@ -2537,7 +2544,7 @@ fi
 # LOAD-BEARING (the red line): the consumer holds the replacement's ARN.
 cssi_capture PROMO_LIVE "PromoImportReader's live SSM value" cssi_reader_value
 if [ "${PROMO_LIVE}" != "${PROMO_ARN_2}" ]; then
-  if [ "${PROMO_LIVE}" = "${PROMO_ARN_1}" ]; then PROMO_HELD="the deleted queue's ARN"; else PROMO_HELD="neither queue's ARN"; fi
+  if [ "${PROMO_LIVE}" = "${PROMO_ARN_1}" ]; then PROMO_HELD="the replaced queue's ARN"; else PROMO_HELD="neither queue's ARN"; fi
   diag "${CSSI_OUT}"
   fail "consumer NO_CHANGE: PromoImportReader holds ${PROMO_HELD} after the step 11f joint deploy, not the replacement PromoQueue's (go-to-k/cdkd#4852)"
 fi
@@ -2556,6 +2563,9 @@ if [ "${PROMO_READ_2}" != "${PROMO_OUT_2}" ]; then
   fail "PromoImportReader's recorded readVersions after it was sent (${PROMO_READ_2}) are not ${PROMO_OUTPUT}'s new versions (${PROMO_OUT_2}) (go-to-k/cdkd#4852)"
 fi
 pass "11f: the consumer was promoted and sent the replacement queue's ARN"
+# SQS may answer for a deleted queue for up to 60 seconds.
+wait_gone 14 "the replaced PromoQueue still exists 70s after the step 11f joint deploy, which deployed its consumer" \
+  aws sqs get-queue-url --queue-name "${PROMO_QUEUE_NAME}" --region "${REGION}"
 # Steady state: the same flags once more must not send it again.
 cssi_deploy "${CONSUMER}" "step 11f steady-state consumer"
 cssi_assert_not_sent "step 11f steady-state consumer" \
