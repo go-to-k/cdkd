@@ -68,6 +68,11 @@ describe('cdkd orphan: a secret-derived live attribute is never spliced (#7061)'
       { resourceType: 'AWS::EC2::SecurityGroup', attributes: { VpcId: '' }, properties: { GroupName: '***' } },
       'VpcId',
     ],
+    [
+      'a placeholder ARN on a secret-carrying record',
+      { resourceType: 'AWS::AppSync::DataSource', attributes: { DataSourceArn: 'arn:aws:appsync:*:*:apis/a/datasources/d' }, properties: { Config: TOKEN } },
+      'DataSourceArn',
+    ],
     ['unrecorded, NoEcho names another attribute', { noEchoAttributeNames: ['Other'] }, 'Arn'],
     ['unrecorded, a secret-derived name in another attribute', { secretNamedAttributes: ['Other'] }, 'Arn'],
     ['unrecorded, the attributes bag masks another attribute', { attributes: { Other: '***' } }, 'Arn'],
@@ -124,6 +129,7 @@ describe('cdkd orphan: a secret-derived live attribute is never spliced (#7061)'
     const result = fetcher.ref('X');
     expect(result.ok).toBe(false);
     expect(JSON.stringify(result)).not.toContain('hunter2');
+    expect((result as { reason: string }).reason).toContain('Remove the reference from the referring resource');
   });
 
   it('the refusal names what the user can do', async () => {
