@@ -286,6 +286,7 @@ iot-topic-rule-role	2026-11-27T15:35:37Z	PASS	726	verify.sh	us-east-1, rc ok, or
 kinesis-esm-filter	2026-11-24T14:18:16Z	PASS	85	verify.sh	rc ok, orph clean (#6933 sweep)
 kinesis-stream-mode-switch	2026-11-24T15:50:36Z	PASS	259	verify.sh	rc ok, orph clean, sha a285cb7f0 (#6933 open shard count, Phase 1b)
 kms-encryption	2026-11-22T03:31:56Z	PASS	151	verify.sh	d2646a6f6 #6759 part a, rc 0, 0 leftovers
+lakeformation-role-switch	2026-11-27T17:38:51Z	PASS	125	verify.sh	rc ok, orph clean; 68ed20336 (#7121)
 lambda	2026-11-27T06:52:52Z	PASS	135	verify.sh	rc ok, orph clean; #7096 ad018a99d
 lambda-accelerator-config	2026-11-21T17:25:48Z	PASS	923	verify.sh	SDK route create/update/removal-refused/destroy; rc ok, orph clean (us-east-1, 1 subnet, 4-vCPU GPU)
 lambda-alias-provisioned-concurrency	2026-11-17T09:08:06Z	PASS	265	verify.sh	rc ok, orph clean (#6437 PR #6483)
