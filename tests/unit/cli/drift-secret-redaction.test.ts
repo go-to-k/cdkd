@@ -3044,21 +3044,30 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
       makeState({
         Consumer: lambdaResource({
           FunctionName: 'fn',
+          Description: 'declared-description',
           [SECRET_PLAINTEXT]: { Nested: 'v' },
         }),
       })
     );
     mockRegistryGetProvider.mockReturnValue({
-      readCurrentState: async () => ({ FunctionName: 'fn', [SECRET_PLAINTEXT]: { Nested: 'w' } }),
+      readCurrentState: async () => ({
+        FunctionName: 'fn',
+        Description: 'edited-description',
+        [SECRET_PLAINTEXT]: { Nested: 'w' },
+      }),
       update,
     });
 
     const { output } = await runDrift(['TestStack', '--revert', '--yes']);
 
     expect(output).not.toContain(SECRET_PLAINTEXT);
-    expect(
-      warnSpy.mock.calls.some((c) => typeof c[0] === 'string' && c[0].includes('cannot revert'))
-    ).toBe(true);
+    const cannot = warnSpy.mock.calls
+      .map((c) => c[0])
+      .filter((m): m is string => typeof m === 'string' && m.includes('cannot revert'));
+    expect(cannot.length).toBe(1);
+    // go-to-k/cdkd#7061: only the path whose first segment is masked is named;
+    // an ordinary drifted path beside it is reverted, not listed.
+    expect(cannot[0]).not.toContain('Description');
   });
 
   it('counts an unresolvable reference apart from an AWS update failure', async () => {

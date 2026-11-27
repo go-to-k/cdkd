@@ -2,11 +2,11 @@
  * `cdkd drift`: `--revert` payload assembly and the narrowed-key helpers.
  * Split out of `../drift.ts`, which re-exports the public names.
  */
+import { holdsMaskLeaf } from '../../../deployment/secret-redaction/recorded-secrecy.js';
 import { getLogger } from '../../../utils/logger.js';
 import type { PropertyDrift } from '../../../analyzer/drift-calculator.js';
 import { hasOwnKey, ownValue, defineOwnKey, hasPlainPrototype } from '../../../utils/own-keys.js';
 import { safeMsg } from '../../../utils/display-safe.js';
-import { carriesSecretMask } from '../../../deployment/secret-redaction.js';
 import type { ResourceProvider } from '../../../types/resource.js';
 import {
   mergeUntemplatedValue,
@@ -318,8 +318,8 @@ export function keepRecordedAttributesOverMask(
   const out: Record<string, unknown> = { ...redacted };
   for (const key of Object.keys(redacted)) {
     if (noEchoDeclared?.has(key)) continue;
-    if (!hasOwnKey(recorded, key) || !carriesSecretMask(redacted[key])) continue;
-    if (carriesSecretMask(recorded[key])) continue;
+    if (!hasOwnKey(recorded, key) || !holdsMaskLeaf(redacted[key])) continue;
+    if (holdsMaskLeaf(recorded[key])) continue;
     if (sameRecordedJson(plaintext[key], recorded[key])) {
       defineOwnKey(out, key, recorded[key]);
     }

@@ -1,8 +1,8 @@
+import { holdsMaskLeaf, isMaskRun } from '../secret-redaction/recorded-secrecy.js';
 import type { ResourceState } from '../../types/state.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { cdkdRemedy, plainOrDescribed, proseQuoted } from '../../utils/pasteable-command.js';
 import {
-  carriesSecretMask,
   isMarkedCoordinate,
   maskAtCoordinates,
   maskReadbackAtCoordinates,
@@ -168,7 +168,7 @@ export function refuseMarkedNoEchoRecreate(
 
 /**
  * Does every mask `props` carries sit at (or inside) one of `marked`? A mask
- * is a whole `***` leaf, as {@link carriesSecretMask} reads it; one elsewhere
+ * is a whole `***` leaf, as {@link holdsMaskLeaf} reads it; one elsewhere
  * is another population's, which keeps its own refusal.
  */
 export function masksOnlyAt(
@@ -183,7 +183,7 @@ export function masksOnlyAt(
  * all-asterisk placeholder (`****`), anywhere inside it.
  */
 function holdsPlaceholder(value: unknown): boolean {
-  if (typeof value === 'string') return /^\*{3,}$/.test(value);
+  if (typeof value === 'string') return isMaskRun(value);
   if (Array.isArray(value)) return value.some(holdsPlaceholder);
   if (value !== null && typeof value === 'object') {
     return Object.values(value as Record<string, unknown>).some(holdsPlaceholder);
@@ -309,7 +309,7 @@ export async function substituteMarkedNoEchoLeaves(input: {
   };
   if (desired === undefined) return identity;
   const pending = (noEchoLeavesOf(baseline) ?? []).filter((coordinate) =>
-    carriesSecretMask(valueAtCoordinate(desired, coordinate))
+    holdsMaskLeaf(valueAtCoordinate(desired, coordinate))
   );
   if (pending.length === 0) return identity;
   // Not on a Cloud Control route, which WOULD send the row's properties:
@@ -363,7 +363,7 @@ export async function substituteMarkedNoEchoLeaves(input: {
       if (bag === undefined) return bag;
       let out = bag;
       for (const { coordinate, value } of values) {
-        if (carriesSecretMask(valueAtCoordinate(out, coordinate))) {
+        if (holdsMaskLeaf(valueAtCoordinate(out, coordinate))) {
           out = replaceAtCoordinate(out, coordinate, value);
         }
       }

@@ -2,10 +2,14 @@
  * `cdkd drift`: `--revert` live-value preservation at masked and uncertified leaves.
  * Split out of `../drift.ts`, which re-exports the public names.
  */
+import {
+  holdsMaskLeaf,
+  isMaskLeaf,
+  mentionsDynamicReference,
+} from '../../../deployment/secret-redaction/recorded-secrecy.js';
 import { equalModuloMask } from '../../../analyzer/drift-calculator.js';
 import { hasPlainPrototype, hasOwnKey, ownValue, defineOwnKey } from '../../../utils/own-keys.js';
 import {
-  carriesSecretMask,
   identityKeyFor,
   SECRET_MASK,
   isSingleDynamicReferenceToken as isWholeDynamicReference,
@@ -61,7 +65,7 @@ import { deepEqualUnordered } from './revert-payload.js';
  * - **every leaf of `send` that is not a mask must equal `live`'s leaf at the
  *   same position** ({@link corroboratedLeafCount}), masked leaves wildcarded.
  *   A whole-ELEMENT exemption is what shipped first, and it corroborated
- *   NOTHING: {@link carriesSecretMask} is a DEEP, whole-subtree test, so an
+ *   NOTHING: {@link holdsMaskLeaf} is a DEEP, whole-subtree test, so an
  *   element carrying one mask anywhere skipped the comparison entirely.
  *   Measured on `[{Pw:'***',Role:'reader'},{Pw:'***',Role:'admin'}]` against a
  *   live list AWS returned in the other order — the admin password was written
@@ -164,7 +168,7 @@ export function pairedLiveItems(
   send: readonly unknown[],
   live: unknown,
   wildcardLeaf: (leaf: unknown) => boolean = isMaskLeaf,
-  carriesWildcard: (value: unknown) => boolean = carriesSecretMask,
+  carriesWildcard: (value: unknown) => boolean = holdsMaskLeaf,
   acceptForcedSingleton = false
 ): readonly unknown[] | undefined {
   if (!Array.isArray(live)) return undefined;
@@ -217,11 +221,6 @@ export function pairedLiveItems(
   return live;
 }
 
-/** The MASK walk's wildcard: the redaction mask alone. */
-function isMaskLeaf(leaf: unknown): boolean {
-  return leaf === SECRET_MASK;
-}
-
 /**
  * The TOKEN walk's wildcard: a leaf whose WHOLE value is a `{{resolve:...}}`
  * token, plus the mask (which that walk never touches but must abstain on —
@@ -231,8 +230,10 @@ function isMaskLeaf(leaf: unknown): boolean {
  * would make every partially-resolved string an unbounded free pass.
  */
 export function isTokenOrMaskLeaf(leaf: unknown): boolean {
-  if (leaf === SECRET_MASK) return true;
-  return typeof leaf === 'string' && leaf.includes('{{resolve:') && isWholeDynamicReference(leaf);
+  if (isMaskLeaf(leaf)) return true;
+  return (
+    typeof leaf === 'string' && mentionsDynamicReference(leaf) && isWholeDynamicReference(leaf)
+  );
 }
 
 /**
@@ -379,7 +380,7 @@ export function overlayLiveAtUncertifiedPaths(
     }
     const needles: string[] = [];
     const collect = (b: unknown, l: unknown): void => {
-      if (b === SECRET_MASK) {
+      if (isMaskLeaf(b)) {
         // A mask matches any live value since go-to-k/cdkd#5333 (a definition
         // whose KEY held a secret is masked whole), so a CONTAINER here is
         // aligned too: what it holds, keys included, must reach the masker.
@@ -614,7 +615,7 @@ function withValueAtPath(
  * exactly where falling back would hand the fabricable bag back.
  *
  * Returns the input bag BY IDENTITY when it holds no mask — checked FIRST via
- * {@link carriesSecretMask}, so a mask-free revert (the ordinary case) pays
+ * {@link holdsMaskLeaf}, so a mask-free revert (the ordinary case) pays
  * one boolean walk instead of a full rebuild plus per-array pairing.
  */
 export function preserveLiveValuesAtMaskedLeaves(
@@ -624,11 +625,11 @@ export function preserveLiveValuesAtMaskedLeaves(
   corroborationSource: Record<string, unknown> = send,
   spelledKeys?: ReadonlySet<string>
 ): { properties: Record<string, unknown>; unpreservablePaths: string[] } {
-  if (!carriesSecretMask(send)) return { properties: send, unpreservablePaths: [] };
+  if (!holdsMaskLeaf(send)) return { properties: send, unpreservablePaths: [] };
   const unpreservablePaths: string[] = [];
   let changed = false;
   const walk = (value: unknown, corr: unknown, live: unknown, path: string): unknown => {
-    if (value === SECRET_MASK) {
+    if (isMaskLeaf(value)) {
       if (live === undefined) {
         unpreservablePaths.push(path);
         return value;
@@ -675,7 +676,7 @@ export function preserveLiveValuesAtMaskedLeaves(
         // reaches this today (this module writes masks only at string leaves
         // of plain containers), but the day one does, the resource is
         // REFUSED, not corrupted.
-        if (carriesSecretMask(value)) unpreservablePaths.push(path);
+        if (holdsMaskLeaf(value)) unpreservablePaths.push(path);
         return value;
       }
       const liveObject = isPlainRecord(live) ? live : undefined;

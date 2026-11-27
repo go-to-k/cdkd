@@ -1,3 +1,4 @@
+import { dynamicReferenceBody } from '../secret-redaction/recorded-secrecy.js';
 import type { ResourceState } from '../../types/state.js';
 import { type CompletedOperation } from './types.js';
 import { deepEqual, isReplacementOp } from './plan/classify.js';
@@ -66,9 +67,8 @@ export function regeneratedSecretAddresses(op: CompletedOperation): Set<string> 
  * (`resolveSecretsManagerReference`).
  */
 export function secretsManagerTokenSecretId(token: string): string | undefined {
-  const prefix = '{{resolve:secretsmanager:';
-  if (!token.startsWith(prefix) || !token.endsWith('}}')) return undefined;
-  const body = token.slice(prefix.length, -2);
+  const body = dynamicReferenceBody(token, 'secretsmanager');
+  if (body === undefined) return undefined;
   const cut = [':SecretString', ':SecretBinary']
     .map((segment) => {
       const mid = body.indexOf(`${segment}:`);

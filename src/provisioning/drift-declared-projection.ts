@@ -13,7 +13,10 @@
  * ({@link FilledDefault}): any other undeclared member (one added out of band,
  * which the next whole-value update would wipe) stays and is reported.
  */
-import { SECRET_MASK } from '../deployment/secret-redaction.js';
+import {
+  isMaskLeaf,
+  mentionsDynamicReference,
+} from '../deployment/secret-redaction/recorded-secrecy.js';
 
 /**
  * Whether the undeclared member `key` holding `value` is a default the service
@@ -119,11 +122,11 @@ export function projectOntoDeclared(
 
 /**
  * Whether `value` holds a `{{resolve:` reference or the redaction mask (a leaf
- * that IS {@link SECRET_MASK}: state redaction replaces a secret leaf whole)
+ * that IS the mask, {@link isMaskLeaf}: state redaction replaces a secret leaf whole)
  * anywhere.
  */
 function holdsUnsentValue(value: unknown): boolean {
-  if (typeof value === 'string') return value === SECRET_MASK || value.includes('{{resolve:');
+  if (typeof value === 'string') return isMaskLeaf(value) || mentionsDynamicReference(value);
   if (Array.isArray(value)) return value.some(holdsUnsentValue);
   if (isPlainObject(value)) return Object.values(value).some(holdsUnsentValue);
   return false;

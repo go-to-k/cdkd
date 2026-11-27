@@ -25,7 +25,7 @@
  *     (we do not synthesize per-index drift entries — that's not useful
  *     output).
  */
-
+import { mentionsDynamicReference } from '../deployment/secret-redaction/recorded-secrecy.js';
 import {
   canonicalizeIdArraysDeep,
   canonicalizeTagListsDeep,
@@ -288,7 +288,7 @@ function diffAt(
   // per-resource and falls back to the unresolved baseline for exactly those,
   // and this line is what then keeps the resource's other properties comparable
   // instead of drowning them in phantom drift.
-  if (typeof stateValue === 'string' && stateValue.includes('{{resolve:')) return;
+  if (typeof stateValue === 'string' && mentionsDynamicReference(stateValue)) return;
 
   if (
     isPlainObject(stateForm) &&
