@@ -30,6 +30,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 }));
 
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
+import { HAND_IN_PLACE_UPDATE_STATUS_ATTRS } from '../../../src/analyzer/diff-calculator/shared.js';
 import {
   findAffectedExports,
   findChangedDeferredExports,
@@ -75,6 +76,10 @@ const SAMPLES: Readonly<Record<string, readonly [unknown, unknown]>> = {
 // go-to-k/cdkd#7007: a Cloud Control pair classified by hand drives it too.
 const movedBy = [...REPORT.sdk, ...REPORT.ccHand].filter((r) => r.verdict === 'moved-by');
 const anyUpdate = [...REPORT.sdk, ...REPORT.ccHand].filter((r) => r.verdict === 'any-update');
+/** go-to-k/cdkd#7007: SDK operational statuses, judged after the update like a generated row. */
+const isStatusRow = (r: SdkRow): boolean =>
+  HAND_IN_PLACE_UPDATE_STATUS_ATTRS[r.type]?.has(r.attribute) === true;
+const statusRows = anyUpdate.filter(isStatusRow);
 /** go-to-k/cdkd#7007: the Cloud Control pairs a moving rule settles. */
 const ccAnyUpdate: SdkRow[] = Object.entries(REPORT.ccMoving).flatMap(([type, attrs]) =>
   attrs.map((attribute) => ({ type, attribute, verdict: 'any-update' as const }))
@@ -402,7 +407,7 @@ describe('the export-change guard counts an export of a moving attribute as chan
     expect(await run(row, UNRELATED)).toEqual([]);
   });
 
-  it.each(anyUpdate.map((r) => [`${r.type} ${r.attribute}`, r] as const))(
+  it.each(anyUpdate.filter((r) => !isStatusRow(r)).map((r) => [`${r.type} ${r.attribute}`, r] as const))(
     '%s on any edit',
     async (_name, row) => {
       expect(await run(row, UNRELATED)).toEqual([{ exportName: EXPORT, reason: 'changed' }]);
@@ -450,7 +455,18 @@ describe('an export of a Cloud Control update time is judged after the update (#
       Promise.resolve(value)
     );
 
-  it.each(ccAnyUpdate.map((r) => [`${r.type} ${r.attribute}`, r] as const))(
+  it('every SDK operational status row is a hand any-update verdict (#7007 part 5)', () => {
+    const rows = Object.entries(HAND_IN_PLACE_UPDATE_STATUS_ATTRS).flatMap(([type, attrs]) =>
+      [...attrs].map((attribute) => `${type}.${attribute}`)
+    );
+    expect(rows.length).toBeGreaterThanOrEqual(20);
+    // An RDS instance's point-in-time status is recorded only from a settled
+    // `available` read: it stays never (a re-resolve would be refused).
+    expect(HAND_IN_PLACE_UPDATE_STATUS_ATTRS['AWS::RDS::DBInstance']?.has('DBInstanceStatus')).toBe(false);
+    expect(statusRows.map((r) => `${r.type}.${r.attribute}`).sort()).toEqual(rows.sort());
+  });
+
+  it.each([...ccAnyUpdate, ...statusRows].map((r) => [`${r.type} ${r.attribute}`, r] as const))(
     '%s: a tag edit defers; refused only when the value moved',
     async (_name, row) => {
       const found = await guard(row, 'UPDATE', false);
@@ -469,7 +485,7 @@ describe('an export of a Cloud Control update time is judged after the update (#
   });
 
   it('a hand any-update row is still a plan-time change', async () => {
-    const row = anyUpdate.find((r) => r.type === 'AWS::EC2::Instance')!;
+    const row = anyUpdate.find((r) => r.type === 'AWS::EC2::Instance' && !isStatusRow(r))!;
     expect(await guard(row, 'UPDATE', false)).toEqual([{ exportName: EXPORT, reason: 'changed' }]);
   });
 });

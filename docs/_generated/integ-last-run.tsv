@@ -182,7 +182,7 @@ ec2-sg-source-group-name	2026-11-10T16:20:27Z	PASS	65	verify.sh	rc ok, orph clea
 ec2-subnet-dns64	2026-11-07T07:23:23Z	PASS	316	verify.sh	rc ok, orph clean, PR #5967 subnet live GetAtt
 ec2-vpc	2026-11-21T12:10:26Z	PASS	170	verify.sh	rc ok, orph clean; #6760 EIP/delete-blocker inventory
 ec2-vpc-endpoint	2026-11-24T17:02:46Z	PASS	506	verify.sh	rc ok, orph clean
-ec2-vpc-ipam	2026-11-07T19:15:05Z	PASS	3944	verify.sh	rc ok, orph clean, IPv6 IPAM-pool subnet arm
+ec2-vpc-ipam	2026-11-27T09:07:40Z	PASS	3912	verify.sh	rc ok, orph clean, #7007 pool State baseline (probe FAILed as expected)
 ecr	2026-11-21T01:28:31Z	PASS	47	standard	PR6710 run at bf25fb0b3, same PR delta except the log-group message; rc ok, orph clean
 ecr-scanning	2026-11-20T11:50:48Z	PASS	133	verify.sh	PR6652 be63cc056, us-west-2; rc 0, kept identity x1, orph clean
 ecs-bluegreen	2026-10-30T09:15:32Z	PASS	235	verify.sh	rc ok, destroy clean, orph clean; PR #5573 ECS default steady-state wait (fix-round head)

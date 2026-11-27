@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 
 /**
  * A VPC whose primary CIDR is allocated from an IPAM pool (issue #5633).
@@ -36,6 +37,11 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
  * UPDATE phase: CDKD_TEST_UPDATE=true adds a tag to the IPAM VPC and both subnets,
  * in-place updates whose recorded `CidrBlock` attributes must survive.
  *
+ * go-to-k/cdkd#7007: the same phase changes only the pool's `Description`,
+ * an in-place update that moves its `State` from `create-complete` to
+ * `modify-complete` (measured). An SSM parameter reads that `State`, so it
+ * must follow the move instead of keeping the value recorded at create.
+ *
  * covers: AWS::EC2::IPAM
  * covers: AWS::EC2::IPAMPool
  * covers: AWS::EC2::IPAMPoolCidr
@@ -68,7 +74,13 @@ export class Ec2VpcIpamStack extends cdk.Stack {
       addressFamily: 'ipv4',
       ipamScopeId: ipam.attrPrivateDefaultScopeId,
       locale: this.region,
+      ...(isUpdate ? { description: 'cdkd-7007-updated' } : {}),
     });
+    const poolStateReader = new ssm.CfnParameter(this, 'PoolStateReader', {
+      type: 'String',
+      value: pool.attrState,
+    });
+    new cdk.CfnOutput(this, 'PoolStateParam', { value: poolStateReader.ref });
 
     const poolCidr = new ec2.CfnIPAMPoolCidr(this, 'PoolCidr', {
       ipamPoolId: pool.attrIpamPoolId,

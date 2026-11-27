@@ -77,8 +77,25 @@ const ARN = never('the ARN is built from create-only inputs');
 const OWN_REF = never('the physical id, which an in-place update keeps');
 const CREATED = never('the creation time');
 const FIXED_ENDPOINT = never('derived from the create-only identifier');
-const STEADY_STATUS = never(
-  'an operational status that settles back to its steady value after an update; no property sets it'
+/**
+ * go-to-k/cdkd#7007: an operational status. The update returns once the
+ * resource is stable, but the stable value can differ from the recorded one
+ * (an IPAM pool's State goes create-complete -> modify-complete on a
+ * Description-only update, measured), so no "settles back" premise holds
+ * unmeasured. A row of shared.ts `HAND_IN_PLACE_UPDATE_STATUS_ATTRS`.
+ */
+const OPERATIONAL_STATUS = anyUpdate(
+  'an operational status; the stable value after an update can differ from the recorded one'
+);
+/**
+ * An RDS instance's point-in-time status: `dbInstanceAttributes` records it
+ * only from a settled read of an `available` instance (CloudFormation serves
+ * its stabilized instance). After an update read mid-modification the record
+ * drops it, so a re-resolved reader would be refused where CloudFormation
+ * serves `available`: it stays `never`.
+ */
+const RDS_SETTLED_STATUS = never(
+  'recorded only from a settled read of an `available` instance, as CloudFormation serves its stabilized instance'
 );
 
 /**
@@ -92,36 +109,27 @@ const renamed = (stack: string, change: string, value: string): InPlaceAttrVerdi
   never(`measured (${stack}): ${change} in place left it ${value}`);
 
 export const RENAME_MEASURED: Readonly<Record<string, Readonly<Record<string, InPlaceAttrVerdict>>>> = {
-  'AWS::Chime::AppInstance': {
-    AppInstanceArn: renamed('cdkd-probe-7007-s2c', 'Name', 'app-instance/2cf58ce3-...'),
-  },
-  'AWS::Chime::AppInstanceUser': {
-    AppInstanceUserArn: renamed('cdkd-probe-7007-s2c', 'Name', '.../user/cdkd-probe-7007-user'),
-  },
-  'AWS::Chime::Channel': {
-    Arn: renamed('cdkd-probe-7007-s3c', 'Name', '.../channel/fdc1ec1c-...'),
-  },
   'AWS::Chime::ChannelFlow': {
-    Arn: renamed('cdkd-probe-7007-s4b', 'Name', '.../channel-flow/1109d9cb...'),
     ChannelFlowId: renamed('cdkd-probe-7007-s4b', 'Name', '1109d9cb...'),
   },
   'AWS::Chime::VoiceConnector': {
-    VoiceConnectorArn: renamed('cdkd-probe-7007-s4b', 'Name', 'vc/dv56tpxjyzqla7zpqp6swq'),
     VoiceConnectorId: renamed('cdkd-probe-7007-s4b', 'Name', 'dv56tpxjyzqla7zpqp6swq'),
   },
-  'AWS::CleanRooms::Collaboration': {
-    Arn: renamed('cdkd-probe-7007-s2c', 'Name', 'collaboration/84408462-...'),
+  'AWS::Deadline::Budget': {
+    BudgetId: renamed('cdkd-probe-7007-s3c', 'DisplayName', 'budget-4a2b9e7f...'),
   },
   'AWS::DataSync::Task': {
     TaskArn: renamed('cdkd-probe-7007-s4b', 'Name', 'task/task-0be708b518a40c674'),
   },
-  'AWS::Deadline::Budget': {
-    Arn: renamed('cdkd-probe-7007-s3c', 'DisplayName', '.../budget/budget-4a2b9e7f...'),
-    BudgetId: renamed('cdkd-probe-7007-s3c', 'DisplayName', 'budget-4a2b9e7f...'),
-  },
   'AWS::Deadline::Queue': {
     Arn: renamed('cdkd-probe-7007-s2c', 'DisplayName', '.../queue/queue-f632d873...'),
     QueueId: renamed('cdkd-probe-7007-s2c', 'DisplayName', 'queue-f632d873...'),
+  },
+  'AWS::CloudWatch::MetricDataQueryDefinition': {
+    Id: renamed('cdkd-probe-7007-135937-mdq', 'Path', '365aa80b-3b8c-429e-88ff-138229c0e9e8'),
+  },
+  'AWS::MediaLive::EventBridgeRuleTemplate': {
+    Id: renamed('cdkd-probe-7007-135937r2-ml', 'Name', '8289460'),
   },
   'AWS::EC2::PrefixList': {
     Arn: renamed('cdkd-probe-7007-s1', 'PrefixListName', 'prefix-list/pl-0d520b78fc4478f52'),
@@ -150,24 +158,8 @@ export const RENAME_MEASURED: Readonly<Record<string, Readonly<Record<string, In
   'AWS::Lex::BotAlias': {
     Arn: renamed('cdkd-probe-7007-s3c', 'BotAliasName', 'bot-alias/8ACWASRH4S/7ETHCRHKIG'),
   },
-  'AWS::Route53Resolver::FirewallRuleGroupAssociation': {
-    Arn: renamed('cdkd-probe-7007-s3c', 'Name', '.../rslvr-frgassoc-ad8eaddd39cc403a'),
-  },
-  // A DomainName change cannot be applied in place (a Cloud Control update
-  // fails NotUpdatable; go-to-k/cdkd#7070), so only Name is an in-place rename.
-  // cdkd-probe-7007-s1: a Name + DomainName update REPLACED the rule
-  // (rslvr-rr-c051d710... -> rslvr-rr-b961c68a...); a second, Name-only update
-  // completed in place, renamed it (live name cdkd-probe-7007-rr-c) and kept
-  // rslvr-rr-b961c68a7e1e43908.
-  'AWS::Route53Resolver::ResolverRule': {
-    Arn: renamed('cdkd-probe-7007-s1', 'Name only', 'resolver-rule/rslvr-rr-b961c68a7e1e43908'),
-  },
   'AWS::WellArchitected::Workload': {
     WorkloadId: renamed('cdkd-probe-7007-s3c', 'WorkloadName', 'd407459bb0b58e882b630018989ed8fb'),
-  },
-  // The handlers complete a rename without applying it: the name and ARN stay.
-  'AWS::XRay::Group': {
-    GroupARN: renamed('cdkd-probe-7007-s1', 'GroupName', 'group/<old name>/NIY2T2OJ...'),
   },
   // UpdateSamplingRule names the rule by name or ARN and has no rename, so no
   // name field (RuleName, SamplingRule / SamplingRuleUpdate.RuleName) moves it.
@@ -204,21 +196,6 @@ const REASONED: Classification = {
   'AWS::Lightsail::LoadBalancer': {
     LoadBalancerArn: never('`LoadBalancer/<uuid>`; TlsPolicyName names a TLS policy'),
   },
-  'AWS::MemoryDB::Cluster': {
-    ARN: never('`cluster/<create-only ClusterName>`; the in-place names are a parameter group, ACL and snapshot'),
-  },
-  'AWS::ElastiCache::ServerlessCache': {
-    ARN: never('`serverlesscache:<create-only name>`; FinalSnapshotName names the final snapshot'),
-  },
-  'AWS::MediaTailor::PlaybackConfiguration': {
-    PlaybackConfigurationArn: never('built from the create-only Name; TranscodeProfileName names a profile'),
-  },
-  'AWS::Route53RecoveryReadiness::ReadinessCheck': {
-    ReadinessCheckArn: never('built from the create-only ReadinessCheckName; ResourceSetName names a set'),
-  },
-  'AWS::IoTWireless::WirelessDeviceImportTask': {
-    Arn: never('`ImportTask/<id>`; DestinationName names a destination'),
-  },
   'AWS::Amplify::Branch': {
     Arn: never('`apps/<app>/branches/<create-only BranchName>`; PullRequestEnvironmentName is a backend'),
   },
@@ -231,8 +208,38 @@ const REASONED: Classification = {
   'AWS::MediaConnect::FlowSource': {
     SourceArn: never('`source:<id>:<create-only Name>`; VpcInterfaceName names an interface'),
   },
-  'AWS::MediaPackage::OriginEndpoint': {
-    Arn: never('`origin_endpoints/<create-only Id>`; ManifestName names the manifest'),
+  // A template-less primary-identifier ARN whose type has an in-place
+  // foreign reference (a role, a certificate, a target): the ARN carries the
+  // minted id or create-only names, not the reference (go-to-k/cdkd#7007).
+  'AWS::ApiGateway::DomainNameV2': {
+    DomainNameArn: never('`/domainnames/<create-only DomainName>+<id>`; CertificateArn and Policy are fields'),
+  },
+  'AWS::ApiGateway::BasePathMappingV2': {
+    BasePathMappingArn: never('under the create-only domain and BasePath; RestApiId and Stage are its target'),
+  },
+  'AWS::EKS::Capability': {
+    Arn: never('`capability/<cluster>/<create-only name>/<uuid>`; RoleArn is a field'),
+  },
+  'AWS::Wisdom::Content': {
+    ContentArn: never('`content/<knowledge base id>/<content id>`; UploadId replaces the body, not the content'),
+  },
+  'AWS::RoboMaker::RobotApplication': {
+    Arn: never('`robot-application/<create-only name>/<creation time>`; CurrentRevisionId selects a revision'),
+  },
+  'AWS::RoboMaker::SimulationApplication': {
+    Arn: never('`simulation-application/<create-only name>/<creation time>`; CurrentRevisionId selects a revision'),
+  },
+  'AWS::MemoryDB::Cluster': {
+    ARN: never('`cluster/<create-only ClusterName>`; the in-place names are a parameter group, ACL and snapshot'),
+  },
+  'AWS::ElastiCache::ServerlessCache': {
+    ARN: never('`serverlesscache:<create-only name>`; FinalSnapshotName names the final snapshot'),
+  },
+  'AWS::MediaTailor::PlaybackConfiguration': {
+    PlaybackConfigurationArn: never('built from the create-only Name; TranscodeProfileName names a profile'),
+  },
+  'AWS::Route53RecoveryReadiness::ReadinessCheck': {
+    ReadinessCheckArn: never('built from the create-only ReadinessCheckName; ResourceSetName names a set'),
   },
   'AWS::SageMaker::Space': {
     SpaceArn: never('`space/<create-only domain>/<create-only SpaceName>`; SpaceDisplayName is a label'),
@@ -253,7 +260,6 @@ const REASONED: Classification = {
     ListId: never('PutProtocolsList updates the list its ListId names; the name is a field'),
   },
   'AWS::MediaLive::CloudWatchAlarmTemplate': {
-    Arn: never('`cloudwatch-alarm-template:<id>`; UpdateCloudWatchAlarmTemplate keeps the id'),
     Id: never('the minted id; UpdateCloudWatchAlarmTemplate names the template by it'),
   },
   // A host or address built from the resource's minted id or create-only
@@ -319,6 +325,8 @@ const REASONED: Classification = {
   },
   'AWS::DataSync::LocationEFS': {
     LocationUri: movedBy(['Subdirectory'], '`efs://<region>.<file system>/<subdirectory>/`'),
+    // A template-less primary-identifier ARN with in-place foreign references.
+    LocationArn: never('`location/loc-<id>`; AccessPointArn and the role are fields UpdateLocationEfs takes'),
   },
   'AWS::DataSync::LocationFSxLustre': {
     LocationUri: movedBy(['Subdirectory'], '`fsxl://<region>.<file system>/<subdirectory>/`'),
@@ -330,6 +338,36 @@ const REASONED: Classification = {
   // Protocol change is taken as a move too.
   'AWS::DataSync::LocationFSxONTAP': {
     LocationUri: movedBy(['Subdirectory', 'Protocol'], 'the storage VM, protocol and subdirectory'),
+    FsxFilesystemArn: never('the file system of the create-only StorageVirtualMachineArn'),
+  },
+  // Pairs the pinned spec settled by `no-in-place-update` that the live
+  // registry snapshot leaves unsettled: it makes one more property in place
+  // (go-to-k/cdkd#7007, after #7074). That property moves none of them.
+  'AWS::Connect::ViewVersion': {
+    // Only VersionDescription is in place. The ARN is the primary identifier
+    // (`view/<id>:<version>`), which an update keeps by the handler contract,
+    // and the version number is its last segment.
+    ViewVersionArn: never('the primary identifier, kept by an update; only VersionDescription is in place'),
+    Version: never('the version number the primary-identifier ARN ends with'),
+  },
+  'AWS::EntityResolution::SchemaMapping': {
+    SchemaArn: never('`schemamapping/<create-only SchemaName>`'),
+    HasWorkflows: never('set by a matching workflow that uses the mapping; an update of the mapping creates none'),
+  },
+  'AWS::Location::Map': {
+    DataSource: never('the data provider of the create-only Configuration style'),
+  },
+  // Only ClientToken (and Tags) are in place; each SQ... attribute echoes a
+  // create-only property.
+  'AWS::Timestream::ScheduledQuery': {
+    SQName: never('echoes the create-only ScheduledQueryName'),
+    SQQueryString: never('echoes the create-only QueryString'),
+    SQScheduleConfiguration: never('echoes the create-only ScheduleConfiguration'),
+    SQNotificationConfiguration: never('echoes the create-only NotificationConfiguration'),
+    SQErrorReportConfiguration: never('echoes the create-only ErrorReportConfiguration'),
+    SQKmsKeyId: never('echoes the create-only KmsKeyId'),
+    SQTargetConfiguration: never('echoes the create-only TargetConfiguration'),
+    SQScheduledQueryExecutionRoleArn: never('echoes the create-only ScheduledQueryExecutionRoleArn'),
   },
   'AWS::DataSync::LocationAzureBlob': {
     LocationUri: movedBy(['Subdirectory'], 'the container URL and subdirectory'),
@@ -379,18 +417,18 @@ const HAND_CLASSIFICATION: Classification = {
     BrowserArn: ID,
     BrowserId: ID,
     Name: never('the browser name is fixed at create'),
-    Status: STEADY_STATUS,
+    Status: OPERATIONAL_STATUS,
   },
   'AWS::BedrockAgentCore::CodeInterpreter': {
     CodeInterpreterArn: ID,
     CodeInterpreterId: ID,
-    Status: STEADY_STATUS,
+    Status: OPERATIONAL_STATUS,
   },
   'AWS::BedrockAgentCore::Evaluator': {
     EvaluatorArn: ID,
     EvaluatorId: ID,
     CreatedAt: CREATED,
-    Status: STEADY_STATUS,
+    Status: OPERATIONAL_STATUS,
     EvaluatorType: movedBy(
       ['EvaluatorConfig'],
       'Custom / CustomCode / CustomDerived follows the kind of EvaluatorConfig'
@@ -409,8 +447,8 @@ const HAND_CLASSIFICATION: Classification = {
     ),
     CreatedAt: CREATED,
     LastUpdatedAt: anyUpdate('every UpdateAgentRuntime stamps it'),
-    Status: STEADY_STATUS,
-    FailureReason: STEADY_STATUS,
+    Status: OPERATIONAL_STATUS,
+    FailureReason: OPERATIONAL_STATUS,
     WorkloadIdentityDetails: never('the workload identity is created with the runtime'),
   },
   'AWS::Budgets::Budget': { Id: OWN_REF },
@@ -464,7 +502,7 @@ const HAND_CLASSIFICATION: Classification = {
     Id: ID,
     Arn: never('derived from the instance id'),
     CreatedTime: CREATED,
-    InstanceStatus: STEADY_STATUS,
+    InstanceStatus: OPERATIONAL_STATUS,
     ServiceRole: never('the service-linked role Connect creates with the instance'),
   },
   'AWS::DLM::LifecyclePolicy': { PolicyId: ID, Arn: never('derived from the policy id') },
@@ -500,7 +538,7 @@ const HAND_CLASSIFICATION: Classification = {
     InstanceId: ID,
     VpcId: never('the subnet is create-only'),
     PrivateIp: never('the primary private address is create-only and survives a stop/start'),
-    State: STEADY_STATUS,
+    State: OPERATIONAL_STATUS,
     PublicIp: anyUpdate('a stop/start update gives an instance without an EIP a new address (#5446)'),
     PublicDnsName: anyUpdate('follows the public address (#5446)'),
     PrivateDnsName: anyUpdate('a PrivateDnsNameOptions change renames it (#5630)'),
@@ -674,7 +712,7 @@ const HAND_CLASSIFICATION: Classification = {
   'AWS::Kinesis::StreamConsumer': {
     ConsumerARN: ARN,
     ConsumerCreationTimestamp: CREATED,
-    ConsumerStatus: STEADY_STATUS,
+    ConsumerStatus: OPERATIONAL_STATUS,
   },
   'AWS::KinesisFirehose::DeliveryStream': { Arn: ARN },
   'AWS::Lambda::EventSourceMapping': { Id: ID, EventSourceMappingArn: never('derived from the id') },
@@ -687,14 +725,14 @@ const HAND_CLASSIFICATION: Classification = {
   'AWS::Lambda::MicrovmImage': {
     ImageArn: ARN,
     CreatedAt: CREATED,
-    State: STEADY_STATUS,
+    State: OPERATIONAL_STATUS,
     LatestActiveImageVersion: movedBy(MICROVM_BUILD_KEYS, 'a build-key change builds a new version'),
     LatestFailedImageVersion: movedBy(MICROVM_BUILD_KEYS, 'a failed build records its version'),
     UpdatedAt: movedBy(MICROVM_BUILD_KEYS, 'stamped by UpdateMicrovmImage; a Tags-only edit skips it'),
   },
   'AWS::Lambda::NetworkConnector': {
     Arn: ARN,
-    State: STEADY_STATUS,
+    State: OPERATIONAL_STATUS,
     LatestVersion: movedBy(
       ['Configuration', 'OperatorRole'],
       'a configuration update creates a new immutable version'
@@ -712,10 +750,10 @@ const HAND_CLASSIFICATION: Classification = {
     DomainName: never('assigned at create'),
     RegionalEndpoints: never('one per create-only Region'),
     CreatedAt: CREATED,
-    State: STEADY_STATUS,
-    StateReason: STEADY_STATUS,
-    UpdateStatus: STEADY_STATUS,
-    UpdateStatusReason: STEADY_STATUS,
+    State: OPERATIONAL_STATUS,
+    StateReason: OPERATIONAL_STATUS,
+    UpdateStatus: OPERATIONAL_STATUS,
+    UpdateStatusReason: OPERATIONAL_STATUS,
     UpdatedAt: movedBy(
       ['Description', 'AuthType', 'RevisionWeights', 'ScalingConfig', 'ThrottleConfig'],
       'stamped by UpdateWebFunctionEndpoint (every in-place property but the create-only ones)'
@@ -725,8 +763,8 @@ const HAND_CLASSIFICATION: Classification = {
     FunctionArn: never('every property is create-only'),
     RevisionId: never('every property is create-only'),
     RevisionArn: never('every property is create-only'),
-    State: STEADY_STATUS,
-    StateReason: STEADY_STATUS,
+    State: OPERATIONAL_STATUS,
+    StateReason: OPERATIONAL_STATUS,
     CreatedAt: CREATED,
   },
   'AWS::Lightsail::Alarm': {
@@ -743,8 +781,8 @@ const HAND_CLASSIFICATION: Classification = {
     Arn: ARN,
     ResourceArns: movedBy(['ResourceArn'], 'the source resource'),
     Service: movedBy(['ResourceArn'], 'the service of the source resource'),
-    Status: STEADY_STATUS,
-    StatusReason: STEADY_STATUS,
+    Status: OPERATIONAL_STATUS,
+    StatusReason: OPERATIONAL_STATUS,
   },
   'AWS::Logs::LogGroup': { Arn: ARN },
   'AWS::Neptune::DBCluster': {
@@ -761,7 +799,7 @@ const HAND_CLASSIFICATION: Classification = {
     Arn: ARN,
     CreationTime: CREATED,
     CurrentState: movedBy(['DesiredState'], 'RUNNING or STOPPED, as DesiredState asks'),
-    StateReason: STEADY_STATUS,
+    StateReason: OPERATIONAL_STATUS,
     LastModifiedTime: movedBy(PIPE_UPDATE_KEYS, 'stamped by UpdatePipe; a Tags-only edit skips it'),
   },
   'AWS::RDS::DBCluster': {
@@ -802,16 +840,16 @@ const HAND_CLASSIFICATION: Classification = {
     'CertificateDetails.*': movedBy(['CACertificateIdentifier'], 'the server certificate of the CA'),
     SecondaryAvailabilityZone: movedBy(['MultiAZ'], 'a Multi-AZ instance gains a standby zone'),
     AutomaticRestartTime: never('set only while the instance is stopped, which no property does'),
-    DBInstanceStatus: STEADY_STATUS,
+    DBInstanceStatus: RDS_SETTLED_STATUS,
     IsStorageConfigUpgradeAvailable: never('an AWS recommendation, no property sets it'),
     LatestRestorableTime: never('advances with time, never by an update'),
-    PercentProgress: STEADY_STATUS,
+    PercentProgress: RDS_SETTLED_STATUS,
     ReadReplicaDBClusterIdentifiers: never('replicas created elsewhere move it'),
     ReadReplicaDBInstanceIdentifiers: never('replicas created elsewhere move it'),
     ResumeFullAutomationModeTime: never('RDS Custom automation mode, which no property sets'),
-    StatusInfos: STEADY_STATUS,
-    StorageOperationStatus: STEADY_STATUS,
-    StorageOperationPercentProgress: STEADY_STATUS,
+    StatusInfos: OPERATIONAL_STATUS,
+    StorageOperationStatus: RDS_SETTLED_STATUS,
+    StorageOperationPercentProgress: RDS_SETTLED_STATUS,
   },
   'AWS::RDS::DBProxy': {
     DBProxyArn: ARN,
