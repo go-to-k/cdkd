@@ -611,6 +611,7 @@
         "diff-fail-on-destructive",
         "dynamodb-autoscaling",
         "efs-immutable-replacement",
+        "elasticache-replicationgroup-getatt",
         "emr-cluster",
         "fallback-recreate-children",
         "generated-name-lifecycle",

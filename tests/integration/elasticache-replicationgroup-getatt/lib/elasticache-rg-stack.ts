@@ -53,6 +53,10 @@ export class ElastiCacheRgStack extends cdk.Stack {
       cacheNodeType: 'cache.t3.micro',
       numCacheClusters: 1,
       automaticFailoverEnabled: false,
+      // go-to-k/cdkd#7100: CDKD_TEST_RESHARD=true adds NumNodeGroups, a change
+      // CloudFormation replaces on. The type is stateful, so the deploy must
+      // refuse it before any call without --force-stateful-recreation.
+      ...(process.env.CDKD_TEST_RESHARD === 'true' && { numNodeGroups: 1 }),
       cacheSubnetGroupName: subnetGroup.ref,
       securityGroupIds: [sg.securityGroupId],
     });

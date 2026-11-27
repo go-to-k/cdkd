@@ -14,5 +14,6 @@ export const SPEC_REPLACEMENT_PATHS: ReadonlyMap<
   ReadonlyArray<readonly string[]>
 > = new Map<string, ReadonlyArray<readonly string[]>>([
   ['AWS::AppConfig::ConfigurationProfile', [['Type']]],
+  ['AWS::ElastiCache::ReplicationGroup', [['NodeGroupConfiguration'], ['NumNodeGroups']]],
   ['AWS::Route53Resolver::ResolverRule', [['DomainName']]],
 ]);

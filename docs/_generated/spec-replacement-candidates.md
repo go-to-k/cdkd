@@ -15,7 +15,7 @@ what cdkd does; `update` and `baseline` rows keep the in-place update, and a `ha
 is decided by `src/analyzer/replacement-rules/rules.ts` or a provider-replacement planner.
 Evidence: `REPLACEMENT_EVIDENCE`.
 
-Candidates: 389 (replace 2, update 103, baseline 195, hand rule 89).
+Candidates: 389 (replace 4, update 103, baseline 193, hand rule 89).
 
 | Candidate | Spec | Verdict |
 | --- | --- | --- |
@@ -199,13 +199,13 @@ Candidates: 389 (replace 2, update 103, baseline 195, hand rule 89).
 | `AWS::ElastiCache::CacheCluster#PreferredAvailabilityZones` | maybe | hand rule |
 | `AWS::ElastiCache::ReplicationGroup#AuthToken` | maybe | update |
 | `AWS::ElastiCache::ReplicationGroup#Engine` | yes | update |
-| `AWS::ElastiCache::ReplicationGroup#NodeGroupConfiguration` | maybe | baseline |
+| `AWS::ElastiCache::ReplicationGroup#NodeGroupConfiguration` | maybe | replace |
 | `AWS::ElastiCache::ReplicationGroup#NodeGroupConfiguration.*.NodeGroupId` | maybe | baseline |
 | `AWS::ElastiCache::ReplicationGroup#NodeGroupConfiguration.*.PrimaryAvailabilityZone` | yes | baseline |
 | `AWS::ElastiCache::ReplicationGroup#NodeGroupConfiguration.*.ReplicaAvailabilityZones` | yes | baseline |
 | `AWS::ElastiCache::ReplicationGroup#NodeGroupConfiguration.*.ReplicaCount` | yes | baseline |
 | `AWS::ElastiCache::ReplicationGroup#NodeGroupConfiguration.*.Slots` | yes | baseline |
-| `AWS::ElastiCache::ReplicationGroup#NumNodeGroups` | maybe | baseline |
+| `AWS::ElastiCache::ReplicationGroup#NumNodeGroups` | maybe | replace |
 | `AWS::ElastiCache::ReplicationGroup#ReplicasPerNodeGroup` | yes | update |
 | `AWS::ElastiCache::User#Engine` | yes | update |
 | `AWS::ElastiCache::UserGroup#Engine` | yes | update |
