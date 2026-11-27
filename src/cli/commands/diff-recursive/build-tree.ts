@@ -713,7 +713,10 @@ export async function buildDiffTree(args: {
         rowDerivedNames,
         producerLookup,
         consumerAccount,
-        { inherited: inheritedSecretTokens, child: childSecretTokens }
+        { inherited: inheritedSecretTokens, child: childSecretTokens },
+        // go-to-k/cdkd#7102: a cross-stack read here sees this run's preview,
+        // as this node's own resources do.
+        crossStackPreview
       )
     );
     // go-to-k/cdkd#7068: the row keys passing a mixed secret, masked on every
