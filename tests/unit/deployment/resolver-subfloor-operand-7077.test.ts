@@ -233,6 +233,33 @@ describe('resolver log operands with a sub-floor provenance print as *** (#7077)
     }
   });
 
+  it('a context reused across a printing binding or a rebound parameter bag re-derives its taint', async () => {
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    const pin = 'Q7';
+    state.pin = pin;
+    const join = { 'Fn::Join': ['-', [{ Ref: 'P' }, 'a']] };
+    // Warmed OUTSIDE the binding, then resolved inside it.
+    const context = {
+      template: template(pin),
+      resources: {},
+      parameters: { P: pin },
+      recordedSecretValues: new Map(),
+    };
+    await resolver.resolve(join, context as never);
+    const subtree = new Map<string, string>();
+    recordLogOnlyValue(subtree, pin);
+    logSpies.debug.mockClear();
+    await withPrintingSecrets(subtree, () => resolver.resolve(join, context as never));
+    expect(debugLines().filter((line) => line.includes(pin))).toEqual([]);
+    // Warmed with a plain value, then the parameter bag is rebound.
+    const inherited = { ...context, inheritedSecrets: new Map([[BIG, A]]), parameters: { P: 'plain' } };
+    await resolver.resolve(join, inherited as never);
+    inherited.parameters = { P: `x/${BIG}` };
+    logSpies.debug.mockClear();
+    await resolver.resolve({ 'Fn::Select': [1, { 'Fn::Split': ['-', { Ref: 'P' }] }] }, inherited as never);
+    expect(debugLines().filter((line) => line.includes('s3cret'))).toEqual([]);
+  });
+
   it('a value with no provenance still prints (the scan above can see it)', async () => {
     state.pin = 'Q7';
     const control: Route = { value: (pin) => pin, context: () => ({ recordedSecretValues: new Map() }) };

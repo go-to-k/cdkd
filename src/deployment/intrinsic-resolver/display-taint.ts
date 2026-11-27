@@ -129,16 +129,44 @@ const namesByTemplate = new WeakMap<CloudFormationTemplate, Map<string, Readonly
 export function displayTaintedNames(context: ResolverContext | undefined): ReadonlySet<string> {
   const template = context?.template;
   if (context === undefined || template === undefined) return EMPTY;
-  // Once per resolution context: `resolveValue` asks at every intrinsic call,
-  // and every input below is fixed before the walk starts.
+  // Memoized per resolution context, since `resolveValue` asks at every
+  // intrinsic call. The bags it reads are not fixed for the context's life:
+  // the log sink's bound bags follow the async chain, and a bag grows as a
+  // pass records. So the memo holds only while the parameter bag, the
+  // bound-bag array and every visible bag's size are what they were
+  // (go-to-k/cdkd#7077 review).
+  const bound = boundPrintingBags();
+  const signature = bagsSignature(context);
   const memo = namesByContext.get(context);
-  if (memo !== undefined) return memo;
+  if (
+    memo !== undefined &&
+    memo.parameters === context.parameters &&
+    memo.bound === bound &&
+    memo.signature === signature
+  ) {
+    return memo.names;
+  }
   const names = computeTaintedNames(context, template);
-  namesByContext.set(context, names);
+  namesByContext.set(context, { parameters: context.parameters, bound, signature, names });
   return names;
 }
 
-const namesByContext = new WeakMap<ResolverContext, ReadonlySet<string>>();
+const namesByContext = new WeakMap<
+  ResolverContext,
+  {
+    parameters: ResolverContext['parameters'];
+    bound: readonly RecordedSecretValues[];
+    signature: string;
+    names: ReadonlySet<string>;
+  }
+>();
+
+/** Each visible bag's pair and log-only counts: what can change a verdict between calls. */
+function bagsSignature(context: ResolverContext): string {
+  return visibleBags(context)
+    .map((bag) => `${bag.size}.${logOnlyValuesOf.get(bag)?.size ?? 0}`)
+    .join(',');
+}
 
 function computeTaintedNames(
   context: ResolverContext,

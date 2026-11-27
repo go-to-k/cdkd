@@ -83,6 +83,7 @@ const NOT_AN_OPERAND: Readonly<Record<string, string>> = {
     ERROR,
   '(err as { $metadata?: { httpStatusCode?: unknown } } | null)?.$metadata ?.httpStatusCode': ERROR,
   'described.detail': "STS GetCallerIdentity's failure text (no operand reaches the call)",
+  'error.name': "a caught error's class name (`account-drain.ts`' account lookup)",
   'account-drain.ts: reason': "the account-id fallback's reason, built from STS failure text",
   'message(failure.detail)': "EC2 DescribeAvailabilityZones' failure text, masked by the builder",
   'line(message)': "`retry.ts`'s own retry line over the masked request names",
@@ -129,7 +130,8 @@ function isOperandCall(node: ts.Node): boolean {
 function isLogCall(call: ts.CallExpression, source: ts.SourceFile): boolean {
   const callee = call.expression;
   if (!ts.isPropertyAccessExpression(callee) || !LOG_METHODS.has(callee.name.text)) return false;
-  const receiver = normalize(callee.expression.getText(source));
+  // Whitespace stripped: a chain is often formatted across lines.
+  const receiver = callee.expression.getText(source).replace(/\s+/g, '');
   return /(^|\.)logger(\(\))?$/.test(receiver) || /(^|\.)getLogger\(\)(\.child\([^)]*\))?$/.test(receiver);
 }
 
@@ -280,6 +282,7 @@ describe('every resolver log operand goes through logOperand (#7077)', () => {
     // A logger getter and a `getLogger()` chain are log calls too.
     expect(verdicts('this.deps.logger().warn(`v ${value}`);')).toEqual(['unclassified']);
     expect(verdicts("getLogger().child('R').debug(`v ${value}`);")).toEqual(['unclassified']);
+    expect(verdicts("getLogger()\n  .child('R')\n  .debug(`v ${value}`);")).toEqual(['unclassified']);
     // A binding is resolved in ITS scope: another function's `const` of the
     // same name, a parameter, or a reassignable `let` classifies nothing.
     expect(
