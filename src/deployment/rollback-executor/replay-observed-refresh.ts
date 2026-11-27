@@ -40,6 +40,12 @@ export interface ObservedBaselineRefresh {
    * as after a deploy's CREATE, so a readback is taken for it too.
    */
   recreated?: true | undefined;
+  /**
+   * go-to-k/cdkd#7158: the values that name nothing secret (the region and
+   * the stack name), which the off-template echo pass never learns, as every
+   * other readback writer passes them.
+   */
+  publicTokens: ReadonlySet<string>;
 }
 
 /**
@@ -156,6 +162,7 @@ export async function withRefreshedObservedBaseline(
   // under a key the template lacks, learned from the raw readback.
   return withOffTemplateEchoesMasked(
     { ...record, observedProperties: scrubbed },
-    { properties: restored.properties, readback: observed }
+    { properties: restored.properties, readback: observed },
+    refresh.publicTokens
   );
 }

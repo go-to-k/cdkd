@@ -197,7 +197,7 @@ describe('cdkd drift: a secret echoed under a key the template lacks (go-to-k/cd
     mockGetState.mockResolvedValueOnce(makeState({ Token: param() }));
     readsBack({ Name: '/app/token', Type: 'String', Value: 'public-value', Extra: LIVE_SECRET });
 
-    const { output } = await runDrift(['TestStack', '--json']);
+    const { output, error } = await runDrift(['TestStack', '--json']);
 
     expect(output).not.toContain(LIVE_SECRET);
     const payload = JSON.parse(output) as DriftJson[];
@@ -206,8 +206,10 @@ describe('cdkd drift: a secret echoed under a key the template lacks (go-to-k/cd
     expect(payload[0]!.notCompared).toEqual([
       { logicalId: 'Token', type: SSM_TYPE, cause: 'maskedEcho', referencesUnresolved: true },
     ]);
-    expect(exitSpy).not.toHaveBeenCalledWith(1);
-    expect(exitSpy).not.toHaveBeenCalledWith(2);
+    // Exit 0, positively: no exit call, no thrown exit, no exit code set.
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(error).toBeUndefined();
+    expect(process.exitCode ?? 0).toBe(0);
   });
 
   it('names the cause and the position, never a value, in the human report', async () => {
@@ -304,13 +306,15 @@ describe('cdkd drift: a secret echoed under a key the template lacks (go-to-k/cd
     );
     readsBack({ ...base, ...liveExtra });
 
-    const { output } = await runDrift(['TestStack', '--json']);
+    const { output, error } = await runDrift(['TestStack', '--json']);
 
     expect(output).not.toContain(LIVE_SECRET);
     const payload = JSON.parse(output) as DriftJson[];
     expect(payload[0]!.drifted).toEqual([]);
     expect(payload[0]!.notCompared.map((n) => n.cause)).toEqual(['maskedEcho']);
-    expect(exitSpy).not.toHaveBeenCalledWith(1);
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(error).toBeUndefined();
+    expect(process.exitCode ?? 0).toBe(0);
   });
 
   it('--accept masks and names an echo a LEGACY record held in plaintext at the accepted path', async () => {

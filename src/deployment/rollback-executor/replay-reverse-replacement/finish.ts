@@ -201,7 +201,13 @@ export async function finishReverseReplacement(
   // go-to-k/cdkd#6146: the re-create sends what the replay resolved, not
   // necessarily the value the deleted copy's `NoEcho` value MACs describe, so
   // they are dropped: the next deploy finds no MAC and re-sends once.
-  const { observedProperties: _staleObserved, noEchoValueMacs: _staleMacs, ...prevRecord } = prev;
+  const {
+    observedProperties: _staleObserved,
+    // go-to-k/cdkd#7158: the positions name the dropped baseline only.
+    observedMaskedLeaves: _staleMaskedLeaves,
+    noEchoValueMacs: _staleMacs,
+    ...prevRecord
+  } = prev;
   // go-to-k/cdkd#6731: the adopted resource is what AWS holds, so state keeps
   // its record (as persisted, already redacted), never one rebuilt from the
   // pre-deploy properties. Its template-level fields stay the pre-deploy
@@ -292,6 +298,7 @@ export async function finishReverseReplacement(
         logger,
         inScope: inOriginalPrefix,
         capture: ctx.captureObservedState,
+        publicTokens: new Set([ctx.region, stackName]),
         recreated: true,
       }
     );

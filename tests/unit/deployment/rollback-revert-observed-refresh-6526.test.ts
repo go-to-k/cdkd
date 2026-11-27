@@ -321,6 +321,7 @@ describe('withRefreshedObservedBaseline (go-to-k/cdkd#6526)', () => {
     logger: { debug: vi.fn() },
     inScope,
     capture: undefined,
+    publicTokens: new Set(['us-east-1', 'Stack6526']),
   });
 
   it("reads inside the revert's own scope", async () => {
@@ -375,6 +376,36 @@ describe('withRefreshedObservedBaseline (go-to-k/cdkd#6526)', () => {
     expect(JSON.stringify(out)).not.toContain('pw-rollback-7152');
     expect(out.observedProperties?.['Login']).toBe('***');
     expect(out.observedMaskedLeaves).toEqual([['Login']]);
+  });
+
+  it('never learns the region or the stack name as an echoed secret (go-to-k/cdkd#7158)', async () => {
+    for (const token of ['us-east-1', 'Stack6526']) {
+      const restored = res(
+        { Users: [{ Password: '{{resolve:ssm-secure:/p7158}}' }] },
+        { Users: [{ Password: '{{resolve:ssm-secure:/p7158}}' }] }
+      );
+      const live = { Users: [{ Password: token }], Where: token };
+      const out = await withRefreshedObservedBaseline(
+        restored,
+        args(restored, vi.fn().mockResolvedValue(live))
+      );
+      expect(out.observedProperties?.['Where']).toBe(token);
+      expect(out.observedMaskedLeaves).toBeUndefined();
+    }
+  });
+
+  it('a restore that resolved no secret still drops an attribute keyed by a NoEcho attribute value (go-to-k/cdkd#7153)', () => {
+    const token = 'abc123xyz';
+    const record: ResourceState = {
+      physicalId: 'cr-1',
+      resourceType: 'Custom::X',
+      properties: {},
+      attributes: { Token: token, [`Key.${token}`]: 1 },
+      noEchoAttributeNames: ['Token'],
+    };
+    const out = redactRollbackRecord(record, new Map(), {}, { Token: '***' });
+    expect(Object.keys(out.attributes ?? {})).toEqual(['Token']);
+    expect(out.noEchoAttributeNames).toEqual(['Token']);
   });
 
   it('a restored custom resource drops a NEW attribute whose key holds a secret, and keeps a persisted one (go-to-k/cdkd#7153)', () => {

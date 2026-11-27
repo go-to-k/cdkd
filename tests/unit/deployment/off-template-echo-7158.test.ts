@@ -329,6 +329,7 @@ describe('a secret echoed under a key the template lacks (go-to-k/cdkd#7158, #71
     );
     expect(out.observedProperties?.['Extra']).toBe('***');
     expect(out.observedMaskedLeaves).toEqual([['Extra']]);
+    expect(JSON.stringify(out)).not.toContain('emb3dded-7152');
   });
 
   it('learns from the resolved bag when the readback does not return the value at its position', () => {
@@ -337,6 +338,7 @@ describe('a secret echoed under a key the template lacks (go-to-k/cdkd#7158, #71
       { properties: { Secret: 'pre-q7Z-post' }, readback: { Extra: 'pre-q7Z-post' } }
     );
     expect(noEcho.observedProperties?.['Extra']).toBe('***');
+    expect(JSON.stringify(noEcho)).not.toContain('q7Z');
     const reference = withOffTemplateEchoesMasked<OffTemplateEchoRecord>(
       {
         physicalId: 'p',
@@ -346,6 +348,7 @@ describe('a secret echoed under a key the template lacks (go-to-k/cdkd#7158, #71
       { properties: { Conn: 'pw=res0lved-7152;' }, readback: { Extra: 'res0lved-7152' } }
     );
     expect(reference.observedProperties?.['Extra']).toBe('***');
+    expect(JSON.stringify(reference)).not.toContain('res0lved-7152');
   });
 
   it('the deploy persist learns from the in-memory bag when the readback omits the position', async () => {
@@ -370,6 +373,7 @@ describe('a secret echoed under a key the template lacks (go-to-k/cdkd#7158, #71
       { readback: { Items: [{ Name: 'b', Value: 'reord3red-7152' }, { Name: 'a', Value: 'pub-a' }], Extra: 'reord3red-7152' } }
     );
     expect(out.observedProperties?.['Extra']).toBe('***');
+    expect(JSON.stringify(out)).not.toContain('reord3red-7152');
   });
 
   it('learns the whole readback leaf when the template leaf holds two references', () => {
@@ -382,6 +386,8 @@ describe('a secret echoed under a key the template lacks (go-to-k/cdkd#7158, #71
       { readback: { Conn: 'u=us3r;p=pa55', Extra: 'u=us3r;p=pa55' } }
     );
     expect(out.observedProperties?.['Extra']).toBe('***');
+    expect(JSON.stringify(out)).not.toContain('us3r');
+    expect(JSON.stringify(out)).not.toContain('pa55');
   });
 
   it('leaves an echo the redaction rewrote into its reference alone, so drift still compares it', () => {
@@ -403,6 +409,50 @@ describe('a secret echoed under a key the template lacks (go-to-k/cdkd#7158, #71
       {}
     );
     expect(out.observedMaskedLeaves).toEqual([['Echoes', 1, 'Value']]);
+  });
+
+  it('keeps an entry past the end of a list a writer masked whole (a mask in the list, not at the index)', () => {
+    // `isWhollyMask` of the list holds; `isMaskLeaf` of a list never does, and
+    // the index itself holds nothing.
+    const out = withOffTemplateEchoesMasked(
+      { properties: {}, observedProperties: { Echoes: ['***', '***'] }, observedMaskedLeaves: [['Echoes', 3]] },
+      {}
+    );
+    expect(out.observedMaskedLeaves).toEqual([['Echoes', 3]]);
+  });
+
+  describe('a kept entry under a template list is re-paired, never indexed into the template (readback indices)', () => {
+    it('an identity-paired element past the end of the template list', () => {
+      const first = withOffTemplateEchoesMasked<OffTemplateEchoRecord>(
+        {
+          physicalId: 'p',
+          properties: { Secret: '***', Items: [{ Name: 'b' }] },
+          noEchoLeaves: [['Secret']],
+          observedProperties: { Secret: '***', Items: [{ Name: 'a' }, { Name: 'b', Extra: 'x-hunter22' }] },
+        },
+        { readback: { Secret: 'hunter22', Items: [{ Name: 'a' }, { Name: 'b', Extra: 'x-hunter22' }] } }
+      );
+      expect(first.observedMaskedLeaves).toEqual([['Items', 1, 'Extra']]);
+      expect(JSON.stringify(first)).not.toContain('hunter22');
+      // A write that cannot re-learn the value (scrub, a persist with no fresh readback).
+      const second = withOffTemplateEchoesMasked(first, {});
+      expect(second.observedMaskedLeaves).toEqual([['Items', 1, 'Extra']]);
+    });
+
+    it('an identity-paired element AWS returned reordered', () => {
+      const first = withOffTemplateEchoesMasked<OffTemplateEchoRecord>(
+        {
+          physicalId: 'p',
+          properties: { Secret: '***', Items: [{ Name: 'a', Extra: 'pub' }, { Name: 'b' }] },
+          noEchoLeaves: [['Secret']],
+          observedProperties: { Secret: '***', Items: [{ Name: 'b', Extra: 'x-hunter22' }, { Name: 'a', Extra: 'pub' }] },
+        },
+        { readback: { Secret: 'hunter22', Items: [{ Name: 'b', Extra: 'x-hunter22' }, { Name: 'a', Extra: 'pub' }] } }
+      );
+      expect(first.observedMaskedLeaves).toEqual([['Items', 0, 'Extra']]);
+      const second = withOffTemplateEchoesMasked(first, {});
+      expect(second.observedMaskedLeaves).toEqual([['Items', 0, 'Extra']]);
+    });
   });
 
   it('the deploy persist never learns the region or the stack name', () => {

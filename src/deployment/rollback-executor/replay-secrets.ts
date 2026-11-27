@@ -409,7 +409,8 @@ export async function resolveLeafByRegion(
  * `properties` (against `journaledProps`) and `attributes` (against
  * `journaledAttributes`); see {@link keepPersistedPlainLeaves}.
  *
- * No-op when the op resolved no secret.
+ * When the op resolved no secret, only the go-to-k/cdkd#7153 attribute-key
+ * drop runs (a `NoEcho` attribute value is a needle of its own).
  */
 export function redactRollbackRecord(
   record: ResourceState,
@@ -417,7 +418,17 @@ export function redactRollbackRecord(
   journaledProps?: Record<string, unknown>,
   journaledAttributes?: Record<string, unknown>
 ): ResourceState {
-  if (secrets.size === 0) return record;
+  // go-to-k/cdkd#7153: a custom resource attribute whose KEY holds a secret
+  // (a re-created resource's fresh `Data`) is not restored. With no template
+  // in hand, the keys the persisted record already held stand for the ones a
+  // template `Fn::GetAtt` spells: its own save kept only those. This runs
+  // whether or not the op resolved a secret: a value the handler returned
+  // under a `NoEcho` attribute is a needle too.
+  const persistedAttributeNames =
+    journaledAttributes === undefined ? undefined : new Set(Object.keys(journaledAttributes));
+  if (secrets.size === 0) {
+    return withSecretAttributeKeysDropped(record, record, secrets, persistedAttributeNames);
+  }
   // Deliberately NOT passed as `sourceProperties`: that parameter means "a
   // TEMPLATE bag", which suppresses the trust-any-expression relaxation a state
   // bag is entitled to. Positioning `properties` against the journaled bag is
@@ -446,10 +457,7 @@ export function redactRollbackRecord(
   const scrubbed = scrubResourceRecord(positioned, secrets, undefined, undefined, {
     observed: isSameGenerationBag(positioned.observedProperties) ? 'same-generation' : 'unproven',
   });
-  // go-to-k/cdkd#7153: a custom resource attribute whose KEY holds a secret
-  // (a re-created resource's fresh `Data`) is not restored. With no template
-  // in hand, the keys the persisted record already held stand for the ones a
-  // template `Fn::GetAtt` spells: its own save kept only those.
+  // go-to-k/cdkd#7153, as above.
   return withSecretAttributeKeysDropped(
     keepPersistedPlainRecordLeaves(scrubbed, record, {
       properties: journaledProps,
@@ -457,7 +465,7 @@ export function redactRollbackRecord(
     }),
     record,
     secrets,
-    journaledAttributes === undefined ? undefined : new Set(Object.keys(journaledAttributes))
+    persistedAttributeNames
   );
 }
 

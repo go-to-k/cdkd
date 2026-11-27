@@ -211,6 +211,18 @@ describe.each([true, false])(
       expect(readCurrentState).not.toHaveBeenCalled();
       expect(record?.observedProperties).toBeUndefined();
     });
+
+    it('drops the deleted copy observedMaskedLeaves with its baseline (go-to-k/cdkd#7158)', async () => {
+      const readCurrentState = vi.fn().mockResolvedValue(LIVE);
+      const record = await reverse(
+        deletedFirst,
+        stub(readCurrentState),
+        { observedMaskedLeaves: [['Extra']] },
+        { captureObservedState: false }
+      );
+      expect(record?.observedProperties).toBeUndefined();
+      expect(record?.observedMaskedLeaves).toBeUndefined();
+    });
   }
 );
 
@@ -300,5 +312,14 @@ describe('the failed-op re-create of a delete-first link records its baseline (g
     );
     expect(readCurrentState).not.toHaveBeenCalled();
     expect(record?.observedProperties).toBeUndefined();
+  });
+
+  it('drops the deleted copy observedMaskedLeaves with its baseline (go-to-k/cdkd#7158)', async () => {
+    const readCurrentState = vi.fn().mockResolvedValue(LINK_PROPS);
+    const record = await recreate(stub(readCurrentState), { captureObservedState: false }, {
+      observedMaskedLeaves: [['Stale']],
+    });
+    expect(record?.observedProperties).toBeUndefined();
+    expect(record?.observedMaskedLeaves).toBeUndefined();
   });
 });

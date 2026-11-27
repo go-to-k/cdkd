@@ -269,19 +269,34 @@ function offTemplateEchoes(
 }
 
 /**
- * Is `coordinate` under a key `properties` does not set? Lists are entered by
- * index (a coordinate the writer recorded through a paired element).
+ * Is `coordinate` of `observed` under a key `properties` does not set? The
+ * coordinate's indices are READBACK indices (as {@link offTemplateEchoes}
+ * records them), so a list the template also holds is entered through
+ * {@link listPairing}, never by bare index: an identity-paired element can sit
+ * at another index, or past the end of the template list. An element nothing
+ * pairs is a template position.
  */
-function isOffTemplate(properties: unknown, coordinate: NoEchoCoordinate): boolean {
+function isOffTemplate(
+  observed: unknown,
+  properties: unknown,
+  coordinate: NoEchoCoordinate
+): boolean {
+  let live = observed;
   let source = properties;
   for (const segment of coordinate) {
     if (typeof segment === 'number') {
-      if (!Array.isArray(source)) return false;
-      source = source[segment];
+      if (!Array.isArray(live) || !Array.isArray(source)) return false;
+      const pairing = listPairing(live, source);
+      if (pairing === undefined) return false;
+      const recordedIndex = source.findIndex((_, i) => pairing(i) === segment);
+      if (recordedIndex < 0) return false;
+      live = live[segment];
+      source = source[recordedIndex];
       continue;
     }
     if (!isPlainObject(source)) return false;
     if (!Object.hasOwn(source, segment)) return true;
+    live = isPlainObject(live) ? live[segment] : undefined;
     source = source[segment];
   }
   return false;
@@ -338,6 +353,14 @@ export function maskOffTemplateEchoes(input: OffTemplateEchoInput): {
   const resolved = input.resolvedProperties ?? properties;
   const physicalId = typeof input.physicalId === 'string' ? input.physicalId : '';
   const needles = new Set<string>();
+  // Known limits of what is learned:
+  // - a secret of MIN_NEEDLE_LENGTH or more characters that is, by
+  //   coincidence, a substring of the physical id is not learned, so its
+  //   off-template echo stays in the clear;
+  // - a value under MIN_NEEDLE_LENGTH is not learned either, so one echoed
+  //   WHOLE stays in the clear. This follows the floor go-to-k/cdkd#7151
+  //   names; a sub-floor value embedded in a longer leaf is covered by the
+  //   noEchoLeaves arm, which learns that leaf whole.
   const learn = (value: unknown): void => {
     if (typeof value !== 'string' || value.length < MIN_NEEDLE_LENGTH) return;
     // A readback or resolved leaf, never a record bag: one carrying the mask
@@ -370,7 +393,7 @@ export function maskOffTemplateEchoes(input: OffTemplateEchoInput): {
   // masked whole, still holds the mask.
   const kept = (observedMaskedLeavesOf({ observedMaskedLeaves: input.previous }) ?? []).filter(
     (coordinate) =>
-      isOffTemplate(properties, coordinate) &&
+      isOffTemplate(masked, properties, coordinate) &&
       coordinate.some((_, i) => isWhollyMask(valueAtCoordinate(masked, coordinate.slice(0, i + 1))))
   );
   return { bag: masked, leaves: canonicalCoordinates([...kept, ...hits]) };

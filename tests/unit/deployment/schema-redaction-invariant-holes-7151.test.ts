@@ -316,6 +316,7 @@ async function written(
           logger: { debug: () => undefined },
           inScope: (fn) => fn(),
           capture: true,
+          publicTokens: new Set(),
         }
       );
       const out = maskRestoredNoEchoRecord(
