@@ -245,16 +245,17 @@ glue-update-hardening	2026-11-21T15:34:28Z	PASS	291	verify.sh	rc ok, orph clean
 guardduty-detector-update	2026-11-20T10:54:34Z	PASS	331	verify.sh	PR6652 be63cc056, rc ok, no pre-existing detector, revert-identity kept x2, orph clean (eu-west-1)
 healthimaging-stateful-update-fallback	2026-11-04T17:48:59Z	PASS	311	verify.sh	rc ok, destroy 0 errors, orph clean, own state bucket
 iam-access-key	2026-11-21T21:51:13Z	PASS	146	verify.sh	rc ok, orph clean (PR 6795 8ad8ddb90)
-iam-managed-policy	2026-11-23T13:42:26Z	PASS	195	verify.sh	rc ok, orph clean (#6880)
+iam-managed-policy	2026-11-27T12:47:54Z	PASS	301	verify.sh	#7117: rc ok, orph clean
+iam-managed-policy-outside-principal	2026-11-27T12:47:54Z	PASS	146	verify.sh	new (#7117): outside-attached policy removal and destroy refused naming the role, then deleted after the detach; orph clean
 iam-oidc-provider	2026-11-22T17:56:50Z	PASS	120	verify.sh	fictitious per-run example.com issuer; rc ok, 0 errors, orph clean; real GitHub provider untouched
-iam-profile-policy-fix-forward-orphan	2026-11-21T18:10:10Z	PASS	135	verify.sh	rc ok, orph clean
+iam-profile-policy-fix-forward-orphan	2026-11-27T12:47:54Z	PASS	155	verify.sh	#7117: rc ok, orph clean
 iam-propagation-stress	2026-11-25T07:06:26Z	PASS	101	verify.sh	rc ok, orph clean, PR #6968 f350f555 (no CR consumer)
-iam-recreate-reattach	2026-11-22T06:53:39Z	PASS	290	verify.sh	rc ok, orph clean
+iam-recreate-reattach	2026-11-27T12:47:54Z	PASS	351	verify.sh	#7117: own state bucket; orph clean
 iam-role-fix-forward-orphan	2026-11-23T13:42:26Z	PASS	115	verify.sh	rc ok, orph clean (#6880)
 iam-role-policies-drift-clean	2026-11-23T13:42:26Z	PASS	657	verify.sh	rc ok, orph clean (#6880)
 iam-role-prefixed-name-update	2026-11-23T13:42:26Z	PASS	356	verify.sh	rc ok, orph clean (#6880)
-iam-secret-derived-principals	2026-11-21T18:10:10Z	PASS	160	verify.sh	rc ok, orph clean
-iam-sibling-managed-policy-drift	2026-11-22T05:59:15Z	PASS	632	verify.sh	#6810 run at b9718f87f; rc ok, orph clean (us-east-1)
+iam-secret-derived-principals	2026-11-27T12:47:54Z	PASS	176	verify.sh	#7117: secret-derived lists keep detaching every principal; orph clean
+iam-sibling-managed-policy-drift	2026-11-27T12:47:54Z	PASS	677	verify.sh	#7117: own state bucket; orph clean
 iam-user-group-fix-forward-orphan	2026-11-23T13:42:26Z	PASS	140	verify.sh	rc ok, orph clean (#6880)
 imagebuilder-infra-update	2026-11-20T10:54:34Z	PASS	155	verify.sh	PR6652 be63cc056, rc ok, revert-identity kept+no replacement, orph clean (eu-west-1)
 import-attribute-readback	2026-11-04T09:00:37Z	PASS	161	verify.sh	batch 15; rc ok, orph clean
