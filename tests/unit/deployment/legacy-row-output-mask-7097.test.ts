@@ -345,6 +345,17 @@ describe('conditions and resource properties decide as a current record would (r
     });
   });
 
+  it('a parameter passed secret is undecided, never decided by its template Default (review)', () => {
+    const child = {
+      Parameters: { P: { Type: 'String', Default: 'none' } },
+      Conditions: { IsNone: { 'Fn::Equals': [{ Ref: 'P' }, 'none'] } },
+      Outputs: { O: { Value: { 'Fn::If': ['IsNone', 'plain', { Ref: 'P' }] } } },
+    };
+    expect(run(child, { P: `x-${A}` }, { 'Outputs.O': `x-${PIN}` }, 'if-secret-over-default')).toEqual({
+      'Outputs.O': '***',
+    });
+  });
+
   it('a child resource property composing a secret reference masks the attribute echoing it', () => {
     const child = {
       Resources: {

@@ -6,6 +6,7 @@ import { SECRET_MASK } from './secret-redaction.js';
 import { carriesSecretMask } from './secret-redaction/mask-only.js';
 import { readsNoEchoSource, type NoEchoPositionSources } from './secret-redaction/noecho-leaves.js';
 import { SPELLED_SECRET_REFERENCE_PREFIXES } from './secret-redaction/anchors.js';
+import { isCustomResourceType } from './export-change-guard.js';
 import { markNonRetryable } from './retryable-errors.js';
 import { NESTED_STACK_RESOURCE_TYPE } from './rollback-executor/types.js';
 import type {
@@ -144,7 +145,7 @@ const MAX_DEPTH = 32;
 function derivedOutputsOf(
   entry: NestedTemplate,
   tainted: ReadonlySet<string>,
-  passedValues: Readonly<Record<string, string>>,
+  passedValues: Readonly<Record<string, string | undefined>>,
   depth: number
 ): DerivedOutputs {
   if (depth > MAX_DEPTH) return ALL_OUTPUTS;
@@ -192,10 +193,7 @@ function derivedOutputsOf(
     // A custom resource's handler may echo any input under any attribute
     // name: the whole bag decides, as for a `NoEcho` custom resource (review).
     const type = resource['Type'];
-    if (
-      typeof type === 'string' &&
-      (type.startsWith('Custom::') || type === 'AWS::CloudFormation::CustomResource')
-    ) {
+    if (typeof type === 'string' && isCustomResourceType(type)) {
       return Object.keys(properties).some((property) =>
         propertyIsDerived(id, properties, property)
       );
@@ -228,17 +226,19 @@ function derivedOutputsOf(
 }
 
 /**
- * The parameter values a row passes that are plain text: a recorded value, or
- * a template literal, holding no dynamic reference and no mask. Only these may
- * decide a condition.
+ * Every parameter a row passes, with its value where that is plain text (a
+ * recorded value, or a template literal, holding no dynamic reference and no
+ * mask) and `undefined` otherwise. Only a plain value decides a condition; a
+ * key passed with any other value is undecided, never its template `Default`
+ * (review: a secret passed over a `Default` must not pick the `Default`'s
+ * branch).
  */
-function plainParameterValues(parameters: unknown): Record<string, string> {
-  const values = Object.create(null) as Record<string, string>;
+function plainParameterValues(parameters: unknown): Record<string, string | undefined> {
+  const values = Object.create(null) as Record<string, string | undefined>;
   for (const [key, value] of Object.entries(recordOf(parameters))) {
-    if (typeof value !== 'string' || value.includes('{{resolve:') || carriesSecretMask(value)) {
-      continue;
-    }
-    values[key] = value;
+    const plain =
+      typeof value === 'string' && !value.includes('{{resolve:') && !carriesSecretMask(value);
+    values[key] = plain ? value : undefined;
   }
   return values;
 }
@@ -252,7 +252,7 @@ function plainParameterValues(parameters: unknown): Record<string, string> {
  */
 function knownConditions(
   template: CloudFormationTemplate,
-  passedValues: Readonly<Record<string, string>>
+  passedValues: Readonly<Record<string, string | undefined>>
 ): Record<string, boolean> {
   const declared = recordOf(template.Conditions);
   const parameters = recordOf(template.Parameters);

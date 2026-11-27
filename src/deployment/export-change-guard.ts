@@ -249,7 +249,7 @@ function onlyTheMaskMoved(
   return respelled === desiredText;
 }
 
-function isCustomResourceType(type: string): boolean {
+export function isCustomResourceType(type: string): boolean {
   return type.startsWith('Custom::') || type === 'AWS::CloudFormation::CustomResource';
 }
 
