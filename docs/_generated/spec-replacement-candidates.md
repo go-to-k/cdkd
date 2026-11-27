@@ -15,22 +15,22 @@ what cdkd does; `update` and `baseline` rows keep the in-place update, and a `ha
 is decided by `src/analyzer/replacement-rules/rules.ts` or a provider-replacement planner.
 Evidence: `REPLACEMENT_EVIDENCE`.
 
-Candidates: 389 (replace 4, update 103, baseline 193, hand rule 89).
+Candidates: 389 (replace 4, update 156, baseline 139, hand rule 90).
 
 | Candidate | Spec | Verdict |
 | --- | --- | --- |
-| `AWS::AmplifyUIBuilder::Component#Tags` | yes | baseline |
-| `AWS::AmplifyUIBuilder::Form#Tags` | yes | baseline |
-| `AWS::AmplifyUIBuilder::Theme#Tags` | yes | baseline |
+| `AWS::AmplifyUIBuilder::Component#Tags` | yes | update |
+| `AWS::AmplifyUIBuilder::Form#Tags` | yes | update |
+| `AWS::AmplifyUIBuilder::Theme#Tags` | yes | update |
 | `AWS::AppConfig::ConfigurationProfile#Type` | yes | replace |
 | `AWS::AppConfig::Extension#Tags` | yes | update |
 | `AWS::AppConfig::ExtensionAssociation#Tags` | yes | update |
 | `AWS::AppStream::StackFleetAssociation#FleetName` | yes | baseline |
 | `AWS::AppStream::StackFleetAssociation#StackName` | yes | baseline |
 | `AWS::AppSync::GraphQLSchema#ApiId` | yes | update |
-| `AWS::AuditManager::Assessment#Scope.AwsAccounts.*.EmailAddress` | maybe | baseline |
-| `AWS::AuditManager::Assessment#Scope.AwsAccounts.*.Id` | maybe | baseline |
-| `AWS::AuditManager::Assessment#Scope.AwsAccounts.*.Name` | maybe | baseline |
+| `AWS::AuditManager::Assessment#Scope.AwsAccounts.*.EmailAddress` | maybe | update |
+| `AWS::AuditManager::Assessment#Scope.AwsAccounts.*.Id` | maybe | update |
+| `AWS::AuditManager::Assessment#Scope.AwsAccounts.*.Name` | maybe | update |
 | `AWS::Batch::ComputeEnvironment#ComputeResources.AllocationStrategy` | maybe | hand rule |
 | `AWS::Batch::ComputeEnvironment#ComputeResources.BidPercentage` | maybe | hand rule |
 | `AWS::Batch::ComputeEnvironment#ComputeResources.Ec2Configuration` | maybe | hand rule |
@@ -54,28 +54,28 @@ Candidates: 389 (replace 4, update 103, baseline 193, hand rule 89).
 | `AWS::Batch::JobDefinition#Tags` | yes | update |
 | `AWS::Batch::JobQueue#Tags` | yes | update |
 | `AWS::Batch::SchedulingPolicy#Tags` | yes | update |
-| `AWS::BedrockAgentCore::Dataset#SchemaType` | yes | baseline |
+| `AWS::BedrockAgentCore::Dataset#SchemaType` | yes | update |
 | `AWS::Budgets::Budget#Budget.AutoAdjustData` | yes | hand rule |
 | `AWS::Budgets::Budget#Budget.PlannedBudgetLimits` | yes | hand rule |
 | `AWS::Cassandra::Keyspace#ReplicationSpecification` | yes | update |
 | `AWS::Cassandra::Table#RegularColumns.*.ColumnName` | maybe | update |
 | `AWS::Cassandra::Table#RegularColumns.*.ColumnType` | maybe | update |
 | `AWS::CertificateManager::Certificate#ValidationMethod` | yes | hand rule |
-| `AWS::CleanRooms::ConfiguredTable#AllowedColumns` | yes | baseline |
-| `AWS::CleanRooms::ConfiguredTable#AnalysisMethod` | yes | baseline |
-| `AWS::CleanRooms::ConfiguredTable#TableReference` | yes | baseline |
+| `AWS::CleanRooms::ConfiguredTable#AllowedColumns` | yes | update |
+| `AWS::CleanRooms::ConfiguredTable#AnalysisMethod` | yes | update |
+| `AWS::CleanRooms::ConfiguredTable#TableReference` | yes | update |
 | `AWS::CodeCommit::Repository#Triggers` | maybe | update |
 | `AWS::Connect::PhoneNumber#Description` | yes | baseline |
 | `AWS::Connect::ViewVersion#VersionDescription` | yes | baseline |
-| `AWS::DataBrew::Dataset#Tags` | yes | baseline |
-| `AWS::DataBrew::Job#Tags` | yes | baseline |
-| `AWS::DataBrew::Project#Tags` | yes | baseline |
+| `AWS::DataBrew::Dataset#Tags` | yes | update |
+| `AWS::DataBrew::Job#Tags` | yes | update |
+| `AWS::DataBrew::Project#Tags` | yes | update |
 | `AWS::DataBrew::Recipe#Tags` | yes | update |
-| `AWS::DataBrew::Schedule#Tags` | yes | baseline |
-| `AWS::DataSync::LocationEFS#AccessPointArn` | yes | baseline |
-| `AWS::DataSync::LocationEFS#FileSystemAccessRoleArn` | yes | baseline |
-| `AWS::DataSync::LocationEFS#InTransitEncryption` | yes | baseline |
-| `AWS::DataSync::LocationEFS#Subdirectory` | yes | baseline |
+| `AWS::DataBrew::Schedule#Tags` | yes | update |
+| `AWS::DataSync::LocationEFS#AccessPointArn` | yes | update |
+| `AWS::DataSync::LocationEFS#FileSystemAccessRoleArn` | yes | update |
+| `AWS::DataSync::LocationEFS#InTransitEncryption` | yes | update |
+| `AWS::DataSync::LocationEFS#Subdirectory` | yes | update |
 | `AWS::DataSync::LocationFSxLustre#Subdirectory` | yes | baseline |
 | `AWS::DataSync::LocationFSxONTAP#Protocol` | yes | baseline |
 | `AWS::DataSync::LocationFSxONTAP#Subdirectory` | yes | baseline |
@@ -98,12 +98,12 @@ Candidates: 389 (replace 4, update 103, baseline 193, hand rule 89).
 | `AWS::DynamoDB::GlobalTable#GlobalSecondaryIndexes.*.Projection.ProjectionType` | maybe | update |
 | `AWS::DynamoDB::GlobalTable#KeySchema` | yes | update |
 | `AWS::DynamoDB::GlobalTable#LocalSecondaryIndexes` | yes | hand rule |
-| `AWS::DynamoDB::GlobalTable#VectorIndexes.*.Projection.NonKeyAttributes` | maybe | baseline |
-| `AWS::DynamoDB::GlobalTable#VectorIndexes.*.Projection.ProjectionType` | maybe | baseline |
+| `AWS::DynamoDB::GlobalTable#VectorIndexes.*.Projection.NonKeyAttributes` | maybe | update |
+| `AWS::DynamoDB::GlobalTable#VectorIndexes.*.Projection.ProjectionType` | maybe | update |
 | `AWS::DynamoDB::Table#KeySchema` | yes | hand rule |
-| `AWS::EC2::CapacityReservation#InstanceMatchCriteria` | yes | baseline |
-| `AWS::EC2::CapacityReservation#TagSpecifications` | yes | baseline |
-| `AWS::EC2::CapacityReservationFleet#TagSpecifications` | yes | baseline |
+| `AWS::EC2::CapacityReservation#InstanceMatchCriteria` | yes | update |
+| `AWS::EC2::CapacityReservation#TagSpecifications` | yes | update |
+| `AWS::EC2::CapacityReservationFleet#TagSpecifications` | yes | update |
 | `AWS::EC2::EIP#Domain` | yes | update |
 | `AWS::EC2::Instance#AdditionalInfo` | maybe | update |
 | `AWS::EC2::Instance#Affinity` | maybe | update |
@@ -118,20 +118,20 @@ Candidates: 389 (replace 4, update 103, baseline 193, hand rule 89).
 | `AWS::EC2::Instance#SecurityGroupIds` | maybe | hand rule |
 | `AWS::EC2::Instance#Tenancy` | maybe | hand rule |
 | `AWS::EC2::Instance#UserData` | maybe | update |
-| `AWS::EC2::NetworkInterface#PrivateIpAddresses` | maybe | baseline |
-| `AWS::EC2::NetworkInterface#PrivateIpAddresses.*.Primary` | maybe | baseline |
-| `AWS::EC2::NetworkInterface#PrivateIpAddresses.*.PrivateIpAddress` | maybe | baseline |
+| `AWS::EC2::NetworkInterface#PrivateIpAddresses` | maybe | update |
+| `AWS::EC2::NetworkInterface#PrivateIpAddresses.*.Primary` | maybe | update |
+| `AWS::EC2::NetworkInterface#PrivateIpAddresses.*.PrivateIpAddress` | maybe | update |
 | `AWS::EC2::SpotFleet#SpotFleetRequestConfigData.LaunchTemplateConfigs` | yes | baseline |
 | `AWS::EC2::SpotFleet#SpotFleetRequestConfigData.OnDemandTargetCapacity` | yes | baseline |
 | `AWS::EC2::Subnet#Ipv6CidrBlock` | maybe | hand rule |
-| `AWS::EC2::TrafficMirrorSession#NetworkInterfaceId` | yes | baseline |
-| `AWS::EC2::TransitGatewayRouteTable#Tags` | yes | baseline |
+| `AWS::EC2::TrafficMirrorSession#NetworkInterfaceId` | yes | update |
+| `AWS::EC2::TransitGatewayRouteTable#Tags` | yes | update |
 | `AWS::EC2::VPC#InstanceTenancy` | maybe | hand rule |
-| `AWS::EC2::VPCPeeringConnection#PeerRoleArn` | yes | baseline |
-| `AWS::EC2::VPNConnection#CustomerGatewayId` | yes | baseline |
-| `AWS::EC2::VPNConnection#TransitGatewayId` | yes | baseline |
-| `AWS::EC2::VPNConnection#VpnGatewayId` | yes | baseline |
-| `AWS::EC2::VPNConnection#VpnTunnelOptionsSpecifications` | yes | baseline |
+| `AWS::EC2::VPCPeeringConnection#PeerRoleArn` | yes | update |
+| `AWS::EC2::VPNConnection#CustomerGatewayId` | yes | update |
+| `AWS::EC2::VPNConnection#TransitGatewayId` | yes | update |
+| `AWS::EC2::VPNConnection#VpnGatewayId` | yes | update |
+| `AWS::EC2::VPNConnection#VpnTunnelOptionsSpecifications` | yes | update |
 | `AWS::ECS::Service#DeploymentController` | yes | update |
 | `AWS::ECS::Service#LaunchType` | yes | hand rule |
 | `AWS::EKS::Cluster#KubernetesNetworkConfig` | yes | baseline |
@@ -221,10 +221,10 @@ Candidates: 389 (replace 4, update 103, baseline 193, hand rule 89).
 | `AWS::Elasticsearch::Domain#NodeToNodeEncryptionOptions` | maybe | baseline |
 | `AWS::Elasticsearch::Domain#NodeToNodeEncryptionOptions.Enabled` | maybe | baseline |
 | `AWS::EntityResolution::SchemaMapping#Description` | yes | update |
-| `AWS::EntityResolution::SchemaMapping#MappedInputFields` | yes | baseline |
+| `AWS::EntityResolution::SchemaMapping#MappedInputFields` | yes | update |
 | `AWS::Events::EventBus#EventSourceName` | yes | update |
 | `AWS::Events::Rule#EventBusName` | yes | hand rule |
-| `AWS::FIS::ExperimentTemplate#Tags` | yes | baseline |
+| `AWS::FIS::ExperimentTemplate#Tags` | yes | update |
 | `AWS::FSx::FileSystem#FileSystemTypeVersion` | yes | update |
 | `AWS::FSx::FileSystem#LustreConfiguration.CopyTagsToBackups` | yes | baseline |
 | `AWS::FSx::FileSystem#LustreConfiguration.DeploymentType` | yes | baseline |
@@ -254,14 +254,14 @@ Candidates: 389 (replace 4, update 103, baseline 193, hand rule 89).
 | `AWS::FSx::FileSystem#WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.OrganizationalUnitDistinguishedName` | yes | baseline |
 | `AWS::Glue::Database#CatalogId` | yes | update |
 | `AWS::Glue::Database#DatabaseInput.Name` | yes | update |
-| `AWS::GuardDuty::Member#Email` | yes | baseline |
+| `AWS::GuardDuty::Member#Email` | yes | update |
 | `AWS::HealthLake::FHIRDatastore#DatastoreName` | yes | baseline |
 | `AWS::HealthLake::FHIRDatastore#IdentityProviderConfiguration` | yes | baseline |
 | `AWS::ImageBuilder::Component#Tags` | yes | update |
-| `AWS::ImageBuilder::ContainerRecipe#Tags` | yes | baseline |
+| `AWS::ImageBuilder::ContainerRecipe#Tags` | yes | update |
 | `AWS::ImageBuilder::Image#Tags` | yes | baseline |
-| `AWS::ImageBuilder::ImageRecipe#Tags` | yes | baseline |
-| `AWS::IoT::ThingType#ThingTypeProperties` | yes | baseline |
+| `AWS::ImageBuilder::ImageRecipe#Tags` | yes | update |
+| `AWS::IoT::ThingType#ThingTypeProperties` | yes | hand rule |
 | `AWS::IoTWireless::NetworkAnalyzerConfiguration#Tags` | yes | update |
 | `AWS::KafkaConnect::Connector#ConnectorConfiguration` | yes | baseline |
 | `AWS::KafkaConnect::Connector#Plugins` | yes | baseline |
@@ -270,7 +270,7 @@ Candidates: 389 (replace 4, update 103, baseline 193, hand rule 89).
 | `AWS::KinesisAnalyticsV2::Application#RuntimeEnvironment` | yes | update |
 | `AWS::KinesisAnalyticsV2::ApplicationOutput#Output.Name` | yes | update |
 | `AWS::KinesisAnalyticsV2::ApplicationReferenceDataSource#ReferenceDataSource.TableName` | yes | update |
-| `AWS::LakeFormation::Resource#UseServiceLinkedRole` | maybe | baseline |
+| `AWS::LakeFormation::Resource#UseServiceLinkedRole` | maybe | update |
 | `AWS::Lambda::EventSourceMapping#AmazonManagedKafkaEventSourceConfig` | yes | update |
 | `AWS::Lambda::EventSourceMapping#SelfManagedKafkaEventSourceConfig` | yes | update |
 | `AWS::Location::GeofenceCollection#Description` | yes | update |
@@ -284,12 +284,12 @@ Candidates: 389 (replace 4, update 103, baseline 193, hand rule 89).
 | `AWS::Location::Tracker#Description` | yes | update |
 | `AWS::Location::Tracker#PositionFiltering` | yes | update |
 | `AWS::MediaLive::Channel#InputAttachments.*.InputId` | yes | baseline |
-| `AWS::MediaStore::Container#CorsPolicy.*.AllowedMethods` | yes | baseline |
-| `AWS::Omics::SequenceStore#Description` | yes | baseline |
-| `AWS::Omics::SequenceStore#FallbackLocation` | yes | baseline |
-| `AWS::Omics::SequenceStore#Name` | yes | baseline |
-| `AWS::Omics::SequenceStore#Tags` | yes | baseline |
-| `AWS::OpenSearchServerless::Collection#Tags` | yes | baseline |
+| `AWS::MediaStore::Container#CorsPolicy.*.AllowedMethods` | yes | update |
+| `AWS::Omics::SequenceStore#Description` | yes | update |
+| `AWS::Omics::SequenceStore#FallbackLocation` | yes | update |
+| `AWS::Omics::SequenceStore#Name` | yes | update |
+| `AWS::Omics::SequenceStore#Tags` | yes | update |
+| `AWS::OpenSearchServerless::Collection#Tags` | yes | update |
 | `AWS::RDS::DBCluster#AvailabilityZones` | yes | update |
 | `AWS::RDS::DBCluster#Engine` | maybe | hand rule |
 | `AWS::RDS::DBCluster#GlobalClusterIdentifier` | maybe | hand rule |
@@ -312,9 +312,9 @@ Candidates: 389 (replace 4, update 103, baseline 193, hand rule 89).
 | `AWS::RDS::DBInstance#SourceDbiResourceId` | maybe | hand rule |
 | `AWS::RDS::DBInstance#StorageType` | maybe | update |
 | `AWS::RDS::DBInstance#UseLatestRestorableTime` | maybe | hand rule |
-| `AWS::RDS::DBSecurityGroup#DBSecurityGroupIngress.*.EC2SecurityGroupId` | yes | baseline |
-| `AWS::RDS::DBSecurityGroup#DBSecurityGroupIngress.*.EC2SecurityGroupName` | yes | baseline |
-| `AWS::RDS::DBSecurityGroup#DBSecurityGroupIngress.*.EC2SecurityGroupOwnerId` | yes | baseline |
+| `AWS::RDS::DBSecurityGroup#DBSecurityGroupIngress.*.EC2SecurityGroupId` | yes | update |
+| `AWS::RDS::DBSecurityGroup#DBSecurityGroupIngress.*.EC2SecurityGroupName` | yes | update |
+| `AWS::RDS::DBSecurityGroup#DBSecurityGroupIngress.*.EC2SecurityGroupOwnerId` | yes | update |
 | `AWS::RedshiftServerless::Namespace#Tags` | yes | update |
 | `AWS::Route53::RecordSet#Name` | yes | hand rule |
 | `AWS::Route53RecoveryControl::SafetyRule#ControlPanelArn` | yes | baseline |
@@ -323,7 +323,7 @@ Candidates: 389 (replace 4, update 103, baseline 193, hand rule 89).
 | `AWS::Route53Resolver::ResolverRule#DomainName` | maybe | replace |
 | `AWS::S3::Bucket#ObjectLockEnabled` | yes | update |
 | `AWS::S3Vectors::Index#MetadataConfiguration` | yes | baseline |
-| `AWS::SES::DedicatedIpPool#ScalingMode` | maybe | baseline |
+| `AWS::SES::DedicatedIpPool#ScalingMode` | maybe | update |
 | `AWS::SSM::Document#Attachments` | maybe | hand rule |
 | `AWS::SSM::Document#Attachments.*.Key` | maybe | hand rule |
 | `AWS::SSM::Document#Attachments.*.Name` | maybe | hand rule |
@@ -396,17 +396,17 @@ Candidates: 389 (replace 4, update 103, baseline 193, hand rule 89).
 | `AWS::SageMaker::ModelPackage#AdditionalInferenceSpecificationsToAdd.*.Containers.*.NearestModelName` | maybe | baseline |
 | `AWS::SageMaker::UserProfile#Tags` | yes | baseline |
 | `AWS::SageMaker::Workteam#MemberDefinitions.*.CognitoMemberDefinition.CognitoUserPool` | yes | baseline |
-| `AWS::ServiceCatalog::PortfolioShare#AcceptLanguage` | yes | baseline |
+| `AWS::ServiceCatalog::PortfolioShare#AcceptLanguage` | yes | update |
 | `AWS::ServiceDiscovery::Service#DnsConfig.NamespaceId` | yes | update |
-| `AWS::Timestream::ScheduledQuery#ClientToken` | yes | baseline |
+| `AWS::Timestream::ScheduledQuery#ClientToken` | yes | update |
 | `AWS::Transfer::Server#EndpointDetails.AddressAllocationIds` | maybe | update |
 | `AWS::Transfer::Server#IdentityProviderType` | yes | update |
 | `AWS::WorkSpaces::Workspace#BundleId` | maybe | baseline |
 | `AWS::WorkSpaces::Workspace#RootVolumeEncryptionEnabled` | maybe | baseline |
 | `AWS::WorkSpaces::Workspace#UserVolumeEncryptionEnabled` | maybe | baseline |
 | `AWS::WorkSpaces::Workspace#VolumeEncryptionKey` | maybe | baseline |
-| `AWS::WorkSpacesWeb::UserSettings#AdditionalEncryptionContext` | yes | baseline |
-| `AWS::WorkSpacesWeb::UserSettings#CustomerManagedKey` | yes | baseline |
+| `AWS::WorkSpacesWeb::UserSettings#AdditionalEncryptionContext` | yes | update |
+| `AWS::WorkSpacesWeb::UserSettings#CustomerManagedKey` | yes | update |
 | `AWS::XRay::SamplingRule#SamplingRuleRecord.SamplingRule.Version` | yes | update |
 
 ## Spec types with no registry schema

@@ -282,7 +282,7 @@ inplace-attr-propagation	2026-11-04T07:36:26Z	PASS	46	verify.sh	rc ok, orph clea
 intrinsic-functions	2026-11-04T05:57:23Z	PASS	32	standard	deploy+destroy rc 0, orph clean
 intrinsics-torture	2026-11-07T00:07:33Z	PASS	50	verify.sh	#5938 ssm-parameter split head; rc ok, orph clean
 intrinsics-torture-2	2026-11-04T08:44:47Z	PASS	45	verify.sh	rc 0, 14/14 checks, destroy clean, orph clean (own state bucket)
-iot-topic-rule-role	2026-11-18T15:35:34Z	PASS	105	verify.sh	us-east-1, rc ok, orph clean; fails without the #6559 pattern
+iot-topic-rule-role	2026-11-27T15:35:37Z	PASS	726	verify.sh	us-east-1, rc ok, orph clean; #7083 thing type replace/in-place arms at b7866473e
 kinesis-esm-filter	2026-11-24T14:18:16Z	PASS	85	verify.sh	rc ok, orph clean (#6933 sweep)
 kinesis-stream-mode-switch	2026-11-24T15:50:36Z	PASS	259	verify.sh	rc ok, orph clean, sha a285cb7f0 (#6933 open shard count, Phase 1b)
 kms-encryption	2026-11-22T03:31:56Z	PASS	151	verify.sh	d2646a6f6 #6759 part a, rc 0, 0 leftovers

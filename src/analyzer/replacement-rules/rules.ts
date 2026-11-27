@@ -24,6 +24,7 @@ import {
   recordSetGroupRecordZoneChanged,
   route53ZoneReferenceChanged,
   ssmDocumentChangeReplaces,
+  thingTypeReplacingMemberChanged,
 } from './predicates.js';
 import {
   dbClusterGlobalClusterChangeReplaces,
@@ -471,6 +472,14 @@ export function initializeRules(this: ReplacementRulesRegistry): void {
   this.rules.set('AWS::Glue::Table', {
     replacementProperties: new Set<string>(),
     conditionalReplacements: new Map([['TableInput', glueTableNameChanged]]),
+  });
+
+  // IoT ThingType (go-to-k/cdkd#7083): CloudFormation replaces the type on a
+  // ThingTypeProperties change only when the description or the searchable
+  // attributes change; Mqtt5Configuration applies in place.
+  this.rules.set('AWS::IoT::ThingType', {
+    replacementProperties: new Set<string>(),
+    conditionalReplacements: new Map([['ThingTypeProperties', thingTypeReplacingMemberChanged]]),
   });
 
   // Route 53 RecordSet / RecordSetGroup — the zone is create-only, but a

@@ -12,29 +12,11 @@
  * no longer an unsettled candidate. Read by that test and the generator only.
  */
 export const UNMEASURED_SPEC_REPLACEMENT_CANDIDATES: ReadonlySet<string> = new Set([
-  'AWS::AmplifyUIBuilder::Component#Tags',
-  'AWS::AmplifyUIBuilder::Form#Tags',
-  'AWS::AmplifyUIBuilder::Theme#Tags',
   'AWS::AppStream::StackFleetAssociation#FleetName',
   'AWS::AppStream::StackFleetAssociation#StackName',
-  'AWS::AuditManager::Assessment#Scope.AwsAccounts.*.EmailAddress',
-  'AWS::AuditManager::Assessment#Scope.AwsAccounts.*.Id',
-  'AWS::AuditManager::Assessment#Scope.AwsAccounts.*.Name',
   'AWS::Batch::ComputeEnvironment#EksConfiguration',
-  'AWS::BedrockAgentCore::Dataset#SchemaType',
-  'AWS::CleanRooms::ConfiguredTable#AllowedColumns',
-  'AWS::CleanRooms::ConfiguredTable#AnalysisMethod',
-  'AWS::CleanRooms::ConfiguredTable#TableReference',
   'AWS::Connect::PhoneNumber#Description',
   'AWS::Connect::ViewVersion#VersionDescription',
-  'AWS::DataBrew::Dataset#Tags',
-  'AWS::DataBrew::Job#Tags',
-  'AWS::DataBrew::Project#Tags',
-  'AWS::DataBrew::Schedule#Tags',
-  'AWS::DataSync::LocationEFS#AccessPointArn',
-  'AWS::DataSync::LocationEFS#FileSystemAccessRoleArn',
-  'AWS::DataSync::LocationEFS#InTransitEncryption',
-  'AWS::DataSync::LocationEFS#Subdirectory',
   'AWS::DataSync::LocationFSxLustre#Subdirectory',
   'AWS::DataSync::LocationFSxONTAP#Protocol',
   'AWS::DataSync::LocationFSxONTAP#Subdirectory',
@@ -47,32 +29,14 @@ export const UNMEASURED_SPEC_REPLACEMENT_CANDIDATES: ReadonlySet<string> = new S
   'AWS::DataSync::LocationNFS#ServerHostname',
   'AWS::DataSync::LocationObjectStorage#ServerHostname',
   'AWS::DataSync::LocationSMB#ServerHostname',
-  'AWS::DynamoDB::GlobalTable#VectorIndexes.*.Projection.NonKeyAttributes',
-  'AWS::DynamoDB::GlobalTable#VectorIndexes.*.Projection.ProjectionType',
-  'AWS::EC2::CapacityReservation#InstanceMatchCriteria',
-  'AWS::EC2::CapacityReservation#TagSpecifications',
-  'AWS::EC2::CapacityReservationFleet#TagSpecifications',
-  // Measured on #7083: Cloud Control reports success on a secondary-address
-  // change and leaves the addresses as they were; a primary change is
-  // `NotUpdatable`. EC2 assigns secondary addresses in place, so a replacement
-  // is not shown; the silent no-op is #7099.
-  'AWS::EC2::NetworkInterface#PrivateIpAddresses',
-  'AWS::EC2::NetworkInterface#PrivateIpAddresses.*.Primary',
-  'AWS::EC2::NetworkInterface#PrivateIpAddresses.*.PrivateIpAddress',
   'AWS::EC2::SpotFleet#SpotFleetRequestConfigData.LaunchTemplateConfigs',
   'AWS::EC2::SpotFleet#SpotFleetRequestConfigData.OnDemandTargetCapacity',
-  'AWS::EC2::TrafficMirrorSession#NetworkInterfaceId',
-  'AWS::EC2::TransitGatewayRouteTable#Tags',
-  'AWS::EC2::VPCPeeringConnection#PeerRoleArn',
-  'AWS::EC2::VPNConnection#CustomerGatewayId',
-  'AWS::EC2::VPNConnection#TransitGatewayId',
-  'AWS::EC2::VPNConnection#VpnGatewayId',
-  'AWS::EC2::VPNConnection#VpnTunnelOptionsSpecifications',
   // Measured on #7083: its mutable member, ElasticLoadBalancing, applies in
   // place with Auto Mode, and IpFamily / ServiceIpv4Cidr already replace
   // through the schema's nested create-only paths. Neither `replace` nor
   // `update` describes the whole property, so it stays here. A lone
-  // ElasticLoadBalancing toggle is a silent no-op (#7099).
+  // ElasticLoadBalancing toggle is left unapplied by CloudFormation too
+  // (UPDATE_COMPLETE on the same cluster), and cdkd refuses it (#7099).
   'AWS::EKS::Cluster#KubernetesNetworkConfig',
   'AWS::EMRServerless::Application#ImageConfiguration',
   'AWS::EMRServerless::Application#ImageConfiguration.ImageUri',
@@ -95,8 +59,6 @@ export const UNMEASURED_SPEC_REPLACEMENT_CANDIDATES: ReadonlySet<string> = new S
   'AWS::Elasticsearch::Domain#EncryptionAtRestOptions.KmsKeyId',
   'AWS::Elasticsearch::Domain#NodeToNodeEncryptionOptions',
   'AWS::Elasticsearch::Domain#NodeToNodeEncryptionOptions.Enabled',
-  'AWS::EntityResolution::SchemaMapping#MappedInputFields',
-  'AWS::FIS::ExperimentTemplate#Tags',
   'AWS::FSx::FileSystem#LustreConfiguration.CopyTagsToBackups',
   'AWS::FSx::FileSystem#LustreConfiguration.DeploymentType',
   'AWS::FSx::FileSystem#LustreConfiguration.DriveCacheType',
@@ -123,32 +85,22 @@ export const UNMEASURED_SPEC_REPLACEMENT_CANDIDATES: ReadonlySet<string> = new S
   'AWS::FSx::FileSystem#WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DomainName',
   'AWS::FSx::FileSystem#WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.FileSystemAdministratorsGroup',
   'AWS::FSx::FileSystem#WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.OrganizationalUnitDistinguishedName',
-  'AWS::GuardDuty::Member#Email',
   'AWS::HealthLake::FHIRDatastore#DatastoreName',
   'AWS::HealthLake::FHIRDatastore#IdentityProviderConfiguration',
-  'AWS::ImageBuilder::ContainerRecipe#Tags',
   'AWS::ImageBuilder::Image#Tags',
-  'AWS::ImageBuilder::ImageRecipe#Tags',
-  'AWS::IoT::ThingType#ThingTypeProperties',
   'AWS::KafkaConnect::Connector#ConnectorConfiguration',
   'AWS::KafkaConnect::Connector#Plugins',
   'AWS::KafkaConnect::Connector#WorkerConfiguration',
-  'AWS::LakeFormation::Resource#UseServiceLinkedRole',
   'AWS::MediaLive::Channel#InputAttachments.*.InputId',
-  'AWS::MediaStore::Container#CorsPolicy.*.AllowedMethods',
-  'AWS::Omics::SequenceStore#Description',
-  'AWS::Omics::SequenceStore#FallbackLocation',
-  'AWS::Omics::SequenceStore#Name',
-  'AWS::Omics::SequenceStore#Tags',
-  'AWS::OpenSearchServerless::Collection#Tags',
-  'AWS::RDS::DBSecurityGroup#DBSecurityGroupIngress.*.EC2SecurityGroupId',
-  'AWS::RDS::DBSecurityGroup#DBSecurityGroupIngress.*.EC2SecurityGroupName',
-  'AWS::RDS::DBSecurityGroup#DBSecurityGroupIngress.*.EC2SecurityGroupOwnerId',
   'AWS::Route53RecoveryControl::SafetyRule#ControlPanelArn',
   'AWS::Route53RecoveryControl::SafetyRule#RuleConfig',
   'AWS::Route53RecoveryControl::SafetyRule#Tags',
+  // Measured on #7083: its one member, NonFilterableMetadataKeys, is
+  // create-only in the schema, so the diff replaces on it through that
+  // nested path; CloudFormation replaced the index on such a change (new
+  // ARN). As for EKS KubernetesNetworkConfig, neither `replace` nor `update`
+  // describes the whole property, so it stays here.
   'AWS::S3Vectors::Index#MetadataConfiguration',
-  'AWS::SES::DedicatedIpPool#ScalingMode',
   'AWS::SageMaker::App#Tags',
   'AWS::SageMaker::Domain#AppNetworkAccessType',
   'AWS::SageMaker::Domain#DefaultSpaceSettings.JupyterLabAppSettings.DefaultResourceSpec.InstanceType',
@@ -209,12 +161,8 @@ export const UNMEASURED_SPEC_REPLACEMENT_CANDIDATES: ReadonlySet<string> = new S
   'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecificationsToAdd.*.Containers.*.NearestModelName',
   'AWS::SageMaker::UserProfile#Tags',
   'AWS::SageMaker::Workteam#MemberDefinitions.*.CognitoMemberDefinition.CognitoUserPool',
-  'AWS::ServiceCatalog::PortfolioShare#AcceptLanguage',
-  'AWS::Timestream::ScheduledQuery#ClientToken',
   'AWS::WorkSpaces::Workspace#BundleId',
   'AWS::WorkSpaces::Workspace#RootVolumeEncryptionEnabled',
   'AWS::WorkSpaces::Workspace#UserVolumeEncryptionEnabled',
   'AWS::WorkSpaces::Workspace#VolumeEncryptionKey',
-  'AWS::WorkSpacesWeb::UserSettings#AdditionalEncryptionContext',
-  'AWS::WorkSpacesWeb::UserSettings#CustomerManagedKey',
 ]);

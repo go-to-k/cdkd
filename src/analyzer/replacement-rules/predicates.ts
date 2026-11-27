@@ -813,3 +813,44 @@ export function ssmDocumentChangeReplaces(
 ): boolean {
   return siblings?.newProperties['UpdateMethod'] !== 'NewVersion';
 }
+
+/**
+ * Whether an `AWS::IoT::ThingType` `ThingTypeProperties` change replaces the
+ * thing type (go-to-k/cdkd#7083). Measured against CloudFormation
+ * (us-east-1): a `ThingTypeDescription` or `SearchableAttributes` change
+ * replaced the type (a new id, or "a custom-named resource requires
+ * replacing"), while a `Mqtt5Configuration` change, or its addition, applied
+ * in place under the same thing type id. Cloud Control refuses the
+ * description change in place ("cannot be added/updated/removed"). A block
+ * that is itself an unresolved intrinsic hides its members, so a change
+ * involving one answers a replacement.
+ */
+export function thingTypeReplacingMemberChanged(oldValue: unknown, newValue: unknown): boolean {
+  const intrinsic = (value: unknown): boolean =>
+    value !== null &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    Object.keys(value).some((key) => key === 'Ref' || key.startsWith('Fn::'));
+  if (intrinsic(oldValue) || intrinsic(newValue)) return !isDeepStrictEqual(oldValue, newValue);
+  const member = (value: unknown, key: string): unknown =>
+    value !== null && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)[key]
+      : undefined;
+  // IoT keeps `SearchableAttributes` as an unordered set (an integ run
+  // declared `['serial', 'model']` and read back `model,serial`), so a
+  // template reorder alone names the same attributes and is not planned as a
+  // replacement: compare as a multiset. What CloudFormation does on a pure
+  // reorder was not measured.
+  const asMultiset = (value: unknown): unknown =>
+    Array.isArray(value) ? value.map((element) => JSON.stringify(element)).sort() : value;
+  return (
+    !isDeepStrictEqual(
+      member(oldValue, 'ThingTypeDescription'),
+      member(newValue, 'ThingTypeDescription')
+    ) ||
+    !isDeepStrictEqual(
+      asMultiset(member(oldValue, 'SearchableAttributes')),
+      asMultiset(member(newValue, 'SearchableAttributes'))
+    )
+  );
+}
