@@ -6,10 +6,13 @@
  * Two kinds, per type:
  * - `writeOnly`: the schema's `writeOnlyProperties` (a value AWS never reads
  *   back: a password, a key, a token);
- * - `secretNamed`: every property path, through `$ref` definitions, objects
- *   and array items, whose NAME says it carries a secret: cdkd's own name
- *   heuristic (`isSensitiveAttributeName`, `src/utils/stringify.ts`) as it is,
- *   or {@link SAMPLING_EXTRA_NAME}.
+ * - `secretNamed`: every property path, through `$ref` definitions, objects,
+ *   array items and map values, whose NAME says it carries a secret: cdkd's own
+ *   name heuristic (`isSensitiveAttributeName`, `src/utils/stringify.ts`) as it
+ *   is, or {@link SAMPLING_EXTRA_NAME};
+ * - `mapValue` (go-to-k/cdkd#7151): every map's value at an arbitrary key
+ *   (`patternProperties`, or an object `additionalProperties`), spelled
+ *   {@link MAP_KEY}. A map's key is the user's, so no name selects it.
  *
  * The names only SELECT which paths the invariant samples. State redaction is
  * driven by value and provenance, never by a property's name, and nothing at
@@ -61,6 +64,8 @@ export function isSampledSecretName(key: string): boolean {
 export interface SecretPaths {
   readonly writeOnly: readonly (readonly string[])[];
   readonly secretNamed: readonly (readonly string[])[];
+  /** Each map's value at an arbitrary key ({@link MAP_KEY}), go-to-k/cdkd#7151. */
+  readonly mapValue: readonly (readonly string[])[];
 }
 
 export interface RegistrySecretPathsSnapshot {
@@ -76,6 +81,21 @@ const isObject = (v: unknown): v is Json => typeof v === 'object' && v !== null 
 
 /** Every property path of `schema` whose last segment {@link isSampledSecretName} selects. */
 export function secretNamedPaths(schema: Json): string[][] {
+  return schemaPaths(schema).secretNamed;
+}
+
+/**
+ * The segment for a map's value at an arbitrary key (`patternProperties`, or an
+ * object `additionalProperties`): `Environment.Variables.<key>`.
+ */
+export const MAP_KEY = '<key>';
+
+/**
+ * Every secret-named path ({@link secretNamedPaths}) and every MAP VALUE path
+ * (go-to-k/cdkd#7151): a map's key is the user's, never the schema's, so no
+ * name selects what it carries, and every map value is a case.
+ */
+export function schemaPaths(schema: Json): { secretNamed: string[][]; mapValue: string[][] } {
   const definitions = isObject(schema['definitions']) ? schema['definitions'] : {};
   const out: string[][] = [];
   const seen = new Set<string>();
@@ -106,31 +126,51 @@ export function secretNamedPaths(schema: Json): string[][] {
     }
     return out;
   };
+  const add = (into: string[][], ids: Set<string>, path: string[]): void => {
+    const id = JSON.stringify(path);
+    if (ids.has(id)) return;
+    ids.add(id);
+    into.push(path);
+  };
+  /** The value schema(s) a node gives an arbitrary key: `patternProperties`, or an object `additionalProperties`. */
+  const mapValues = (node: Json): unknown[] => [
+    ...(isObject(node['patternProperties']) ? Object.values(node['patternProperties']) : []),
+    ...(isObject(node['additionalProperties']) ? [node['additionalProperties']] : []),
+  ];
+  /** A property's schema at `path`: array items (one `*` per level), combinator branches, properties, map values. */
+  const visit = (raw: unknown, path: string[], refs: ReadonlySet<string>): void => {
+    let at = deref(raw, refs);
+    let itemPath = path;
+    // An array (of arrays): its items, one `*` per level.
+    while (at !== undefined && isObject(at.node['items']) && itemPath.length < MAX_DEPTH) {
+      itemPath = [...itemPath, '*'];
+      at = deref(at.node['items'], at.refs);
+    }
+    if (at === undefined) return;
+    for (const b of branches(at)) {
+      walk(b.node['properties'], itemPath, b.refs);
+      // A map (go-to-k/cdkd#7151): its value at an arbitrary key, `MAP_KEY`.
+      const values = mapValues(b.node);
+      if (values.length === 0 || itemPath.length >= MAX_DEPTH) continue;
+      const valuePath = [...itemPath, MAP_KEY];
+      add(maps, mapIds, valuePath);
+      for (const value of values) visit(value, valuePath, b.refs);
+    }
+  };
   const walk = (properties: unknown, prefix: string[], refs: ReadonlySet<string>): void => {
     if (!isObject(properties) || prefix.length >= MAX_DEPTH) return;
     for (const [key, raw] of Object.entries(properties)) {
       const path = [...prefix, key];
-      if (isSampledSecretName(key)) {
-        const id = JSON.stringify(path);
-        if (!seen.has(id)) {
-          seen.add(id);
-          out.push(path);
-        }
-      }
-      let at = deref(raw, refs);
-      let itemPath = path;
-      // An array (of arrays): its items, one `*` per level.
-      while (at !== undefined && isObject(at.node['items']) && itemPath.length < MAX_DEPTH) {
-        itemPath = [...itemPath, '*'];
-        at = deref(at.node['items'], at.refs);
-      }
-      if (at !== undefined) for (const b of branches(at)) walk(b.node['properties'], itemPath, b.refs);
+      if (isSampledSecretName(key)) add(out, seen, path);
+      visit(raw, path, refs);
     }
   };
+  const maps: string[][] = [];
+  const mapIds = new Set<string>();
   walk(schema['properties'], [], new Set());
   // A property declared only inside a top-level combinator branch.
   for (const b of branches({ node: schema, refs: new Set() }).slice(1)) walk(b.node['properties'], [], b.refs);
-  return out.sort(comparePaths);
+  return { secretNamed: out.sort(comparePaths), mapValue: maps.sort(comparePaths) };
 }
 
 function comparePaths(a: readonly string[], b: readonly string[]): number {
@@ -141,8 +181,10 @@ function comparePaths(a: readonly string[], b: readonly string[]): number {
 export function extractSecretPaths(schemaJson: string): SecretPaths | undefined {
   const schema = JSON.parse(schemaJson) as Json;
   const writeOnly = parseCreateOnlyPropertyPointers(schema['writeOnlyProperties']).sort(comparePaths);
-  const secretNamed = secretNamedPaths(schema);
-  return writeOnly.length === 0 && secretNamed.length === 0 ? undefined : { writeOnly, secretNamed };
+  const { secretNamed, mapValue } = schemaPaths(schema);
+  return writeOnly.length === 0 && secretNamed.length === 0 && mapValue.length === 0
+    ? undefined
+    : { writeOnly, secretNamed, mapValue };
 }
 
 export function buildSnapshot(
@@ -177,9 +219,9 @@ export function buildSnapshot(
   return {
     _comment: [
       'Every resource type in the public CloudFormation registry schema bundle (us-east-1, then',
-      `${FALLBACK_REGIONS.join(', ')} for a type it lacks) that has a writeOnlyProperties path or a`,
-      'property NAMED as a secret, with those paths. Read OFFLINE by',
-      'tests/unit/deployment/schema-redaction-invariant-7061.test.ts (go-to-k/cdkd#7061).',
+      `${FALLBACK_REGIONS.join(', ')} for a type it lacks) that has a writeOnlyProperties path, a`,
+      'property NAMED as a secret, or a map value (`<key>`), with those paths. Read OFFLINE by',
+      'tests/unit/deployment/schema-redaction-invariant-7061.test.ts (go-to-k/cdkd#7061, #7151).',
       'Refresh: `vp run gen:cfn-registry-secret-paths` (network).',
     ],
     source: BUNDLE_URL,

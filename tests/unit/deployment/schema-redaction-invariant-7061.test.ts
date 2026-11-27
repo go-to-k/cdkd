@@ -3,9 +3,10 @@
  * generated from the CloudFormation registry schemas.
  *
  * The cases: every path of `tests/fixtures/cfn-registry-secret-paths.json`
- * (each type's `writeOnlyProperties` and every property NAMED as a secret,
- * refreshed weekly by `vp run gen:cfn-registry-secret-paths`), deduplicated
- * per type, and each seeded three ways, each a PROVENANCE the redaction reads:
+ * (each type's `writeOnlyProperties`, every property NAMED as a secret, and
+ * every map value, go-to-k/cdkd#7151; refreshed weekly by
+ * `vp run gen:cfn-registry-secret-paths`), deduplicated per type
+ * (`schema-redaction-cases.ts`), and each seeded three ways, each a PROVENANCE the redaction reads:
  * a unique `secretsmanager` reference as the WHOLE value, one EMBEDDED in
  * surrounding text, and a `NoEcho` parameter (`{ Ref }`). The resolved pass
  * holds the plaintext. The names in the snapshot only SELECT the paths;
@@ -16,8 +17,8 @@
  * snapshot, and the population is asserted between a floor and a cap
  * ({@link MIN_CASES}, {@link MAX_CASES}).
  *
- * Shapes: a top-level string, a nested object leaf, an array item (`*`), and a
- * create-only path (from `cfn-registry-create-only-paths.json`). Each shape has
+ * Shapes: a top-level string, a nested object leaf, an array item (`*`), a map
+ * value (`<key>`, the second entry of its map), and a create-only path (from `cfn-registry-create-only-paths.json`). Each shape has
  * a floor.
  *
  * For each case, through the writer choke point (`scrubResourceRecord`):
@@ -33,12 +34,11 @@
  * item sits SECOND in its list, after a plain one. The plaintext is also echoed
  * as an attribute, and by the readback under a key the template lacks.
  *
- * NOT claimed here:
- * - the unchanged-resource arm with no template bag (covered by its own tests);
- * - a `NoEcho` value embedded in text, which needs the fresh / containment
- *   side-sets;
- * - a sub-floor (under four characters) `NoEcho` value, which `applyNoEchoPersist`
- *   positions after this choke point.
+ * NOT claimed here, and claimed by `schema-redaction-invariant-holes-7151.test.ts`
+ * over the same population: the unchanged-resource arm with no template bag, a
+ * `NoEcho` value embedded in text or under the needle floor, the whole persist
+ * pipeline (`applyNoEchoPersist` after this choke point), the other writers'
+ * call shapes, one plaintext at two paths, and a map KEY.
  * The `create-only` shape is a label: the redaction reads nothing create-only.
  *
  * The redaction reads values and provenance, never a property's name or path,
@@ -48,8 +48,6 @@
  * A case that may not hold is listed in {@link EXCEPTIONS} with its reason,
  * and an entry that no longer fails is itself a failure.
  */
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { describe, it, expect } from 'vite-plus/test';
 import {
   recordMaskOnlyValue,
@@ -60,60 +58,11 @@ import {
 import { noEchoComparisonForTemplate } from '../../../src/deployment/deploy-engine/noecho.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
-
-const FIXTURES = join(import.meta.dirname, '..', '..', 'fixtures');
-interface SecretPaths {
-  writeOnly: string[][];
-  secretNamed: string[][];
-}
-const SNAPSHOT = JSON.parse(readFileSync(join(FIXTURES, 'cfn-registry-secret-paths.json'), 'utf8')) as {
-  types: Record<string, SecretPaths>;
-};
-const CREATE_ONLY = JSON.parse(readFileSync(join(FIXTURES, 'cfn-registry-create-only-paths.json'), 'utf8')) as {
-  types: Record<string, string[][]>;
-};
+import { casesOf, placed, type Case, type Shape } from './schema-redaction-cases.js';
 
 /** A literal floor and cap the generator does not read: a snapshot that lost its types, or grew past the runtime bound. */
-const MIN_CASES = 1500;
+const MIN_CASES = 2000;
 const MAX_CASES = 6000;
-
-type Shape = 'top-level' | 'nested' | 'array-item' | 'create-only';
-interface Case {
-  readonly type: string;
-  readonly path: readonly string[];
-  readonly kinds: readonly ('writeOnly' | 'secretNamed')[];
-  readonly shapes: readonly Shape[];
-}
-
-function casesOf(): Case[] {
-  const out: Case[] = [];
-  for (const [type, paths] of Object.entries(SNAPSHOT.types).sort(([a], [b]) => a.localeCompare(b))) {
-    const createOnly = new Set((CREATE_ONLY.types[type] ?? []).map((p) => p.join('/')));
-    const byPath = new Map<string, Set<'writeOnly' | 'secretNamed'>>();
-    for (const kind of ['writeOnly', 'secretNamed'] as const) {
-      for (const path of paths[kind]) {
-        const key = path.join('/');
-        byPath.set(key, (byPath.get(key) ?? new Set()).add(kind));
-      }
-    }
-    for (const [key, kinds] of [...byPath].sort(([a], [b]) => a.localeCompare(b))) {
-      const path = key.split('/');
-      const shapes: Shape[] = [path.includes('*') ? 'array-item' : path.length === 1 ? 'top-level' : 'nested'];
-      if (createOnly.has(key) || createOnly.has(path[0]!)) shapes.push('create-only');
-      out.push({ type, path, kinds: [...kinds], shapes });
-    }
-  }
-  return out;
-}
-
-/** `value` placed at `path` (`*` is the SECOND item of a list, after a plain one). */
-function placed(path: readonly string[], value: unknown): Record<string, unknown> {
-  const build = (i: number): unknown => {
-    if (i === path.length) return value;
-    return path[i] === '*' ? ['plain-item-7061', build(i + 1)] : { [path[i]!]: build(i + 1) };
-  };
-  return build(0) as Record<string, unknown>;
-}
 
 /**
  * How the secret reaches the path: a dynamic reference as the whole value, one
@@ -218,9 +167,11 @@ describe('schema redaction invariant (go-to-k/cdkd#7061 slice (c))', { timeout: 
     expect(count('top-level')).toBeGreaterThanOrEqual(500);
     expect(count('nested')).toBeGreaterThanOrEqual(100);
     expect(count('array-item')).toBeGreaterThanOrEqual(50);
+    expect(count('map-value')).toBeGreaterThanOrEqual(400);
     expect(count('create-only')).toBeGreaterThanOrEqual(50);
     expect(cases.filter((c) => c.kinds.includes('writeOnly')).length).toBeGreaterThanOrEqual(1000);
     expect(cases.filter((c) => c.kinds.includes('secretNamed')).length).toBeGreaterThanOrEqual(500);
+    expect(cases.filter((c) => c.kinds.includes('mapValue')).length).toBeGreaterThanOrEqual(400);
   });
 
   it('every write-only and secret-named path is redacted on persist and plans no change on an unchanged redeploy', () => {

@@ -44,9 +44,10 @@
  * IAM wildcard spells too, so neither is a per-character walk
  * `[...v].every((c) => c === '*')`), nor a regular expression that matches the
  * marker only inside surrounding text (`/=\*\*\*$/`), nor a marker used as an
- * object KEY in a lookup table, nor a marker handed as an argument to any
- * other function (a deep-equality helper, a local comparator
- * `same(v, SECRET_MASK)`). The record-provenance entry point and the fence
+ * object KEY in a lookup table, nor a marker handed to a function in ANOTHER
+ * module (a deep-equality helper). A marker handed to a SAME-FILE function
+ * that compares that parameter (`same(v, SECRET_MASK)`) is a hand test at the
+ * call (go-to-k/cdkd#7151). The record-provenance entry point and the fence
  * arm that routes record readers onto it are later steps of the same plan.
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -54,6 +55,7 @@ import { join, relative } from 'node:path';
 import { parseSync } from 'vite-plus';
 import { describe, expect, it } from 'vite-plus/test';
 import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
+import { READS_RECORD_TEXT_DEEP, UNTRIAGED_CAP } from './recorded-secrecy-deep-readers-7151.js';
 import {
   countDynamicReferenceOpenings,
   dynamicReferenceBody,
@@ -547,6 +549,34 @@ function aliasesIn(program: Node, names: ReadonlySet<string>): Set<string> {
   return local;
 }
 
+const FUNCTION_TYPES = ['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression'];
+
+/** The file's named functions: `function f() {}` and `const f = (...) => ...`, by name. */
+function sameFileFunctions(program: Node): Map<string, Node> {
+  const helpers = new Map<string, Node>();
+  const find = (node: Node): void => {
+    if (node.type === 'FunctionDeclaration' && isNode(node['id'])) helpers.set(node['id']['name'] as string, node);
+    if (
+      node.type === 'VariableDeclarator' &&
+      isNode(node['id']) &&
+      node['id'].type === 'Identifier' &&
+      isNode(node['init']) &&
+      FUNCTION_TYPES.includes((node['init'] as Node).type)
+    ) {
+      helpers.set(node['id']['name'] as string, node['init'] as Node);
+    }
+    for (const v of Object.values(node)) {
+      if (Array.isArray(v)) {
+        for (const c of v) if (isNode(c)) find(c);
+      } else if (isNode(v)) {
+        find(v);
+      }
+    }
+  };
+  find(program);
+  return helpers;
+}
+
 function handTestsIn(file: string, text: string, globalNames: ReadonlySet<string>): string[] {
   const out: string[] = [];
   const program = parseOrThrow(file, text);
@@ -611,6 +641,51 @@ function handTestsIn(file: string, text: string, globalNames: ReadonlySet<string
     }
     return false;
   };
+  // go-to-k/cdkd#7151: a marker handed to a SAME-FILE comparator
+  // (`same(v, SECRET_MASK)`, `function same(a, b) { return a === b; }`) is a
+  // hand test at the CALL: the helper compares the parameter at that position
+  // (an equality, a `switch` case, a string search by it or on it).
+  const comparators = sameFileFunctions(program);
+  const comparedParams = new Map<Node, Set<number>>();
+  const comparesParam = (helper: Node, index: number): boolean => {
+    const known = comparedParams.get(helper);
+    if (known !== undefined) return known.has(index);
+    const found = new Set<number>();
+    const params = (helper['params'] as unknown[]).map((p) => {
+      const n = unwrap(p);
+      const left = isNode(n) && n.type === 'AssignmentPattern' ? unwrap(n['left']) : n;
+      return isNode(left) && left.type === 'Identifier' ? (left['name'] as string) : undefined;
+    });
+    const isParam = (raw: unknown, name: string): boolean => {
+      const n = unwrap(raw);
+      return isNode(n) && n.type === 'Identifier' && n['name'] === name;
+    };
+    const scan = (node: Node): void => {
+      params.forEach((name, i) => {
+        if (name === undefined) return;
+        const hit =
+          (node.type === 'BinaryExpression' &&
+            ['===', '!==', '==', '!='].includes(node['operator'] as string) &&
+            (isParam(node['left'], name) || isParam(node['right'], name))) ||
+          (node.type === 'SwitchCase' && isParam(node['test'], name)) ||
+          (node.type === 'CallExpression' &&
+            SEARCHES.has(memberName(node['callee'] as Node) ?? '') &&
+            (isParam((node['arguments'] as unknown[])[0], name) ||
+              isParam((node['callee'] as Node)['object'], name)));
+        if (hit) found.add(i);
+      });
+      for (const v of Object.values(node)) {
+        if (Array.isArray(v)) {
+          for (const c of v) if (isNode(c)) scan(c);
+        } else if (isNode(v)) {
+          scan(v);
+        }
+      }
+    };
+    scan(helper['body'] as Node);
+    comparedParams.set(helper, found);
+    return found.has(index);
+  };
   const walk = (node: Node, fn: string): void => {
     // An import binds a name and tests nothing; its USES are what is read.
     if (node.type === 'ImportDeclaration') return;
@@ -656,6 +731,13 @@ function handTestsIn(file: string, text: string, globalNames: ReadonlySet<string
         callee['object']['name'] === 'Object' &&
         name === 'is' &&
         args.some(isMarkerOrFragment)
+      ) {
+        flag();
+      } else if (
+        node.type === 'CallExpression' &&
+        callee.type === 'Identifier' &&
+        comparators.has(callee['name'] as string) &&
+        args.some((arg, i) => isMarkerOrFragment(arg) && comparesParam(comparators.get(callee['name'] as string)!, i))
       ) {
         flag();
       } else if (callee.type === 'Identifier' && callee['name'] === 'RegExp') {
@@ -751,13 +833,44 @@ function readsRecordField(raw: unknown): boolean {
  *
  * A HEURISTIC, by name: a bag is recognised by the names `properties`,
  * `attributes` and `observedProperties`. It follows one local copy, and one
- * call hop into a SAME-FILE helper (argument to parameter). It does not follow
- * a two-hop copy, a callback parameter fed by a bag's walk, a helper in another
- * module, or a bag renamed before it reaches a helper. So the pinned table
- * counts what the heuristic sees, not every reader of a record.
+ * call hop into a SAME-FILE helper (argument to parameter); that is what
+ * {@link READS_RECORD_TEXT} pins. With `deep` (go-to-k/cdkd#7151) it also
+ * follows any number of local copies, a chain of same-file helpers, and a
+ * call into a function another module of `src/` imports by name, to a fixed
+ * point; what only that reach sees is pinned by count in
+ * `recorded-secrecy-deep-readers-7151.ts` and triaged by go-to-k/cdkd#7156.
+ * Neither follows a callback parameter fed by a bag's walk, a re-export
+ * (`export { f } from`), a namespace import's member call, a default
+ * export, or a bag stored in an object or returned from a function. So the
+ * pinned tables count what the heuristic sees, not every reader of a record.
  */
-function recordFieldTextReadsIn(file: string, text: string): string[] {
+/** A call handing a record bag to a function another module exports: `<module>` `<name>` at `index`. */
+interface OutgoingBagCall {
+  readonly module: string;
+  readonly name: string;
+  readonly index: number;
+}
+
+/** The module a relative import names, as a `src/...ts` path, or `undefined` for a package. */
+function importedModule(file: string, source: string): string | undefined {
+  if (!source.startsWith('.')) return undefined;
+  const parts = file.split('/').slice(0, -1);
+  for (const part of source.replace(/\.js$/, '.ts').split('/')) {
+    if (part === '..') parts.pop();
+    else if (part !== '.') parts.push(part);
+  }
+  const path = parts.join('/');
+  return path.endsWith('.ts') ? path : `${path}.ts`;
+}
+
+function recordFieldTextReadsIn(
+  file: string,
+  text: string,
+  deep = false,
+  seeds: ReadonlyMap<string, ReadonlySet<number>> = new Map()
+): { hits: string[]; outgoing: OutgoingBagCall[] } {
   const out: string[] = [];
+  const outgoing: OutgoingBagCall[] = [];
   const program = parseOrThrow(file, text);
   // One hop through a local copy: `const v = record.attributes.Arn`, a member
   // of one (`const attrs = record.attributes; attrs[k]`), a destructured one
@@ -822,61 +935,82 @@ function recordFieldTextReadsIn(file: string, text: string): string[] {
       key === 'key' && n.type === 'Property' ? [] : Array.isArray(v) ? v.flatMap(namesRead) : namesRead(v)
     );
   };
-  // One call hop into a same-file helper: `f(record.properties)` makes `f`'s
-  // parameter at that position a record bag (`function f(bag) { holdsMaskLeaf(bag.K) }`).
-  const helpers = new Map<string, Node>();
-  const findHelpers = (node: Node): void => {
-    if (node.type === 'FunctionDeclaration' && isNode(node['id'])) helpers.set(node['id']['name'] as string, node);
-    if (
-      node.type === 'VariableDeclarator' &&
-      isNode(node['id']) &&
-      node['id'].type === 'Identifier' &&
-      isNode(node['init']) &&
-      FUNCTIONS.includes((node['init'] as Node).type)
-    ) {
-      helpers.set(node['id']['name'] as string, node['init'] as Node);
-    }
-    for (const v of Object.values(node)) {
-      if (Array.isArray(v)) {
-        for (const c of v) if (isNode(c)) findHelpers(c);
-      } else if (isNode(v)) {
-        findHelpers(v);
-      }
-    }
-  };
-  findHelpers(program);
+  // A call into a same-file helper: `f(record.properties)` makes `f`'s
+  // parameter at that position a record bag (`function f(bag) { holdsMaskLeaf(bag.K) }`),
+  // and so does an argument reaching a bag through a copy or another helper's
+  // parameter, to a fixed point (go-to-k/cdkd#7151). `seeds` are the
+  // parameters another module's calls make bags.
+  const helpers = sameFileFunctions(program);
   const recordParams = new Map<Node, Set<string>>();
-  const findBagCalls = (node: Node): void => {
+  const markParam = (helper: Node, index: number): boolean => {
+    const names = patternNames((helper['params'] as unknown[])[index]);
+    const set = recordParams.get(helper) ?? new Set<string>();
+    const before = set.size;
+    for (const name of names) set.add(name);
+    recordParams.set(helper, set);
+    return set.size > before;
+  };
+  for (const [name, indexes] of seeds) {
+    const helper = helpers.get(name);
+    if (helper !== undefined) for (const index of indexes) markParam(helper, index);
+  }
+  // A local copy, through any number of copies (`const a = record.attributes;
+  // const b = a; b.Arn`), looked up from the scope that binds it.
+  const copiedFromRecord = (name: string, chain: readonly Node[], seen: Set<string> = new Set()): boolean => {
+    for (let i = chain.length - 1; i >= 0; i--) {
+      const { copies, params } = scopeOf(chain[i]!);
+      const inits = copies.get(name);
+      if (inits !== undefined) {
+        const key = `${chain[i]!.start}:${name}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        if (!deep) return inits.some(readsRecordField);
+        const scope = chain.slice(0, i + 1);
+        return inits.some((init) => readsRecordField(init) || namesRead(init).some((n) => copiedFromRecord(n, scope, seen)));
+      }
+      if (params.has(name)) return recordParams.get(chain[i]!)?.has(name) === true;
+    }
+    return false;
+  };
+  const readsRecordIn = (arg: unknown, chain: readonly Node[]): boolean =>
+    readsRecordField(arg) || namesRead(arg).some((name) => copiedFromRecord(name, chain));
+  const findBagCalls = (node: Node, chain: readonly Node[]): boolean => {
+    let changed = false;
+    const inChain = FUNCTIONS.includes(node.type) ? [...chain, node] : chain;
     if (node.type === 'CallExpression' && isNode(node['callee']) && node['callee'].type === 'Identifier') {
       const helper = helpers.get(node['callee']['name'] as string);
       if (helper !== undefined) {
         (node['arguments'] as unknown[]).forEach((arg, i) => {
-          const param = (helper['params'] as unknown[])[i];
-          if (!readsRecordField(arg)) return;
-          for (const name of patternNames(param)) recordParams.set(helper, (recordParams.get(helper) ?? new Set()).add(name));
+          if ((deep ? readsRecordIn(arg, inChain) : readsRecordField(arg)) && markParam(helper, i)) changed = true;
         });
       }
     }
     for (const v of Object.values(node)) {
       if (Array.isArray(v)) {
-        for (const c of v) if (isNode(c)) findBagCalls(c);
-      } else if (isNode(v)) {
-        findBagCalls(v);
+        for (const c of v) if (isNode(c) && findBagCalls(c, inChain)) changed = true;
+      } else if (isNode(v) && findBagCalls(v, inChain)) {
+        changed = true;
       }
     }
+    return changed;
   };
-  findBagCalls(program);
-  const copiedFromRecord = (name: string, chain: readonly Node[]): boolean => {
-    for (let i = chain.length - 1; i >= 0; i--) {
-      const { copies, params } = scopeOf(chain[i]!);
-      const inits = copies.get(name);
-      if (inits !== undefined) return inits.some(readsRecordField);
-      if (params.has(name)) return recordParams.get(chain[i]!)?.has(name) === true;
+  let unsettled = findBagCalls(program, [program]);
+  for (let round = 0; deep && unsettled; round++) {
+    if (round === 32) throw new Error(`${file}: the helper reach did not settle in 32 rounds`);
+    unsettled = findBagCalls(program, [program]);
+  }
+  // The functions this file imports from another module of `src/`, by local name.
+  const imported = new Map<string, { module: string; name: string }>();
+  for (const statement of program['body'] as Node[]) {
+    if (statement.type !== 'ImportDeclaration' || !isNode(statement['source'])) continue;
+    const module = importedModule(file, statement['source']['value'] as string);
+    if (module === undefined) continue;
+    for (const spec of statement['specifiers'] as Node[]) {
+      if (spec.type !== 'ImportSpecifier' || !isNode(spec['local']) || !isNode(spec['imported'])) continue;
+      const name = (spec['imported']['name'] ?? spec['imported']['value']) as string;
+      imported.set(spec['local']['name'] as string, { module, name });
     }
-    return false;
-  };
-  const readsRecord = (arg: unknown, chain: readonly Node[]): boolean =>
-    readsRecordField(arg) || namesRead(arg).some((name) => copiedFromRecord(name, chain));
+  }
   const walk = (node: Node, fn: string, chain: readonly Node[]): void => {
     let here = fn;
     const inChain = FUNCTIONS.includes(node.type) ? [...chain, node] : chain;
@@ -890,6 +1024,14 @@ function recordFieldTextReadsIn(file: string, text: string): string[] {
       here = (node['id'] as Node)['name'] as string;
     }
     if (node.type === 'MethodDefinition' && isNode(node['key'])) here = (node['key'] as Node)['name'] as string;
+    if (node.type === 'CallExpression' && isNode(node['callee']) && node['callee'].type === 'Identifier') {
+      const target = deep ? imported.get(node['callee']['name'] as string) : undefined;
+      if (target !== undefined) {
+        (node['arguments'] as unknown[]).forEach((arg, index) => {
+          if (readsRecordIn(arg, inChain)) outgoing.push({ ...target, index });
+        });
+      }
+    }
     if (node.type === 'CallExpression' && isNode(node['callee'])) {
       const callee = node['callee'];
       const name =
@@ -898,14 +1040,14 @@ function recordFieldTextReadsIn(file: string, text: string): string[] {
           : callee.type === 'MemberExpression' && isNode(callee['property'])
             ? (callee['property']['name'] as string)
             : undefined;
-      if (name !== undefined && TEXT_PREDICATES.has(name) && (node['arguments'] as unknown[]).some((arg) => readsRecord(arg, inChain))) {
+      if (name !== undefined && TEXT_PREDICATES.has(name) && (node['arguments'] as unknown[]).some((arg) => readsRecordIn(arg, inChain))) {
         out.push(`${file}#${here}#${text.slice(node.start, node.end).replace(/\s+/g, ' ')}`);
       }
       // A predicate handed over as a callback of a record bag's walk:
       // `Object.values(record.attributes).some(holdsMaskLeaf)`.
       else if (
         callee.type === 'MemberExpression' &&
-        readsRecord(callee['object'], inChain) &&
+        readsRecordIn(callee['object'], inChain) &&
         (node['arguments'] as unknown[]).some(
           (arg) => isNode(arg) && arg.type === 'Identifier' && TEXT_PREDICATES.has(arg['name'] as string)
         )
@@ -922,7 +1064,7 @@ function recordFieldTextReadsIn(file: string, text: string): string[] {
     }
   };
   walk(program, '<module>', [program]);
-  return out;
+  return { hits: out, outgoing };
 }
 
 /**
@@ -1056,28 +1198,100 @@ const READS_RECORD_TEXT: Readonly<Record<string, { count: number; why: string }>
   },
 };
 
-function recordTextProblems(extra: Record<string, string> = {}): string[] {
-  const found: string[] = [];
+/**
+ * {@link recordFieldTextReadsIn}, memoized by file, text, reach and seeds: the
+ * probes re-scan the whole tree with one file added, and every other file's
+ * answer is the same.
+ */
+const recordFieldTextCache = new Map<string, { text: string; result: ReturnType<typeof recordFieldTextReadsIn> }>();
+function cachedRecordFieldTextReads(
+  file: string,
+  text: string,
+  deep: boolean,
+  seeds: ReadonlyMap<string, ReadonlySet<number>> | undefined
+): ReturnType<typeof recordFieldTextReadsIn> {
+  const seedKey = JSON.stringify([...(seeds ?? new Map())].map(([name, indexes]) => [name, [...indexes].sort()]).sort());
+  const key = `${deep ? 'deep' : 'shallow'}|${file}|${seedKey}`;
+  const hit = recordFieldTextCache.get(key);
+  if (hit !== undefined && hit.text === text) return hit.result;
+  const result = recordFieldTextReadsIn(file, text, deep, seeds);
+  recordFieldTextCache.set(key, { text, result });
+  return result;
+}
+
+/** Every record text read in `src/` (plus `extra`), keyed as {@link READS_RECORD_TEXT} is. */
+function recordTextReads(extra: Record<string, string>, deep: boolean): string[] {
   const files = new Set([
     ...tsFiles(join(ROOT, 'src')).map((f) => relative(ROOT, f).split('\\').join('/')),
     ...Object.keys(extra),
   ]);
-  for (const file of files) {
-    if (file === HELPER) continue;
-    found.push(...recordFieldTextReadsIn(file, extra[file] ?? readFileSync(join(ROOT, file), 'utf8')));
+  const texts = new Map<string, string>();
+  for (const file of files) if (file !== HELPER) texts.set(file, extra[file] ?? readFileSync(join(ROOT, file), 'utf8'));
+  // go-to-k/cdkd#7151 (`deep`): a bag handed to a function ANOTHER module
+  // exports makes that function's parameter a bag there, to a fixed point.
+  const seeds = new Map<string, Map<string, Set<number>>>();
+  const results = new Map<string, string[]>();
+  let pending = new Set(texts.keys());
+  for (let round = 0; pending.size > 0; round++) {
+    if (round === 32) throw new Error('the cross-module reach did not settle in 32 rounds');
+    const next = new Set<string>();
+    for (const file of pending) {
+      const { hits, outgoing } = cachedRecordFieldTextReads(file, texts.get(file)!, deep, seeds.get(file));
+      results.set(file, hits);
+      for (const call of outgoing) {
+        if (!texts.has(call.module)) continue;
+        const byName = seeds.get(call.module) ?? new Map<string, Set<number>>();
+        const indexes = byName.get(call.name) ?? new Set<number>();
+        if (indexes.has(call.index)) continue;
+        indexes.add(call.index);
+        byName.set(call.name, indexes);
+        seeds.set(call.module, byName);
+        next.add(call.module);
+      }
+    }
+    pending = next;
   }
+  return [...results.values()].flat();
+}
+
+function countsOf(keys: readonly string[]): Map<string, number> {
   const counts = new Map<string, number>();
-  for (const key of found) counts.set(key, (counts.get(key) ?? 0) + 1);
+  for (const key of keys) counts.set(key, (counts.get(key) ?? 0) + 1);
+  return counts;
+}
+
+function pinProblems(counts: ReadonlyMap<string, number>, pinned: Readonly<Record<string, { count: number }>>, label: string): string[] {
   const problems: string[] = [];
   for (const [key, n] of counts) {
-    const pinned = READS_RECORD_TEXT[key];
-    if (pinned === undefined) problems.push(`record text read: ${key}`);
-    else if (pinned.count !== n) problems.push(`${key}: ${n} sites, pinned ${pinned.count}`);
+    const pin = pinned[key];
+    if (pin === undefined) problems.push(`${label}: ${key}`);
+    else if (pin.count !== n) problems.push(`${key}: ${n} sites, pinned ${pin.count}`);
   }
-  for (const key of Object.keys(READS_RECORD_TEXT)) {
-    if (!counts.has(key)) problems.push(`pinned record text read matches nothing: ${key}`);
+  for (const key of Object.keys(pinned)) {
+    if (!counts.has(key)) problems.push(`pinned ${label} matches nothing: ${key}`);
   }
   return problems;
+}
+
+function recordTextProblems(extra: Record<string, string> = {}): string[] {
+  return pinProblems(countsOf(recordTextReads(extra, false)), READS_RECORD_TEXT, 'record text read');
+}
+
+/**
+ * The readers only the DEEP reach sees (go-to-k/cdkd#7151): a bag reached
+ * through two or more local copies, through a chain of same-file helpers, or
+ * through a function another module exports, beyond what
+ * {@link recordTextProblems} pins.
+ */
+function deepRecordTextProblems(extra: Record<string, string> = {}): string[] {
+  const shallow = countsOf(recordTextReads(extra, false));
+  const deep = countsOf(recordTextReads(extra, true));
+  const only = new Map<string, number>();
+  for (const [key, n] of deep) {
+    const extraSites = n - (shallow.get(key) ?? 0);
+    if (extraSites > 0) only.set(key, extraSites);
+  }
+  return pinProblems(only, READS_RECORD_TEXT_DEEP, 'deep record text read');
 }
 
 let cachedNames: Set<string> | undefined;
@@ -1116,6 +1330,40 @@ describe(
     // A floor the scan does not read: a group that lost its files proves nothing.
     expect(groupFiles().length).toBeGreaterThanOrEqual(332);
     expect(violations()).toEqual([]);
+  });
+
+  it('no reader the deep reach sees tests a record bag by its text outside its pinned table (go-to-k/cdkd#7151)', () => {
+    // A floor the scan does not read: an empty table would pass a reach that follows nothing.
+    expect(Object.keys(READS_RECORD_TEXT_DEEP).length).toBeGreaterThanOrEqual(80);
+    expect(deepRecordTextProblems()).toEqual([]);
+    // The untriaged backlog (go-to-k/cdkd#7156) only shrinks: a new entry needs its `why`.
+    const untriaged = Object.values(READS_RECORD_TEXT_DEEP).filter((entry) => entry.why === undefined).length;
+    expect(untriaged).toBeLessThanOrEqual(UNTRIAGED_CAP);
+  });
+
+  it.each([
+    ['a copy of a copy', 'export const d1 = (record: { attributes: Record<string, unknown> }) => { const a = record.attributes; const b = a; return holdsMaskLeaf(b.Arn); };', 'd1#holdsMaskLeaf(b.Arn)'],
+    ['a member of a copy of a copy', 'export const d2 = (record: { properties: Record<string, unknown> }) => { const p = record.properties; const n = p.Nested as Record<string, unknown>; const leaf = n.Leaf; return isMaskLeaf(leaf); };', 'd2#isMaskLeaf(leaf)'],
+    ['a chain of same-file helpers', 'function d3(x: Record<string, unknown>) { return mentionsMask(x.K); }\nfunction d4(bag: Record<string, unknown>) { return d3(bag); }\nexport const d5 = (record: { observedProperties: Record<string, unknown> }) => d4(record.observedProperties);', 'd3#mentionsMask(x.K)'],
+    ['a helper fed a copy', 'function d6(x: Record<string, unknown>) { return isMaskLeaf(x.K); }\nexport const d7 = (record: { attributes: Record<string, unknown> }) => { const a = record.attributes; return d6(a); };', 'd6#isMaskLeaf(x.K)'],
+  ])('probe: a new text check through %s fails the deep reach only', (_what, line, key) => {
+    const file = 'src/zz-probe-record-text.ts';
+    expect(recordTextProblems({ [file]: line })).toEqual([]);
+    expect(deepRecordTextProblems({ [file]: line })).toEqual([`deep record text read: ${file}#${key}`]);
+  });
+
+  it('probe: a bag handed to a function another module exports fails the deep reach at that function', () => {
+    const helper = 'src/zz-probe-deep-helper.ts';
+    const caller = 'src/zz-probe-deep-caller.ts';
+    const extra = {
+      [helper]: 'export function deepCheck(input: Record<string, unknown>) { return holdsMaskLeaf(input.K); }',
+      [caller]: "import { deepCheck } from './zz-probe-deep-helper.js';\nexport const caller = (record: { properties: Record<string, unknown> }) => deepCheck(record.properties);",
+    };
+    expect(recordTextProblems(extra)).toEqual([]);
+    expect(deepRecordTextProblems(extra)).toEqual([`deep record text read: ${helper}#deepCheck#holdsMaskLeaf(input.K)`]);
+    // The same helper called with no bag is no reader.
+    const unfed = { ...extra, [caller]: "import { deepCheck } from './zz-probe-deep-helper.js';\nexport const caller = (desired: Record<string, unknown>) => deepCheck(desired);" };
+    expect(deepRecordTextProblems(unfed)).toEqual([]);
   });
 
   it('no reader tests a record bag by its text outside the pinned table', () => {
@@ -1247,6 +1495,18 @@ describe(
     ['a ternary of a marker on both branches', 'export const q8 = (v: string, c: boolean) => { const m = c ? SECRET_MASK : `"${SECRET_MASK}"`; return v.includes(m); };', 'q8#v.includes(m)'],
   ])('probe: %s fails at its use', (_what, line, key) => {
     expect(violations({ [NAME]: `${real(NAME)}\n${line}\n` })).toEqual([`hand test: ${NAME}#${key}`]);
+  });
+
+  it.each([
+    ['a same-file comparator', 'function same(a: unknown, b: unknown) { return a === b; }\nexport const c1 = (v: unknown) => same(v, SECRET_MASK);', 'c1#same(v, SECRET_MASK)'],
+    ['a same-file search helper', 'const within = (text: string, part: string) => text.includes(part);\nexport const c2 = (v: string) => within(v, SECRET_MASK);', 'c2#within(v, SECRET_MASK)'],
+  ])('probe: a marker handed to %s fails at the call (go-to-k/cdkd#7151)', (_what, line, key) => {
+    expect(violations({ [NAME]: `${real(NAME)}\n${line}\n` })).toEqual([`hand test: ${NAME}#${key}`]);
+  });
+
+  it('probe: a marker handed to a same-file function that does not compare it passes', () => {
+    const line = 'function keep(a: unknown, b: unknown) { return [a, b]; }\nexport const c3 = (v: unknown) => keep(v, SECRET_MASK);';
+    expect(violations({ [NAME]: `${real(NAME)}\n${line}\n` })).toEqual([]);
   });
 
   it('probe: a marker token inside other text is a second marker constant, and its use a hand test', () => {
