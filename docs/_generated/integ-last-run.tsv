@@ -25,7 +25,7 @@ apigw-vpclink-integration-target	2026-11-12T11:22:31Z	PASS	346	verify.sh	rc ok, 
 app-autoscaling-recreate	2026-11-19T14:40:15Z	PASS	122	verify.sh	#6626 HEAD 341ad3edc: rc ok, destroy 0 errors, orph clean
 appconfig	2026-11-27T06:40:05Z	PASS	145	verify.sh	PR 7101 head 21ca26d1d; Type change refuses w/o --force-stateful-recreation then replaces (#7083); 0 errors, 0 orphans
 appconfig-environment-delete-protection	2026-11-10T07:11:19Z	PASS	91	verify.sh	3 consecutive PASS after #6074 settle wait (95/91/91s); APPLY control refused each run, 0 errors, 0 orphans
-appsync	2026-11-22T05:45:00Z	PASS	204	verify.sh	PR6814 2ae78b7f6, us-east-1, rc ok, orph clean
+appsync	2026-11-27T18:52:08Z	PASS	276	verify.sh	rc ok, orph clean (PR #7137)
 appsync-schema-update-drift	2026-11-27T18:46:35Z	PASS	191	verify.sh	rc ok, orph clean (PR #7137, #7127; probe with the wait disabled FAILED at the v2 baseline check)
 asg-destroy-running-instances	2026-11-17T03:39:15Z	PASS	305	verify.sh	rc ok, orph clean (#6437 PR #6469)
 asg-rolling-signals	2026-11-21T05:04:54Z	PASS	1167	verify.sh	rc 0, 4 phases, metadata restored, orph clean (us-east-1)
@@ -152,7 +152,7 @@ drift-revert	2026-11-27T19:11:02Z	PASS	932	verify.sh	rc 0, destroy 17 deleted 0 
 drift-revert-arrays	2026-11-23T08:26:12Z	PASS	267	verify.sh	PR6859 11e38d61f us-east-1 rc ok, orph clean
 drift-revert-firehose	2026-11-26T07:18:30Z	PASS	365	verify.sh	rc ok, orph clean; #7025 step 6 post-revert verification
 drift-revert-nested-write-only	2026-11-27T05:43:30Z	PASS	386	verify.sh	PR7060 73afba08d us-east-1 rc ok, orph clean
-drift-revert-readback-placeholders	2026-11-26T07:18:30Z	PASS	295	verify.sh	rc ok, orph clean; #7025 step 6 post-revert verification
+drift-revert-readback-placeholders	2026-11-27T18:52:08Z	PASS	286	verify.sh	rc ok, orph clean (PR #7137)
 drift-revert-vpc	2026-11-25T15:18:54Z	PASS	502	verify.sh	rc ok, orph clean
 drift-rotation-schedule-revert	2026-11-20T11:50:48Z	PASS	138	verify.sh	PR6652 be63cc056, us-west-2; rc 0, revert-identity kept identity x1, orph clean
 drift-sg-sibling-rules	2026-11-26T18:43:17Z	PASS	617	verify.sh	PR7075 run at 430bf0ba0, rc ok, orph clean
@@ -268,7 +268,7 @@ import-auto-mode	2026-11-04T07:51:26Z	PASS	87	verify.sh	rc ok, orph clean (#4607
 import-deployed-parameter-secret	2026-11-04T21:09:01Z	PASS	344	verify.sh	rc 0, destroy 0 errors, 0 surviving state versions, orph clean (state keys, live resources, no leaked log groups); own temp state bucket
 import-heal-prefix-record	2026-11-04T20:04:01Z	PASS	170	verify.sh	rc ok, orph clean
 import-lambda-url-attributes	2026-11-04T06:43:31Z	PASS	115	verify.sh	rc ok, orph clean, own state bucket; no leaked log groups
-import-migrate-appsync	2026-10-30T05:02:32Z	PASS	115	verify.sh	#5540 outputs = CFn (KeyArn/KeyRef/SchemaRef); rc ok, orph clean, versions swept
+import-migrate-appsync	2026-11-27T18:52:08Z	PASS	131	verify.sh	rc ok, orph clean (PR #7137)
 import-migrate-pending-change	2026-11-22T21:43:53Z	PASS	176	verify.sh	rc ok, orph clean; PR #6844 aa10e2386
 import-migrate-vpc	2026-11-04T22:03:16Z	PASS	356	verify.sh	rc ok, orph clean; VPC confirmed gone; us-east-1; own temp state bucket
 import-nested-stack	2026-11-24T07:55:55Z	PASS	155	verify.sh	rc ok, orph clean; #6900 step 9c migration writes nestedStackTags
