@@ -3,11 +3,19 @@
  * fence sees (`recorded-secrecy-readers-7061.test.ts`, `deepRecordTextProblems`):
  * a bag reached through two or more local copies, a chain of same-file
  * helpers, or a function another module exports. Each still reads a record
- * bag's TEXT; whether it should ask `recordedSecrecyOf` instead is triaged per
- * entry by go-to-k/cdkd#7156. A new one fails the fence, and so does an entry
- * that matches nothing.
+ * bag's TEXT.
+ *
+ * An UNTRIAGED BACKLOG, owned by go-to-k/cdkd#7156: no entry has been decided
+ * yet (migrate to `recordedSecrecyOf`, keep with a reason, or narrow the
+ * reach), so none carries a `why`. A triaged entry gains its `why`. The fence
+ * caps the entries WITHOUT one at {@link UNTRIAGED_CAP}, so a new reader
+ * cannot join the backlog unexplained and the backlog only shrinks; lower the
+ * cap as entries are triaged. A new reader fails the fence, and so does an
+ * entry that matches nothing.
  */
-export const READS_RECORD_TEXT_DEEP: Readonly<Record<string, { count: number }>> = {
+export const UNTRIAGED_CAP = 85;
+
+export const READS_RECORD_TEXT_DEEP: Readonly<Record<string, { count: number; why?: string }>> = {
   "src/analyzer/diff-calculator/redaction-masks.ts#maskUnmovedRedactionMasks#holdsMaskLeaf(current[key])": { count: 1 },
   "src/analyzer/diff-calculator/redaction-masks.ts#maskUnmovedRedactionMasks#holdsMaskLeaf(desired[key])": { count: 1 },
   "src/analyzer/diff-calculator/redaction-masks.ts#maskUnmovedRedactionMasks#isMaskLeaf(current[key])": { count: 1 },

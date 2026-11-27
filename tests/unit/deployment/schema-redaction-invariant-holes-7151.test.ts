@@ -193,8 +193,18 @@ function plansNoChange(c: Case, s: Seeded, form: Form, current: Record<string, u
 }
 
 /** The problems a written record shows. */
+/** The readback's key the template lacks, which {@link inMemoryRecord} seeds as an echo. */
+const ECHO_KEY = 'ReadbackOnly7061';
+
+/**
+ * The problems a written record shows. A plaintext found ONLY under the
+ * readback's echo key is its own problem, so a gap of that shape never absorbs
+ * a plaintext anywhere else in the record.
+ */
 function problemsOf(record: unknown, s: Seeded): string[] {
-  return JSON.stringify(record).includes(s.plaintext) ? ['plaintext persisted'] : [];
+  if (!JSON.stringify(record).includes(s.plaintext)) return [];
+  const withoutEcho = JSON.stringify(record, (key, value: unknown) => (key === ECHO_KEY ? undefined : value));
+  return [withoutEcho.includes(s.plaintext) ? 'plaintext persisted' : 'plaintext persisted only in the readback echo'];
 }
 
 type Writer = 'deploy-persist' | 'unchanged-persist' | 'scrub' | 'journal' | 'rollback-restore';
@@ -317,27 +327,48 @@ async function written(
   }
 }
 
-/**
- * Known gaps, each filed, keyed `<writer> <form> <problem>`: a failure of that
- * key is not counted, and a gap that no longer fails is itself a failure. Each
- * holds only with the readback's echo under a key the template lacks; the same
- * writer and form WITHOUT it is asserted clean.
- */
-const GAPS: Readonly<Record<string, string>> = {
-  // go-to-k/cdkd#7152: an unchanged pass has no needles; it learns a pair only from an unambiguous object position.
-  'unchanged-persist whole plaintext persisted': 'go-to-k/cdkd#7152 (a reference inside a list or a map value)',
-  'unchanged-persist embedded plaintext persisted': 'go-to-k/cdkd#7152 (a reference inside a list or a map value)',
-  'unchanged-persist twin plaintext persisted': 'go-to-k/cdkd#7152 (two references, one plaintext)',
-  // go-to-k/cdkd#7158: a NoEcho leaf no needle covers, echoed under a key the template lacks.
-  'deploy-persist subfloor-embedded plaintext persisted': 'go-to-k/cdkd#7158 (a sub-floor value embedded in a longer leaf)',
-  'journal subfloor-embedded plaintext persisted': 'go-to-k/cdkd#7158 (carried from the deploy persist)',
-  'rollback-restore subfloor-embedded plaintext persisted': 'go-to-k/cdkd#7158 (carried from the deploy persist)',
-  'unchanged-persist noecho plaintext persisted': 'go-to-k/cdkd#7158 (an unchanged pass has no needle)',
-  'unchanged-persist noecho-embedded plaintext persisted': 'go-to-k/cdkd#7158 (an unchanged pass has no needle)',
-  'unchanged-persist subfloor-embedded plaintext persisted': 'go-to-k/cdkd#7158 (an unchanged pass has no needle)',
-  // go-to-k/cdkd#7154: no plaintext; one spurious update after the scrub.
-  'scrub twin an unchanged redeploy plans a change': 'go-to-k/cdkd#7154 (two references, one plaintext, inside a list)',
+/** The case paths a gap may absorb: a list item (a `*` segment), or any path. */
+type GapShape = 'list' | 'any';
+const PATH_SHAPES: Readonly<Record<GapShape, (path: readonly string[]) => boolean>> = {
+  list: (path) => path.includes('*'),
+  any: () => true,
 };
+
+/**
+ * Known gaps, each filed, keyed `<writer> <form> <problem>` and bounded by the
+ * case paths it may absorb (`shape`, measured): only a failure of that key on
+ * such a path is absorbed, and a gap that no longer fails is itself a failure.
+ * A plaintext gap absorbs only a plaintext found SOLELY under the readback's
+ * echo key ({@link problemsOf}); without that echo every writer and form is
+ * asserted clean, except #7154, which needs no echo (list paths only).
+ */
+const GAPS: Readonly<Record<string, { readonly issue: string; readonly shape: GapShape }>> = {
+  // go-to-k/cdkd#7152: an unchanged pass has no needles; it learns a pair only from an unambiguous object position.
+  'unchanged-persist whole plaintext persisted only in the readback echo': { issue: 'go-to-k/cdkd#7152 (a reference inside a list)', shape: 'list' },
+  'unchanged-persist embedded plaintext persisted only in the readback echo': { issue: 'go-to-k/cdkd#7152 (a reference inside a list)', shape: 'list' },
+  'unchanged-persist twin plaintext persisted only in the readback echo': { issue: 'go-to-k/cdkd#7152 (two references, one plaintext)', shape: 'any' },
+  // go-to-k/cdkd#7158: a NoEcho leaf no needle covers, echoed under a key the template lacks.
+  'deploy-persist subfloor-embedded plaintext persisted only in the readback echo': { issue: 'go-to-k/cdkd#7158 (a sub-floor value embedded in a longer leaf)', shape: 'any' },
+  'journal subfloor-embedded plaintext persisted only in the readback echo': { issue: 'go-to-k/cdkd#7158 (carried from the deploy persist)', shape: 'any' },
+  'rollback-restore subfloor-embedded plaintext persisted only in the readback echo': { issue: 'go-to-k/cdkd#7158 (carried from the deploy persist)', shape: 'any' },
+  'unchanged-persist noecho plaintext persisted only in the readback echo': { issue: 'go-to-k/cdkd#7158 (an unchanged pass has no needle)', shape: 'any' },
+  'unchanged-persist noecho-embedded plaintext persisted only in the readback echo': { issue: 'go-to-k/cdkd#7158 (an unchanged pass has no needle)', shape: 'any' },
+  'unchanged-persist subfloor-embedded plaintext persisted only in the readback echo': { issue: 'go-to-k/cdkd#7158 (an unchanged pass has no needle)', shape: 'any' },
+  // go-to-k/cdkd#7154: no plaintext; one spurious update after the scrub. Needs no echo.
+  'scrub twin an unchanged redeploy plans a change': { issue: 'go-to-k/cdkd#7154 (two references, one plaintext, inside a list)', shape: 'list' },
+};
+
+interface Failure {
+  readonly gap: string;
+  readonly path: readonly string[];
+  readonly detail: string;
+}
+
+/** Does a gap absorb `f`: its key, on a path of its shape? */
+function absorbed(f: Failure): boolean {
+  const gap = Object.hasOwn(GAPS, f.gap) ? GAPS[f.gap] : undefined;
+  return gap !== undefined && PATH_SHAPES[gap.shape](f.path);
+}
 
 /** Every failure of `writer` over `cases`, keyed for {@link GAPS}. */
 async function failuresOf(
@@ -345,8 +376,8 @@ async function failuresOf(
   cases: readonly Case[],
   echo: boolean,
   forms: readonly Form[] = FORMS
-): Promise<Array<{ gap: string; detail: string }>> {
-  const failures: Array<{ gap: string; detail: string }> = [];
+): Promise<Failure[]> {
+  const failures: Failure[] = [];
   for (const [index, c] of cases.entries()) {
     for (const form of forms) {
       const s = await seeded(c, index, form);
@@ -354,7 +385,7 @@ async function failuresOf(
       const problems = problemsOf(record, s);
       if (properties !== undefined && !plansNoChange(c, s, form, properties)) problems.push('an unchanged redeploy plans a change');
       for (const problem of problems) {
-        failures.push({ gap: `${writer} ${form} ${problem}`, detail: `${c.type} ${c.path.join('/')} ${form}: ${problem}` });
+        failures.push({ gap: `${writer} ${form} ${problem}`, path: c.path, detail: `${c.type} ${c.path.join('/')} ${form}: ${problem}` });
       }
     }
   }
@@ -372,7 +403,7 @@ describe('schema redaction invariant: the #7061 holes (go-to-k/cdkd#7151)', { ti
 
   it.each(WRITERS)('%s: no case and form persists the plaintext or plans a change', async (writer) => {
     const failures = await failuresOf(writer, cases, true);
-    expect(failures.filter((f) => !Object.hasOwn(GAPS, f.gap)).map((f) => f.detail).slice(0, 20)).toEqual([]);
+    expect(failures.filter((f) => !absorbed(f)).map((f) => f.detail).slice(0, 20)).toEqual([]);
     // A gap of this writer that no longer fails is stale.
     const seen = new Set(failures.map((f) => f.gap));
     expect(Object.keys(GAPS).filter((gap) => gap.startsWith(`${writer} `) && !seen.has(gap))).toEqual([]);
@@ -380,10 +411,22 @@ describe('schema redaction invariant: the #7061 holes (go-to-k/cdkd#7151)', { ti
 
   it.each(WRITERS)('%s: without the readback echo under a key the template lacks, every case holds', async (writer) => {
     const failures = await failuresOf(writer, cases, false);
-    // #7154 does not need the echo: it is the scrub's list positioning, and only a list path may show it.
-    const listScrubTwin = (f: { gap: string; detail: string }): boolean =>
-      f.gap === 'scrub twin an unchanged redeploy plans a change' && f.detail.split(' ')[1]!.split('/').includes('*');
-    expect(failures.filter((f) => !listScrubTwin(f)).map((f) => f.detail).slice(0, 20)).toEqual([]);
+    // #7154 needs no echo: it is the scrub's list positioning, absorbed on a list path only.
+    const needsNoEcho = (f: Failure): boolean => f.gap === 'scrub twin an unchanged redeploy plans a change' && absorbed(f);
+    expect(failures.filter((f) => !needsNoEcho(f)).map((f) => f.detail).slice(0, 20)).toEqual([]);
+  });
+
+  it('probe: a gap absorbs only its key, on a path of its shape, and a plaintext only under the echo key', () => {
+    const listGap = 'unchanged-persist whole plaintext persisted only in the readback echo';
+    expect(absorbed({ gap: listGap, path: ['Users', '*', 'Password'], detail: '' })).toBe(true);
+    // The same key on a plain path or a map value is a leak outside the gap.
+    expect(absorbed({ gap: listGap, path: ['Password'], detail: '' })).toBe(false);
+    expect(absorbed({ gap: listGap, path: ['Env', MAP_KEY], detail: '' })).toBe(false);
+    // A plaintext anywhere but the echo key is another problem, which no gap names.
+    const s = { plaintext: 'pl-7151' } as Seeded;
+    expect(problemsOf({ observedProperties: { [ECHO_KEY]: 'pl-7151' } }, s)).toEqual(['plaintext persisted only in the readback echo']);
+    expect(problemsOf({ observedProperties: { [ECHO_KEY]: 'pl-7151', A: 'pl-7151' } }, s)).toEqual(['plaintext persisted']);
+    expect(Object.keys(GAPS).some((gap) => gap.endsWith(' plaintext persisted'))).toBe(false);
   });
 
   it('a map KEY spelling a reference stays the template text, and its value is never fetched (item 5)', async () => {
