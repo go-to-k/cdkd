@@ -176,6 +176,10 @@ function computeTaintedNames(
   for (const [name, value] of Object.entries(context.parameters ?? {})) {
     if (parameterDisplayTainted(name, value, context)) passed.push(name);
   }
+  // go-to-k/cdkd#7077 review: a resource whose template READS a tainted
+  // export or output holds its value in state, so a reader of it printed
+  // before the read is marked (template order) is tainted too.
+  passed.push(...resourcesReadingTaintedCrossStack(template, crossStackTaintOf(context)));
   const key = passed.sort().join('\u0000');
   let byKey = namesByTemplate.get(template);
   if (byKey === undefined) {
@@ -191,6 +195,43 @@ function computeTaintedNames(
 }
 
 const EMPTY: ReadonlySet<string> = new Set();
+
+/**
+ * The resources whose properties read an export or output `taint` marks: a
+ * literal `Fn::ImportValue` name `exportTainted` answers, a literal
+ * `Fn::GetStackOutput` pair `stackOutputTainted` answers, and (fail closed)
+ * either with a computed argument whenever the run holds any taint.
+ */
+function resourcesReadingTaintedCrossStack(
+  template: CloudFormationTemplate,
+  taint: ReturnType<typeof crossStackTaintOf>
+): string[] {
+  if (taint === undefined || !taint.holdsAnyTaint()) return [];
+  const reads = (node: unknown, depth: number): boolean => {
+    if (node === null || typeof node !== 'object' || depth > 64) return false;
+    if (Array.isArray(node)) return node.some((item) => reads(item, depth + 1));
+    const record = node as Record<string, unknown>;
+    if (Object.hasOwn(record, 'Fn::ImportValue')) {
+      const name = record['Fn::ImportValue'];
+      return typeof name !== 'string' || taint.exportTainted('', name);
+    }
+    if (Object.hasOwn(record, 'Fn::GetStackOutput')) {
+      const args = record['Fn::GetStackOutput'] as Record<string, unknown> | undefined;
+      const stack = args?.['StackName'];
+      const output = args?.['OutputName'];
+      return (
+        typeof stack !== 'string' ||
+        typeof output !== 'string' ||
+        taint.stackOutputTainted('', stack, output)
+      );
+    }
+    return Object.values(record).some((value) => reads(value, depth + 1));
+  };
+  const resources = (template.Resources ?? {}) as Record<string, unknown>;
+  return Object.entries(resources)
+    .filter(([, resource]) => reads((resource as { Properties?: unknown } | null)?.Properties, 0))
+    .map(([logicalId]) => logicalId);
+}
 
 /**
  * The innermost intrinsic call being resolved, whether it is tainted, and the

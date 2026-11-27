@@ -196,6 +196,9 @@ async function diffPair(
     Cons: stack(
       'Cons',
       {
+        // go-to-k/cdkd#7077 review: a reader of `Reader` placed BEFORE it, so
+        // its line prints before the import is read.
+        Early: record('AWS::SSM::Parameter', { Type: 'String', Value: c.consumerHolds ? held : 'old-early' }),
         Reader: record('AWS::SSM::Parameter', { Type: 'String', Value: held }, {
           attributes: { Value: held },
         }),
@@ -209,13 +212,23 @@ async function diffPair(
         Row2: record('AWS::CloudFormation::Stack', {
           TemplateURL: 'u2',
           Parameters: { P: held },
+          // go-to-k/cdkd#7077 review: a row TAG importing the value. The tag
+          // settle (`holdsRecordedSecret`) read a needle of it in the pass bag
+          // and planned the row as unknowable, a phantom UPDATE.
+          Tags: [{ Key: 'Env', Value: held }],
         }),
       },
       { Shown: held }
     ),
     'Cons~Row2': stack('Cons~Row2', {
-      Inner: record('AWS::SSM::Parameter', { Type: 'String', Value: held }),
+      // The row's stack tag, merged into the child's taggable resource.
+      Inner: record('AWS::SSM::Parameter', { Type: 'String', Value: held, Tags: { Env: held } }),
     }),
+  };
+  // The row's recorded stack tags, as a deploy stores them: without them the
+  // tag run is planned on main too, and the case decides nothing.
+  (states['Cons'] as unknown as { nestedStackTags: unknown }).nestedStackTags = {
+    Row2: { Env: held },
   };
   const backend = {
     listStacks: async () => [
@@ -270,6 +283,10 @@ async function diffPair(
     nestedTemplates: { Row2: join(dir, 'inner.json') },
     template: {
       Resources: {
+        Early: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: { Type: 'String', Value: { 'Fn::GetAtt': ['Reader', 'Value'] } },
+        },
         Reader: { Type: 'AWS::SSM::Parameter', Properties: { Type: 'String', Value: read.value } },
         Echo: {
           Type: 'AWS::SSM::Parameter',
@@ -286,7 +303,11 @@ async function diffPair(
         Row2: {
           Type: 'AWS::CloudFormation::Stack',
           Metadata: { 'aws:asset:path': 'inner.json' },
-          Properties: { TemplateURL: 'u2', Parameters: { P: read.value } },
+          Properties: {
+            TemplateURL: 'u2',
+            Parameters: { P: read.value },
+            Tags: [{ Key: 'Env', Value: read.value }],
+          },
         },
       },
       Outputs: { Shown: { Value: read.value } },
@@ -354,7 +375,7 @@ describe('cdkd diff: a consumer reading a secret-fed producer output (#7090)', (
             expect(consLog.some((line) => line.includes('[IntrinsicFunctionResolver]')), resolved).toBe(true);
             // Display only: a consumer already holding the value plans nothing.
             if (consumerHolds) {
-              for (const id of ['Reader', 'Echo', 'Pol']) {
+              for (const id of ['Early', 'Reader', 'Echo', 'Pol']) {
                 expect(changeTypeOf(cons, id), id).toBe('NO_CHANGE');
               }
               expect(cons.outputChanges, JSON.stringify(cons.outputChanges)).toEqual([]);
