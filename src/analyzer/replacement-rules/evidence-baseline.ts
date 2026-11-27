@@ -15,8 +15,6 @@ export const UNMEASURED_SPEC_REPLACEMENT_CANDIDATES: ReadonlySet<string> = new S
   'AWS::AppStream::StackFleetAssociation#FleetName',
   'AWS::AppStream::StackFleetAssociation#StackName',
   'AWS::Batch::ComputeEnvironment#EksConfiguration',
-  'AWS::Connect::PhoneNumber#Description',
-  'AWS::Connect::ViewVersion#VersionDescription',
   'AWS::DataSync::LocationFSxLustre#Subdirectory',
   'AWS::DataSync::LocationFSxONTAP#Protocol',
   'AWS::DataSync::LocationFSxONTAP#Subdirectory',
@@ -29,8 +27,6 @@ export const UNMEASURED_SPEC_REPLACEMENT_CANDIDATES: ReadonlySet<string> = new S
   'AWS::DataSync::LocationNFS#ServerHostname',
   'AWS::DataSync::LocationObjectStorage#ServerHostname',
   'AWS::DataSync::LocationSMB#ServerHostname',
-  'AWS::EC2::SpotFleet#SpotFleetRequestConfigData.LaunchTemplateConfigs',
-  'AWS::EC2::SpotFleet#SpotFleetRequestConfigData.OnDemandTargetCapacity',
   // Measured on #7083: its mutable member, ElasticLoadBalancing, applies in
   // place with Auto Mode, and IpFamily / ServiceIpv4Cidr already replace
   // through the schema's nested create-only paths. Neither `replace` nor
@@ -51,14 +47,13 @@ export const UNMEASURED_SPEC_REPLACEMENT_CANDIDATES: ReadonlySet<string> = new S
   'AWS::ElastiCache::ReplicationGroup#NodeGroupConfiguration.*.ReplicaAvailabilityZones',
   'AWS::ElastiCache::ReplicationGroup#NodeGroupConfiguration.*.ReplicaCount',
   'AWS::ElastiCache::ReplicationGroup#NodeGroupConfiguration.*.Slots',
-  'AWS::Elasticsearch::Domain#AdvancedSecurityOptions',
-  'AWS::Elasticsearch::Domain#AdvancedSecurityOptions.Enabled',
+  // Measured on #7083 (CloudFormation A/B): the version change (no
+  // UpdatePolicy) and a KmsKeyId change each required a replacement;
+  // Enabled applied in place, so the whole EncryptionAtRestOptions stays
+  // here too. The `replace` / conditional rows need a fixture first (#7130).
   'AWS::Elasticsearch::Domain#ElasticsearchVersion',
   'AWS::Elasticsearch::Domain#EncryptionAtRestOptions',
-  'AWS::Elasticsearch::Domain#EncryptionAtRestOptions.Enabled',
   'AWS::Elasticsearch::Domain#EncryptionAtRestOptions.KmsKeyId',
-  'AWS::Elasticsearch::Domain#NodeToNodeEncryptionOptions',
-  'AWS::Elasticsearch::Domain#NodeToNodeEncryptionOptions.Enabled',
   'AWS::FSx::FileSystem#LustreConfiguration.CopyTagsToBackups',
   'AWS::FSx::FileSystem#LustreConfiguration.DeploymentType',
   'AWS::FSx::FileSystem#LustreConfiguration.DriveCacheType',
@@ -91,10 +86,18 @@ export const UNMEASURED_SPEC_REPLACEMENT_CANDIDATES: ReadonlySet<string> = new S
   'AWS::KafkaConnect::Connector#ConnectorConfiguration',
   'AWS::KafkaConnect::Connector#Plugins',
   'AWS::KafkaConnect::Connector#WorkerConfiguration',
+  // Measured on #7083: CloudFormation replaced the channel (new id); Cloud
+  // Control refuses CREATE for the type, so cdkd cannot deploy it and no
+  // fixture can carry a `replace` row. An element member cannot be compared
+  // per element either.
   'AWS::MediaLive::Channel#InputAttachments.*.InputId',
+  // Measured on #7083 (CloudFormation A/B): the handler refuses either change
+  // unless the rule's Name changes too ("requires changing the safety rule
+  // name"). A RuleConfig change with a new Name applied under a NEW rule ARN
+  // (the ControlPanelArn + Name pair was not run). Neither verdict describes
+  // that, and Cloud Control's update was not measured.
   'AWS::Route53RecoveryControl::SafetyRule#ControlPanelArn',
   'AWS::Route53RecoveryControl::SafetyRule#RuleConfig',
-  'AWS::Route53RecoveryControl::SafetyRule#Tags',
   // Measured on #7083: its one member, NonFilterableMetadataKeys, is
   // create-only in the schema, so the diff replaces on it through that
   // nested path; CloudFormation replaced the index on such a change (new
@@ -102,65 +105,19 @@ export const UNMEASURED_SPEC_REPLACEMENT_CANDIDATES: ReadonlySet<string> = new S
   // describes the whole property, so it stays here.
   'AWS::S3Vectors::Index#MetadataConfiguration',
   'AWS::SageMaker::App#Tags',
-  'AWS::SageMaker::Domain#AppNetworkAccessType',
-  'AWS::SageMaker::Domain#DefaultSpaceSettings.JupyterLabAppSettings.DefaultResourceSpec.InstanceType',
-  'AWS::SageMaker::Domain#DefaultSpaceSettings.JupyterLabAppSettings.DefaultResourceSpec.LifecycleConfigArn',
-  'AWS::SageMaker::Domain#DefaultSpaceSettings.JupyterLabAppSettings.DefaultResourceSpec.SageMakerImageArn',
-  'AWS::SageMaker::Domain#DefaultSpaceSettings.JupyterLabAppSettings.DefaultResourceSpec.SageMakerImageVersionArn',
-  'AWS::SageMaker::Domain#DefaultSpaceSettings.JupyterServerAppSettings.DefaultResourceSpec.InstanceType',
-  'AWS::SageMaker::Domain#DefaultSpaceSettings.JupyterServerAppSettings.DefaultResourceSpec.LifecycleConfigArn',
-  'AWS::SageMaker::Domain#DefaultSpaceSettings.JupyterServerAppSettings.DefaultResourceSpec.SageMakerImageArn',
-  'AWS::SageMaker::Domain#DefaultSpaceSettings.JupyterServerAppSettings.DefaultResourceSpec.SageMakerImageVersionArn',
-  'AWS::SageMaker::Domain#DefaultSpaceSettings.KernelGatewayAppSettings.DefaultResourceSpec.InstanceType',
-  'AWS::SageMaker::Domain#DefaultSpaceSettings.KernelGatewayAppSettings.DefaultResourceSpec.LifecycleConfigArn',
-  'AWS::SageMaker::Domain#DefaultSpaceSettings.KernelGatewayAppSettings.DefaultResourceSpec.SageMakerImageArn',
-  'AWS::SageMaker::Domain#DefaultSpaceSettings.KernelGatewayAppSettings.DefaultResourceSpec.SageMakerImageVersionArn',
-  'AWS::SageMaker::Domain#DefaultUserSettings.CodeEditorAppSettings.DefaultResourceSpec.InstanceType',
-  'AWS::SageMaker::Domain#DefaultUserSettings.CodeEditorAppSettings.DefaultResourceSpec.LifecycleConfigArn',
-  'AWS::SageMaker::Domain#DefaultUserSettings.CodeEditorAppSettings.DefaultResourceSpec.SageMakerImageArn',
-  'AWS::SageMaker::Domain#DefaultUserSettings.CodeEditorAppSettings.DefaultResourceSpec.SageMakerImageVersionArn',
-  'AWS::SageMaker::Domain#DefaultUserSettings.JupyterLabAppSettings.DefaultResourceSpec.InstanceType',
-  'AWS::SageMaker::Domain#DefaultUserSettings.JupyterLabAppSettings.DefaultResourceSpec.LifecycleConfigArn',
-  'AWS::SageMaker::Domain#DefaultUserSettings.JupyterLabAppSettings.DefaultResourceSpec.SageMakerImageArn',
-  'AWS::SageMaker::Domain#DefaultUserSettings.JupyterLabAppSettings.DefaultResourceSpec.SageMakerImageVersionArn',
-  'AWS::SageMaker::Domain#DefaultUserSettings.JupyterServerAppSettings.DefaultResourceSpec.InstanceType',
-  'AWS::SageMaker::Domain#DefaultUserSettings.JupyterServerAppSettings.DefaultResourceSpec.LifecycleConfigArn',
-  'AWS::SageMaker::Domain#DefaultUserSettings.JupyterServerAppSettings.DefaultResourceSpec.SageMakerImageArn',
-  'AWS::SageMaker::Domain#DefaultUserSettings.JupyterServerAppSettings.DefaultResourceSpec.SageMakerImageVersionArn',
-  'AWS::SageMaker::Domain#DefaultUserSettings.KernelGatewayAppSettings.DefaultResourceSpec.InstanceType',
-  'AWS::SageMaker::Domain#DefaultUserSettings.KernelGatewayAppSettings.DefaultResourceSpec.LifecycleConfigArn',
-  'AWS::SageMaker::Domain#DefaultUserSettings.KernelGatewayAppSettings.DefaultResourceSpec.SageMakerImageArn',
-  'AWS::SageMaker::Domain#DefaultUserSettings.KernelGatewayAppSettings.DefaultResourceSpec.SageMakerImageVersionArn',
-  'AWS::SageMaker::Domain#DefaultUserSettings.RSessionAppSettings.DefaultResourceSpec.InstanceType',
-  'AWS::SageMaker::Domain#DefaultUserSettings.RSessionAppSettings.DefaultResourceSpec.LifecycleConfigArn',
-  'AWS::SageMaker::Domain#DefaultUserSettings.RSessionAppSettings.DefaultResourceSpec.SageMakerImageArn',
-  'AWS::SageMaker::Domain#DefaultUserSettings.RSessionAppSettings.DefaultResourceSpec.SageMakerImageVersionArn',
-  'AWS::SageMaker::Domain#SubnetIds',
-  'AWS::SageMaker::Domain#Tags',
+  // Measured on #7083: Cloud Control refuses it (NotUpdatable), and
+  // CloudFormation replaced on it (its named domain failed AlreadyExists).
+  // The `replace` row needs a fixture first (#7126).
   'AWS::SageMaker::Domain#VpcId',
+  // Measured on #7083: TtlDuration applies in place under CloudFormation, and
+  // a StorageType change replaces through the schema's nested create-only
+  // paths (CloudFormation: "requires replacing"). As for EKS
+  // KubernetesNetworkConfig, neither verdict describes the whole property.
   'AWS::SageMaker::FeatureGroup#OnlineStoreConfig',
-  'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecifications.*.Containers.*.ContainerHostname',
-  'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecifications.*.Containers.*.Environment',
   'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecifications.*.Containers.*.Framework',
-  'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecifications.*.Containers.*.FrameworkVersion',
-  'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecifications.*.Containers.*.Image',
   'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecifications.*.Containers.*.ImageDigest',
-  'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecifications.*.Containers.*.ModelDataUrl',
-  'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecifications.*.Containers.*.ModelInput',
-  'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecifications.*.Containers.*.ModelInput.DataInputConfig',
-  'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecifications.*.Containers.*.NearestModelName',
-  'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecificationsToAdd.*.Containers.*.ContainerHostname',
-  'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecificationsToAdd.*.Containers.*.Environment',
   'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecificationsToAdd.*.Containers.*.Framework',
-  'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecificationsToAdd.*.Containers.*.FrameworkVersion',
-  'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecificationsToAdd.*.Containers.*.Image',
   'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecificationsToAdd.*.Containers.*.ImageDigest',
-  'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecificationsToAdd.*.Containers.*.ModelDataUrl',
-  'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecificationsToAdd.*.Containers.*.ModelInput',
-  'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecificationsToAdd.*.Containers.*.ModelInput.DataInputConfig',
-  'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecificationsToAdd.*.Containers.*.NearestModelName',
-  'AWS::SageMaker::UserProfile#Tags',
-  'AWS::SageMaker::Workteam#MemberDefinitions.*.CognitoMemberDefinition.CognitoUserPool',
   'AWS::WorkSpaces::Workspace#BundleId',
   'AWS::WorkSpaces::Workspace#RootVolumeEncryptionEnabled',
   'AWS::WorkSpaces::Workspace#UserVolumeEncryptionEnabled',

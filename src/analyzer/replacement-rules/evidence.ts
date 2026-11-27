@@ -586,6 +586,238 @@ export const REPLACEMENT_EVIDENCE: ReadonlyMap<string, ReplacementEvidence> = ne
   ['AWS::EC2::VPNConnection#TransitGatewayId', update('cc-measured', 7083)],
   ['AWS::EC2::VPNConnection#VpnGatewayId', update('cc-measured', 7083)],
   ['AWS::EC2::VPNConnection#VpnTunnelOptionsSpecifications', update('cc-measured', 7083)],
+  // Slice 3 of the #7083 baseline (us-east-1, 2026-11-28).
+  ['AWS::Connect::PhoneNumber#Description', update('cfn-measured', 7083)],
+  // CloudFormation's handler refuses it in place ("Attempt to modify
+  // AWS::Connect::ViewVersion"), with no replacement. Cloud Control runs the
+  // same handler (not measured).
+  ['AWS::Connect::ViewVersion#VersionDescription', update('cfn-measured', 7083)],
+  // ModifySpotFleetRequest: each applied under the same request id, read back.
+  [
+    'AWS::EC2::SpotFleet#SpotFleetRequestConfigData.LaunchTemplateConfigs',
+    update('cfn-measured', 7083),
+  ],
+  [
+    'AWS::EC2::SpotFleet#SpotFleetRequestConfigData.OnDemandTargetCapacity',
+    update('cfn-measured', 7083),
+  ],
+  // CloudFormation A/B, each enabled (false -> true) in place under the same
+  // domain, AdvancedSecurityOptions with an internal master user; the
+  // disable direction was not measured.
+  ['AWS::Elasticsearch::Domain#AdvancedSecurityOptions', update('cfn-measured', 7083)],
+  ['AWS::Elasticsearch::Domain#AdvancedSecurityOptions.Enabled', update('cfn-measured', 7083)],
+  ['AWS::Elasticsearch::Domain#EncryptionAtRestOptions.Enabled', update('cfn-measured', 7083)],
+  ['AWS::Elasticsearch::Domain#NodeToNodeEncryptionOptions', update('cfn-measured', 7083)],
+  ['AWS::Elasticsearch::Domain#NodeToNodeEncryptionOptions.Enabled', update('cfn-measured', 7083)],
+  // Recovery Control: a CloudFormation A/B in us-west-2, its home Region.
+  ['AWS::Route53RecoveryControl::SafetyRule#Tags', update('cfn-measured', 7083)],
+  // UpdateDomain: each applied under the same domain id and read back (Tags by
+  // the domain ARN). The image ARNs are AWS-owned SageMaker images.
+  ['AWS::SageMaker::Domain#AppNetworkAccessType', update('cc-measured', 7083)],
+  [
+    'AWS::SageMaker::Domain#DefaultSpaceSettings.JupyterLabAppSettings.DefaultResourceSpec.InstanceType',
+    update('cc-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::Domain#DefaultSpaceSettings.JupyterLabAppSettings.DefaultResourceSpec.LifecycleConfigArn',
+    update('cc-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::Domain#DefaultSpaceSettings.JupyterLabAppSettings.DefaultResourceSpec.SageMakerImageArn',
+    update('cc-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::Domain#DefaultSpaceSettings.JupyterLabAppSettings.DefaultResourceSpec.SageMakerImageVersionArn',
+    update('cc-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::Domain#DefaultSpaceSettings.JupyterServerAppSettings.DefaultResourceSpec.InstanceType',
+    update('cc-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::Domain#DefaultSpaceSettings.JupyterServerAppSettings.DefaultResourceSpec.LifecycleConfigArn',
+    update('cc-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::Domain#DefaultSpaceSettings.JupyterServerAppSettings.DefaultResourceSpec.SageMakerImageArn',
+    update('cc-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::Domain#DefaultSpaceSettings.JupyterServerAppSettings.DefaultResourceSpec.SageMakerImageVersionArn',
+    cannotProbe('SageMaker refuses any image version for a JupyterServer app (InvalidRequest)'),
+  ],
+  [
+    'AWS::SageMaker::Domain#DefaultSpaceSettings.KernelGatewayAppSettings.DefaultResourceSpec.InstanceType',
+    update('cc-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::Domain#DefaultSpaceSettings.KernelGatewayAppSettings.DefaultResourceSpec.LifecycleConfigArn',
+    update('cc-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::Domain#DefaultSpaceSettings.KernelGatewayAppSettings.DefaultResourceSpec.SageMakerImageArn',
+    update('cc-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::Domain#DefaultSpaceSettings.KernelGatewayAppSettings.DefaultResourceSpec.SageMakerImageVersionArn',
+    update('cc-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::Domain#DefaultUserSettings.CodeEditorAppSettings.DefaultResourceSpec.InstanceType',
+    update('cc-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::Domain#DefaultUserSettings.CodeEditorAppSettings.DefaultResourceSpec.LifecycleConfigArn',
+    update('cc-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::Domain#DefaultUserSettings.CodeEditorAppSettings.DefaultResourceSpec.SageMakerImageArn',
+    update('cc-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::Domain#DefaultUserSettings.CodeEditorAppSettings.DefaultResourceSpec.SageMakerImageVersionArn',
+    update('cc-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::Domain#DefaultUserSettings.JupyterLabAppSettings.DefaultResourceSpec.InstanceType',
+    update('cc-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::Domain#DefaultUserSettings.JupyterLabAppSettings.DefaultResourceSpec.LifecycleConfigArn',
+    update('cc-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::Domain#DefaultUserSettings.JupyterLabAppSettings.DefaultResourceSpec.SageMakerImageArn',
+    update('cc-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::Domain#DefaultUserSettings.JupyterLabAppSettings.DefaultResourceSpec.SageMakerImageVersionArn',
+    update('cc-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::Domain#DefaultUserSettings.JupyterServerAppSettings.DefaultResourceSpec.InstanceType',
+    update('cc-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::Domain#DefaultUserSettings.JupyterServerAppSettings.DefaultResourceSpec.LifecycleConfigArn',
+    update('cc-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::Domain#DefaultUserSettings.JupyterServerAppSettings.DefaultResourceSpec.SageMakerImageArn',
+    update('cc-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::Domain#DefaultUserSettings.JupyterServerAppSettings.DefaultResourceSpec.SageMakerImageVersionArn',
+    cannotProbe('SageMaker refuses any image version for a JupyterServer app (InvalidRequest)'),
+  ],
+  [
+    'AWS::SageMaker::Domain#DefaultUserSettings.KernelGatewayAppSettings.DefaultResourceSpec.InstanceType',
+    update('cc-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::Domain#DefaultUserSettings.KernelGatewayAppSettings.DefaultResourceSpec.LifecycleConfigArn',
+    update('cc-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::Domain#DefaultUserSettings.KernelGatewayAppSettings.DefaultResourceSpec.SageMakerImageArn',
+    update('cc-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::Domain#DefaultUserSettings.KernelGatewayAppSettings.DefaultResourceSpec.SageMakerImageVersionArn',
+    update('cc-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::Domain#DefaultUserSettings.RSessionAppSettings.DefaultResourceSpec.InstanceType',
+    update('cc-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::Domain#DefaultUserSettings.RSessionAppSettings.DefaultResourceSpec.LifecycleConfigArn',
+    cannotProbe('Studio lifecycle configurations have no RSession app type'),
+  ],
+  [
+    'AWS::SageMaker::Domain#DefaultUserSettings.RSessionAppSettings.DefaultResourceSpec.SageMakerImageArn',
+    update('cc-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::Domain#DefaultUserSettings.RSessionAppSettings.DefaultResourceSpec.SageMakerImageVersionArn',
+    update('cc-measured', 7083),
+  ],
+  ['AWS::SageMaker::Domain#SubnetIds', update('cc-measured', 7083)],
+  ['AWS::SageMaker::Domain#Tags', update('cc-measured', 7083)],
+  // CloudFormation reports UPDATE_COMPLETE under the same version ARN and
+  // leaves the specifications as created: no replacement either way.
+  [
+    'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecifications.*.Containers.*.ContainerHostname',
+    update('cfn-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecifications.*.Containers.*.Environment',
+    update('cfn-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecifications.*.Containers.*.FrameworkVersion',
+    update('cfn-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecifications.*.Containers.*.Image',
+    update('cfn-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecifications.*.Containers.*.ModelDataUrl',
+    update('cfn-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecifications.*.Containers.*.ModelInput',
+    update('cfn-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecifications.*.Containers.*.ModelInput.DataInputConfig',
+    update('cfn-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecifications.*.Containers.*.NearestModelName',
+    update('cfn-measured', 7083),
+  ],
+  // Appended in place on update (UpdateModelPackage), same version ARN.
+  [
+    'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecificationsToAdd.*.Containers.*.ContainerHostname',
+    update('cfn-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecificationsToAdd.*.Containers.*.Environment',
+    update('cfn-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecificationsToAdd.*.Containers.*.FrameworkVersion',
+    update('cfn-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecificationsToAdd.*.Containers.*.Image',
+    update('cfn-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecificationsToAdd.*.Containers.*.ModelDataUrl',
+    update('cfn-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecificationsToAdd.*.Containers.*.ModelInput',
+    update('cfn-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecificationsToAdd.*.Containers.*.ModelInput.DataInputConfig',
+    update('cfn-measured', 7083),
+  ],
+  [
+    'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecificationsToAdd.*.Containers.*.NearestModelName',
+    update('cfn-measured', 7083),
+  ],
+  ['AWS::SageMaker::UserProfile#Tags', update('cc-measured', 7083)],
+  [
+    'AWS::SageMaker::Workteam#MemberDefinitions.*.CognitoMemberDefinition.CognitoUserPool',
+    cannotProbe(
+      "A Cognito work team's pool is the private workforce's, one per account and Region, and UpdateWorkforce cannot change its Cognito pool: no second pool can be named"
+    ),
+  ],
   // --- updateableProperties beyond the fixture or the spec
   ['AWS::Budgets::Budget#NotificationsWithSubscribers', update('deviation', 7038)],
   ['AWS::EC2::Subnet#Ipv6CidrBlock', update('cfn-measured', 5632)],
