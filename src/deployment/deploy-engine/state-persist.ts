@@ -470,6 +470,9 @@ export function redactStateForPersist(this: DeployEngine, state: StackState): St
  * - the loaded record's bag, carried: its field verbatim, or, when the
  *   record has none (written before v12) and this deploy resolved an EQUAL
  *   bag, that resolution's (the outputs' share of the migration);
+ * - a fresh read's bag, written back verbatim (go-to-k/cdkd#7110: a save
+ *   that only drops `supersededResources` rows): that read's field, carried
+ *   whole, as {@link carryReadOutputs} registered it;
  * - anything else (a merge): none.
  */
 export function outputReferenceProvenanceFor(
@@ -499,8 +502,43 @@ export function outputReferenceProvenanceFor(
   return outputProvenanceForPersist({
     outputs: redacted,
     resolvedThisRun: this.outputsRun.outputsResolvedThisRun.has(outputs),
-    carriedFrom: baseline !== undefined && outputs === baseline.outputs ? baseline : undefined,
+    carriedFrom:
+      baseline !== undefined && outputs === baseline.outputs
+        ? baseline
+        : readsWrittenBack.get(outputs),
     sinkOf,
+  });
+}
+
+/**
+ * go-to-k/cdkd#7110: the stored records a save writes back with their
+ * `outputs` bag untouched, keyed by that bag's identity. Such a bag is
+ * neither this deploy's baseline nor one it resolved, so without the entry
+ * {@link outputReferenceProvenanceFor} takes its "merge" arm and the save
+ * erased the stack's `outputReferenceProvenance`, leaving every later
+ * consumer of its outputs unpromotable (go-to-k/cdkd#4852).
+ */
+const readsWrittenBack = new WeakMap<
+  object,
+  Pick<StackState, 'outputs' | 'outputReferenceProvenance'>
+>();
+
+/**
+ * Register `read` (a state just read from the backend, already redacted) as
+ * written back with its `outputs` bag unchanged: a save of a state holding
+ * that same bag object carries `read`'s `outputReferenceProvenance` whole.
+ * Call it on the read every engine save rebuilds from, before the save.
+ * Nothing new persists: the field is the stored one, tokens and versions only.
+ */
+export function carryReadOutputs(
+  read: Pick<StackState, 'outputs' | 'outputReferenceProvenance'>
+): void {
+  if (read.outputs === null || typeof read.outputs !== 'object') return;
+  readsWrittenBack.set(read.outputs, {
+    outputs: read.outputs,
+    ...(read.outputReferenceProvenance !== undefined && {
+      outputReferenceProvenance: read.outputReferenceProvenance,
+    }),
   });
 }
 

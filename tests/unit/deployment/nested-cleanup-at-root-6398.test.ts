@@ -568,6 +568,35 @@ describe('a nested child cleanup phase runs at the root (go-to-k/cdkd#6398)', ()
     expect(written[0]!.state.resources['CRev']!.physicalId).toBe('CRev-new');
   });
 
+  // go-to-k/cdkd#7110: the write-back keeps the read's outputs bag, so it keeps
+  // that bag's reference provenance too. Before, the persist writer could not
+  // place the bag and dropped the field.
+  it("the write-back keeps the read's outputReferenceProvenance", async () => {
+    const child = childEngine();
+    const queue = new NestedCleanupQueue();
+    await withNestedCleanupQueue(queue, () => deployStack(child, CHILD, 'C'));
+    const before = store.get(CHILD)!;
+    const token = '{{resolve:secretsmanager:s:SecretString:k::}}';
+    const provenance = { QueueArn: { [token]: { versions: ['v2'] } } };
+    store.set(CHILD, {
+      ...before,
+      state: {
+        ...before.state,
+        outputs: { QueueArn: `arn:aws:sqs:us-east-1:1:${token}` },
+        outputReferenceProvenance: provenance,
+      } as StackState,
+    });
+    const savesBefore = saves.length;
+
+    await queue.runAll({ interrupted: () => false }, { info: vi.fn(), warn: vi.fn() });
+
+    expect(deletesOf('CRev-old')).toBe(1);
+    const written = saves.slice(savesBefore);
+    expect(written).toHaveLength(1);
+    expect(supersededResourcesOf(written[0]!.state)).toEqual([]);
+    expect(written[0]!.state.outputReferenceProvenance).toEqual(provenance);
+  });
+
   // go-to-k/cdkd#6463: a carried entry owing a pre-delete snapshot, whose
   // delete fails after the snapshot, stays listed and owes none.
   it("keeps a child's entry whose snapshot was taken before its delete failed, owing none", async () => {
