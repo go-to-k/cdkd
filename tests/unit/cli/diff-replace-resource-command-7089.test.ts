@@ -14,7 +14,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
     info: vi.fn(),
     warn: warned,
     error: mockLoggerError,
-    child: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
+    child: () => ({ debug: vi.fn(), info: vi.fn(), warn: warned, error: vi.fn() }),
   }),
 }));
 
