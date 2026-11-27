@@ -1,6 +1,7 @@
 import type { CloudFormationTemplate } from '../../../types/resource.js';
 import type { ResourceChange, StackState } from '../../../types/state.js';
 import { NESTED_STACK_RESOURCE_TYPE } from '../retire-cfn-stack.js';
+import { mentionsDynamicReferenceTo } from '../../../deployment/secret-redaction/recorded-secrecy.js';
 import type { NodeTrust } from './types.js';
 
 /**
@@ -53,7 +54,7 @@ function makeTrustClassifier(options: {
     if (dot > 0) return resourceLeaf(name.slice(0, dot), name.slice(dot + 1));
     return resourceLeaf(name, undefined);
   };
-  const literalTrusted = (text: string): boolean => !text.includes('{{resolve:ssm:');
+  const literalTrusted = (text: string): boolean => !mentionsDynamicReferenceTo(text, 'ssm');
   const subTrusted = (template: unknown, locals: ReadonlySet<string>): boolean => {
     if (typeof template !== 'string' || !literalTrusted(template)) return false;
     for (const match of template.matchAll(/\$\{([^}]*)\}/g)) {

@@ -12,6 +12,10 @@ import {
   type RecordedSecretValues,
 } from '../../../deployment/secret-redaction.js';
 import { NESTED_STACK_RESOURCE_TYPE } from '../retire-cfn-stack.js';
+import {
+  isMaskLeaf,
+  mentionsDynamicReference,
+} from '../../../deployment/secret-redaction/recorded-secrecy.js';
 import { displayIdent, displaySafe } from '../../../utils/display-safe.js';
 import { displayPhysicalId } from '../../../provisioning/secret-physical-id.js';
 
@@ -58,7 +62,7 @@ function recordOf(value: unknown): Record<string, unknown> {
 export function mixesDynamicReference(value: unknown): boolean {
   return (
     typeof value === 'string' &&
-    value.includes('{{resolve:') &&
+    mentionsDynamicReference(value) &&
     !isSingleDynamicReferenceToken(value)
   );
 }
@@ -84,7 +88,7 @@ function holdsDynamicReference(value: unknown): boolean {
   const seen = new Set<object>();
   while (pending.length > 0) {
     const next = pending.pop();
-    if (typeof next === 'string' && next.includes('{{resolve:')) return true;
+    if (typeof next === 'string' && mentionsDynamicReference(next)) return true;
     if (next === null || typeof next !== 'object' || seen.has(next)) continue;
     seen.add(next);
     pending.push(...Object.values(next as Record<string, unknown>));
@@ -397,7 +401,7 @@ function maskParameterKeys(
   let changed = false;
   const shown: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(side)) {
-    if (value !== SECRET_MASK && flagged.has(key)) {
+    if (!isMaskLeaf(value) && flagged.has(key)) {
       shown[key] = SECRET_MASK;
       changed = true;
     } else {
@@ -612,7 +616,7 @@ export function recordedValuesOf(
     while (pending.length > 0) {
       const next = pending.pop();
       if (typeof next === 'string') {
-        if (next.length > 0 && next !== SECRET_MASK) recordLogOnlyValue(needles, next);
+        if (next.length > 0 && !isMaskLeaf(next)) recordLogOnlyValue(needles, next);
       } else if (next !== null && typeof next === 'object' && !seen.has(next)) {
         seen.add(next);
         pending.push(...Object.values(next));

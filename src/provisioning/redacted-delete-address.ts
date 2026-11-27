@@ -1,4 +1,5 @@
-import { carriesSecretMask, dynamicReferenceTokens } from '../deployment/secret-redaction.js';
+import { dynamicReferenceTokens } from '../deployment/secret-redaction.js';
+import { holdsMaskLeaf } from '../deployment/secret-redaction/recorded-secrecy.js';
 import type { ResourceDeleteResult } from '../types/resource.js';
 import { safeMsg } from '../utils/display-safe.js';
 import type { DeleteContext } from './region-check.js';
@@ -22,7 +23,7 @@ import { stateOrphanRecordRemedy } from './state-orphan-remedy.js';
  * check for every other provider.
  */
 export function isRedactedRecordedValue(value: unknown): boolean {
-  if (carriesSecretMask(value)) return true;
+  if (holdsMaskLeaf(value)) return true;
   let text: string | undefined;
   try {
     text = typeof value === 'string' ? value : JSON.stringify(value);

@@ -14,11 +14,8 @@ import {
   carriesResolvedSecret,
   findResolvedSecretPaths,
 } from '../../custom-resource-secure-references.js';
-import {
-  carriesSecretMask,
-  dynamicReferenceTokens,
-  SECRET_MASK,
-} from '../../../deployment/secret-redaction.js';
+import { dynamicReferenceTokens, SECRET_MASK } from '../../../deployment/secret-redaction.js';
+import { holdsMaskLeaf } from '../../../deployment/secret-redaction/recorded-secrecy.js';
 import { applyNoEchoDeleteValues } from '../../../deployment/noecho-delete-reresolution.js';
 import {
   deletePathMasker,
@@ -118,7 +115,7 @@ export async function deleteImpl(
   // gone", naming the wrong cause and the wrong repair. Re-deploying does not repair
   // the record while the NoEcho attribute still carries that value: the
   // same needle masks the same leaf again.
-  if (carriesSecretMask(serviceToken)) {
+  if (holdsMaskLeaf(serviceToken)) {
     this.logger.warn(
       safeMsg`ServiceToken for custom resource ${logicalId} is recorded in state as the redaction ` +
         safeMsg`mask '${SECRET_MASK}' (a NoEcho value this resource reads equals, or is contained ` +
@@ -181,7 +178,7 @@ export async function deleteImpl(
   // scrub record) is not re-resolvable either, and sending it is the same
   // hazard: a tolerant handler answers SUCCESS on `***` and the record is
   // dropped over whatever it manages.
-  if (carriesSecretMask(payload)) {
+  if (holdsMaskLeaf(payload)) {
     this.logger.warn(
       safeMsg`Custom resource ${logicalId} is recorded in state with a property holding the ` +
         `'***' redaction mask, which no NoEcho coordinate of the record names, so cdkd cannot ` +
