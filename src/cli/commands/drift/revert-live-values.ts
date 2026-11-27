@@ -1,16 +1,15 @@
+/**
+ * `cdkd drift`: `--revert` live-value preservation at masked and uncertified leaves.
+ * Split out of `../drift.ts`, which re-exports the public names.
+ */
 import {
   holdsMaskLeaf,
   isMaskLeaf,
   mentionsDynamicReference,
 } from '../../../deployment/secret-redaction/recorded-secrecy.js';
-/**
- * `cdkd drift`: `--revert` live-value preservation at masked and uncertified leaves.
- * Split out of `../drift.ts`, which re-exports the public names.
- */
 import { equalModuloMask } from '../../../analyzer/drift-calculator.js';
 import { hasPlainPrototype, hasOwnKey, ownValue, defineOwnKey } from '../../../utils/own-keys.js';
 import {
-  carriesSecretMask,
   identityKeyFor,
   SECRET_MASK,
   isSingleDynamicReferenceToken as isWholeDynamicReference,
@@ -66,7 +65,7 @@ import { deepEqualUnordered } from './revert-payload.js';
  * - **every leaf of `send` that is not a mask must equal `live`'s leaf at the
  *   same position** ({@link corroboratedLeafCount}), masked leaves wildcarded.
  *   A whole-ELEMENT exemption is what shipped first, and it corroborated
- *   NOTHING: {@link carriesSecretMask} is a DEEP, whole-subtree test, so an
+ *   NOTHING: {@link holdsMaskLeaf} is a DEEP, whole-subtree test, so an
  *   element carrying one mask anywhere skipped the comparison entirely.
  *   Measured on `[{Pw:'***',Role:'reader'},{Pw:'***',Role:'admin'}]` against a
  *   live list AWS returned in the other order — the admin password was written
@@ -169,7 +168,7 @@ export function pairedLiveItems(
   send: readonly unknown[],
   live: unknown,
   wildcardLeaf: (leaf: unknown) => boolean = isMaskLeaf,
-  carriesWildcard: (value: unknown) => boolean = carriesSecretMask,
+  carriesWildcard: (value: unknown) => boolean = holdsMaskLeaf,
   acceptForcedSingleton = false
 ): readonly unknown[] | undefined {
   if (!Array.isArray(live)) return undefined;
@@ -616,7 +615,7 @@ function withValueAtPath(
  * exactly where falling back would hand the fabricable bag back.
  *
  * Returns the input bag BY IDENTITY when it holds no mask — checked FIRST via
- * {@link carriesSecretMask}, so a mask-free revert (the ordinary case) pays
+ * {@link holdsMaskLeaf}, so a mask-free revert (the ordinary case) pays
  * one boolean walk instead of a full rebuild plus per-array pairing.
  */
 export function preserveLiveValuesAtMaskedLeaves(

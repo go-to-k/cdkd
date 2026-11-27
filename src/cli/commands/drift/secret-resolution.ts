@@ -1,11 +1,11 @@
-import {
-  isMaskLeaf,
-  mentionsDynamicReference,
-} from '../../../deployment/secret-redaction/recorded-secrecy.js';
 /**
  * `cdkd drift`: secret dynamic-reference handling: recorded-secret paths, per-region resolvers and the baseline re-resolution.
  * Split out of `../drift.ts`, which re-exports the public names.
  */
+import {
+  isMaskLeaf,
+  mentionsDynamicReference,
+} from '../../../deployment/secret-redaction/recorded-secrecy.js';
 import { getLogger } from '../../../utils/logger.js';
 import { CdkdError, IntrinsicResolutionRefusalError } from '../../../utils/error-handler.js';
 import { S3StateBackend } from '../../../state/s3-state-backend.js';
@@ -166,7 +166,7 @@ export function collectDynamicReferencePaths(value: unknown, into: SecretPathSet
 }
 
 /**
- * Record the dotted path of every leaf that IS {@link SECRET_MASK} — the
+ * Record the dotted path of every leaf that IS the mask ({@link isMaskLeaf}) — the
  * mask-only twin of {@link collectDynamicReferencePaths} (issue
  * [#2274](https://github.com/go-to-k/cdkd/issues/2274)).
  *

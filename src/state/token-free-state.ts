@@ -1,5 +1,3 @@
-import { mentionsDynamicReference } from '../deployment/secret-redaction/recorded-secrecy.js';
-
 /**
  * The TOKEN-FREE fast path of state schema v12 (go-to-k/cdkd#4847 /
  * go-to-k/cdkd#4852).
@@ -14,6 +12,8 @@ import { mentionsDynamicReference } from '../deployment/secret-redaction/recorde
  * An UNMARKED state (built in memory, a legacy-key read, a test double) reads
  * as "may carry tokens", so a missed mark costs work, never a skipped record.
  */
+import { mentionsDynamicReference } from '../deployment/secret-redaction/recorded-secrecy.js';
+
 const tokenFreeStates = new WeakSet<object>();
 
 /** Does `body` (a raw `state.json`) possibly carry a token or a provenance field? O(bytes). */

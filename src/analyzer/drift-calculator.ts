@@ -1,4 +1,3 @@
-import { mentionsDynamicReference } from '../deployment/secret-redaction/recorded-secrecy.js';
 /**
  * Drift detection between cdkd state-recorded properties and AWS-current
  * properties.
@@ -26,7 +25,7 @@ import { mentionsDynamicReference } from '../deployment/secret-redaction/recorde
  *     (we do not synthesize per-index drift entries — that's not useful
  *     output).
  */
-
+import { mentionsDynamicReference } from '../deployment/secret-redaction/recorded-secrecy.js';
 import {
   canonicalizeIdArraysDeep,
   canonicalizeTagListsDeep,

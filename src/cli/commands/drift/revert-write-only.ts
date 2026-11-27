@@ -1,4 +1,3 @@
-import { holdsMaskLeaf } from '../../../deployment/secret-redaction/recorded-secrecy.js';
 /**
  * `cdkd drift --revert`: the template's write-only values a Cloud Control
  * routed update sends (go-to-k/cdkd#6498, #6499).
@@ -26,6 +25,7 @@ import { holdsMaskLeaf } from '../../../deployment/secret-redaction/recorded-sec
  * fails the update instead, so a revert never gets one. A revert path that
  * did would read each key as narrowed in `collectNarrowedTopLevelKeys`.
  */
+import { holdsMaskLeaf } from '../../../deployment/secret-redaction/recorded-secrecy.js';
 import { hasOwnKey, defineOwnKey } from '../../../utils/own-keys.js';
 import { carriesDynamicReference } from '../../../deployment/intrinsic-resolver/context/log-twins.js';
 import { getTopLevelKeysHoldingUnreadableCreateOnly } from '../../../provisioning/write-only-properties.js';

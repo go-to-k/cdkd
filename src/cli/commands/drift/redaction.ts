@@ -1,12 +1,12 @@
+/**
+ * `cdkd drift`: the redaction choke point and the NoEcho / uncertified-baseline partitions.
+ * Split out of `../drift.ts`, which re-exports the public names.
+ */
 import {
   holdsMaskLeaf,
   isMaskLeaf,
   mentionsMask,
 } from '../../../deployment/secret-redaction/recorded-secrecy.js';
-/**
- * `cdkd drift`: the redaction choke point and the NoEcho / uncertified-baseline partitions.
- * Split out of `../drift.ts`, which re-exports the public names.
- */
 import {
   type PropertyDrift,
   equalModuloMarkedMask,

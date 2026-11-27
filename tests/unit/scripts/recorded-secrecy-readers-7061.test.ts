@@ -22,8 +22,12 @@
  * - a regular expression (a literal, or `RegExp(...)` of a marker) that
  *   matches a marker and not the same text with one character changed;
  * - a local binding of a marker literal (a second mask constant);
- * - a direct `carriesSecretMask` call: the helper's `holdsMaskLeaf` is the one
- *   spelling of that question.
+ * - any reference to `carriesSecretMask` (a call, a callback, a default
+ *   parameter), under any local name: the helper's `holdsMaskLeaf` is the one
+ *   spelling of that question;
+ * - a string search whose RECEIVER is a marker (`'***'.localeCompare(v)`).
+ * A marker includes either branch of a ternary or a logical operator, and a
+ * local alias of one (`const m = SECRET_MASK`) is a marker too.
  * Each one fails here unless {@link NOT_A_READER} lists it, and an entry that
  * matches nothing fails too.
  *
@@ -35,10 +39,15 @@
  * tests for a MARKER only: a reader that compares, sends or addresses a
  * recorded value with no secrecy test at all is not seen, and neither is a
  * marker reached through a value no constant names (a string built at run
- * time from parts that are not literals), nor a one-character piece of one
- * (`'*'`, which an IAM wildcard spells too), nor a marker handed as an argument to any other
- * function (a deep-equality helper, a local comparator `same(v, SECRET_MASK)`). The record-provenance entry point and the fence arm that routes
- * record readers onto it are later steps of the same plan.
+ * time from parts that are not literals, `String.fromCharCode(42, 42, 42)`,
+ * `''.padStart(3, '*')`), nor a one-character piece of one (`'*'`, which an
+ * IAM wildcard spells too, so neither is a per-character walk
+ * `[...v].every((c) => c === '*')`), nor a regular expression that matches the
+ * marker only inside surrounding text (`/=\*\*\*$/`), nor a marker used as an
+ * object KEY in a lookup table, nor a marker handed as an argument to any
+ * other function (a deep-equality helper, a local comparator
+ * `same(v, SECRET_MASK)`). The record-provenance entry point and the fence
+ * arm that routes record readers onto it are later steps of the same plan.
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
@@ -135,6 +144,10 @@ const GROUPS: Readonly<Record<string, readonly string[]>> = {
     'src/deployment/deploy-engine/deploy-flow/journal-at-start.ts',
     'src/state/unsettled-properties.ts',
     'src/state/token-free-state.ts',
+    'src/cli/commands/state-refresh-observed.ts',
+    'src/deployment/force-quit-journal.ts',
+    'src/deployment/journaled-holder.ts',
+    'src/deployment/nested-child-journal.ts',
   ],
 };
 
@@ -222,6 +235,22 @@ function literalText(raw: unknown): string | undefined {
     }
     return out;
   }
+  // `String.raw\`...\``: the raw text of its parts.
+  if (node.type === 'TaggedTemplateExpression') {
+    const tag = unwrap(node['tag']);
+    const quasi = node['quasi'] as Node;
+    if (
+      isNode(tag) &&
+      tag.type === 'MemberExpression' &&
+      isNode(tag['object']) &&
+      tag['object']['name'] === 'String' &&
+      memberName(tag) === 'raw' &&
+      (quasi['expressions'] as unknown[]).length === 0
+    ) {
+      return ((quasi['quasis'] as Node[])[0]!['value'] as { raw: string }).raw;
+    }
+    return undefined;
+  }
   if (node.type === 'BinaryExpression' && node['operator'] === '+') {
     const left = literalText(node['left']);
     const right = left === undefined ? undefined : literalText(node['right']);
@@ -246,6 +275,11 @@ function literalText(raw: unknown): string | undefined {
       const elements = parts(object['elements'] as unknown[]);
       const separator = args.length === 0 ? ',' : literalText(args[0]);
       return elements === undefined || separator === undefined ? undefined : elements.join(separator);
+    }
+    if (name === 'repeat' && isNode(args[0]) && typeof (args[0] as Node)['value'] === 'number') {
+      const base = literalText(object);
+      const times = (args[0] as Node)['value'] as number;
+      return base === undefined || !Number.isInteger(times) || times < 0 || times > 64 ? undefined : base.repeat(times);
     }
     if (name === 'concat') {
       const base = literalText(object);
@@ -301,14 +335,18 @@ function spellsMarkerLiteral(node: unknown): boolean {
 /**
  * A PIECE of a marker that only a marker test searches for: a run of two or
  * more `*` (`v.startsWith('**')` answers for the mask), or a prefix of the
- * reference opener at least two characters long (`'{{'`, `'{{resol'`). One
+ * reference opener at least two characters long (`'{{'`, `'{{resol'`), or a
+ * text that opens with `resolve:` (`'resolve:secretsmanager:'`), in any literal
+ * run of the expression (`'**' + s`). One
  * character (`'*'`, `'{'`) is no such piece: an IAM wildcard or a brace test
  * spells it too.
  */
 function isMarkerFragment(raw: unknown): boolean {
-  const text = literalText(raw);
-  if (text === undefined || text.length < 2) return false;
-  return /^\*{2,}$/.test(text) || '{{resolve:'.startsWith(text);
+  return literalRuns(raw).some(
+    (text) =>
+      text.length >= 2 &&
+      (/^\*{2,}$/.test(text) || '{{resolve:'.startsWith(text) || /^\{{0,2}resolve:/.test(text))
+  );
 }
 
 /** Every module-level name bound under `src/` to a marker literal (the helper's own private one aside). */
@@ -422,9 +460,21 @@ function handTestsIn(file: string, text: string, globalNames: ReadonlySet<string
     // A template literal interpolating one (`${SECRET_MASK}`), or a `+` chain holding one.
     if (node.type === 'TemplateLiteral' && (node['expressions'] as unknown[]).some(isMarker)) return true;
     if (node.type === 'BinaryExpression' && node['operator'] === '+' && plusOperands(node).some(isMarker)) return true;
+    // Either branch of a ternary, either side of `??` / `||` / `&&`.
+    if (node.type === 'ConditionalExpression') return isMarker(node['consequent']) || isMarker(node['alternate']);
+    if (node.type === 'LogicalExpression') return isMarker(node['left']) || isMarker(node['right']);
     return spellsMarkerLiteral(node);
   };
-  const isMarkerOrFragment = (raw: unknown): boolean => isMarker(raw) || isMarkerFragment(raw);
+  const isMarkerOrFragment = (raw: unknown): boolean => {
+    const node = unwrap(raw);
+    if (isNode(node) && node.type === 'ConditionalExpression') {
+      return isMarkerOrFragment(node['consequent']) || isMarkerOrFragment(node['alternate']);
+    }
+    if (isNode(node) && node.type === 'LogicalExpression') {
+      return isMarkerOrFragment(node['left']) || isMarkerOrFragment(node['right']);
+    }
+    return isMarker(node) || isMarkerFragment(node);
+  };
   const holdsMarker = (raw: Node): boolean => {
     const node = unwrap(raw) as Node;
     if (node.type === 'Identifier') return names.has(node['name'] as string);
@@ -436,6 +486,8 @@ function handTestsIn(file: string, text: string, globalNames: ReadonlySet<string
     return false;
   };
   const walk = (node: Node, fn: string): void => {
+    // An import binds a name and tests nothing; its USES are what is read.
+    if (node.type === 'ImportDeclaration') return;
     let here = fn;
     if (node.type === 'FunctionDeclaration' && isNode(node['id'])) here = node['id']['name'] as string;
     // `const name = (...) => ...`: the binding names the function.
@@ -469,13 +521,9 @@ function handTestsIn(file: string, text: string, globalNames: ReadonlySet<string
       const args = node['arguments'] as Node[];
       const name = memberName(callee);
       if (node.type === 'CallExpression' && name !== undefined && SEARCHES.has(name) && isMarkerOrFragment(args[0])) flag();
+      // A marker as the RECEIVER: `'***'.localeCompare(v)`, `OPENER.startsWith(v)`.
+      else if (node.type === 'CallExpression' && name !== undefined && SEARCHES.has(name) && isMarker(callee['object'])) flag();
       else if (name !== undefined && COLLECTION_SEARCHES.has(name) && holdsMarker(callee['object'] as Node)) flag();
-      else if (
-        (callee.type === 'Identifier' && maskWalkers.has(callee['name'] as string)) ||
-        name === 'carriesSecretMask'
-      ) {
-        flag();
-      }
       else if (
         callee.type === 'MemberExpression' &&
         isNode(callee['object']) &&
@@ -492,6 +540,9 @@ function handTestsIn(file: string, text: string, globalNames: ReadonlySet<string
         }
       }
     }
+    // ANY reference to `carriesSecretMask` (a call, a callback `xs.some(carriesSecretMask)`,
+    // a default parameter), under any local name or as a namespace member.
+    if (node.type === 'Identifier' && maskWalkers.has(node['name'] as string)) flag();
     if (node.type === 'Literal' && typeof node['regex'] === 'object' && node['regex'] !== null) {
       const { pattern, flags } = node['regex'] as { pattern: string; flags: string };
       if (patternNamesMarker(pattern, flags)) flag();
@@ -506,6 +557,15 @@ function handTestsIn(file: string, text: string, globalNames: ReadonlySet<string
       flag();
       // ...and every later use of it is a hand test too.
       if (isNode(node['id']) && node['id'].type === 'Identifier') names.add(node['id']['name'] as string);
+    } else if (node.type === 'VariableDeclarator' && isNode(node['id']) && node['id'].type === 'Identifier') {
+      // A local holding a fragment is a second marker constant; a local alias of a
+      // marker (`const m = SECRET_MASK`) is no test itself, but its uses are.
+      if (isMarkerFragment(node['init'])) {
+        flag();
+        names.add(node['id']['name'] as string);
+      } else if (isMarker(node['init'])) {
+        names.add(node['id']['name'] as string);
+      }
     }
     for (const v of Object.values(node)) {
       if (Array.isArray(v)) {
@@ -544,7 +604,7 @@ function violations(extra: Record<string, string> = {}): string[] {
 describe('readers ask recorded-secrecy, never test a marker by hand (go-to-k/cdkd#7061)', () => {
   it('no migrated group holds a hand test', () => {
     // A floor the scan does not read: a group that lost its files proves nothing.
-    expect(groupFiles().length).toBeGreaterThanOrEqual(161);
+    expect(groupFiles().length).toBeGreaterThanOrEqual(165);
     expect(violations()).toEqual([]);
   });
 
@@ -600,6 +660,17 @@ describe('readers ask recorded-secrecy, never test a marker by hand (go-to-k/cdk
     ['a mask prefix search', "export const m = (v: string) => v.startsWith('**');"],
     ['a mask prefix equality', "export const m2 = (v: string) => v.slice(0, 2) === '**';"],
     ['an opener prefix search', "export const m3 = (v: string) => v.indexOf('{{') >= 0;"],
+    ['carriesSecretMask as a callback', 'export const n = (xs: unknown[]) => xs.some(carriesSecretMask);'],
+    ['carriesSecretMask as a default parameter', 'export const n2 = (v: unknown, w: (x: unknown) => boolean = carriesSecretMask) => w(v);'],
+    ['a local alias of the constant', 'export const n3 = (v: string) => { const m = SECRET_MASK; return v === m; };'],
+    ['a marker in a ternary', "export const n4 = (v: string, b: boolean) => v === (b ? '***' : 'x');"],
+    ['a marker behind ??', "export const n5 = (v: string, o?: string) => v.includes(o ?? '{{resolve:');"],
+    ['a marker as the receiver', "export const n6 = (v: string) => '***'.localeCompare(v) === 0;"],
+    ['a fragment before a variable', "export const n7 = (v: string, s: string) => v.startsWith('**' + s);"],
+    ['a local fragment constant', "export const n8 = (v: string) => { const P = '{{'; return v.startsWith(P); };"],
+    ['a repeated star', "export const n9 = (v: unknown) => v === '*'.repeat(3);"],
+    ['a reference service text', "export const n10 = (v: string) => v.includes('resolve:secretsmanager:');"],
+    ['a String.raw mask', 'export const n11 = (v: unknown) => v === String.raw`***`;'],
     ['a mask prefix in a list', "export const m4 = (v: string) => ['**'].includes(v.slice(0, 2));"],
   ])('probe: %s fails', (_what, line) => {
     const problems = violations({ [NAME]: `${real(NAME)}\n${line}\n` });

@@ -1,8 +1,8 @@
-import { mentionsDynamicReference } from '../../../deployment/secret-redaction/recorded-secrecy.js';
 /**
  * `cdkd drift`: `--revert` merge helpers: tag lists, untemplated values, unresolved tokens.
  * Split out of `../drift.ts`, which re-exports the public names.
  */
+import { mentionsDynamicReference } from '../../../deployment/secret-redaction/recorded-secrecy.js';
 import type { PropertyDrift } from '../../../analyzer/drift-calculator.js';
 import { hasOwnKey, ownValue, hasPlainPrototype } from '../../../utils/own-keys.js';
 import {

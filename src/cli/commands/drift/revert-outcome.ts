@@ -1,8 +1,8 @@
-import { mentionsMask } from '../../../deployment/secret-redaction/recorded-secrecy.js';
 /**
  * `cdkd drift`: `--revert`: one drifted resource's revert payload.
  * Split out of `../drift.ts`, which re-exports the public names.
  */
+import { mentionsMask } from '../../../deployment/secret-redaction/recorded-secrecy.js';
 import type { ConsoleLogger } from '../../../utils/logger.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { safeMsg } from '../../../utils/display-safe.js';

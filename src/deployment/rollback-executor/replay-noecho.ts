@@ -168,7 +168,7 @@ export function refuseMarkedNoEchoRecreate(
 
 /**
  * Does every mask `props` carries sit at (or inside) one of `marked`? A mask
- * is a whole `***` leaf, as {@link carriesSecretMask} reads it; one elsewhere
+ * is a whole `***` leaf, as {@link holdsMaskLeaf} reads it; one elsewhere
  * is another population's, which keeps its own refusal.
  */
 export function masksOnlyAt(

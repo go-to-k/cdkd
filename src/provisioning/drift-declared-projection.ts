@@ -1,7 +1,3 @@
-import {
-  isMaskLeaf,
-  mentionsDynamicReference,
-} from '../deployment/secret-redaction/recorded-secrecy.js';
 /**
  * go-to-k/cdkd#6854: compare only the members a template DECLARES inside a
  * property AWS fills with defaults on read.
@@ -17,6 +13,10 @@ import {
  * ({@link FilledDefault}): any other undeclared member (one added out of band,
  * which the next whole-value update would wipe) stays and is reported.
  */
+import {
+  isMaskLeaf,
+  mentionsDynamicReference,
+} from '../deployment/secret-redaction/recorded-secrecy.js';
 
 /**
  * Whether the undeclared member `key` holding `value` is a default the service
@@ -122,7 +122,7 @@ export function projectOntoDeclared(
 
 /**
  * Whether `value` holds a `{{resolve:` reference or the redaction mask (a leaf
- * that IS {@link SECRET_MASK}: state redaction replaces a secret leaf whole)
+ * that IS the mask, {@link isMaskLeaf}: state redaction replaces a secret leaf whole)
  * anywhere.
  */
 function holdsUnsentValue(value: unknown): boolean {

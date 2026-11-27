@@ -1,8 +1,8 @@
-import { holdsMaskLeaf } from '../../../deployment/secret-redaction/recorded-secrecy.js';
 /**
  * `cdkd drift`: `--revert` payload assembly and the narrowed-key helpers.
  * Split out of `../drift.ts`, which re-exports the public names.
  */
+import { holdsMaskLeaf } from '../../../deployment/secret-redaction/recorded-secrecy.js';
 import { getLogger } from '../../../utils/logger.js';
 import type { PropertyDrift } from '../../../analyzer/drift-calculator.js';
 import { hasOwnKey, ownValue, defineOwnKey, hasPlainPrototype } from '../../../utils/own-keys.js';
