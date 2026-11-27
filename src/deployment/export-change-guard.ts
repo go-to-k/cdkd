@@ -85,6 +85,7 @@ export async function findAffectedExports({
   currentState,
   resolve,
   replaces,
+  legacyMaskedReads,
 }: {
   template: CloudFormationTemplate;
   conditions: Record<string, boolean>;
@@ -93,6 +94,12 @@ export async function findAffectedExports({
   resolve: (value: unknown) => Promise<unknown>;
   /** Whether the plan replaces `logicalId` (a `NO_CHANGE` row included). */
   replaces: (logicalId: string) => boolean;
+  /**
+   * go-to-k/cdkd#7097: the legacy nested-row reads this deploy rewrote from
+   * plaintext to the mask (`maskLegacyTaintedRowOutputs`). Only an export
+   * reading one of them may move from plaintext to the mask unchanged.
+   */
+  legacyMaskedReads?: ReadonlyMap<string, ReadonlyMap<string, string>> | undefined;
 }): Promise<AffectedExport[]> {
   const published = importableOutputKeys(currentState);
   if (published.length === 0) return [];
@@ -134,7 +141,8 @@ export async function findAffectedExports({
       currentState.outputs[exportName],
       changes,
       resolve,
-      replaces
+      replaces,
+      legacyMaskedReads
     );
     if (verdict === 'changed') affected.push({ exportName, reason: 'changed' });
     else if (verdict === 'deferred') {
@@ -149,7 +157,8 @@ async function valueMayChange(
   publishedValue: unknown,
   changes: ReadonlyMap<string, ResourceChange>,
   resolve: (value: unknown) => Promise<unknown>,
-  replaces: (logicalId: string) => boolean
+  replaces: (logicalId: string) => boolean,
+  legacyMaskedReads: ReadonlyMap<string, ReadonlyMap<string, string>> | undefined
 ): Promise<'changed' | 'deferred' | 'unchanged'> {
   let touchesChangedResource = false;
   // A value known only after the update: a custom resource's (#6865), or a
@@ -157,7 +166,15 @@ async function valueMayChange(
   // stamps an update time is the handler's choice, and CloudFormation refuses
   // only a value that moved).
   let readsUpdatedCustomResource = false;
+  // go-to-k/cdkd#7097: the legacy plaintexts of the row outputs this deploy
+  // masked that the value reads.
+  const legacyPlaintexts: string[] = [];
   for (const [logicalId, reads] of extractGetAttRefs(output.Value)) {
+    const masked = legacyMaskedReads?.get(logicalId);
+    for (const read of reads) {
+      const plaintext = masked?.get(read);
+      if (plaintext !== undefined) legacyPlaintexts.push(plaintext);
+    }
     if (replaces(logicalId)) return 'changed';
     const change = changes.get(logicalId);
     if (change === undefined || change.changeType === 'NO_CHANGE') continue;
@@ -192,11 +209,47 @@ async function valueMayChange(
     return touchesChangedResource ? 'changed' : 'unchanged';
   }
   if (desired === undefined) return touchesChangedResource ? 'changed' : 'unchanged';
+  // go-to-k/cdkd#7097: a value published in plaintext by a record from before
+  // cdkd masked it, now resolving to (or composed over) the mask, moves only
+  // its persisted spelling: no import blocks it. Only a value reading an
+  // output this deploy rewrote that way, and only where the rest of the value
+  // still matches what was published around the mask: any other export newly
+  // resolving to the mask (a template edit pointing it at a secret) really
+  // moves. One bound, stated: such a first deploy that ALSO edits the masked
+  // source's live value is judged unchanged, where the published side would
+  // have shown the move; after it the published side holds the mask and the
+  // rule above applies as always.
+  if (onlyTheMaskMoved(desired, publishedValue, legacyPlaintexts)) return 'unchanged';
   if (!isDeepStrictEqual(desired, publishedValue)) return 'changed';
   return readsUpdatedCustomResource ? 'deferred' : 'unchanged';
 }
 
-function isCustomResourceType(type: string): boolean {
+/**
+ * Is `desired` exactly the published value once each legacy plaintext it
+ * reads is spelled as the mask? An exact compare: text around the mask that
+ * moved, or a sibling that was dropped, is a real move.
+ */
+function onlyTheMaskMoved(
+  desired: unknown,
+  published: unknown,
+  legacyPlaintexts: readonly string[]
+): boolean {
+  if (legacyPlaintexts.length === 0) return false;
+  const publishedText = JSON.stringify(published);
+  const desiredText = JSON.stringify(desired);
+  if (publishedText === undefined || desiredText === undefined) return false;
+  if (publishedText.includes(SECRET_MASK)) return false;
+  let respelled = publishedText;
+  // Longest first, so a plaintext inside another is not replaced in it.
+  for (const plaintext of [...new Set(legacyPlaintexts)].sort((a, b) => b.length - a.length)) {
+    if (plaintext === '') continue;
+    const spelled = JSON.stringify(plaintext).slice(1, -1);
+    respelled = respelled.split(spelled).join(SECRET_MASK);
+  }
+  return respelled === desiredText;
+}
+
+export function isCustomResourceType(type: string): boolean {
   return type.startsWith('Custom::') || type === 'AWS::CloudFormation::CustomResource';
 }
 

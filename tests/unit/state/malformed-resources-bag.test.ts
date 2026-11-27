@@ -160,6 +160,8 @@ const DIFF_RECURSIVE_ORDER = [
   'passed-secret-display.ts',
   // go-to-k/cdkd#7090: that provenance carried across stacks by the preview.
   'cross-stack-taint.ts',
+  // go-to-k/cdkd#7097: a deleted nested row's subtree masked by its recorded taint.
+  'deleted-subtree-taint.ts',
   'build-tree.ts',
   'routes.ts',
   'tree.ts',

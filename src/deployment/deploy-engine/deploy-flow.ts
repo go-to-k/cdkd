@@ -1,4 +1,5 @@
 import { recordNestedStackTags } from '../nested-stack-tags.js';
+import { maskLegacyTaintedRowOutputs } from '../legacy-row-output-mask.js';
 import { armSignalReceiver, ensureSignalReceiver, settledAfter } from './signal-receiver-run.js';
 import { readRefactorMarker } from '../../state/refactor-marker.js';
 import { seedPersistedNoEchoAttributes } from './noecho.js';
@@ -276,6 +277,8 @@ export async function doDeployWithPrefetch(
       ssmNameHeals.push(...healed.heals);
     };
     healSsmNames();
+    // go-to-k/cdkd#7097: the reads it rewrote scope the export guard's relaxation.
+    const legacyMaskedReads = maskLegacyTaintedRowOutputs(currentState, template, stackName);
     // go-to-k/cdkd#6282: ... and once per record, the nested children are read
     // for such a name, overlapping the work up to the diff. A marked record or
     // a stack with no nested-stack row reads nothing.
@@ -609,6 +612,7 @@ export async function doDeployWithPrefetch(
     const { deferredExports } = await refuseUnsafePlan(engine, {
       stackName,
       ssmNameHeals,
+      legacyMaskedReads,
       currentState,
       effectiveTemplate,
       parameterValues,

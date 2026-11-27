@@ -3,6 +3,7 @@ import * as cdk from 'aws-cdk-lib';
 import { ChainConsumerStack } from '../lib/chain-consumer-stack.ts';
 import { ConsumerStack } from '../lib/consumer-stack.ts';
 import { ProducerStack } from '../lib/producer-stack.ts';
+import { Consumer7097Stack, Producer7097Stack } from '../lib/legacy-row-7097-stacks.ts';
 
 const app = new cdk.App();
 
@@ -45,3 +46,21 @@ const chainConsumer = new ChainConsumerStack(app, 'CdkdCrossStackSecretChainCons
 // is a synth-time token that propagates no stack dependency, so without this the
 // DAG would let this stack race the consumer whose export it reads.
 chainConsumer.addDependency(consumer);
+
+// go-to-k/cdkd#7097's own pair: built only for verify.sh's #7097 step, so the
+// `deploy --all` of every other step never sees it.
+if (process.env.CDKD_TEST_7097 === '1') {
+  const exportName = process.env.CDKD_7097_EXPORT_NAME ?? 'cdkd-7097-piece';
+  const producer7097 = new Producer7097Stack(app, 'CdkdCrossStackSecret7097Producer', {
+    env: { region },
+    pinParam: process.env.CDKD_7097_PIN_PARAM ?? '/cdkd-integ-7097/pin',
+    longParam: process.env.CDKD_7097_LONG_PARAM ?? '/cdkd-integ-7097/long',
+    exportName,
+  });
+  const consumer7097 = new Consumer7097Stack(app, 'CdkdCrossStackSecret7097Consumer', {
+    env: { region },
+    exportName,
+    parameterName: process.env.CDKD_7097_READER_PARAM ?? '/cdkd-integ-7097/reader',
+  });
+  consumer7097.addDependency(producer7097);
+}
