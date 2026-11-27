@@ -1,11 +1,10 @@
 import { holdsMaskLeaf, isMaskLeaf } from '../recorded-secrecy.js';
-import { SECRET_MASK } from '../pairs.js';
 import { isDynamicReferenceString } from '../rules.js';
 import { subtreeHasDynamicReference, pathCrossesDottedKey } from './subtree.js';
 import { RENDERED_DEFINITION_KEYS, definitionSourceCarriesSecret } from './definition.js';
 
 /**
- * Could a {@link SECRET_MASK} in an `observedProperties` baseline at the dotted
+ * Could a mask (`***`, {@link isMaskLeaf}) in an `observedProperties` baseline at the dotted
  * `path` be an UNCERTIFIED-POSITION mask (issue
  * [#2852](https://github.com/go-to-k/cdkd/issues/2852)'s fail-closed refusal)
  * rather than a `NoEcho` custom-resource mask (issue

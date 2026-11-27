@@ -54,12 +54,15 @@ import { join, relative } from 'node:path';
 import { parseSync } from 'vite-plus';
 import { describe, expect, it } from 'vite-plus/test';
 import {
+  countDynamicReferenceOpenings,
   dynamicReferenceBody,
   dynamicReferenceOpeners,
   isMaskLeaf,
   isMaskRun,
   mentionsDynamicReference,
+  mentionsDynamicReferenceTo,
   mentionsMask,
+  opensDynamicReferenceTo,
   usableRecordedName,
   valueMentionsDynamicReference,
 } from '../../../src/deployment/secret-redaction/recorded-secrecy.js';
@@ -899,6 +902,34 @@ describe('readers ask recorded-secrecy, never test a marker by hand (go-to-k/cdk
     const prefix = ['{{', 'resolve:secretsmanager:'].join('');
     const before = !token.startsWith(prefix) || !token.endsWith('}}') ? undefined : token.slice(prefix.length, -2);
     expect(dynamicReferenceBody(token, 'secretsmanager')).toBe(before);
+  });
+
+  const OPENER = ['{{', 'resolve:'].join('');
+  it.each([
+    '',
+    'plain',
+    '{{resolve:ssm:/a}}',
+    '{{resolve:ssm-secure:/a}}',
+    'x{{resolve:secretsmanager:s}}y{{resolve:ssm:/b}}',
+    '{{resolve:{{resolve:ssm:/c}}',
+    '{{resolve:ssm',
+  ])('the service-scoped opener predicates are the hand tests they replaced (%j)', (text) => {
+    for (const service of ['secretsmanager', 'ssm', 'ssm-secure']) {
+      const opening = `${OPENER}${service}:`;
+      expect(mentionsDynamicReferenceTo(text, service)).toBe(text.includes(opening));
+      expect(opensDynamicReferenceTo(text, service)).toBe(text.startsWith(opening));
+      // scrub's per-service count: `leaf.split(opening).length - 1`.
+      expect(countDynamicReferenceOpenings(text, service)).toBe(text.split(opening).length - 1);
+    }
+    // import's opener count: the indexOf loop.
+    let count = 0;
+    for (let from = 0; ; ) {
+      const at = text.indexOf(OPENER, from);
+      if (at === -1) break;
+      count++;
+      from = at + OPENER.length;
+    }
+    expect(countDynamicReferenceOpenings(text)).toBe(count);
   });
 
   it.each(['', '*', '**', '***', '****', '***a', ' ***', '*+*'])('isMaskRun(%j)', (text) => {
