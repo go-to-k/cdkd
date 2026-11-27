@@ -473,7 +473,8 @@ export async function buildImportPlan(
         stateEntry.properties,
         stateEntry.attributes ?? {},
         schemaInfo,
-        backfillDeps
+        backfillDeps,
+        stateEntry.noEchoAttributeNames
       );
     } catch (err) {
       blocked.push({

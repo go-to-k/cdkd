@@ -73,7 +73,9 @@ export async function resolveResourceIdentifier(
   properties: Record<string, unknown>,
   attributes: Record<string, unknown>,
   entry: PrimaryIdentifierCacheEntry,
-  backfillDeps: IdentifierBackfillDeps | undefined
+  backfillDeps: IdentifierBackfillDeps | undefined,
+  /** The record's `noEchoAttributeNames` as stored (go-to-k/cdkd#7061). */
+  noEchoAttributeNames?: unknown
 ): Promise<CompositeIdResult> {
   // Consulted on BOTH branches (i.e. before either can run): "cdkd's id is
   // composite" and "the CFn identifier is multi-field" are independent facts,
@@ -111,7 +113,7 @@ export async function resolveResourceIdentifier(
     }
     const value = await resolveIdentifierValue(
       compositeIdentifier,
-      { logicalId, physicalId, attributes },
+      { logicalId, physicalId, attributes, noEchoAttributeNames },
       backfillDeps
     );
     return {

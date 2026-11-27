@@ -289,6 +289,10 @@ function makeResource(overrides: Partial<ResourceState> = {}): ResourceState {
     ...(overrides.observedBaselineRefusalReason && {
       observedBaselineRefusalReason: overrides.observedBaselineRefusalReason,
     }),
+    ...(overrides.noEchoLeaves && { noEchoLeaves: overrides.noEchoLeaves }),
+    ...(overrides.maskedPropertyFingerprints && {
+      maskedPropertyFingerprints: overrides.maskedPropertyFingerprints,
+    }),
   };
 }
 
@@ -1190,6 +1194,9 @@ describe('cdkd drift', () => {
             ConnectionType: 'INTERNET',
             TlsConfig: { ServerNameToVerify: 'backend.example.com' },
           },
+          // go-to-k/cdkd#7061: the record's own provenance reaches the provider.
+          noEchoLeaves: [['ApiId']],
+          maskedPropertyFingerprints: { IntegrationType: 'sha256:00' },
         }),
       })
     );
@@ -1219,7 +1226,9 @@ describe('cdkd drift', () => {
     expect(error).toBeUndefined();
     expect(getDriftUnknownPaths).toHaveBeenCalledWith(
       'AWS::ApiGatewayV2::Integration',
-      expect.objectContaining({ ConnectionType: 'INTERNET' })
+      expect.objectContaining({ ConnectionType: 'INTERNET' }),
+      // go-to-k/cdkd#7061: the record's own secrecy provenance, as stored.
+      { noEchoLeaves: [['ApiId']], maskedPropertyFingerprints: { IntegrationType: 'sha256:00' } }
     );
     expect(output).toContain('no drift detected');
     expect(output).not.toContain('TlsConfig');

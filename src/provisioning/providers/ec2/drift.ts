@@ -1,4 +1,4 @@
-import { holdsMaskLeaf } from '../../../deployment/secret-redaction/recorded-secrecy.js';
+import type { RecordedProvenanceFields } from '../../../deployment/secret-redaction/recorded-secrecy.js';
 import type { Subnet } from '@aws-sdk/client-ec2';
 import { DescribeSubnetsCommand } from '@aws-sdk/client-ec2';
 import { canonicalizeIpv6Cidr } from '../../../utils/ipv6-cidr.js';
@@ -23,7 +23,11 @@ import {
   subnetPrivateDnsOptionsRefusal,
 } from './subnet-support.js';
 import type { EC2Provider } from '../ec2-provider.js';
-import { declaredBlockDeviceNames, isInstanceSubReadFailure } from './read-instance-state.js';
+import {
+  declaredBlockDeviceNames,
+  isInstanceSubReadFailure,
+  userDataUnreadable,
+} from './read-instance-state.js';
 
 /** Recovery must not mistake an in-flight IPv6 association for absence. */
 export function subnetIpv6InTransition(this: EC2Provider, subnet: Subnet): boolean {
@@ -279,7 +283,7 @@ export async function readCurrentStateOnce(
       case 'AWS::EC2::SecurityGroup':
         return await this.readSecurityGroupCurrentState(physicalId, properties, context);
       case 'AWS::EC2::Instance':
-        return await this.readInstanceCurrentState(physicalId, properties);
+        return await this.readInstanceCurrentState(physicalId, properties, context?.provenance);
       case 'AWS::EC2::NetworkAcl':
         return await this.readNetworkAclCurrentState(physicalId, properties, ownWrite);
       case 'AWS::EC2::EIP':
@@ -341,7 +345,8 @@ export async function readCurrentStateOnce(
 export function getDriftUnknownPaths(
   this: EC2Provider,
   resourceType: string,
-  properties?: Record<string, unknown>
+  properties?: Record<string, unknown>,
+  provenance?: RecordedProvenanceFields
 ): string[] {
   switch (resourceType) {
     // NetworkInterfaces cannot be read back faithfully: the drift
@@ -373,7 +378,11 @@ export function getDriftUnknownPaths(
         'Ipv6Addresses',
         'LaunchTemplate',
         'LicenseSpecifications',
-        ...(holdsMaskLeaf(properties?.['UserData']) ? ['UserData'] : []),
+        // An ABSENT bag compares (`.claude/rules/layout-drift.md`): the
+        // unsettled re-check passes none.
+        ...(properties !== undefined && userDataUnreadable(properties, provenance)
+          ? ['UserData']
+          : []),
       ];
     // go-to-k/cdkd#5633: DescribeVpcs names no IPAM pool; the netmask is
     // read back from the CIDR instead. A `monitor` encryption control

@@ -37,6 +37,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js';
 import { SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
+import type { ReadCurrentStateContext } from '../../../src/types/resource.js';
 
 const TAGS = [
   { Key: 'aws:cloudformation:stack-name', Value: 'S' },
@@ -283,7 +284,8 @@ describe('EC2 drift readback gaps (go-to-k/cdkd#6754)', () => {
   describe('AWS::EC2::Instance', () => {
     const read = async (
       properties: Record<string, unknown>,
-      userData: string | null = 'IyEvYmluL2Jhc2g='
+      userData: string | null = 'IyEvYmluL2Jhc2g=',
+      context?: ReadCurrentStateContext
     ): Promise<Record<string, unknown>> => {
       answer([
         [
@@ -317,7 +319,8 @@ describe('EC2 drift readback gaps (go-to-k/cdkd#6754)', () => {
         'i-1',
         'L',
         'AWS::EC2::Instance',
-        properties
+        properties,
+        context
       )) as Record<string, unknown>;
     };
     const userDataCalls = (): number =>
@@ -364,7 +367,27 @@ describe('EC2 drift readback gaps (go-to-k/cdkd#6754)', () => {
       ).toContain('UserData');
       expect(
         provider.getDriftUnknownPaths('AWS::EC2::Instance', { UserData: 'IyEvYmluL2Jhc2g=' })
-      ).not.toContain('UserData');
+      ).not.toContain('UserData');      // An ABSENT bag compares (the unsettled re-check passes none; #7061 review).
+      expect(provider.getDriftUnknownPaths('AWS::EC2::Instance')).not.toContain('UserData');
+    });
+
+    it('declares UserData unknown for a properties bag the record cannot be read through (unknown is masked)', () => {
+      expect(provider.getDriftUnknownPaths('AWS::EC2::Instance', 'x' as never)).toContain('UserData');
+    });
+
+    // go-to-k/cdkd#7061: the record's provenance decides too, whatever the
+    // value's text: a masked-property fingerprint or a `NoEcho` coordinate
+    // under `UserData` means the record holds no value to compare with.
+    it.each([
+      ['a masked-property fingerprint', { maskedPropertyFingerprints: { UserData: 'sha256:00' } }],
+      ['a NoEcho coordinate under it', { noEchoLeaves: [['UserData']] }],
+    ])('makes no user-data call, and declares it unknown, for a record whose %s names UserData', async (_what, provenance) => {
+      const result = await read({ UserData: 'IyEvYmluL2Jhc2g=' }, 'IyEvYmluL2Jhc2g=', { provenance });
+      expect(result).not.toHaveProperty('UserData');
+      expect(userDataCalls()).toBe(0);
+      expect(
+        provider.getDriftUnknownPaths('AWS::EC2::Instance', { UserData: 'IyEvYmluL2Jhc2g=' }, provenance)
+      ).toContain('UserData');
     });
 
     it('throws when a declared UserData cannot be read, rather than reading it as removed', async () => {

@@ -1,3 +1,4 @@
+import type { RecordedProvenanceFields } from '../../deployment/secret-redaction/recorded-secrecy.js';
 import type {
   ResourceCreateResult,
   ResourceDeleteResult,
@@ -498,7 +499,16 @@ export interface ResourceProvider {
    * @returns paths to exclude from the drift comparison; defaults to
    *          empty when not implemented
    */
-  getDriftUnknownPaths?(resourceType: string, properties?: Record<string, unknown>): string[];
+  getDriftUnknownPaths?(
+    resourceType: string,
+    properties?: Record<string, unknown>,
+    /**
+     * go-to-k/cdkd#7061: the record's own `noEchoLeaves` and
+     * `maskedPropertyFingerprints`, as stored, for a provider that asks
+     * `recordedSecrecyOf` whether a recorded property is a secret.
+     */
+    provenance?: RecordedProvenanceFields
+  ): string[];
 
   /**
    * Narrow a property bag the same way this provider narrows what it actually

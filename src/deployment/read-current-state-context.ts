@@ -57,6 +57,16 @@ export function buildReadCurrentStateContext(
   const ownAttributes = ownRecord('attributes');
   // go-to-k/cdkd#6616: the own drift baseline, through the same gate.
   const ownObserved = ownRecord('observedProperties');
+  // go-to-k/cdkd#7061: the own record's secrecy provenance, as stored, so a
+  // provider asks `recordedSecrecyOf` rather than the value's text alone.
+  // Set only when the record holds either field.
+  const ownFields = isReadableResourceEntry(own) ? (own as Record<string, unknown>) : {};
+  const noEchoLeaves = ownFields['noEchoLeaves'];
+  const maskedPropertyFingerprints = ownFields['maskedPropertyFingerprints'];
+  const ownProvenance =
+    noEchoLeaves !== undefined || maskedPropertyFingerprints !== undefined
+      ? { noEchoLeaves, maskedPropertyFingerprints }
+      : undefined;
   // go-to-k/cdkd#6641: a Cloud Control readback assigns no rule by id.
   const ccApiRead =
     isReadableResourceEntry(own) && (own as { provisionedBy?: unknown }).provisionedBy === 'cc-api';
@@ -65,5 +75,6 @@ export function buildReadCurrentStateContext(
     ...(ccApiRead && { ccApiRead: true }),
     ...(ownAttributes && { attributes: ownAttributes }),
     ...(ownObserved && { driftBaseline: ownObserved }),
+    ...(ownProvenance && { provenance: ownProvenance }),
   };
 }
