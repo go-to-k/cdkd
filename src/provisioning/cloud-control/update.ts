@@ -70,6 +70,7 @@ import { s3ClientDefaults } from '../../utils/s3-client-defaults.js';
 import { stringifyJsonProperties, stripNullValues, s3RedirectRegion } from './shared.js';
 import { IdScrubLog, inIdLogScope, holdsSecretDerivedLeaf } from './id-log.js';
 import { shiftAliasThroughCodeDeploy } from './codedeploy-alias-update.js';
+import { switchLakeFormationOffServiceLinkedRole } from './lakeformation-role-switch.js';
 import { awaitRefusalEdgeTarget } from '../deferred-refusal-edges.js';
 
 /**
@@ -204,6 +205,29 @@ export async function updateInIdLogScope(
     if (shifted) cleanPreviousProperties['FunctionVersion'] = cleanProperties['FunctionVersion'];
     // CodeDeploy wrote the alias, so an empty patch did send something.
     const sentNothing = shifted ? {} : { sentNothing: true as const };
+
+    // go-to-k/cdkd#7121: a Lake Formation location moving off the
+    // service-linked role is re-registered (deregister + register), as
+    // CloudFormation does; Cloud Control's update refuses it. See the helper.
+    const reRegistered = await switchLakeFormationOffServiceLinkedRole(this, {
+      logicalId,
+      physicalId,
+      resourceType,
+      properties: cleanProperties,
+      previousProperties: cleanPreviousProperties,
+      log: idLog,
+    });
+    if (reRegistered !== undefined) {
+      const attributes = await this.mergeSparseModelReadback(
+        resourceType,
+        physicalId,
+        reRegistered.ResourceModel
+          ? this.parseResourceModel(reRegistered.ResourceModel, idLog)
+          : {},
+        idLog
+      );
+      return { physicalId, wasReplaced: false, attributes };
+    }
 
     // Generate JSON Patch document
     let patch = this.patchGenerator.generatePatch(cleanPreviousProperties, cleanProperties);

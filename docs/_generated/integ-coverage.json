@@ -7329,6 +7329,7 @@
         "infra-security",
         "intrinsic-functions",
         "iot-topic-rule-role",
+        "lakeformation-role-switch",
         "lambda-esm-self-managed-kafka",
         "lambda-fix-forward-orphan",
         "lambda-microvm-image",
@@ -7657,6 +7658,9 @@
           "l2"
         ],
         "iot-topic-rule-role": [
+          "l2"
+        ],
+        "lakeformation-role-switch": [
           "l2"
         ],
         "lambda-esm-self-managed-kafka": [
@@ -9933,6 +9937,7 @@
         "infra-security",
         "intrinsic-functions",
         "kms-encryption",
+        "lakeformation-role-switch",
         "local-aws-emulator",
         "local-invoke-agentcore-from-state",
         "local-invoke-from-state",
@@ -10106,6 +10111,9 @@
         "kms-encryption": [
           "l2",
           "literal"
+        ],
+        "lakeformation-role-switch": [
+          "l2"
         ],
         "local-aws-emulator": [
           "l2",
@@ -12457,6 +12465,7 @@
     "AWS::IoT::ThingType",
     "AWS::IoT::TopicRule",
     "AWS::KMS::Grant",
+    "AWS::LakeFormation::Resource",
     "AWS::Lambda::Alias",
     "AWS::Lambda::CapacityProvider",
     "AWS::Lambda::CodeSigningConfig",
