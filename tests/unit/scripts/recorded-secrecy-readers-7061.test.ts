@@ -30,7 +30,8 @@
  * tests for a MARKER only: a reader that compares, sends or addresses a
  * recorded value with no secrecy test at all is not seen, and neither is a
  * marker reached through a value no constant names (a string built at run
- * time). The record-provenance entry point and the fence arm that routes
+ * time, `'{{' + 'resolve:'`), nor a deep-equality helper handed one
+ * (`isDeepStrictEqual(v, SECRET_MASK)`). The record-provenance entry point and the fence arm that routes
  * record readers onto it are later steps of the same plan.
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -225,6 +226,15 @@ function handTestsIn(file: string, text: string, names: ReadonlySet<string>): st
       here = (node['id'] as Node)['name'] as string;
     }
     if (node.type === 'MethodDefinition' && isNode(node['key'])) here = (node['key'] as Node)['name'] as string;
+    // An object literal's method or function-valued property.
+    if (
+      node.type === 'Property' &&
+      isNode(node['key']) &&
+      isNode(node['value']) &&
+      ['ArrowFunctionExpression', 'FunctionExpression'].includes((node['value'] as Node).type)
+    ) {
+      here = ((node['key'] as Node)['name'] as string | undefined) ?? here;
+    }
     const flag = (): void => {
       out.push(`${file}#${here}#${text.slice(node.start, node.end).replace(/\s+/g, ' ')}`);
     };
@@ -342,6 +352,11 @@ describe('readers ask recorded-secrecy, never test a marker by hand (go-to-k/cdk
       "// v === SECRET_MASK, v.includes('{{resolve:')\n" +
       "export const i = (v: string) => v.includes('arn:') && /./.test(v) && /\\*/.test(v);";
     expect(violations({ [NAME]: `${real(NAME)}\n${line}\n` })).toEqual([]);
+  });
+
+  it('probe: a hand test in an object method is keyed by the method', () => {
+    const line = 'export const o = { pick(v: unknown) { return v === SECRET_MASK; } };';
+    expect(violations({ [NAME]: `${real(NAME)}\n${line}\n` })).toEqual([`hand test: ${NAME}#pick#v === SECRET_MASK`]);
   });
 
   it('probe: putting a migrated site back fails', () => {
