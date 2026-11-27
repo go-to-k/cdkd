@@ -135,10 +135,12 @@ const TYPE_POSITIONS = new Set([
 /** Whether `node` names a choke-point function: an identifier, or a computed key spelled as a string. */
 function namesTarget(node: Node, parent: Node | undefined, key: string): boolean {
   if (node.type === 'Identifier') return TARGETS.has(node['name'] as string);
-  // `engine['withParentInfo'](x)` and `` engine[`withParentInfo`](x) ``.
-  if (parent?.type !== 'MemberExpression' || parent['computed'] !== true || key !== 'property') {
-    return false;
-  }
+  // `engine['withParentInfo'](x)`, `` engine[`withParentInfo`](x) ``, and a
+  // computed destructuring key (`const { ['withParentInfo']: w } = engine`).
+  const computedMember =
+    parent?.type === 'MemberExpression' && parent['computed'] === true && key === 'property';
+  const computedKey = parent?.type === 'Property' && parent['computed'] === true && key === 'key';
+  if (!computedMember && !computedKey) return false;
   if (node.type === 'Literal') return TARGETS.has(node['value'] as string);
   if (node.type === 'TemplateLiteral' && (node['expressions'] as unknown[]).length === 0) {
     const quasi = (node['quasis'] as Node[])[0];
@@ -410,6 +412,7 @@ describe('engine saves carry output reference provenance (go-to-k/cdkd#7110)', (
   const ZZ = 'src/deployment/deploy-engine/zz-probe.ts';
   it.each([
     ['a renamed destructuring', `export function a(engine: E) { const { withParentInfo: w } = engine; return w; }\n`, `${ZZ}#a#<ref>`],
+    ['a computed destructuring key', `export function a2(engine: E) { const { ['withParentInfo']: w } = engine; return w; }\n`, `${ZZ}#a2#<ref>`],
     ['an element access', `export function b(engine: E, s: S) { return engine['withParentInfo'](s); }\n`, `${ZZ}#b#s`],
     ['a template-literal element access', `export function c(engine: E, s: S) { return engine[\`withParentInfo\`](s); }\n`, `${ZZ}#c#s`],
     ['a non-null reference', `export function d(engine: E) { return engine.withParentInfo!.call(engine, s); }\n`, `${ZZ}#d#<ref>`],
