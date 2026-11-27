@@ -271,9 +271,11 @@ export type DriftOutcome =
       /**
        * The comparator paths split off as `observedMaskedLeaves` positions
        * (go-to-k/cdkd#7158): a secret echoed under a key the template lacks,
-       * held only as the mask. Never in `changes`; `runRevert` sends the LIVE
-       * subtree at each, as for `noEchoParameterPaths`. Paths only. Optional:
-       * absent means none.
+       * held only as the mask. Never in `changes`; a revert whose bag still
+       * holds the mask there sends AWS's own value back
+       * (`preserveLiveValuesAtMaskedLeaves`), and the baseline it writes keeps
+       * the mask (`maskMarkedNoEchoBaseline`). Paths only. Optional: absent
+       * means none.
        */
       maskedEchoPaths?: string[];
       /**

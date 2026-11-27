@@ -498,11 +498,7 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
       overlaid,
       // go-to-k/cdkd#4043: a `NoEcho` parameter's marked position
       // likewise sends AWS's own value back, never the mask.
-      [
-        ...outcome.uncertifiedPaths,
-        ...(outcome.noEchoParameterPaths ?? []),
-        ...(outcome.maskedEchoPaths ?? []),
-      ],
+      [...outcome.uncertifiedPaths, ...(outcome.noEchoParameterPaths ?? [])],
       outcome.awsProperties,
       desiredProperties,
       secrets,

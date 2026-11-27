@@ -1059,6 +1059,7 @@ reports it; none holds any part of a value:
 | `noEchoLeaves` | the positions in `properties` (and so in `observedProperties`) stored as `***` because a `NoEcho` parameter, or an attribute declared `NoEcho`, supplied them; each position is a list of keys and array indexes |
 | `noEchoAttributeNames` | the record's own `attributes` its provider declared `NoEcho`: every attribute of a custom resource that answered `NoEcho: true`, a nested stack's masked outputs, and an attribute that echoes a `NoEcho` value. Each is stored as `***` whatever its type or length |
 | `noEchoExactEchoLeaves` | the `noEchoLeaves` positions, under a create-only property, at which AWS was seen to report exactly what cdkd sent (no version bump; see the table below) |
+| `observedMaskedLeaves` | the positions in `observedProperties`, under a key the template does not set, stored as `***` because the readback echoed a `NoEcho` value or a secret reference's plaintext there; `cdkd drift` reports them as `maskedEcho`, never as drift (no version bump: an older binary ignores the field and reports such a position as drift) |
 
 An ABSENT field means "not known", which is every record an older cdkd wrote.
 
@@ -2662,6 +2663,7 @@ interface ResourceState {
   noEchoLeaves?: (string | number)[][]         // v11+: positions in `properties` stored as `***` for a NoEcho value
   noEchoAttributeNames?: string[]              // v11+: `attributes` the provider declared NoEcho, each stored as `***`
   noEchoExactEchoLeaves?: string[][]           // optional, no bump: `noEchoLeaves` positions AWS reports exactly
+  observedMaskedLeaves?: (string | number)[][] // optional, no bump: `observedProperties` positions under template-absent keys stored as `***` (issue #7158)
   referenceProvenance?: Record<string, ReferenceProvenance> // v12+: token → { region?, versions?, readVersions?, versionsSent? (v18+, written only with one) }; absent = not known
   acceptedCreateOnlyDrops?: string[] // optional, no bump: create-only properties the SDK route was told to drop, so never sent
   maskedPropertyFingerprints?: Record<string, string> // optional, no bump: per property `properties` holds as `***`, a hash of its template text (issue #4451)

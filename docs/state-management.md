@@ -355,7 +355,7 @@ record it. [`cdkd export`](cli-export.md) rebuilds a template from
 `properties`, so the property is missing from the exported template too.
 
 A record can also carry bookkeeping fields that no command asks you to read or
-edit: `noEchoLeaves`, `noEchoAttributeNames`, `noEchoExactEchoLeaves`,
+edit: `noEchoLeaves`, `noEchoAttributeNames`, `noEchoExactEchoLeaves`, `observedMaskedLeaves`,
 `maskedPropertyFingerprints`, `maskedPropertyInputFingerprints`,
 `maskedPropertyReferenceFingerprints`,
 `acceptedCreateOnlyDrops`, `observedBaselineRefusalReason`,
