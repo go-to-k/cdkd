@@ -128,6 +128,7 @@ export const REPLACEMENT_EVIDENCE: ReadonlyMap<string, ReplacementEvidence> = ne
   ['AWS::DynamoDB::GlobalTable#LocalSecondaryIndexes', conditional('cfn-measured', 5489)],
   ['AWS::DynamoDB::Table#AttributeDefinitions', conditional('cfn-measured', 7038)],
   ['AWS::IAM::Role#Path', conditional('cfn-measured', 4739)],
+  ['AWS::IoT::ThingType#ThingTypeProperties', conditional('cfn-measured', 7083)],
   ['AWS::SSM::Document#Content', conditional('cfn-measured', 6568)],
   ['AWS::SSM::Document#Attachments', conditional('cfn-measured', 6568)],
   ['AWS::SSM::Document#DocumentFormat', conditional('cfn-measured', 6568)],

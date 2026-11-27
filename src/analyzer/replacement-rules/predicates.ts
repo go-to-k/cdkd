@@ -813,3 +813,21 @@ export function ssmDocumentChangeReplaces(
 ): boolean {
   return siblings?.newProperties['UpdateMethod'] !== 'NewVersion';
 }
+
+/**
+ * Whether an `AWS::IoT::ThingType` `ThingTypeProperties` change replaces the
+ * thing type (go-to-k/cdkd#7083). Measured against CloudFormation
+ * (us-east-1): a `ThingTypeDescription` or `SearchableAttributes` change
+ * replaced the type (a new id, or "a custom-named resource requires
+ * replacing"), while a `Mqtt5Configuration` change, or its addition, applied
+ * in place under the same thing type id.
+ */
+export function thingTypeReplacingMemberChanged(oldValue: unknown, newValue: unknown): boolean {
+  const member = (value: unknown, key: string): unknown =>
+    value !== null && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)[key]
+      : undefined;
+  return ['ThingTypeDescription', 'SearchableAttributes'].some(
+    (key) => !isDeepStrictEqual(member(oldValue, key), member(newValue, key))
+  );
+}

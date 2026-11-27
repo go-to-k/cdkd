@@ -273,6 +273,7 @@ These resource types appear in integ fixtures but no SDK Provider is registered 
 - `AWS::IAM::RolePolicy`
 - `AWS::IAM::UserPolicy`
 - `AWS::ImageBuilder::InfrastructureConfiguration`
+- `AWS::IoT::ThingType`
 - `AWS::IoT::TopicRule`
 - `AWS::KMS::Grant`
 - `AWS::Lambda::Alias`

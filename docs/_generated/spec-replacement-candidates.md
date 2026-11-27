@@ -15,7 +15,7 @@ what cdkd does; `update` and `baseline` rows keep the in-place update, and a `ha
 is decided by `src/analyzer/replacement-rules/rules.ts` or a provider-replacement planner.
 Evidence: `REPLACEMENT_EVIDENCE`.
 
-Candidates: 389 (replace 4, update 150, baseline 146, hand rule 89).
+Candidates: 389 (replace 4, update 150, baseline 145, hand rule 90).
 
 | Candidate | Spec | Verdict |
 | --- | --- | --- |
@@ -261,7 +261,7 @@ Candidates: 389 (replace 4, update 150, baseline 146, hand rule 89).
 | `AWS::ImageBuilder::ContainerRecipe#Tags` | yes | update |
 | `AWS::ImageBuilder::Image#Tags` | yes | baseline |
 | `AWS::ImageBuilder::ImageRecipe#Tags` | yes | update |
-| `AWS::IoT::ThingType#ThingTypeProperties` | yes | baseline |
+| `AWS::IoT::ThingType#ThingTypeProperties` | yes | hand rule |
 | `AWS::IoTWireless::NetworkAnalyzerConfiguration#Tags` | yes | update |
 | `AWS::KafkaConnect::Connector#ConnectorConfiguration` | yes | baseline |
 | `AWS::KafkaConnect::Connector#Plugins` | yes | baseline |

@@ -18,7 +18,15 @@ import type { Construct } from 'constructs';
  * `CDKD_TEST_UPDATE=true` changes the rule's SQL and description and removes
  * the error action: all mutable, so the rule must be updated in place.
  *
+ * Two unnamed thing types ride the same update (go-to-k/cdkd#7083).
+ * CloudFormation replaces a thing type when `ThingTypeProperties` changes its
+ * `SearchableAttributes` or `ThingTypeDescription`, and updates it in place on
+ * a `Mqtt5Configuration` change (measured). `SearchThingType` gains a
+ * searchable attribute, so cdkd must replace it; `MqttThingType` changes only
+ * its propagated user property key, so cdkd must keep it.
+ *
  * covers: AWS::IoT::TopicRule
+ * covers: AWS::IoT::ThingType
  */
 export class IotTopicRuleRoleStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -47,7 +55,25 @@ export class IotTopicRuleRoleStack extends cdk.Stack {
       },
     });
 
+    const propagated = (key: string) => ({
+      propagatingAttributes: [{ userPropertyKey: key, thingAttribute: 'serial' }],
+    });
+    const searchType = new iot.CfnThingType(this, 'SearchThingType', {
+      thingTypeProperties: {
+        thingTypeDescription: 'cdkd integ',
+        searchableAttributes: updating ? ['serial', 'model'] : ['serial'],
+      },
+    });
+    const mqttType = new iot.CfnThingType(this, 'MqttThingType', {
+      thingTypeProperties: {
+        thingTypeDescription: 'cdkd integ',
+        mqtt5Configuration: propagated(updating ? 'k2' : 'k1'),
+      },
+    });
+
     new cdk.CfnOutput(this, 'RuleName', { value: rule.ref });
+    new cdk.CfnOutput(this, 'SearchThingTypeName', { value: searchType.ref });
+    new cdk.CfnOutput(this, 'MqttThingTypeName', { value: mqttType.ref });
     new cdk.CfnOutput(this, 'QueueUrl', { value: queue.queueUrl });
   }
 }

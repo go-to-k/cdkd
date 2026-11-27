@@ -93,12 +93,6 @@ export const UNMEASURED_SPEC_REPLACEMENT_CANDIDATES: ReadonlySet<string> = new S
   'AWS::HealthLake::FHIRDatastore#DatastoreName',
   'AWS::HealthLake::FHIRDatastore#IdentityProviderConfiguration',
   'AWS::ImageBuilder::Image#Tags',
-  // Measured on #7083: Cloud Control refuses a ThingTypeDescription change
-  // ("cannot be added/updated/removed"), and CloudFormation REPLACED the thing
-  // type on it (new physical id; the change set read `Replacement: False`).
-  // Whether a SearchableAttributes or Mqtt5Configuration change replaces too
-  // is not yet measured, so the whole property is not yet `replace`.
-  'AWS::IoT::ThingType#ThingTypeProperties',
   'AWS::KafkaConnect::Connector#ConnectorConfiguration',
   'AWS::KafkaConnect::Connector#Plugins',
   'AWS::KafkaConnect::Connector#WorkerConfiguration',
