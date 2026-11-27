@@ -1,5 +1,6 @@
 import { GetParameterCommand, ParameterNotFound } from '@aws-sdk/client-ssm';
 import { definedAttributes } from '../../attribute-map.js';
+import { mentionsDynamicReference } from '../../../deployment/secret-redaction/recorded-secrecy.js';
 import {
   displayIdent,
   isPasteableIdent,
@@ -206,7 +207,7 @@ export async function importImpl(
       // `SecureString` adopted via `--resource` would yield ciphertext, never
       // plaintext; CloudFormation cannot create one.)
       const declared = input.properties?.['Value'];
-      const literalValue = typeof declared === 'string' && !declared.includes('{{resolve:');
+      const literalValue = typeof declared === 'string' && !mentionsDynamicReference(declared);
       return {
         physicalId: explicit,
         attributes: definedAttributes({

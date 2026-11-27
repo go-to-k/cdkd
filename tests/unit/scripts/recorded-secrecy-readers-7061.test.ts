@@ -192,11 +192,15 @@ const GROUPS: Readonly<Record<string, readonly string[]>> = {
     'src/deployment/secret-redaction/nested-stack',
     'src/deployment/secret-redaction/cross-stack.ts',
     'src/deployment/secret-redaction/redact-path/baseline-mask.ts',
+    'src/deployment/secret-redaction/redact-state/scrub-record.ts',
     'src/provisioning/cloud-control/delete-guards.ts',
     'src/provisioning/cloud-control/delete-identity.ts',
     'src/provisioning/cloud-control/delete.ts',
     'src/provisioning/cloud-control/import.ts',
     'src/provisioning/providers/nested-stack',
+    'src/provisioning/providers/custom-resource/delete.ts',
+    'src/provisioning/providers/ssm-parameter/import.ts',
+    'src/provisioning/redacted-delete-address.ts',
     'src/state/active-import-consumers.ts',
     'src/state/export-index-store.ts',
     'src/state/malformed-resources-bag/outputs.ts',
@@ -733,7 +737,7 @@ function violations(
 describe('readers ask recorded-secrecy, never test a marker by hand (go-to-k/cdkd#7061)', () => {
   it('no migrated group holds a hand test', () => {
     // A floor the scan does not read: a group that lost its files proves nothing.
-    expect(groupFiles().length).toBeGreaterThanOrEqual(327);
+    expect(groupFiles().length).toBeGreaterThanOrEqual(331);
     expect(violations()).toEqual([]);
   });
 

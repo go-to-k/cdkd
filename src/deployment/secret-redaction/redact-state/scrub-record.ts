@@ -1,5 +1,6 @@
 import { isSingleDynamicReferenceToken } from '../rules.js';
-import { SECRET_MASK, type RecordedSecretValues } from '../pairs.js';
+import type { RecordedSecretValues } from '../pairs.js';
+import { mentionsDynamicReference, mentionsMask } from '../recorded-secrecy.js';
 import { redactForState, redactAtProvenance } from '../context.js';
 import { attributeIdCopiesOf, physicalNameCopiesOf } from '../physical-name-copies.js';
 
@@ -350,9 +351,9 @@ export function embeddedPhysicalNameRewrites(
       if (
         typeof legacy === 'string' &&
         legacy !== name &&
-        legacy.includes('{{resolve:') &&
+        mentionsDynamicReference(legacy) &&
         !isSingleDynamicReferenceToken(legacy) &&
-        !legacy.includes(SECRET_MASK)
+        !mentionsMask(legacy)
       ) {
         pairs.push([legacy, name]);
       }
