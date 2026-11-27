@@ -362,13 +362,11 @@ describe('cdkd diff: a consumer reading a secret-fed producer output (#7090)', (
               }
               expect(cons.outputChanges, JSON.stringify(cons.outputChanges)).toEqual([]);
               // The consumer's row and its child, whose parameter resolution
-              // runs under the needles: still compared on the real value. (A
-              // producer CHANGE is not read into a child parameter: #7102.)
-              if (producerUnchanged) {
-                expect(changeTypeOf(cons, 'Row2'), 'Row2').toBe('NO_CHANGE');
-                const child = cons.children.find((node) => node.stackName === 'Cons~Row2');
-                expect(child && changeTypeOf(child, 'Inner'), 'Inner').toBe('NO_CHANGE');
-              }
+              // runs under the needles: still compared on the real value, the
+              // producer's changed one read from the preview (go-to-k/cdkd#7102).
+              expect(changeTypeOf(cons, 'Row2'), 'Row2').toBe('NO_CHANGE');
+              const child = cons.children.find((node) => node.stackName === 'Cons~Row2');
+              expect(child && changeTypeOf(child, 'Inner'), 'Inner').toBe('NO_CHANGE');
             } else {
               // The value reached the consumer: the scan above is not vacuous.
               expect(changeTypeOf(cons, 'Reader'), 'Reader').toBe('UPDATE');
@@ -503,6 +501,15 @@ describe('cdkd diff: a consumer reading a secret-fed producer output (#7090)', (
       expect(json).toContain(secret);
       expect((await securityTables(cons)).join('\n')).toContain(secret);
       expect(changeTypeOf(cons, 'Reader')).toBe('UPDATE');
+      // go-to-k/cdkd#7102: the nested child's parameter reads what the
+      // consumer's own resources read, the preview's new value included,
+      // never the producer's stored `old`.
+      const child = cons.children.find((node) => node.stackName === 'Cons~Row2');
+      const inner = child?.changes.get('Inner');
+      expect(inner?.changeType, 'Inner').toBe('UPDATE');
+      expect(inner?.propertyChanges?.find((pc) => pc.path === 'Value')?.newValue).toBe(
+        READ_SHAPES[shape]!.holding(secret)
+      );
     });
   }
 });
