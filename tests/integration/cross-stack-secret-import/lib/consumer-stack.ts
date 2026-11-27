@@ -6,6 +6,7 @@ import {
   CONDITIONAL_EXPORT_NAME,
   EXPORT_NAME,
   PARAMETER_NAME,
+  PROMO_BLOCKED_PARAMETER_NAME,
   PROMO_PARAMETER_NAME,
   PROMO_QUEUE_ARN_EXPORT_NAME,
   QUEUE_URL_EXPORT_NAME,
@@ -119,10 +120,15 @@ export class ConsumerStack extends cdk.Stack {
     // producer's PromoQueue ARN. Only under CSSI_PROMO=true, after every
     // scrub step, so none of their record counts move. CSSI_PROMO_SETTLE=true
     // edits its Description, so it is written while the producer is unchanged
-    // and records the producer version it read.
+    // and records the producer version it read. CSSI_PROMO_BLOCK=true (step
+    // 11f's interrupted joint deploy) renames it, which cdkd refuses for a
+    // stateful SSM parameter before writing it.
     if (process.env.CSSI_PROMO === 'true') {
       const promoReader = new ssm.CfnParameter(this, 'PromoImportReader', {
-        name: PROMO_PARAMETER_NAME,
+        name:
+          process.env.CSSI_PROMO_BLOCK === 'true'
+            ? PROMO_BLOCKED_PARAMETER_NAME
+            : PROMO_PARAMETER_NAME,
         type: 'String',
         value: cdk.Fn.importValue(PROMO_QUEUE_ARN_EXPORT_NAME),
         // CSSI_PROMO_EDIT=true (step 11e's pinning arm) edits it again after a
