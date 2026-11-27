@@ -94,6 +94,14 @@ const parsed: any = parseYaml(workflow);
     );
   });
 
+  // go-to-k/cdkd#7061: the secret-path snapshot the schema redaction
+  // invariant reads is refreshed by the same job and counts as drift.
+  it('refreshes the registry secret-path snapshot and counts it as drift', () => {
+    expect(shellOf('Refresh fixtures from the public schema bundle')).toContain('vp run gen:cfn-registry-secret-paths');
+    expect(shellOf('Detect drift')).toContain('tests/fixtures/cfn-registry-secret-paths.json');
+    expect(shellOf('Publish the refresh')).toContain('tests/fixtures/cfn-registry-secret-paths.json');
+  });
+
 /**
  * The body of the guard arm introduced by `needle`, up to its closing `fi`.
  *
@@ -883,7 +891,7 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       // The same three paths `Publish the refresh` commits, or the probe grades
       // a different tree than the one the PR carries.
       expect(mark).toContain(
-        'regen=$(git status --porcelain -- src/provisioning/ src/analyzer/replacement-rules/ docs/ tests/fixtures/cfn-schemas/ tests/fixtures/cfn-registry-create-only-paths.json)'
+        'regen=$(git status --porcelain -- src/provisioning/ src/analyzer/replacement-rules/ docs/ tests/fixtures/cfn-schemas/ tests/fixtures/cfn-registry-create-only-paths.json tests/fixtures/cfn-registry-secret-paths.json)'
       );
       const publish = shellOf('Publish the refresh');
       for (const path of [
@@ -892,6 +900,7 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
         'docs/',
         'tests/fixtures/cfn-schemas/',
         'tests/fixtures/cfn-registry-create-only-paths.json',
+        'tests/fixtures/cfn-registry-secret-paths.json',
       ]) {
         expect(publish, `${path} is no longer committed — the clean-tree probe is now wrong`).toContain(
           path
@@ -907,7 +916,7 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       // could not fail. What is falsifiable is the probe being INSIDE the arm
       // and running `git status` over the regenerated paths.
       expect(noPublish, 'the clean-tree probe escaped its no-publish guard').toContain(
-        'git status --porcelain -- src/provisioning/ src/analyzer/replacement-rules/ docs/ tests/fixtures/cfn-schemas/ tests/fixtures/cfn-registry-create-only-paths.json'
+        'git status --porcelain -- src/provisioning/ src/analyzer/replacement-rules/ docs/ tests/fixtures/cfn-schemas/ tests/fixtures/cfn-registry-create-only-paths.json tests/fixtures/cfn-registry-secret-paths.json'
       );
       const dirty = guardArm(mark, 'if [ -n "${regen}" ]; then');
       expect(dirty, 'a dirty tree still gets its marking cleared').toContain('exit 0');

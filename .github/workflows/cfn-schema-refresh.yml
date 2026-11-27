@@ -239,6 +239,9 @@ jobs:
           # of the spec-replacement candidates (`gen:all-matrices` below
           # regenerates their table from it).
           vp run gen:cfn-registry-create-only-paths 2>&1 | tee -a /tmp/refresh.log
+          # go-to-k/cdkd#7061: every type's write-only and secret-named paths,
+          # the cases of the schema redaction invariant.
+          vp run gen:cfn-registry-secret-paths 2>&1 | tee -a /tmp/refresh.log
 
       # The change signal. `refresh-cfn-schemas.mjs --from-zip` writes ONLY
       # fixtures that actually drifted (`generatedAt` excluded from the
@@ -259,14 +262,14 @@ jobs:
           # `set -e` does not fire inside an `if` condition, so the inline form
           # swallows a git failure as "no drift" — fail-OPEN, contradicting the
           # fail-closed guard two steps up. A standalone assignment aborts.
-          changes=$(git status --porcelain -- tests/fixtures/cfn-schemas/ tests/fixtures/cfn-registry-create-only-paths.json)
+          changes=$(git status --porcelain -- tests/fixtures/cfn-schemas/ tests/fixtures/cfn-registry-create-only-paths.json tests/fixtures/cfn-registry-secret-paths.json)
           if [ -z "${changes}" ]; then
             echo "drifted=false" >> "$GITHUB_OUTPUT"
             echo "No fixture drift — nothing to do."
           else
             echo "drifted=true" >> "$GITHUB_OUTPUT"
             echo "${changes}"
-            git --no-pager diff --stat -- tests/fixtures/cfn-schemas/ tests/fixtures/cfn-registry-create-only-paths.json
+            git --no-pager diff --stat -- tests/fixtures/cfn-schemas/ tests/fixtures/cfn-registry-create-only-paths.json tests/fixtures/cfn-registry-secret-paths.json
           fi
 
       # The mechanical regeneration, and only the mechanical regeneration.
@@ -488,6 +491,7 @@ jobs:
           git add \
             tests/fixtures/cfn-schemas/ \
             tests/fixtures/cfn-registry-create-only-paths.json \
+            tests/fixtures/cfn-registry-secret-paths.json \
             src/provisioning/ \
             src/analyzer/replacement-rules/ \
             docs/
@@ -840,7 +844,7 @@ jobs:
             exit 0
           fi
           if [ -z "${PUBLISHED_PR}" ]; then
-            regen=$(git status --porcelain -- src/provisioning/ src/analyzer/replacement-rules/ docs/ tests/fixtures/cfn-schemas/ tests/fixtures/cfn-registry-create-only-paths.json)
+            regen=$(git status --porcelain -- src/provisioning/ src/analyzer/replacement-rules/ docs/ tests/fixtures/cfn-schemas/ tests/fixtures/cfn-registry-create-only-paths.json tests/fixtures/cfn-registry-secret-paths.json)
             if [ -n "${regen}" ]; then
               echo "::warning::PR ${pr} has no outstanding checks, but regenerating changed files this PR has not committed, so its own CI is still red. Leaving the marking. Run 'vp run gen:all-matrices' on the branch and push."
               echo "${regen}"
