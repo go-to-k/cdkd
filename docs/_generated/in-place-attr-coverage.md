@@ -12,8 +12,8 @@ Whether an in-place update moves each read-only `Fn::GetAtt` attribute (issue [#
 
 Source: `@aws-cdk/aws-service-spec` 0.1.235; create-only properties from the live-registry snapshot `tests/fixtures/cfn-registry-create-only-paths.json`.
 
-- SDK-provider types: **131**, pairs classified by hand: **390** (moving: **66**)
-- Cloud Control types: **1584**, pairs: **5545** — by rule: `no-in-place-update` 1112, `creation-timestamp` 381, `own-identity` 816, `primary-identifier` 522, `arn-template` 96, `update-timestamp` 372, `creator` 26, `owner-account` 30, `identifier-arn-member` 68, `update-marker` 143, `parent-fixed` 2, `operational-status` 486; by hand: **80**; in the baseline: **1411**
+- SDK-provider types: **131**, pairs classified by hand: **390** (moving: **90**)
+- Cloud Control types: **1584**, pairs: **5545** — by rule: `no-in-place-update` 974, `creation-timestamp` 381, `own-identity` 816, `primary-identifier` 493, `arn-template` 96, `update-timestamp` 372, `creator` 26, `owner-account` 30, `identifier-arn-member` 68, `update-marker` 143, `parent-fixed` 2, `operational-status` 624; by hand: **87**; in the baseline: **1433**
 
 ## SDK-provider types (hand classification)
 
@@ -97,13 +97,13 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235; create-only properties from the liv
 - `BrowserArn`: never — an id AWS mints at create, fixed for the resource life
 - `BrowserId`: never — an id AWS mints at create, fixed for the resource life
 - `Name`: never — the browser name is fixed at create
-- `Status`: never — an operational status that settles back to its steady value after an update; no property sets it
+- `Status`: any-update — an operational status; the stable value after an update can differ from the recorded one
 
 ### `AWS::BedrockAgentCore::CodeInterpreter`
 
 - `CodeInterpreterArn`: never — an id AWS mints at create, fixed for the resource life
 - `CodeInterpreterId`: never — an id AWS mints at create, fixed for the resource life
-- `Status`: never — an operational status that settles back to its steady value after an update; no property sets it
+- `Status`: any-update — an operational status; the stable value after an update can differ from the recorded one
 
 ### `AWS::BedrockAgentCore::Evaluator`
 
@@ -112,7 +112,7 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235; create-only properties from the liv
 - `EvaluatorId`: never — an id AWS mints at create, fixed for the resource life
 - `EvaluatorType`: moved by `EvaluatorConfig` — Custom / CustomCode / CustomDerived follows the kind of EvaluatorConfig
 - `Provider`: moved by `EvaluatorConfig` — follows the evaluator configuration
-- `Status`: never — an operational status that settles back to its steady value after an update; no property sets it
+- `Status`: any-update — an operational status; the stable value after an update can differ from the recorded one
 - `UpdatedAt`: moved by `Description`, `EvaluatorConfig`, `Level`, `KmsKeyArn` — stamped by UpdateEvaluator, which a Tags-only edit does not call
 
 ### `AWS::BedrockAgentCore::Runtime`
@@ -121,9 +121,9 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235; create-only properties from the liv
 - `AgentRuntimeId`: never — an id AWS mints at create, fixed for the resource life
 - `AgentRuntimeVersion`: any-update — every UpdateAgentRuntime mints a version, and the update sends one for every change (#6962)
 - `CreatedAt`: never — the creation time
-- `FailureReason`: never — an operational status that settles back to its steady value after an update; no property sets it
+- `FailureReason`: any-update — an operational status; the stable value after an update can differ from the recorded one
 - `LastUpdatedAt`: any-update — every UpdateAgentRuntime stamps it
-- `Status`: never — an operational status that settles back to its steady value after an update; no property sets it
+- `Status`: any-update — an operational status; the stable value after an update can differ from the recorded one
 - `WorkloadIdentityDetails`: never — the workload identity is created with the runtime
 
 ### `AWS::Budgets::Budget`
@@ -205,7 +205,7 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235; create-only properties from the liv
 - `Arn`: never — derived from the instance id
 - `CreatedTime`: never — the creation time
 - `Id`: never — an id AWS mints at create, fixed for the resource life
-- `InstanceStatus`: never — an operational status that settles back to its steady value after an update; no property sets it
+- `InstanceStatus`: any-update — an operational status; the stable value after an update can differ from the recorded one
 - `ServiceRole`: never — the service-linked role Connect creates with the instance
 
 ### `AWS::DLM::LifecyclePolicy`
@@ -250,7 +250,7 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235; create-only properties from the liv
 - `PrivateIp`: never — the primary private address is create-only and survives a stop/start
 - `PublicDnsName`: any-update — follows the public address (#5446)
 - `PublicIp`: any-update — a stop/start update gives an instance without an EIP a new address (#5446)
-- `State`: never — an operational status that settles back to its steady value after an update; no property sets it
+- `State`: any-update — an operational status; the stable value after an update can differ from the recorded one
 - `VpcId`: never — the subnet is create-only
 
 ### `AWS::EC2::InternetGateway`
@@ -506,7 +506,7 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235; create-only properties from the liv
 
 - `ConsumerARN`: never — the ARN is built from create-only inputs
 - `ConsumerCreationTimestamp`: never — the creation time
-- `ConsumerStatus`: never — an operational status that settles back to its steady value after an update; no property sets it
+- `ConsumerStatus`: any-update — an operational status; the stable value after an update can differ from the recorded one
 
 ### `AWS::KinesisFirehose::DeliveryStream`
 
@@ -534,7 +534,7 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235; create-only properties from the liv
 - `ImageArn`: never — the ARN is built from create-only inputs
 - `LatestActiveImageVersion`: moved by `BaseImageArn`, `BaseImageVersion`, `BuildRoleArn`, `Description`, `CodeArtifact`, `Logging`, `EgressNetworkConnectors`, `CpuConfigurations`, `Resources`, `AdditionalOsCapabilities`, `Hooks`, `EnvironmentVariables`, `KmsKeyIdentifier` — a build-key change builds a new version
 - `LatestFailedImageVersion`: moved by `BaseImageArn`, `BaseImageVersion`, `BuildRoleArn`, `Description`, `CodeArtifact`, `Logging`, `EgressNetworkConnectors`, `CpuConfigurations`, `Resources`, `AdditionalOsCapabilities`, `Hooks`, `EnvironmentVariables`, `KmsKeyIdentifier` — a failed build records its version
-- `State`: never — an operational status that settles back to its steady value after an update; no property sets it
+- `State`: any-update — an operational status; the stable value after an update can differ from the recorded one
 - `UpdatedAt`: moved by `BaseImageArn`, `BaseImageVersion`, `BuildRoleArn`, `Description`, `CodeArtifact`, `Logging`, `EgressNetworkConnectors`, `CpuConfigurations`, `Resources`, `AdditionalOsCapabilities`, `Hooks`, `EnvironmentVariables`, `KmsKeyIdentifier` — stamped by UpdateMicrovmImage; a Tags-only edit skips it
 
 ### `AWS::Lambda::NetworkConnector`
@@ -542,7 +542,7 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235; create-only properties from the liv
 - `Arn`: never — the ARN is built from create-only inputs
 - `LatestVersion`: moved by `Configuration`, `OperatorRole` — a configuration update creates a new immutable version
 - `LatestVersionArn`: moved by `Configuration`, `OperatorRole` — the ARN of the latest version
-- `State`: never — an operational status that settles back to its steady value after an update; no property sets it
+- `State`: any-update — an operational status; the stable value after an update can differ from the recorded one
 
 ### `AWS::Lambda::Permission`
 
@@ -560,10 +560,10 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235; create-only properties from the liv
 - `EndpointArn`: never — the ARN is built from create-only inputs
 - `FunctionArn`: never — the create-only FunctionName
 - `RegionalEndpoints`: never — one per create-only Region
-- `State`: never — an operational status that settles back to its steady value after an update; no property sets it
-- `StateReason`: never — an operational status that settles back to its steady value after an update; no property sets it
-- `UpdateStatus`: never — an operational status that settles back to its steady value after an update; no property sets it
-- `UpdateStatusReason`: never — an operational status that settles back to its steady value after an update; no property sets it
+- `State`: any-update — an operational status; the stable value after an update can differ from the recorded one
+- `StateReason`: any-update — an operational status; the stable value after an update can differ from the recorded one
+- `UpdateStatus`: any-update — an operational status; the stable value after an update can differ from the recorded one
+- `UpdateStatusReason`: any-update — an operational status; the stable value after an update can differ from the recorded one
 - `UpdatedAt`: moved by `Description`, `AuthType`, `RevisionWeights`, `ScalingConfig`, `ThrottleConfig` — stamped by UpdateWebFunctionEndpoint (every in-place property but the create-only ones)
 
 ### `AWS::Lambda::WebFunctionRevision`
@@ -572,8 +572,8 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235; create-only properties from the liv
 - `FunctionArn`: never — every property is create-only
 - `RevisionArn`: never — every property is create-only
 - `RevisionId`: never — every property is create-only
-- `State`: never — an operational status that settles back to its steady value after an update; no property sets it
-- `StateReason`: never — an operational status that settles back to its steady value after an update; no property sets it
+- `State`: any-update — an operational status; the stable value after an update can differ from the recorded one
+- `StateReason`: any-update — an operational status; the stable value after an update can differ from the recorded one
 
 ### `AWS::Lightsail::Alarm`
 
@@ -595,8 +595,8 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235; create-only properties from the liv
 - `Arn`: never — the ARN is built from create-only inputs
 - `ResourceArns`: moved by `ResourceArn` — the source resource
 - `Service`: moved by `ResourceArn` — the service of the source resource
-- `Status`: never — an operational status that settles back to its steady value after an update; no property sets it
-- `StatusReason`: never — an operational status that settles back to its steady value after an update; no property sets it
+- `Status`: any-update — an operational status; the stable value after an update can differ from the recorded one
+- `StatusReason`: any-update — an operational status; the stable value after an update can differ from the recorded one
 
 ### `AWS::Logs::LogGroup`
 
@@ -620,7 +620,7 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235; create-only properties from the liv
 - `CreationTime`: never — the creation time
 - `CurrentState`: moved by `DesiredState` — RUNNING or STOPPED, as DesiredState asks
 - `LastModifiedTime`: moved by `Description`, `DesiredState`, `Enrichment`, `EnrichmentParameters`, `KmsKeyIdentifier`, `LogConfiguration`, `RoleArn`, `SourceParameters`, `Target`, `TargetParameters` — stamped by UpdatePipe; a Tags-only edit skips it
-- `StateReason`: never — an operational status that settles back to its steady value after an update; no property sets it
+- `StateReason`: any-update — an operational status; the stable value after an update can differ from the recorded one
 
 ### `AWS::RDS::DBCluster`
 
@@ -642,7 +642,7 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235; create-only properties from the liv
 - `CertificateDetails.CAIdentifier`: moved by `CACertificateIdentifier` — the server certificate of the CA
 - `CertificateDetails.ValidTill`: moved by `CACertificateIdentifier` — the server certificate of the CA
 - `DBInstanceArn`: never — the ARN is built from create-only inputs
-- `DBInstanceStatus`: never — an operational status that settles back to its steady value after an update; no property sets it
+- `DBInstanceStatus`: any-update — an operational status; the stable value after an update can differ from the recorded one
 - `DbiResourceId`: never — an id AWS mints at create, fixed for the resource life
 - `Endpoint`: moved by `Port` — the endpoint object carries the port, modified in place
 - `Endpoint.Address`: never — derived from the create-only identifier
@@ -656,14 +656,14 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235; create-only properties from the liv
 - `ListenerEndpoint.HostedZoneId`: never — the regional zone of the endpoint
 - `ListenerEndpoint.Port`: moved by `Port` — follows the instance port
 - `MasterUserSecret.SecretArn`: moved by `ManageMasterUserPassword` — turning the managed password off and on mints a new secret (#6913)
-- `PercentProgress`: never — an operational status that settles back to its steady value after an update; no property sets it
+- `PercentProgress`: any-update — an operational status; the stable value after an update can differ from the recorded one
 - `ReadReplicaDBClusterIdentifiers`: never — replicas created elsewhere move it
 - `ReadReplicaDBInstanceIdentifiers`: never — replicas created elsewhere move it
 - `ResumeFullAutomationModeTime`: never — RDS Custom automation mode, which no property sets
 - `SecondaryAvailabilityZone`: moved by `MultiAZ` — a Multi-AZ instance gains a standby zone
-- `StatusInfos`: never — an operational status that settles back to its steady value after an update; no property sets it
-- `StorageOperationPercentProgress`: never — an operational status that settles back to its steady value after an update; no property sets it
-- `StorageOperationStatus`: never — an operational status that settles back to its steady value after an update; no property sets it
+- `StatusInfos`: any-update — an operational status; the stable value after an update can differ from the recorded one
+- `StorageOperationPercentProgress`: any-update — an operational status; the stable value after an update can differ from the recorded one
+- `StorageOperationStatus`: any-update — an operational status; the stable value after an update can differ from the recorded one
 
 ### `AWS::RDS::DBProxy`
 
@@ -803,9 +803,11 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235; create-only properties from the liv
 ## Cloud Control types classified by hand
 
 - `AWS::APS::Workspace` `PrometheusEndpoint`: never — `aps-workspaces.<region>.../workspaces/<id>/`
+- `AWS::Amplify::Branch` `Arn`: never — `apps/<app>/branches/<create-only BranchName>`; PullRequestEnvironmentName is a backend
 - `AWS::Amplify::Webhook` `WebhookUrl`: never — built from the webhook id and its creation token
 - `AWS::AppSync::Api` `Dns`: never — the api id hosts, fixed for the api life
 - `AWS::AppSync::DomainName` `AppSyncDomainName`: never — the CloudFront host for the create-only DomainName
+- `AWS::Chatbot::MicrosoftTeamsChannelConfiguration` `Arn`: never — built from the create-only ConfigurationName; TeamsChannelName labels the channel
 - `AWS::Chime::ChannelFlow` `ChannelFlowId`: never — measured (cdkd-probe-7007-s4b): Name in place left it 1109d9cb...
 - `AWS::Chime::VoiceConnector` `VoiceConnectorId`: never — measured (cdkd-probe-7007-s4b): Name in place left it dv56tpxjyzqla7zpqp6swq
 - `AWS::CloudFront::StreamingDistribution` `DomainName`: never — the `d....cloudfront.net` host assigned at create
@@ -828,8 +830,10 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235; create-only properties from the liv
 - `AWS::DataSync::LocationObjectStorage` `LocationUri`: moved by `Subdirectory`, `ServerHostname` — `object-storage://<host>/<bucket>/<subdirectory>/`
 - `AWS::DataSync::LocationS3` `LocationUri`: moved by `Subdirectory` — `s3://<bucket>/<subdirectory>/`
 - `AWS::DataSync::LocationSMB` `LocationUri`: moved by `Subdirectory`, `ServerHostname` — `smb://<host>/<subdirectory>/`
+- `AWS::DataSync::Task` `TaskArn`: never — measured (cdkd-probe-7007-s4b): Name in place left it task/task-0be708b518a40c674
 - `AWS::Deadline::Budget` `BudgetId`: never — measured (cdkd-probe-7007-s3c): DisplayName in place left it budget-4a2b9e7f...
 - `AWS::Deadline::Monitor` `Url`: moved by `Subdomain` — the monitor subdomain host
+- `AWS::Deadline::Queue` `Arn`: never — measured (cdkd-probe-7007-s2c): DisplayName in place left it .../queue/queue-f632d873...
 - `AWS::Deadline::Queue` `QueueId`: never — measured (cdkd-probe-7007-s2c): DisplayName in place left it queue-f632d873...
 - `AWS::EC2::GatewayRouteTableAssociation` `AssociationId`: moved by `RouteTableId` — ReplaceRouteTableAssociation mints a new association id
 - `AWS::EC2::LaunchTemplate` `DefaultVersionNumber`: any-update — the new version becomes the default when the update sets it
@@ -841,6 +845,7 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235; create-only properties from the liv
 - `AWS::Events::Endpoint` `EndpointUrl`: never — `<endpoint id>.endpoint.events.amazonaws.com`
 - `AWS::FMS::ApplicationsList` `ListId`: never — PutAppsList updates the list its ListId names; the name is a field
 - `AWS::FMS::ProtocolsList` `ListId`: never — PutProtocolsList updates the list its ListId names; the name is a field
+- `AWS::Glue::UserDefinedFunction` `Arn`: never — measured (cdkd-probe-7007-s2c): ClassName / OwnerName in place left it .../<db>/<create-only name>
 - `AWS::HealthLake::FHIRDatastore` `DatastoreEndpoint`: never — built from the datastore id
 - `AWS::IAM::ServerCertificate` `Arn`: never — measured (cdkd-probe-7007-s1): Path in place left it server-certificate/cdkd-probe-7007-a/cdkd-probe-7007-cert
 - `AWS::IVSChat::LoggingConfiguration` `Id`: never — measured (cdkd-probe-7007-s3c): Name in place left it r2zbNTcYVRdc
@@ -853,6 +858,8 @@ Source: `@aws-cdk/aws-service-spec` 0.1.235; create-only properties from the liv
 - `AWS::Lightsail::Instance` `InstanceArn`: never — `Instance/<uuid>`; KeyPairName names a key pair
 - `AWS::Lightsail::LoadBalancer` `LoadBalancerArn`: never — `LoadBalancer/<uuid>`; TlsPolicyName names a TLS policy
 - `AWS::Location::Map` `DataSource`: never — the data provider of the create-only Configuration style
+- `AWS::MediaConnect::FlowOutput` `OutputArn`: never — `output:<id>:<create-only Name>`; NdiProgramName is an NDI setting
+- `AWS::MediaConnect::FlowSource` `SourceArn`: never — `source:<id>:<create-only Name>`; VpcInterfaceName names an interface
 - `AWS::MediaLive::CloudWatchAlarmTemplate` `Id`: never — the minted id; UpdateCloudWatchAlarmTemplate names the template by it
 - `AWS::MediaLive::EventBridgeRuleTemplate` `Id`: never — measured (cdkd-probe-7007-135937r2-ml): Name in place left it 8289460
 - `AWS::MediaPackageV2::Channel` `IngestEndpoints`: never — assigned per channel at create; InputType is create-only
@@ -892,7 +899,7 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::AIOps::InvestigationGroup` | `LastModifiedAt`, `LastModifiedBy` |
 | `AWS::ARCRegionSwitch::Plan` | `Version` |
 | `AWS::AccessAnalyzer::ArchiveRule` | `UpdatedAt` |
-| `AWS::AccountAccess::Application` | `UpdatedAt` |
+| `AWS::AccountAccess::Application` | `Status`, `UpdatedAt` |
 | `AWS::AgentRegistry::Registry` | `AutoDetectionStatus`, `Status`, `UpdatedAt` |
 | `AWS::AgentRegistry::RegistryRecord` | `Status`, `UpdatedAt` |
 | `AWS::AmazonMQ::Broker` | `ConfigurationRevision`, `EngineVersionCurrent` |
@@ -901,11 +908,12 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::AmplifyUIBuilder::Component` | `ModifiedAt` |
 | `AWS::AmplifyUIBuilder::Theme` | `ModifiedAt` |
 | `AWS::ApiGatewayV2::PortalProduct` | `LastModified` |
+| `AWS::AppConfig::Deployment` | `State` |
 | `AWS::AppConfig::ExperimentDefinition` | `Status`, `UpdatedAt` |
 | `AWS::AppConfig::ExperimentRun` | `Status`, `UpdatedAt` |
 | `AWS::AppConfig::Extension` | `VersionNumber` |
 | `AWS::AppFabric::AppAuthorization` | `Status`, `UpdatedAt` |
-| `AWS::AppFabric::Ingestion` | `UpdatedAt` |
+| `AWS::AppFabric::Ingestion` | `State`, `UpdatedAt` |
 | `AWS::AppFabric::IngestionDestination` | `Status`, `UpdatedAt` |
 | `AWS::AppIntegrations::Application` | `LastModifiedRegion`, `LastModifiedTime` |
 | `AWS::AppRunner::Service` | `Status` |
@@ -924,8 +932,10 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::B2BI::Transformer` | `ModifiedAt` |
 | `AWS::BCM::Dashboard` | `UpdatedAt` |
 | `AWS::BCM::ScheduledReport` | `HealthStatus`, `UpdatedAt` |
+| `AWS::Backup::BackupAccessPoint` | `Status` |
 | `AWS::Backup::BackupPlan` | `VersionId` |
 | `AWS::Backup::Framework` | `DeploymentStatus`, `FrameworkStatus` |
+| `AWS::Backup::LegalHold` | `Status` |
 | `AWS::Backup::LogicallyAirGappedBackupVault` | `VaultState` |
 | `AWS::Backup::TieringConfiguration` | `LastUpdatedTime` |
 | `AWS::Batch::ComputeEnvironment` | `EksConfiguration.AccessEntry.Status` |
@@ -934,7 +944,7 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::BcmPricingCalculator::WorkloadEstimate` | `FailureMessage`, `Status` |
 | `AWS::Bedrock::Agent` | `AgentStatus`, `AgentVersion`, `FailureReasons`, `UpdatedAt` |
 | `AWS::Bedrock::AgentAlias` | `AgentAliasStatus`, `UpdatedAt` |
-| `AWS::Bedrock::ApplicationInferenceProfile` | `UpdatedAt` |
+| `AWS::Bedrock::ApplicationInferenceProfile` | `Status`, `UpdatedAt` |
 | `AWS::Bedrock::AutomatedReasoningPolicy` | `UpdatedAt`, `Version` |
 | `AWS::Bedrock::AutomatedReasoningPolicyVersion` | `UpdatedAt` |
 | `AWS::Bedrock::Blueprint` | `LastModifiedTime` |
@@ -944,8 +954,9 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::Bedrock::EnforcedGuardrailConfiguration` | `UpdatedAt`, `UpdatedBy` |
 | `AWS::Bedrock::Flow` | `Status`, `UpdatedAt`, `Version` |
 | `AWS::Bedrock::FlowAlias` | `UpdatedAt` |
+| `AWS::Bedrock::FlowVersion` | `Status` |
 | `AWS::Bedrock::Guardrail` | `Status`, `StatusReasons`, `UpdatedAt`, `Version` |
-| `AWS::Bedrock::IntelligentPromptRouter` | `UpdatedAt` |
+| `AWS::Bedrock::IntelligentPromptRouter` | `Status`, `UpdatedAt` |
 | `AWS::Bedrock::KnowledgeBase` | `FailureReasons`, `Status`, `UpdatedAt` |
 | `AWS::Bedrock::KnowledgeBasePolicy` | `RevisionId` |
 | `AWS::Bedrock::Prompt` | `UpdatedAt`, `Version` |
@@ -953,10 +964,10 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::Bedrock::RetrievalInstruction` | `LastTransitionStatus`, `Status`, `UpdatedAt` |
 | `AWS::Bedrock::Session` | `LastUpdatedAt`, `SessionStatus` |
 | `AWS::BedrockAgentCore::ApiKeyCredentialProvider` | `LastUpdatedTime` |
-| `AWS::BedrockAgentCore::BrowserCustom` | `LastUpdatedAt` |
-| `AWS::BedrockAgentCore::BrowserProfile` | `LastUpdatedAt` |
+| `AWS::BedrockAgentCore::BrowserCustom` | `FailureReason`, `LastUpdatedAt`, `Status` |
+| `AWS::BedrockAgentCore::BrowserProfile` | `LastUpdatedAt`, `Status` |
 | `AWS::BedrockAgentCore::CapacityProvider` | `LastUpdatedAt`, `Status` |
-| `AWS::BedrockAgentCore::CodeInterpreterCustom` | `LastUpdatedAt` |
+| `AWS::BedrockAgentCore::CodeInterpreterCustom` | `FailureReason`, `LastUpdatedAt`, `Status` |
 | `AWS::BedrockAgentCore::ConfigurationBundle` | `UpdatedAt`, `VersionId` |
 | `AWS::BedrockAgentCore::ConsentPortal` | `Status`, `UpdatedAt` |
 | `AWS::BedrockAgentCore::Dataset` | `Status`, `UpdatedAt` |
@@ -984,6 +995,7 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::Braket::SpendingLimit` | `UpdatedAt` |
 | `AWS::CE::AnomalyMonitor` | `LastUpdatedDate` |
 | `AWS::Cases::CaseRule` | `LastModifiedTime` |
+| `AWS::Cases::Domain` | `DomainStatus` |
 | `AWS::Cases::Field` | `LastModifiedTime` |
 | `AWS::Cases::Layout` | `LastModifiedTime` |
 | `AWS::Cases::Template` | `LastModifiedTime` |
@@ -997,7 +1009,9 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::Chime::SipMediaApplication` | `UpdatedTimestamp` |
 | `AWS::Chime::VoiceConnector` | `UpdatedTimestamp` |
 | `AWS::CleanRooms::IntermediateTable` | `Status` |
+| `AWS::CleanRoomsML::TrainingDataset` | `Status` |
 | `AWS::CloudFormation::GeneratedTemplate` | `LastUpdatedTime`, `Progress`, `Status` |
+| `AWS::CloudFormation::Publisher` | `PublisherStatus` |
 | `AWS::CloudFront::AnycastIpList` | `ETag` |
 | `AWS::CloudFront::CachePolicy` | `LastModifiedTime` |
 | `AWS::CloudFront::ConnectionFunction` | `ETag`, `LastModifiedTime`, `Status` |
@@ -1030,8 +1044,10 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::CloudWatch::ResourceMetricsConfiguration` | `UpdatedAt` |
 | `AWS::CloudWatch::Space` | `Status`, `UpdatedAt` |
 | `AWS::CloudWatch::View` | `UpdatedAt` |
+| `AWS::CodeConnections::Connection` | `ConnectionStatus` |
 | `AWS::CodeConnections::Host` | `Status` |
 | `AWS::CodePipeline::Pipeline` | `Version` |
+| `AWS::CodeStarConnections::Connection` | `ConnectionStatus` |
 | `AWS::Comprehend::DocumentClassifierEndpoint` | `LastModifiedTime` |
 | `AWS::Comprehend::EntityRecognizerEndpoint` | `EndpointStatus`, `LastModifiedTime` |
 | `AWS::ComputeOptimizer::AutomationRule` | `LastUpdatedTimestamp`, `RuleRevision` |
@@ -1045,15 +1061,18 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::Connect::SecurityProfile` | `LastModifiedRegion`, `LastModifiedTime` |
 | `AWS::Connect::TestCase` | `LastModifiedRegion`, `LastModifiedTime` |
 | `AWS::Connect::TrafficDistributionGroup` | `Status` |
-| `AWS::Connect::Vocabulary` | `LastModifiedTime` |
+| `AWS::Connect::Vocabulary` | `LastModifiedTime`, `State` |
 | `AWS::ControlTower::LandingZone` | `DriftStatus`, `Status` |
 | `AWS::CustomerProfiles::CalculatedAttributeDefinition` | `LastUpdatedAt`, `Status` |
 | `AWS::CustomerProfiles::Domain` | `LastUpdatedAt`, `RuleBasedMatching.Status` |
 | `AWS::CustomerProfiles::DomainObjectType` | `LastUpdatedAt` |
+| `AWS::CustomerProfiles::EventStream` | `DestinationDetails.Status`, `State` |
 | `AWS::CustomerProfiles::EventTrigger` | `LastUpdatedAt` |
 | `AWS::CustomerProfiles::Integration` | `LastUpdatedAt` |
 | `AWS::CustomerProfiles::ObjectType` | `LastUpdatedAt` |
 | `AWS::CustomerProfiles::Recommender` | `FailureReason`, `LastUpdatedAt`, `Status` |
+| `AWS::CustomerProfiles::RecommenderFilter` | `Status` |
+| `AWS::CustomerProfiles::RecommenderSchema` | `Status` |
 | `AWS::DRS::RecoveryPlan` | `Status`, `UpdatedAt` |
 | `AWS::DSQL::Cluster` | `PolicyVersion`, `Status` |
 | `AWS::DataExchange::DataSet` | `UpdatedAt` |
@@ -1071,29 +1090,53 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::DataZone::SubscriptionTarget` | `UpdatedAt`, `UpdatedBy` |
 | `AWS::Deadline::Budget` | `Status` |
 | `AWS::Deadline::Fleet` | `Status`, `StatusMessage` |
+| `AWS::Deadline::LicenseEndpoint` | `Status`, `StatusMessage` |
+| `AWS::Deadline::Worker` | `Status` |
 | `AWS::DevOpsAgent::AgentSpace` | `UpdatedAt` |
 | `AWS::DevOpsAgent::Asset` | `UpdatedAt`, `Version` |
 | `AWS::DevOpsAgent::Association` | `UpdatedAt` |
 | `AWS::DevOpsAgent::PrivateConnection` | `Status` |
 | `AWS::DevOpsAgent::Trigger` | `UpdatedAt` |
+| `AWS::DeviceFarm::Upload` | `Status` |
 | `AWS::DirectConnect::Connection` | `ConnectionState` |
 | `AWS::DirectConnect::Lag` | `LagState` |
+| `AWS::DocDBElastic::ClusterSnapshot` | `Status` |
 | `AWS::EC2::CapacityReservation` | `State` |
+| `AWS::EC2::CarrierGateway` | `State` |
 | `AWS::EC2::FcaPolicy` | `LatestVersion`, `VersionExpectedEffectiveAt` |
 | `AWS::EC2::FpgaImage` | `State`, `UpdateTime` |
 | `AWS::EC2::IPAMPool` | `State`, `StateMessage` |
+| `AWS::EC2::IPAMPoolCidr` | `State` |
 | `AWS::EC2::IPAMResourceDiscovery` | `State` |
+| `AWS::EC2::IPAMResourceDiscoveryAssociation` | `ResourceDiscoveryStatus`, `State` |
+| `AWS::EC2::InstanceConnectEndpoint` | `State`, `StateMessage` |
 | `AWS::EC2::InstanceEventWindow` | `State` |
+| `AWS::EC2::IpamExternalResourceVerificationToken` | `State`, `Status` |
+| `AWS::EC2::IpamInternetRegistryAssociation` | `State` |
 | `AWS::EC2::LocalGatewayRoute` | `State` |
+| `AWS::EC2::LocalGatewayRouteTable` | `State` |
+| `AWS::EC2::LocalGatewayRouteTableVPCAssociation` | `State` |
+| `AWS::EC2::LocalGatewayRouteTableVirtualInterfaceGroupAssociation` | `State` |
+| `AWS::EC2::LocalGatewayVirtualInterface` | `ConfigurationState` |
+| `AWS::EC2::LocalGatewayVirtualInterfaceGroup` | `ConfigurationState` |
 | `AWS::EC2::NetworkInsightsAccessScope` | `UpdatedDate` |
+| `AWS::EC2::NetworkInsightsAccessScopeAnalysis` | `Status`, `StatusMessage` |
 | `AWS::EC2::NetworkInsightsAnalysis` | `Status`, `StatusMessage` |
 | `AWS::EC2::PrefixList` | `Version` |
+| `AWS::EC2::SecurityGroupVpcAssociation` | `State`, `StateReason` |
+| `AWS::EC2::Snapshot` | `Progress`, `State` |
 | `AWS::EC2::SqlHaStandbyDetectedInstance` | `HaStatus`, `LastUpdatedTime` |
 | `AWS::EC2::TransitGateway` | `EncryptionSupportState` |
+| `AWS::EC2::TransitGatewayConnect` | `State` |
+| `AWS::EC2::TransitGatewayConnectPeer` | `State` |
 | `AWS::EC2::TransitGatewayMeteringPolicy` | `State` |
+| `AWS::EC2::TransitGatewayMeteringPolicyEntry` | `State` |
 | `AWS::EC2::TransitGatewayMulticastDomain` | `State` |
+| `AWS::EC2::TransitGatewayMulticastDomainAssociation` | `State` |
 | `AWS::EC2::TransitGatewayNetworkFunctionAttachment` | `State` |
 | `AWS::EC2::TransitGatewayPeeringAttachment` | `MultipathResilienceStatus`, `State`, `Status`, `Status.Code`, `Status.Message` |
+| `AWS::EC2::TransitGatewayPolicyTable` | `State` |
+| `AWS::EC2::TransitGatewayPolicyTableAssociation` | `State` |
 | `AWS::EC2::TransitGatewayPolicyTableEntry` | `State` |
 | `AWS::EC2::VPCEncryptionControl` | `ResourceExclusions.EgressOnlyInternetGateway.State`, `ResourceExclusions.EgressOnlyInternetGateway.StateMessage`, `ResourceExclusions.ElasticFileSystem.State`, `ResourceExclusions.ElasticFileSystem.StateMessage`, `ResourceExclusions.InternetGateway.State`, `ResourceExclusions.InternetGateway.StateMessage`, `ResourceExclusions.Lambda.State`, `ResourceExclusions.Lambda.StateMessage`, `ResourceExclusions.NatGateway.State`, `ResourceExclusions.NatGateway.StateMessage`, `ResourceExclusions.VirtualPrivateGateway.State`, `ResourceExclusions.VirtualPrivateGateway.StateMessage`, `ResourceExclusions.VpcLattice.State`, `ResourceExclusions.VpcLattice.StateMessage`, `ResourceExclusions.VpcPeering.State`, `ResourceExclusions.VpcPeering.StateMessage`, `State`, `StateMessage` |
 | `AWS::EC2::VPCEndpointService` | `PrivateDnsNameConfiguration.State` |
@@ -1105,10 +1148,15 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::ECS::Daemon` | `DaemonStatus`, `UpdatedAt` |
 | `AWS::ECS::ExpressGatewayService` | `Status`, `UpdatedAt` |
 | `AWS::ECS::Gateway` | `Status`, `UpdatedAt` |
+| `AWS::ECS::GatewayClusterAssociations` | `Status` |
 | `AWS::EKS::Capability` | `ModifiedAt`, `Status`, `Version` |
+| `AWS::EKS::CertificateAuthority` | `DistributionStatus`, `SigningStatus` |
+| `AWS::EMRContainers::Endpoint` | `FailureReason`, `State`, `StateDetails` |
 | `AWS::EVS::Environment` | `EnvironmentState`, `ModifiedAt`, `StateDetails` |
 | `AWS::ElastiCache::GlobalReplicationGroup` | `Status` |
 | `AWS::ElastiCache::ServerlessCache` | `FullEngineVersion`, `Status` |
+| `AWS::ElastiCache::ServerlessCacheSnapshot` | `Status` |
+| `AWS::ElastiCache::Snapshot` | `SnapshotStatus` |
 | `AWS::ElastiCache::User` | `Status` |
 | `AWS::ElastiCache::UserGroup` | `Status` |
 | `AWS::ElasticLoadBalancingV2::TrustStore` | `Status` |
@@ -1138,6 +1186,7 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::Glue::Blueprint` | `LastModifiedOn`, `Status` |
 | `AWS::Glue::Catalog` | `CatalogProperties.DataLakeAccessProperties.ManagedWorkgroupStatus`, `FederatedCatalog.SyncConfiguration.AssetsSyncConfiguration.ManagedCrawlerDetails.Error`, `FederatedCatalog.SyncConfiguration.AssetsSyncConfiguration.ManagedCrawlerDetails.Error.ErrorCode`, `FederatedCatalog.SyncConfiguration.AssetsSyncConfiguration.ManagedCrawlerDetails.Error.ErrorMessage`, `FederatedCatalog.SyncConfiguration.AssetsSyncConfiguration.ManagedCrawlerDetails.Status`, `FederatedCatalog.SyncConfiguration.LineageSyncConfiguration.ManagedCrawlerDetails.Error`, `FederatedCatalog.SyncConfiguration.LineageSyncConfiguration.ManagedCrawlerDetails.Error.ErrorCode`, `FederatedCatalog.SyncConfiguration.LineageSyncConfiguration.ManagedCrawlerDetails.Error.ErrorMessage`, `FederatedCatalog.SyncConfiguration.LineageSyncConfiguration.ManagedCrawlerDetails.Status`, `UpdateTime` |
 | `AWS::Glue::Integration` | `Status` |
+| `AWS::Glue::Session` | `Progress`, `Status` |
 | `AWS::Grafana::Workspace` | `ModificationTimestamp`, `SamlConfigurationStatus`, `Status` |
 | `AWS::Greengrass::ConnectorDefinition` | `LatestVersionArn` |
 | `AWS::Greengrass::CoreDefinition` | `LatestVersionArn` |
@@ -1152,9 +1201,11 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::GuardDuty::PublishingDestination` | `Status` |
 | `AWS::GuardDuty::ThreatEntitySet` | `ErrorDetails`, `Status`, `UpdatedAt` |
 | `AWS::GuardDuty::TrustedEntitySet` | `ErrorDetails`, `Status`, `UpdatedAt` |
-| `AWS::HealthImaging::Datastore` | `UpdatedAt` |
+| `AWS::HealthAgent::Domain` | `Status` |
+| `AWS::HealthImaging::Datastore` | `DatastoreStatus`, `UpdatedAt` |
 | `AWS::HealthLake::FHIRDatastore` | `DatastoreStatus` |
 | `AWS::IVS::IngestConfiguration` | `State` |
+| `AWS::IVS::RecordingConfiguration` | `State` |
 | `AWS::IVSChat::LoggingConfiguration` | `State` |
 | `AWS::IdentityStore::User` | `UpdatedAt`, `UpdatedBy`, `UserStatus` |
 | `AWS::ImageBuilder::Image` | `LatestVersion`, `LatestVersion.Arn`, `LatestVersion.Major`, `LatestVersion.Minor`, `LatestVersion.Patch` |
@@ -1179,32 +1230,41 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::IoTFleetWise::SignalCatalog` | `LastModificationTime` |
 | `AWS::IoTFleetWise::StateTemplate` | `LastModificationTime` |
 | `AWS::IoTFleetWise::Vehicle` | `LastModificationTime` |
-| `AWS::IoTSiteWise::Application` | `UpdatedAt` |
+| `AWS::IoTSecureTunneling::Tunnel` | `Status` |
+| `AWS::IoTSiteWise::Application` | `Status`, `UpdatedAt` |
 | `AWS::IoTSiteWise::Pipeline` | `Status` |
 | `AWS::IoTSiteWise::Task` | `Status` |
 | `AWS::IoTSiteWise::Workspace` | `Status`, `UpdatedAt` |
 | `AWS::IoTTwinMaker::ComponentType` | `Status`, `Status.Error`, `Status.Error.Code`, `Status.Error.Message`, `Status.State`, `UpdateDateTime` |
 | `AWS::IoTTwinMaker::Entity` | `Status`, `Status.Error`, `Status.Error.Code`, `Status.Error.Message`, `Status.State`, `UpdateDateTime` |
 | `AWS::IoTTwinMaker::Scene` | `UpdateDateTime` |
-| `AWS::IoTTwinMaker::SyncJob` | `UpdateDateTime` |
+| `AWS::IoTTwinMaker::SyncJob` | `State`, `UpdateDateTime` |
 | `AWS::IoTTwinMaker::Workspace` | `UpdateDateTime` |
 | `AWS::IoTWireless::FuotaTask` | `FuotaTaskStatus` |
 | `AWS::IoTWireless::MulticastGroup` | `Status` |
 | `AWS::IoTWireless::WirelessDeviceImportTask` | `Status`, `StatusReason` |
 | `AWS::Kinesis::Channel` | `ChannelStatus` |
+| `AWS::KinesisAnalyticsV2::Snapshot` | `SnapshotStatus` |
 | `AWS::Lambda::CapacityProvider` | `State` |
 | `AWS::Lambda::Runtime` | `LastModified`, `State` |
 | `AWS::Lambda::RuntimeAlias` | `LastModified`, `RuntimeVersionArn`, `State` |
 | `AWS::Lambda::RuntimeVersion` | `LastModified`, `State` |
-| `AWS::Lambda::WebFunction` | `UpdatedAt` |
+| `AWS::Lambda::WebFunction` | `State`, `StateReason`, `UpdatedAt` |
 | `AWS::LaunchWizard::Deployment` | `Status` |
 | `AWS::Lex::BotAlias` | `BotAliasStatus` |
 | `AWS::Lex::ResourcePolicy` | `RevisionId` |
 | `AWS::LicenseManager::Grant` | `Version` |
 | `AWS::LicenseManager::License` | `Version` |
 | `AWS::LicenseManager::LicenseConfiguration` | `Status` |
+| `AWS::LicenseManagerLinuxSubscriptions::SubscriptionProvider` | `SubscriptionProviderStatus`, `SubscriptionProviderStatusMessage` |
+| `AWS::LicenseManagerUserSubscriptions::LicenseServerEndpoint` | `LicenseServerEndpointProvisioningStatus` |
+| `AWS::Lightsail::Certificate` | `Status` |
+| `AWS::Lightsail::ContactMethod` | `Status` |
+| `AWS::Lightsail::DatabaseSnapshot` | `State` |
 | `AWS::Lightsail::Disk` | `AttachmentState`, `State` |
+| `AWS::Lightsail::DiskSnapshot` | `Progress`, `State` |
 | `AWS::Lightsail::Distribution` | `Status` |
+| `AWS::Lightsail::InstanceSnapshot` | `State` |
 | `AWS::Lightsail::LoadBalancerTlsCertificate` | `Status` |
 | `AWS::Location::APIKey` | `UpdateTime` |
 | `AWS::Location::GeofenceCollection` | `UpdateTime` |
@@ -1212,6 +1272,7 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::Location::PlaceIndex` | `UpdateTime` |
 | `AWS::Location::RouteCalculator` | `UpdateTime` |
 | `AWS::Location::Tracker` | `UpdateTime` |
+| `AWS::Logs::Integration` | `IntegrationStatus` |
 | `AWS::Logs::LogAnomalyDetector` | `AnomalyDetectorStatus`, `LastModifiedTimeStamp` |
 | `AWS::Logs::ScheduledQuery` | `LastExecutionStatus`, `LastUpdatedTime` |
 | `AWS::Logs::StorageTierPolicy` | `LastUpdatedTime` |
@@ -1220,15 +1281,18 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::MGN::NetworkMigrationDefinition` | `UpdatedAt` |
 | `AWS::MGN::Wave` | `LastModifiedDateTime`, `WaveAggregatedStatus` |
 | `AWS::MPA::ApprovalTeam` | `LastUpdateTime`, `Status`, `StatusCode`, `StatusMessage`, `VersionId` |
+| `AWS::MPA::IdentitySource` | `Status`, `StatusCode`, `StatusMessage` |
 | `AWS::MSK::Channel` | `StateInfo`, `Status` |
 | `AWS::MSK::ClusterPolicy` | `CurrentVersion` |
 | `AWS::MSK::Replicator` | `CurrentVersion` |
 | `AWS::MWAAServerless::Workflow` | `ModifiedAt`, `WorkflowStatus`, `WorkflowVersion` |
 | `AWS::Macie::AllowList` | `Status` |
-| `AWS::Macie::Member` | `UpdatedAt` |
+| `AWS::Macie::Member` | `RelationshipStatus`, `UpdatedAt` |
 | `AWS::Macie::Session` | `AutomatedDiscoveryStatus` |
+| `AWS::ManagedBlockchain::Accessor` | `Status` |
 | `AWS::MediaConnect::Bridge` | `BridgeState` |
 | `AWS::MediaConnect::DestinationEndpoint` | `ConnectionState`, `RegistrationState`, `UpdatedAt` |
+| `AWS::MediaConnect::Gateway` | `GatewayState` |
 | `AWS::MediaConnect::RouterInput` | `State`, `UpdatedAt` |
 | `AWS::MediaConnect::RouterNetworkInterface` | `State`, `UpdatedAt` |
 | `AWS::MediaConnect::RouterOutput` | `RoutedState`, `State`, `UpdatedAt` |
@@ -1251,22 +1315,26 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::MemoryDB::ACL` | `Status` |
 | `AWS::MemoryDB::Cluster` | `ParameterGroupStatus`, `Status` |
 | `AWS::MemoryDB::MultiRegionCluster` | `Status` |
+| `AWS::MemoryDB::Snapshot` | `Status` |
 | `AWS::MemoryDB::User` | `Status` |
 | `AWS::NeptuneGraph::Graph` | `Status` |
+| `AWS::NeptuneGraph::GraphSnapshot` | `Status` |
 | `AWS::NetworkFirewall::ContainerAssociation` | `Status` |
 | `AWS::NetworkFlowMonitor::Monitor` | `ModifiedAt`, `MonitorStatus` |
 | `AWS::NetworkFlowMonitor::PerformanceMonitor` | `ModifiedAt`, `MonitorStatus` |
+| `AWS::NetworkFlowMonitor::Scope` | `Status` |
 | `AWS::NetworkManager::ConnectAttachment` | `LastModificationErrors`, `State`, `UpdatedAt` |
-| `AWS::NetworkManager::ConnectPeer` | `LastModificationErrors` |
+| `AWS::NetworkManager::ConnectPeer` | `LastModificationErrors`, `State` |
 | `AWS::NetworkManager::Connection` | `State` |
 | `AWS::NetworkManager::ContextStore` | `State` |
+| `AWS::NetworkManager::ContextStoreAssociation` | `State` |
 | `AWS::NetworkManager::CoreNetwork` | `State` |
 | `AWS::NetworkManager::Device` | `State` |
 | `AWS::NetworkManager::DirectConnectGatewayAttachment` | `LastModificationErrors`, `State`, `UpdatedAt` |
 | `AWS::NetworkManager::Link` | `State` |
 | `AWS::NetworkManager::Site` | `State` |
 | `AWS::NetworkManager::SiteToSiteVpnAttachment` | `LastModificationErrors`, `State`, `UpdatedAt` |
-| `AWS::NetworkManager::TransitGatewayPeering` | `LastModificationErrors` |
+| `AWS::NetworkManager::TransitGatewayPeering` | `LastModificationErrors`, `State` |
 | `AWS::NetworkManager::TransitGatewayRouteTableAttachment` | `LastModificationErrors`, `State`, `UpdatedAt` |
 | `AWS::NetworkManager::VpcAttachment` | `LastModificationErrors`, `State`, `UpdatedAt` |
 | `AWS::NetworkMonitor::Monitor` | `ModifiedAt`, `State` |
@@ -1278,9 +1346,13 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::NetworkSecurityManager::Template` | `Status`, `UpdatedAt`, `Version` |
 | `AWS::Notifications::EventRule` | `StatusSummaryByRegion` |
 | `AWS::Notifications::NotificationConfiguration` | `Status` |
-| `AWS::NotificationsContacts::EmailContact` | `EmailContact.UpdateTime` |
+| `AWS::Notifications::NotificationHub` | `NotificationHubStatusSummary` |
+| `AWS::NotificationsContacts::EmailContact` | `EmailContact.Status`, `EmailContact.UpdateTime` |
+| `AWS::NovaAct::WorkflowDefinition` | `Status` |
+| `AWS::OSIS::PipelineEndpoint` | `Status` |
 | `AWS::ObservabilityAdmin::DatasetIntegration` | `UpdatedAt` |
 | `AWS::ObservabilityAdmin::OrganizationTelemetryRule` | `RegionStatuses` |
+| `AWS::ObservabilityAdmin::TelemetryEnrichment` | `Status` |
 | `AWS::ObservabilityAdmin::TelemetryPipelines` | `Status`, `StatusReason` |
 | `AWS::ObservabilityAdmin::TelemetryRule` | `RegionStatuses` |
 | `AWS::Omics::AnnotationStore` | `Status`, `StatusMessage`, `UpdateTime` |
@@ -1297,11 +1369,12 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::PCS::Cluster` | `ErrorInfo`, `Status` |
 | `AWS::PCS::ComputeNodeGroup` | `ErrorInfo`, `Status` |
 | `AWS::PCS::Queue` | `ErrorInfo`, `Status` |
-| `AWS::Panorama::ApplicationInstance` | `LastUpdatedTime` |
+| `AWS::PI::PerfReports` | `Status` |
+| `AWS::Panorama::ApplicationInstance` | `HealthStatus`, `LastUpdatedTime`, `Status`, `StatusDescription` |
 | `AWS::Panorama::PackageVersion` | `Status`, `StatusDescription` |
 | `AWS::PaymentCryptography::Key` | `KeyState`, `ReplicationStatus` |
 | `AWS::Personalize::Campaign` | `LastUpdatedDateTime`, `Status` |
-| `AWS::Personalize::Filter` | `LastUpdatedDateTime` |
+| `AWS::Personalize::Filter` | `LastUpdatedDateTime`, `Status` |
 | `AWS::Personalize::MetricAttribution` | `Status` |
 | `AWS::Personalize::Recommender` | `LastUpdatedDateTime`, `Status` |
 | `AWS::Polly::Lexicon` | `LastModified` |
@@ -1333,11 +1406,14 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::QuickSight::Theme` | `LastUpdatedTime`, `Version`, `Version.Arn`, `Version.BaseThemeId`, `Version.Configuration`, `Version.Configuration.DataColorPalette`, `Version.Configuration.Sheet`, `Version.Configuration.Typography`, `Version.Configuration.UIColorPalette`, `Version.CreatedTime`, `Version.Description`, `Version.Errors`, `Version.Status`, `Version.VersionNumber` |
 | `AWS::QuickSight::VPCConnection` | `LastUpdatedTime`, `Status` |
 | `AWS::RAM::PermissionAssociation` | `AssociationStatus`, `LastUpdatedTime`, `PermissionVersion` |
-| `AWS::RAM::PrincipalAssociation` | `LastUpdatedTime` |
-| `AWS::RAM::ResourceAssociation` | `LastUpdatedTime` |
+| `AWS::RAM::PrincipalAssociation` | `LastUpdatedTime`, `Status` |
+| `AWS::RAM::ResourceAssociation` | `LastUpdatedTime`, `Status` |
 | `AWS::RAM::ResourceShare` | `LastUpdatedTime`, `Status` |
-| `AWS::RAM::SourceAssociation` | `LastUpdatedTime` |
+| `AWS::RAM::SourceAssociation` | `LastUpdatedTime`, `Status` |
+| `AWS::RDS::ClusterSnapshot` | `Status` |
 | `AWS::RDS::DBClusterEndpoint` | `Status` |
+| `AWS::RDS::DBSnapshot` | `Status` |
+| `AWS::RDS::Deployment` | `Status` |
 | `AWS::RTBFabric::InboundExternalLink` | `LinkStatus`, `UpdatedTimestamp` |
 | `AWS::RTBFabric::Link` | `LinkStatus`, `UpdatedTimestamp` |
 | `AWS::RTBFabric::LinkRoutingRule` | `Status`, `UpdatedTimestamp` |
@@ -1355,6 +1431,7 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::RedshiftServerless::Namespace` | `Namespace.Status` |
 | `AWS::RedshiftServerless::Snapshot` | `Snapshot.Status` |
 | `AWS::RedshiftServerless::Workgroup` | `Workgroup.Status` |
+| `AWS::Rekognition::StreamProcessor` | `Status`, `StatusMessage` |
 | `AWS::ResilienceHub::App` | `DriftStatus` |
 | `AWS::ResilienceHubV2::Policy` | `UpdatedAt` |
 | `AWS::ResilienceHubV2::Service` | `UpdatedAt` |
@@ -1362,6 +1439,8 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::ResilienceHubV2::System` | `UpdatedAt` |
 | `AWS::ResilienceHubV2::UserJourney` | `UpdatedAt` |
 | `AWS::ResourceExplorer2::Index` | `IndexState` |
+| `AWS::ResourceGroups::TagSyncTask` | `Status` |
+| `AWS::Route53::HealthCheckSource` | `HealthCheckSourceStatus` |
 | `AWS::Route53::TrafficPolicy` | `Version` |
 | `AWS::Route53::TrafficPolicyInstance` | `State` |
 | `AWS::Route53GlobalResolver::AccessSource` | `Status`, `UpdatedAt` |
@@ -1371,6 +1450,7 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::Route53GlobalResolver::FirewallRule` | `Status`, `UpdatedAt` |
 | `AWS::Route53GlobalResolver::GlobalResolver` | `Status`, `UpdatedAt` |
 | `AWS::Route53GlobalResolver::HostedZoneAssociation` | `Status`, `UpdatedAt` |
+| `AWS::Route53Profiles::Profile` | `ShareStatus` |
 | `AWS::Route53RecoveryControl::Cluster` | `Status` |
 | `AWS::Route53RecoveryControl::ControlPanel` | `Status` |
 | `AWS::Route53RecoveryControl::RoutingControl` | `Status` |
@@ -1379,7 +1459,11 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::Route53Resolver::FirewallRuleGroup` | `ModificationTime`, `ShareStatus`, `Status`, `StatusMessage` |
 | `AWS::Route53Resolver::FirewallRuleGroupAssociation` | `ModificationTime`, `Status`, `StatusMessage` |
 | `AWS::Route53Resolver::OutpostResolver` | `ModificationTime`, `Status`, `StatusMessage` |
+| `AWS::Route53Resolver::ResolverDNSSECConfig` | `ValidationStatus` |
+| `AWS::Route53Resolver::ResolverQueryLoggingConfig` | `ShareStatus`, `Status` |
+| `AWS::Route53Resolver::ResolverQueryLoggingConfigAssociation` | `Error`, `ErrorMessage`, `Status` |
 | `AWS::S3::MultiRegionAccessPointPolicy` | `PolicyStatus`, `PolicyStatus.IsPublic` |
+| `AWS::S3Files::AccessPoint` | `Status` |
 | `AWS::S3Files::FileSystem` | `Status`, `StatusMessage` |
 | `AWS::S3Files::MountTarget` | `Status`, `StatusMessage` |
 | `AWS::S3ObjectLambda::AccessPoint` | `Alias.Status`, `PolicyStatus`, `PolicyStatus.IsPublic` |
@@ -1392,6 +1476,9 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::SES::MailManagerIngressPoint` | `Status` |
 | `AWS::SMSVOICE::NotifyConfiguration` | `Status`, `TierUpgradeStatus` |
 | `AWS::SMSVOICE::RcsAgent` | `Status` |
+| `AWS::SMSVOICE::Registration` | `RegistrationStatus` |
+| `AWS::SMSVOICE::RegistrationAttachment` | `AttachmentStatus` |
+| `AWS::SMSVOICE::VerifiedDestinationNumber` | `Status` |
 | `AWS::SSM::CloudConnector` | `UpdatedAt` |
 | `AWS::SSM::DefaultHostManagementConfiguration` | `LastModifiedDate`, `LastModifiedUser`, `Status` |
 | `AWS::SSM::OpsItem` | `LastModifiedBy`, `LastModifiedTime`, `Status`, `Version` |
@@ -1417,10 +1504,10 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::SageMaker::ModelPackageGroup` | `ModelPackageGroupStatus` |
 | `AWS::SageMaker::MonitoringSchedule` | `LastModifiedTime` |
 | `AWS::SageMaker::PartnerApp` | `CurrentVersionEolDate` |
-| `AWS::SageMaker::ProcessingJob` | `LastModifiedTime` |
+| `AWS::SageMaker::ProcessingJob` | `FailureReason`, `LastModifiedTime`, `ProcessingJobStatus` |
 | `AWS::SageMaker::Project` | `ProjectStatus` |
 | `AWS::SageMaker::TrialComponent` | `LastModifiedTime` |
-| `AWS::Scheduler::ScheduleGroup` | `LastModificationDate` |
+| `AWS::Scheduler::ScheduleGroup` | `LastModificationDate`, `State` |
 | `AWS::SecurityAgent::AgentSpace` | `UpdatedAt` |
 | `AWS::SecurityAgent::Artifact` | `UpdatedAt` |
 | `AWS::SecurityAgent::Pentest` | `UpdatedAt` |
@@ -1431,11 +1518,16 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::SecurityHub::ConfigurationPolicy` | `UpdatedAt` |
 | `AWS::SecurityHub::Connector` | `ConnectorStatus`, `EnablementStatus`, `LastUpdatedAt` |
 | `AWS::SecurityHub::ConnectorV2` | `ConnectorStatus`, `EnablementStatus`, `EnablementStatusReason`, `LastUpdatedAt` |
+| `AWS::SecurityHub::DelegatedAdmin` | `Status` |
 | `AWS::SecurityHub::OrganizationConfiguration` | `Status`, `StatusMessage` |
 | `AWS::SecurityHub::PolicyAssociation` | `AssociationStatus`, `AssociationStatusMessage`, `UpdatedAt` |
 | `AWS::StorageGateway::NFSFileShare` | `FileShareStatus` |
 | `AWS::StorageGateway::SMBFileShare` | `FileShareStatus` |
+| `AWS::StorageGateway::Tape` | `TapeStatus` |
+| `AWS::StorageGateway::Volume` | `VolumeAttachmentStatus`, `VolumeStatus` |
+| `AWS::SupportAuthZ::SupportPermit` | `Status` |
 | `AWS::Synthetics::Canary` | `State` |
+| `AWS::Timestream::InfluxDBBackup` | `Status` |
 | `AWS::Timestream::InfluxDBCluster` | `Status` |
 | `AWS::Timestream::InfluxDBInstance` | `Status` |
 | `AWS::Transcribe::CallAnalyticsCategory` | `LastUpdateTime` |
@@ -1447,6 +1539,7 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::Translate::Terminology` | `LastUpdatedAt` |
 | `AWS::VerifiedPermissions::PolicyStore` | `EncryptionState` |
 | `AWS::VpcLattice::AuthPolicy` | `State` |
+| `AWS::VpcLattice::DomainVerification` | `Status` |
 | `AWS::VpcLattice::Service` | `LastUpdatedAt`, `Status` |
 | `AWS::VpcLattice::ServiceNetwork` | `LastUpdatedAt` |
 | `AWS::VpcLattice::ServiceNetworkServiceAssociation` | `Status` |
@@ -1465,9 +1558,11 @@ Each is a row of `IN_PLACE_UPDATE_DERIVED_ATTRS` (any in-place update promotes i
 | `AWS::Wisdom::AIPrompt` | `ModifiedTimeSeconds` |
 | `AWS::Wisdom::Content` | `RevisionId`, `Status` |
 | `AWS::Wisdom::QuickResponse` | `Status` |
+| `AWS::WorkSpaces::ConnectionAlias` | `ConnectionAliasState` |
 | `AWS::WorkSpaces::Directory` | `State` |
 | `AWS::WorkSpacesThinClient::Environment` | `PendingSoftwareSetVersion`, `SoftwareSetComplianceStatus`, `UpdatedAt` |
 | `AWS::WorkSpacesWeb::Portal` | `PortalStatus`, `StatusReason` |
+| `AWS::WorkspacesInstances::WorkspaceInstance` | `ProvisionState` |
 
 ## Cloud Control baseline
 
@@ -1523,6 +1618,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::B2BI::Partnership` | 1 |
 | `AWS::B2BI::Profile` | 1 |
 | `AWS::BCM::Dashboard` | 1 |
+| `AWS::BCM::ScheduledReport` | 1 |
 | `AWS::BCMDataExports::Export` | 1 |
 | `AWS::Backup::BackupPlan` | 1 |
 | `AWS::Backup::LogicallyAirGappedBackupVault` | 1 |
@@ -1584,6 +1680,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::CleanRooms::PrivacyBudgetTemplate` | 3 |
 | `AWS::CloudFormation::GeneratedTemplate` | 1 |
 | `AWS::CloudFormation::HookDefaultVersion` | 1 |
+| `AWS::CloudFormation::HookTypeConfig` | 1 |
 | `AWS::CloudFormation::ResourceDefaultVersion` | 1 |
 | `AWS::CloudFormation::TypeActivation` | 1 |
 | `AWS::CloudFront::AnycastIpList` | 2 |
@@ -1616,14 +1713,24 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Config::ConfigRule` | 1 |
 | `AWS::Config::ConfigurationRecorder` | 1 |
 | `AWS::Config::ConformancePack` | 1 |
+| `AWS::Connect::AgentStatus` | 1 |
+| `AWS::Connect::ContactFlow` | 1 |
+| `AWS::Connect::ContactFlowModule` | 1 |
 | `AWS::Connect::ContactFlowModuleAlias` | 2 |
 | `AWS::Connect::DataTable` | 1 |
+| `AWS::Connect::EmailAddress` | 1 |
+| `AWS::Connect::HoursOfOperation` | 1 |
 | `AWS::Connect::Metric` | 13 |
 | `AWS::Connect::PhoneNumber` | 1 |
-| `AWS::Connect::Queue` | 1 |
-| `AWS::Connect::QuickConnect` | 1 |
+| `AWS::Connect::Prompt` | 1 |
+| `AWS::Connect::Queue` | 2 |
+| `AWS::Connect::QuickConnect` | 2 |
+| `AWS::Connect::RoutingProfile` | 1 |
+| `AWS::Connect::TaskTemplate` | 1 |
+| `AWS::Connect::TestCase` | 1 |
 | `AWS::Connect::TrafficDistributionGroup` | 1 |
-| `AWS::Connect::View` | 2 |
+| `AWS::Connect::UserHierarchyGroup` | 1 |
+| `AWS::Connect::View` | 3 |
 | `AWS::Connect::Workspace` | 1 |
 | `AWS::ControlTower::LandingZone` | 1 |
 | `AWS::CustomerProfiles::CalculatedAttributeDefinition` | 1 |
@@ -1661,7 +1768,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::DataZone::ProjectProfile` | 3 |
 | `AWS::DataZone::SubscriptionTarget` | 1 |
 | `AWS::DataZone::UserProfile` | 2 |
-| `AWS::Deadline::Fleet` | 3 |
+| `AWS::Deadline::Fleet` | 4 |
 | `AWS::Deadline::Limit` | 1 |
 | `AWS::Deadline::Monitor` | 1 |
 | `AWS::Deadline::QueueEnvironment` | 1 |
@@ -1764,6 +1871,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::IVS::Stage` | 1 |
 | `AWS::ImageBuilder::Image` | 3 |
 | `AWS::ImageBuilder::ImagePipeline` | 1 |
+| `AWS::InspectorV2::CisScanConfiguration` | 1 |
 | `AWS::InspectorV2::CodeSecurityIntegration` | 1 |
 | `AWS::Interconnect::Connection` | 5 |
 | `AWS::Invoicing::ProcurementPortalPreference` | 1 |
@@ -1786,8 +1894,8 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::IoTWireless::WirelessDeviceImportTask` | 5 |
 | `AWS::Kendra::DataSource` | 1 |
 | `AWS::Kendra::FeaturedResultsSet` | 1 |
-| `AWS::Kendra::QuerySuggestionsBlockList` | 1 |
-| `AWS::Kendra::Thesaurus` | 1 |
+| `AWS::Kendra::QuerySuggestionsBlockList` | 2 |
+| `AWS::Kendra::Thesaurus` | 2 |
 | `AWS::Kinesis::Channel` | 1 |
 | `AWS::Lambda::RuntimeAlias` | 1 |
 | `AWS::Lambda::RuntimeVersion` | 3 |
@@ -1814,6 +1922,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::MWAAServerless::Workflow` | 2 |
 | `AWS::Macie::FindingsFilter` | 1 |
 | `AWS::Macie::Session` | 1 |
+| `AWS::MediaConnect::Bridge` | 1 |
 | `AWS::MediaConnect::DestinationEndpoint` | 6 |
 | `AWS::MediaConnect::Flow` | 9 |
 | `AWS::MediaConnect::FlowMediaStream` | 1 |
@@ -1886,7 +1995,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Organizations::OrganizationalUnit` | 2 |
 | `AWS::Organizations::Policy` | 2 |
 | `AWS::Outposts::Outpost` | 2 |
-| `AWS::PCS::ComputeNodeGroup` | 1 |
+| `AWS::PCS::ComputeNodeGroup` | 2 |
 | `AWS::Panorama::Package` | 5 |
 | `AWS::Panorama::PackageVersion` | 4 |
 | `AWS::PaymentCryptography::Key` | 1 |
@@ -1954,6 +2063,7 @@ Pairs no rule settles, per type (the list is in the JSON). Shrinking it is track
 | `AWS::Route53Profiles::ProfileResourceAssociation` | 1 |
 | `AWS::Route53RecoveryControl::Cluster` | 1 |
 | `AWS::Route53RecoveryControl::ControlPanel` | 2 |
+| `AWS::Route53RecoveryControl::SafetyRule` | 1 |
 | `AWS::Route53RecoveryReadiness::Cell` | 1 |
 | `AWS::Route53Resolver::FirewallConfig` | 1 |
 | `AWS::Route53Resolver::FirewallDomainList` | 2 |

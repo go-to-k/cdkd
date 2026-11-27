@@ -118,18 +118,58 @@ export const HAND_IN_PLACE_UPDATE_DERIVED_ATTRS: Readonly<Record<string, Readonl
     'AWS::BedrockAgentCore::Runtime': new Set(['AgentRuntimeVersion', 'LastUpdatedAt']),
   });
 
+/**
+ * go-to-k/cdkd#7007: operational statuses of SDK-provider types. An update
+ * returns once the resource is stable, but the stable value can differ from
+ * the recorded one (an IPAM pool's `State` goes `create-complete` ->
+ * `modify-complete` on a Description-only update, measured), so a reader is
+ * re-resolved after any in-place update. Like a generated Cloud Control row,
+ * an export of one is judged against the value the update recorded
+ * (`export-change-guard.ts`), not refused before it.
+ */
+export const HAND_IN_PLACE_UPDATE_STATUS_ATTRS: Readonly<Record<string, ReadonlySet<string>>> =
+  Object.freeze({
+    'AWS::BedrockAgentCore::Browser': new Set(['Status']),
+    'AWS::BedrockAgentCore::CodeInterpreter': new Set(['Status']),
+    'AWS::BedrockAgentCore::Evaluator': new Set(['Status']),
+    'AWS::BedrockAgentCore::Runtime': new Set(['Status', 'FailureReason']),
+    'AWS::Connect::Instance': new Set(['InstanceStatus']),
+    'AWS::EC2::Instance': new Set(['State']),
+    'AWS::Kinesis::StreamConsumer': new Set(['ConsumerStatus']),
+    'AWS::Lambda::MicrovmImage': new Set(['State']),
+    'AWS::Lambda::NetworkConnector': new Set(['State']),
+    'AWS::Lambda::WebFunctionEndpoint': new Set([
+      'State',
+      'StateReason',
+      'UpdateStatus',
+      'UpdateStatusReason',
+    ]),
+    'AWS::Lambda::WebFunctionRevision': new Set(['State', 'StateReason']),
+    'AWS::Logs::DeliverySource': new Set(['Status', 'StatusReason']),
+    'AWS::Pipes::Pipe': new Set(['StateReason']),
+    'AWS::RDS::DBInstance': new Set([
+      'DBInstanceStatus',
+      'PercentProgress',
+      'StatusInfos',
+      'StorageOperationStatus',
+      'StorageOperationPercentProgress',
+    ]),
+  });
+
 export const IN_PLACE_UPDATE_DERIVED_ATTRS: Readonly<Record<string, ReadonlySet<string>>> =
   Object.freeze(
     Object.fromEntries(
       [
         ...new Set([
           ...Object.keys(HAND_IN_PLACE_UPDATE_DERIVED_ATTRS),
+          ...Object.keys(HAND_IN_PLACE_UPDATE_STATUS_ATTRS),
           ...Object.keys(CC_IN_PLACE_UPDATE_DERIVED_ATTRS),
         ]),
       ].map((type) => [
         type,
         new Set([
           ...(HAND_IN_PLACE_UPDATE_DERIVED_ATTRS[type] ?? []),
+          ...(HAND_IN_PLACE_UPDATE_STATUS_ATTRS[type] ?? []),
           ...(CC_IN_PLACE_UPDATE_DERIVED_ATTRS[type] ?? []),
         ]),
       ])

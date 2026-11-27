@@ -3,14 +3,14 @@
   "summary": {
     "sdkTypes": 131,
     "sdkPairs": 390,
-    "sdkMoving": 66,
+    "sdkMoving": 90,
     "ccTypes": 1584,
     "ccPairs": 5545,
     "ccByRule": {
-      "no-in-place-update": 1112,
+      "no-in-place-update": 974,
       "creation-timestamp": 381,
       "own-identity": 816,
-      "primary-identifier": 522,
+      "primary-identifier": 493,
       "arn-template": 96,
       "update-timestamp": 372,
       "creator": 26,
@@ -18,10 +18,10 @@
       "identifier-arn-member": 68,
       "update-marker": 143,
       "parent-fixed": 2,
-      "operational-status": 486
+      "operational-status": 624
     },
-    "ccByHand": 80,
-    "ccBaseline": 1411
+    "ccByHand": 87,
+    "ccBaseline": 1433
   },
   "sdk": [
     {
@@ -207,8 +207,8 @@
     {
       "type": "AWS::BedrockAgentCore::Browser",
       "attribute": "Status",
-      "verdict": "never",
-      "reason": "an operational status that settles back to its steady value after an update; no property sets it"
+      "verdict": "any-update",
+      "reason": "an operational status; the stable value after an update can differ from the recorded one"
     },
     {
       "type": "AWS::BedrockAgentCore::CodeInterpreter",
@@ -225,8 +225,8 @@
     {
       "type": "AWS::BedrockAgentCore::CodeInterpreter",
       "attribute": "Status",
-      "verdict": "never",
-      "reason": "an operational status that settles back to its steady value after an update; no property sets it"
+      "verdict": "any-update",
+      "reason": "an operational status; the stable value after an update can differ from the recorded one"
     },
     {
       "type": "AWS::BedrockAgentCore::Evaluator",
@@ -267,8 +267,8 @@
     {
       "type": "AWS::BedrockAgentCore::Evaluator",
       "attribute": "Status",
-      "verdict": "never",
-      "reason": "an operational status that settles back to its steady value after an update; no property sets it"
+      "verdict": "any-update",
+      "reason": "an operational status; the stable value after an update can differ from the recorded one"
     },
     {
       "type": "AWS::BedrockAgentCore::Evaluator",
@@ -309,8 +309,8 @@
     {
       "type": "AWS::BedrockAgentCore::Runtime",
       "attribute": "FailureReason",
-      "verdict": "never",
-      "reason": "an operational status that settles back to its steady value after an update; no property sets it"
+      "verdict": "any-update",
+      "reason": "an operational status; the stable value after an update can differ from the recorded one"
     },
     {
       "type": "AWS::BedrockAgentCore::Runtime",
@@ -321,8 +321,8 @@
     {
       "type": "AWS::BedrockAgentCore::Runtime",
       "attribute": "Status",
-      "verdict": "never",
-      "reason": "an operational status that settles back to its steady value after an update; no property sets it"
+      "verdict": "any-update",
+      "reason": "an operational status; the stable value after an update can differ from the recorded one"
     },
     {
       "type": "AWS::BedrockAgentCore::Runtime",
@@ -564,8 +564,8 @@
     {
       "type": "AWS::Connect::Instance",
       "attribute": "InstanceStatus",
-      "verdict": "never",
-      "reason": "an operational status that settles back to its steady value after an update; no property sets it"
+      "verdict": "any-update",
+      "reason": "an operational status; the stable value after an update can differ from the recorded one"
     },
     {
       "type": "AWS::Connect::Instance",
@@ -717,8 +717,8 @@
     {
       "type": "AWS::EC2::Instance",
       "attribute": "State",
-      "verdict": "never",
-      "reason": "an operational status that settles back to its steady value after an update; no property sets it"
+      "verdict": "any-update",
+      "reason": "an operational status; the stable value after an update can differ from the recorded one"
     },
     {
       "type": "AWS::EC2::Instance",
@@ -1498,8 +1498,8 @@
     {
       "type": "AWS::Kinesis::StreamConsumer",
       "attribute": "ConsumerStatus",
-      "verdict": "never",
-      "reason": "an operational status that settles back to its steady value after an update; no property sets it"
+      "verdict": "any-update",
+      "reason": "an operational status; the stable value after an update can differ from the recorded one"
     },
     {
       "type": "AWS::KinesisFirehose::DeliveryStream",
@@ -1615,8 +1615,8 @@
     {
       "type": "AWS::Lambda::MicrovmImage",
       "attribute": "State",
-      "verdict": "never",
-      "reason": "an operational status that settles back to its steady value after an update; no property sets it"
+      "verdict": "any-update",
+      "reason": "an operational status; the stable value after an update can differ from the recorded one"
     },
     {
       "type": "AWS::Lambda::MicrovmImage",
@@ -1668,8 +1668,8 @@
     {
       "type": "AWS::Lambda::NetworkConnector",
       "attribute": "State",
-      "verdict": "never",
-      "reason": "an operational status that settles back to its steady value after an update; no property sets it"
+      "verdict": "any-update",
+      "reason": "an operational status; the stable value after an update can differ from the recorded one"
     },
     {
       "type": "AWS::Lambda::Permission",
@@ -1722,26 +1722,26 @@
     {
       "type": "AWS::Lambda::WebFunctionEndpoint",
       "attribute": "State",
-      "verdict": "never",
-      "reason": "an operational status that settles back to its steady value after an update; no property sets it"
+      "verdict": "any-update",
+      "reason": "an operational status; the stable value after an update can differ from the recorded one"
     },
     {
       "type": "AWS::Lambda::WebFunctionEndpoint",
       "attribute": "StateReason",
-      "verdict": "never",
-      "reason": "an operational status that settles back to its steady value after an update; no property sets it"
+      "verdict": "any-update",
+      "reason": "an operational status; the stable value after an update can differ from the recorded one"
     },
     {
       "type": "AWS::Lambda::WebFunctionEndpoint",
       "attribute": "UpdateStatus",
-      "verdict": "never",
-      "reason": "an operational status that settles back to its steady value after an update; no property sets it"
+      "verdict": "any-update",
+      "reason": "an operational status; the stable value after an update can differ from the recorded one"
     },
     {
       "type": "AWS::Lambda::WebFunctionEndpoint",
       "attribute": "UpdateStatusReason",
-      "verdict": "never",
-      "reason": "an operational status that settles back to its steady value after an update; no property sets it"
+      "verdict": "any-update",
+      "reason": "an operational status; the stable value after an update can differ from the recorded one"
     },
     {
       "type": "AWS::Lambda::WebFunctionEndpoint",
@@ -1783,14 +1783,14 @@
     {
       "type": "AWS::Lambda::WebFunctionRevision",
       "attribute": "State",
-      "verdict": "never",
-      "reason": "an operational status that settles back to its steady value after an update; no property sets it"
+      "verdict": "any-update",
+      "reason": "an operational status; the stable value after an update can differ from the recorded one"
     },
     {
       "type": "AWS::Lambda::WebFunctionRevision",
       "attribute": "StateReason",
-      "verdict": "never",
-      "reason": "an operational status that settles back to its steady value after an update; no property sets it"
+      "verdict": "any-update",
+      "reason": "an operational status; the stable value after an update can differ from the recorded one"
     },
     {
       "type": "AWS::Lightsail::Alarm",
@@ -1855,14 +1855,14 @@
     {
       "type": "AWS::Logs::DeliverySource",
       "attribute": "Status",
-      "verdict": "never",
-      "reason": "an operational status that settles back to its steady value after an update; no property sets it"
+      "verdict": "any-update",
+      "reason": "an operational status; the stable value after an update can differ from the recorded one"
     },
     {
       "type": "AWS::Logs::DeliverySource",
       "attribute": "StatusReason",
-      "verdict": "never",
-      "reason": "an operational status that settles back to its steady value after an update; no property sets it"
+      "verdict": "any-update",
+      "reason": "an operational status; the stable value after an update can differ from the recorded one"
     },
     {
       "type": "AWS::Logs::LogGroup",
@@ -1951,8 +1951,8 @@
     {
       "type": "AWS::Pipes::Pipe",
       "attribute": "StateReason",
-      "verdict": "never",
-      "reason": "an operational status that settles back to its steady value after an update; no property sets it"
+      "verdict": "any-update",
+      "reason": "an operational status; the stable value after an update can differ from the recorded one"
     },
     {
       "type": "AWS::RDS::DBCluster",
@@ -2070,8 +2070,8 @@
     {
       "type": "AWS::RDS::DBInstance",
       "attribute": "DBInstanceStatus",
-      "verdict": "never",
-      "reason": "an operational status that settles back to its steady value after an update; no property sets it"
+      "verdict": "any-update",
+      "reason": "an operational status; the stable value after an update can differ from the recorded one"
     },
     {
       "type": "AWS::RDS::DBInstance",
@@ -2169,8 +2169,8 @@
     {
       "type": "AWS::RDS::DBInstance",
       "attribute": "PercentProgress",
-      "verdict": "never",
-      "reason": "an operational status that settles back to its steady value after an update; no property sets it"
+      "verdict": "any-update",
+      "reason": "an operational status; the stable value after an update can differ from the recorded one"
     },
     {
       "type": "AWS::RDS::DBInstance",
@@ -2202,20 +2202,20 @@
     {
       "type": "AWS::RDS::DBInstance",
       "attribute": "StatusInfos",
-      "verdict": "never",
-      "reason": "an operational status that settles back to its steady value after an update; no property sets it"
+      "verdict": "any-update",
+      "reason": "an operational status; the stable value after an update can differ from the recorded one"
     },
     {
       "type": "AWS::RDS::DBInstance",
       "attribute": "StorageOperationPercentProgress",
-      "verdict": "never",
-      "reason": "an operational status that settles back to its steady value after an update; no property sets it"
+      "verdict": "any-update",
+      "reason": "an operational status; the stable value after an update can differ from the recorded one"
     },
     {
       "type": "AWS::RDS::DBInstance",
       "attribute": "StorageOperationStatus",
-      "verdict": "never",
-      "reason": "an operational status that settles back to its steady value after an update; no property sets it"
+      "verdict": "any-update",
+      "reason": "an operational status; the stable value after an update can differ from the recorded one"
     },
     {
       "type": "AWS::RDS::DBProxy",
@@ -2626,6 +2626,12 @@
       "reason": "`aps-workspaces.<region>.../workspaces/<id>/`"
     },
     {
+      "type": "AWS::Amplify::Branch",
+      "attribute": "Arn",
+      "verdict": "never",
+      "reason": "`apps/<app>/branches/<create-only BranchName>`; PullRequestEnvironmentName is a backend"
+    },
+    {
       "type": "AWS::Amplify::Webhook",
       "attribute": "WebhookUrl",
       "verdict": "never",
@@ -2642,6 +2648,12 @@
       "attribute": "AppSyncDomainName",
       "verdict": "never",
       "reason": "the CloudFront host for the create-only DomainName"
+    },
+    {
+      "type": "AWS::Chatbot::MicrosoftTeamsChannelConfiguration",
+      "attribute": "Arn",
+      "verdict": "never",
+      "reason": "built from the create-only ConfigurationName; TeamsChannelName labels the channel"
     },
     {
       "type": "AWS::Chime::ChannelFlow",
@@ -2823,6 +2835,12 @@
       "reason": "`smb://<host>/<subdirectory>/`"
     },
     {
+      "type": "AWS::DataSync::Task",
+      "attribute": "TaskArn",
+      "verdict": "never",
+      "reason": "measured (cdkd-probe-7007-s4b): Name in place left it task/task-0be708b518a40c674"
+    },
+    {
       "type": "AWS::Deadline::Budget",
       "attribute": "BudgetId",
       "verdict": "never",
@@ -2836,6 +2854,12 @@
         "Subdomain"
       ],
       "reason": "the monitor subdomain host"
+    },
+    {
+      "type": "AWS::Deadline::Queue",
+      "attribute": "Arn",
+      "verdict": "never",
+      "reason": "measured (cdkd-probe-7007-s2c): DisplayName in place left it .../queue/queue-f632d873..."
     },
     {
       "type": "AWS::Deadline::Queue",
@@ -2905,6 +2929,12 @@
       "attribute": "ListId",
       "verdict": "never",
       "reason": "PutProtocolsList updates the list its ListId names; the name is a field"
+    },
+    {
+      "type": "AWS::Glue::UserDefinedFunction",
+      "attribute": "Arn",
+      "verdict": "never",
+      "reason": "measured (cdkd-probe-7007-s2c): ClassName / OwnerName in place left it .../<db>/<create-only name>"
     },
     {
       "type": "AWS::HealthLake::FHIRDatastore",
@@ -2977,6 +3007,18 @@
       "attribute": "DataSource",
       "verdict": "never",
       "reason": "the data provider of the create-only Configuration style"
+    },
+    {
+      "type": "AWS::MediaConnect::FlowOutput",
+      "attribute": "OutputArn",
+      "verdict": "never",
+      "reason": "`output:<id>:<create-only Name>`; NdiProgramName is an NDI setting"
+    },
+    {
+      "type": "AWS::MediaConnect::FlowSource",
+      "attribute": "SourceArn",
+      "verdict": "never",
+      "reason": "`source:<id>:<create-only Name>`; VpcInterfaceName names an interface"
     },
     {
       "type": "AWS::MediaLive::CloudWatchAlarmTemplate",
@@ -3165,6 +3207,7 @@
       "UpdatedAt"
     ],
     "AWS::AccountAccess::Application": [
+      "Status",
       "UpdatedAt"
     ],
     "AWS::AgentRegistry::Registry": [
@@ -3197,6 +3240,9 @@
     "AWS::ApiGatewayV2::PortalProduct": [
       "LastModified"
     ],
+    "AWS::AppConfig::Deployment": [
+      "State"
+    ],
     "AWS::AppConfig::ExperimentDefinition": [
       "Status",
       "UpdatedAt"
@@ -3213,6 +3259,7 @@
       "UpdatedAt"
     ],
     "AWS::AppFabric::Ingestion": [
+      "State",
       "UpdatedAt"
     ],
     "AWS::AppFabric::IngestionDestination": [
@@ -3277,12 +3324,18 @@
       "HealthStatus",
       "UpdatedAt"
     ],
+    "AWS::Backup::BackupAccessPoint": [
+      "Status"
+    ],
     "AWS::Backup::BackupPlan": [
       "VersionId"
     ],
     "AWS::Backup::Framework": [
       "DeploymentStatus",
       "FrameworkStatus"
+    ],
+    "AWS::Backup::LegalHold": [
+      "Status"
     ],
     "AWS::Backup::LogicallyAirGappedBackupVault": [
       "VaultState"
@@ -3315,6 +3368,7 @@
       "UpdatedAt"
     ],
     "AWS::Bedrock::ApplicationInferenceProfile": [
+      "Status",
       "UpdatedAt"
     ],
     "AWS::Bedrock::AutomatedReasoningPolicy": [
@@ -3351,6 +3405,9 @@
     "AWS::Bedrock::FlowAlias": [
       "UpdatedAt"
     ],
+    "AWS::Bedrock::FlowVersion": [
+      "Status"
+    ],
     "AWS::Bedrock::Guardrail": [
       "Status",
       "StatusReasons",
@@ -3358,6 +3415,7 @@
       "Version"
     ],
     "AWS::Bedrock::IntelligentPromptRouter": [
+      "Status",
       "UpdatedAt"
     ],
     "AWS::Bedrock::KnowledgeBase": [
@@ -3388,17 +3446,22 @@
       "LastUpdatedTime"
     ],
     "AWS::BedrockAgentCore::BrowserCustom": [
-      "LastUpdatedAt"
+      "FailureReason",
+      "LastUpdatedAt",
+      "Status"
     ],
     "AWS::BedrockAgentCore::BrowserProfile": [
-      "LastUpdatedAt"
+      "LastUpdatedAt",
+      "Status"
     ],
     "AWS::BedrockAgentCore::CapacityProvider": [
       "LastUpdatedAt",
       "Status"
     ],
     "AWS::BedrockAgentCore::CodeInterpreterCustom": [
-      "LastUpdatedAt"
+      "FailureReason",
+      "LastUpdatedAt",
+      "Status"
     ],
     "AWS::BedrockAgentCore::ConfigurationBundle": [
       "UpdatedAt",
@@ -3509,6 +3572,9 @@
     "AWS::Cases::CaseRule": [
       "LastModifiedTime"
     ],
+    "AWS::Cases::Domain": [
+      "DomainStatus"
+    ],
     "AWS::Cases::Field": [
       "LastModifiedTime"
     ],
@@ -3549,10 +3615,16 @@
     "AWS::CleanRooms::IntermediateTable": [
       "Status"
     ],
+    "AWS::CleanRoomsML::TrainingDataset": [
+      "Status"
+    ],
     "AWS::CloudFormation::GeneratedTemplate": [
       "LastUpdatedTime",
       "Progress",
       "Status"
+    ],
+    "AWS::CloudFormation::Publisher": [
+      "PublisherStatus"
     ],
     "AWS::CloudFront::AnycastIpList": [
       "ETag"
@@ -3668,11 +3740,17 @@
     "AWS::CloudWatch::View": [
       "UpdatedAt"
     ],
+    "AWS::CodeConnections::Connection": [
+      "ConnectionStatus"
+    ],
     "AWS::CodeConnections::Host": [
       "Status"
     ],
     "AWS::CodePipeline::Pipeline": [
       "Version"
+    ],
+    "AWS::CodeStarConnections::Connection": [
+      "ConnectionStatus"
     ],
     "AWS::Comprehend::DocumentClassifierEndpoint": [
       "LastModifiedTime"
@@ -3727,7 +3805,8 @@
       "Status"
     ],
     "AWS::Connect::Vocabulary": [
-      "LastModifiedTime"
+      "LastModifiedTime",
+      "State"
     ],
     "AWS::ControlTower::LandingZone": [
       "DriftStatus",
@@ -3744,6 +3823,10 @@
     "AWS::CustomerProfiles::DomainObjectType": [
       "LastUpdatedAt"
     ],
+    "AWS::CustomerProfiles::EventStream": [
+      "DestinationDetails.Status",
+      "State"
+    ],
     "AWS::CustomerProfiles::EventTrigger": [
       "LastUpdatedAt"
     ],
@@ -3756,6 +3839,12 @@
     "AWS::CustomerProfiles::Recommender": [
       "FailureReason",
       "LastUpdatedAt",
+      "Status"
+    ],
+    "AWS::CustomerProfiles::RecommenderFilter": [
+      "Status"
+    ],
+    "AWS::CustomerProfiles::RecommenderSchema": [
       "Status"
     ],
     "AWS::DRS::RecoveryPlan": [
@@ -3818,6 +3907,13 @@
       "Status",
       "StatusMessage"
     ],
+    "AWS::Deadline::LicenseEndpoint": [
+      "Status",
+      "StatusMessage"
+    ],
+    "AWS::Deadline::Worker": [
+      "Status"
+    ],
     "AWS::DevOpsAgent::AgentSpace": [
       "UpdatedAt"
     ],
@@ -3834,13 +3930,22 @@
     "AWS::DevOpsAgent::Trigger": [
       "UpdatedAt"
     ],
+    "AWS::DeviceFarm::Upload": [
+      "Status"
+    ],
     "AWS::DirectConnect::Connection": [
       "ConnectionState"
     ],
     "AWS::DirectConnect::Lag": [
       "LagState"
     ],
+    "AWS::DocDBElastic::ClusterSnapshot": [
+      "Status"
+    ],
     "AWS::EC2::CapacityReservation": [
+      "State"
+    ],
+    "AWS::EC2::CarrierGateway": [
       "State"
     ],
     "AWS::EC2::FcaPolicy": [
@@ -3855,17 +3960,54 @@
       "State",
       "StateMessage"
     ],
+    "AWS::EC2::IPAMPoolCidr": [
+      "State"
+    ],
     "AWS::EC2::IPAMResourceDiscovery": [
       "State"
     ],
+    "AWS::EC2::IPAMResourceDiscoveryAssociation": [
+      "ResourceDiscoveryStatus",
+      "State"
+    ],
+    "AWS::EC2::InstanceConnectEndpoint": [
+      "State",
+      "StateMessage"
+    ],
     "AWS::EC2::InstanceEventWindow": [
+      "State"
+    ],
+    "AWS::EC2::IpamExternalResourceVerificationToken": [
+      "State",
+      "Status"
+    ],
+    "AWS::EC2::IpamInternetRegistryAssociation": [
       "State"
     ],
     "AWS::EC2::LocalGatewayRoute": [
       "State"
     ],
+    "AWS::EC2::LocalGatewayRouteTable": [
+      "State"
+    ],
+    "AWS::EC2::LocalGatewayRouteTableVPCAssociation": [
+      "State"
+    ],
+    "AWS::EC2::LocalGatewayRouteTableVirtualInterfaceGroupAssociation": [
+      "State"
+    ],
+    "AWS::EC2::LocalGatewayVirtualInterface": [
+      "ConfigurationState"
+    ],
+    "AWS::EC2::LocalGatewayVirtualInterfaceGroup": [
+      "ConfigurationState"
+    ],
     "AWS::EC2::NetworkInsightsAccessScope": [
       "UpdatedDate"
+    ],
+    "AWS::EC2::NetworkInsightsAccessScopeAnalysis": [
+      "Status",
+      "StatusMessage"
     ],
     "AWS::EC2::NetworkInsightsAnalysis": [
       "Status",
@@ -3874,6 +4016,14 @@
     "AWS::EC2::PrefixList": [
       "Version"
     ],
+    "AWS::EC2::SecurityGroupVpcAssociation": [
+      "State",
+      "StateReason"
+    ],
+    "AWS::EC2::Snapshot": [
+      "Progress",
+      "State"
+    ],
     "AWS::EC2::SqlHaStandbyDetectedInstance": [
       "HaStatus",
       "LastUpdatedTime"
@@ -3881,10 +4031,22 @@
     "AWS::EC2::TransitGateway": [
       "EncryptionSupportState"
     ],
+    "AWS::EC2::TransitGatewayConnect": [
+      "State"
+    ],
+    "AWS::EC2::TransitGatewayConnectPeer": [
+      "State"
+    ],
     "AWS::EC2::TransitGatewayMeteringPolicy": [
       "State"
     ],
+    "AWS::EC2::TransitGatewayMeteringPolicyEntry": [
+      "State"
+    ],
     "AWS::EC2::TransitGatewayMulticastDomain": [
+      "State"
+    ],
+    "AWS::EC2::TransitGatewayMulticastDomainAssociation": [
       "State"
     ],
     "AWS::EC2::TransitGatewayNetworkFunctionAttachment": [
@@ -3896,6 +4058,12 @@
       "Status",
       "Status.Code",
       "Status.Message"
+    ],
+    "AWS::EC2::TransitGatewayPolicyTable": [
+      "State"
+    ],
+    "AWS::EC2::TransitGatewayPolicyTableAssociation": [
+      "State"
     ],
     "AWS::EC2::TransitGatewayPolicyTableEntry": [
       "State"
@@ -3951,10 +4119,22 @@
       "Status",
       "UpdatedAt"
     ],
+    "AWS::ECS::GatewayClusterAssociations": [
+      "Status"
+    ],
     "AWS::EKS::Capability": [
       "ModifiedAt",
       "Status",
       "Version"
+    ],
+    "AWS::EKS::CertificateAuthority": [
+      "DistributionStatus",
+      "SigningStatus"
+    ],
+    "AWS::EMRContainers::Endpoint": [
+      "FailureReason",
+      "State",
+      "StateDetails"
     ],
     "AWS::EVS::Environment": [
       "EnvironmentState",
@@ -3967,6 +4147,12 @@
     "AWS::ElastiCache::ServerlessCache": [
       "FullEngineVersion",
       "Status"
+    ],
+    "AWS::ElastiCache::ServerlessCacheSnapshot": [
+      "Status"
+    ],
+    "AWS::ElastiCache::Snapshot": [
+      "SnapshotStatus"
     ],
     "AWS::ElastiCache::User": [
       "Status"
@@ -4073,6 +4259,10 @@
     "AWS::Glue::Integration": [
       "Status"
     ],
+    "AWS::Glue::Session": [
+      "Progress",
+      "Status"
+    ],
     "AWS::Grafana::Workspace": [
       "ModificationTimestamp",
       "SamlConfigurationStatus",
@@ -4122,13 +4312,20 @@
       "Status",
       "UpdatedAt"
     ],
+    "AWS::HealthAgent::Domain": [
+      "Status"
+    ],
     "AWS::HealthImaging::Datastore": [
+      "DatastoreStatus",
       "UpdatedAt"
     ],
     "AWS::HealthLake::FHIRDatastore": [
       "DatastoreStatus"
     ],
     "AWS::IVS::IngestConfiguration": [
+      "State"
+    ],
+    "AWS::IVS::RecordingConfiguration": [
       "State"
     ],
     "AWS::IVSChat::LoggingConfiguration": [
@@ -4232,7 +4429,11 @@
     "AWS::IoTFleetWise::Vehicle": [
       "LastModificationTime"
     ],
+    "AWS::IoTSecureTunneling::Tunnel": [
+      "Status"
+    ],
     "AWS::IoTSiteWise::Application": [
+      "Status",
       "UpdatedAt"
     ],
     "AWS::IoTSiteWise::Pipeline": [
@@ -4265,6 +4466,7 @@
       "UpdateDateTime"
     ],
     "AWS::IoTTwinMaker::SyncJob": [
+      "State",
       "UpdateDateTime"
     ],
     "AWS::IoTTwinMaker::Workspace": [
@@ -4283,6 +4485,9 @@
     "AWS::Kinesis::Channel": [
       "ChannelStatus"
     ],
+    "AWS::KinesisAnalyticsV2::Snapshot": [
+      "SnapshotStatus"
+    ],
     "AWS::Lambda::CapacityProvider": [
       "State"
     ],
@@ -4300,6 +4505,8 @@
       "State"
     ],
     "AWS::Lambda::WebFunction": [
+      "State",
+      "StateReason",
       "UpdatedAt"
     ],
     "AWS::LaunchWizard::Deployment": [
@@ -4320,12 +4527,35 @@
     "AWS::LicenseManager::LicenseConfiguration": [
       "Status"
     ],
+    "AWS::LicenseManagerLinuxSubscriptions::SubscriptionProvider": [
+      "SubscriptionProviderStatus",
+      "SubscriptionProviderStatusMessage"
+    ],
+    "AWS::LicenseManagerUserSubscriptions::LicenseServerEndpoint": [
+      "LicenseServerEndpointProvisioningStatus"
+    ],
+    "AWS::Lightsail::Certificate": [
+      "Status"
+    ],
+    "AWS::Lightsail::ContactMethod": [
+      "Status"
+    ],
+    "AWS::Lightsail::DatabaseSnapshot": [
+      "State"
+    ],
     "AWS::Lightsail::Disk": [
       "AttachmentState",
       "State"
     ],
+    "AWS::Lightsail::DiskSnapshot": [
+      "Progress",
+      "State"
+    ],
     "AWS::Lightsail::Distribution": [
       "Status"
+    ],
+    "AWS::Lightsail::InstanceSnapshot": [
+      "State"
     ],
     "AWS::Lightsail::LoadBalancerTlsCertificate": [
       "Status"
@@ -4347,6 +4577,9 @@
     ],
     "AWS::Location::Tracker": [
       "UpdateTime"
+    ],
+    "AWS::Logs::Integration": [
+      "IntegrationStatus"
     ],
     "AWS::Logs::LogAnomalyDetector": [
       "AnomalyDetectorStatus",
@@ -4379,6 +4612,11 @@
       "StatusMessage",
       "VersionId"
     ],
+    "AWS::MPA::IdentitySource": [
+      "Status",
+      "StatusCode",
+      "StatusMessage"
+    ],
     "AWS::MSK::Channel": [
       "StateInfo",
       "Status"
@@ -4398,10 +4636,14 @@
       "Status"
     ],
     "AWS::Macie::Member": [
+      "RelationshipStatus",
       "UpdatedAt"
     ],
     "AWS::Macie::Session": [
       "AutomatedDiscoveryStatus"
+    ],
+    "AWS::ManagedBlockchain::Accessor": [
+      "Status"
     ],
     "AWS::MediaConnect::Bridge": [
       "BridgeState"
@@ -4410,6 +4652,9 @@
       "ConnectionState",
       "RegistrationState",
       "UpdatedAt"
+    ],
+    "AWS::MediaConnect::Gateway": [
+      "GatewayState"
     ],
     "AWS::MediaConnect::RouterInput": [
       "State",
@@ -4487,10 +4732,16 @@
     "AWS::MemoryDB::MultiRegionCluster": [
       "Status"
     ],
+    "AWS::MemoryDB::Snapshot": [
+      "Status"
+    ],
     "AWS::MemoryDB::User": [
       "Status"
     ],
     "AWS::NeptuneGraph::Graph": [
+      "Status"
+    ],
+    "AWS::NeptuneGraph::GraphSnapshot": [
       "Status"
     ],
     "AWS::NetworkFirewall::ContainerAssociation": [
@@ -4504,18 +4755,25 @@
       "ModifiedAt",
       "MonitorStatus"
     ],
+    "AWS::NetworkFlowMonitor::Scope": [
+      "Status"
+    ],
     "AWS::NetworkManager::ConnectAttachment": [
       "LastModificationErrors",
       "State",
       "UpdatedAt"
     ],
     "AWS::NetworkManager::ConnectPeer": [
-      "LastModificationErrors"
+      "LastModificationErrors",
+      "State"
     ],
     "AWS::NetworkManager::Connection": [
       "State"
     ],
     "AWS::NetworkManager::ContextStore": [
+      "State"
+    ],
+    "AWS::NetworkManager::ContextStoreAssociation": [
       "State"
     ],
     "AWS::NetworkManager::CoreNetwork": [
@@ -4541,7 +4799,8 @@
       "UpdatedAt"
     ],
     "AWS::NetworkManager::TransitGatewayPeering": [
-      "LastModificationErrors"
+      "LastModificationErrors",
+      "State"
     ],
     "AWS::NetworkManager::TransitGatewayRouteTableAttachment": [
       "LastModificationErrors",
@@ -4592,14 +4851,27 @@
     "AWS::Notifications::NotificationConfiguration": [
       "Status"
     ],
+    "AWS::Notifications::NotificationHub": [
+      "NotificationHubStatusSummary"
+    ],
     "AWS::NotificationsContacts::EmailContact": [
+      "EmailContact.Status",
       "EmailContact.UpdateTime"
+    ],
+    "AWS::NovaAct::WorkflowDefinition": [
+      "Status"
+    ],
+    "AWS::OSIS::PipelineEndpoint": [
+      "Status"
     ],
     "AWS::ObservabilityAdmin::DatasetIntegration": [
       "UpdatedAt"
     ],
     "AWS::ObservabilityAdmin::OrganizationTelemetryRule": [
       "RegionStatuses"
+    ],
+    "AWS::ObservabilityAdmin::TelemetryEnrichment": [
+      "Status"
     ],
     "AWS::ObservabilityAdmin::TelemetryPipelines": [
       "Status",
@@ -4660,8 +4932,14 @@
       "ErrorInfo",
       "Status"
     ],
+    "AWS::PI::PerfReports": [
+      "Status"
+    ],
     "AWS::Panorama::ApplicationInstance": [
-      "LastUpdatedTime"
+      "HealthStatus",
+      "LastUpdatedTime",
+      "Status",
+      "StatusDescription"
     ],
     "AWS::Panorama::PackageVersion": [
       "Status",
@@ -4676,7 +4954,8 @@
       "Status"
     ],
     "AWS::Personalize::Filter": [
-      "LastUpdatedDateTime"
+      "LastUpdatedDateTime",
+      "Status"
     ],
     "AWS::Personalize::MetricAttribution": [
       "Status"
@@ -4828,19 +5107,31 @@
       "PermissionVersion"
     ],
     "AWS::RAM::PrincipalAssociation": [
-      "LastUpdatedTime"
+      "LastUpdatedTime",
+      "Status"
     ],
     "AWS::RAM::ResourceAssociation": [
-      "LastUpdatedTime"
+      "LastUpdatedTime",
+      "Status"
     ],
     "AWS::RAM::ResourceShare": [
       "LastUpdatedTime",
       "Status"
     ],
     "AWS::RAM::SourceAssociation": [
-      "LastUpdatedTime"
+      "LastUpdatedTime",
+      "Status"
+    ],
+    "AWS::RDS::ClusterSnapshot": [
+      "Status"
     ],
     "AWS::RDS::DBClusterEndpoint": [
+      "Status"
+    ],
+    "AWS::RDS::DBSnapshot": [
+      "Status"
+    ],
+    "AWS::RDS::Deployment": [
       "Status"
     ],
     "AWS::RTBFabric::InboundExternalLink": [
@@ -4902,6 +5193,10 @@
     "AWS::RedshiftServerless::Workgroup": [
       "Workgroup.Status"
     ],
+    "AWS::Rekognition::StreamProcessor": [
+      "Status",
+      "StatusMessage"
+    ],
     "AWS::ResilienceHub::App": [
       "DriftStatus"
     ],
@@ -4922,6 +5217,12 @@
     ],
     "AWS::ResourceExplorer2::Index": [
       "IndexState"
+    ],
+    "AWS::ResourceGroups::TagSyncTask": [
+      "Status"
+    ],
+    "AWS::Route53::HealthCheckSource": [
+      "HealthCheckSourceStatus"
     ],
     "AWS::Route53::TrafficPolicy": [
       "Version"
@@ -4958,6 +5259,9 @@
       "Status",
       "UpdatedAt"
     ],
+    "AWS::Route53Profiles::Profile": [
+      "ShareStatus"
+    ],
     "AWS::Route53RecoveryControl::Cluster": [
       "Status"
     ],
@@ -4991,9 +5295,24 @@
       "Status",
       "StatusMessage"
     ],
+    "AWS::Route53Resolver::ResolverDNSSECConfig": [
+      "ValidationStatus"
+    ],
+    "AWS::Route53Resolver::ResolverQueryLoggingConfig": [
+      "ShareStatus",
+      "Status"
+    ],
+    "AWS::Route53Resolver::ResolverQueryLoggingConfigAssociation": [
+      "Error",
+      "ErrorMessage",
+      "Status"
+    ],
     "AWS::S3::MultiRegionAccessPointPolicy": [
       "PolicyStatus",
       "PolicyStatus.IsPublic"
+    ],
+    "AWS::S3Files::AccessPoint": [
+      "Status"
     ],
     "AWS::S3Files::FileSystem": [
       "Status",
@@ -5036,6 +5355,15 @@
       "TierUpgradeStatus"
     ],
     "AWS::SMSVOICE::RcsAgent": [
+      "Status"
+    ],
+    "AWS::SMSVOICE::Registration": [
+      "RegistrationStatus"
+    ],
+    "AWS::SMSVOICE::RegistrationAttachment": [
+      "AttachmentStatus"
+    ],
+    "AWS::SMSVOICE::VerifiedDestinationNumber": [
       "Status"
     ],
     "AWS::SSM::CloudConnector": [
@@ -5137,7 +5465,9 @@
       "CurrentVersionEolDate"
     ],
     "AWS::SageMaker::ProcessingJob": [
-      "LastModifiedTime"
+      "FailureReason",
+      "LastModifiedTime",
+      "ProcessingJobStatus"
     ],
     "AWS::SageMaker::Project": [
       "ProjectStatus"
@@ -5146,7 +5476,8 @@
       "LastModifiedTime"
     ],
     "AWS::Scheduler::ScheduleGroup": [
-      "LastModificationDate"
+      "LastModificationDate",
+      "State"
     ],
     "AWS::SecurityAgent::AgentSpace": [
       "UpdatedAt"
@@ -5184,6 +5515,9 @@
       "EnablementStatusReason",
       "LastUpdatedAt"
     ],
+    "AWS::SecurityHub::DelegatedAdmin": [
+      "Status"
+    ],
     "AWS::SecurityHub::OrganizationConfiguration": [
       "Status",
       "StatusMessage"
@@ -5199,8 +5533,21 @@
     "AWS::StorageGateway::SMBFileShare": [
       "FileShareStatus"
     ],
+    "AWS::StorageGateway::Tape": [
+      "TapeStatus"
+    ],
+    "AWS::StorageGateway::Volume": [
+      "VolumeAttachmentStatus",
+      "VolumeStatus"
+    ],
+    "AWS::SupportAuthZ::SupportPermit": [
+      "Status"
+    ],
     "AWS::Synthetics::Canary": [
       "State"
+    ],
+    "AWS::Timestream::InfluxDBBackup": [
+      "Status"
     ],
     "AWS::Timestream::InfluxDBCluster": [
       "Status"
@@ -5237,6 +5584,9 @@
     ],
     "AWS::VpcLattice::AuthPolicy": [
       "State"
+    ],
+    "AWS::VpcLattice::DomainVerification": [
+      "Status"
     ],
     "AWS::VpcLattice::Service": [
       "LastUpdatedAt",
@@ -5301,6 +5651,9 @@
     "AWS::Wisdom::QuickResponse": [
       "Status"
     ],
+    "AWS::WorkSpaces::ConnectionAlias": [
+      "ConnectionAliasState"
+    ],
     "AWS::WorkSpaces::Directory": [
       "State"
     ],
@@ -5312,6 +5665,9 @@
     "AWS::WorkSpacesWeb::Portal": [
       "PortalStatus",
       "StatusReason"
+    ],
+    "AWS::WorkspacesInstances::WorkspaceInstance": [
+      "ProvisionState"
     ]
   },
   "ccBaseline": {
@@ -5492,6 +5848,9 @@
     ],
     "AWS::BCM::Dashboard": [
       "Type"
+    ],
+    "AWS::BCM::ScheduledReport": [
+      "Arn"
     ],
     "AWS::BCMDataExports::Export": [
       "Export.ExportArn"
@@ -5728,6 +6087,9 @@
     "AWS::CloudFormation::HookDefaultVersion": [
       "Arn"
     ],
+    "AWS::CloudFormation::HookTypeConfig": [
+      "ConfigurationArn"
+    ],
     "AWS::CloudFormation::ResourceDefaultVersion": [
       "Arn"
     ],
@@ -5843,12 +6205,27 @@
     "AWS::Config::ConformancePack": [
       "Type"
     ],
+    "AWS::Connect::AgentStatus": [
+      "AgentStatusArn"
+    ],
+    "AWS::Connect::ContactFlow": [
+      "ContactFlowArn"
+    ],
+    "AWS::Connect::ContactFlowModule": [
+      "ContactFlowModuleArn"
+    ],
     "AWS::Connect::ContactFlowModuleAlias": [
       "AliasId",
       "ContactFlowModuleAliasARN"
     ],
     "AWS::Connect::DataTable": [
       "Arn"
+    ],
+    "AWS::Connect::EmailAddress": [
+      "EmailAddressArn"
+    ],
+    "AWS::Connect::HoursOfOperation": [
+      "HoursOfOperationArn"
     ],
     "AWS::Connect::Metric": [
       "Category",
@@ -5868,16 +6245,34 @@
     "AWS::Connect::PhoneNumber": [
       "Address"
     ],
+    "AWS::Connect::Prompt": [
+      "PromptArn"
+    ],
     "AWS::Connect::Queue": [
+      "QueueArn",
       "Type"
     ],
     "AWS::Connect::QuickConnect": [
+      "QuickConnectArn",
       "QuickConnectType"
+    ],
+    "AWS::Connect::RoutingProfile": [
+      "RoutingProfileArn"
+    ],
+    "AWS::Connect::TaskTemplate": [
+      "Arn"
+    ],
+    "AWS::Connect::TestCase": [
+      "TestCaseArn"
     ],
     "AWS::Connect::TrafficDistributionGroup": [
       "IsDefault"
     ],
+    "AWS::Connect::UserHierarchyGroup": [
+      "UserHierarchyGroupArn"
+    ],
     "AWS::Connect::View": [
+      "ViewArn",
       "ViewContentSha256",
       "ViewId"
     ],
@@ -6031,6 +6426,7 @@
       "Type"
     ],
     "AWS::Deadline::Fleet": [
+      "Arn",
       "Capabilities",
       "FleetId",
       "WorkerCount"
@@ -6487,6 +6883,9 @@
     "AWS::ImageBuilder::ImagePipeline": [
       "DeploymentId"
     ],
+    "AWS::InspectorV2::CisScanConfiguration": [
+      "Arn"
+    ],
     "AWS::InspectorV2::CodeSecurityIntegration": [
       "AuthorizationUrl"
     ],
@@ -6575,9 +6974,11 @@
       "FeaturedResultsSetId"
     ],
     "AWS::Kendra::QuerySuggestionsBlockList": [
+      "Arn",
       "Id"
     ],
     "AWS::Kendra::Thesaurus": [
+      "Arn",
       "Id"
     ],
     "AWS::Kinesis::Channel": [
@@ -6702,6 +7103,9 @@
     ],
     "AWS::Macie::Session": [
       "ServiceRole"
+    ],
+    "AWS::MediaConnect::Bridge": [
+      "BridgeArn"
     ],
     "AWS::MediaConnect::DestinationEndpoint": [
       "AssociatedResourceDetails",
@@ -7128,6 +7532,7 @@
       "SiteArn"
     ],
     "AWS::PCS::ComputeNodeGroup": [
+      "Arn",
       "Id"
     ],
     "AWS::Panorama::Package": [
@@ -7437,6 +7842,9 @@
     "AWS::Route53RecoveryControl::ControlPanel": [
       "DefaultControlPanel",
       "RoutingControlCount"
+    ],
+    "AWS::Route53RecoveryControl::SafetyRule": [
+      "SafetyRuleArn"
     ],
     "AWS::Route53RecoveryReadiness::Cell": [
       "ParentReadinessScopes"

@@ -68,7 +68,8 @@ describe('the committed audit (#7001)', () => {
     expect(report.summary.sdkTypes).toBeGreaterThanOrEqual(131);
     expect(report.summary.sdkPairs).toBeGreaterThanOrEqual(390);
     expect(report.summary.ccPairs).toBeGreaterThanOrEqual(5500);
-    expect(report.summary.ccByRule['no-in-place-update']).toBeGreaterThan(1000);
+    // #7007 part 5: a tag-only type's statuses left it for operational-status.
+    expect(report.summary.ccByRule['no-in-place-update']).toBeGreaterThan(950);
     expect(report.summary.ccByRule['creation-timestamp']).toBeGreaterThan(300);
     expect(report.summary.ccBaseline).toBeGreaterThan(0);
     expect(report.summary.ccByRule['own-identity']).toBeGreaterThan(800);
@@ -83,7 +84,7 @@ describe('the committed audit (#7001)', () => {
     expect(report.summary.ccByRule['parent-fixed']).toBeGreaterThan(0);
     // go-to-k/cdkd#7007 part 5.
     expect(report.summary.ccByRule['operational-status']).toBeGreaterThan(450);
-    expect(report.summary.ccByRule['primary-identifier']).toBeGreaterThan(500);
+    expect(report.summary.ccByRule['primary-identifier']).toBeGreaterThan(480);
     expect(report.summary.ccByRule['arn-template']).toBeGreaterThan(85);
     // #7007: the measured rename probes are hand verdicts, merged in without
     // dropping a type both tables name.
@@ -296,7 +297,8 @@ describe('classifyByRule (#7001)', () => {
 
   it('settles every pair of a type whose only in-place property is Tags, bar an update timestamp', () => {
     const t = input('AWS::X::Thing', { Name: 'yes', Config: 'yes', Tags: undefined });
-    expect(classifyByRule(t, 'Status')).toBe('no-in-place-update');
+    expect(classifyByRule(t, 'Config2')).toBe('no-in-place-update');
+    expect(classifyByRule(t, 'Status')).toBe('operational-status');
     // A tag edit may stamp it: moving, never `no-in-place-update`.
     for (const a of ['UpdatedAt', 'LastModifiedTime', 'LastUpdatedDateTime', 'UpdateTime', 'LastModificationDate']) {
       expect(classifyByRule(t, a), a).toBe('update-timestamp');
@@ -540,6 +542,28 @@ describe('the #7007 rules, on real spec inputs', () => {
     expect(classifyByRule(t(['Arn']), 'Arn')).toBe('primary-identifier');
     // A versioned type's ARN may carry the version.
     expect(classifyByRule(t(['Arn', 'VersionNumber']), 'Arn')).toBeUndefined();
+    // An in-place parent or foreign reference the ARN may embed, or a name
+    // that is not the resource's own: not settled.
+    for (const prop of ['InstanceArn', 'ControlPanelArn', 'ParentId', 'GroupIdentifier', 'TypeName', 'SshKeyName']) {
+      const withProp = { ...t(['Arn']), properties: { Name: undefined, [prop]: undefined } };
+      expect(classifyByRule(withProp, 'Arn'), prop).toBeUndefined();
+    }
+    for (const prop of ['DisplayName', 'Path', 'WidgetName']) {
+      const own = { ...t(['Arn']), properties: { [prop]: undefined } };
+      expect(classifyByRule(own, 'Arn'), prop).toBe('primary-identifier');
+    }
+    // Real cases: `type-configuration/hook/<TypeName>/<alias>` over an
+    // in-place TypeName; an ARN under an in-place control panel or instance.
+    for (const [type, attr] of [
+      ['AWS::CloudFormation::HookTypeConfig', 'ConfigurationArn'],
+      ['AWS::Route53RecoveryControl::SafetyRule', 'SafetyRuleArn'],
+      ['AWS::Connect::TestCase', 'TestCaseArn'],
+      ['AWS::Connect::ContactFlow', 'ContactFlowArn'],
+    ] as const) {
+      expect(real(type).arnTemplate, type).toBeUndefined();
+      expect(classifyByRule(real(type), attr), type).toBeUndefined();
+      expect(report.ccBaseline[type], type).toContain(attr);
+    }
   });
 
   it('operational-status settles a status, its explanation and a member status as moving (#7007 part 5)', () => {
@@ -571,8 +595,11 @@ describe('the #7007 rules, on real spec inputs', () => {
     for (const a of ['Exclusions', 'Owner', 'Stateful', 'StatusArn']) {
       expect(classifyByRule(t, a), a).not.toBe('operational-status');
     }
-    // A tag-only type's status stays no-in-place-update.
-    expect(classifyByRule({ ...t, properties: { Config: 'yes' } }, 'Status')).toBe('no-in-place-update');
+    // A tag-only type's status is moving too; its other pairs stay settled.
+    const tagOnly = { ...t, properties: { Config: 'yes' } };
+    expect(classifyByRule(tagOnly, 'Status')).toBe('operational-status');
+    expect(classifyByRule(tagOnly, 'Exclusions.Nat.State')).toBe('operational-status');
+    expect(classifyByRule(tagOnly, 'Owner')).toBe('no-in-place-update');
   });
 
   it('reads create-only from the live registry snapshot, the spec only for a type it lacks (#7007 part 5)', () => {

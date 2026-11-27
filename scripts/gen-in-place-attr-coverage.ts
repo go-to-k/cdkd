@@ -264,7 +264,8 @@ const OWN_IDENTITY = /^(.*?)(Arn|ARN|Id|ID|Uuid|UUID)$/;
  *
  * - `no-in-place-update`: every property but `Tags` replaces the resource
  *   (`causesReplacement: yes`), so the only in-place update is a tag edit.
- *   An update timestamp is left out: a tag edit may stamp it.
+ *   An update timestamp is left out: a tag edit may stamp it. So is an
+ *   operational status (`operational-status`).
  * - `creation-timestamp`: an undotted creation time. A dotted one is a member
  *   of a nested object an update can re-create (an MSK configuration's
  *   `LatestRevision.CreationTime`).
@@ -289,8 +290,10 @@ const OWN_IDENTITY = /^(.*?)(Arn|ARN|Id|ID|Uuid|UUID)$/;
  *   a `Version...` / `Revision...` member (an update can mint one), an ARN
  *   whose `arnTemplate` has a placeholder ENDING with an in-place property's
  *   name, nor an ARN with no template on a VERSIONED type with an in-place
- *   name or path (its ARN may carry the version). On an unversioned type a
- *   template-less ARN is settled: every rename probe of #7007 kept it (#7069's
+ *   name or path (its ARN may carry the version), nor one on a type with an
+ *   in-place parent or foreign reference (`...Arn` / `...Id` / `...Identifier`,
+ *   a name not the resource's own, such as a hook's `TypeName`), which the
+ *   ARN may embed. Otherwise a template-less ARN is settled: every rename probe of #7007 kept it (#7069's
  *   26 pairs; BCM Dashboard, CloudWatch MetricDataQueryDefinition, InspectorV2
  *   Filter and MediaLive EventBridgeRuleTemplate in part 5).
  * - No rule settles an own id or ARN of an `...Association` type with an
@@ -334,16 +337,24 @@ const OWN_IDENTITY = /^(.*?)(Arn|ARN|Id|ID|Uuid|UUID)$/;
  *   `Status` `STOPPED_INGESTION`), or the service reports the update itself
  *   (`UPDATE_COMPLETE`). Proving neither per type takes its handler, so any
  *   in-place update may move it. A wrong `moving` costs only a speculative
- *   promotion, which the deploy skips when the value is unchanged. A type
- *   whose only in-place property is `Tags` keeps `no-in-place-update`, which
- *   runs first: a tag edit reconfigures nothing a status reports.
+ *   promotion, which the deploy skips when the value is unchanged. It holds
+ *   on a type whose only in-place property is `Tags` too: no measurement
+ *   shows a tag edit leaving every status alone.
  */
 export function classifyByRule(input: TypeInput, attribute: string): RuleName | undefined {
   if (RULE_HELD_OUT.has(`${input.type}.${attribute}`)) return undefined;
   const writable = Object.entries(input.properties).filter(
     ([name, replaces]) => name !== 'Tags' && replaces !== 'yes'
   );
-  if (writable.length === 0 && !UPDATE_TIMESTAMP.test(attribute)) return 'no-in-place-update';
+  // A status is left out like an update time: no measurement shows a tag
+  // edit leaving every status alone (go-to-k/cdkd#7007 part 5).
+  if (
+    writable.length === 0 &&
+    !UPDATE_TIMESTAMP.test(attribute) &&
+    !OPERATIONAL_STATUS.test(attribute.slice(attribute.lastIndexOf('.') + 1))
+  ) {
+    return 'no-in-place-update';
+  }
   if (attribute.includes('.')) {
     // A member is part of its parent attribute's value: it moves when the
     // parent may, and never moves when the parent never does (bar a member
@@ -412,14 +423,26 @@ export function classifyByRule(input: TypeInput, attribute: string): RuleName | 
   // A primary-identifier ARN with no template on a type with an in-place
   // name is settled by the contract, as measured (#7069's renames, and the
   // BCM Dashboard / CloudWatch MetricDataQueryDefinition / InspectorV2
-  // Filter renames of go-to-k/cdkd#7007 part 5), unless the type is
-  // versioned: its ARN may carry a version.
+  // Filter renames of go-to-k/cdkd#7007 part 5), only when the in-place
+  // names are the resource's OWN (`Name`, `DisplayName`, `Path`,
+  // `<...TypeName>Name`) and no in-place property names a parent or another
+  // resource (`...Arn` / `...Id` / `...Identifier`, a `TypeName`): an ARN may
+  // embed those (`type-configuration/hook/<TypeName>/...`,
+  // `instance/<instance>/...`). A versioned type stays out too: its ARN may
+  // carry a version.
+  const ownNameOnly = writable.every(([name]) => {
+    if (IDENTITY_SHAPED.test(name)) return false;
+    if (!name.endsWith('Name') && name !== 'Path') return true;
+    if (name === 'Name' || name === 'DisplayName' || name === 'Path') return true;
+    const q = name.slice(0, -'Name'.length);
+    return typeName.endsWith(q);
+  });
   const isPrimaryIdentifier =
     IDENTITY_SHAPED.test(attribute) &&
     !VERSIONED.test(attribute) &&
     primaryIdentifier.includes(attribute) &&
     !(isArn && templateNamesWritable) &&
-    !(isArn && input.arnTemplate === undefined && mutableName && versioned);
+    !(isArn && input.arnTemplate === undefined && mutableName && (versioned || !ownNameOnly));
   const m = OWN_IDENTITY.exec(attribute);
   const prefix = m?.[1]!.toLowerCase();
   const own = prefix !== undefined && (prefix === '' || typeName.toLowerCase().endsWith(prefix));
