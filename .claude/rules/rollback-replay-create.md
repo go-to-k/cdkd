@@ -18,6 +18,8 @@ journaled `oldDeletedBeforeCreate` (#4690); the failed-op re-create
 wholesale, none keeps it. Do not re-narrow that result type. Its
 `attributes` are recorded too, after its `NoEcho` is registered
 (`recordNoEchoAttributeValues`, #4434).
+Its drift baseline is a fresh readback (`recreated`, #7129); none when the
+create declared `NoEcho` or returned the LIVE new resource (#6731).
 
 **When the ROUTING DECISION is `cc-api`, both arms run the bag through
 `applyDefaultNameForFallback`** (#3199), filling a

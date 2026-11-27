@@ -4379,7 +4379,11 @@ describe('classifyRemovedProperty', () => {
     // carry both facts and where each was read — not a template sentence.
     expect(rationale).toContain('@aws-sdk/client-route-53');
     expect(rationale).toContain('ResourceRecordSet');
-    expect(rationale).toMatch(/wires it at src\/provisioning\/providers\/route53\/record-set\.ts:\d+/);
+    // `read-state.ts` holds the drift fold of its `Bias` (go-to-k/cdkd#7129),
+    // `record-set.ts` the create's mapping: either is a site that wires it.
+    expect(rationale).toMatch(
+      /wires it at src\/provisioning\/providers\/route53\/(record-set|read-state)\.ts:\d+/
+    );
     expect(rationale).toContain('Written automatically by the schema refresh job');
     // PascalCase here, so the camelCase note must NOT appear — it is a claim
     // about the service's modelling convention, wrong on this one.

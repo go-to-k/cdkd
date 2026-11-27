@@ -9851,6 +9851,7 @@
       "integs": [
         "cc-to-sdk-reroute-hosted-zone",
         "ec2-vpc",
+        "rollback-observed-baseline-refresh",
         "route53",
         "route53-drift-import",
         "sdk-unmodelled-nested-route"
@@ -9863,6 +9864,9 @@
         "ec2-vpc": [
           "l1",
           "literal"
+        ],
+        "rollback-observed-baseline-refresh": [
+          "l2"
         ],
         "route53": [
           "l2"
@@ -9879,10 +9883,14 @@
     {
       "resourceType": "AWS::Route53::RecordSet",
       "integs": [
+        "rollback-observed-baseline-refresh",
         "route53",
         "route53-drift-import"
       ],
       "signals": {
+        "rollback-observed-baseline-refresh": [
+          "l2"
+        ],
         "route53": [
           "l1",
           "l2",

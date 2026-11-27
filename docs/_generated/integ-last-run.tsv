@@ -459,16 +459,16 @@ rollback-command	2026-11-24T14:31:41Z	PASS	890	verify.sh	rc ok, orph clean (#693
 rollback-cross-region-secret	2026-11-20T11:50:48Z	PASS	298	verify.sh	PR6652 be63cc056, us-west-2+us-east-1; own state bucket (deleted); rc 0, kept identity x2, orph clean
 rollback-deletion-policy-snapshot	2026-11-04T20:33:20Z	PASS	102	verify.sh	re-run after review fix: verify.sh state check treats missing .resources map as FAIL (unreadable); PASS through it, VolumeSnap record removed; orph clean us-east-1
 rollback-explicit-name-rewrite	2026-11-20T16:18:33Z	PASS	195	verify.sh	rc ok, orph clean, own state bucket, head 27ba68d76 (#6692)
-rollback-failure-injection	2026-11-19T06:52:45Z	PASS	376	verify.sh	#6600 final: rc ok, destroy 0 errors, orph clean
+rollback-failure-injection	2026-11-27T19:04:48Z	PASS	360	verify.sh	rc ok, orph clean (PR #7136; own state bucket)
 rollback-nested-cross-region-secret	2026-11-20T11:50:48Z	PASS	458	verify.sh	PR6652 be63cc056, us-west-2+us-east-1; own state bucket (deleted); rc 0, kept identity x2, orph clean
-rollback-observed-baseline-refresh	2026-11-18T05:18:35Z	PASS	101	verify.sh	rc ok, orph clean (PR #6531, #6526)
+rollback-observed-baseline-refresh	2026-11-27T21:11:05Z	PASS	120	verify.sh	rc ok, orph clean (PR #7136, #7129, after rebase onto #7149; own state bucket)
 rollback-regenerated-secret	2026-11-27T18:42:37Z	PASS	196	verify.sh	#7131 a8123005: rc ok, destroy 0 errors, orph clean
 rollback-replacement-retain	2026-11-21T01:28:31Z	PASS	87	verify.sh	PR6710 260d5664a; rc ok, orph clean
 rollback-replay-cc-generated-name	2026-11-20T14:40:31Z	PASS	172	verify.sh	rc ok, orph clean (#6675)
 rollback-replay-effective-props	2026-11-18T06:37:13Z	PASS	326	verify.sh	PR #6531 re-run after rebase onto 40868290f; rc ok, orph clean
 rollback-same-id-recreate	2026-11-21T01:28:31Z	PASS	177	verify.sh	PR6710 260d5664a; rc ok, orph clean; own bucket
 rollback-sqs-cooldown	2026-11-21T03:36:15Z	PASS	180	verify.sh	rc ok, orph clean (#6713, fixture from #6736)
-route53	2026-11-22T05:45:00Z	PASS	472	verify.sh	PR6814 2ae78b7f6, us-east-1, rc ok, orph clean
+route53	2026-11-27T19:04:48Z	PASS	576	verify.sh	rc ok, orph clean (PR #7136)
 route53-drift-import	2026-11-20T11:22:10Z	PASS	130	verify.sh	PR6652 be63cc056, us-east-1, revert-identity kept, orph clean
 route53resolver-rule	2026-11-26T19:51:25Z	PASS	100	verify.sh	PR7074 86baafa5b us-east-1 rc 0 ok, orph clean
 s3-analytics-inventory	2026-11-04T08:31:11Z	PASS	135	verify.sh	verify.sh rc 0, destroy clean, orph clean (own state bucket)

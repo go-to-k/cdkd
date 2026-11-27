@@ -1,5 +1,6 @@
 {
   "scenarios": [
-    "rollback-restore-drift-baseline"
+    "rollback-restore-drift-baseline",
+    "rollback-recreate-drift-baseline"
   ]
 }

@@ -113,6 +113,7 @@ const CASES: ReadonlyArray<readonly [string, string, string, number]> = [
   ['import', 'import', 'importImpl', 1],
   ['import', 'importHostedZone', 'importHostedZone', 1],
   ['import', 'importRecordSet', 'importRecordSet', 1],
+  ['read-state', 'canonicalizeDriftProperties', 'canonicalizeDriftProperties', 2],
   ['read-state', 'getDriftUnorderedPaths', 'getDriftUnorderedPaths', 1],
   ['read-state', 'readCurrentState', 'readCurrentState', 4],
   ['read-state', 'readHostedZone', 'readHostedZone', 3],
