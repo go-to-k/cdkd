@@ -23,9 +23,11 @@
  * One consequence: moving an address from interface A to interface B in one
  * deploy can be refused, because nothing orders B's assignment after A's
  * unassignment. That fails safe (the refused assignment changes nothing on B,
- * and no address is taken from A), and the next deploy converges once A's
- * unassignment has run. What
- * CloudFormation does for such a move is unmeasured.
+ * and no address is taken from A). It converges under `--no-rollback` (the
+ * next deploy finds A's unassignment done), or when the removal from A and
+ * the addition to B go in two deploys. The default rollback reverts A's
+ * update, which assigns the address back to A, so the next deploy can repeat
+ * the same conflict. What CloudFormation does for such a move is unmeasured.
  *
  * Only an explicit secondary list is handled. A desired side that also
  * declares `SecondaryPrivateIpAddressCount` (AWS picks those addresses), lacks
