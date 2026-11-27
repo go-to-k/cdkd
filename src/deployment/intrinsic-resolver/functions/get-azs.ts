@@ -1,6 +1,6 @@
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import type { IntrinsicFunctionResolver } from '../../intrinsic-function-resolver.js';
-import { displayMasked, logRender, maskValueLeaves } from '../masking-display.js';
+import { displayMasked, logOperand, maskValueLeaves } from '../masking-display.js';
 import { logTextOfLeaf, regionLogText } from '../masking.js';
 import { markNonRetryable, markRedactedCause } from '../../retryable-errors.js';
 import { injectiveKey } from '../../../state/record-keys.js';
@@ -121,7 +121,7 @@ export async function resolveGetAZs(
     // cleared `isClientSafeRegion`, which a real plaintext can (issue #2827
     // review).
     resolver.logger.debug(
-      `Resolved Fn::GetAZs from cache: ${logRender(resolver, loggedRegionText ?? region, context)} resolved to ${logRender(resolver, JSON.stringify(maskValueLeaves(resolver, cached, context)), context, { structured: true })}`
+      `Resolved Fn::GetAZs from cache: ${logOperand(resolver, loggedRegionText ?? region, context)} resolved to ${logOperand(resolver, JSON.stringify(maskValueLeaves(resolver, cached, context)), context, { structured: true })}`
     );
     return cached;
   }
@@ -214,7 +214,7 @@ export async function resolveGetAZs(
 
   cachedAvailabilityZones.set(azCacheKey, azNames);
   resolver.logger.debug(
-    `Resolved Fn::GetAZs: ${logRender(resolver, loggedRegionText ?? region, context)} resolved to ${logRender(resolver, JSON.stringify(maskValueLeaves(resolver, azNames, context)), context, { structured: true })}`
+    `Resolved Fn::GetAZs: ${logOperand(resolver, loggedRegionText ?? region, context)} resolved to ${logOperand(resolver, JSON.stringify(maskValueLeaves(resolver, azNames, context)), context, { structured: true })}`
   );
   return azNames;
 }

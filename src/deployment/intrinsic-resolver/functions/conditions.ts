@@ -1,5 +1,5 @@
 import type { IntrinsicFunctionResolver } from '../../intrinsic-function-resolver.js';
-import { displayMasked, logRender, maskValueLeaves } from '../masking-display.js';
+import { displayMasked, logOperand, logRender, maskValueLeaves } from '../masking-display.js';
 import { resolveDynamicReferencesWithLogTwin } from '../dynamic-refs.js';
 import { recordLeafResolution } from '../masking.js';
 import { markNonRetryable } from '../../retryable-errors.js';
@@ -112,7 +112,7 @@ export async function resolveEquals(
   resolver.logger.debug(
     // Leaf-masked before the encoding — see `resolveSelect`'s twin comment
     // (issue [#2759](https://github.com/go-to-k/cdkd/issues/2759)).
-    `Resolved Fn::Equals: ${logRender(resolver, JSON.stringify(maskValueLeaves(resolver, resolved1, context)), context, { structured: true })} === ${logRender(resolver, JSON.stringify(maskValueLeaves(resolver, resolved2, context)), context, { structured: true })} resolved to ${result}`
+    `Resolved Fn::Equals: ${logOperand(resolver, JSON.stringify(maskValueLeaves(resolver, resolved1, context)), context, { structured: true })} === ${logOperand(resolver, JSON.stringify(maskValueLeaves(resolver, resolved2, context)), context, { structured: true })} resolved to ${logOperand(resolver, String(result), context, { render: String })}`
   );
 
   return result;

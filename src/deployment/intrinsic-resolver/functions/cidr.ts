@@ -1,5 +1,5 @@
 import type { IntrinsicFunctionResolver } from '../../intrinsic-function-resolver.js';
-import { displayMasked, maskValueLeaves } from '../masking-display.js';
+import { logOperand, maskValueLeaves } from '../masking-display.js';
 import { markNonRetryable } from '../../retryable-errors.js';
 import { type ResolverContext } from '../support.js';
 
@@ -45,7 +45,7 @@ export async function resolveCidr(
   resolver.logger.debug(
     // Leaf-masked like the refusal above (issue #2827 review): `ipBlock`
     // comes back from `resolveValue`.
-    `Resolving Fn::Cidr: ipBlock=${displayMasked(resolver, JSON.stringify(maskValueLeaves(resolver, ipBlock, context)), context)}, count=${displayMasked(resolver, String(count), context)}, cidrBits=${displayMasked(resolver, String(cidrBits), context)}`
+    `Resolving Fn::Cidr: ipBlock=${logOperand(resolver, JSON.stringify(maskValueLeaves(resolver, ipBlock, context)), context, { render: 'plain' })}, count=${logOperand(resolver, String(count), context, { render: 'plain' })}, cidrBits=${logOperand(resolver, String(cidrBits), context, { render: 'plain' })}`
   );
 
   const isIpv6 = ipBlock.includes(':');
@@ -124,7 +124,7 @@ export async function resolveCidr(
   // TODAY rather than of the site: the day this pushes something it did not
   // compute, the leaf walk is the mask that still works.
   resolver.logger.debug(
-    `Fn::Cidr result: ${displayMasked(resolver, JSON.stringify(maskValueLeaves(resolver, results, context)), context)}`
+    `Fn::Cidr result: ${logOperand(resolver, JSON.stringify(maskValueLeaves(resolver, results, context)), context, { render: 'plain' })}`
   );
   return results;
 }

@@ -1,5 +1,5 @@
 import type { IntrinsicFunctionResolver } from '../../intrinsic-function-resolver.js';
-import { logRender } from '../masking-display.js';
+import { logOperand } from '../masking-display.js';
 import {
   hasLogOnlyNeedles,
   logTextOfLeaf,
@@ -82,7 +82,7 @@ export async function resolveBase64(
     )
   ) {
     resolver.logger.debug(
-      safeMsg`Resolved Fn::Base64: ${logRender(resolver, logTextOfLeaf(resolver, resolvedValue, context), context)} resolved to ${SECRET_MASK} (an unresolved secret reference, compared as the mask the deploy persists)`
+      safeMsg`Resolved Fn::Base64: ${logOperand(resolver, logTextOfLeaf(resolver, resolvedValue, context), context)} resolved to ${SECRET_MASK} (an unresolved secret reference, compared as the mask the deploy persists)`
     );
     return SECRET_MASK;
   }
@@ -201,7 +201,7 @@ export async function resolveBase64(
   }
 
   resolver.logger.debug(
-    `Resolved Fn::Base64: ${logRender(resolver, inputLogText, context)} resolved to ${logRender(resolver, inputLogText !== resolvedValue ? SECRET_MASK : result, context)}`
+    `Resolved Fn::Base64: ${logOperand(resolver, inputLogText, context)} resolved to ${logOperand(resolver, inputLogText !== resolvedValue ? SECRET_MASK : result, context)}`
   );
   return result;
 }

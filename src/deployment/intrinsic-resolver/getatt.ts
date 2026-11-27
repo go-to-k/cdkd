@@ -1,5 +1,11 @@
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
-import { displayLeaf, displayMasked, logRender, maskValueLeaves } from './masking-display.js';
+import {
+  displayLeaf,
+  displayMasked,
+  logOperand,
+  logRender,
+  maskValueLeaves,
+} from './masking-display.js';
 import { outputNameLogText } from './masking.js';
 import type { ResourceState } from '../../types/state.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
@@ -317,7 +323,7 @@ export async function resolveGetAtt(
           context
         );
         resolver.logger.debug(
-          `Normalized legacy Fn::GetAtt attribute: ${logRender(resolver, logicalId, context)}.${logRender(resolver, attributeName, context)} normalized to ${logRender(resolver, stringifyAttributeForLog(attributeName, maskValueLeaves(resolver, nameServers, context)), context, { structured: isStructured(nameServers), redacted: isSensitiveAttributeName(attributeName) })}`
+          `Normalized legacy Fn::GetAtt attribute: ${logRender(resolver, logicalId, context)}.${logRender(resolver, attributeName, context)} normalized to ${logOperand(resolver, stringifyAttributeForLog(attributeName, maskValueLeaves(resolver, nameServers, context)), context, { structured: isStructured(nameServers), redacted: isSensitiveAttributeName(attributeName) })}`
         );
         return notedNameServers;
       }
@@ -334,7 +340,7 @@ export async function resolveGetAtt(
         ? flatValue
         : noteAttributeSecrecy(resolver, logicalId, attributeName, flatValue, context);
       resolver.logger.debug(
-        `Resolved Fn::GetAtt from attributes: ${logRender(resolver, logicalId, context)}.${logRender(resolver, attributeName, context)} resolved to ${logRender(resolver, stringifyAttributeForLog(attributeName, maskValueLeaves(resolver, flatValue, context)), context, { structured: isStructured(flatValue), redacted: isSensitiveAttributeName(attributeName) })}`
+        `Resolved Fn::GetAtt from attributes: ${logRender(resolver, logicalId, context)}.${logRender(resolver, attributeName, context)} resolved to ${logOperand(resolver, stringifyAttributeForLog(attributeName, maskValueLeaves(resolver, flatValue, context)), context, { structured: isStructured(flatValue), redacted: isSensitiveAttributeName(attributeName) })}`
       );
       // A nested-stack child's outputs are read out of the child's PERSISTED
       // state by `NestedStackProvider`, which since PR #1899 holds a
@@ -462,7 +468,7 @@ export async function resolveGetAtt(
           context
         );
         resolver.logger.debug(
-          `Resolved Fn::GetAtt from nested attributes: ${logRender(resolver, logicalId, context)}.${logRender(resolver, attributeName, context)} resolved to ${logRender(resolver, stringifyAttributeForLog(attributeName, maskValueLeaves(resolver, cursor, context)), context, { structured: isStructured(cursor), redacted: isSensitiveAttributeName(attributeName) })}`
+          `Resolved Fn::GetAtt from nested attributes: ${logRender(resolver, logicalId, context)}.${logRender(resolver, attributeName, context)} resolved to ${logOperand(resolver, stringifyAttributeForLog(attributeName, maskValueLeaves(resolver, cursor, context)), context, { structured: isStructured(cursor), redacted: isSensitiveAttributeName(attributeName) })}`
         );
         // NO nested-stack re-resolution arm here, unlike the flat-key lookup
         // above, and that is a REACHABILITY claim rather than a decision:
@@ -565,7 +571,7 @@ export async function resolveGetAtt(
   // that note.
   recordSecretNamedRead(logicalId, value, context);
   resolver.logger.debug(
-    `Resolved Fn::GetAtt: ${logRender(resolver, logicalId, context)}.${logRender(resolver, attributeName, context)} resolved to ${logRender(resolver, stringifyAttributeForLog(attributeName, maskValueLeaves(resolver, value, context)), context, { structured: isStructured(value), redacted: isSensitiveAttributeName(attributeName) })}`
+    `Resolved Fn::GetAtt: ${logRender(resolver, logicalId, context)}.${logRender(resolver, attributeName, context)} resolved to ${logOperand(resolver, stringifyAttributeForLog(attributeName, maskValueLeaves(resolver, value, context)), context, { structured: isStructured(value), redacted: isSensitiveAttributeName(attributeName) })}`
   );
   return value;
 }

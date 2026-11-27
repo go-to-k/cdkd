@@ -1,5 +1,5 @@
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
-import { displayMasked } from './masking-display.js';
+import { displayMasked, logOperand } from './masking-display.js';
 import { injectiveKey } from '../../state/record-keys.js';
 import { stringifyValue } from '../../utils/stringify.js';
 import {
@@ -130,9 +130,9 @@ export async function resolveSecretsManagerReference(
   const loggedJsonKey = displayMasked(resolver, nameLogText(jsonKey), context);
 
   resolver.logger.debug(
-    `Resolving dynamic reference: secretsmanager:${loggedSecretId}:SecretString:${loggedJsonKey}:` +
-      `${displayMasked(resolver, nameLogText(versionStage), context)}:` +
-      `${displayMasked(resolver, nameLogText(versionId), context)}`
+    `Resolving dynamic reference: secretsmanager:${logOperand(resolver, secretId, context, { render: () => loggedSecretId })}:SecretString:${logOperand(resolver, jsonKey, context, { render: () => loggedJsonKey })}:` +
+      `${logOperand(resolver, nameLogText(versionStage), context, { render: 'plain' })}:` +
+      `${logOperand(resolver, nameLogText(versionId), context, { render: 'plain' })}`
   );
 
   // Region-sensitive, and the reason issue #1957 is a security defect rather
@@ -325,11 +325,13 @@ export async function resolveSSMReference(
   // The name as the TOKEN spells it, also for a pinned read: version ids
   // reach debug lines only (go-to-k/cdkd#4847), and the request's own name
   // is masked to this spelling in any error.
-  const loggedParameterName = displayMasked(resolver, nameLogText(namedParameter), context);
+  const loggedParameterName = logOperand(resolver, nameLogText(namedParameter), context, {
+    render: 'plain',
+  });
 
   // not-in-class(service): the typed `service: 'ssm' | 'ssm-secure'` PARAMETER of resolveSSMReference, not the text parsed off an assembled reference.
   resolver.logger.debug(
-    `Resolving dynamic reference: ${service}:${loggedParameterName}${pinVersion === undefined ? '' : ` (version ${pinVersion})`}`
+    `Resolving dynamic reference: ${service}:${loggedParameterName}${pinVersion === undefined ? '' : ` (version ${logOperand(resolver, String(pinVersion), context, { render: 'plain' })})`}`
   );
 
   // Region-sensitive in BOTH of its outputs: the value, and the `Type` this

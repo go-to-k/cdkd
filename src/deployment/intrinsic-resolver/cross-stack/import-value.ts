@@ -1,6 +1,6 @@
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import type { IntrinsicFunctionResolver } from '../../intrinsic-function-resolver.js';
-import { displayLeaf, displayMasked } from '../masking-display.js';
+import { displayLeaf, displayMasked, logOperand } from '../masking-display.js';
 import { markNonRetryable } from '../../retryable-errors.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import type { ExportIndexStore } from '../../../state/export-index-store.js';
@@ -40,7 +40,7 @@ async function sameRegionExportEntry(
     };
   } catch (err) {
     resolver.logger.debug(
-      safeMsg`Same-region read for an exports index entry failed: ${displayMasked(resolver, describeAwsFailure(err).detail, context)}`
+      safeMsg`Same-region read for an exports index entry failed: ${logOperand(resolver, describeAwsFailure(err).detail, context, { render: 'plain' })}`
     );
     return undefined;
   }
@@ -87,7 +87,7 @@ export async function resolveImportValue(
   // export name assembled from a secret is a resolved secret in every line
   // that names it. Same treatment as `Fn::Join` / `Fn::Sub` already give
   // their results.
-  const loggedExportName = displayMasked(resolver, exportName, context);
+  const loggedExportName = logOperand(resolver, exportName, context, { render: 'plain' });
   resolver.logger.debug(`Resolving Fn::ImportValue: ${loggedExportName}`);
 
   // `cdkd diff` (go-to-k/cdkd#6796): a producer diffed earlier in this run
@@ -138,7 +138,7 @@ export async function resolveImportValue(
         // What IS a closed leak is `loggedExportName` beside it (issue
         // #2133), and that is what the test for this site pins.
         `Exports index lookup failed for ${quotedRender(loggedExportName, "'", 'an export whose name is not a plain identifier')}: ` +
-          `${displayMasked(resolver, describeAwsFailure(err).detail, context)}` +
+          `${logOperand(resolver, describeAwsFailure(err).detail, context, { render: 'plain' })}` +
           `; falling back to state.json scan`
       );
       entry = undefined;
@@ -297,8 +297,8 @@ export async function resolveImportValue(
                 // quieter. An index write failure quotes the KEY it could
                 // not write, which is built from the export name.
                 `Failed to patch exports index for ` +
-                  `${quotedRender(displayMasked(resolver, exportName, context), "'", 'an export whose name is not a plain identifier')}: ` +
-                  `${displayMasked(resolver, describeAwsFailure(err).detail, context)}`
+                  `${quotedRender(logOperand(resolver, exportName, context, { render: 'plain' }), "'", 'an export whose name is not a plain identifier')}: ` +
+                  `${logOperand(resolver, describeAwsFailure(err).detail, context, { render: 'plain' })}`
               );
             });
         }
@@ -314,7 +314,7 @@ export async function resolveImportValue(
         // NEITHER operand. `refStack` is a state-derived stack name and the
         // caught message quotes the state key it failed on.
         `Failed to read state for stack ${displayMasked(resolver, refStack, context)}: ` +
-          `${displayMasked(resolver, describeAwsFailure(error).detail, context)}`
+          `${logOperand(resolver, describeAwsFailure(error).detail, context, { render: 'plain' })}`
       );
       continue;
     }

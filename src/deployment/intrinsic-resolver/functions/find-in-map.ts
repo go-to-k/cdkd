@@ -1,5 +1,5 @@
 import type { IntrinsicFunctionResolver } from '../../intrinsic-function-resolver.js';
-import { displayMasked, logRender, maskValueLeaves } from '../masking-display.js';
+import { displayMasked, logOperand, maskValueLeaves } from '../masking-display.js';
 import { markNonRetryable } from '../../retryable-errors.js';
 import { type ResolverContext, quotedRender } from '../support.js';
 
@@ -117,10 +117,10 @@ export async function resolveFindInMap(
     // common one — so leaving it bare printed at `--verbose` exactly the
     // values the neighbouring refusals mask. The mapped VALUE is leaf-masked
     // too: a mapping may legitimately hold a value assembled from a secret.
-    `Resolved Fn::FindInMap: ${logRender(resolver, mapName, context)}.` +
-      `${logRender(resolver, topLevelKey, context)}.` +
-      `${logRender(resolver, secondLevelKey, context)} resolved to ` +
-      `${logRender(resolver, JSON.stringify(maskValueLeaves(resolver, result, context)), context, { structured: true })}`
+    `Resolved Fn::FindInMap: ${logOperand(resolver, mapName, context)}.` +
+      `${logOperand(resolver, topLevelKey, context)}.` +
+      `${logOperand(resolver, secondLevelKey, context)} resolved to ` +
+      `${logOperand(resolver, JSON.stringify(maskValueLeaves(resolver, result, context)), context, { structured: true })}`
   );
   return result;
 }

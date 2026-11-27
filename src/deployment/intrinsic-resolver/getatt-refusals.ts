@@ -1,7 +1,7 @@
 import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
 import { describeAwsFailure, verbosePointerSentence } from '../../utils/aws-failure-text.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
-import { displayMasked } from './masking-display.js';
+import { displayMasked, logOperand } from './masking-display.js';
 import { displaySafe } from '../../utils/display-safe.js';
 import { IntrinsicResolutionRefusalError } from '../../utils/error-handler.js';
 import { type ResolverContext, quotedRender } from './support.js';
@@ -218,7 +218,7 @@ export function describeFailureObserved(
   // not-in-class(read): the AWS API name the calling arm issued, a literal at every call site.
   // not-in-class(errorClass): the thrown error's CLASS name plus its numeric HTTP status, bounded and display-safe; the message is masked beside it.
   resolver.logger.debug(
-    `${read} failed (${errorClass}): ${displayMasked(resolver, describeAwsFailure(err).detail, context)}`
+    `${read} failed (${errorClass}): ${logOperand(resolver, describeAwsFailure(err).detail, context, { render: 'plain' })}`
   );
   return verbosePointerSentence()
     ? `${read} failed (${errorClass}); re-run with --verbose for the AWS error text`

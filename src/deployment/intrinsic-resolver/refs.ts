@@ -1,6 +1,6 @@
 import { cdkdRemedy, proseQuoted } from '../../utils/pasteable-command.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
-import { displayMasked, logRender, maskValueLeaves } from './masking-display.js';
+import { displayMasked, logOperand, logRender, maskValueLeaves } from './masking-display.js';
 import {
   recordInheritedParameterSecrets,
   recordNoEchoParameterValue,
@@ -241,7 +241,7 @@ export async function resolveRef(
     // follows, so a template value would choose a file to truncate
     // (go-to-k/cdkd#4161).
     resolver.logger.debug(
-      `Resolved Ref to resource: ${logRender(resolver, logicalId, context)} resolved to ${logRender(resolver, String(refValue), context)}`
+      `Resolved Ref to resource: ${logRender(resolver, logicalId, context)} resolved to ${logOperand(resolver, String(refValue), context)}`
     );
     // A `Ref` served out of the record's `properties` / `attributes` (an
     // AppSync data source's `DataSourceArn`) can be a leaf persisted as its
@@ -303,11 +303,15 @@ export async function resolveRef(
     // the author's own `NoEcho` declaration, and a CDK-synthesized
     // nested-stack parameter never carries one.
     resolver.logger.debug(
-      `Resolved Ref to parameter: ${logRender(resolver, logicalId, context)} resolved to ${logRender(
+      `Resolved Ref to parameter: ${logRender(resolver, logicalId, context)} resolved to ${logOperand(
         resolver,
         stringifyParameterForLog(paramDef, maskValueLeaves(resolver, value, context)),
         context,
-        { structured: isStructured(value), redacted: declaresNoEcho(paramDef) }
+        {
+          structured: isStructured(value),
+          redacted: declaresNoEcho(paramDef),
+          parameter: { name: logicalId, value },
+        }
       )}`
     );
     onParameter?.();
@@ -345,7 +349,7 @@ export async function resolveRef(
     // VALUE is not constrained the way its name is -- `AWS::StackName` is the
     // manifest-derived stack name.
     resolver.logger.debug(
-      `Resolved Ref to pseudo parameter: ${logicalId} resolved to ${logRender(resolver, valueStr, context)}`
+      `Resolved Ref to pseudo parameter: ${logicalId} resolved to ${logOperand(resolver, valueStr, context)}`
     );
     return pseudoValue;
   }

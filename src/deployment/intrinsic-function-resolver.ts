@@ -3,6 +3,7 @@ import {
   withConsumptionScope,
 } from './secret-redaction/consumed-references.js';
 import { GetParameterCommand } from '@aws-sdk/client-ssm';
+import { displayScopeOpenFor, withDisplayScope } from './intrinsic-resolver/display-taint.js';
 import { getLogger } from '../utils/logger.js';
 import { canonicalizeRegion, sameRegion } from '../utils/aws-partition.js';
 import { withSharedDrainBudget } from './drain-budget.js';
@@ -456,6 +457,19 @@ export class IntrinsicFunctionResolver {
       !consumptionScopeOpenFor(value)
     ) {
       return withConsumptionScope(value, () => this.resolveValue(value, context));
+    }
+    // go-to-k/cdkd#7077: the display scope a log operand's provenance is read
+    // from (`display-taint.ts`); opened only when the template has a tainted
+    // name, and read by log renders alone.
+    if (
+      value !== null &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      isIntrinsicCallShape(value) &&
+      !displayScopeOpenFor(value)
+    ) {
+      const scoped = withDisplayScope(value, context, () => this.resolveValue(value, context));
+      if (scoped !== undefined) return scoped;
     }
     // Primitives: return as-is (but check strings for dynamic references)
     if (typeof value !== 'object' || value === null) {
