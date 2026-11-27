@@ -2,8 +2,8 @@
   "issue": 7132,
   "total": 173,
   "counts": {
-    "unmeasured": 60,
-    "waits": 96,
+    "unmeasured": 59,
+    "waits": 97,
     "no-wait-by-design": 17
   },
   "rows": [
@@ -197,8 +197,16 @@
         "src/provisioning/providers/appsync-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns while the schema is PROCESSING; CloudFormation fails NotStabilized on an invalid schema (#7127, whose open fix adds the wait)"
+        "verdict": "waits",
+        "helpers": [
+          "waitForSchemaCreation"
+        ],
+        "failureStatuses": [
+          "FAILED",
+          "NOT_APPLICABLE",
+          "DELETING"
+        ],
+        "note": "every outcome is decided by a GetSchemaCreationStatus poll, as CloudFormation waits (#7127)"
       }
     },
     {

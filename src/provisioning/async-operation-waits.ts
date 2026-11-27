@@ -83,8 +83,10 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
   ),
   'appconfig:CreateEnvironment': unmeasured(NO_WAIT),
   'appconfig:UpdateEnvironment': unmeasured(NO_WAIT),
-  'appsync:StartSchemaCreation': unmeasured(
-    'returns while the schema is PROCESSING; CloudFormation fails NotStabilized on an invalid schema (#7127, whose open fix adds the wait)'
+  'appsync:StartSchemaCreation': waits(
+    ['waitForSchemaCreation'],
+    ['FAILED', 'NOT_APPLICABLE', 'DELETING'],
+    'every outcome is decided by a GetSchemaCreationStatus poll, as CloudFormation waits (#7127)'
   ),
   'auto-scaling:StartInstanceRefresh': waits(
     ['runInstanceRefresh'],
