@@ -75,6 +75,13 @@ import type { Construct } from 'constructs';
  *     DisassociateFileSystemAliases, not UpdateFileSystem.
  * All must keep the FileSystemId unchanged (no replacement).
  *
+ * DEPLOYMENT TYPE phase (the UPDATE phase's env plus
+ * CDKD_TEST_DEPLOYTYPE_CHANGE=true, go-to-k/cdkd#7083):
+ * WindowsConfiguration DeploymentType SINGLE_AZ_1 -> SINGLE_AZ_2, which
+ * CloudFormation was measured replacing the file system on. The diff must
+ * show the replacement and the deploy must refuse it (stateful) before any
+ * call; it is never applied.
+ *
  * Known coverage boundary: because `WeeklyMaintenanceStartTime` is
  * metadata-only, `UpdateFileSystem` reports no pending administrative
  * action, so this fixture does NOT exercise the provider's asynchronous
@@ -88,6 +95,7 @@ export class FsxWindowsStack extends cdk.Stack {
     super(scope, id, props);
 
     const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
+    const isDeployTypeChange = process.env.CDKD_TEST_DEPLOYTYPE_CHANGE === 'true';
     const activeDirectoryId = process.env.FSX_AD_ID;
 
     // 2 AZs: the Managed AD needs two subnets in different AZs. Public
@@ -123,7 +131,10 @@ export class FsxWindowsStack extends cdk.Stack {
       subnetIds: [vpc.publicSubnets[0].subnetId],
       windowsConfiguration: {
         activeDirectoryId,
-        deploymentType: 'SINGLE_AZ_1',
+        // SINGLE_AZ_1 -> SINGLE_AZ_2 under CDKD_TEST_DEPLOYTYPE_CHANGE=true
+        // (go-to-k/cdkd#7083): CloudFormation replaces the file system on it,
+        // so the deploy must refuse the stateful replacement. Never deployed.
+        deploymentType: isDeployTypeChange ? 'SINGLE_AZ_2' : 'SINGLE_AZ_1',
         // Minimum Windows throughput capacity.
         throughputCapacity: 8,
         // No automatic backups — nothing chargeable survives the destroy.

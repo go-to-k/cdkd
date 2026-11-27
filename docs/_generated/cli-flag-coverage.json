@@ -619,6 +619,7 @@
         "emr-cluster",
         "fallback-recreate-children",
         "fsx-openzfs",
+        "fsx-windows",
         "generated-name-lifecycle",
         "globaltable-keyschema-replace",
         "glue-update-hardening",

@@ -234,6 +234,8 @@ describe('spec-replacement table (go-to-k/cdkd#7070)', () => {
       ['LustreConfiguration', 'ImportedFileChunkSize'],
       ['OpenZFSConfiguration', 'RootVolumeConfiguration', 'RecordSizeKiB'],
       ['OntapConfiguration', 'EndpointIpAddressRange'],
+      ['WindowsConfiguration', 'DeploymentType'],
+      ['WindowsConfiguration', 'SelfManagedActiveDirectoryConfiguration', 'DomainName'],
     ]) {
       expect(await replacesOnChange(TYPE, path), path.join('.')).toBe(true);
     }

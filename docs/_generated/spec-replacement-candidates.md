@@ -15,7 +15,7 @@ what cdkd does; `update` and `baseline` rows keep the in-place update, and a `ha
 is decided by `src/analyzer/replacement-rules/rules.ts` or a provider-replacement planner.
 Evidence: `REPLACEMENT_EVIDENCE`.
 
-Candidates: 389 (replace 25, update 245, baseline 29, hand rule 90).
+Candidates: 389 (replace 32, update 245, baseline 22, hand rule 90).
 
 | Candidate | Spec | Verdict |
 | --- | --- | --- |
@@ -245,13 +245,13 @@ Candidates: 389 (replace 25, update 245, baseline 29, hand rule 90).
 | `AWS::FSx::FileSystem#OpenZFSConfiguration.RootVolumeConfiguration.ReadOnly` | yes | replace |
 | `AWS::FSx::FileSystem#OpenZFSConfiguration.RootVolumeConfiguration.RecordSizeKiB` | yes | replace |
 | `AWS::FSx::FileSystem#OpenZFSConfiguration.RootVolumeConfiguration.UserAndGroupQuotas` | yes | replace |
-| `AWS::FSx::FileSystem#WindowsConfiguration.ActiveDirectoryId` | yes | baseline |
-| `AWS::FSx::FileSystem#WindowsConfiguration.CopyTagsToBackups` | yes | baseline |
-| `AWS::FSx::FileSystem#WindowsConfiguration.DeploymentType` | yes | baseline |
-| `AWS::FSx::FileSystem#WindowsConfiguration.PreferredSubnetId` | yes | baseline |
-| `AWS::FSx::FileSystem#WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DomainName` | yes | baseline |
-| `AWS::FSx::FileSystem#WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.FileSystemAdministratorsGroup` | yes | baseline |
-| `AWS::FSx::FileSystem#WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.OrganizationalUnitDistinguishedName` | yes | baseline |
+| `AWS::FSx::FileSystem#WindowsConfiguration.ActiveDirectoryId` | yes | replace |
+| `AWS::FSx::FileSystem#WindowsConfiguration.CopyTagsToBackups` | yes | replace |
+| `AWS::FSx::FileSystem#WindowsConfiguration.DeploymentType` | yes | replace |
+| `AWS::FSx::FileSystem#WindowsConfiguration.PreferredSubnetId` | yes | replace |
+| `AWS::FSx::FileSystem#WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DomainName` | yes | replace |
+| `AWS::FSx::FileSystem#WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.FileSystemAdministratorsGroup` | yes | replace |
+| `AWS::FSx::FileSystem#WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.OrganizationalUnitDistinguishedName` | yes | replace |
 | `AWS::Glue::Database#CatalogId` | yes | update |
 | `AWS::Glue::Database#DatabaseInput.Name` | yes | update |
 | `AWS::GuardDuty::Member#Email` | yes | update |

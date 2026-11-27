@@ -42,13 +42,6 @@ export const UNMEASURED_SPEC_REPLACEMENT_CANDIDATES: ReadonlySet<string> = new S
   // (#7130) and its Enabled member applies in place, so neither verdict
   // describes the whole property.
   'AWS::Elasticsearch::Domain#EncryptionAtRestOptions',
-  'AWS::FSx::FileSystem#WindowsConfiguration.ActiveDirectoryId',
-  'AWS::FSx::FileSystem#WindowsConfiguration.CopyTagsToBackups',
-  'AWS::FSx::FileSystem#WindowsConfiguration.DeploymentType',
-  'AWS::FSx::FileSystem#WindowsConfiguration.PreferredSubnetId',
-  'AWS::FSx::FileSystem#WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DomainName',
-  'AWS::FSx::FileSystem#WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.FileSystemAdministratorsGroup',
-  'AWS::FSx::FileSystem#WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.OrganizationalUnitDistinguishedName',
   'AWS::KafkaConnect::Connector#ConnectorConfiguration',
   'AWS::KafkaConnect::Connector#Plugins',
   'AWS::KafkaConnect::Connector#WorkerConfiguration',
