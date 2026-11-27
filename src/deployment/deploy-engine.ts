@@ -33,7 +33,8 @@ import type { DagBuilder } from '../analyzer/dag-builder.js';
 import type { DiffCalculator } from '../analyzer/diff-calculator.js';
 import { ProviderRegistry } from '../provisioning/provider-registry.js';
 import { TemplateParser } from '../analyzer/template-parser.js';
-import { replaysAmbiguousCreate, withRetry, type RetryLogger } from './retry.js';
+import { withRetry, type RetryLogger } from './retry.js';
+import { replaysAmbiguousCreate } from './idempotent-create.js';
 import { maskingRetryLogger } from './masking-retry-logger.js';
 import {
   DEFAULT_RESOURCE_TIMEOUT_MS,

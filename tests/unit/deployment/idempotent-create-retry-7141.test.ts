@@ -12,11 +12,12 @@ import { join } from 'node:path';
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { GetBucketPolicyCommand, PutBucketPolicyCommand } from '@aws-sdk/client-s3';
 
-const { mockSend } = vi.hoisted(() => ({ mockSend: vi.fn() }));
+const { mockSend, mockSqsSend } = vi.hoisted(() => ({ mockSend: vi.fn(), mockSqsSend: vi.fn() }));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
     s3: { send: mockSend, config: { region: () => Promise.resolve('us-east-1') } },
+    sqs: { send: mockSqsSend, config: { region: () => Promise.resolve('us-east-1') } },
   }),
 }));
 
@@ -38,9 +39,14 @@ vi.mock('../../../src/deployment/resource-deadline.js', () => ({
 
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { provisionResource } from '../../../src/deployment/deploy-engine/provision.js';
-import { replaysAmbiguousCreate, withRetry } from '../../../src/deployment/retry.js';
+import { withRetry } from '../../../src/deployment/retry.js';
+import { replaysAmbiguousCreate } from '../../../src/deployment/idempotent-create.js';
 import { createWithRollbackRetry } from '../../../src/deployment/rollback-executor/replay-retry.js';
 import { isAmbiguousSocketError } from '../../../src/deployment/retryable-errors/transient.js';
+import {
+  createdBeforeFailure,
+  markCreatedBeforeFailure,
+} from '../../../src/provisioning/auxiliary-failure.js';
 import { priorAttemptLookup, withPriorAttempts } from '../../../src/deployment/prior-attempt-scope.js';
 import { S3BucketPolicyProvider } from '../../../src/provisioning/providers/s3-bucket-policy-provider.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
@@ -55,6 +61,12 @@ const socketHangUp = (): Error =>
   });
 /** A bare Node socket error: the code alone, no SDK name. */
 const bareReset = (): Error => Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' });
+/** `@smithy/node-http-handler`'s socket-inactivity timeout: the name alone, no code. */
+const codelessTimeout = (): Error =>
+  Object.assign(
+    new Error('the request socket timed out after 30000 ms of inactivity'),
+    { name: 'TimeoutError' }
+  );
 
 const quiet = { debug: () => {}, warn: () => {} };
 const noSleep = async (): Promise<void> => {};
@@ -63,6 +75,12 @@ describe('isAmbiguousSocketError (go-to-k/cdkd#7141)', () => {
   it('reads the socket arms down the cause chain, and not a 5xx or a throttle', () => {
     expect(isAmbiguousSocketError(socketHangUp())).toBe(true);
     expect(isAmbiguousSocketError(bareReset())).toBe(true);
+    expect(isAmbiguousSocketError(codelessTimeout())).toBe(true);
+    expect(
+      isAmbiguousSocketError(
+        Object.assign(new Error('x'), { $retryable: { throttling: true }, cause: bareReset() })
+      )
+    ).toBe(false);
     expect(isAmbiguousSocketError(new Error('wrapped', { cause: bareReset() }))).toBe(true);
     for (const code of ['EPIPE', 'ETIMEDOUT', 'EADDRNOTAVAIL']) {
       expect(isAmbiguousSocketError(Object.assign(new Error(code), { code }))).toBe(true);
@@ -88,6 +106,7 @@ describe('withRetry replayAmbiguousSocketError (go-to-k/cdkd#7141)', () => {
   for (const [label, make] of [
     ['an SDK TimeoutError', socketHangUp],
     ['a bare ECONNRESET', bareReset],
+    ['a code-less TimeoutError', codelessTimeout],
   ] as const) {
     it(`replays ${label} only when the caller declared it safe`, async () => {
       const declared = vi.fn().mockRejectedValueOnce(make()).mockResolvedValue('done');
@@ -108,30 +127,76 @@ describe('withRetry replayAmbiguousSocketError (go-to-k/cdkd#7141)', () => {
     });
   }
 
-  it('stays inside the existing budget', async () => {
+  it('stays inside the existing budget, and says so when it gives up', async () => {
     const op = vi.fn().mockRejectedValue(socketHangUp());
+    const warn = vi.fn();
     await expect(
-      withRetry(op, 'Policy', { replayAmbiguousSocketError: true, sleep: noSleep, logger: quiet })
+      withRetry(op, 'Policy', {
+        replayAmbiguousSocketError: true,
+        sleep: noSleep,
+        logger: { debug: () => {}, warn },
+      })
     ).rejects.toThrow('socket hang up');
+    expect(warn).toHaveBeenCalledOnce();
+    expect(String(warn.mock.calls[0]![0])).toContain(
+      'gave up after 8 socket-reset retries of an idempotent create'
+    );
     // The generic 8 retries after the first attempt.
     expect(op).toHaveBeenCalledTimes(9);
   });
 
-  it('keeps the dense IAM-propagation schedule it interrupts (the issue run)', async () => {
-    // MalformedPolicy (IAM propagation) several times, a socket reset, then success.
+  it('keeps the IAM-propagation budget it interrupts (the issue run)', async () => {
+    // MalformedPolicy (IAM propagation) past the generic budget of 8, a socket
+    // reset, then success: only the latched 26-retry budget reaches it.
     const propagation = () => new Error('MalformedPolicy: Invalid principal in policy');
-    const op = vi
-      .fn()
-      .mockRejectedValueOnce(propagation())
-      .mockRejectedValueOnce(propagation())
-      .mockRejectedValueOnce(propagation())
-      .mockRejectedValueOnce(propagation())
-      .mockRejectedValueOnce(socketHangUp())
-      .mockResolvedValue('done');
+    const op = vi.fn();
+    for (let i = 0; i < 10; i++) op.mockRejectedValueOnce(propagation());
+    op.mockRejectedValueOnce(socketHangUp()).mockResolvedValue('done');
     await expect(
       withRetry(op, 'Policy', { replayAmbiguousSocketError: true, sleep: noSleep, logger: quiet })
     ).resolves.toBe('done');
-    expect(op).toHaveBeenCalledTimes(6);
+    expect(op).toHaveBeenCalledTimes(12);
+  });
+});
+
+describe('a replay that writes fewer targets keeps the earlier ones journaled (go-to-k/cdkd#7141)', () => {
+  const TYPE = 'AWS::SQS::QueuePolicy';
+  const marked = (error: Error, written: string): Error =>
+    markCreatedBeforeFailure(error, 'Policy', TYPE, written);
+
+  it('the thrown mark is the union when the two share a member', async () => {
+    // Attempt 1 wrote qA and qB, then a reset on qC; the replay wrote qA, then
+    // failed for good on qB. Both qA and qB hold this create's policy.
+    const op = vi
+      .fn()
+      .mockRejectedValueOnce(marked(socketHangUp(), 'qA,qB'))
+      .mockRejectedValueOnce(marked(new Error('AccessDenied'), 'qA'));
+    const thrown = await withRetry(op, 'Policy', {
+      replayAmbiguousSocketError: true,
+      sleep: noSleep,
+      logger: quiet,
+    }).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(op).toHaveBeenCalledTimes(2);
+    expect(createdBeforeFailure(thrown, 'Policy', TYPE)).toBe('qA,qB');
+  });
+
+  it('a later mark naming every earlier member is left as it is', async () => {
+    const op = vi
+      .fn()
+      .mockRejectedValueOnce(marked(socketHangUp(), 'qA'))
+      .mockRejectedValueOnce(marked(new Error('AccessDenied'), 'qA,qB'));
+    const thrown = await withRetry(op, 'Policy', {
+      replayAmbiguousSocketError: true,
+      sleep: noSleep,
+      logger: quiet,
+    }).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(createdBeforeFailure(thrown, 'Policy', TYPE)).toBe('qA,qB');
   });
 });
 
@@ -200,6 +265,50 @@ describe('S3BucketPolicyProvider: a socket reset on a Put that landed converges 
 
     expect(result.physicalId).toBe(BUCKET);
     expect(puts).toBe(2);
+  });
+});
+
+describe('SQSQueuePolicyProvider: a reset on the second queue converges (go-to-k/cdkd#7141)', () => {
+  it('the replay rewrites both queues and resolves', async () => {
+    const { SQSQueuePolicyProvider } = await import(
+      '../../../src/provisioning/providers/sqs-queue-policy-provider.js'
+    );
+    const { SetQueueAttributesCommand } = await import('@aws-sdk/client-sqs');
+    const sent: string[] = [];
+    let q2Calls = 0;
+    mockSqsSend.mockReset();
+    mockSqsSend.mockImplementation((command: unknown) => {
+      if (!(command instanceof SetQueueAttributesCommand)) {
+        return Promise.reject(new Error('unexpected command'));
+      }
+      const url = command.input.QueueUrl!;
+      sent.push(url);
+      if (url.endsWith('/q2') && q2Calls++ === 0) return Promise.reject(socketHangUp());
+      return Promise.resolve({});
+    });
+    const provider = new SQSQueuePolicyProvider();
+    const TYPE = 'AWS::SQS::QueuePolicy';
+    const queues = [
+      'https://sqs.us-east-1.amazonaws.com/123456789012/q1',
+      'https://sqs.us-east-1.amazonaws.com/123456789012/q2',
+    ];
+
+    const result = await withRetry(
+      () =>
+        provider.create('Policy', TYPE, {
+          Queues: queues,
+          PolicyDocument: { Version: '2012-10-17', Statement: [] },
+        }),
+      'Policy',
+      {
+        ...(replaysAmbiguousCreate(provider, TYPE) && { replayAmbiguousSocketError: true }),
+        sleep: noSleep,
+        logger: quiet,
+      }
+    );
+
+    expect(result.physicalId).toBe(queues[0]);
+    expect(sent).toEqual([queues[0], queues[1], queues[0], queues[1]]);
   });
 });
 
@@ -392,7 +501,13 @@ describe('the marked set is deliberate (go-to-k/cdkd#7141)', () => {
         if (/export async function createWithRollbackRetry\($/.test(source.slice(0, m.index + m[0].length).split('\n').pop()!)) continue;
         const call = callText(source, m.index + m[0].length - 1);
         rollbackSites++;
-        expect({ file, typed: /\bresourceType: \w+/.test(call) }).toEqual({ file, typed: true });
+        // The type passed is the one the wrapped `create(` is called with.
+        const created = /\.create\(\s*[\w.]+,\s*(\w+)/.exec(call)?.[1];
+        expect({ file, created: created !== undefined }).toEqual({ file, created: true });
+        expect({ file, typed: new RegExp(`\\bresourceType: ${created}\\b`).test(call) }).toEqual({
+          file,
+          typed: true,
+        });
       }
     }
     // Floors: a rename that hides the sites from this scan fails here.

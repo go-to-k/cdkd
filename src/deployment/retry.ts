@@ -33,7 +33,6 @@ import {
 } from '../provisioning/auxiliary-failure.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { isAmbiguousSocketError } from './retryable-errors/transient.js';
-import type { ResourceProvider } from '../types/resource.js';
 
 export interface RetryLogger {
   debug(message: string): void;
@@ -368,6 +367,9 @@ export async function withRetry<T>(
   // the raw AWS error with nothing printed, which is exactly the silence issue
   // #2018 existed to remove for the propagation class. Reporting only.
   let serverErrorRetries = 0;
+  // go-to-k/cdkd#7141: retries spent replaying an ambiguous socket error on an
+  // idempotent create, so a give-up after them says cdkd retried. Reporting only.
+  let socketReplayRetries = 0;
   // Issue #3972: latches once an attempt failed with an AUXILIARY-marked error
   // (`markAuxiliaryFailure`) and never clears. That attempt's main create had
   // SUCCEEDED, and a provider that does not retire what it materialized leaves
@@ -548,7 +550,12 @@ export async function withRetry<T>(
         //
         // Gated on having actually retried, so the overwhelmingly common case
         // (a non-propagation error failing fast on attempt 0) prints nothing.
-        if (propagationRetries > 0 || serverErrorRetries > 0 || nameCooldownRetries > 0) {
+        if (
+          propagationRetries > 0 ||
+          serverErrorRetries > 0 ||
+          nameCooldownRetries > 0 ||
+          socketReplayRetries > 0
+        ) {
           // Whether the BUDGET ran out is a property of the loop's own exit
           // condition, NOT of the retry count. Keying it on
           // `propagationRetries >= IAM_PROPAGATION_MAX_RETRIES` was wrong in
@@ -641,6 +648,12 @@ export async function withRetry<T>(
             spent.push(
               `${serverErrorRetries} transient server-error ` +
                 `${serverErrorRetries === 1 ? 'retry' : 'retries'} (HTTP 5xx)`
+            );
+          }
+          if (socketReplayRetries > 0) {
+            spent.push(
+              `${socketReplayRetries} socket-reset ` +
+                `${socketReplayRetries === 1 ? 'retry' : 'retries'} of an idempotent create`
             );
           }
           const summary = (): string =>
@@ -749,6 +762,8 @@ export async function withRetry<T>(
         // `initialDelayMs` but no classifier, so the default one ran and this
         // arm is the class it just classified.
         serverErrorRetries++;
+      } else if (opts.replayAmbiguousSocketError === true && isAmbiguousSocketError(error)) {
+        socketReplayRetries++;
       }
     }
   }
@@ -780,17 +795,4 @@ function retryErrorClass(error: unknown): string {
     (part): part is string => part !== undefined
   );
   return parts.length > 0 ? `${name} (${parts.join(', ')})` : name;
-}
-
-/**
- * go-to-k/cdkd#7141: whether a create of `resourceType` through `provider` may
- * replay an ambiguous socket error (`WithRetryOptions.replayAmbiguousSocketError`):
- * only a type the provider declared in `idempotentCreateTypes`. A caller that
- * is not wrapping a create passes no type, and gets `false`.
- */
-export function replaysAmbiguousCreate(
-  provider: Pick<ResourceProvider, 'idempotentCreateTypes'> | undefined,
-  resourceType: string | undefined
-): boolean {
-  return resourceType !== undefined && provider?.idempotentCreateTypes?.has(resourceType) === true;
 }

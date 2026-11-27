@@ -157,7 +157,13 @@ schedule is chosen per error class.
 
 **Throttling and transient** covers rate limits, a resource still leaving
 `Pending`, an async delete releasing a dependency, and HTTP 500 / 502 / 503 /
-504, the same four the AWS SDK's own retry strategy treats as transient.
+504, the same four the AWS SDK's own retry strategy treats as transient. For a
+create of a type whose provider declares the create idempotent (a put of the
+whole document keyed by its parent: `AWS::S3::BucketPolicy`,
+`AWS::SQS::QueuePolicy`, `AWS::SNS::TopicPolicy`,
+`AWS::Lambda::EventInvokeConfig`), it also covers a connection reset, a broken
+pipe and a client-side timeout after the request was sent. Any other create
+stops on those, because one that may have landed is not made twice.
 
 **IAM propagation** covers `Invalid IAM Instance Profile`, `cannot be
 assumed`, `not authorized to perform`, `Policy Error: PrincipalNotFound`,

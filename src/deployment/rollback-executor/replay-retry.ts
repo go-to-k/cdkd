@@ -20,7 +20,8 @@ import {
   markLeafCertifiedBag,
   markSameGenerationBag,
 } from '../secret-redaction.js';
-import { replaysAmbiguousCreate, withRetry } from '../retry.js';
+import { withRetry } from '../retry.js';
+import { replaysAmbiguousCreate } from '../idempotent-create.js';
 import { MAX_CAUSE_CHAIN_DEPTH } from '../retryable-errors/marks.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { withoutUnsettledProperties } from '../../state/unsettled-properties.js';

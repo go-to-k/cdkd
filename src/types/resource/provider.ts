@@ -121,9 +121,10 @@ export interface ResourceProvider {
 
   /**
    * go-to-k/cdkd#7141: the types whose `create()` is IDEMPOTENT -- one put of
-   * the whole document keyed by the parent the template names (a bucket, a
-   * queue, a function), with no id AWS generates, so replaying it converges on
-   * what an attempt that landed already did. For these creates only, the
+   * the whole document per parent the template names (a bucket, each listed
+   * queue or topic, a function), in a fixed order, with no id AWS generates
+   * and nothing else written, so replaying it converges on what an attempt
+   * that landed already did. For these creates only, the
    * engine's retry loop also replays an ambiguous socket error (a reset, a
    * broken pipe, a client-side timeout after the send), within the same
    * budget. Every other create keeps the no-replay rule, since one that may
