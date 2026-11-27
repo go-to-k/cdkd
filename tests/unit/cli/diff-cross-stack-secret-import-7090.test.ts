@@ -361,6 +361,17 @@ describe('cdkd diff: a consumer reading a secret-fed producer output (#7090)', (
                 expect(changeTypeOf(cons, id), id).toBe('NO_CHANGE');
               }
               expect(cons.outputChanges, JSON.stringify(cons.outputChanges)).toEqual([]);
+              // The consumer's row and its child, whose parameter resolution
+              // runs under the needles: still compared on the real value. (A
+              // producer CHANGE is not read into a child parameter: #7102.)
+              if (producerUnchanged) {
+                expect(changeTypeOf(cons, 'Row2'), 'Row2').toBe('NO_CHANGE');
+                const child = cons.children.find((node) => node.stackName === 'Cons~Row2');
+                expect(child && changeTypeOf(child, 'Inner'), 'Inner').toBe('NO_CHANGE');
+              }
+            } else {
+              // The value reached the consumer: the scan above is not vacuous.
+              expect(changeTypeOf(cons, 'Reader'), 'Reader').toBe('UPDATE');
             }
           });
         }
@@ -472,13 +483,16 @@ describe('cdkd diff: a consumer reading a secret-fed producer output (#7090)', (
   // The control: the row is not secret-fed, so the import is an ordinary value
   // and every channel above prints it. Without this, a channel that never
   // reached the output would pass the scan.
-  for (const shape of ['importValue', 'stackOutput']) {
-    it(`prints a value that is not secret-fed (${shape})`, async () => {
+  for (const [shape, producerUnchanged] of Object.keys(READ_SHAPES).flatMap((s) => [
+    [s, false] as const,
+    [s, true] as const,
+  ])) {
+    it(`prints a value that is not secret-fed (${shape}, producer ${producerUnchanged ? 'unchanged' : 'changed'})`, async () => {
       const secret = 'Q7plainvalue';
       const { cons } = await diffPair({
         secret,
         secretFed: false,
-        producerUnchanged: false,
+        producerUnchanged,
         consumerHolds: false,
         shape,
       });

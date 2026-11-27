@@ -219,7 +219,7 @@ async function marked(
     stackName: 'Mid',
     template,
     desiredOutputs: { Out: 'Q7', Plain: 'literal' },
-    storedOutputs: { Out: 'Q7old', 'out-export': 'Q7old', Plain: 'literal' },
+    storedOutputs: { Out: 'Q7old', 'out-export': 'Q7oldexp', Plain: 'literal' },
     readsSecretFedName: producerReadsSecretFedName(tainted),
   });
   return preview;
@@ -236,10 +236,28 @@ describe('a producer marks every output reading a secret-fed name (#7090)', () =
       expect(preview.exportTainted(REGION, 'out-export')).toBe(true);
       expect(preview.stackOutputTainted(REGION, 'Mid', 'Plain')).toBe(false);
       expect(preview.exportTainted(REGION, 'plain-export')).toBe(false);
-      expect([...preview.taintedValues()]).toEqual(expect.arrayContaining(['Q7', 'Q7old']));
+      expect([...preview.taintedValues()]).toEqual(
+        expect.arrayContaining(['Q7', 'Q7old', 'Q7oldexp'])
+      );
       expect(preview.taintedValues().has('literal')).toBe(false);
     });
   }
+  it('taints no export for a tainted output without one, and takes no mask as a needle', async () => {
+    const template = producer({ 'Fn::GetAtt': ['Row', 'Outputs.Piece'] });
+    delete (template.Outputs!['Out'] as { Export?: unknown }).Export;
+    const preview = new CrossStackPreview();
+    const tainted = taintedNamesOf(template, []);
+    await markProducerTaint(preview, async (v) => v, {
+      stackName: 'Mid',
+      template,
+      desiredOutputs: { Out: '' },
+      storedOutputs: { Out: '***' },
+      readsSecretFedName: producerReadsSecretFedName(tainted),
+    });
+    expect(preview.stackOutputTainted(REGION, 'Mid', 'Out')).toBe(true);
+    expect(preview.exportTainted(REGION, 'anything')).toBe(false);
+    expect([...preview.taintedValues()]).toEqual([]);
+  });
   it('marks nothing on a stack with no secret-fed name', async () => {
     const template = producer({ 'Fn::GetAtt': ['Row', 'Outputs.Piece'] });
     (template.Resources['Row']!.Properties as Record<string, unknown>)['Parameters'] = {
@@ -328,6 +346,39 @@ describe('the app-wide marks, before any diff (#7090)', () => {
     expect(preview.exportTainted(REGION, 'anything')).toBe(false);
   });
 
+  it('marks an output whose export NAME reads a secret-fed name', () => {
+    const preview = new CrossStackPreview();
+    markAppProducerTaint(preview, [
+      {
+        stackName: 'Prod',
+        template: rowFed({
+          Out: {
+            Value: 'literal',
+            Export: { Name: { 'Fn::GetAtt': ['Row', 'Outputs.Piece'] } as unknown as string },
+          },
+        }),
+      },
+    ]);
+    expect(preview.stackOutputTainted(REGION, 'Prod', 'Out')).toBe(true);
+    expect(preview.exportTainted(REGION, 'anything')).toBe(true);
+  });
+
+  it('fails closed on an export name object that is not a lone `Fn::Sub`', () => {
+    const preview = new CrossStackPreview();
+    markAppProducerTaint(preview, [
+      {
+        stackName: 'Prod',
+        template: rowFed({
+          Out: {
+            Value: { 'Fn::GetAtt': ['Row', 'Outputs.Piece'] },
+            Export: { Name: { 'Fn::Sub': '${AWS::StackName}-x', Extra: 1 } as unknown as string },
+          },
+        }),
+      },
+    ]);
+    expect(preview.exportTainted(REGION, 'anything')).toBe(true);
+  });
+
   it('marks nothing in an app with no secret-fed name', () => {
     const preview = new CrossStackPreview();
     markAppProducerTaint(preview, [
@@ -356,6 +407,54 @@ describe('nested subtrees, read from disk (#7090)', () => {
             Export: { Name: 'child-export' },
           },
           Plain: { Value: 'literal', Export: { Name: 'child-plain' } },
+        },
+      })
+    );
+    // A consumer's child re-exporting the tainted export.
+    writeFileSync(
+      join(dir, 'reexport.json'),
+      JSON.stringify({
+        Resources: {},
+        Outputs: {
+          Y: { Value: { 'Fn::ImportValue': 'child-export' }, Export: { Name: 'relay-child-export' } },
+        },
+      })
+    );
+    // A consumer's child re-exporting a parameter its row fills from the import.
+    writeFileSync(
+      join(dir, 'param.json'),
+      JSON.stringify({
+        Parameters: { P: { Type: 'String' } },
+        Resources: {},
+        Outputs: { Z: { Value: { Ref: 'P' }, Export: { Name: 'relay-param-export' } } },
+      })
+    );
+    // A child exporting the piece under a `${AWS::StackName}` name: the child's
+    // stack name is the deploy's.
+    writeFileSync(
+      join(dir, 'subexport.json'),
+      JSON.stringify({
+        Parameters: { X: { Type: 'String' } },
+        Resources: {},
+        Outputs: {
+          Piece: {
+            Value: { Ref: 'X' },
+            Export: { Name: { 'Fn::Sub': '${AWS::StackName}-piece' } },
+          },
+        },
+      })
+    );
+    // A middle child handing the parameter to a grandchild that exports it.
+    writeFileSync(
+      join(dir, 'mid.json'),
+      JSON.stringify({
+        Parameters: { X: { Type: 'String' } },
+        Resources: {
+          G: {
+            Type: 'AWS::CloudFormation::Stack',
+            Metadata: { 'aws:asset:path': 'exporting.json' },
+            Properties: { TemplateURL: 'u', Parameters: { X: { Ref: 'X' } } },
+          },
         },
       })
     );
@@ -462,6 +561,51 @@ describe('nested subtrees, read from disk (#7090)', () => {
         nestedTemplates: { A: cyclic, B: cyclic },
       },
     ]);
+    expect(preview.exportTainted(REGION, 'child-export')).toBe(true);
+  });
+
+  const mixed = { X: { 'Fn::Join': ['', [{ Ref: 'Sep' }, '/{{resolve:ssm-secure:/a}}']] } };
+  const single = (stackName: string, row: string, asset: string, parameters = {}): AppStack => ({
+    stackName,
+    template: { Resources: { [row]: nestedRow(asset, parameters) } } as unknown as CloudFormationTemplate,
+    nestedTemplates: { [row]: join(dir, asset) },
+  });
+
+  it("reaches a fixed point over a consumer's child re-exporting, listed before its producer", () => {
+    const preview = new CrossStackPreview();
+    markAppProducerTaint(preview, [single('Relay', 'R', 'reexport.json'), app()[0]!]);
+    expect(preview.exportTainted(REGION, 'relay-child-export')).toBe(true);
+  });
+
+  it("taints a consumer child's parameter filled from a tainted import", () => {
+    const preview = new CrossStackPreview();
+    markAppProducerTaint(preview, [
+      app()[0]!,
+      single('Relay', 'R', 'param.json', { P: { 'Fn::ImportValue': 'child-export' } }),
+    ]);
+    expect(preview.exportTainted(REGION, 'relay-param-export')).toBe(true);
+  });
+
+  it("fails closed on a child's `${AWS::StackName}` export name", () => {
+    const preview = new CrossStackPreview();
+    markAppProducerTaint(preview, [single('Prod', 'Row', 'subexport.json', mixed)]);
+    expect(preview.exportTainted(REGION, 'anything')).toBe(true);
+  });
+
+  it('reaches a grandchild', () => {
+    const preview = new CrossStackPreview();
+    markAppProducerTaint(preview, [single('Prod', 'Row', 'mid.json', mixed)]);
+    expect(preview.exportTainted(REGION, 'child-export')).toBe(true);
+  });
+
+  it('skips a nested template that does not read, without failing the walk', () => {
+    const preview = new CrossStackPreview();
+    expect(() =>
+      markAppProducerTaint(preview, [
+        { ...single('Broken', 'B', 'missing.json'), nestedTemplates: { B: join(dir, 'missing.json') } },
+        app()[0]!,
+      ])
+    ).not.toThrow();
     expect(preview.exportTainted(REGION, 'child-export')).toBe(true);
   });
 
