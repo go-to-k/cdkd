@@ -36,7 +36,7 @@ athena-workgroup-update	2026-11-18T21:22:04Z	PASS	170	verify.sh	rc ok, orph clea
 aws-custom-resource	2026-11-25T07:06:26Z	PASS	100	verify.sh	rc ok, orph clean, PR #6968 f350f555
 backup	2026-11-04T19:21:11Z	PASS	83	verify.sh	rc ok, orph clean; no Backup vault/recovery-point leak, no lambda log groups
 basic	2026-11-25T03:30:44Z	PASS	102	standard	rc ok, orph clean; #6970
-batch	2026-11-04T05:26:26Z	PASS	94	standard	batch 3 (rc=0, destroy 12 deleted 0 errors); no CE/queue/ENI/VPC leftovers; account clean
+batch	2026-11-27T08:17:43Z	PASS	266	verify.sh	rc ok, orph clean
 bedrock-agentcore	2026-11-26T03:14:44Z	PASS	756	verify.sh	PR7013 2de5a0442 us-east-1 rc ok, orph clean
 bench-ccapi	2026-11-05T11:21:32Z	PASS	82	standard	sweep n7 own bucket; destroy 0 errors, 0 orphans
 bench-cdk-sample	2026-11-25T15:18:54Z	PASS	448	standard	rc ok, orph clean
@@ -285,7 +285,7 @@ iot-topic-rule-role	2026-11-18T15:35:34Z	PASS	105	verify.sh	us-east-1, rc ok, or
 kinesis-esm-filter	2026-11-24T14:18:16Z	PASS	85	verify.sh	rc ok, orph clean (#6933 sweep)
 kinesis-stream-mode-switch	2026-11-24T15:50:36Z	PASS	259	verify.sh	rc ok, orph clean, sha a285cb7f0 (#6933 open shard count, Phase 1b)
 kms-encryption	2026-11-22T03:31:56Z	PASS	151	verify.sh	d2646a6f6 #6759 part a, rc 0, 0 leftovers
-lambda	2026-11-27T05:22:02Z	PASS	105	standard	deploy+destroy 0 errors, orph clean, #7092 e5aec88
+lambda	2026-11-27T06:52:52Z	PASS	135	verify.sh	rc ok, orph clean; #7096 ad018a99d
 lambda-accelerator-config	2026-11-21T17:25:48Z	PASS	923	verify.sh	SDK route create/update/removal-refused/destroy; rc ok, orph clean (us-east-1, 1 subnet, 4-vCPU GPU)
 lambda-alias-provisioned-concurrency	2026-11-17T09:08:06Z	PASS	265	verify.sh	rc ok, orph clean (#6437 PR #6483)
 lambda-arch-switch	2026-11-06T18:48:58Z	PASS	66	verify.sh	#5901 lambda-function split head; rc ok, orph clean
@@ -364,7 +364,7 @@ logs-delivery	2026-11-21T11:32:56Z	PASS	137	verify.sh	rc 0, 0 orphans (PR #6763)
 logs-loggroup-fix-forward-orphan	2026-11-21T01:28:31Z	PASS	97	verify.sh	PR6710 260d5664a; rc ok, orph clean; own bucket
 lost-child-after-failed-deploy	2026-11-04T10:46:14Z	PASS	90	verify.sh	rc 0; phase-2 premise matches 'Sibling: ParameterPatternMismatchException', #4443 assertions pass; destroy 0 errors, orph clean
 macro-expansion	2026-11-10T12:50:06Z	PASS	80	verify.sh	rc ok, orph clean (#6080 marker re-set on branch tree)
-microservices	2026-11-27T05:22:02Z	PASS	62	standard	deploy+destroy 0 errors, orph clean, #7092 e5aec88
+microservices	2026-11-27T06:52:52Z	PASS	60	standard	deploy+destroy 0 errors, orph clean; #7096 ad018a99d
 migrate-from-cfn	2026-11-22T22:07:36Z	PASS	341	run.sh	small only; #6848 AppConfig env composite id: rc ok, orph clean
 monitoring	2026-11-04T05:45:58Z	PASS	60	standard	1104 sweep b5; 7 del 0 err, 0 orph
 multi-asset	2026-11-04T06:01:56Z	PASS	95	verify.sh	rc 0, orph: 4 Lambda log groups leaked (deleted); #5747 fix: default docker credential store (expired cached ECR token), lazy re-login
@@ -519,7 +519,7 @@ servicediscovery-namespaces	2026-11-17T05:50:34Z	PASS	145	verify.sh	rc ok, destr
 ses-identity	2026-11-04T05:36:33Z	PASS	196	verify.sh	batch 4; all 3 phases clean, 0 err 0 orph
 sg-circular-dependency	2026-11-04T21:40:26Z	PASS	376	verify.sh	us-east-1; own temp state bucket; rc ok, orph clean
 sg-ingress-secret-source	2026-11-27T05:33:25Z	PASS	114	verify.sh	rc ok, orph clean
-sg-ingress-source-replacement	2026-11-27T05:33:25Z	PASS	136	verify.sh	rc ok, orph clean
+sg-ingress-source-replacement	2026-11-27T06:52:52Z	PASS	135	verify.sh	rc ok, orph clean; #7096 ad018a99d
 sg-rule-description-update	2026-11-26T18:43:17Z	PASS	235	verify.sh	PR7075 run at 430bf0ba0, rc ok, orph clean
 shared-stackname-multi-region	2026-11-05T07:40:12Z	PASS	105	verify.sh	rc ok, us-east-1+us-west-2, orph clean both regions (own temp state bucket)
 sns-event-source	2026-11-04T08:15:09Z	PASS	65	verify.sh	rc ok, orph clean
@@ -549,7 +549,8 @@ stepfunctions-s3-definition	2026-11-07T00:18:55Z	PASS	70	verify.sh	#5936 stepfun
 stepfunctions-sync-managed-rule	2026-11-10T13:24:25Z	PASS	100	verify.sh	rc ok, orph clean, managed-rule window hit and retried (#6081), rebuilt tree rerun for marker
 stream-delete-redeploy	2026-11-26T03:14:44Z	PASS	977	verify.sh	PR7013 2de5a0442 us-east-1 rc ok, orph clean
 subnet-mappublicip-removal	2026-11-15T12:58:41Z	PASS	90	verify.sh	rc ok, orph clean; #6342 pre-fix RED at remove phase
-superseded-sg-destroy-order	2026-11-27T05:22:02Z	PASS	610	verify.sh	rc ok, orph clean, #7092 fix/7076 e5aec88
+superseded-sg-destroy-order	2026-11-27T06:52:52Z	PASS	616	verify.sh	rc ok, orph clean; #7096 ad018a99d
+superseded-stage-equal-id	2026-11-27T06:52:52Z	PASS	216	verify.sh	rc ok, orph clean (state, APIGW domain, ACM); #7096 ad018a99d
 synthetics-canary	2026-11-18T13:56:57Z	PASS	175	verify.sh	rc ok, orph clean; marker re-set after comment-only commit e44c0ae38 (#6553 PR #6554)
 tags-propagation	2026-11-23T19:48:57Z	PASS	396	verify.sh	rc ok, orph clean; #6886 deploy --tags replaces stack tags
 termination-protection	2026-11-05T10:11:05Z	PASS	60	verify.sh	rc ok, orph clean

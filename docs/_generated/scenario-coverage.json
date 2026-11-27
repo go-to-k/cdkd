@@ -3441,6 +3441,11 @@
       "scenarios": []
     },
     {
+      "name": "superseded-stage-equal-id",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "synthetics-canary",
       "annotated": false,
       "scenarios": []
@@ -4654,6 +4659,7 @@
     "stream-delete-redeploy",
     "subnet-mappublicip-removal",
     "superseded-sg-destroy-order",
+    "superseded-stage-equal-id",
     "synthetics-canary",
     "termination-protection",
     "unrecognized-key-autoroute",
