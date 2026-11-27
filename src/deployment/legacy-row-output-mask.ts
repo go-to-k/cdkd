@@ -4,15 +4,19 @@ import { displayIdent, displayStackName } from '../utils/display-safe.js';
 import { cdkdRemedy, proseQuoted } from '../utils/pasteable-command.js';
 import { SECRET_MASK } from './secret-redaction.js';
 import { carriesSecretMask } from './secret-redaction/mask-only.js';
-import { readsNoEchoSource } from './secret-redaction/noecho-leaves.js';
+import { readsNoEchoSource, type NoEchoPositionSources } from './secret-redaction/noecho-leaves.js';
+import { SPELLED_SECRET_REFERENCE_PREFIXES } from './secret-redaction/anchors.js';
 import { markNonRetryable } from './retryable-errors.js';
 import { NESTED_STACK_RESOURCE_TYPE } from './rollback-executor/types.js';
-import type { ChildTemplateLoader } from './masked-property-fingerprints/input-walk.js';
+import type {
+  ChildTemplateLoader,
+  NestedTemplate,
+} from './masked-property-fingerprints/input-walk.js';
 import { childTemplateLoader } from './nested-output-templates.js';
 import { getCurrentNestedStackContext } from '../provisioning/nested-stack-context.js';
 import {
   mixesDynamicReference,
-  taintedNamesOf,
+  templateMixesDynamicReference,
 } from '../cli/commands/diff-recursive/passed-secret-display.js';
 
 const OUTPUT_PREFIX = 'Outputs.';
@@ -26,14 +30,20 @@ const OUTPUT_PREFIX = 'Outputs.';
  *
  * This makes such a record behave exactly as a current one, before anything
  * reads it: each `Outputs.<K>` the CHILD template's output `K` derives from a
- * parameter the row passes MIXED with a dynamic reference (#7068's shape) is
- * read as `***`. From there the existing semantics apply unchanged: a root
- * output and its export persist `***`, and a property reading it is refused.
+ * parameter the row passes MIXED with a dynamic reference (#7068's shape), or
+ * from a secret reference a row of the child (at any depth) composes with
+ * other text, is read as `***`. From there the existing semantics apply
+ * unchanged: a root output and its export persist `***`, and a property
+ * reading it is refused.
  *
  * Precise by construction: an output of the same row that reads no such
- * parameter keeps its value (masking the whole row would change what
- * consumers import). When the child template cannot be read, so the answer
- * is unknown, the deploy is REFUSED rather than guessed either way.
+ * source keeps its value (masking the whole row would change what consumers
+ * import), and so does an id (`Ref`, `Arn`) of a resource that merely reads
+ * one ({@link derivedOutputsOf}). When the child template cannot be read
+ * while the record says the row is a secret's, the deploy is REFUSED rather
+ * than guessed either way.
+ *
+ * Returns the reads it rewrote, for the export guard.
  */
 export function maskLegacyTaintedRowOutputs(
   state: StackState,
@@ -42,7 +52,8 @@ export function maskLegacyTaintedRowOutputs(
   childTemplate: ChildTemplateLoader | undefined = childTemplateLoader(
     getCurrentNestedStackContext()?.nestedTemplates
   )
-): void {
+): LegacyMaskedReads {
+  const masked = new Map<string, Set<string>>();
   const rows = (template.Resources ?? {}) as Record<string, unknown>;
   for (const [logicalId, rawRow] of Object.entries(rows)) {
     const row = rawRow as { Type?: unknown; Properties?: Record<string, unknown> } | null;
@@ -60,27 +71,139 @@ export function maskLegacyTaintedRowOutputs(
     );
     if (plainOutputs.length === 0) continue;
     const mixedKeys = recordedSecretKeys(record?.properties);
-    if (mixedKeys.size === 0) continue;
     const child = childTemplate?.(logicalId);
     if (child === undefined) {
+      // Nothing recorded says the row is a secret's: no evidence to refuse on.
+      // A secret composed one level down is decided from the child template,
+      // which a deployable tree always has (review: the depth-3 shape).
+      if (mixedKeys.size === 0) continue;
       throw refusal(
         stackName,
         logicalId,
         plainOutputs.map((key) => key.slice(OUTPUT_PREFIX.length))
       );
     }
-    const childTainted = taintedNamesOf(child.template, mixedKeys);
-    const outputs = (child.template.Outputs ?? {}) as Record<string, { Value?: unknown } | null>;
+    const derived = derivedOutputsOf(child, mixedKeys, 0);
+    if (derived !== ALL_OUTPUTS && derived.size === 0) continue;
     for (const key of plainOutputs) {
       const name = key.slice(OUTPUT_PREFIX.length);
-      if (!Object.hasOwn(outputs, name)) continue;
-      const reads = readsNoEchoSource(outputs[name]?.Value, {
-        parameters: childTainted,
-        attributeIsNoEcho: (id) => childTainted.has(id),
-      });
-      if (reads) attributes[key] = SECRET_MASK;
+      if (derived !== ALL_OUTPUTS && !derived.has(name)) continue;
+      attributes[key] = SECRET_MASK;
+      let reads = masked.get(logicalId);
+      if (reads === undefined) masked.set(logicalId, (reads = new Set()));
+      reads.add(key);
     }
   }
+  return masked;
+}
+
+/**
+ * The `Fn::GetAtt` reads (row logical id -> `Outputs.<K>` attribute names)
+ * {@link maskLegacyTaintedRowOutputs} rewrote from a legacy plaintext to the
+ * mask. The export guard relaxes its compare for exports reading these alone.
+ */
+export type LegacyMaskedReads = ReadonlyMap<string, ReadonlySet<string>>;
+
+/** Stands for every output of a stack whose template cannot be read. */
+const ALL_OUTPUTS = Symbol('all-outputs');
+type DerivedOutputs = ReadonlySet<string> | typeof ALL_OUTPUTS;
+
+/** Deeper than any tree CDK synthesizes; a cyclic tree stops here, masking (never leaking). */
+const MAX_DEPTH = 32;
+
+/**
+ * The outputs of the nested stack `entry` whose value derives from one of
+ * `tainted` (its parameters the parent passes secret-derived), or from a
+ * secret reference one of ITS rows composes with other text, at any depth.
+ *
+ * What counts as reading a tainted source, as a current record's value scan
+ * would see it:
+ *
+ * - a `Ref` / `Fn::Sub` of a tainted parameter;
+ * - an `Fn::GetAtt` of a nested row's `Outputs.<J>` that is derived in turn
+ *   (that row's template decides; one that cannot be read counts whole);
+ * - an `Fn::GetAtt` of a resource attribute NAMED after a property reading a
+ *   tainted source (an attribute echoing its property, `Value` of an SSM
+ *   parameter).
+ *
+ * Not: a resource's `Ref` or an id attribute (`Arn`) of a resource that merely
+ * reads one. A current record keeps such an id copy as written
+ * (go-to-k/cdkd#4849), and masking it would refuse a parent reading it.
+ *
+ * A row's parameter is tainted when it reads one of these, or when its
+ * template value composes a `ssm-secure` / `secretsmanager` reference with
+ * other text. A PUBLIC `ssm` reference is resolved into the record as its
+ * value, as one level up, so it taints nothing.
+ */
+function derivedOutputsOf(
+  entry: NestedTemplate,
+  tainted: ReadonlySet<string>,
+  depth: number
+): DerivedOutputs {
+  if (depth > MAX_DEPTH) return ALL_OUTPUTS;
+  const template = entry.template;
+  const resources = recordOf(template.Resources);
+  const rowMemo = new Map<string, DerivedOutputs>();
+  const attributeMemo = new Map<string, boolean>();
+  const sources: NoEchoPositionSources = {
+    parameters: tainted,
+    attributeIsNoEcho: (id, attribute) => attributeIsDerived(id, attribute),
+  };
+  const rowDerived = (id: string): DerivedOutputs => {
+    const known = rowMemo.get(id);
+    if (known !== undefined) return known;
+    rowMemo.set(id, new Set()); // a cycle between rows reads nothing more
+    const parameters = recordOf(recordOf(recordOf(resources[id])['Properties'])['Parameters']);
+    const passed = new Set<string>();
+    for (const [key, value] of Object.entries(parameters)) {
+      if (composesSecretReference(value) || readsNoEchoSource(value, sources)) passed.add(key);
+    }
+    let result: DerivedOutputs = new Set();
+    if (passed.size > 0) {
+      const grandchild = entry.childTemplate(id);
+      result =
+        grandchild === undefined ? ALL_OUTPUTS : derivedOutputsOf(grandchild, passed, depth + 1);
+    }
+    rowMemo.set(id, result);
+    return result;
+  };
+  const attributeIsDerived = (id: string, attribute: string): boolean => {
+    if (!Object.hasOwn(resources, id)) return false;
+    const resource = recordOf(resources[id]);
+    if (resource['Type'] === NESTED_STACK_RESOURCE_TYPE) {
+      if (!attribute.startsWith(OUTPUT_PREFIX)) return false;
+      const derived = rowDerived(id);
+      return derived === ALL_OUTPUTS || derived.has(attribute.slice(OUTPUT_PREFIX.length));
+    }
+    const property = attribute.split('.')[0]!;
+    const properties = recordOf(resource['Properties']);
+    if (!Object.hasOwn(properties, property)) return false;
+    const key = `${id}\u0000${property}`;
+    const known = attributeMemo.get(key);
+    if (known !== undefined) return known;
+    attributeMemo.set(key, false); // a cycle reads nothing more
+    const reads = readsNoEchoSource(properties[property], sources);
+    attributeMemo.set(key, reads);
+    return reads;
+  };
+  const derived = new Set<string>();
+  for (const [name, output] of Object.entries(recordOf(template.Outputs))) {
+    if (readsNoEchoSource(recordOf(output)['Value'], sources)) derived.add(name);
+  }
+  return derived;
+}
+
+/** Does a template value compose a SECRET-spelled dynamic reference with other text? */
+function composesSecretReference(value: unknown): boolean {
+  if (!templateMixesDynamicReference(value)) return false;
+  const text = JSON.stringify(value) ?? '';
+  return SPELLED_SECRET_REFERENCE_PREFIXES.some((prefix) => text.includes(prefix));
+}
+
+function recordOf(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
 /**

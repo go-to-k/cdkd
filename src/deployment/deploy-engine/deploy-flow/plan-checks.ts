@@ -38,6 +38,7 @@ import type { DeployEngine } from '../../deploy-engine.js';
 import { healsReadByExports, type SlashedSsmNameHeal } from '../../ssm-slashed-name-heal.js';
 import type { StackState, ResourceChange } from '../../../types/state.js';
 import type { CloudFormationTemplate } from '../../../types/resource.js';
+import type { LegacyMaskedReads } from '../../legacy-row-output-mask.js';
 import type { ResolverContext } from '../../intrinsic-resolver/context.js';
 
 /**
@@ -49,6 +50,7 @@ export async function refuseUnsafePlan(
   {
     stackName,
     ssmNameHeals = [],
+    legacyMaskedReads,
     currentState,
     effectiveTemplate,
     parameterValues,
@@ -59,6 +61,8 @@ export async function refuseUnsafePlan(
     stackName: string;
     /** go-to-k/cdkd#6274: the records this deploy re-spelled, named in an export refusal. */
     ssmNameHeals?: readonly SlashedSsmNameHeal[];
+    /** go-to-k/cdkd#7097: the legacy row reads this deploy masked, for the export guard. */
+    legacyMaskedReads?: LegacyMaskedReads;
     currentState: StackState;
     effectiveTemplate: CloudFormationTemplate;
     parameterValues: Record<string, unknown>;
@@ -170,6 +174,7 @@ export async function refuseUnsafePlan(
   const deferredExports = await refuseInUseExportChanges(engine, {
     stackName,
     ssmNameHeals,
+    legacyMaskedReads,
     currentState,
     effectiveTemplate,
     conditions,
@@ -260,6 +265,7 @@ async function refuseInUseExportChanges(
   {
     stackName,
     ssmNameHeals,
+    legacyMaskedReads,
     currentState,
     effectiveTemplate,
     conditions,
@@ -268,6 +274,7 @@ async function refuseInUseExportChanges(
   }: {
     stackName: string;
     ssmNameHeals: readonly SlashedSsmNameHeal[];
+    legacyMaskedReads: LegacyMaskedReads | undefined;
     currentState: StackState;
     effectiveTemplate: CloudFormationTemplate;
     conditions: Record<string, boolean>;
@@ -299,6 +306,7 @@ async function refuseInUseExportChanges(
     currentState,
     resolve: (value) => engine.resolver.resolve(value, diffResolverContext),
     replaces,
+    legacyMaskedReads,
   });
   // go-to-k/cdkd#6865: an export is judged after the custom resource update
   // only when nothing the deploy does before that check is irreversible. A

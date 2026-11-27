@@ -7,7 +7,7 @@
  * and nothing else changes. When the child template cannot be read, the deploy
  * is refused, naming the row and the output, never the value.
  */
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vite-plus/test';
@@ -53,6 +53,7 @@ const { DeployEngine } = await import('../../../src/deployment/deploy-engine.js'
 const { DiffCalculator } = await import('../../../src/analyzer/diff-calculator.js');
 const { DagBuilder } = await import('../../../src/analyzer/dag-builder.js');
 const { withNestedStackContext } = await import('../../../src/provisioning/nested-stack-context.js');
+const { findAffectedExports } = await import('../../../src/deployment/export-change-guard.js');
 
 const PIN = 'q7';
 const A = '{{resolve:ssm-secure:/app/a}}';
@@ -190,6 +191,11 @@ describe('the class: every child output shape over the mixed parameter reads as 
     ['Ref to an unmixed parameter', OTHER, false],
     ['literal', 'lit', false],
     ['GetAtt of a resource reading nothing mixed', { 'Fn::GetAtt': ['Other', 'Value'] }, false],
+    // An id of a resource that merely reads X: a current record keeps such an
+    // id copy as written (#4849), so a parent reading it is not refused (review).
+    ['GetAtt Arn of a resource reading X', { 'Fn::GetAtt': ['Fn', 'Arn'] }, false],
+    ['Ref of a resource reading X', { Ref: 'Fn' }, false],
+    ['Sub of an id of a resource reading X', { 'Fn::Sub': '${Fn.Arn}' }, false],
   ];
   it.each(SHAPES)('%s', (_label, value, derived) => {
     const child = {
@@ -198,6 +204,10 @@ describe('the class: every child output shape over the mixed parameter reads as 
       Resources: {
         Reader: { Type: 'AWS::SSM::Parameter', Properties: { Type: 'String', Value: MIXED } },
         Other: { Type: 'AWS::SSM::Parameter', Properties: { Type: 'String', Value: OTHER } },
+        Fn: {
+          Type: 'AWS::Lambda::Function',
+          Properties: { Handler: 'h', Environment: { Variables: { V: MIXED } } },
+        },
       },
       Outputs: { O: { Value: value } },
     };
@@ -215,6 +225,81 @@ describe('the class: every child output shape over the mixed parameter reads as 
   });
 });
 
+describe('a secret composed one level down: the row record holds no secret parameter (review: depth 3)', () => {
+  const SECRET_MIX = { 'Fn::Join': ['', [{ Ref: 'Sep' }, '/', A]] };
+  const PUBLIC_MIX = { 'Fn::Join': ['', [{ Ref: 'Sep' }, '/', '{{resolve:ssm:/public/name}}']] };
+  /** Root -> Row (child.json) -> Grand (grand.json); the CHILD composes the reference. */
+  function tree(name: string, grandParameter: unknown, writeGrand = true): string {
+    const sub = join(dir, name);
+    mkdirSync(sub, { recursive: true });
+    if (writeGrand) {
+      writeFileSync(
+        join(sub, 'grand.json'),
+        JSON.stringify({
+          Parameters: { Y: { Type: 'String' } },
+          Outputs: {
+            J: { Value: { 'Fn::Select': [0, { 'Fn::Split': ['/', { Ref: 'Y' }] }] } },
+            J2: { Value: 'grand-plain' },
+          },
+        })
+      );
+    }
+    writeFileSync(
+      join(sub, 'child.json'),
+      JSON.stringify({
+        Parameters: { Sep: { Type: 'String' } },
+        Resources: {
+          Grand: {
+            Type: 'AWS::CloudFormation::Stack',
+            Metadata: { 'aws:asset:path': 'grand.json' },
+            Properties: { TemplateURL: 'https://s3.amazonaws.com/assets/grand.json', Parameters: { Y: grandParameter } },
+          },
+        },
+        Outputs: {
+          K: { Value: { 'Fn::GetAtt': ['Grand', 'Outputs.J'] } },
+          K2: { Value: { 'Fn::GetAtt': ['Grand', 'Outputs.J2'] } },
+        },
+      })
+    );
+    return join(sub, 'child.json');
+  }
+  function depth3State(): StackState {
+    const state = legacyState();
+    state.resources['Row']!.properties!['Parameters'] = { Sep: PIN };
+    state.resources['Row']!.attributes = { 'Outputs.K': PIN, 'Outputs.K2': 'grand-plain' };
+    return state;
+  }
+
+  it('masks the child output reading the grandchild output derived from the secret, and only it', () => {
+    const state = depth3State();
+    const masked = maskLegacyTaintedRowOutputs(
+      state,
+      parentTemplate(),
+      STACK,
+      childTemplateLoader({ Row: tree('d3-secret', SECRET_MIX) })
+    );
+    expect(state.resources['Row']!.attributes).toEqual({ 'Outputs.K': '***', 'Outputs.K2': 'grand-plain' });
+    expect([...(masked.get('Row') ?? [])]).toEqual(['Outputs.K']);
+  });
+
+  it('keeps every output when the child composes a PUBLIC ssm reference', () => {
+    const state = depth3State();
+    maskLegacyTaintedRowOutputs(state, parentTemplate(), STACK, childTemplateLoader({ Row: tree('d3-public', PUBLIC_MIX) }));
+    expect(state.resources['Row']!.attributes).toEqual({ 'Outputs.K': PIN, 'Outputs.K2': 'grand-plain' });
+  });
+
+  it('masks every output reading the grandchild when its template cannot be read', () => {
+    const state = depth3State();
+    maskLegacyTaintedRowOutputs(
+      state,
+      parentTemplate(),
+      STACK,
+      childTemplateLoader({ Row: tree('d3-nogrand', SECRET_MIX, false) })
+    );
+    expect(state.resources['Row']!.attributes).toEqual({ 'Outputs.K': '***', 'Outputs.K2': '***' });
+  });
+});
+
 describe('a deploy over a legacy mixed-fed row record persists no plaintext (#7097)', () => {
   let saveState: ReturnType<typeof vi.fn>;
   let indexWrites: ReturnType<typeof vi.fn>;
@@ -227,7 +312,8 @@ describe('a deploy over a legacy mixed-fed row record persists no plaintext (#70
   async function deploy(
     nestedTemplates: Record<string, string>,
     consumers: StackState[] = [],
-    template: CloudFormationTemplate = parentTemplate()
+    template: CloudFormationTemplate = parentTemplate(),
+    seed: (state: StackState) => void = () => undefined
   ) {
     const provider = {
       create: vi.fn(),
@@ -240,7 +326,10 @@ describe('a deploy over a legacy mixed-fed row record persists no plaintext (#70
       {
         getState: vi.fn(async (name: string) => {
           const consumer = consumers.find((c) => c.stackName === name);
-          return { state: consumer ? structuredClone(consumer) : legacyState(), etag: 'e0' };
+          if (consumer) return { state: structuredClone(consumer), etag: 'e0' };
+          const state = legacyState();
+          seed(state);
+          return { state, etag: 'e0' };
         }),
         saveState,
         listStacks: vi.fn().mockResolvedValue(
@@ -317,7 +406,11 @@ describe('a deploy over a legacy mixed-fed row record persists no plaintext (#70
       Value: { 'Fn::Join': ['', ['x-', { 'Fn::GetAtt': ['Row', 'Outputs.Piece'] }]] },
       Export: { Name: 'piece-export' },
     };
-    const { thrown, saved } = await deploy({ Row: join(dir, 'child.json') }, [consumer], template);
+    // The legacy record published the composed value over the plaintext.
+    const { thrown, saved } = await deploy({ Row: join(dir, 'child.json') }, [consumer], template, (state) => {
+      state.outputs['Out'] = `x-${PIN}`;
+      state.outputs['piece-export'] = `x-${PIN}`;
+    });
     expect(thrown).toBeUndefined();
     expect(saved.at(-1)!.outputs['Out']).toBe('x-***');
   });
@@ -335,6 +428,48 @@ describe('a deploy over a legacy mixed-fed row record persists no plaintext (#70
     const { thrown, saved } = await deploy({ Row: join(dir, 'child.json') }, [consumer]);
     expect(thrown).toBeUndefined();
     expect(saved.at(-1)!.outputs['Out']).toBe('***');
+  });
+
+  it('keeps an unrelated Lambda ARN of the same row in plaintext, and its importer is not refused (review)', async () => {
+    const ARN = `arn:aws:lambda:${REGION}:123456789012:function:fn-7097`;
+    const childPath = join(dir, 'child-fn.json');
+    writeFileSync(
+      childPath,
+      JSON.stringify({
+        ...CHILD,
+        Resources: {
+          Fn: {
+            Type: 'AWS::Lambda::Function',
+            Properties: { Handler: 'h', Environment: { Variables: { V: { Ref: 'X' } } } },
+          },
+        },
+        Outputs: { ...CHILD.Outputs, FnArn: { Value: { 'Fn::GetAtt': ['Fn', 'Arn'] } } },
+      })
+    );
+    const consumer = {
+      version: STATE_SCHEMA_VERSION_CURRENT,
+      region: REGION,
+      stackName: 'cons-fn-7097',
+      resources: {},
+      outputs: {},
+      imports: [{ exportName: 'fn-arn-export', sourceStack: STACK, sourceRegion: REGION }],
+      lastModified: 0,
+    } as unknown as StackState;
+    const template = parentTemplate();
+    template.Outputs!['FnArnOut'] = {
+      Value: { 'Fn::GetAtt': ['Row', 'Outputs.FnArn'] },
+      Export: { Name: 'fn-arn-export' },
+    };
+    const { thrown, saved } = await deploy({ Row: childPath }, [consumer], template, (state) => {
+      state.resources['Row']!.attributes!['Outputs.FnArn'] = ARN;
+      state.outputs['FnArnOut'] = ARN;
+      state.outputs['fn-arn-export'] = ARN;
+    });
+    expect(thrown).toBeUndefined();
+    const last = saved.at(-1)!;
+    expect(last.outputs['Out']).toBe('***');
+    expect(last.outputs['FnArnOut']).toBe(ARN);
+    expect(last.outputs['fn-arn-export']).toBe(ARN);
   });
 
   it('refuses the deploy when the child template cannot be read, and saves nothing new', async () => {
@@ -413,6 +548,39 @@ describe('cdkd diff: a deleted nested row masks its subtree by its recorded tain
   it('a row with ordinary recorded Parameters still prints its values (control)', async () => {
     const printed = await diffDeleted({ X: 'plain' });
     expect(printed).toContain(PIN);
+  });
+});
+
+
+describe('the export guard relaxation is scoped to the reads the legacy mask rewrote (review)', () => {
+  const template = {
+    Resources: { Row: { Type: 'AWS::CloudFormation::Stack', Properties: {} } },
+    Outputs: {
+      Out: { Value: { 'Fn::Join': ['', ['x-', { 'Fn::GetAtt': ['Row', 'Outputs.Secret'] }]] }, Export: { Name: 'e' } },
+    },
+  } as unknown as CloudFormationTemplate;
+  const judge = async (legacyMaskedReads: Map<string, Set<string>> | undefined, desired = 'x-***') =>
+    findAffectedExports({
+      template,
+      conditions: {},
+      changes: new Map(),
+      currentState: { outputs: { Out: 'x-plain', e: 'x-plain' }, exportNames: ['e'] } as never,
+      resolve: () => Promise.resolve(desired),
+      replaces: () => false,
+      legacyMaskedReads,
+    });
+
+  it('a non-legacy export that newly holds the mask is CHANGED', async () => {
+    expect(await judge(undefined)).toEqual([{ exportName: 'e', reason: 'changed' }]);
+    expect(await judge(new Map([['Row', new Set(['Outputs.Other'])]]))).toEqual([
+      { exportName: 'e', reason: 'changed' },
+    ]);
+  });
+
+  it('an export reading a masked legacy read is unchanged, unless the text around the mask moved', async () => {
+    const masked = new Map([['Row', new Set(['Outputs.Secret'])]]);
+    expect(await judge(masked)).toEqual([]);
+    expect(await judge(masked, 'y-***')).toEqual([{ exportName: 'e', reason: 'changed' }]);
   });
 });
 

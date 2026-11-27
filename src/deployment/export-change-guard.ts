@@ -85,6 +85,7 @@ export async function findAffectedExports({
   currentState,
   resolve,
   replaces,
+  legacyMaskedReads,
 }: {
   template: CloudFormationTemplate;
   conditions: Record<string, boolean>;
@@ -93,6 +94,12 @@ export async function findAffectedExports({
   resolve: (value: unknown) => Promise<unknown>;
   /** Whether the plan replaces `logicalId` (a `NO_CHANGE` row included). */
   replaces: (logicalId: string) => boolean;
+  /**
+   * go-to-k/cdkd#7097: the legacy nested-row reads this deploy rewrote from
+   * plaintext to the mask (`maskLegacyTaintedRowOutputs`). Only an export
+   * reading one of them may move from plaintext to the mask unchanged.
+   */
+  legacyMaskedReads?: ReadonlyMap<string, ReadonlySet<string>> | undefined;
 }): Promise<AffectedExport[]> {
   const published = importableOutputKeys(currentState);
   if (published.length === 0) return [];
@@ -134,7 +141,8 @@ export async function findAffectedExports({
       currentState.outputs[exportName],
       changes,
       resolve,
-      replaces
+      replaces,
+      legacyMaskedReads
     );
     if (verdict === 'changed') affected.push({ exportName, reason: 'changed' });
     else if (verdict === 'deferred') {
@@ -149,7 +157,8 @@ async function valueMayChange(
   publishedValue: unknown,
   changes: ReadonlyMap<string, ResourceChange>,
   resolve: (value: unknown) => Promise<unknown>,
-  replaces: (logicalId: string) => boolean
+  replaces: (logicalId: string) => boolean,
+  legacyMaskedReads: ReadonlyMap<string, ReadonlySet<string>> | undefined
 ): Promise<'changed' | 'deferred' | 'unchanged'> {
   let touchesChangedResource = false;
   // A value known only after the update: a custom resource's (#6865), or a
@@ -157,7 +166,13 @@ async function valueMayChange(
   // stamps an update time is the handler's choice, and CloudFormation refuses
   // only a value that moved).
   let readsUpdatedCustomResource = false;
+  // go-to-k/cdkd#7097: does the value read a legacy row output this deploy masked?
+  let readsLegacyMasked = false;
   for (const [logicalId, reads] of extractGetAttRefs(output.Value)) {
+    const masked = legacyMaskedReads?.get(logicalId);
+    if (masked !== undefined && [...reads].some((read) => masked.has(read))) {
+      readsLegacyMasked = true;
+    }
     if (replaces(logicalId)) return 'changed';
     const change = changes.get(logicalId);
     if (change === undefined || change.changeType === 'NO_CHANGE') continue;
@@ -194,15 +209,33 @@ async function valueMayChange(
   if (desired === undefined) return touchesChangedResource ? 'changed' : 'unchanged';
   // go-to-k/cdkd#7097: a value published in plaintext by a record from before
   // cdkd masked it, now resolving to (or composed over) the mask, moves only
-  // its persisted spelling: no import blocks it. One bound, stated: such a
-  // first deploy that ALSO edits the masked source's live value is judged
-  // unchanged, where the published side would have shown the move; after it
-  // the published side holds the mask and the rule above applies as always.
-  const holdsMask = (value: unknown): boolean =>
-    JSON.stringify(value)?.includes(SECRET_MASK) === true;
-  if (holdsMask(desired) && !holdsMask(publishedValue)) return 'unchanged';
+  // its persisted spelling: no import blocks it. Only a value reading an
+  // output this deploy rewrote that way, and only where the rest of the value
+  // still matches what was published around the mask: any other export newly
+  // resolving to the mask (a template edit pointing it at a secret) really
+  // moves. One bound, stated: such a first deploy that ALSO edits the masked
+  // source's live value is judged unchanged, where the published side would
+  // have shown the move; after it the published side holds the mask and the
+  // rule above applies as always.
+  if (readsLegacyMasked && onlyTheMaskMoved(desired, publishedValue)) return 'unchanged';
   if (!isDeepStrictEqual(desired, publishedValue)) return 'changed';
   return readsUpdatedCustomResource ? 'deferred' : 'unchanged';
+}
+
+/**
+ * Does `desired` (holding the mask) spell `published` (holding none) once each
+ * mask stands for whatever the published side holds there?
+ */
+function onlyTheMaskMoved(desired: unknown, published: unknown): boolean {
+  const desiredText = JSON.stringify(desired);
+  const publishedText = JSON.stringify(published);
+  if (desiredText === undefined || publishedText === undefined) return false;
+  if (!desiredText.includes(SECRET_MASK) || publishedText.includes(SECRET_MASK)) return false;
+  const pattern = desiredText
+    .split(SECRET_MASK)
+    .map((piece) => piece.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('[\\s\\S]*?');
+  return new RegExp(`^${pattern}$`).test(publishedText);
 }
 
 function isCustomResourceType(type: string): boolean {

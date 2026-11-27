@@ -277,7 +277,8 @@ export async function doDeployWithPrefetch(
       ssmNameHeals.push(...healed.heals);
     };
     healSsmNames();
-    maskLegacyTaintedRowOutputs(currentState, template, stackName); // go-to-k/cdkd#7097
+    // go-to-k/cdkd#7097: the reads it rewrote scope the export guard's relaxation.
+    const legacyMaskedReads = maskLegacyTaintedRowOutputs(currentState, template, stackName);
     // go-to-k/cdkd#6282: ... and once per record, the nested children are read
     // for such a name, overlapping the work up to the diff. A marked record or
     // a stack with no nested-stack row reads nothing.
@@ -611,6 +612,7 @@ export async function doDeployWithPrefetch(
     const { deferredExports } = await refuseUnsafePlan(engine, {
       stackName,
       ssmNameHeals,
+      legacyMaskedReads,
       currentState,
       effectiveTemplate,
       parameterValues,
