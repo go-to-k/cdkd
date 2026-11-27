@@ -603,14 +603,22 @@ if [ "${RS_P2E_BEFORE}" != "128" ]; then
   exit 1
 fi
 P2E_DIFF_LOG="$(mktemp)"
+# `--fail-on=destructive` is what prints the `<type> <path> <id> will be
+# replaced` line (exit 1); a plain diff only marks the property
+# `[requires replacement]`.
 set +e
 env -u CDKD_TEST_RECORDSIZE_CHANGE CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true CDKD_TEST_MAINT_ALT="${MAINT_ALT}" CDKD_TEST_TP_REMOVAL=true \
   CDKD_TEST_RECORDSIZE_CHANGE=true node "${LOCAL_DIST}" diff "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" >"${P2E_DIFF_LOG}" 2>&1
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --fail-on=destructive </dev/null >"${P2E_DIFF_LOG}" 2>&1
+P2E_DIFF_RC=$?
 set -e
 P2E_DIFF="$(sed 's/\x1b\[[0-9;]*m//g' "${P2E_DIFF_LOG}")"
-if ! grep -qE 'AWS::FSx::FileSystem .*Fs will be replaced' <<<"${P2E_DIFF}"; then
-  echo "FAIL [phase 2e]: #7083: cdkd diff does not show the file system replaced on a RecordSizeKiB change (CloudFormation replaces it)" >&2
+if [ "${P2E_DIFF_RC}" -ne 1 ] \
+  || ! grep -qE 'AWS::FSx::FileSystem .*Fs will be replaced' <<<"${P2E_DIFF}" \
+  || ! grep -qF 'OpenZFSConfiguration' <<<"${P2E_DIFF}" \
+  || ! grep -qF '[requires replacement]' <<<"${P2E_DIFF}"; then
+  echo "FAIL [phase 2e]: #7083: cdkd diff --fail-on=destructive (exit ${P2E_DIFF_RC}, expected 1) does not show the file system replaced on a RecordSizeKiB change (CloudFormation replaces it). The diff output:" >&2
+  sed 's/^/    /' <<<"${P2E_DIFF}" >&2
   exit 1
 fi
 P2E_LOG="$(mktemp)"
