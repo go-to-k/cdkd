@@ -547,6 +547,7 @@ export async function updateInIdLogScope(
           ))
       ) {
         const fresh = await applyUnappliedSecondaryAddresses({
+          previous: cleanPreviousProperties,
           desired: cleanProperties,
           live: result.attributes,
           ids: { logicalId, physicalId },

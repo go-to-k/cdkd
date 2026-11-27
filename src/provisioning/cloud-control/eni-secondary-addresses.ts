@@ -9,7 +9,8 @@
  * Control has returned. Measured on the same interface: both calls take effect
  * at once, and Cloud Control's GetResource returns the new list right after.
  *
- * The difference is taken from the LIVE list, not the previous record, so a
+ * The difference is taken from the LIVE list (unassigning only what the
+ * template removed), so a
  * run that failed halfway converges on the next deploy: the caller runs this
  * also when the template changed the list and the live list differs from it,
  * whether or not the live list still equals the previous one. Addresses are
@@ -71,16 +72,25 @@ function addressList(value: unknown): AddressList | undefined {
  */
 export function secondaryAddressPlan(
   desired: Readonly<Record<string, unknown>>,
-  live: Readonly<Record<string, unknown>> | undefined
+  live: Readonly<Record<string, unknown>> | undefined,
+  previous?: Readonly<Record<string, unknown>>
 ): SecondaryAddressPlan | undefined {
   if (live === undefined) return undefined;
   if (desired['SecondaryPrivateIpAddressCount'] !== undefined) return undefined;
   const want = addressList(desired[SECONDARY_ADDRESS_KEY]);
   const have = addressList(live[SECONDARY_ADDRESS_KEY]);
   if (want === undefined || have === undefined || want.primary !== have.primary) return undefined;
+  // With `previous`, only an address the template REMOVED is unassigned: one
+  // added outside cdkd (it may carry an Elastic IP association) is left, as a
+  // deploy that does not touch the list leaves it. A `drift --revert` passes
+  // the read-back as `previous`, so it still reverts such an address.
+  const was = previous === undefined ? undefined : addressList(previous[SECONDARY_ADDRESS_KEY]);
+  if (previous !== undefined && was === undefined) return undefined;
   return {
     assign: [...want.secondaries].filter((a) => !have.secondaries.has(a)).sort(),
-    unassign: [...have.secondaries].filter((a) => !want.secondaries.has(a)).sort(),
+    unassign: [...have.secondaries]
+      .filter((a) => !want.secondaries.has(a) && (was === undefined || was.secondaries.has(a)))
+      .sort(),
   };
 }
 
@@ -95,7 +105,7 @@ export function secondaryAddressesNeedApplying(
 ): boolean {
   const changed = secondaryAddressPlan(desired, previous);
   if (changed === undefined || changed.assign.length + changed.unassign.length === 0) return false;
-  const plan = secondaryAddressPlan(desired, live);
+  const plan = secondaryAddressPlan(desired, live, previous);
   return plan !== undefined && plan.assign.length + plan.unassign.length > 0;
 }
 
@@ -185,6 +195,7 @@ const READBACK_DELAY_MS = 1000;
  * and so does a re-read that still lacks the change EC2 accepted.
  */
 export async function applyUnappliedSecondaryAddresses(input: {
+  previous: Readonly<Record<string, unknown>>;
   desired: Readonly<Record<string, unknown>>;
   live: Readonly<Record<string, unknown>> | undefined;
   ids: { logicalId: string; physicalId: string };
@@ -194,7 +205,7 @@ export async function applyUnappliedSecondaryAddresses(input: {
   clientFor?: typeof secondaryAddressClient;
   delayMs?: number;
 }): Promise<Record<string, unknown> | undefined> {
-  const plan = secondaryAddressPlan(input.desired, input.live);
+  const plan = secondaryAddressPlan(input.desired, input.live, input.previous);
   if (plan === undefined) return undefined;
   if (plan.assign.length === 0 && plan.unassign.length === 0) return { ...input.live };
   const client = await (input.clientFor ?? secondaryAddressClient)(input.regionOf);
@@ -209,7 +220,7 @@ export async function applyUnappliedSecondaryAddresses(input: {
   );
   for (let attempt = 1; attempt <= READBACK_ATTEMPTS; attempt++) {
     const fresh = await input.reread();
-    const left = secondaryAddressPlan(input.desired, fresh);
+    const left = secondaryAddressPlan(input.desired, fresh, input.previous);
     if (fresh !== undefined && left?.assign.length === 0 && left.unassign.length === 0) {
       return fresh;
     }

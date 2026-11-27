@@ -207,14 +207,28 @@ describe('an interface secondary-address change Cloud Control did not apply (go-
     expect(held).toEqual(['10.0.0.9']);
   });
 
-  it('applies the template addition over an address added outside cdkd', async () => {
+  // An address added outside cdkd may carry an Elastic IP association: a
+  // deploy unassigns only what the template removed, as one that does not
+  // touch the list keeps it.
+  it('applies the template addition and keeps an address added outside cdkd', async () => {
     const held = serve(['10.0.0.7']);
     await update([], ['10.0.0.9']);
-    expect(ec2Calls()).toEqual([
-      ['AssignPrivateIpAddressesCommand', ['10.0.0.9']],
-      ['UnassignPrivateIpAddressesCommand', ['10.0.0.7']],
-    ]);
-    expect(held).toEqual(['10.0.0.9']);
+    expect(ec2Calls()).toEqual([['AssignPrivateIpAddressesCommand', ['10.0.0.9']]]);
+    expect(held).toEqual(['10.0.0.7', '10.0.0.9']);
+  });
+
+  it('a drift --revert, whose previous side is the read-back, unassigns the out-of-band address', async () => {
+    const held = serve(['10.0.0.7']);
+    await new CloudControlProvider().update(
+      'Eni',
+      'eni-1',
+      ENI,
+      { SubnetId: 's', PrivateIpAddresses: list([]) },
+      { SubnetId: 's', PrivateIpAddresses: list(['10.0.0.7']) },
+      { desiredFromAwsReadback: true }
+    );
+    expect(ec2Calls()).toEqual([['UnassignPrivateIpAddressesCommand', ['10.0.0.7']]]);
+    expect(held).toEqual([]);
   });
 
   it('leaves the addresses alone when the template did not change them', async () => {
