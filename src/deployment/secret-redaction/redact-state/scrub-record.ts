@@ -179,7 +179,7 @@ export function scrubResourceRecord<
         // generation's `observedProperties`, read out of `state.json` and being
         // RE-WRITTEN UNCHANGED. Masking an unpairable position in THAT bag —
         // an array AWS reordered, an identity key AWS normalised — replaces a
-        // correct persisted baseline with {@link SECRET_MASK} and produces
+        // correct persisted baseline with `***` and produces
         // permanent phantom drift no `cdkd drift` run clears, until the next
         // SUCCESSFUL deploy's `drainObservedCaptures` overwrites the record.
         // Exactly the two REPLAYED-baseline cases above, one writer over.

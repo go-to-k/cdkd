@@ -120,6 +120,13 @@ describe('a reader copy of a read physical id (#4810)', () => {
     expect(embeddedPhysicalNameRewrites(bag)).toEqual([]);
   });
 
+  it('a legacy spelling embedding a reference that itself holds the mask is no repair (go-to-k/cdkd#7061)', () => {
+    // A reference whose JSON key is `***`: the old walk wrote the mask inside the reference.
+    const bag: RecordedSecretValues = new Map([[NAME, '{{resolve:secretsmanager:sdin:SecretString:***::}}']]);
+    recordPhysicalNameCopy(bag, URL);
+    expect(embeddedPhysicalNameRewrites(bag)).toEqual([]);
+  });
+
   it('an empty physical id is never recorded, so the scan terminates', () => {
     // `physicalNameSpans` scans with `indexOf`, which finds an empty needle at
     // every offset, forever.
