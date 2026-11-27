@@ -8,6 +8,8 @@ import {
   buildSnapshot,
   extractSecretPaths,
   isSampledSecretName,
+  MAP_KEY,
+  schemaPaths,
   secretNamedPaths,
   serializeSnapshot,
   SNAPSHOT_PATH,
@@ -25,12 +27,18 @@ const SCHEMA = {
     Loop: { $ref: '#/definitions/Loop' },
     Chained: { $ref: '#/definitions/Alias' },
     Either: { oneOf: [{ $ref: '#/definitions/Auth' }, { type: 'object', properties: { ClientSecret: { type: 'string' } } }] },
+    // go-to-k/cdkd#7151: maps, by `patternProperties` and by an object `additionalProperties`.
+    Env: { type: 'object', properties: { Variables: { type: 'object', patternProperties: { '^.*$': { type: 'string' } } } } },
+    Labels: { type: 'object', additionalProperties: { $ref: '#/definitions/Label' } },
+    Closed: { type: 'object', additionalProperties: false, properties: { Name: { type: 'string' } } },
+    Open: { type: 'object', additionalProperties: true },
   },
   definitions: {
     Auth: { type: 'object', properties: { AuthToken: { type: 'string' }, Mode: { type: 'string' } } },
     User: { type: 'object', properties: { PrivateKey: { type: 'string' } } },
     Loop: { type: 'object', properties: { Next: { $ref: '#/definitions/Loop' }, Credentials: { type: 'string' } } },
     Alias: { $ref: '#/definitions/User' },
+    Label: { type: 'object', properties: { Password: { type: 'string' }, Tags: { type: 'array', items: { patternProperties: { '^.+$': { type: 'string' } } } } } },
   },
   writeOnlyProperties: ['/properties/MasterUserPassword', '/properties/Auth/AuthToken'],
 };
@@ -57,11 +65,26 @@ describe('refresh-registry-secret-paths (#7061)', () => {
       ['Chained', 'PrivateKey'],
       ['Either', 'AuthToken'],
       ['Either', 'ClientSecret'],
+      // Under a map value (go-to-k/cdkd#7151).
+      ['Labels', MAP_KEY, 'Password'],
       // The cycle stops at the definition it re-enters.
       ['Loop', 'Credentials'],
       ['MasterUserPassword'],
       ['Users', '*', 'PrivateKey'],
     ]);
+  });
+
+  it('lists every map value at an arbitrary key, nested ones too, and no closed or untyped object (go-to-k/cdkd#7151)', () => {
+    expect(schemaPaths(SCHEMA).mapValue).toEqual([
+      ['Env', 'Variables', MAP_KEY],
+      ['Labels', MAP_KEY],
+      ['Labels', MAP_KEY, 'Tags', '*', MAP_KEY],
+    ]);
+    expect(extractSecretPaths(JSON.stringify({ typeName: 'AWS::Test::Map', properties: { M: { patternProperties: { '.': {} } } } }))).toEqual({
+      writeOnly: [],
+      secretNamed: [],
+      mapValue: [['M', MAP_KEY]],
+    });
   });
 
   it('parses writeOnlyProperties with the runtime pointer parse', () => {
