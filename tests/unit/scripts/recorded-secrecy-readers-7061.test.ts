@@ -350,14 +350,38 @@ function isMarkerFragment(raw: unknown): boolean {
   );
 }
 
-/** Every module-level name bound under `src/` to a marker literal (the helper's own private one aside). */
-function markerNames(): Set<string> {
+/**
+ * Every module-level name bound under `src/` to a marker: a marker literal, a
+ * list or `Set` of them, or another marker name (`export const MASK = SECRET_MASK`,
+ * resolved to a fixpoint across modules). The helper's own private one aside.
+ */
+function markerNames(extraModules: Readonly<Record<string, string>> = {}): Set<string> {
   const names = new Set(['SECRET_MASK']);
-  for (const abs of tsFiles(join(ROOT, 'src'))) {
+  const aliases: Array<{ name: string; init: unknown }> = [];
+  const isConstant = (n: unknown): boolean => {
+    const t = literalText(n);
+    return t !== undefined && MARKER_CONSTANT.test(t);
+  };
+  const namesMarker = (raw: unknown): boolean => {
+    const n = unwrap(raw);
+    if (!isNode(n)) return false;
+    if (isConstant(n)) return true;
+    if (n.type === 'Identifier') return names.has(n['name'] as string);
+    if (n.type === 'MemberExpression' && n['computed'] !== true && isNode(n['property'])) {
+      return names.has(n['property']['name'] as string);
+    }
+    if (n.type === 'ArrayExpression') return (n['elements'] as unknown[]).some(namesMarker);
+    if (n.type === 'NewExpression' && isNode(n['callee']) && n['callee']['name'] === 'Set') {
+      return namesMarker((n['arguments'] as unknown[])[0]);
+    }
+    return false;
+  };
+  const modules = [...tsFiles(join(ROOT, 'src')), ...Object.keys(extraModules).map((rel) => join(ROOT, rel))];
+  for (const abs of modules) {
     const rel = relative(ROOT, abs).split('\\').join('/');
     if (rel === HELPER) continue;
     // No text prefilter: a folded constant (`'{{' + 'resolve:'`) spells no marker in its source.
-    const text = readFileSync(abs, 'utf8');
+    const text = extraModules[rel] ?? readFileSync(abs, 'utf8');
     // MODULE-level bindings only (exported or not): a function's local of the
     // same name is no constant another module can import.
     for (const stmt of parseOrThrow(abs, text)['body'] as Node[]) {
@@ -365,18 +389,18 @@ function markerNames(): Set<string> {
       if (decl?.type !== 'VariableDeclaration') continue;
       for (const d of decl['declarations'] as Node[]) {
         if (!isNode(d['id']) || d['id'].type !== 'Identifier') continue;
-        const init = d['init'] as Node | null;
-        const isConstant = (n: unknown): boolean => {
-          const t = literalText(n);
-          return t !== undefined && MARKER_CONSTANT.test(t);
-        };
-        // A marker constant, or a list of them (`MASKS.includes(v)`).
-        if (
-          isConstant(init) ||
-          (init?.type === 'ArrayExpression' && (init['elements'] as unknown[]).some(isConstant))
-        ) {
-          names.add(d['id']['name'] as string);
-        }
+        aliases.push({ name: d['id']['name'] as string, init: d['init'] });
+      }
+    }
+  }
+  // A marker constant, a list or Set of them (`MASKS.includes(v)`), or an alias
+  // of one: repeat until no binding joins.
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const { name, init } of aliases) {
+      if (!names.has(name) && namesMarker(init)) {
+        names.add(name);
+        grew = true;
       }
     }
   }
@@ -564,9 +588,14 @@ function handTestsIn(file: string, text: string, globalNames: ReadonlySet<string
       if (isMarkerFragment(node['init'])) {
         flag();
         names.add(node['id']['name'] as string);
-      } else if (isMarker(node['init'])) {
+      } else if (isMarker(node['init']) || (isNode(node['init']) && holdsMarker(node['init'] as Node))) {
+        // ...a local list or Set of markers (`const S = new Set([SECRET_MASK])`) too.
         names.add(node['id']['name'] as string);
       }
+    }
+    // A default parameter of a marker (`(v, mask = SECRET_MASK) => v === mask`).
+    if (node.type === 'AssignmentPattern' && isNode(node['left']) && node['left'].type === 'Identifier') {
+      if (isMarker(node['right'])) names.add(node['left']['name'] as string);
     }
     for (const v of Object.values(node)) {
       if (Array.isArray(v)) {
@@ -612,6 +641,16 @@ describe('readers ask recorded-secrecy, never test a marker by hand (go-to-k/cdk
   it('the marker names include the constants other modules bind', () => {
     cachedNames ??= markerNames();
     expect([...cachedNames]).toEqual(expect.arrayContaining(['SECRET_MASK', 'DYNAMIC_REFERENCE_OPENING']));
+  });
+
+  it('probe: a module-level alias or collection of a marker is a marker name, across modules', () => {
+    // The importing module is read FIRST: one pass would miss its alias.
+    const names = markerNames({
+      'src/zz-probe-b.ts': "import { MASK_ALIAS } from './zz-probe-a.js';\nexport const ALIAS_OF_ALIAS = MASK_ALIAS;",
+      'src/zz-probe-a.ts': 'export const MASK_ALIAS = SECRET_MASK;\nexport const UNSENT = new Set([MASK_ALIAS]);',
+    });
+    expect([...names]).toEqual(expect.arrayContaining(['MASK_ALIAS', 'UNSENT', 'ALIAS_OF_ALIAS']));
+    expect(names.has('NOT_A_MARKER')).toBe(false);
   });
 
   const real = (rel: string): string => readFileSync(join(ROOT, rel), 'utf8');
@@ -672,6 +711,10 @@ describe('readers ask recorded-secrecy, never test a marker by hand (go-to-k/cdk
     ['a repeated star', "export const n9 = (v: unknown) => v === '*'.repeat(3);"],
     ['a reference service text', "export const n10 = (v: string) => v.includes('resolve:secretsmanager:');"],
     ['a String.raw mask', 'export const n11 = (v: unknown) => v === String.raw`***`;'],
+    ['a Set constant of the marker', 'const MARKERS = new Set([SECRET_MASK]);\nexport const n12 = (v: string) => MARKERS.has(v);'],
+    ['a list constant of the marker', 'const MARKERS2 = [SECRET_MASK];\nexport const n13 = (v: string) => MARKERS2.includes(v);'],
+    ['a Set constant of the literal', "const MARKERS3 = new Set(['***']);\nexport const n14 = (v: string) => MARKERS3.has(v);"],
+    ['a default-parameter alias', 'export const n15 = (v: unknown, mask = SECRET_MASK) => v === mask;'],
     ['a mask prefix in a list', "export const m4 = (v: string) => ['**'].includes(v.slice(0, 2));"],
   ])('probe: %s fails', (_what, line) => {
     const problems = violations({ [NAME]: `${real(NAME)}\n${line}\n` });
