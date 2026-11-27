@@ -138,10 +138,15 @@ export async function calculateDeployDiff(
   // go-to-k/cdkd#7050: a value read from a sub-floor-marked parameter the
   // diff side keeps (`subFloorDisplayTainted`) is masked on the `--verbose`
   // replacement line. Display only: the comparison runs on that value.
+  const subFloorTainted = subFloorDisplayTainted(
+    effectiveTemplate,
+    diffParameters,
+    engine.options.inheritedSecrets
+  );
   const diffCalculator = deployCalculatorMaskingSubFloorLines(
     engine.diffCalculator,
     effectiveTemplate,
-    subFloorDisplayTainted(effectiveTemplate, diffParameters, engine.options.inheritedSecrets)
+    subFloorTainted
   );
   const changes = await diffCalculator.calculateDiff(
     currentState,
@@ -265,6 +270,8 @@ export async function calculateDeployDiff(
     changes,
     expectedChildTags,
     zonelessRecordsHealed: zonelessRecordsHealed.length > 0,
+    // The same taint set the approval's broadening table is withheld on.
+    subFloorTainted,
   };
 }
 

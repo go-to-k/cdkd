@@ -1,5 +1,5 @@
-import { diffLogMasker, redactParametersForDiff } from '../masking.js';
-import { subFloorDisplayTainted } from '../sub-floor-display.js';
+import { diffLogMasker } from '../masking.js';
+import type { subFloorDisplayTainted } from '../sub-floor-display.js';
 import { securityDiffWithPassedSecretWithheld } from '../../../cli/commands/diff-recursive/passed-secret-display.js';
 import { getAccountInfo } from '../../intrinsic-function-resolver.js';
 import { GeneratedNameGuard, type GeneratedNameGuardInput } from '../../generated-name-guard.js';
@@ -39,6 +39,7 @@ export async function prepareChangeExecution(
     parameterValues,
     changes,
     diffResolverContext,
+    subFloorTainted,
     idArrivesLater,
     nameScope,
     retainedAtFirstDeploy,
@@ -53,6 +54,8 @@ export async function prepareChangeExecution(
     parameterValues: Record<string, unknown>;
     changes: Map<string, ResourceChange>;
     diffResolverContext: ResolverContext;
+    /** go-to-k/cdkd#7050: the diff's `subFloorDisplayTainted` set, shared so both displays mask alike. */
+    subFloorTainted: ReturnType<typeof subFloorDisplayTainted>;
     idArrivesLater: boolean;
     nameScope: () => StackScope;
     retainedAtFirstDeploy: Promise<RetainedResource[] | null> | undefined;
@@ -185,11 +188,7 @@ export async function prepareChangeExecution(
         compute,
         new Map(asked.map((change) => [change.logicalId, change])),
         effectiveTemplate,
-        subFloorDisplayTainted(
-          effectiveTemplate,
-          redactParametersForDiff(engine.maskingDeps(), parameterValues),
-          engine.options.inheritedSecrets
-        )
+        subFloorTainted
       ),
   });
   // go-to-k/cdkd#4705: the prompt may have waited; the lookups made before

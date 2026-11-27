@@ -575,16 +575,22 @@ export async function doDeployWithPrefetch(
       effectiveTemplate,
       currentState
     );
-    const { diffResolverContext, maskedInputs, changes, expectedChildTags, zonelessRecordsHealed } =
-      await calculateDeployDiff(engine, {
-        stackName,
-        currentState,
-        effectiveTemplate,
-        parameterValues,
-        conditions,
-        clock,
-        forcedNestedChildRuns: nestedCheck?.forcedRows,
-      });
+    const {
+      diffResolverContext,
+      maskedInputs,
+      changes,
+      expectedChildTags,
+      zonelessRecordsHealed,
+      subFloorTainted,
+    } = await calculateDeployDiff(engine, {
+      stackName,
+      currentState,
+      effectiveTemplate,
+      parameterValues,
+      conditions,
+      clock,
+      forcedNestedChildRuns: nestedCheck?.forcedRows,
+    });
     clock.lap('diff');
     // The diff was the prefetch's only consumer: withdraw what it did not need, so it
     // stops spending the account's DescribeType quota the deploy's write-only lookups use.
@@ -740,6 +746,7 @@ export async function doDeployWithPrefetch(
       parameterValues,
       changes,
       diffResolverContext,
+      subFloorTainted,
       idArrivesLater,
       nameScope,
       retainedAtFirstDeploy,
