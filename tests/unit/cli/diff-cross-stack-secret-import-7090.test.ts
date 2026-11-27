@@ -341,6 +341,95 @@ describe('cdkd diff: a consumer reading a secret-fed producer output (#7090)', (
     }
   }
 
+  // A NESTED child's export: only `--recursive` diffs the child, whose own
+  // node marks the export (`markProducerTaint`); the consumer reads it from
+  // the child's legacy state.
+  for (const secret of SECRETS) {
+    it(`never prints a nested child's export read by a consumer ("${secret}")`, async () => {
+      writeFileSync(
+        join(dir, 'exporting.json'),
+        JSON.stringify({
+          Parameters: { X: { Type: 'String' } },
+          Resources: {},
+          Outputs: {
+            Piece: {
+              Value: { 'Fn::Select': [0, { 'Fn::Split': ['/', { Ref: 'X' }] }] },
+              Export: { Name: 'child-export' },
+            },
+          },
+        })
+      );
+      const states: Record<string, StackState> = {
+        Prod: stack('Prod', {
+          Row: record(
+            'AWS::CloudFormation::Stack',
+            { TemplateURL: 'u', Parameters: { X: `${secret}/${A}` } },
+            { attributes: { 'Outputs.Piece': secret } }
+          ),
+        }),
+        'Prod~Row': stack('Prod~Row', {}, { Piece: secret, 'child-export': secret }),
+        Cons: stack('Cons', {
+          Reader: record('AWS::SSM::Parameter', { Type: 'String', Value: 'old-import' }),
+        }),
+      };
+      const backend = {
+        listStacks: async () =>
+          Object.keys(states).map((stackName) => ({ stackName, region: 'us-east-1' })),
+        getState: async (name: string) =>
+          states[name] ? { state: structuredClone(states[name]), etag: 'e' } : null,
+      };
+      const preview = new CrossStackPreview();
+      const common = {
+        region: 'us-east-1',
+        stateBackend: backend,
+        diffCalculator: new DiffCalculator(),
+        isNestedChild: false,
+        crossStackPreview: preview,
+        recursive: true,
+      };
+      const prod = await buildDiffTree({
+        ...common,
+        stackName: 'Prod',
+        displayName: 'Prod',
+        parameters: { Sep: secret },
+        nestedTemplates: { Row: join(dir, 'exporting.json') },
+        template: {
+          Parameters: { Sep: { Type: 'String' } },
+          Resources: {
+            Row: {
+              Type: 'AWS::CloudFormation::Stack',
+              Metadata: { 'aws:asset:path': 'exporting.json' },
+              Properties: {
+                TemplateURL: 'u',
+                Parameters: { X: { 'Fn::Join': ['', [{ Ref: 'Sep' }, '/', A]] } },
+              },
+            },
+          },
+        },
+      } as never);
+      const prodLog = captured.splice(0);
+      const cons = await buildDiffTree({
+        ...common,
+        stackName: 'Cons',
+        displayName: 'Cons',
+        nestedTemplates: {},
+        template: {
+          Resources: {
+            Reader: {
+              Type: 'AWS::SSM::Parameter',
+              Properties: { Type: 'String', Value: { 'Fn::ImportValue': 'child-export' } },
+            },
+          },
+        },
+      } as never);
+      const consLog = captured.splice(0);
+      expect(preview.exportTainted('us-east-1', 'child-export')).toBe(true);
+      const text = [await printed(prod, prodLog), await printed(cons, consLog)].join('\n');
+      expect(text.includes(secret), text).toBe(false);
+      expect(changeTypeOf(cons, 'Reader')).toBe('UPDATE');
+    });
+  }
+
   // The control: the row is not secret-fed, so the import is an ordinary value
   // and every channel above prints it. Without this, a channel that never
   // reached the output would pass the scan.
