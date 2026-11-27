@@ -407,6 +407,8 @@ export async function runRevert(
             // SENT at a marked coordinate (the live value kept there), which
             // the value arm misses for a number or a value under 4 characters.
             const live = liveByLogicalId.get(logicalId);
+            // The live readback teaches the echo mask its values; the written
+            // bag stays `newBaseline`, masked further.
             const writtenBaseline = maskMarkedNoEchoBaseline(
               newBaseline,
               existing,
@@ -414,12 +416,18 @@ export async function runRevert(
               live
             );
             resources[logicalId] = hasObserved
-              ? withOffTemplateEchoesMasked(
-                  { ...existing, observedProperties: writtenBaseline },
-                  live === undefined ? {} : { readback: live },
-                  new Set([report.region, report.stackName])
-                )
+              ? { ...existing, observedProperties: writtenBaseline }
               : { ...existing, properties: writtenBaseline };
+            // go-to-k/cdkd#7158: an echo of a secret under a key the template
+            // lacks, in what this writes, is masked and named, as every other
+            // readback writer does.
+            if (hasObserved) {
+              resources[logicalId] = withOffTemplateEchoesMasked(
+                resources[logicalId]!,
+                live === undefined ? {} : { readback: live },
+                new Set([report.region, report.stackName])
+              );
+            }
           }
           let reRecordedCount = 0;
           for (const [logicalId, identity] of reRecordedByLogicalId) {

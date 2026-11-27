@@ -665,17 +665,20 @@ export function maskMarkedNoEchoBaseline(
     // element changed is not masked whole; the whole-list fallback stays only
     // for a list no value was learned for.
     const named = observedMaskedLeavesOf(record) ?? [];
-    const learned =
+    // Only the COORDINATES are taken from it: the bag written stays
+    // `positioned`, masked further.
+    const learnedLeaves =
       live === undefined || named.length === 0
-        ? { bag: positioned, leaves: [] as (string | number)[][] }
+        ? []
         : maskOffTemplateEchoes({
             bag: positioned,
             readback: live,
             properties: record.properties ?? {},
             noEchoLeaves: record.noEchoLeaves,
             physicalId: record.physicalId,
-          });
-    const byIndex = maskAtCoordinates(learned.bag, named);
+          }).leaves;
+    const valueMasked = maskAtCoordinates(positioned, learnedLeaves);
+    const byIndex = maskAtCoordinates(valueMasked, named);
     const echoes = named.map((coordinate) => {
       const list = coordinate.findIndex((segment) => typeof segment === 'number');
       if (list < 0) return coordinate;
@@ -684,13 +687,13 @@ export function maskMarkedNoEchoBaseline(
       if (JSON.stringify(valueAtCoordinate(byIndex, path)) === JSON.stringify(recorded)) {
         return coordinate;
       }
-      const maskedByValue = learned.leaves.some(
+      const maskedByValue = learnedLeaves.some(
         (leaf) => leaf.length > path.length && path.every((segment, i) => segment === leaf[i])
       );
       return maskedByValue ? undefined : path;
     });
     const remaining = echoes.filter((c): c is (string | number)[] => c !== undefined);
-    return remaining.length === 0 ? learned.bag : maskAtCoordinates(learned.bag, remaining);
+    return maskAtCoordinates(valueMasked, remaining);
   }
   if (marked.length === 0) return baseline;
   // By index, except where a written value REPLACED the list a coordinate
