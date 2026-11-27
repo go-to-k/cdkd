@@ -4,6 +4,7 @@ import {
   recordedAndDesiredOf,
 } from '../analyzer/diff-calculator/in-place-promotion.js';
 import {
+  HAND_IN_PLACE_UPDATE_STATUS_ATTRS,
   IN_PLACE_UPDATE_DERIVED_ATTRS,
   IN_PLACE_UPDATE_DERIVED_ATTR_PREFIXES,
   REF_READ,
@@ -238,9 +239,16 @@ function inPlaceUpdateMayMove(
   reads: ReadonlySet<string>
 ): 'changed' | 'after-update' | 'unchanged' {
   const type = change.resourceType;
-  const afterUpdate = Object.hasOwn(CC_IN_PLACE_UPDATE_DERIVED_ATTRS, type)
-    ? CC_IN_PLACE_UPDATE_DERIVED_ATTRS[type]
-    : undefined;
+  // A generated Cloud Control row, or an SDK type's operational status
+  // (go-to-k/cdkd#7007), is judged against the value the update recorded.
+  const afterUpdate = [
+    ...(Object.hasOwn(CC_IN_PLACE_UPDATE_DERIVED_ATTRS, type)
+      ? CC_IN_PLACE_UPDATE_DERIVED_ATTRS[type]!
+      : []),
+    ...(Object.hasOwn(HAND_IN_PLACE_UPDATE_STATUS_ATTRS, type)
+      ? HAND_IN_PLACE_UPDATE_STATUS_ATTRS[type]!
+      : []),
+  ];
   let deferred = false;
   const changed = new Set((change.propertyChanges ?? []).map((pc) => pc.path));
   const derived = Object.hasOwn(IN_PLACE_UPDATE_DERIVED_ATTRS, type)
@@ -252,7 +260,7 @@ function inPlaceUpdateMayMove(
   for (const attr of reads) {
     if (attr === REF_READ) continue;
     if (changed.has(attr)) return 'changed';
-    if (derived?.has(attr) === true && afterUpdate?.includes(attr) !== true) return 'changed';
+    if (derived?.has(attr) === true && !afterUpdate.includes(attr)) return 'changed';
     if (
       attributeMovedByChangedProperty(type, attr, changed, (prop) =>
         recordedAndDesiredOf(change, prop)
@@ -261,9 +269,9 @@ function inPlaceUpdateMayMove(
       return 'changed';
     }
     if (prefixes?.some((prefix) => attr.startsWith(prefix)) === true) return 'changed';
-    // A generated Cloud Control row (only one) is judged against the value
-    // the update recorded; a hand row above is a known move.
-    if (afterUpdate?.includes(attr) === true) deferred = true;
+    // A generated Cloud Control row or an SDK status (only one) is judged
+    // against the value the update recorded; a hand row above is a known move.
+    if (afterUpdate.includes(attr)) deferred = true;
   }
   return deferred ? 'after-update' : 'unchanged';
 }

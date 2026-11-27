@@ -568,6 +568,35 @@ describe('a nested child cleanup phase runs at the root (go-to-k/cdkd#6398)', ()
     expect(written[0]!.state.resources['CRev']!.physicalId).toBe('CRev-new');
   });
 
+  // go-to-k/cdkd#7110: the write-back keeps the read's outputs bag, so it keeps
+  // that bag's reference provenance too. Before, the persist writer could not
+  // place the bag and dropped the field.
+  it("the write-back keeps the read's outputReferenceProvenance", async () => {
+    const child = childEngine();
+    const queue = new NestedCleanupQueue();
+    await withNestedCleanupQueue(queue, () => deployStack(child, CHILD, 'C'));
+    const before = store.get(CHILD)!;
+    const token = '{{resolve:secretsmanager:s:SecretString:k::}}';
+    const provenance = { QueueArn: { [token]: { versions: ['v2'] } } };
+    store.set(CHILD, {
+      ...before,
+      state: {
+        ...before.state,
+        outputs: { QueueArn: `arn:aws:sqs:us-east-1:1:${token}` },
+        outputReferenceProvenance: provenance,
+      } as StackState,
+    });
+    const savesBefore = saves.length;
+
+    await queue.runAll({ interrupted: () => false }, { info: vi.fn(), warn: vi.fn() });
+
+    expect(deletesOf('CRev-old')).toBe(1);
+    const written = saves.slice(savesBefore);
+    expect(written).toHaveLength(1);
+    expect(supersededResourcesOf(written[0]!.state)).toEqual([]);
+    expect(written[0]!.state.outputReferenceProvenance).toEqual(provenance);
+  });
+
   // go-to-k/cdkd#6463: a carried entry owing a pre-delete snapshot, whose
   // delete fails after the snapshot, stays listed and owes none.
   it("keeps a child's entry whose snapshot was taken before its delete failed, owing none", async () => {
@@ -891,6 +920,44 @@ describe('a nested child cleanup phase runs at the root (go-to-k/cdkd#6398)', ()
     expect(supersededResourcesOf(store.get(CHILD)!.state)).toEqual([]);
     expect(outcome.updatePartial).toBe(0);
     expect(printed.warn).toEqual([]);
+  });
+
+  // go-to-k/cdkd#7110: the retry writes back the RE-READ, so it carries the
+  // re-read's output provenance, not the first read's.
+  it("an ETag conflict's retry carries the re-read's outputReferenceProvenance", async () => {
+    const child = childEngine();
+    const queue = new NestedCleanupQueue();
+    await withNestedCleanupQueue(queue, () => deployStack(child, CHILD, 'C'));
+    const token = '{{resolve:secretsmanager:s:SecretString:k::}}';
+    const withProvenance = (state: StackState, version: string): StackState =>
+      ({
+        ...state,
+        outputs: { QueueArn: `arn:aws:sqs:us-east-1:1:${token}` },
+        outputReferenceProvenance: { QueueArn: { [token]: { versions: [version] } } },
+      }) as StackState;
+    const first = store.get(CHILD)!;
+    store.set(CHILD, { ...first, state: withProvenance(first.state, 'v1') });
+    const before = store.get(CHILD)!;
+    let refused = 0;
+    // Another writer moved the record (and its output versions) once.
+    refuseSave = (stack, expectedEtag) => {
+      if (stack !== CHILD || expectedEtag !== before.etag || refused > 0) return false;
+      refused++;
+      store.set(CHILD, { state: withProvenance(structuredClone(before.state), 'v2'), etag: 'moved' });
+      return true;
+    };
+    const savesBefore = saves.length;
+
+    await queue.runAll({ interrupted: () => false }, { info: vi.fn(), warn: vi.fn() });
+
+    const written = saves.slice(savesBefore);
+    expect(written.map((w) => w.expectedEtag)).toEqual([before.etag, 'moved']);
+    expect(written[0]!.state.outputReferenceProvenance).toEqual({
+      QueueArn: { [token]: { versions: ['v1'] } },
+    });
+    expect(store.get(CHILD)!.state.outputReferenceProvenance).toEqual({
+      QueueArn: { [token]: { versions: ['v2'] } },
+    });
   });
 
   it('an ETag conflict on every write-back warns with the ids and counts them partial', async () => {

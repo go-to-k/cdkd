@@ -14,6 +14,7 @@ import {
 } from '../nested-cleanup-scope.js';
 import {
   isSupersededHeld,
+  sameSupersededEntry,
   isSupersededResourceRecord,
   supersededResourcesOf,
 } from '../superseded-resources.js';
@@ -26,6 +27,7 @@ import { recordedDependencies } from './dependencies.js';
 import { retryCarriedSupersededResources } from './superseded-retry.js';
 import { carriedNotHeldByConsumers, markHeldForConsumers } from './consumer-held-superseded.js';
 import { isConditionFailure } from '../../state/s3-state-backend/shared.js';
+import { carryReadOutputs } from './state-persist.js';
 
 /**
  * A deploy's cleanup phase, after its creates, updates and deletes: the
@@ -358,13 +360,7 @@ async function runQueuedNestedCleanup(
   }
 }
 
-function sameSuperseded(row: SupersededResourceRecord, entry: SupersededResourceRecord): boolean {
-  return (
-    row.logicalId === entry.logicalId &&
-    row.state.physicalId === entry.state.physicalId &&
-    row.state.resourceType === entry.state.resourceType
-  );
-}
+const sameSuperseded = sameSupersededEntry;
 
 /** Conditional writes `persistDropped` makes before it gives up on conflicts. */
 export const PERSIST_DROPPED_ATTEMPTS = 4;
@@ -420,6 +416,9 @@ async function persistDropped(
       lastModified: Date.now(),
     };
     let failure: unknown;
+    // go-to-k/cdkd#7110: `next` keeps the read's `outputs` bag, so the
+    // choke point carries the read's `outputReferenceProvenance` with it.
+    carryReadOutputs(current.state);
     try {
       // Through the persist choke point, as every engine save: the read is
       // already redacted, and redacting it again changes nothing.

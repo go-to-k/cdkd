@@ -164,6 +164,11 @@ export async function buildDiffTree(args: {
   cfnFallback?: boolean;
   /** As `computeStackDiff`'s `updatePolicy`; handed to every node of the tree. */
   updatePolicy?: boolean;
+  /**
+   * go-to-k/cdkd#7089: as `computeStackDiff`'s `replaceResources`; the ROOT's
+   * only, never handed to a child (a logical id names one template's resource).
+   */
+  replaceResources?: ReadonlySet<string>;
   /** As `computeStackDiff`'s `createRouteOf`; handed to every node of the tree. */
   createRouteOf?: CreateRouteOf;
   /** As `computeStackDiff`'s `producerLookup`; handed to every node of the tree. */
@@ -298,6 +303,7 @@ export async function buildDiffTree(args: {
     assetRedirect,
     cfnFallback,
     updatePolicy,
+    replaceResources,
     createRouteOf,
     producerLookup,
     crossStackPreview,
@@ -430,6 +436,7 @@ export async function buildDiffTree(args: {
           ...(ccRouteUnavailableReason && { ccRouteUnavailableReason }),
           ...(cfnFallback !== undefined && { cfnFallback }),
           ...(updatePolicy === true && { updatePolicy }),
+          ...(replaceResources !== undefined && !isNestedChild && { replaceResources }),
           ...(createRouteOf && { createRouteOf }),
           ...(producerLookup && { producerLookup }),
           ...(consumerAccount && { consumerAccount }),
@@ -707,6 +714,8 @@ export async function buildDiffTree(args: {
         producerLookup,
         consumerAccount,
         { inherited: inheritedSecretTokens, child: childSecretTokens },
+        // go-to-k/cdkd#7102: a cross-stack read here sees this run's preview,
+        // as this node's own resources do.
         crossStackPreview
       )
     );

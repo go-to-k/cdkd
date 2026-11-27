@@ -79,7 +79,7 @@ resource and create a new one, and that can cost you something:
 | [`--recreate-via-cc-api <LogicalId>`](cli-deploy-safety-recreate.md#recreate-via-cc-api-deploy) | deploy | Destroy and recreate one resource through Cloud Control API. |
 | [`--recreate-via-sdk-provider <LogicalId>`](cli-deploy-safety-recreate.md#recreate-via-sdk-provider-deploy) | deploy | Destroy and recreate one resource through cdkd's SDK provider. |
 | [`--replace`](cli-deploy-safety-replacement.md#replace-deploy) | deploy | Replace (delete and create) a resource that AWS has no update call for. |
-| [`--replace-resource <LogicalId>`](#replace-resource-deploy) | deploy | Plan one resource's update as a replacement, as a create-only property change is. |
+| [`--replace-resource <LogicalId>`](#replace-resource-deploy) | deploy, diff | Plan one resource's update as a replacement, as a create-only property change is. |
 | [`--force-stateful-recreation`](#force-stateful-recreation) | deploy | Confirm the data loss when any replacement in the run targets a [stateful resource](#stateful-resource-guard). |
 | [`--strict-getatt`](cli-deploy-safety-ci-flags.md#strict-getatt-deploy) | deploy | Fail on any `Fn::GetAtt` that falls back to a physical ID, and on any unresolvable Output. |
 | [`--allow-unaddressed`](cli-deploy-safety-ci-flags.md#allow-unaddressed-deploy) | deploy | Exit 0 instead of 2 when the deploy left a resource alive that it no longer tracks. |
@@ -295,6 +295,17 @@ exactly one stack of the deploy: an id no stack declares, one two stacks
 declare (deploy that stack alone), or one `--recreate-via-*` also names is
 refused (`REPLACE_RESOURCE_INVALID`). It names a top-level stack's resources
 only.
+
+`cdkd diff --replace-resource <LogicalId>` previews this plan. The target
+shows as a replacement and its readers are promoted, as in
+`cdkd deploy --dry-run`. An id the deploy refuses as invalid fails the diff
+too, checked over the stacks that deploy runs without `-e`: the selection
+plus its dependency stacks. An id only such a dependency declares is named in a
+warning, since the diff does not diff that stack. `cdkd diff` has no `-e`, so
+it cannot preview `cdkd deploy -e ... --replace-resource`: there an id a
+dependency also declares is refused by the diff and accepted by the deploy. A `REPLACE_RESOURCE_REFUSED` target is a blocking reason (exit `3`).
+`cdkd diff` has no `--force-stateful-recreation`, so a stateful target or
+reader the deploy would refuse without that flag is only a warning.
 
 ### Under `UpdateReplacePolicy: Retain`
 

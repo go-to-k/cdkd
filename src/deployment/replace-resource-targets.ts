@@ -30,6 +30,13 @@ export interface UnreplacedTarget {
   changeType: ResourceChange['changeType'] | undefined;
 }
 
+/** The warning for a target the plan does not replace; `cdkd diff` prints the same (go-to-k/cdkd#7089). */
+export function renderUnreplacedTarget(stackName: string, target: UnreplacedTarget): string {
+  return target.changeType === undefined
+    ? safeMsg`--replace-resource ${target.logicalId}: not replaced, stack ${stackName} has no such resource.`
+    : safeMsg`--replace-resource ${target.logicalId}: not replaced, this deploy will ${target.changeType.toLowerCase()} it instead.`;
+}
+
 /**
  * Plan each target's UPDATE as a replacement: every property change of its
  * row requires replacement, exactly the row a template create-only change

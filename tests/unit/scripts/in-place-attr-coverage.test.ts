@@ -19,6 +19,8 @@ import {
   classificationKeyFor,
   classifyByRule,
   loadInputs,
+  registryTopLevelCreateOnly,
+  typeInputFromSpec,
   renderJson,
   renderMarkdown,
   renderSrc,
@@ -66,7 +68,8 @@ describe('the committed audit (#7001)', () => {
     expect(report.summary.sdkTypes).toBeGreaterThanOrEqual(131);
     expect(report.summary.sdkPairs).toBeGreaterThanOrEqual(390);
     expect(report.summary.ccPairs).toBeGreaterThanOrEqual(5500);
-    expect(report.summary.ccByRule['no-in-place-update']).toBeGreaterThan(1000);
+    // #7007 part 5: a tag-only type's statuses left it for operational-status.
+    expect(report.summary.ccByRule['no-in-place-update']).toBeGreaterThan(950);
     expect(report.summary.ccByRule['creation-timestamp']).toBeGreaterThan(300);
     expect(report.summary.ccBaseline).toBeGreaterThan(0);
     expect(report.summary.ccByRule['own-identity']).toBeGreaterThan(800);
@@ -79,6 +82,10 @@ describe('the committed audit (#7001)', () => {
     expect(report.summary.ccByRule['identifier-arn-member']).toBeGreaterThan(60);
     expect(report.summary.ccByRule['update-marker']).toBeGreaterThan(130);
     expect(report.summary.ccByRule['parent-fixed']).toBeGreaterThan(0);
+    // go-to-k/cdkd#7007 part 5.
+    expect(report.summary.ccByRule['operational-status']).toBeGreaterThan(450);
+    expect(report.summary.ccByRule['primary-identifier']).toBeGreaterThan(480);
+    expect(report.summary.ccByRule['arn-template']).toBeGreaterThan(85);
     // #7007: the measured rename probes are hand verdicts, merged in without
     // dropping a type both tables name.
     const v: InPlaceAttrVerdict = { kind: 'never', reason: 'r' };
@@ -169,10 +176,10 @@ describe('the hand verdicts equal the shared.ts tables (#7001)', () => {
       // reading the stale spec (the DataSync locations).
       if (r.verdict === 'never') expect(rule, where).toBeUndefined();
     }
+    // The live registry makes the S3 location's Subdirectory in place, so no
+    // rule settles its URI; the hand verdict moves it (#7007 part 5).
     const s3 = report.ccHand.find((r) => r.type === 'AWS::DataSync::LocationS3');
-    expect(classifyByRule(inputs.types.find((x) => x.type === s3!.type)!, 'LocationUri')).toBe(
-      'no-in-place-update'
-    );
+    expect(classifyByRule(inputs.types.find((x) => x.type === s3!.type)!, 'LocationUri')).toBeUndefined();
     expect(s3?.verdict).toBe('moved-by');
   });
 
@@ -290,14 +297,15 @@ describe('classifyByRule (#7001)', () => {
 
   it('settles every pair of a type whose only in-place property is Tags, bar an update timestamp', () => {
     const t = input('AWS::X::Thing', { Name: 'yes', Config: 'yes', Tags: undefined });
-    expect(classifyByRule(t, 'Status')).toBe('no-in-place-update');
+    expect(classifyByRule(t, 'Config2')).toBe('no-in-place-update');
+    expect(classifyByRule(t, 'Status')).toBe('operational-status');
     // A tag edit may stamp it: moving, never `no-in-place-update`.
     for (const a of ['UpdatedAt', 'LastModifiedTime', 'LastUpdatedDateTime', 'UpdateTime', 'LastModificationDate']) {
       expect(classifyByRule(t, a), a).toBe('update-timestamp');
     }
-    // The last writer is moving too (#7007); an update status is not settled.
+    // The last writer is moving too (#7007), and so is a status (part 5).
     expect(classifyByRule(t, 'LastModifiedBy')).toBe('update-marker');
-    expect(classifyByRule(t, 'UpdateStatus')).toBeUndefined();
+    expect(classifyByRule(t, 'UpdateStatus')).toBe('operational-status');
   });
 
   it('settles an undotted creation timestamp, never an update one or a nested member', () => {
@@ -371,7 +379,8 @@ describe('the #7007 rules, on real spec inputs', () => {
     expect(agent.primaryIdentifier).toEqual(['AgentId']);
     expect(classifyByRule(agent, 'AgentId')).toBe('primary-identifier');
     expect(classifyByRule(agent, 'AgentArn')).toBeUndefined();
-    // An ARN with no template on a type whose name or alias is in place.
+    // An ARN with no template on a VERSIONED type whose name or alias is in
+    // place (MajorVersion, VersionBump): its ARN may carry the version.
     const activation = real('AWS::CloudFormation::TypeActivation');
     expect(activation.arnTemplate).toBeUndefined();
     expect(activation.primaryIdentifier).toContain('Arn');
@@ -457,8 +466,13 @@ describe('the #7007 rules, on real spec inputs', () => {
     );
     // bot:${BotName} names the in-place Name: not settled.
     expect(classifyByRule(real('AWS::Lex::Bot'), 'Arn')).toBeUndefined();
-    // ${ResourceId} names no property or identifier.
-    expect(classifyByRule(real('AWS::QuickSight::DataSet'), 'Arn')).toBeUndefined();
+    // ${ResourceId} is the own id, a primary-identifier member (DataSetId)
+    // (#7007 part 5).
+    expect(real('AWS::QuickSight::DataSet').primaryIdentifier).toContain('DataSetId');
+    expect(classifyByRule(real('AWS::QuickSight::DataSet'), 'Arn')).toBe('arn-template');
+    // eventbridge-rule-template:${EventBridgeRuleTemplateId} over the
+    // primary identifier Identifier; a rename kept it (measured).
+    expect(classifyByRule(real('AWS::MediaLive::EventBridgeRuleTemplate'), 'Arn')).toBe('arn-template');
     // A versioned type: the ARN can carry the version an update mints.
     expect(
       classifyByRule(real('AWS::GameLift::ContainerGroupDefinition'), 'ContainerGroupDefinitionArn')
@@ -487,6 +501,179 @@ describe('the #7007 rules, on real spec inputs', () => {
     }
     const { arnTemplate: _, ...none } = t(env);
     expect(classifyByRule(none, 'Arn')).toBeUndefined();
+  });
+  it('arn-template takes an own-id placeholder only over a primary-identifier id (#7007 part 5)', () => {
+    const t = (arnTemplate: string, primaryIdentifier: string[]): TypeInput => ({
+      type: 'AWS::X::TaskDefinition',
+      attributes: ['Arn'],
+      properties: { Name: undefined },
+      primaryIdentifier,
+      arnTemplate: `arn:\${Partition}:x:\${Region}:\${Account}:${arnTemplate}`,
+    });
+    for (const ph of ['ResourceId', 'Id', 'Identifier', 'TaskDefinitionId', 'GatewayTaskDefinitionId']) {
+      expect(classifyByRule(t(`task/\${${ph}}`, ['Id']), 'Arn'), ph).toBe('arn-template');
+      // No id in the primary identifier (a name, an account): not settled.
+      expect(classifyByRule(t(`task/\${${ph}}`, ['Name']), 'Arn'), ph).toBeUndefined();
+      expect(classifyByRule(t(`task/\${${ph}}`, ['AwsAccountId']), 'Arn'), ph).toBeUndefined();
+    }
+    // Another resource's id is no own-id placeholder.
+    for (const ph of ['VpcId', 'GatewayId', 'TaskId']) {
+      expect(classifyByRule(t(`task/\${${ph}}`, ['Id']), 'Arn'), ph).toBeUndefined();
+    }
+  });
+
+  it('primary-identifier settles a template-less ARN on an unversioned type with an in-place name (#7007 part 5)', () => {
+    // Measured: BCM Dashboard / CloudWatch MetricDataQueryDefinition /
+    // InspectorV2 Filter renames kept the ARN.
+    for (const type of [
+      'AWS::BCM::Dashboard',
+      'AWS::CloudWatch::MetricDataQueryDefinition',
+      'AWS::InspectorV2::Filter',
+    ]) {
+      expect(real(type).arnTemplate, type).toBeUndefined();
+      expect(classifyByRule(real(type), 'Arn'), type).toBe('primary-identifier');
+    }
+    const t = (attributes: string[]): TypeInput => ({
+      type: 'AWS::X::Widget',
+      attributes,
+      properties: { Name: undefined },
+      primaryIdentifier: ['Arn'],
+    });
+    expect(classifyByRule(t(['Arn']), 'Arn')).toBe('primary-identifier');
+    // A versioned type's ARN may carry the version.
+    expect(classifyByRule(t(['Arn', 'VersionNumber']), 'Arn')).toBeUndefined();
+    // An in-place parent or foreign reference the ARN may embed, or a name
+    // that is not the resource's own: not settled.
+    for (const prop of ['InstanceArn', 'ControlPanelArn', 'ParentId', 'GroupIdentifier', 'TypeName', 'SshKeyName']) {
+      const withProp = { ...t(['Arn']), properties: { Name: undefined, [prop]: undefined } };
+      expect(classifyByRule(withProp, 'Arn'), prop).toBeUndefined();
+    }
+    // ...with no in-place name at all, too (an ARN that is not the type's
+    // own-identity shape, so only primary-identifier can reach it).
+    const configured = (properties: Record<string, undefined>): TypeInput => ({
+      type: 'AWS::X::Widget',
+      attributes: ['ConfigurationArn'],
+      properties,
+      primaryIdentifier: ['ConfigurationArn'],
+    });
+    expect(classifyByRule(configured({ ParentArn: undefined }), 'ConfigurationArn')).toBeUndefined();
+    expect(classifyByRule(configured({ Config: undefined }), 'ConfigurationArn')).toBe('primary-identifier');
+    for (const prop of ['DisplayName', 'Path', 'WidgetName']) {
+      const own = { ...t(['Arn']), properties: { [prop]: undefined } };
+      expect(classifyByRule(own, 'Arn'), prop).toBe('primary-identifier');
+    }
+    // Real cases: `type-configuration/hook/<TypeName>/<alias>` over an
+    // in-place TypeName; an ARN under an in-place control panel or instance.
+    for (const [type, attr] of [
+      ['AWS::CloudFormation::HookTypeConfig', 'ConfigurationArn'],
+      ['AWS::Route53RecoveryControl::SafetyRule', 'SafetyRuleArn'],
+      ['AWS::Connect::TestCase', 'TestCaseArn'],
+      ['AWS::Connect::ContactFlow', 'ContactFlowArn'],
+      // No in-place name, but an in-place InstanceArn the ARN embeds.
+      ['AWS::Connect::EvaluationForm', 'EvaluationFormArn'],
+    ] as const) {
+      expect(real(type).arnTemplate, type).toBeUndefined();
+      expect(classifyByRule(real(type), attr), type).toBeUndefined();
+      expect(report.ccBaseline[type], type).toContain(attr);
+    }
+  });
+
+  it('operational-status settles a status, its explanation and a member status as moving (#7007 part 5)', () => {
+    // Measured: a Description-only update moved State create-complete ->
+    // modify-complete on both.
+    expect(classifyByRule(real('AWS::EC2::IPAMPool'), 'State')).toBe('operational-status');
+    expect(classifyByRule(real('AWS::EC2::IPAMResourceDiscovery'), 'State')).toBe(
+      'operational-status'
+    );
+    const t: TypeInput = {
+      type: 'AWS::X::Thing',
+      attributes: [
+        'Status',
+        'ConnectionState',
+        'StatusReason',
+        'FailureReason',
+        'Health',
+        'Exclusions',
+        'Exclusions.Nat.State',
+        'Owner',
+        'Stateful',
+        'StatusArn',
+      ],
+      properties: { Config: undefined },
+    };
+    for (const a of ['Status', 'ConnectionState', 'StatusReason', 'FailureReason', 'Health', 'Exclusions.Nat.State']) {
+      expect(classifyByRule(t, a), a).toBe('operational-status');
+    }
+    for (const a of ['Exclusions', 'Owner', 'Stateful', 'StatusArn']) {
+      expect(classifyByRule(t, a), a).not.toBe('operational-status');
+    }
+    // A tag-only type's status is moving too; its other pairs stay settled.
+    const tagOnly = { ...t, properties: { Config: 'yes' } };
+    expect(classifyByRule(tagOnly, 'Status')).toBe('operational-status');
+    expect(classifyByRule(tagOnly, 'Exclusions.Nat.State')).toBe('operational-status');
+    expect(classifyByRule(tagOnly, 'Owner')).toBe('no-in-place-update');
+  });
+
+  it('reads create-only from the live registry snapshot, the spec only for a type it lacks (#7007 part 5)', () => {
+    const created = registryTopLevelCreateOnly(new Map([['AWS::X::Thing', [['Name'], ['Config', 'Inner']]]]));
+    // A nested create-only path leaves its top-level property in place.
+    expect([...created.get('AWS::X::Thing')!]).toEqual(['Name']);
+    const resource = {
+      cloudFormationType: 'AWS::X::Thing',
+      properties: { Name: {}, Config: { causesReplacement: 'yes' }, Path: { causesReplacement: 'yes' } },
+      attributes: { Arn: {} },
+    } as unknown as Parameters<typeof typeInputFromSpec>[0];
+    expect(typeInputFromSpec(resource, created.get('AWS::X::Thing'))?.properties).toEqual({
+      Name: 'yes',
+      Config: undefined,
+      Path: undefined,
+    });
+    expect(typeInputFromSpec(resource)?.properties).toEqual({ Name: undefined, Config: 'yes', Path: 'yes' });
+    // The pinned spec calls the S3 location's Subdirectory create-only; the
+    // live registry does not.
+    expect(real('AWS::DataSync::LocationS3').properties.Subdirectory).toBeUndefined();
+  });
+
+  it('classifies every pair the stale spec settled differently from the live registry (#7078, #7007 part 5)', () => {
+    // #7078 measured 21 pairs whose rule verdict changes under the live
+    // create-only list: 5 move, 14 do not, 2 are held out.
+    const sq = [
+      'SQErrorReportConfiguration',
+      'SQKmsKeyId',
+      'SQName',
+      'SQNotificationConfiguration',
+      'SQQueryString',
+      'SQScheduleConfiguration',
+      'SQScheduledQueryExecutionRoleArn',
+      'SQTargetConfiguration',
+    ];
+    const expected: Record<string, string> = {
+      'AWS::DataSync::LocationEFS.LocationUri': 'moved-by',
+      'AWS::DataSync::LocationFSxLustre.LocationUri': 'moved-by',
+      'AWS::DataSync::LocationFSxONTAP.LocationUri': 'moved-by',
+      'AWS::DataSync::LocationFSxOpenZFS.LocationUri': 'moved-by',
+      'AWS::DataSync::LocationS3.LocationUri': 'moved-by',
+      'AWS::Connect::ViewVersion.Version': 'never',
+      'AWS::Connect::ViewVersion.ViewVersionArn': 'never',
+      'AWS::DataSync::LocationFSxONTAP.FsxFilesystemArn': 'never',
+      'AWS::EntityResolution::SchemaMapping.HasWorkflows': 'never',
+      'AWS::EntityResolution::SchemaMapping.SchemaArn': 'never',
+      'AWS::Location::Map.DataSource': 'never',
+      ...Object.fromEntries(sq.map((a) => [`AWS::Timestream::ScheduledQuery.${a}`, 'never'])),
+      'AWS::DataSync::LocationFSxONTAP.Protocol.SMB.ManagedSecretConfig': 'baseline',
+      'AWS::DataSync::LocationFSxONTAP.Protocol.SMB.CmkSecretConfig.SecretArn': 'baseline',
+    };
+    expect(Object.keys(expected)).toHaveLength(21);
+    for (const [pair, verdict] of Object.entries(expected)) {
+      const i = pair.indexOf('.', pair.lastIndexOf('::'));
+      const [type, attribute] = [pair.slice(0, i), pair.slice(i + 1)];
+      const hand = report.ccHand.find((r) => r.type === type && r.attribute === attribute);
+      const actual =
+        hand?.verdict ?? (report.ccBaseline[type]?.includes(attribute) === true ? 'baseline' : 'rule');
+      expect(actual, pair).toBe(verdict);
+      // The stale spec's no-in-place-update no longer fires on any of them.
+      expect(classifyByRule(real(type), attribute), pair).not.toBe('no-in-place-update');
+    }
   });
 
   it('creator and owner-account settle creation facts; the owner only with no in-place account', () => {
@@ -633,6 +820,7 @@ describe('the #7007 rules, on real spec inputs', () => {
     const rule = real('AWS::AccessAnalyzer::ArchiveRule');
     expect(classifyByRule(rule, 'UpdatedAt')).toBe('update-timestamp');
     expect(MOVING_RULES.has('update-timestamp')).toBe(true);
+    expect(MOVING_RULES.has('operational-status')).toBe(true);
     expect(MOVING_RULES.has('primary-identifier')).toBe(false);
     expect(MOVING_RULES.has('arn-template')).toBe(false);
   });
@@ -642,7 +830,7 @@ describe('buildReport findings (#7001)', () => {
   const never = (reason: string): InPlaceAttrVerdict => ({ kind: 'never', reason });
   const types: TypeInput[] = [
     { type: 'AWS::S::Sdk', attributes: ['Arn', 'Family.A', 'Family.B', 'Loose'], properties: {} },
-    { type: 'AWS::C::Cc', attributes: ['Arn', 'Status', 'Phase'], properties: { Config: undefined } },
+    { type: 'AWS::C::Cc', attributes: ['Arn', 'Endpoint', 'Phase'], properties: { Config: undefined } },
   ];
   const build = (
     classification: Record<string, Record<string, InPlaceAttrVerdict>>,
@@ -659,7 +847,7 @@ describe('buildReport findings (#7001)', () => {
   it('names an unclassified SDK pair and a stale classification key; a Family.* key covers members', () => {
     const f = build(
       { 'AWS::S::Sdk': { Arn: never('r'), 'Family.*': never('r'), Gone: never('r') } },
-      { 'AWS::C::Cc': ['Status', 'Phase'] }
+      { 'AWS::C::Cc': ['Endpoint', 'Phase'] }
     );
     expect(f.unclassifiedSdk).toEqual(['AWS::S::Sdk.Loose']);
     expect(f.staleClassification).toEqual(['AWS::S::Sdk.Gone']);
@@ -669,7 +857,7 @@ describe('buildReport findings (#7001)', () => {
   it('fails a Cloud Control pair outside the baseline, and a baseline entry a rule settles', () => {
     const f = build(
       { 'AWS::S::Sdk': { Arn: never('r'), 'Family.*': never('r'), Loose: never('r') } },
-      { 'AWS::C::Cc': ['Status', 'Arn'], 'AWS::C::Removed': ['X'] }
+      { 'AWS::C::Cc': ['Endpoint', 'Arn'], 'AWS::C::Removed': ['X'] }
     );
     expect(f.unclassifiedCc).toEqual(['AWS::C::Cc.Phase']);
     expect(f.staleBaseline).toEqual(['AWS::C::Cc.Arn', 'AWS::C::Removed.X']);

@@ -1,5 +1,6 @@
 import type { ReplacementRulesRegistry } from '../replacement-rules.js';
 import type { ConditionalReplacement } from './types.js';
+import { batchComputeResourcesChangeReplaces } from './batch-compute-environment.js';
 import {
   vpcInstanceTenancyChangeReplaces,
   instanceSecurityGroupIdsChangeReplaces,
@@ -174,6 +175,16 @@ export function initializeRules(this: ReplacementRulesRegistry): void {
       'MaximumRetryAttempts',
       'DestinationConfig',
     ]),
+  });
+
+  // Batch compute environment (go-to-k/cdkd#7098): a ComputeResources change
+  // that needs an infrastructure update replaces unless the template sets
+  // `ReplaceComputeEnvironment: false`, as CloudFormation does. The schema's
+  // create-only paths (the name, `Type`, `Tags`, the EKS members) still apply
+  // to the properties this rule leaves unclassified.
+  this.rules.set('AWS::Batch::ComputeEnvironment', {
+    replacementProperties: new Set(),
+    conditionalReplacements: new Map([['ComputeResources', batchComputeResourcesChangeReplaces]]),
   });
 
   // DynamoDB GlobalTable (go-to-k/cdkd#5489). No property is listed outright:

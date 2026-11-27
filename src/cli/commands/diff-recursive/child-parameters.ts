@@ -4,7 +4,6 @@ import type { ResourceState, StackState } from '../../../types/state.js';
 import {
   AWS_NO_VALUE,
   IntrinsicFunctionResolver,
-  type ResolverContext,
 } from '../../../deployment/intrinsic-function-resolver.js';
 import type { ProducerLookup } from '../../../deployment/intrinsic-resolver/cdk-cross-account-ref.js';
 import {
@@ -26,6 +25,7 @@ import { standInTokensOf } from './printing.js';
 import { collectRefTargets, isScalarList } from './parameters-conditions.js';
 import { rowValueTrusted } from './trust.js';
 import { stackIdTailOf } from '../../../state/stack-id-tail.js';
+import type { CrossStackPreview } from '../../../analyzer/cross-stack-preview.js';
 
 /**
  * go-to-k/cdkd#4043 (review round 9): the keys of a nested-stack row's
@@ -158,11 +158,14 @@ export async function resolveChildStackParameters(
     child: Map<string, ReadonlySet<string>>;
   },
   /**
-   * go-to-k/cdkd#7077: the run's cross-stack taint marks (`CrossStackPreview`),
-   * so a row reading a tainted export or output masks its resolver lines. The
-   * read still resolves from state: display only.
+   * go-to-k/cdkd#7102: the run's cross-stack preview (go-to-k/cdkd#6796), as
+   * the parent node's own resources read it: a row value importing an export
+   * a producer diffed earlier in this run changes reads the new value, as the
+   * deploy (which reaches this parent after that producer saved) passes it.
+   * The value's provenance is the row's, so `mixedSecretRowKeys` masks a
+   * tainted one on every child leaf, as for the value read from state.
    */
-  crossStackTaint?: ResolverContext['crossStackTaint']
+  crossStackPreview?: CrossStackPreview
 ): Promise<Record<string, unknown>> {
   const rawParams = parentStackRow.Properties?.['Parameters'];
   if (!rawParams || typeof rawParams !== 'object' || Array.isArray(rawParams)) {
@@ -197,6 +200,7 @@ export async function resolveChildStackParameters(
         secretNameSink: derivedNameSink ?? new Map(),
         stateBackend,
         stackName: parentStackName,
+        ...(crossStackPreview && { crossStackPreview }),
         // go-to-k/cdkd#6170: the tail the deploy resolves the parent's row with.
         stackIdTail: () => stackIdTailOf(parentState, parentStackName),
         // go-to-k/cdkd#6705: the signal receiver's ARN, when the stack has one.
@@ -223,7 +227,6 @@ export async function resolveChildStackParameters(
         // could not be split.
         skipDynamicReferences: true,
         skippedSecretReferences,
-        ...(crossStackTaint && { crossStackTaint }),
         ...(inheritedStandIns && { secretStandInTokens: inheritedStandIns }),
         ...(attributeHealer && { attributeHealer }),
       });

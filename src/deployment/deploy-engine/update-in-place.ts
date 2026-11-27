@@ -662,6 +662,7 @@ export async function updateInPlace(
             stackName,
             changedProperties,
             record: currentResource,
+            desiredProperties: resolvedProps,
             updateReplacePolicy,
             nestedChild: engine.options.parentStackInfo !== undefined,
           })
