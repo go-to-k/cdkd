@@ -12,6 +12,7 @@ import { refuseStatefulReplacedReaders } from '../../recreate-target-readers.js'
 import {
   planReplaceResourceTargets,
   refuseStatefulReplaceResourceTargets,
+  renderUnreplacedTarget,
   replaceResourceIdsFor,
 } from '../../replace-resource-targets.js';
 import { markNonRetryable } from '../../retryable-errors.js';
@@ -72,12 +73,8 @@ export async function refuseUnsafePlan(
   const replaceResourceIds = replaceResourceIdsFor(engine.options.replaceResources, stackName);
   if (replaceResourceIds !== undefined) {
     const { replaced, unreplaced } = planReplaceResourceTargets(changes, replaceResourceIds);
-    for (const { logicalId, changeType } of unreplaced) {
-      engine.logger.warn(
-        changeType === undefined
-          ? safeMsg`--replace-resource ${logicalId}: not replaced, stack ${stackName} has no such resource.`
-          : safeMsg`--replace-resource ${logicalId}: not replaced, this deploy will ${changeType.toLowerCase()} it instead.`
-      );
+    for (const target of unreplaced) {
+      engine.logger.warn(renderUnreplacedTarget(stackName, target));
     }
     refuseStatefulReplaceResourceTargets({
       targetIds: replaced,

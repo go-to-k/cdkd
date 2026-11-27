@@ -83,6 +83,7 @@ import { stackIdTailOf } from '../../../state/stack-id-tail.js';
 import { previewNoEchoMacChanges } from './noecho-macs.js';
 import { markProducerTaint, recordProducerPreview } from '../../../analyzer/cross-stack-preview.js';
 import { producerReadsSecretFedName } from './cross-stack-taint.js';
+import { previewReplaceResourcePlan, withoutWarnings } from './replace-resource-preview.js';
 
 /**
  * Compute the per-resource diff for one stack: `currentState` (cdkd state)
@@ -502,58 +503,73 @@ export async function computeStackDiff(
       ]),
     };
   }
-  const changes = await diffCalculator.calculateDiff(
-    stateForDiff,
-    effectiveTemplate,
-    resolveFn,
-    canonicalizeProperties,
-    undefined,
-    undefined,
-    // `--verbose`'s replacement line prints resolved values (go-to-k/cdkd#4049).
-    maskForLog,
-    undefined,
-    maskedInputs,
-    options.refusalRecovery,
-    // go-to-k/cdkd#4043: compare what the deploy persists for a value a
-    // `NoEcho` source served (`***`), reading a pre-v11 record's plaintext as
-    // the migration witness. Only the verdicts this diff knows position an
-    // `Fn::If`; an unknown one masks the whole leaf.
-    noEchoComparisonForTemplate(
+  const diffWith = (forcedReplacements: ReadonlySet<string> | undefined, quiet?: boolean) =>
+    (quiet === true ? withoutWarnings(diffCalculator) : diffCalculator).calculateDiff(
+      stateForDiff,
       effectiveTemplate,
-      namingConditions,
-      mergedParameters,
-      stateForDiff.resources,
-      new Set([region, stackName]),
-      inheritedNoEchoParameters
-    ),
-    // State schema v12 (go-to-k/cdkd#4852): the deploy diff's read-provenance
-    // members: a nested child's snapshot (`inheritedProvenanceForChildDiff`) and
-    // each producer output a cross-stack read of this diff read (one state read
-    // per producer, only for a reader holding read versions).
-    {
-      ...(options.inheritedReferenceProvenance && {
-        inherited: options.inheritedReferenceProvenance,
-      }),
-      crossStackOutputs: crossStackOutputProvenanceSource(
-        crossStackReads,
-        crossStackReads,
-        stateBackend
+      resolveFn,
+      canonicalizeProperties,
+      undefined,
+      undefined,
+      // `--verbose`'s replacement line prints resolved values (go-to-k/cdkd#4049).
+      maskForLog,
+      // go-to-k/cdkd#7089: a `--replace-resource` target's readers.
+      forcedReplacements,
+      maskedInputs,
+      options.refusalRecovery,
+      // go-to-k/cdkd#4043: compare what the deploy persists for a value a
+      // `NoEcho` source served (`***`), reading a pre-v11 record's plaintext as
+      // the migration witness. Only the verdicts this diff knows position an
+      // `Fn::If`; an unknown one masks the whole leaf.
+      noEchoComparisonForTemplate(
+        effectiveTemplate,
+        namingConditions,
+        mergedParameters,
+        stateForDiff.resources,
+        new Set([region, stackName]),
+        inheritedNoEchoParameters
       ),
-    },
-    options.forcedNestedChildRuns,
-    // go-to-k/cdkd#6437: the deploy's diff takes the same flag.
-    options.updatePolicy === true
-  );
-  warnLegacySpelling(changes, effectiveTemplate, stackName, logger); // go-to-k/cdkd#7037
-  // go-to-k/cdkd#6871: the rows the deploy updates for their child's tags.
-  const childStackTags = await settleStackTagChildRuns({
-    changes,
-    template: effectiveTemplate,
-    stackTags: options.stackTags,
+      // State schema v12 (go-to-k/cdkd#4852): the deploy diff's read-provenance
+      // members: a nested child's snapshot (`inheritedProvenanceForChildDiff`) and
+      // each producer output a cross-stack read of this diff read (one state read
+      // per producer, only for a reader holding read versions).
+      {
+        ...(options.inheritedReferenceProvenance && {
+          inherited: options.inheritedReferenceProvenance,
+        }),
+        crossStackOutputs: crossStackOutputProvenanceSource(
+          crossStackReads,
+          crossStackReads,
+          stateBackend
+        ),
+      },
+      options.forcedNestedChildRuns,
+      // go-to-k/cdkd#6437: the deploy's diff takes the same flag.
+      options.updatePolicy === true
+    );
+  // go-to-k/cdkd#6871: the rows the deploy updates for their child's tags, then
+  // go-to-k/cdkd#7089's `--replace-resource` plan, as the deploy's flow runs them.
+  const planned = await previewReplaceResourcePlan({
+    diff: diffWith,
+    settle: (rows) =>
+      settleStackTagChildRuns({
+        changes: rows,
+        template: effectiveTemplate,
+        stackTags: options.stackTags,
+        state: stateForDiff,
+        resolve: resolveFn,
+        secrets: diffSecrets,
+      }),
+    targetIds: options.replaceResources,
+    stackName,
     state: stateForDiff,
-    resolve: resolveFn,
-    secrets: diffSecrets,
+    template: effectiveTemplate,
+    conditions: namingConditions ?? {},
+    warn: (message) => logger.warn(printing.mask(message)),
   });
+  const { changes, settled: childStackTags } = planned;
+  blocking = [...blocking, ...planned.blocking];
+  warnLegacySpelling(changes, effectiveTemplate, stackName, logger); // go-to-k/cdkd#7037
   // go-to-k/cdkd#6146: a property whose recorded NoEcho value MACs prove the
   // value moved is a change, as the deploy sends it. No KMS call unless a
   // record carries MACs; none in a nested child.

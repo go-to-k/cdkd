@@ -343,6 +343,13 @@ export interface ComputeStackDiffOptions {
    */
   updatePolicy?: boolean;
   /**
+   * go-to-k/cdkd#7089: this stack's `--replace-resource` targets, planned as
+   * replacements as `cdkd deploy --replace-resource` plans them
+   * (`replace-resource-preview.ts`). A top-level stack's only: the flag never
+   * reaches a nested child.
+   */
+  replaceResources?: ReadonlySet<string>;
+  /**
    * go-to-k/cdkd#6437: the provider registry's `getProviderFor`, so the
    * preview decides a replacement's create route as the deploy does
    * (`replacementCreateRoutesToCloudControl`). Absent: the route is not
