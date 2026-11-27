@@ -614,8 +614,9 @@ export const REPLACEMENT_EVIDENCE: ReadonlyMap<string, ReplacementEvidence> = ne
   // UpdatePolicy, and KmsKeyId from the AWS-managed key to a customer key,
   // each failed "cannot update a stack when a custom-named resource requires
   // replacing", so CloudFormation replaces on both (#7130). Under
-  // `UpdatePolicy: EnableVersionUpgrade` it upgrades the version in place, so
-  // the diff keeps that change in place there (`version-upgrade-policy.ts`).
+  // `UpdatePolicy: EnableVersionUpgrade` it was measured upgrading 7.9 -> 7.10
+  // in place (UPDATE_COMPLETE, same physical id), so the diff keeps that
+  // change in place there (`version-upgrade-policy.ts`).
   // Stateful: a replacement stays behind --force-stateful-recreation.
   ['AWS::Elasticsearch::Domain#ElasticsearchVersion', replace('cfn-measured', 7083, 7130)],
   [

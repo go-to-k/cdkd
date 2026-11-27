@@ -5,7 +5,7 @@ import type { ResourceChange } from '../../types/state.js';
  * The version property `UpdatePolicy.EnableVersionUpgrade` upgrades in place,
  * per type.
  */
-export const VERSION_UPGRADE_PROPERTIES: ReadonlyMap<string, string> = new Map([
+const VERSION_UPGRADE_PROPERTIES: ReadonlyMap<string, string> = new Map([
   ['AWS::Elasticsearch::Domain', 'ElasticsearchVersion'],
 ]);
 
@@ -14,7 +14,7 @@ export const VERSION_UPGRADE_PROPERTIES: ReadonlyMap<string, string> = new Map([
  * intrinsic (an `Fn::If`) reads as false: the diff then plans the replacement
  * and the stateful gate refuses it before any call, the safe side.
  */
-export function enablesVersionUpgrade(updatePolicy: unknown): boolean {
+function enablesVersionUpgrade(updatePolicy: unknown): boolean {
   if (typeof updatePolicy !== 'object' || updatePolicy === null) return false;
   const value = (updatePolicy as Record<string, unknown>)['EnableVersionUpgrade'];
   return value === true || value === 'true';
@@ -26,7 +26,8 @@ export function enablesVersionUpgrade(updatePolicy: unknown): boolean {
  * `ElasticsearchVersion` change. MEASURED against CloudFormation (us-east-1,
  * t3.small): without the policy, 7.9 -> 7.10 failed "CloudFormation cannot
  * update a stack when a custom-named resource requires replacing", so it
- * replaces; under the policy, CloudFormation upgrades the domain in place.
+ * replaces; under the policy, 7.9 -> 7.10 completed UPDATE_COMPLETE under the
+ * same physical id, the domain reading back 7.10 (an in-place upgrade).
  *
  * Runs on every diff, whatever `--update-policy` says: it only ever removes a
  * replacement.
