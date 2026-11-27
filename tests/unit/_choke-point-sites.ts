@@ -1,4 +1,5 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join, relative } from 'node:path';
 import { parseSync } from 'vite-plus';
 
@@ -147,6 +148,16 @@ function statementBlocks(
   return out;
 }
 
+/**
+ * A callback argument is keyed by a short digest of its text rather than the
+ * text itself: the key stays readable, and an edit to the body still changes
+ * it, so the entry is classified again.
+ */
+function callbackOrText(normalized: string, arg: Node): string {
+  if (arg.type !== 'ArrowFunctionExpression' && arg.type !== 'FunctionExpression') return normalized;
+  return `<callback:${createHash('sha256').update(normalized).digest('hex').slice(0, 10)}>`;
+}
+
 /** Parse `text`, refusing a file the parser cannot read (a scan of half a file proves nothing). */
 export function parseOrThrow(file: string, text: string): Node {
   const parsed = parseSync(file, text);
@@ -207,12 +218,8 @@ export function sitesIn(
         args === undefined
           ? '<ref>'
           : arg === undefined
-            ? '<none>'
-            : // A callback is keyed by its kind: its body is the writer's
-              // logic, and an edit to it is no new site.
-              arg.type === 'ArrowFunctionExpression' || arg.type === 'FunctionExpression'
-              ? '<callback>'
-              : text.slice(arg.start, arg.end).replace(/\s+/g, ' ');
+            ? '<ref>'
+            : callbackOrText(text.slice(arg.start, arg.end).replace(/\s+/g, ' '), arg);
       const name = here?.name ?? '<module>';
       const rel = relative(ROOT, file).split('\\').join('/');
       out.push({

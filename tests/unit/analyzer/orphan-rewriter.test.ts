@@ -658,17 +658,10 @@ describe('rewriteResourceReferences', () => {
     expect(result.unresolvable).toHaveLength(1);
     const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
     expect(warned).not.toContain('falling back to cached value');
-    if (why === 'a value with a credential-named field') {
-      // No provenance names this record secret, so the live read runs and the
-      // `--force` cache refusal decides.
-      expect(result.unresolvable[0]!.reason).toContain(`holds ${why}`);
-      expect(warned).toContain(why);
-    } else {
-      // go-to-k/cdkd#7061: the record's provenance refuses the attribute
-      // before the live read, so the cache fallback is never reached.
-      expect(result.unresolvable[0]!.reason).toContain('so cdkd does not write it');
-      expect(getAttribute).not.toHaveBeenCalled();
-    }
+    // go-to-k/cdkd#7061: the record's provenance refuses each of these
+    // before the live read, so the cache fallback is never reached.
+    expect(result.unresolvable[0]!.reason).toContain('so cdkd does not write it');
+    expect(getAttribute).not.toHaveBeenCalled();
     // Neither the warning nor the reason carries the cached value itself.
     if (typeof cached === 'string' && cached !== SECRET_MASK) {
       expect(warned).not.toContain(cached);
@@ -1541,11 +1534,13 @@ describe('a recorded attribute replaces a live answer (#4186)', () => {
   });
 
   it('reads live past a pre-#1681 placeholder ARN, and serves a real recorded ARN', async () => {
-    const PLACEHOLDER = 'arn:aws:appsync:*:*:apis/abc/apikeys/k';
-    const REAL = 'arn:aws:appsync:us-east-1:123456789012:apis/abc/apikeys/k';
+    // A data source, not an API key: an API key's every attribute embeds the
+    // key, so it is refused outright (go-to-k/cdkd#7061).
+    const PLACEHOLDER = 'arn:aws:appsync:*:*:apis/abc/datasources/d';
+    const REAL = 'arn:aws:appsync:us-east-1:123456789012:apis/abc/datasources/d';
     const getAttribute = vi.fn(async () => REAL);
     const stale = await rewriteResourceReferences(
-      repoState({ Arn: PLACEHOLDER }, 'Arn', 'AWS::AppSync::ApiKey'),
+      repoState({ DataSourceArn: PLACEHOLDER }, 'DataSourceArn', 'AWS::AppSync::DataSource'),
       ['Repo'],
       fakeRegistry(getAttribute)
     );
@@ -1553,9 +1548,9 @@ describe('a recorded attribute replaces a live answer (#4186)', () => {
     expect(getAttribute).toHaveBeenCalledTimes(1);
 
     getAttribute.mockClear();
-    const recorded = 'arn:aws:appsync:us-east-1:123456789012:apis/abc/apikeys/recorded';
+    const recorded = 'arn:aws:appsync:us-east-1:123456789012:apis/abc/datasources/recorded';
     const fresh = await rewriteResourceReferences(
-      repoState({ Arn: recorded }, 'Arn', 'AWS::AppSync::ApiKey'),
+      repoState({ DataSourceArn: recorded }, 'DataSourceArn', 'AWS::AppSync::DataSource'),
       ['Repo'],
       fakeRegistry(getAttribute)
     );
@@ -1790,23 +1785,24 @@ describe('a recorded attribute replaces a live answer (#4186)', () => {
     );
     expect(JSON.stringify(result.rewrites)).not.toContain(KEY);
     expect(JSON.stringify(result.state.resources['Other'])).not.toContain(KEY);
-    // CONTROL: with a live answer, the same record's Arn is served. (The
-    // real AppSync provider answers nothing, so this isolates the table.)
+    // go-to-k/cdkd#7061: the same record's Arn embeds the key too, so it is
+    // refused as well, recorded or live.
     const arn = await rewriteResourceReferences(
       repoState({ ApiKey: KEY, Arn: 'arn:aws:appsync:us-east-1:1:apis/a/apikey/k' }, 'Arn', 'AWS::AppSync::ApiKey'),
       ['Repo'],
       fakeRegistry(vi.fn(async () => 'live-arn'))
     );
-    expect((arn.state.resources['Other']?.properties as { Array: unknown }).Array).toBe(
-      'arn:aws:appsync:us-east-1:1:apis/a/apikey/k'
-    );
+    expect(JSON.stringify(arn.state.resources['Other'])).not.toContain('apikey/k');
+    expect(JSON.stringify(arn.state.resources['Other'])).not.toContain('live-arn');
   });
 
   for (const [label, value] of [
     ['a top-level Password leaf', { Host: 'h', Password: 'pw-plaintext-1' }],
     ['a nested credential leaf', { Conn: [{ Credentials: 'pw-plaintext-1' }] }],
   ] as const) {
-    it(`does not serve an innocently named object holding ${label}; reads live instead`, async () => {
+    // go-to-k/cdkd#7061: the live answer is the same object, credential
+    // included, so it is not read either.
+    it(`does not serve an innocently named object holding ${label}, nor read it live`, async () => {
       const getAttribute = vi.fn(async () => 'live-value');
       const result = await rewriteResourceReferences(
         repoState({ Endpoint: value }, 'Endpoint', 'AWS::RDS::DBCluster'),
@@ -1814,9 +1810,8 @@ describe('a recorded attribute replaces a live answer (#4186)', () => {
         fakeRegistry(getAttribute)
       );
       expect(JSON.stringify(result.rewrites)).not.toContain('pw-plaintext-1');
-      expect((result.state.resources['Other']?.properties as { Array: unknown }).Array).toBe(
-        'live-value'
-      );
+      expect(getAttribute).not.toHaveBeenCalled();
+      expect(JSON.stringify(result.state.resources['Other'])).not.toContain('live-value');
     });
   }
 

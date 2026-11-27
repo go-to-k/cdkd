@@ -34,7 +34,14 @@
  * - `definition`: the backend's own delegation to its module function.
  *
  * BOUNDS. The fence proves the population is classified and that each named
- * redactor call exists; it does not follow the written value back to that call.
+ * redactor call exists. It does not follow the written value back to that
+ * call, nor check that the call's RESULT is used (a guard whose verdict is
+ * ignored passes here; the behavioural tests beside each guard catch that).
+ * It keys on the WRITER, so a new upstream PRODUCER that decides secrecy from
+ * a value's text and feeds an already-classified writer is outside it: the
+ * reader-side helper of #7061 is that class's fence. `callsIn` matches a
+ * function by name within its file. Also outside: S3 copies of an object
+ * already at rest (`state-migrate`'s `CopyObjectCommand`).
  * `observedProperties` has that dataflow critic
  * (`scripts/check-observed-properties-redaction.ts`); the engine's save sites
  * have the output-provenance fence (`fresh-read-save-output-provenance-7110`).
@@ -63,6 +70,9 @@ const TARGETS: ReadonlyMap<string, number> = new Map([
   // The exports index holds each export's VALUE.
   ['updateForStack', 2],
   ['patchEntry', 1],
+  ['writeIndex', 0],
+  ['removeStack', 0],
+  ['removeStackIfPresent', 0],
 ]);
 
 /** The calls a `scrubbed` writer's `via` may name. */
@@ -75,6 +85,8 @@ const GUARDS = new Set([
   // `cdkd orphan` resolves no secret, so it has no needles to scrub with: it
   // refuses a secret-derived live attribute by provenance instead.
   'secretDerivedLiveAttribute',
+  // ...and its `Ref` arm refuses a physical id carrying a credential.
+  'secretPhysicalIdSegment',
 ]);
 
 type Site = { count: number } & (
@@ -96,7 +108,9 @@ const IMPORT_VIA = [
   { at: 'src/cli/commands/import/observed-capture.ts#captureObservedForImportedResources', calls: 'redactForState' },
 ];
 const ORPHAN_VIA = [
+  // Every `Fn::GetAtt` answer, recorded, live or `--force`'s cache, passes it first.
   { at: 'src/analyzer/orphan-rewriter/attribute-fetcher.ts#getAtt', calls: 'secretDerivedLiveAttribute' },
+  { at: 'src/analyzer/orphan-rewriter/attribute-fetcher.ts#ref', calls: 'secretPhysicalIdSegment' },
 ];
 const JOURNAL_EDIT = 'removes or marks operations of segments that appendRollbackJournalSegment already wrote redacted';
 const CC_SETTLE = 'rewrites an operation already journaled: drops its pending request, sets the recovered physical id and provider';
@@ -120,8 +134,8 @@ const SITES: Record<string, Site> = {
     via: [{ at: `${ENGINE}/rollback/adopt-orphans.ts#redactOperationsForJournal`, calls: 'scrubResourceRecord' }],
     count: 1,
   },
-  [`${ENGINE}/rollback/settle.ts#orphanUntakenResumes#<callback>`]: { kind: 'carry', why: CC_SETTLE, count: 1 },
-  ['src/deployment/cc-pending-requests.ts#settlePending#<callback>']: { kind: 'carry', why: CC_SETTLE, count: 1 },
+  [`${ENGINE}/rollback/settle.ts#orphanUntakenResumes#<callback:de85a816ee>`]: { kind: 'carry', why: CC_SETTLE, count: 1 },
+  ['src/deployment/cc-pending-requests.ts#settlePending#<callback:b57dbcdd81>']: { kind: 'carry', why: CC_SETTLE, count: 1 },
 
   // `cdkd scrub`: the whole point of the command; the save helper is handed
   // states its rewrite pass rebuilt.
@@ -269,6 +283,26 @@ const SITES: Record<string, Site> = {
   ['src/deployment/intrinsic-resolver/cross-stack/import-value.ts#resolveImportValue#{ value, producerStack: refStack, producerRegion: lookupRegion, }']:
     { kind: 'carry', why: "indexes the value the scan read from the producer's state record", count: 1 },
 
+  // The exports index store's own writes: entries rebuilt from, or removed
+  // from, the producers' state at rest.
+  ['src/state/export-index-store.ts#rebuild#next']: {
+    kind: 'carry',
+    why: "rebuilds every entry from the producers' state records at rest",
+    count: 1,
+  },
+  ['src/state/export-index-store.ts#persist#file']: {
+    kind: 'carry',
+    why: 'writes the entries updateForStack / patchEntry / removeStack produced (each classified at its caller)',
+    count: 1,
+  },
+  ['src/cli/region-options.ts#removeFromOther#stackName']: { kind: 'carry', why: "removes a stack's entries", count: 1 },
+  ['src/cli/region-options.ts#get#stackName']: { kind: 'carry', why: "removes a stack's entries", count: 1 },
+  ['src/cli/commands/destroy-runner/under-lock.ts#destroyStackUnderLock#stackName']: {
+    kind: 'carry',
+    why: "removes a destroyed stack's entries",
+    count: 2,
+  },
+
   // The backend's methods delegate to the module functions above.
   ['src/state/s3-state-backend.ts#saveState#<ref>']: { kind: 'definition', count: 1 },
   ['src/state/s3-state-backend.ts#putRawObject#<ref>']: { kind: 'definition', count: 1 },
@@ -311,7 +345,7 @@ function violations(extra: Record<string, string> = {}): string[] {
       const saved = key.split('#').slice(2).join('#');
       const ok =
         site.by === undefined
-          ? /^(?:\w+\.)?(?:withParentInfo|redactStateForPersist)\(/.test(saved)
+          ? /^engine\.(?:withParentInfo|redactStateForPersist)\(/.test(saved)
           : // The exports index is fed the outputs bag only: its value is
             // built from the outputs redactor's result.
             new RegExp(`\\boutputs: ${site.by}\\(`).test(saved);
@@ -331,7 +365,7 @@ describe('every state writer goes through the redaction choke point (go-to-k/cdk
   it('every writer is classified, and each redacted or scrubbed one reaches its redactor', () => {
     const { sites } = scan();
     // A floor the scan does not read: too few sites means a broken scan.
-    expect(sites.length).toBeGreaterThanOrEqual(48);
+    expect(sites.length).toBeGreaterThanOrEqual(55);
     expect(violations()).toEqual([]);
   });
 
@@ -394,12 +428,34 @@ describe('every state writer goes through the redaction choke point (go-to-k/cdk
 
   it("probe: the orphan fetcher's provenance refusal removed fails", () => {
     const rel = 'src/analyzer/orphan-rewriter/attribute-fetcher.ts';
-    const text = real(rel).replace(': secretDerivedLiveAttribute(orphan, attribute);', ': undefined;');
+    const text = real(rel).replace(
+      'const secretDerived = secretDerivedLiveAttribute(orphan, attribute);',
+      'const secretDerived = undefined as string | undefined;'
+    );
     expect(text).not.toBe(real(rel));
     expect(violations({ [rel]: text })).toEqual([
       `src/cli/commands/orphan.ts#orphanCommand#rewriteResult.state: ${rel}#getAtt does not call secretDerivedLiveAttribute`,
       `src/cli/commands/state/orphan.ts#stateOrphanResources#rewriteResult.state: ${rel}#getAtt does not call secretDerivedLiveAttribute`,
     ]);
+  });
+
+  it("probe: the orphan fetcher's Ref refusal removed fails", () => {
+    const rel = 'src/analyzer/orphan-rewriter/attribute-fetcher.ts';
+    const text = real(rel).replace('if (secretPhysicalIdSegment(o.resourceType, o.physicalId) !== undefined) {', 'if (false) {');
+    expect(text).not.toBe(real(rel));
+    expect(violations({ [rel]: text })).toEqual([
+      `src/cli/commands/orphan.ts#orphanCommand#rewriteResult.state: ${rel}#ref does not call secretPhysicalIdSegment`,
+      `src/cli/commands/state/orphan.ts#stateOrphanResources#rewriteResult.state: ${rel}#ref does not call secretPhysicalIdSegment`,
+    ]);
+  });
+
+  it('probe: an edit to a classified callback body is classified again', () => {
+    const rel = 'src/deployment/cc-pending-requests.ts';
+    const text = real(rel).replace("provisionedBy: 'cc-api',", "provisionedBy: 'cc-api', properties: {},");
+    expect(text).not.toBe(real(rel));
+    const problems = violations({ [rel]: text });
+    expect(problems.some((p) => p.startsWith(`unclassified writer: ${rel}#settlePending#<callback:`))).toBe(true);
+    expect(problems.some((p) => p.startsWith(`classified writer gone: ${rel}#settlePending#<callback:`))).toBe(true);
   });
 
   it('probe: a raw put of a new store fails until classified', () => {

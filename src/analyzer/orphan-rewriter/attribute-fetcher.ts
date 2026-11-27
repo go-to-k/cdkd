@@ -15,6 +15,7 @@ import { injectiveKey } from '../../state/record-keys.js';
 import { isReadableBag } from '../../types/state.js';
 import type { OrphanRewriteOptions } from './types.js';
 import { isUnexposedRecordedIdentity } from '../../deployment/unexposed-identity-attribute.js';
+import { secretPhysicalIdSegment } from '../../provisioning/secret-physical-id.js';
 import {
   UNREADABLE_ORPHAN_RECORD_REASON,
   isResolvableOrphanRecord,
@@ -22,6 +23,11 @@ import {
   servableRecordedAttribute,
   unsplicableCachedAttribute,
 } from './recorded-attributes.js';
+
+/** What a user can do about a reference refused as secret-derived (go-to-k/cdkd#7061). */
+const SECRET_DERIVED_REMEDY =
+  'Remove the reference from the referring resource in the template (or pass the value in another ' +
+  'way, such as a parameter) and deploy, then orphan again; --force leaves the reference in place.';
 
 /**
  * Attribute resolver for one orphan resource: the RECORDED value when the
@@ -119,6 +125,17 @@ export class AttributeFetcher {
           'Ref returns, and the physical id is NOT that value',
       };
     }
+    // go-to-k/cdkd#7061: a physical id carrying a bearer credential (an AppSync
+    // API key) is masked by its own record, which `cdkd orphan` drops; the
+    // copy in the referring resource would have no needle left.
+    if (secretPhysicalIdSegment(o.resourceType, o.physicalId) !== undefined) {
+      return {
+        ok: false,
+        reason:
+          `the Ref value of ${displayIdent(orphanLogicalId)} carries a credential, so cdkd does ` +
+          `not write it into the referring resource's state. ${SECRET_DERIVED_REMEDY}`,
+      };
+    }
     let maskedKey: string | undefined;
     const value = cfnRefValueFromPhysicalId(
       o.resourceType,
@@ -213,18 +230,18 @@ export class AttributeFetcher {
     // name rule can recognise) or a live read that fails keeps its pre-#4186
     // outcome: unresolvable without `--force`.
     const recorded = servableRecordedAttribute(orphan, attribute);
-    // go-to-k/cdkd#7061: no redaction pass runs on this path, so a live answer
-    // the record's provenance calls secret-derived is never spliced, nor read:
-    // refused with or without `--force`, before the provider is looked up.
-    const secretDerived = recorded.served
-      ? undefined
-      : secretDerivedLiveAttribute(orphan, attribute);
+    // go-to-k/cdkd#7061: no redaction pass runs on this path, so an answer the
+    // record's provenance calls secret-derived is never spliced, recorded or
+    // live: refused with or without `--force`, before the provider is looked
+    // up, and so before the cache fallback too.
+    const secretDerived = secretDerivedLiveAttribute(orphan, attribute);
     if (secretDerived !== undefined) {
       return {
         ok: false,
         reason:
-          `the live value of ${displayIdent(orphanLogicalId)}.${displayIdent(attribute)} is ` +
-          `${secretDerived}, so cdkd does not write it into the referring resource's state`,
+          `the value of ${displayIdent(orphanLogicalId)}.${displayIdent(attribute)} is ` +
+          `${secretDerived}, so cdkd does not write it into the referring resource's state. ` +
+          SECRET_DERIVED_REMEDY,
       };
     }
 

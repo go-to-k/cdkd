@@ -27,8 +27,12 @@ const record = (over: Partial<ResourceState>): ResourceState => ({
   ...over,
 });
 
-const fetcherWith = (orphan: ResourceState, force: boolean) => {
-  const getAttribute = vi.fn(async () => PLAINTEXT);
+const fetcherWith = (orphan: ResourceState, force: boolean, liveAnswers = true) => {
+  // A live read that fails sends `--force` to the cache fallback.
+  const getAttribute = vi.fn(async () => {
+    if (!liveAnswers) throw new Error('throttled');
+    return PLAINTEXT;
+  });
   const registry = {
     getProviderFor: () => ({ provider: { getAttribute } }),
   } as unknown as ProviderRegistry;
@@ -52,12 +56,41 @@ describe('cdkd orphan: a secret-derived live attribute is never spliced (#7061)'
     ['a credential-named attribute', {}, 'SecretAccessKey'],
     ['a custom resource attribute', { resourceType: 'Custom::Thing' }, 'Arn'],
     ['a secret-valued attribute', { resourceType: 'AWS::AppSync::ApiKey' }, 'ApiKey'],
+    // Review of the first round: each arm the predicate has, pinned.
+    [
+      'a served nested output named secret-derived',
+      { resourceType: 'AWS::CloudFormation::Stack', attributes: { 'Outputs.K': 'hunter2-key' }, secretNamedAttributes: ['Outputs.K'] },
+      'Outputs.K',
+    ],
+    ['recorded with a credential-named leaf', { attributes: { Conn: { Password: 'hunter2-pw' } } }, 'Conn'],
+    [
+      "an impossible recorded '' on a secret-carrying record",
+      { resourceType: 'AWS::EC2::SecurityGroup', attributes: { VpcId: '' }, properties: { GroupName: '***' } },
+      'VpcId',
+    ],
+    ['unrecorded, NoEcho names another attribute', { noEchoAttributeNames: ['Other'] }, 'Arn'],
+    ['unrecorded, a secret-derived name in another attribute', { secretNamedAttributes: ['Other'] }, 'Arn'],
+    ['unrecorded, the attributes bag masks another attribute', { attributes: { Other: '***' } }, 'Arn'],
+    [
+      'a dotted member of a NoEcho-declared attribute',
+      { attributes: { Endpoint: { Address: 'hunter2.example' } }, noEchoAttributeNames: ['Endpoint'] },
+      'Endpoint.Address',
+    ],
+    [
+      "an attribute of a resource whose id is a credential",
+      { resourceType: 'AWS::AppSync::ApiKey', physicalId: 'apiid|da2-hunter2key', attributes: { Arn: 'arn:aws:appsync:us-east-1:1:apis/apiid/apikeys/da2-hunter2key' } },
+      'Arn',
+    ],
   ];
 
-  it.each(refused.flatMap(([what, over, attr]) => [false, true].map((force) => [what, over, attr, force] as const)))(
-    '%s (%s.%s, force=%s): refused before the live read',
-    async (_what, over, attribute, force) => {
-      const { fetcher, getAttribute } = fetcherWith(record(over), force);
+  it.each(
+    refused.flatMap(([what, over, attr]) =>
+      [false, true].flatMap((force) => [true, false].map((liveAnswers) => [what, over, attr, force, liveAnswers] as const))
+    )
+  )(
+    '%s (%s.%s, force=%s, live answers=%s): refused before the live read',
+    async (_what, over, attribute, force, liveAnswers) => {
+      const { fetcher, getAttribute } = fetcherWith(record(over), force, liveAnswers);
       const result = await fetcher.getAtt('X', attribute);
       expect(result.ok).toBe(false);
       expect(JSON.stringify(result)).not.toContain('hunter2');
@@ -72,6 +105,32 @@ describe('cdkd orphan: a secret-derived live attribute is never spliced (#7061)'
     );
     await expect(fetcher.getAtt('X', 'Arn')).resolves.toEqual({ ok: true, value: PLAINTEXT });
     expect(getAttribute).toHaveBeenCalledOnce();
+  });
+
+  it('a secret-carrying record still reads an always-live attribute it records plainly', async () => {
+    const { fetcher, getAttribute } = fetcherWith(
+      record({ resourceType: 'AWS::EC2::VPC', properties: { Tag: '***' }, attributes: { Ipv6CidrBlocks: ['2001:db8::/56'] } }),
+      false
+    );
+    await expect(fetcher.getAtt('X', 'Ipv6CidrBlocks')).resolves.toEqual({ ok: true, value: PLAINTEXT });
+    expect(getAttribute).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ['an AppSync API key', 'AWS::AppSync::ApiKey', 'apiid|da2-hunter2key'],
+    ["a wait condition handle's pre-signed URL", 'AWS::CloudFormation::WaitConditionHandle', 'https://h.example/x?X-Amz-Signature=hunter2'],
+  ])('Ref of %s is refused', (_what, resourceType, physicalId) => {
+    const { fetcher } = fetcherWith(record({ resourceType, physicalId }), true);
+    const result = fetcher.ref('X');
+    expect(result.ok).toBe(false);
+    expect(JSON.stringify(result)).not.toContain('hunter2');
+  });
+
+  it('the refusal names what the user can do', async () => {
+    const { fetcher } = fetcherWith(record({ attributes: { Arn: '***' } }), false);
+    const result = await fetcher.getAtt('X', 'Arn');
+    expect(result).toMatchObject({ ok: false });
+    expect((result as { reason: string }).reason).toContain('Remove the reference from the referring resource');
   });
 
   it('a served recorded value is unchanged, even on a secret-carrying record', async () => {
