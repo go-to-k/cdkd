@@ -260,6 +260,13 @@ describe('resolver log operands with a sub-floor provenance print as *** (#7077)
     expect(debugLines().filter((line) => line.includes('s3cret'))).toEqual([]);
   });
 
+  it('the bound-bag answer outside any binding is one array (the memo key compares it by identity)', async () => {
+    const { boundPrintingBags } = await import('../../../src/deployment/resource-secrets-scope.js');
+    // A fresh `[]` per call missed the per-context memo on every intrinsic
+    // call of an ordinary run (13x on a 300-parameter template, review round 2).
+    expect(boundPrintingBags()).toBe(boundPrintingBags());
+  });
+
   it('a value with no provenance still prints (the scan above can see it)', async () => {
     state.pin = 'Q7';
     const control: Route = { value: (pin) => pin, context: () => ({ recordedSecretValues: new Map() }) };

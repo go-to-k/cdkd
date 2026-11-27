@@ -108,8 +108,11 @@ export function withPrintingSecrets<T>(secrets: RecordedSecretValues, fn: () => 
  * enumerate or log the keys: they are secret plaintext.
  */
 export function boundPrintingBags(): readonly RecordedSecretValues[] {
-  return boundSecretBagsStore.getStore() ?? [];
+  return boundSecretBagsStore.getStore() ?? NO_BOUND_BAGS;
 }
+
+/** One shared empty answer, so a caller can compare answers by identity (a memo key). */
+const NO_BOUND_BAGS: readonly RecordedSecretValues[] = Object.freeze([]);
 
 /**
  * The bag {@link withCurrentResourceSecrets} bound for the provider call

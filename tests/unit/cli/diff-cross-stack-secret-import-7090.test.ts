@@ -350,6 +350,8 @@ describe('cdkd diff: a consumer reading a secret-fed producer output (#7090)', (
             // line reading it by provenance (go-to-k/cdkd#7077).
             const resolved = consLog.join('\n');
             expect(resolved.includes(secret), resolved).toBe(false);
+            // Present, so the scan above cannot pass on silence.
+            expect(consLog.some((line) => line.includes('[IntrinsicFunctionResolver]')), resolved).toBe(true);
             // Display only: a consumer already holding the value plans nothing.
             if (consumerHolds) {
               for (const id of ['Reader', 'Echo', 'Pol']) {
