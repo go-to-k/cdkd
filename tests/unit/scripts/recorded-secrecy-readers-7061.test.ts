@@ -148,6 +148,7 @@ const GROUPS: Readonly<Record<string, readonly string[]>> = {
     'src/deployment/force-quit-journal.ts',
     'src/deployment/journaled-holder.ts',
     'src/deployment/nested-child-journal.ts',
+    'src/deployment/cc-pending-requests.ts',
   ],
 };
 
@@ -604,7 +605,7 @@ function violations(extra: Record<string, string> = {}): string[] {
 describe('readers ask recorded-secrecy, never test a marker by hand (go-to-k/cdkd#7061)', () => {
   it('no migrated group holds a hand test', () => {
     // A floor the scan does not read: a group that lost its files proves nothing.
-    expect(groupFiles().length).toBeGreaterThanOrEqual(165);
+    expect(groupFiles().length).toBeGreaterThanOrEqual(166);
     expect(violations()).toEqual([]);
   });
 

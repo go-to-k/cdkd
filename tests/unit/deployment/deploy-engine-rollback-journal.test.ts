@@ -1292,6 +1292,10 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     it('a journaled bag holding the mask is never resumed, even where the CREATE would send the same text (#7061)', async () => {
       // The mask stands for a secret the earlier CREATE sent; the bag cannot say
       // which, so it is compared with nothing and the made resource is orphaned.
+      // Two guards answer this: the resume callback's own mask test
+      // (journal-at-start) and, before it, the identifier-uniqueness proof's
+      // refusal of a secret-bearing bag (cc-pending-requests). This pins the
+      // outcome; neither guard alone is discriminated here.
       const { engine, provider } = resumingEngine({ p: '***' });
       const changes = new Map([
         ['B', { ...makeChange('B'), desiredProperties: { p: '***' } } as ResourceChange],
