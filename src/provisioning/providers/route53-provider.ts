@@ -75,6 +75,7 @@ import {
   readHostedZone,
   readRecordSet,
   readRecordSetAt,
+  canonicalizeDriftProperties,
 } from './route53/read-state.js';
 import {
   importImpl,
@@ -553,6 +554,14 @@ export class Route53Provider implements ResourceProvider {
 
   getDriftUnorderedPaths(resourceType: string): string[] {
     return getDriftUnorderedPaths.call(this, resourceType);
+  }
+
+  /** go-to-k/cdkd#7129: a record's integer members (`TTL: "300"`) as numbers. */
+  canonicalizeDriftProperties(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Record<string, unknown> {
+    return canonicalizeDriftProperties.call(this, resourceType, properties);
   }
 
   readHostedZone(

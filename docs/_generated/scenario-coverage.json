@@ -313,6 +313,10 @@
       "description": "deploy-engine ROLLBACK path on a RICH multi-resource stack (VPC+SG+IAM Role+Lambda-in-VPC+SSM Parameter): a self-contained env-gated (`ROLLBACK_INTEG_FAIL`) failing SQS Queue (out-of-range messageRetentionPeriod) wired to depend on the fast siblings forces a deploy failure AFTER siblings complete; verify.sh asserts the completed siblings are rolled back (no orphan VPC/SG/ENI/Role/Lambda/SSM, state empty) and the #808 events captured RESOURCE_FAILED + ROLLBACK_* + RUN_FINISHED=FAILED."
     },
     {
+      "tag": "rollback-recreate-drift-baseline",
+      "description": "A rollback that RE-CREATES a resource records the re-created copy's drift baseline (issue #7129). A Route 53 CNAME renamed in a failing deploy is replaced delete-first inside the provider's update, so both the automatic rollback and `cdkd rollback` (from a --no-rollback journal) re-create the old record from its recorded properties, whose `TTL` CDK spells as the string \"300\". verify.sh asserts the reverse replacement ran (the premise), the live zone holds the old name only, the re-created record's `observedProperties.TTL` is the number 300, and `cdkd drift` is clean after each rollback."
+    },
+    {
       "tag": "rollback-replacement-updatereplacepolicy-retain",
       "description": "Replacement rollback under `UpdateReplacePolicy: Retain` keeps the replacement's NEW physical copy (issue #2598). A live CloudFormation A/B (us-east-1, 2026-09-05) settled which attribute governs that delete: `UpdateReplacePolicy` does (DELETE_SKIPPED, new copy orphaned OUT of the stack) and `DeletionPolicy` does not (DELETE_COMPLETE) — so the fixture carries THREE `AWS::SSM::Parameter` subjects, one per row: RetainParam (UpdateReplacePolicy Retain, no DeletionPolicy — new copy must SURVIVE), ControlParam (no policies — new copy must be DELETED), DeletionPolicyParam (DeletionPolicy Retain only — new copy must be DELETED too, the row that refutes 'DeletionPolicy governs it'). All three rename their create-only `Name` in one deploy whose failing SQS queue DependsOn all of them, so every replacement COMPLETES and the rollback classifies each as a replacement; `--force-stateful-recreation` is required because AWS::SSM::Parameter is in STATEFUL_TYPES (the Retain arm is exempt from that guard and unaffected by the flag). verify.sh asserts the deploy engine ORPHANED the old retain copy, the rollback took reverse-replacement-readopt, the new retain copy is ALIVE in SSM while both control copies are GONE, and state names every OLD copy and the survivor NOWHERE. The load-bearing assertion is on the DURABLE channel rather than the log: a rollback runs during an already-failing deploy, usually non-TTY with the log discarded, so `cdkd events --run <failed> --format json` must show the retained subject's ROLLBACK_RESOURCE_SUCCEEDED carrying the survivor's `physicalId`, a `reason` naming both ids, and `provisionedBy` — while BOTH control rows carry neither field (an unconditional physicalId would point a cleanup pass at the resource the rollback just deleted). The warn grep is kept as the interactive-user channel, with a sentinel so a reworded message fails loudly instead of going blind. Finally, `cdkd destroy` must remove the tracked copies while leaving the untracked survivor standing — which the fixture then deletes itself, since Retain means cdkd will not clean up after it. Distinct from `rollback-replay-effective-properties`, which reaches the same reverse-replacement branch but only ever in its DELETE polarity: no other rollback fixture declares UpdateReplacePolicy: Retain on a replaced resource."
     },
@@ -2945,6 +2949,7 @@
       "name": "rollback-observed-baseline-refresh",
       "annotated": true,
       "scenarios": [
+        "rollback-recreate-drift-baseline",
         "rollback-restore-drift-baseline"
       ]
     },
@@ -4188,6 +4193,13 @@
       "fixtures": [
         "generated-name-lifecycle",
         "rollback-failure-injection"
+      ]
+    },
+    {
+      "scenario": "rollback-recreate-drift-baseline",
+      "description": "A rollback that RE-CREATES a resource records the re-created copy's drift baseline (issue #7129). A Route 53 CNAME renamed in a failing deploy is replaced delete-first inside the provider's update, so both the automatic rollback and `cdkd rollback` (from a --no-rollback journal) re-create the old record from its recorded properties, whose `TTL` CDK spells as the string \"300\". verify.sh asserts the reverse replacement ran (the premise), the live zone holds the old name only, the re-created record's `observedProperties.TTL` is the number 300, and `cdkd drift` is clean after each rollback.",
+      "fixtures": [
+        "rollback-observed-baseline-refresh"
       ]
     },
     {

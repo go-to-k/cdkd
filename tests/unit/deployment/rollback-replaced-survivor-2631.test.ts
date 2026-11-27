@@ -565,7 +565,9 @@ describe('reverse replacement of an old resource that may survive (#2631)', () =
     const s = state();
     const result = await replayRollback([op()], s, 'S', ctx);
 
-    expect(read).toHaveBeenCalledTimes(1);
+    // The existence read of the old id, then the re-created copy's drift
+    // baseline (go-to-k/cdkd#7129).
+    expect(read.mock.calls.map((c) => c[0])).toEqual(['topic-old', 'topic-old-2']);
     expect(provider.create).toHaveBeenCalledTimes(1);
     expect(s['Topic']!.physicalId).toBe('topic-old-2');
     expect(live.has('topic-new')).toBe(false);
@@ -594,7 +596,9 @@ describe('reverse replacement of an old resource that may survive (#2631)', () =
   it('sends no read for an op without the flag (an ordinary reverse replacement)', async () => {
     const s = state();
     await replayRollback([op({ oldResourceMaySurvive: undefined })], s, 'S', ctx);
-    expect(read).not.toHaveBeenCalled();
+    // No existence read of the old id; the only read is the re-created copy's
+    // drift baseline (go-to-k/cdkd#7129).
+    expect(read.mock.calls.map((c) => c[0])).toEqual(['topic-old-2']);
     expect(provider.create).toHaveBeenCalledTimes(1);
   });
 

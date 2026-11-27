@@ -728,6 +728,7 @@
         "rollback-cross-region-secret",
         "rollback-explicit-name-rewrite",
         "rollback-nested-cross-region-secret",
+        "rollback-observed-baseline-refresh",
         "rollback-replay-cc-generated-name",
         "rollback-replay-effective-props",
         "rollback-same-id-recreate",

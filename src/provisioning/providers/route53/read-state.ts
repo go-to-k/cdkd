@@ -118,6 +118,80 @@ export function getDriftUnorderedPaths(this: Route53Provider, resourceType: stri
   return resourceType === 'AWS::Route53::HostedZone' ? ['VPCs'] : [];
 }
 
+/**
+ * go-to-k/cdkd#7129: a Route 53 record's integer members as one spelling on
+ * both drift sides. CDK synthesizes a record's `TTL` as a STRING (`"300"`),
+ * and the create sends `Number(ttl)` (`buildResourceRecordSet`), while the
+ * readback (`readRecordSet`) answers the number AWS holds. On a baseline taken
+ * from the recorded `properties` (a record with no `observedProperties`: one a
+ * rollback re-created before #7129, an older record, a failed capture) the two
+ * read as `TTL: 300 -> 300` drift. `Weight` and `GeoProximityLocation.Bias`
+ * are integers the create converts the same way, so they fold too.
+ *
+ * Only a string that IS a decimal integer folds, to the number the create
+ * would have sent: two different values never compare equal. Anything else
+ * (a mask, an intrinsic, a non-numeric string) is left as it is.
+ */
+
+const DRIFT_RECORD_SET = 'AWS::Route53::RecordSet';
+const DRIFT_RECORD_SET_GROUP = 'AWS::Route53::RecordSetGroup';
+
+/**
+ * `"300"` / `"-5"` as the number the create sends; `undefined` otherwise.
+ * Only the plain digit form folds (CDK never emits `"+300"` or `" 300"`, which
+ * `Number()` would also accept): a narrower fold can leave drift reported,
+ * never hide one.
+ */
+function integerOf(value: unknown): number | undefined {
+  if (typeof value !== 'string' || !/^-?\d+$/.test(value)) return undefined;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** One record's bag with its integer members folded; the input when none applies. */
+function canonicalRecord(record: Record<string, unknown>): Record<string, unknown> {
+  let out: Record<string, unknown> | undefined;
+  for (const key of ['TTL', 'Weight'] as const) {
+    const parsed = integerOf(record[key]);
+    if (parsed === undefined) continue;
+    out ??= { ...record };
+    out[key] = parsed;
+  }
+  const geo = record['GeoProximityLocation'];
+  if (isPlainRecord(geo)) {
+    const bias = integerOf(geo['Bias']);
+    if (bias !== undefined) {
+      out ??= { ...record };
+      out['GeoProximityLocation'] = { ...geo, Bias: bias };
+    }
+  }
+  return out ?? record;
+}
+
+/** `ResourceProvider.canonicalizeDriftProperties` for the record types. */
+export function canonicalizeDriftProperties(
+  this: Route53Provider,
+  resourceType: string,
+  properties: Record<string, unknown>
+): Record<string, unknown> {
+  if (resourceType === DRIFT_RECORD_SET) return canonicalRecord(properties);
+  if (resourceType !== DRIFT_RECORD_SET_GROUP) return properties;
+  const records = properties['RecordSets'];
+  if (!Array.isArray(records)) return properties;
+  let changed = false;
+  const folded = records.map((record: unknown) => {
+    if (!isPlainRecord(record)) return record;
+    const canonical = canonicalRecord(record);
+    if (canonical !== record) changed = true;
+    return canonical;
+  });
+  return changed ? { ...properties, RecordSets: folded } : properties;
+}
+
 export async function readHostedZone(
   this: Route53Provider,
   physicalId: string,

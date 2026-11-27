@@ -12,6 +12,7 @@ import { displaySafe, safeMsg } from '../../../utils/display-safe.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { recordNoEchoAttributeValues } from '../../secret-redaction.js';
 import { redactRollbackRecord } from '../replay-secrets.js';
+import { withRefreshedObservedBaseline } from '../replay-observed-refresh.js';
 import {
   safe,
   throwIfDeleteSkipped,
@@ -72,6 +73,8 @@ export async function finishReverseReplacement(
     resolveNewDeleteRoute,
     newDeleteGuardScope,
     newCopyClaimed,
+    createProvider,
+    inOriginalPrefix,
   } = r;
   // Issue #1247 — rollback sibling of the deploy engine's #1238
   // NAMED_REPLACEMENT_IDEMPOTENT_CREATE guard: a name-idempotent Create
@@ -233,7 +236,11 @@ export async function finishReverseReplacement(
   // attributes below are the create's, so a custom resource answering
   // `NoEcho: true` (or a nested stack's masked outputs) would otherwise land
   // in the record in the clear.
-  recordNoEchoAttributeValues(createResult, secrets, resolvedPrevProps);
+  const createDeclaredNoEcho = recordNoEchoAttributeValues(
+    createResult,
+    secrets,
+    resolvedPrevProps
+  );
   // go-to-k/cdkd#5064 phase 2: the old resource comes back at its own name
   // generation, and the record remembers the one the deleted copy reached, so
   // the next replacement never asks for that name again.
@@ -264,6 +271,31 @@ export async function finishReverseReplacement(
   // go-to-k/cdkd#6824: a journal an older binary wrote may carry the send
   // attestation; the re-create resolved its own versions, so none is kept.
   stateResources[op.logicalId] = withoutVersionAttestation(stateResources[op.logicalId]!);
+  // go-to-k/cdkd#7129: the re-created resource's drift baseline, read back as
+  // the deploy captures one after a CREATE; without it drift compared the
+  // template's spelling (a Route 53 `TTL: "300"`) with AWS's. Not for a
+  // re-create that returned the LIVE new resource: a baseline read from it
+  // would hide the properties the rollback did not re-apply (#6731), nor when
+  // the create declared `NoEcho` attributes (the persist arm masks those).
+  if (!adoptedLiveNewResource && createDeclaredNoEcho === undefined) {
+    stateResources[op.logicalId] = await withRefreshedObservedBaseline(
+      stateResources[op.logicalId]!,
+      {
+        provider: createProvider,
+        op: { logicalId: op.logicalId, resourceType: oldType },
+        desiredProps: resolvedPrevProps,
+        restored: stateResources[op.logicalId]!,
+        stateResources,
+        secrets,
+        noEcho: { substituted: [] },
+        mask,
+        logger,
+        inScope: inOriginalPrefix,
+        capture: ctx.captureObservedState,
+        recreated: true,
+      }
+    );
+  }
   // go-to-k/cdkd#4225: the re-create put the old resource's inline
   // policies, as the deploy's replacement create does. A re-create that
   // returned the live NEW resource is not counted: its record may not

@@ -32,6 +32,13 @@ export interface ObservedBaselineRefresh {
   inScope: <T>(fn: () => Promise<T>) => Promise<T>;
   /** `RollbackExecutorContext.captureObservedState`; only `false` skips. */
   capture: boolean | undefined;
+  /**
+   * go-to-k/cdkd#7129: `record` describes a resource the replay just
+   * RE-CREATED (a reversed replacement), whose stale baseline was dropped on
+   * purpose. Its absent `observedProperties` then means "not captured yet",
+   * as after a deploy's CREATE, so a readback is taken for it too.
+   */
+  recreated?: true | undefined;
 }
 
 /**
@@ -43,8 +50,11 @@ export interface ObservedBaselineRefresh {
  * revert's write (an S3 lifecycle rule's generated `Id`) reports as drift.
  *
  * Runs only on the rollback replay's two in-place revert arms (`replay-revert.ts`
- * and `replay-failed.ts`), which both the automatic rollback and `cdkd rollback`
- * drive, never on a deploy: the ordinary deploy path issues no new call.
+ * and `replay-failed.ts`) and its two re-create arms (`recreated`,
+ * go-to-k/cdkd#7129: the reverse replacement's `finish.ts` and
+ * `replay-failed-replaced-deleted.ts`, as the deploy captures after a CREATE),
+ * which both the automatic rollback and `cdkd rollback` drive, never on a
+ * deploy: the ordinary deploy path issues no new call.
  *
  * REDACTION is the deploy's: `scrubResourceRecord` walks the readback under a
  * same-generation claim (it was taken right after this replay wrote the
@@ -65,7 +75,8 @@ export interface ObservedBaselineRefresh {
  * OVERLOADED (also a refused import baseline, which a deploy-start refresh
  * must not refill). Those cases:
  *
- * - no baseline to refresh, or a refused one (`observedBaselineRefused`);
+ * - no baseline to refresh (unless `recreated`), or a refused one
+ *   (`observedBaselineRefused`), which a re-create keeps refused too;
  * - a provider without `readCurrentState`, or an unaddressable physical id;
  * - any `NoEcho` marking on the restored record (`noEchoLeaves`,
  *   `noEchoAttributeNames`, a value the revert substituted) or any `***` in
@@ -82,9 +93,8 @@ export async function withRefreshedObservedBaseline(
 ): Promise<ResourceState> {
   const { provider, restored } = refresh;
   if (refresh.capture === false) return record;
-  if (record.observedProperties === undefined || record.observedBaselineRefused === true) {
-    return record;
-  }
+  if (record.observedBaselineRefused === true) return record;
+  if (record.observedProperties === undefined && refresh.recreated !== true) return record;
   if (!provider.readCurrentState || !hasAddressablePhysicalId(record)) return record;
   const noEchoFields = restored as { noEchoLeaves?: unknown; noEchoAttributeNames?: unknown };
   if (
@@ -123,7 +133,7 @@ export async function withRefreshedObservedBaseline(
     );
   } catch (err) {
     refresh.logger.debug(
-      safeMsg`Rollback: observedProperties refresh for ${refresh.mask(refresh.op.logicalId)} (${refresh.mask(refresh.op.resourceType)}) failed: ${asIsMessage(refresh.mask(describeAwsFailure(err).detail))}; the restored record keeps its previous drift baseline.`
+      safeMsg`Rollback: observedProperties refresh for ${refresh.mask(refresh.op.logicalId)} (${refresh.mask(refresh.op.resourceType)}) failed: ${asIsMessage(refresh.mask(describeAwsFailure(err).detail))}; ${refresh.recreated === true ? 'the re-created record has no drift baseline until a deploy captures one' : 'the restored record keeps its previous drift baseline'}.`
     );
     return record;
   }

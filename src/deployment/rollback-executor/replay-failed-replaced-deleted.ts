@@ -37,6 +37,7 @@ import { refuseMaskedReplayBaseline, resolveReplayProps } from './replay-props.j
 import { refuseMarkedNoEchoRecreate } from './replay-noecho.js';
 import { createWithRollbackRetry, recordedPropertiesAfterReplayCreate } from './replay-retry.js';
 import { redactRollbackRecord, type ReplayResolvers } from './replay-secrets.js';
+import { withRefreshedObservedBaseline } from './replay-observed-refresh.js';
 import type { FailedOperation, FailedOpReplayResult, RollbackExecutorContext } from './types.js';
 import type { ReplayFailedOperationsOptions } from './replay-failed-checks.js';
 
@@ -155,7 +156,11 @@ export async function recreateFailedReplacedDeleted(s: ReplacedDeletedScope): Pr
   );
   // go-to-k/cdkd#4434: the create's NoEcho declaration first, as the reverse
   // replacement records it.
-  recordNoEchoAttributeValues(createResult, secrets, resolvedPrevProps);
+  const createDeclaredNoEcho = recordNoEchoAttributeValues(
+    createResult,
+    secrets,
+    resolvedPrevProps
+  );
   const { observedProperties: _staleObserved, noEchoValueMacs: _staleMacs, ...prevRecord } = prev;
   const restoredProperties =
     recordedPropertiesAfterReplayCreate(prevRecord, createResult) ?? prev.properties;
@@ -178,6 +183,28 @@ export async function recreateFailedReplacedDeleted(s: ReplacedDeletedScope): Pr
       prevRecord.attributes
     )
   );
+  // go-to-k/cdkd#7129, as the reverse replacement's re-create: the new
+  // resource's drift baseline, read back as the deploy's CREATE captures it.
+  if (createDeclaredNoEcho === undefined) {
+    stateResources[op.logicalId] = await withRefreshedObservedBaseline(
+      stateResources[op.logicalId]!,
+      {
+        provider,
+        op: { logicalId: op.logicalId, resourceType: oldType },
+        desiredProps: resolvedPrevProps,
+        restored: stateResources[op.logicalId]!,
+        stateResources,
+        secrets,
+        noEcho: { substituted: [] },
+        mask,
+        logger,
+        // The create above ran outside any prefix scope, so its readback does.
+        inScope: (fn) => fn(),
+        capture: ctx.captureObservedState,
+        recreated: true,
+      }
+    );
+  }
   logger.info(
     safeMsg`  Rollback: ${shownLogicalId(op.logicalId)} re-created as ${mask(String(displayPhysicalId(oldType, createResult.physicalId)))}`
   );
