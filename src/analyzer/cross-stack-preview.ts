@@ -38,6 +38,11 @@ export class CrossStackPreview {
   private readonly taintedTexts = new Set<string>();
   /** A tainted output exports under a name that did not resolve: every export is. */
   private everyExportTainted = false;
+  /**
+   * A nested child's output is tainted, and its stack name is the deploy's:
+   * every output of a stack outside these (the app's top-level names) is.
+   */
+  private nestedOutputsTaintedOutside: ReadonlySet<string> | undefined;
 
   /** Is export `name` derived from a secret, by provenance (in any region)? */
   exportTainted(_region: string, name: string): boolean {
@@ -46,7 +51,20 @@ export class CrossStackPreview {
 
   /** Is `stackName`'s output `outputName` derived from a secret (in any region)? */
   stackOutputTainted(_region: string, stackName: string, outputName: string): boolean {
-    return this.taintedOutputs.has(JSON.stringify([stackName, outputName]));
+    return (
+      this.taintedOutputs.has(JSON.stringify([stackName, outputName])) ||
+      (this.nestedOutputsTaintedOutside !== undefined &&
+        !this.nestedOutputsTaintedOutside.has(stackName))
+    );
+  }
+
+  /**
+   * A nested child's output is tainted: taint every output of any stack not
+   * named in `topLevelStackNames`, since a child's generated stack name is not
+   * known before its deploy (fail closed).
+   */
+  markNestedOutputsTainted(topLevelStackNames: ReadonlySet<string>): void {
+    this.nestedOutputsTaintedOutside = topLevelStackNames;
   }
 
   /** Does this run hold any tainted export or output? */

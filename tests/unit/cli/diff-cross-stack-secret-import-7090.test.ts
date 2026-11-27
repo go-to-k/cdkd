@@ -349,7 +349,8 @@ describe('cdkd diff: a consumer reading a secret-fed producer output (#7090)', (
             // The consumer's resolver lines too (`--verbose`), once the value
             // clears the masker's floor (a sub-floor piece there is #7077's).
             // Not when the producer is not diffed: the app-wide marks carry no
-            // value to mask the resolver's lines with (go-to-k/cdkd#7077).
+            // value to mask the resolver's lines with. Its fix is resolver-side,
+            // folded into go-to-k/cdkd#7077 as this case.
             if (secret.length >= MIN_NEEDLE_LENGTH && !consumerOnly) {
               const resolved = consLog.join('\n');
               expect(resolved.includes(secret), resolved).toBe(false);

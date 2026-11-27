@@ -74,39 +74,60 @@ function taintedOutputsOf(
   }) as Array<[string, Output]>;
 }
 
+/** One walk's parsed nested templates by path; `null` for one that did not read. */
+export type NestedTemplateCache = Map<
+  string,
+  { template: CloudFormationTemplate; children: Record<string, string> } | null
+>;
+
+function readChild(path: string, cache: NestedTemplateCache) {
+  if (!cache.has(path)) {
+    try {
+      const template = readNestedTemplate(path);
+      cache.set(path, { template, children: indexNestedChildTemplates(template, path) });
+    } catch {
+      cache.set(path, null);
+    }
+  }
+  return cache.get(path) ?? null;
+}
+
 /**
  * The secret-fed names of one node, with its nested subtree read from disk:
  * {@link taintedNamesOf} over `passed` and the node's tainted cross-stack
  * reads, plus each nested row whose child (at any depth) has a secret-fed
  * output, since `Fn::GetAtt Row.Outputs.*` reads it. `onChildOutput` sees
  * each such child output, for its export. A child template that cannot be
- * read adds nothing here: the walk that diffs it refuses it.
+ * read, or that is already on the path from the root (a cyclic assembly),
+ * adds nothing here: the walk that diffs it refuses it.
  */
 export function subtreeTaintedNames(
   template: CloudFormationTemplate,
   nestedTemplates: Readonly<Record<string, string>> | undefined,
   passed: Iterable<string>,
   preview: CrossStackPreview | undefined,
-  onChildOutput?: (childPath: string, outputName: string, output: Output) => void,
-  depth = 0
+  walk: {
+    onChildOutput?: (childPath: string, outputName: string, output: Output) => void;
+    cache?: NestedTemplateCache;
+    ancestors?: ReadonlySet<string>;
+    depth?: number;
+  } = {}
 ): Set<string> {
   const seeds = [...passed, ...crossStackTaintSeedsOf(template, '', preview)];
   let tainted = taintedNamesOf(template, seeds);
+  const ancestors = walk.ancestors ?? new Set<string>();
+  const depth = walk.depth ?? 0;
   if (nestedTemplates === undefined || depth >= MAX_NESTED_DEPTH) return tainted;
+  const cache = walk.cache ?? new Map();
   const rows = new Set<string>();
   for (const [logicalId, raw] of Object.entries(template.Resources ?? {})) {
     if (raw?.Type !== NESTED_STACK_RESOURCE_TYPE || !Object.hasOwn(nestedTemplates, logicalId)) {
       continue;
     }
     const childPath = nestedTemplates[logicalId]!;
-    let child: CloudFormationTemplate;
-    let grandchildren: Record<string, string>;
-    try {
-      child = readNestedTemplate(childPath);
-      grandchildren = indexNestedChildTemplates(child, childPath);
-    } catch {
-      continue;
-    }
+    if (ancestors.has(childPath)) continue;
+    const child = readChild(childPath, cache);
+    if (child === null) continue;
     const parameters = (raw.Properties as { Parameters?: unknown } | undefined)?.Parameters;
     const childPassed: string[] = [];
     if (parameters !== null && typeof parameters === 'object' && !Array.isArray(parameters)) {
@@ -116,26 +137,42 @@ export function subtreeTaintedNames(
         }
       }
     }
-    const childTainted = subtreeTaintedNames(
-      child,
-      grandchildren,
-      childPassed,
-      preview,
-      onChildOutput,
-      depth + 1
-    );
-    const outputs = taintedOutputsOf(child, childTainted);
-    for (const [name, output] of outputs) onChildOutput?.(childPath, name, output);
+    const childTainted = subtreeTaintedNames(child.template, child.children, childPassed, preview, {
+      ...walk,
+      cache,
+      ancestors: new Set([...ancestors, childPath]),
+      depth: depth + 1,
+    });
+    const outputs = taintedOutputsOf(child.template, childTainted);
+    for (const [name, output] of outputs) walk.onChildOutput?.(childPath, name, output);
     if (outputs.length > 0) rows.add(logicalId);
   }
   if (rows.size > 0) tainted = taintedNamesOf(template, [...seeds, ...rows]);
   return tainted;
 }
 
-/** `null` for an export whose name is not a literal string (fail closed). */
-function literalExportName(output: Output): string | null | undefined {
+/**
+ * An export's name as the deploy will resolve it, when this can tell from the
+ * template alone: a literal, or a `Fn::Sub` string whose only variable is
+ * `${AWS::StackName}` (as CDK writes them). `null` otherwise (fail closed:
+ * every export is then tainted).
+ */
+function exportNameOf(output: Output, stackName: string | undefined): string | null | undefined {
   if (output?.Export === undefined) return undefined;
-  return typeof output.Export.Name === 'string' ? output.Export.Name : null;
+  const name = output.Export.Name;
+  if (typeof name === 'string') return name;
+  const sub = (name as { 'Fn::Sub'?: unknown } | null)?.['Fn::Sub'];
+  if (
+    stackName !== undefined &&
+    name !== null &&
+    typeof name === 'object' &&
+    Object.keys(name).length === 1 &&
+    typeof sub === 'string'
+  ) {
+    const resolved = sub.split('${AWS::StackName}').join(stackName);
+    if (!resolved.includes('${')) return resolved;
+  }
+  return null;
 }
 
 /**
@@ -152,24 +189,28 @@ export function markAppProducerTaint(
     nestedTemplates?: Readonly<Record<string, string>> | undefined;
   }>
 ): void {
+  const topLevel = new Set(stacks.map((stack) => stack.stackName));
+  const cache: NestedTemplateCache = new Map();
   let grew = true;
   while (grew) {
     grew = false;
     for (const { stackName, template, nestedTemplates } of stacks) {
-      const mark = (owner: string, outputName: string, output: Output): void => {
-        if (preview.markTainted(owner, outputName, literalExportName(output))) grew = true;
-      };
-      const tainted = subtreeTaintedNames(
-        template,
-        nestedTemplates,
-        [],
-        preview,
+      const tainted = subtreeTaintedNames(template, nestedTemplates, [], preview, {
+        cache,
         // A child's outputs are read by its export name; its stack name is
-        // the deploy's, so the template path stands for it.
-        (childPath, outputName, output) => mark(childPath, outputName, output)
-      );
+        // the deploy's, so the template path stands for it, and every
+        // non-top-level stack's outputs are tainted too.
+        onChildOutput: (childPath, outputName, output) => {
+          // A child's `${AWS::StackName}` is the deploy's: not resolvable here.
+          if (preview.markTainted(childPath, outputName, exportNameOf(output, undefined)))
+            grew = true;
+          preview.markNestedOutputsTainted(topLevel);
+        },
+      });
       for (const [outputName, output] of taintedOutputsOf(template, tainted)) {
-        mark(stackName, outputName, output);
+        if (preview.markTainted(stackName, outputName, exportNameOf(output, stackName))) {
+          grew = true;
+        }
       }
     }
   }

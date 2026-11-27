@@ -395,7 +395,8 @@ export async function buildDiffTree(args: {
         template,
         nestedTemplates,
         inheritedMixedSecretParameters ?? [],
-        crossStackPreview
+        crossStackPreview,
+        ancestorTemplatePaths ? { ancestors: ancestorTemplatePaths } : {}
       )
     : ownSecretNames;
   const readsTaintedCrossStack = passedSecretNames.size > ownSecretNames.size;

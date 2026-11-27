@@ -303,12 +303,29 @@ describe('the app-wide marks, before any diff (#7090)', () => {
         template: rowFed({
           Out: {
             Value: { 'Fn::GetAtt': ['Row', 'Outputs.Piece'] },
-            Export: { Name: { 'Fn::Sub': '${AWS::StackName}-x' } as unknown as string },
+            Export: { Name: { 'Fn::Sub': '${AWS::StackName}-${AWS::Region}' } as unknown as string },
           },
         }),
       },
     ]);
     expect(preview.exportTainted(REGION, 'anything')).toBe(true);
+  });
+
+  it('reads a `${AWS::StackName}` export name as CDK writes it, without tainting every export', () => {
+    const preview = new CrossStackPreview();
+    markAppProducerTaint(preview, [
+      {
+        stackName: 'Prod',
+        template: rowFed({
+          Out: {
+            Value: { 'Fn::GetAtt': ['Row', 'Outputs.Piece'] },
+            Export: { Name: { 'Fn::Sub': '${AWS::StackName}-x' } as unknown as string },
+          },
+        }),
+      },
+    ]);
+    expect(preview.exportTainted(REGION, 'Prod-x')).toBe(true);
+    expect(preview.exportTainted(REGION, 'anything')).toBe(false);
   });
 
   it('marks nothing in an app with no secret-fed name', () => {
@@ -392,6 +409,9 @@ describe('nested subtrees, read from disk (#7090)', () => {
     markAppProducerTaint(preview, app());
     expect(preview.exportTainted(REGION, 'child-export')).toBe(true);
     expect(preview.exportTainted(REGION, 'child-plain')).toBe(false);
+    // Its stack name is the deploy's: any non-top-level stack's output is tainted.
+    expect(preview.stackOutputTainted(REGION, 'Prod-RowNested-ABC', 'Piece')).toBe(true);
+    expect(preview.stackOutputTainted(REGION, 'Cons', 'Other')).toBe(false);
   });
 
   it("taints a row whose child reads a tainted export, and a root output reading the row", () => {
@@ -402,6 +422,29 @@ describe('nested subtrees, read from disk (#7090)', () => {
     expect(tainted.has('Row2')).toBe(true);
     // ...so a third stack importing the root's re-export is masked too.
     expect(preview.exportTainted(REGION, 'relay-export')).toBe(true);
+  });
+
+  it('terminates on a cyclic assembly (rows naming their own template)', () => {
+    const cyclic = join(dir, 'cyclic.json');
+    writeFileSync(
+      cyclic,
+      JSON.stringify({
+        Resources: { A: nestedRow('cyclic.json'), B: nestedRow('cyclic.json') },
+        Outputs: { O: { Value: { 'Fn::ImportValue': 'child-export' } } },
+      })
+    );
+    const preview = new CrossStackPreview();
+    const started = Date.now();
+    markAppProducerTaint(preview, [
+      ...app(),
+      {
+        stackName: 'Loop',
+        template: { Resources: { A: nestedRow('cyclic.json'), B: nestedRow('cyclic.json') } } as unknown as CloudFormationTemplate,
+        nestedTemplates: { A: cyclic, B: cyclic },
+      },
+    ]);
+    expect(Date.now() - started).toBeLessThan(5000);
+    expect(preview.exportTainted(REGION, 'child-export')).toBe(true);
   });
 
   it('marks nothing when the row passes no reference', () => {
