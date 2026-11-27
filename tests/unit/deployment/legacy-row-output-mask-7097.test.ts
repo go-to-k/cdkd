@@ -356,6 +356,42 @@ describe('conditions and resource properties decide as a current record would (r
     });
   });
 
+  // Security review: the engine compares the coerced or SSM-resolved value,
+  // so a parameter of these types never decides a condition here.
+  it.each([
+    [
+      'an SSM-typed Default (decided by the value its path resolves to)',
+      { Mode: { Type: 'AWS::SSM::Parameter::Value<String>', Default: '/app/mode' } },
+      { 'Fn::Equals': [{ Ref: 'Mode' }, 'secret'] },
+      ['C', { Ref: 'X' }, 'plain'],
+      {},
+    ],
+    [
+      'a Number passed "1" (compared as 1)',
+      { N: { Type: 'Number' } },
+      { 'Fn::Equals': [{ Ref: 'N' }, '1'] },
+      ['C', 'plain', { Ref: 'X' }],
+      { N: '1' },
+    ],
+    [
+      'a CommaDelimitedList passed "a,b" (compared as a list)',
+      { L: { Type: 'CommaDelimitedList' } },
+      { 'Fn::Equals': [{ Ref: 'L' }, 'a,b'] },
+      ['C', 'plain', { Ref: 'X' }],
+      { L: 'a,b' },
+    ],
+  ])('%s is undecided', (label, parameters, condition, branches, passed) => {
+    const child = {
+      Parameters: { X: { Type: 'String' }, ...parameters },
+      Conditions: { C: condition },
+      Outputs: { O: { Value: { 'Fn::If': branches } } },
+    };
+    const name = `if-typed-${label.replace(/\W+/g, '-').slice(0, 24)}`;
+    expect(run(child, { X: `${PIN}/${A}`, ...passed }, { 'Outputs.O': PIN }, name)).toEqual({
+      'Outputs.O': '***',
+    });
+  });
+
   it('a child resource property composing a secret reference masks the attribute echoing it', () => {
     const child = {
       Resources: {

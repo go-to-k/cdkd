@@ -44,6 +44,10 @@ const OUTPUT_PREFIX = 'Outputs.';
  * while the record says the row is a secret's, the deploy is REFUSED rather
  * than guessed either way.
  *
+ * Assumes the CURRENT child template is the one the legacy deploy ran:
+ * record-vs-template drift (a condition literal or `Default` edited since)
+ * can make an `Fn::If` select another branch than the recorded value took.
+ *
  * Returns the reads it rewrote, for the export guard.
  */
 export function maskLegacyTaintedRowOutputs(
@@ -249,6 +253,11 @@ function plainParameterValues(parameters: unknown): Record<string, string | unde
  * and `Ref`s of parameters passed plain (or left at a string `Default`). A
  * condition reading anything else is left out, so its `Fn::If` reads both
  * branches (masking, never leaking).
+ *
+ * Assumes the CURRENT child template's conditions are the ones the legacy
+ * deploy evaluated, as the whole mask does: a condition literal or `Default`
+ * edited since that deploy may select another branch than the record's
+ * value came from.
  */
 function knownConditions(
   template: CloudFormationTemplate,
@@ -262,8 +271,12 @@ function knownConditions(
     if (typeof node === 'string') return node;
     const ref = recordOf(node)['Ref'];
     if (typeof ref !== 'string' || Object.keys(recordOf(node)).length !== 1) return undefined;
-    if (Object.hasOwn(passedValues, ref)) return passedValues[ref];
     if (!Object.hasOwn(parameters, ref)) return undefined;
+    // Review: the engine compares the COERCED value (a `Number`, a list) or the
+    // value an SSM-typed parameter RESOLVES to, never the raw string. Only a
+    // type whose value is that string decides here.
+    if (!comparesAsWritten(recordOf(parameters[ref])['Type'])) return undefined;
+    if (Object.hasOwn(passedValues, ref)) return passedValues[ref];
     const fallback = recordOf(parameters[ref])['Default'];
     return typeof fallback === 'string' ? fallback : undefined;
   };
@@ -300,6 +313,19 @@ function knownConditions(
   };
   for (const name of Object.keys(declared)) conditionOf(name);
   return verdicts;
+}
+
+/**
+ * Is a parameter of this `Type` compared as its written string? An absent
+ * type, `String`, and a scalar AWS-specific id type (`AWS::EC2::VPC::Id`).
+ * Not `Number`, `CommaDelimitedList`, `List<...>`, or the
+ * `AWS::SSM::Parameter::Value<...>` family, whose value the engine coerces or
+ * resolves first.
+ */
+function comparesAsWritten(type: unknown): boolean {
+  if (type === undefined || type === 'String') return true;
+  if (typeof type !== 'string' || !type.startsWith('AWS::')) return false;
+  return !type.startsWith('AWS::SSM::Parameter::') && !type.includes('List<');
 }
 
 /** Does a template value compose a SECRET-spelled dynamic reference with other text? */
