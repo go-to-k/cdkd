@@ -128,6 +128,14 @@ const update = row('update');
 const conditional = row('conditional');
 const nested = row('nested');
 
+/** Account-level service roles a probe may not create (go-to-k/cdkd#7083). */
+const APPSTREAM_ROLE = cannotProbe(
+  'AppStream refuses a fleet create unless the account-level service role AmazonAppStreamServiceAccess exists ("your service role ... is invalid"), and creating that role is an account-level change'
+);
+const WORKSPACES_ROLE = cannotProbe(
+  'WorkSpaces refuses to register a directory unless the account-level role workspaces_DefaultRole exists, and creating that role is an account-level change'
+);
+
 /** `<Type>#<Property>` -> its evidence. */
 export const REPLACEMENT_EVIDENCE: ReadonlyMap<string, ReplacementEvidence> = new Map([
   // --- conditionalReplacements predicates
@@ -940,30 +948,10 @@ export const REPLACEMENT_EVIDENCE: ReadonlyMap<string, ReplacementEvidence> = ne
   ['AWS::DataSync::LocationNFS#ServerHostname', update('cc-measured', 7083)],
   ['AWS::DataSync::LocationObjectStorage#ServerHostname', update('cc-measured', 7083)],
   ['AWS::DataSync::LocationSMB#ServerHostname', update('cc-measured', 7083)],
-  [
-    'AWS::WorkSpaces::Workspace#BundleId',
-    cannotProbe(
-      'WorkSpaces refuses to register a directory unless the account-level role workspaces_DefaultRole exists, and creating that role is an account-level change'
-    ),
-  ],
-  [
-    'AWS::WorkSpaces::Workspace#RootVolumeEncryptionEnabled',
-    cannotProbe(
-      'WorkSpaces refuses to register a directory unless the account-level role workspaces_DefaultRole exists, and creating that role is an account-level change'
-    ),
-  ],
-  [
-    'AWS::WorkSpaces::Workspace#UserVolumeEncryptionEnabled',
-    cannotProbe(
-      'WorkSpaces refuses to register a directory unless the account-level role workspaces_DefaultRole exists, and creating that role is an account-level change'
-    ),
-  ],
-  [
-    'AWS::WorkSpaces::Workspace#VolumeEncryptionKey',
-    cannotProbe(
-      'WorkSpaces refuses to register a directory unless the account-level role workspaces_DefaultRole exists, and creating that role is an account-level change'
-    ),
-  ],
+  ['AWS::WorkSpaces::Workspace#BundleId', WORKSPACES_ROLE],
+  ['AWS::WorkSpaces::Workspace#RootVolumeEncryptionEnabled', WORKSPACES_ROLE],
+  ['AWS::WorkSpaces::Workspace#UserVolumeEncryptionEnabled', WORKSPACES_ROLE],
+  ['AWS::WorkSpaces::Workspace#VolumeEncryptionKey', WORKSPACES_ROLE],
   // CloudFormation A/B: UPDATE_COMPLETE under the same datastore id, reading
   // back the new name, then SMART_ON_FHIR_V1.
   ['AWS::HealthLake::FHIRDatastore#DatastoreName', update('cfn-measured', 7083)],
@@ -990,18 +978,8 @@ export const REPLACEMENT_EVIDENCE: ReadonlyMap<string, ReplacementEvidence> = ne
     'AWS::SageMaker::ModelPackage#AdditionalInferenceSpecificationsToAdd.*.Containers.*.ImageDigest',
     update('cfn-measured', 7083),
   ],
-  [
-    'AWS::AppStream::StackFleetAssociation#FleetName',
-    cannotProbe(
-      'AppStream refuses a fleet create unless the account-level service role AmazonAppStreamServiceAccess exists ("your service role ... is invalid"), and creating that role is an account-level change'
-    ),
-  ],
-  [
-    'AWS::AppStream::StackFleetAssociation#StackName',
-    cannotProbe(
-      'AppStream refuses a fleet create unless the account-level service role AmazonAppStreamServiceAccess exists ("your service role ... is invalid"), and creating that role is an account-level change'
-    ),
-  ],
+  ['AWS::AppStream::StackFleetAssociation#FleetName', APPSTREAM_ROLE],
+  ['AWS::AppStream::StackFleetAssociation#StackName', APPSTREAM_ROLE],
   // --- updateableProperties beyond the fixture or the spec
   ['AWS::Budgets::Budget#NotificationsWithSubscribers', update('deviation', 7038)],
   ['AWS::EC2::Subnet#Ipv6CidrBlock', update('cfn-measured', 5632)],

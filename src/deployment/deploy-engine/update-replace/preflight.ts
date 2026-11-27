@@ -29,8 +29,8 @@ function measuredPathsChanged(
   resourceType: string,
   pc: { path: string; oldValue?: unknown; newValue?: unknown }
 ): string[] {
-  if (SPEC_REPLACEMENT_CFN_MEASURED.has(`${resourceType}#${pc.path}`)) return [pc.path];
-  const prefix = `${resourceType}#${pc.path}.`;
+  if (SPEC_REPLACEMENT_CFN_MEASURED.has([resourceType, pc.path].join('#'))) return [pc.path];
+  const prefix = [resourceType, pc.path].join('#') + '.';
   const at = (value: unknown, path: readonly string[]): unknown =>
     path.reduce<unknown>(
       (v, k) =>
