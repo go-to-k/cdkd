@@ -318,6 +318,28 @@ describe('cdkd diff --replace-resource previews cdkd deploy --replace-resource (
     expect(planOf(diff.changes)['RefParam']).toBe('NO_CHANGE');
   });
 
+  it('diffs a refused plan again unseeded, with its warnings silenced', async () => {
+    const calculator = new DiffCalculator();
+    const loud = vi.fn();
+    calculator.logger = Object.create(calculator.logger, { warn: { value: loud } });
+    const real = DiffCalculator.prototype.calculateDiff;
+    const passes: Array<{ forced: unknown; warn: (m: string) => void }> = [];
+    calculator.calculateDiff = function (this: DiffCalculator, ...args) {
+      passes.push({ forced: args[7], warn: (m) => this.logger.warn(m) });
+      return real.apply(this, args);
+    } as DiffCalculator['calculateDiff'];
+    const state = priorState();
+    const backend = { getState: async () => ({ state, etag: 'fake' }) } as unknown as S3StateBackend;
+    const result = await computeStackDiff(state, template(128), REGION, STACK, backend, calculator, {
+      replaceResources: new Set(['Fn']),
+    });
+    expect(result.blocking).toHaveLength(1);
+    expect(passes.map((p) => p.forced)).toEqual([new Set(['Fn']), undefined]);
+    passes[0]!.warn('first');
+    passes[1]!.warn('second');
+    expect(loud.mock.calls.map((c) => c[0])).toEqual(['first']);
+  });
+
   it('warns once per target it does not replace', async () => {
     const t = template(256);
     t.Resources['NewA'] = { Type: PARAM_TYPE, Properties: { Name: 'a', Type: 'String', Value: 'v' } };

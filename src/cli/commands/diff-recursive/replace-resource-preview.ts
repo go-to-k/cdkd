@@ -7,6 +7,7 @@ import {
 } from '../../../deployment/replace-resource-targets.js';
 import { refuseStatefulReplacedReaders } from '../../../deployment/recreate-target-readers.js';
 import { CdkdError } from '../../../utils/error-handler.js';
+import type { ConsoleLogger } from '../../../utils/logger.js';
 
 /**
  * go-to-k/cdkd#7089: `cdkd diff --replace-resource`, the preview of the plan
@@ -90,12 +91,14 @@ export async function previewReplaceResourceTargets(input: {
  * (`forcedReplacements`), as the deploy's does. When a target is refused the
  * deploy shows no plan at all, so the rows are diffed again UNSEEDED: no
  * reader is left shown as a replacement the deploy never plans. The verdict
- * itself is the seeded diff's, as the deploy's is.
+ * itself is the seeded diff's, as the deploy's is. The second pass prints no
+ * warning: the first printed each already.
  */
 export async function previewReplaceResourcePlan<T>(
   input: Omit<Parameters<typeof previewReplaceResourceTargets>[0], 'changes'> & {
     diff: (
-      forcedReplacements: ReadonlySet<string> | undefined
+      forcedReplacements: ReadonlySet<string> | undefined,
+      quiet?: boolean
     ) => Promise<Map<string, ResourceChange>>;
     settle: (changes: Map<string, ResourceChange>) => Promise<T>;
   }
@@ -105,6 +108,14 @@ export async function previewReplaceResourcePlan<T>(
   const settled = await settle(changes);
   const blocking = await previewReplaceResourceTargets({ ...plan, changes });
   if (blocking.length === 0 || plan.targetIds === undefined) return { changes, settled, blocking };
-  const unseeded = await diff(undefined);
+  const unseeded = await diff(undefined, true);
   return { changes: unseeded, settled: await settle(unseeded), blocking };
+}
+
+/** `calculator` with its warnings dropped, for a pass repeating one already printed. */
+export function withoutWarnings<C extends { logger: ConsoleLogger }>(calculator: C): C {
+  const logger = Object.create(calculator.logger, {
+    warn: { value: () => undefined },
+  }) as ConsoleLogger;
+  return Object.create(calculator, { logger: { value: logger } }) as C;
 }

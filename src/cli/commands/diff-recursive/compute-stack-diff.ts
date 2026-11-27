@@ -83,7 +83,7 @@ import { stackIdTailOf } from '../../../state/stack-id-tail.js';
 import { previewNoEchoMacChanges } from './noecho-macs.js';
 import { markProducerTaint, recordProducerPreview } from '../../../analyzer/cross-stack-preview.js';
 import { producerReadsSecretFedName } from './cross-stack-taint.js';
-import { previewReplaceResourcePlan } from './replace-resource-preview.js';
+import { previewReplaceResourcePlan, withoutWarnings } from './replace-resource-preview.js';
 
 /**
  * Compute the per-resource diff for one stack: `currentState` (cdkd state)
@@ -503,8 +503,8 @@ export async function computeStackDiff(
       ]),
     };
   }
-  const diffWith = (forcedReplacements: ReadonlySet<string> | undefined) =>
-    diffCalculator.calculateDiff(
+  const diffWith = (forcedReplacements: ReadonlySet<string> | undefined, quiet?: boolean) =>
+    (quiet === true ? withoutWarnings(diffCalculator) : diffCalculator).calculateDiff(
       stateForDiff,
       effectiveTemplate,
       resolveFn,
