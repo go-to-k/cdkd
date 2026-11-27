@@ -557,7 +557,7 @@ assert_gone "VPC '${DOWN_VPC}' still exists after destroy" aws ec2 describe-vpcs
 assert_gone "VPC '${P2_UP_VPC}' still exists after destroy" aws ec2 describe-vpcs --vpc-ids "${P2_UP_VPC}" --region "${REGION}"
 assert_gone "VPC '${ENC_VPC}' still exists after destroy" aws ec2 describe-vpcs --vpc-ids "${ENC_VPC}" --region "${REGION}"
 echo "    OK: all five VPCs are gone"
-assert_gone "network interface '${ENI_ID}' still exists after destroy (issue #7099)" aws ec2 describe-network-interfaces --network-interface-ids "${ENI_ID}" --region "${REGION}"
+assert_gone "network interface '${ENI_ID}' still exists after destroy" aws ec2 describe-network-interfaces --network-interface-ids "${ENI_ID}" --region "${REGION}"
 echo "    OK: the network interface is gone"
 assert_gone "private hosted zone '${ZONE_ID}' still exists after destroy" aws route53 get-hosted-zone --id "${ZONE_ID}"
 echo "    OK: the private hosted zone is gone"
