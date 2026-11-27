@@ -259,10 +259,31 @@ describe('a Lake Formation location moving off the service-linked role (go-to-k/
     const creates = sent.filter((s) => s.name === 'CreateResourceCommand');
     expect(creates).toHaveLength(1);
     expect(JSON.parse(String(creates[0]!.input['DesiredState']))).toEqual(own);
-    expect(mockWarn.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
-      'was interrupted after its deregister'
-    );
+    const warned = mockWarn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain('the Lake Formation location is not registered with Lake Formation');
+    // It cannot tell an interrupted switch from a deregister outside cdkd.
+    expect(warned).not.toContain('interrupted');
   });
+
+  it.each([
+    ['the template reverted to the service-linked role', slr, own],
+    ['an unrelated change on its own role', { ...own, HybridAccessEnabled: true }, own],
+  ])(
+    'registers a missing location on any update (%s), instead of updating it',
+    async (_label, desired, previous) => {
+      const sent = serve('gone');
+      await provider().update('Lf', ARN, T, desired, previous);
+      const names = sent.map((s) => s.name);
+      expect(names).not.toContain('UpdateResourceCommand');
+      expect(names).not.toContain('DeleteResourceCommand');
+      const creates = sent.filter((s) => s.name === 'CreateResourceCommand');
+      expect(creates).toHaveLength(1);
+      expect(JSON.parse(String(creates[0]!.input['DesiredState']))).toEqual(desired);
+      expect(mockWarn.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+        'not registered with Lake Formation'
+      );
+    }
+  );
 
   it('masks the caller identity of a synchronous refusal in the double-failure message', async () => {
     serve(SLR);

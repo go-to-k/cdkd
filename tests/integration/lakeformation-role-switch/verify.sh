@@ -12,7 +12,9 @@
 #   2. deploy `own`: registered with the stack's own role, same location ARN;
 #   3. deploy the default again: back on the service-linked role (Cloud
 #      Control's own update applies this direction);
-#   4. destroy: the registration, the role, the bucket and the state are gone.
+#   4. deploy `fresh`: a role created in this same deploy, and the location
+#      switched to it (the role is seconds old at the register);
+#   5. destroy: the registration, both roles, the bucket and the state are gone.
 #
 # Required env vars:
 #   STATE_BUCKET -- cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -60,6 +62,7 @@ ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
 BUCKET="cdkd-integ-lf-role-switch-${ACCOUNT}-${REGION}"
 LOCATION_ARN="arn:aws:s3:::${BUCKET}"
 ROLE_NAME="CdkdLfRoleSwitch-${REGION}"
+FRESH_ROLE_NAME="CdkdLfRoleSwitchFresh-${REGION}"
 SLR_PATH=":role/aws-service-role/lakeformation.amazonaws.com/"
 unset CDKD_TEST_UPDATE
 
@@ -75,10 +78,12 @@ cleanup() {
     aws lakeformation deregister-resource --resource-arn "${LOCATION_ARN}" --region "${REGION}" >/dev/null 2>&1
     aws s3 rb "s3://${BUCKET}" --force --region "${REGION}" >/dev/null 2>&1
   fi
-  for p in $(aws iam list-role-policies --role-name "${ROLE_NAME}" --query 'PolicyNames[]' --output text 2>/dev/null); do
-    aws iam delete-role-policy --role-name "${ROLE_NAME}" --policy-name "${p}" >/dev/null 2>&1
+  for r in "${ROLE_NAME}" "${FRESH_ROLE_NAME}"; do
+    for p in $(aws iam list-role-policies --role-name "${r}" --query 'PolicyNames[]' --output text 2>/dev/null); do
+      aws iam delete-role-policy --role-name "${r}" --policy-name "${p}" >/dev/null 2>&1
+    done
+    aws iam delete-role --role-name "${r}" >/dev/null 2>&1
   done
-  aws iam delete-role --role-name "${ROLE_NAME}" >/dev/null 2>&1
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -150,15 +155,38 @@ case "${ROLE3}" in *"${SLR_PATH}"*) ;; *)
   echo "FAIL: phase 3: the registration's record moved to '$(registration_id)'" >&2; exit 1; }
 echo "    OK: back on the service-linked role"
 
-echo "==> Phase 4: destroy"
+echo "==> Phase 4: switch to a role created in the same deploy"
+assert_gone "role ${FRESH_ROLE_NAME} exists before phase 4 creates it" aws iam get-role --role-name "${FRESH_ROLE_NAME}"
+set +e
+CDKD_TEST_UPDATE=fresh node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${DEPLOY_LOG}"
+rc=${PIPESTATUS[0]}
+set -e
+[ "${rc}" = "0" ] || {
+  echo "FAIL: phase 4: the switch to a role created in the same deploy exited ${rc} (an IAM-propagation refusal of the register would land here)" >&2; exit 1; }
+FRESH_ROLE_ARN="$(aws iam get-role --role-name "${FRESH_ROLE_NAME}" --query Role.Arn --output text)"
+ROLE4="$(live_role)" || {
+  echo "FAIL: phase 4: the location is not registered after the switch to a role created in the same deploy" >&2; exit 1; }
+[ "${ROLE4}" = "${FRESH_ROLE_ARN}" ] || {
+  echo "FAIL: phase 4: the location is registered with '${ROLE4}', expected the role created in the same deploy ${FRESH_ROLE_ARN}" >&2; exit 1; }
+[ "$(registration_id)" = "${LOCATION_ARN}" ] || {
+  echo "FAIL: phase 4: the registration's record moved to '$(registration_id)'" >&2; exit 1; }
+plain | grep -q "deregistering and registering it with its own role" || {
+  echo "FAIL: phase 4: the deploy did not take the re-register route (if cdkd reworded its line, update this check)" >&2; exit 1; }
+if plain | grep -qE "registered it back with the service-linked role|not registered with Lake Formation"; then
+  echo "FAIL: phase 4: the register with the new role failed or found the location unregistered during the switch" >&2; exit 1
+fi
+echo "    OK: re-registered in place with ${FRESH_ROLE_ARN}, created in the same deploy"
+
+echo "==> Phase 5: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 assert_gone "the Lake Formation registration of ${LOCATION_ARN} still exists after destroy" \
   aws lakeformation describe-resource --resource-arn "${LOCATION_ARN}" --region "${REGION}"
 assert_gone "role ${ROLE_NAME} still exists after destroy" aws iam get-role --role-name "${ROLE_NAME}"
+assert_gone "role ${FRESH_ROLE_NAME} still exists after destroy" aws iam get-role --role-name "${FRESH_ROLE_NAME}"
 assert_gone "bucket ${BUCKET} still exists after destroy" aws s3api head-bucket --bucket "${BUCKET}"
 assert_gone "state file of ${STACK} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: nothing of the stack left"
 
 echo ""
-echo "[verify] PASS — a Lake Formation location switches off the service-linked role in place, and back"
+echo "[verify] PASS — a Lake Formation location switches off the service-linked role in place, and back, also to a role created in the same deploy"

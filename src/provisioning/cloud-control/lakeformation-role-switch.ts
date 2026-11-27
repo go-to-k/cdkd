@@ -144,24 +144,27 @@ function createRegistration(
  * it did (it takes the update's place), or `undefined` when this update is
  * not such a switch and goes through Cloud Control's update as before.
  *
- * A location Cloud Control reports NotFound is one a previous run
- * deregistered and was stopped before registering again (an interrupt
- * between the two calls): it is registered with the desired model, which
- * finishes that switch, instead of failing every later deploy on NotFound.
+ * Every update of a registration first reads it. A location Cloud Control
+ * reports NotFound (a deploy stopped between this switch's deregister and its
+ * register, or a deregister outside cdkd) is registered with the desired
+ * model, whichever direction the update goes, instead of failing that update
+ * and every later one on NotFound. A deploy whose template holds no change for
+ * the registration sends no update, so it cannot see a missing one.
  */
 export async function switchLakeFormationOffServiceLinkedRole(
   provider: CloudControlProvider,
   input: LakeFormationRoleSwitchInput
 ): Promise<ProgressEvent | undefined> {
   const { logicalId, physicalId, resourceType, properties, previousProperties, log } = input;
-  if (!movesToOwnRole(resourceType, previousProperties, properties)) return undefined;
+  if (resourceType !== LAKE_FORMATION_RESOURCE_TYPE) return undefined;
   const live = await readLiveRegistration(provider, resourceType, physicalId, log);
   if (live === 'gone') {
     log.warn(
-      `${logicalId}: the Lake Formation location is not registered (a previous switch off the service-linked role was interrupted after its deregister); registering it with its own role`
+      `${logicalId}: the Lake Formation location is not registered with Lake Formation; registering it with the template's model instead of updating it`
     );
     return createRegistration(provider, logicalId, resourceType, properties);
   }
+  if (!movesToOwnRole(resourceType, previousProperties, properties)) return undefined;
   if (live === undefined || !isServiceLinkedRoleArn(live['RoleArn'])) return undefined;
 
   log.info(
@@ -172,6 +175,9 @@ export async function switchLakeFormationOffServiceLinkedRole(
       new DeleteResourceCommand({ TypeName: resourceType, Identifier: physicalId })
     )
   );
+  // No IAM propagation wait before the register: a role created moments
+  // earlier in the same deploy registers at once (measured: RegisterResource
+  // right after CreateRole, and through Cloud Control's create, 6 of 6).
   try {
     return await createRegistration(provider, logicalId, resourceType, properties);
   } catch (registerError) {

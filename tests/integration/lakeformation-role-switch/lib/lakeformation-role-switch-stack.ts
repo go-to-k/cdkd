@@ -9,7 +9,9 @@ import type { Construct } from 'constructs';
  * - by default with the service-linked role (`UseServiceLinkedRole: true`);
  * - `CDKD_TEST_UPDATE=own` registers it with the stack's own role instead
  *   (`UseServiceLinkedRole: false` + `RoleArn`), which Lake Formation's
- *   UpdateResource refuses and CloudFormation applies in place.
+ *   UpdateResource refuses and CloudFormation applies in place;
+ * - `CDKD_TEST_UPDATE=fresh` adds a second role and registers the location
+ *   with it, so the switch runs against a role created in the same deploy.
  *
  * covers: AWS::LakeFormation::Resource
  */
@@ -17,6 +19,7 @@ export class LakeFormationRoleSwitchStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
     const own = process.env['CDKD_TEST_UPDATE'] === 'own';
+    const fresh = process.env['CDKD_TEST_UPDATE'] === 'fresh';
 
     const bucket = new s3.Bucket(this, 'Location', {
       bucketName: `cdkd-integ-lf-role-switch-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}`,
@@ -27,13 +30,22 @@ export class LakeFormationRoleSwitchStack extends cdk.Stack {
       assumedBy: new iam.ServicePrincipal('lakeformation.amazonaws.com'),
     });
     bucket.grantReadWrite(role);
+    const freshRole = fresh
+      ? new iam.Role(this, 'FreshLocationRole', {
+          roleName: `CdkdLfRoleSwitchFresh-${cdk.Aws.REGION}`,
+          assumedBy: new iam.ServicePrincipal('lakeformation.amazonaws.com'),
+        })
+      : undefined;
+    if (freshRole) bucket.grantReadWrite(freshRole);
+    const registeredWith = freshRole ?? (own ? role : undefined);
 
     const registration = new lakeformation.CfnResource(this, 'Registration', {
       resourceArn: bucket.bucketArn,
-      useServiceLinkedRole: !own,
-      ...(own && { roleArn: role.roleArn }),
+      useServiceLinkedRole: registeredWith === undefined,
+      ...(registeredWith && { roleArn: registeredWith.roleArn }),
     });
     // The role's policy must exist before Lake Formation registers with it.
     registration.node.addDependency(role);
+    if (freshRole) registration.node.addDependency(freshRole);
   }
 }
