@@ -32,10 +32,7 @@ import { reportDeleteGuards } from './delete-guard-scope.js';
 import { deleteSkipReason } from './delete-outcome.js';
 import { readsNoEchoDeleteValues } from './noecho-delete-reresolution.js';
 import { isMarkedNonRetryable } from './retryable-errors.js';
-import {
-  equalIdNamesDifferentResources,
-  recordedIdsNameDifferentResources,
-} from './type-change-guard.js';
+import { equalIdNamesDifferentResources } from './type-change-guard.js';
 
 /**
  * The well-formed entries of `state.supersededResources`. A malformed entry
@@ -121,24 +118,30 @@ export function isSupersededHeld(
  * resource (go-to-k/cdkd#7088). Not always: a stage on another API, a
  * permission on another function, an ingress rule from another source or a
  * table in another database carries the same id
- * (`equalIdNamesDifferentResources`), and two ingress records holding
- * different `sgr-` ids are two rules (`recordedIdsNameDifferentResources`).
- * Where those cannot tell (a masked value, a missing key) the answer is
- * "the same", as before.
+ * (`equalIdNamesDifferentResources`). Where that cannot tell (a masked
+ * value, a missing key) the answer is "the same", as before.
+ *
+ * Two ingress records of one source holding different recorded `sgr-` ids
+ * are still the same rule here: AWS holds one rule per source, and the old
+ * record's id may be dead (revoked by hand), in which case its delete matches
+ * the live rule by properties, the new record's own rule.
  */
 export function namesSameResource(a: ResourceState, b: ResourceState): boolean {
   if (a.physicalId !== b.physicalId || a.resourceType !== b.resourceType) return false;
-  if (
-    equalIdNamesDifferentResources({
-      resourceType: a.resourceType,
-      physicalId: a.physicalId,
-      oldProperties: a.properties,
-      newProperties: b.properties,
-    })
-  ) {
-    return false;
-  }
-  return !recordedIdsNameDifferentResources(a.resourceType, a.attributes, b.attributes);
+  return !equalIdNamesDifferentResources({
+    resourceType: a.resourceType,
+    physicalId: a.physicalId,
+    oldProperties: a.properties,
+    newProperties: b.properties,
+  });
+}
+
+/** Two superseded entries for one resource of one logical id (go-to-k/cdkd#7088). */
+export function sameSupersededEntry(
+  a: SupersededResourceRecord,
+  b: SupersededResourceRecord
+): boolean {
+  return a.logicalId === b.logicalId && namesSameResource(a.state, b.state);
 }
 
 const isRecord = (record: unknown): record is ResourceState =>

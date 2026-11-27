@@ -13,10 +13,13 @@ import {
   addSuperseded,
   isSupersededHeldBySameType,
   namesSameResource,
+  sameSupersededEntry,
   supersededAfterRollback,
   supersededHolderOf,
   supersededResourcesOf,
 } from '../../../src/deployment/superseded-resources.js';
+import { segmentCleanupOptions } from '../../../src/deployment/rollback-executor/replay-moved-id-cleanup.js';
+import { deferredDeleteStillPending } from '../../../src/deployment/rollback-executor/replay-reverse-replacement.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type {
   ResourceChange,
@@ -212,11 +215,18 @@ describe('namesSameResource and the holder checks (#7088)', () => {
     expect(namesSameResource(stageOn('api-a'), stageOn('api-a'))).toBe(true);
   });
 
-  it('two ingress records holding different rule ids are two rules', () => {
-    const rule = (id: string) =>
-      record('sg-1|tcp|443|10.0.0.0/16', INGRESS, { GroupId: 'sg-1', CidrIp: '10.0.0.0/16' }, { Id: id });
-    expect(namesSameResource(rule('sgr-0aaa1111bbbb2222c'), rule('sgr-0ddd3333eeee4444f'))).toBe(false);
-    expect(namesSameResource(rule('sgr-0aaa1111bbbb2222c'), rule('sgr-0aaa1111bbbb2222c'))).toBe(true);
+  it('two ingress records of one source are one rule, whatever rule ids they recorded', () => {
+    // AWS holds one rule per source; the old record's id may be dead.
+    const rule = (id: string, cidr = '10.0.0.0/16') =>
+      record(
+        'sg-1|tcp|443|' + cidr,
+        INGRESS,
+        { GroupId: 'sg-1', IpProtocol: 'tcp', FromPort: 443, ToPort: 443, CidrIp: cidr },
+        { Id: id }
+      );
+    expect(namesSameResource(rule('sgr-0aaa1111bbbb2222c'), rule('sgr-0ddd3333eeee4444f'))).toBe(
+      true
+    );
   });
 
   it('a type outside the hook keeps "same id, same type" as one resource', () => {
@@ -278,5 +288,29 @@ describe('namesSameResource and the holder checks (#7088)', () => {
     expect(
       supersededResourcesOf(supersededAfterRollback(base, {}, { Stage: stageOn('api-b') }))
     ).toHaveLength(1);
+  });
+
+  it('two entries of one logical id on different APIs are two entries', () => {
+    expect(sameSupersededEntry(kept('Stage', stageOn('api-a')), kept('Stage', stageOn('api-b')))).toBe(false);
+    expect(sameSupersededEntry(kept('Stage', stageOn('api-a')), kept('Stage', stageOn('api-a')))).toBe(true);
+    expect(sameSupersededEntry(kept('Stage', stageOn('api-a')), kept('Other', stageOn('api-a')))).toBe(false);
+  });
+
+  it("a rollback's settled moved id leaves the loaded state's entry of another stage alone", () => {
+    const settled = kept('Stage', stageOn('api-a'));
+    const host = { supersededResources: [settled] };
+    const base = { supersededResources: [kept('Stage', stageOn('api-a')), kept('Stage', stageOn('api-b'))] };
+
+    segmentCleanupOptions(false, host, base).onSupersededSettled(settled);
+
+    expect(supersededResourcesOf(host)).toEqual([]);
+    expect(supersededResourcesOf(base).map((e) => e.state.properties['RestApiId'])).toEqual(['api-b']);
+  });
+
+  it("a deferred op's old stage is pending only while an entry names that same stage", () => {
+    const prev = stageOn('api-a');
+    expect(deferredDeleteStillPending([kept('Stage', stageOn('api-b'))], prev, STAGE)).toBe(false);
+    expect(deferredDeleteStillPending([kept('Stage', stageOn('api-a'))], prev, STAGE)).toBe(true);
+    expect(deferredDeleteStillPending(undefined, prev, STAGE)).toBe(true);
   });
 });

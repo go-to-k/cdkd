@@ -59,8 +59,11 @@ cd "$(dirname "$0")"
 
 STACK="CdkdSupersededStageEqualIdExample"
 REGION="${AWS_REGION:-us-east-1}"
-API_PREFIX="cdkd-integ-superseded-stage-"
-DOMAIN="superseded-stage.cdkd-integ.example.com"
+# Per run: the cleanup sweeps only this run's APIs and domain, never a peer run's.
+RUN_ID="$(date +%s)-$$"
+export CDKD_INTEG_RUN_ID="${RUN_ID}"
+API_PREFIX="cdkd-integ-superseded-stage-${RUN_ID}-"
+DOMAIN="superseded-stage-${RUN_ID}.cdkd-integ.example.com"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 CERT_DIR="$(mktemp -d)"
@@ -111,6 +114,7 @@ trap '(exit 143); cleanup; exit 143' TERM
 [ -z "${STATE_BUCKET:-}" ] && { echo "FAIL: STATE_BUCKET required" >&2; exit 1; }
 [ ! -f "${LOCAL_DIST}" ] && { echo "FAIL: build dist first" >&2; exit 1; }
 command -v openssl >/dev/null || { echo "FAIL: openssl is required (the self-signed certificate)" >&2; exit 1; }
+command -v jq >/dev/null || { echo "FAIL: jq is required" >&2; exit 1; }
 [ -d node_modules ] || npm install
 echo "==> Pre-run cleanup"; cleanup
 CERT_DIR="$(mktemp -d)"

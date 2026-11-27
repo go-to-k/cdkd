@@ -19,9 +19,11 @@ export class SupersededStageEqualIdStack extends cdk.Stack {
     super(scope, id, props);
 
     const onB = process.env.CDKD_TEST_UPDATE === 'v2';
+    // verify.sh names this run's APIs, so a peer run's are never swept.
+    const runId = process.env.CDKD_INTEG_RUN_ID ?? 'unset';
     const api = (name: string): { rest: apigw.CfnRestApi; deployment: apigw.CfnDeployment } => {
       const rest = new apigw.CfnRestApi(this, `Api${name}`, {
-        name: `cdkd-integ-superseded-stage-${name}`,
+        name: `cdkd-integ-superseded-stage-${runId}-${name}`,
       });
       const method = new apigw.CfnMethod(this, `Get${name}`, {
         restApiId: rest.ref,
