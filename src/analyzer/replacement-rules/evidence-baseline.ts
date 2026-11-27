@@ -79,17 +79,14 @@ export const UNMEASURED_SPEC_REPLACEMENT_CANDIDATES: ReadonlySet<string> = new S
   'AWS::EMRServerless::Application#WorkerTypeSpecifications',
   'AWS::EMRServerless::Application#WorkerTypeSpecifications.*.ImageConfiguration',
   'AWS::EMRServerless::Application#WorkerTypeSpecifications.*.ImageConfiguration.ImageUri',
-  // Measured on #7083: Cloud Control answers `NotUpdatable: Immutable` for
-  // NodeGroupConfiguration and NumNodeGroups, but CloudFormation reshards
-  // online under a `UseOnlineResharding` update policy, so a replacement of
-  // this stateful type is not shown (#7100).
-  'AWS::ElastiCache::ReplicationGroup#NodeGroupConfiguration',
+  // Members of NodeGroupConfiguration, whose own row is a CloudFormation-
+  // measured `replace` (#7100): replacing on it already covers each of them,
+  // and a member cannot be compared per element.
   'AWS::ElastiCache::ReplicationGroup#NodeGroupConfiguration.*.NodeGroupId',
   'AWS::ElastiCache::ReplicationGroup#NodeGroupConfiguration.*.PrimaryAvailabilityZone',
   'AWS::ElastiCache::ReplicationGroup#NodeGroupConfiguration.*.ReplicaAvailabilityZones',
   'AWS::ElastiCache::ReplicationGroup#NodeGroupConfiguration.*.ReplicaCount',
   'AWS::ElastiCache::ReplicationGroup#NodeGroupConfiguration.*.Slots',
-  'AWS::ElastiCache::ReplicationGroup#NumNodeGroups',
   'AWS::Elasticsearch::Domain#AdvancedSecurityOptions',
   'AWS::Elasticsearch::Domain#AdvancedSecurityOptions.Enabled',
   'AWS::Elasticsearch::Domain#ElasticsearchVersion',

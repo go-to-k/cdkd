@@ -95,7 +95,7 @@ aws ssm delete-parameter --name "${PORT_PARAM}" --region "${REGION}" >/dev/null 
 
 echo "==> Step 1: deploy (ElastiCache ReplicationGroup via Cloud Control)"
 set +e
-node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_RESHARD node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes > "${DEPLOY_LOG}" 2>&1
 DEPLOY_RC=$?
 set -e
@@ -136,6 +136,48 @@ case "${PORT}" in
     echo "    OK: PrimaryEndPoint.Port is numeric (${PORT})"
     ;;
 esac
+
+echo "==> Step 2b (#7100): a NumNodeGroups change must be refused before any call (stateful replacement)"
+rg_ids() {
+  aws elasticache describe-replication-groups --region "${REGION}" \
+    --query "ReplicationGroups[?contains(Description, 'cdkd elasticache-rg getatt fixture')].[ReplicationGroupId,Status] | [0]" \
+    --output text
+}
+read -r RG_ID RG_STATUS <<<"$(rg_ids)"
+if [ -z "${RG_ID}" ] || [ "${RG_ID}" = "None" ] || [ "${RG_STATUS}" != "available" ]; then
+  echo "FAIL: #7100 premise: no available replication group before the NumNodeGroups change (got '${RG_ID}' '${RG_STATUS}')" >&2
+  exit 1
+fi
+set +e
+CDKD_TEST_RESHARD=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes > "${DEPLOY_LOG}" 2>&1
+RESHARD_RC=$?
+set -e
+if [ "${RESHARD_RC}" -eq 0 ]; then
+  echo "FAIL: #7100: the NumNodeGroups change deployed without --force-stateful-recreation (the stateful replacement gate did not refuse)" >&2
+  tail -40 "${DEPLOY_LOG}" >&2
+  exit 1
+fi
+if ! grep -qF 'requires replacement (immutable property changed: NumNodeGroups)' "${DEPLOY_LOG}"; then
+  echo "FAIL: #7100: the deploy exited ${RESHARD_RC} without planning NumNodeGroups as a replacement (pre-fix: an in-place update)" >&2
+  tail -40 "${DEPLOY_LOG}" >&2
+  exit 1
+fi
+# The arm adds NumNodeGroups (absent -> 1) to a cluster-mode-disabled group: it
+# proves the gate, not CloudFormation's verdict for this transition (CFn was
+# measured replacing on 1 -> 2; the unit test pins the refusal's wording).
+if ! grep -qF 'stateful resource' "${DEPLOY_LOG}" \
+  || ! grep -qF -- '--force-stateful-recreation' "${DEPLOY_LOG}"; then
+  echo "FAIL: #7100: the refusal is not the stateful replacement gate naming --force-stateful-recreation" >&2
+  tail -40 "${DEPLOY_LOG}" >&2
+  exit 1
+fi
+read -r RG_ID2 RG_STATUS2 <<<"$(rg_ids)"
+if [ "${RG_ID2}" != "${RG_ID}" ] || [ "${RG_STATUS2}" != "available" ]; then
+  echo "FAIL: #7100: the refused deploy touched the replication group (now '${RG_ID2}' '${RG_STATUS2}', was '${RG_ID}' available)" >&2
+  exit 1
+fi
+echo "    OK: refused before any call; ${RG_ID} untouched"
 
 echo "==> Step 3: destroy"
 set +e

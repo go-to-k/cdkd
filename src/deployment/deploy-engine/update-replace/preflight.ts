@@ -10,6 +10,7 @@ import {
 } from '../../../provisioning/stateful-types.js';
 import { type ResourceChange, type ResourceState } from '../../../types/state.js';
 import { safeMsg } from '../../../utils/display-safe.js';
+import { SPEC_REPLACEMENT_CFN_MEASURED } from '../../../analyzer/replacement-rules/spec-replacement-properties.generated.js';
 import { CdkdError } from '../../../utils/error-handler.js';
 import { markRefusedBeforeApplying } from '../../prior-attempt-scope.js';
 import { markNonRetryable } from '../../retryable-errors.js';
@@ -90,6 +91,14 @@ export function refuseUnsafeReplacement(
           ?.filter((pc) => pc.requiresReplacement)
           .map((pc) => pc.path)
           .join(', ') || 'Type';
+      // go-to-k/cdkd#7100: a property the registry schema calls mutable that a
+      // CloudFormation execution was measured replacing on. Say so, since the
+      // user may expect the in-place update the schema suggests; only a
+      // measured row may claim it.
+      const measuredReplaced = (change.propertyChanges ?? [])
+        .filter((pc) => pc.requiresReplacement)
+        .map((pc) => pc.path)
+        .filter((path) => SPEC_REPLACEMENT_CFN_MEASURED.has([oldResourceType, path].join('#')));
       // `markNonRetryable`: the verdict is computed from a CLI flag and
       // a state-recorded property bag, neither of which a retry can
       // change — and the message interpolates a template-controlled
@@ -115,6 +124,9 @@ export function refuseUnsafeReplacement(
           new CdkdError(
             safeMsg`${logicalId} (${oldResourceType}) requires replacement (immutable property changed: ${immutableProps}${typeChanged ? `, to ${resourceType}` : ''}) but it is a stateful resource — ` +
               safeMsg`${renderStatefulReason(statefulReason)}. ` +
+              (measuredReplaced.length > 0
+                ? safeMsg`CloudFormation was measured replacing it on a ${measuredReplaced.join(' / ')} change, so the data is lost there as well. `
+                : '') +
               (protection
                 ? safeMsg`${recordedProtectionNote(protection, '--force-stateful-recreation')} Or change ` +
                   `the resource's definition to avoid the immutable-property change.`

@@ -1,5 +1,6 @@
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import { markUpdatePolicyReplacements } from './update-policy-replacement.js';
+import { keepOnlineReshardingInPlace } from './elasticache-online-resharding.js';
 import {
   dropSupersededProviderReplacements,
   providerReplacementReason,
@@ -761,6 +762,9 @@ export async function calculateDiff(
       siblingsOf(change)
     );
   }
+  // go-to-k/cdkd#7100: before the replacement passes, so no reader is
+  // promoted over a replication group CloudFormation reshards online.
+  keepOnlineReshardingInPlace(changes, desiredTemplate);
   do {
     if (updatePolicy === true) {
       markUpdatePolicyReplacements(changes, desiredTemplate);
