@@ -227,7 +227,8 @@
         "apigw-stage-throttling",
         "apigw-vpclink-integration-target",
         "cc-to-sdk-reroute-common-types-7",
-        "sdk-to-cc-identifier"
+        "sdk-to-cc-identifier",
+        "superseded-stage-equal-id"
       ],
       "signals": {
         "api-cognito": [
@@ -266,6 +267,10 @@
         "sdk-to-cc-identifier": [
           "l1",
           "literal"
+        ],
+        "superseded-stage-equal-id": [
+          "l1",
+          "literal"
         ]
       }
     },
@@ -284,7 +289,8 @@
         "cc-to-sdk-reroute-common-types-7",
         "cc-to-sdk-reroute-rest-api",
         "local-start-api-user-pool-authorizer",
-        "sdk-to-cc-identifier"
+        "sdk-to-cc-identifier",
+        "superseded-stage-equal-id"
       ],
       "signals": {
         "api-cognito": [
@@ -329,6 +335,10 @@
           "literal"
         ],
         "sdk-to-cc-identifier": [
+          "l1",
+          "literal"
+        ],
+        "superseded-stage-equal-id": [
           "l1",
           "literal"
         ]
@@ -381,6 +391,7 @@
         "schema-v16-to-v17-migration",
         "sdk-to-cc-identifier",
         "sdk-unmodelled-nested-route",
+        "superseded-stage-equal-id",
         "wafv2"
       ],
       "signals": {
@@ -441,6 +452,10 @@
           "l1",
           "literal"
         ],
+        "superseded-stage-equal-id": [
+          "l1",
+          "literal"
+        ],
         "wafv2": [
           "literal"
         ]
@@ -458,7 +473,8 @@
         "apigw-stage-props",
         "apigw-stage-throttling",
         "apigw-vpclink-integration-target",
-        "cc-to-sdk-reroute-common-types-7"
+        "cc-to-sdk-reroute-common-types-7",
+        "superseded-stage-equal-id"
       ],
       "signals": {
         "api-cognito": [
@@ -491,6 +507,10 @@
           "l1"
         ],
         "cc-to-sdk-reroute-common-types-7": [
+          "l1",
+          "literal"
+        ],
+        "superseded-stage-equal-id": [
           "l1",
           "literal"
         ]
