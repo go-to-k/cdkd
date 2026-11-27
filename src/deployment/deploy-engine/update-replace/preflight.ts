@@ -67,6 +67,7 @@ function sameValue(a: unknown, b: unknown): boolean {
     const kb = Object.keys(b as object);
     return (
       ka.length === kb.length &&
+      kb.every((k) => k in (a as object)) &&
       ka.every((k) =>
         sameValue((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k])
       )
