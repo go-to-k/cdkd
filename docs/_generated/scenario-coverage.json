@@ -1704,6 +1704,11 @@
       "scenarios": []
     },
     {
+      "name": "iam-managed-policy-outside-principal",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "iam-oidc-provider",
       "annotated": true,
       "scenarios": []
@@ -4485,6 +4490,7 @@
     "guardduty-detector-update",
     "healthimaging-stateful-update-fallback",
     "iam-managed-policy",
+    "iam-managed-policy-outside-principal",
     "iam-profile-policy-fix-forward-orphan",
     "iam-recreate-reattach",
     "iam-role-fix-forward-orphan",

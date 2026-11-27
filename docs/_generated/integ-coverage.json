@@ -7309,6 +7309,7 @@
         "getatt-rds-docdb-attributes",
         "glue-update-hardening",
         "iam-managed-policy",
+        "iam-managed-policy-outside-principal",
         "iam-oidc-provider",
         "iam-profile-policy-fix-forward-orphan",
         "iam-propagation-stress",
@@ -7588,6 +7589,9 @@
           "l2"
         ],
         "iam-managed-policy": [
+          "l2"
+        ],
+        "iam-managed-policy-outside-principal": [
           "l2"
         ],
         "iam-oidc-provider": [
