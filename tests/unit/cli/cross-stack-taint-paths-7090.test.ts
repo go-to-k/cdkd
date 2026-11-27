@@ -3,22 +3,28 @@
  *
  * A producer's value reaches a consumer's diff through the run's
  * `CrossStackPreview` (its two readers, `Fn::ImportValue` and
- * `Fn::GetStackOutput`) or through state, and the preview is where the
- * producer marks which outputs derive from a secret. The first block
- * enumerates every writer and reader of the preview in `src/`, so a new path
- * (a third reader, a second writer, a writer that drops the taint predicate)
- * fails here until it is routed through the taint. The rest is generated over
- * the read shapes a consumer can spell, and the output shapes a producer can
- * read a secret-fed name through.
+ * `Fn::GetStackOutput`) or through the producer's state. Either way the
+ * consumer's provenance comes from the preview's taint marks: made from the
+ * app's templates before any diff (`markAppProducerTaint`, so a producer this
+ * run does not diff, or diffs later, is covered), and again by each
+ * producer's diff, which adds the values. The first block enumerates every
+ * writer and reader of the preview in `src/`, so a new path (a third reader,
+ * another writer, a writer that drops the taint predicate) fails here until
+ * it is routed through the taint. The rest is generated over the read shapes
+ * a consumer can spell, the output shapes a producer can read a secret-fed
+ * name through, and nested subtrees on both sides.
  */
-import { describe, it, expect } from 'vite-plus/test';
-import { readFileSync, readdirSync } from 'node:fs';
+import { describe, it, expect, beforeAll, afterAll } from 'vite-plus/test';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 
 import { CrossStackPreview, markProducerTaint } from '../../../src/analyzer/cross-stack-preview.js';
 import {
   crossStackTaintSeedsOf,
+  markAppProducerTaint,
   producerReadsSecretFedName,
+  subtreeTaintedNames,
 } from '../../../src/cli/commands/diff-recursive/cross-stack-taint.js';
 import { taintedNamesOf } from '../../../src/cli/commands/diff-recursive/passed-secret-display.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -62,6 +68,7 @@ describe('every producer-to-consumer preview path (#7090)', () => {
   it('writes the preview only through recordProducerPreview / markProducerTaint', () => {
     expect(filesMatching(/\bpreview\.record\(|\.markTainted\(/)).toEqual([
       'src/analyzer/cross-stack-preview.ts',
+      'src/cli/commands/diff-recursive/cross-stack-taint.ts',
     ]);
     expect(filesMatching(/\b(recordProducerPreview|markProducerTaint)\(/)).toEqual([
       'src/analyzer/cross-stack-preview.ts',
@@ -80,7 +87,9 @@ describe('every producer-to-consumer preview path (#7090)', () => {
   it('builds a preview only in `cdkd diff`, and every node seeds its taint from it', () => {
     expect(filesMatching(/new CrossStackPreview\(/)).toEqual(['src/cli/commands/diff.ts']);
     const tree = readFileSync(join(ROOT, 'src/cli/commands/diff-recursive/build-tree.ts'), 'utf8');
-    expect(tree).toContain('crossStackTaintSeedsOf(template, region, crossStackPreview)');
+    expect(tree).toContain('subtreeTaintedNames(');
+    const diff = readFileSync(join(ROOT, 'src/cli/commands/diff.ts'), 'utf8');
+    expect(diff).toContain('markAppProducerTaint(crossStackPreview, allStacks)');
     expect(tree).toContain('crossStackPreview?.taintedValues()');
     expect(tree).toContain('secretFedNames: passedSecretNames');
   });
@@ -90,7 +99,7 @@ const REGION = 'us-east-1';
 
 function previewWith(
   mark: (preview: CrossStackPreview) => void = (preview) =>
-    preview.markTainted(REGION, 'Prod', 'Out', 'piece-export', ['Q7'])
+    preview.markTainted('Prod', 'Out', 'piece-export', ['Q7'])
 ): CrossStackPreview {
   const preview = new CrossStackPreview();
   mark(preview);
@@ -158,7 +167,7 @@ describe('a consumer seeds its taint from every read shape (#7090)', () => {
     expect(crossStackTaintSeedsOf(template, REGION, undefined).size).toBe(0);
   });
   it('taints every export when a tainted output exports under an unresolved name', () => {
-    const preview = previewWith((p) => p.markTainted(REGION, 'Prod', 'Out', null, []));
+    const preview = previewWith((p) => p.markTainted('Prod', 'Out', null, []));
     const template = consumer(CLEAN_READS['otherExport']);
     expect(crossStackTaintSeedsOf(template, REGION, preview).size).toBe(1);
   });
@@ -206,7 +215,7 @@ async function marked(
 ) {
   const preview = upstream ?? new CrossStackPreview();
   const tainted = taintedNamesOf(template, crossStackTaintSeedsOf(template, REGION, preview));
-  await markProducerTaint(preview, REGION, resolve, {
+  await markProducerTaint(preview, resolve, {
     stackName: 'Mid',
     template,
     desiredOutputs: { Out: 'Q7', Plain: 'literal' },
@@ -220,7 +229,7 @@ describe('a producer marks every output reading a secret-fed name (#7090)', () =
   for (const [label, value] of Object.entries(TAINTED_OUTPUTS)) {
     it(`marks ${label}, its export and its values`, async () => {
       const upstream = previewWith((p) =>
-        p.markTainted(REGION, 'Up', 'U', 'upstream-export', ['Q7up'])
+        p.markTainted('Up', 'U', 'upstream-export', ['Q7up'])
       );
       const preview = await marked(producer(value), upstream);
       expect(preview.stackOutputTainted(REGION, 'Mid', 'Out')).toBe(true);
@@ -251,5 +260,157 @@ describe('a producer marks every output reading a secret-fed name (#7090)', () =
   it('taints every export when the export name of a tainted output does not resolve', async () => {
     const preview = await marked(producer({ 'Fn::GetAtt': ['Row', 'Outputs.Piece'] }, { Ref: 'N' }));
     expect(preview.exportTainted(REGION, 'anything')).toBe(true);
+  });
+});
+
+describe('the app-wide marks, before any diff (#7090)', () => {
+  const rowFed = (outputs: CloudFormationTemplate['Outputs']): CloudFormationTemplate =>
+    ({ ...producer({ 'Fn::GetAtt': ['Row', 'Outputs.Piece'] }), Outputs: outputs }) as CloudFormationTemplate;
+
+  it('marks a secret-fed output in every region, and a re-export of it downstream', () => {
+    const preview = new CrossStackPreview();
+    markAppProducerTaint(preview, [
+      // Listed consumer-first: the fixed point does not depend on order.
+      {
+        stackName: 'Relay',
+        template: {
+          Resources: {},
+          Outputs: { Again: { Value: IMPORT, Export: { Name: 'again-export' } } },
+        } as CloudFormationTemplate,
+      },
+      {
+        stackName: 'Prod',
+        template: rowFed({
+          Out: { Value: { 'Fn::GetAtt': ['Row', 'Outputs.Piece'] }, Export: { Name: 'piece-export' } },
+          Plain: { Value: 'literal', Export: { Name: 'plain-export' } },
+        }),
+      },
+    ]);
+    for (const region of ['us-east-1', 'eu-west-1']) {
+      expect(preview.exportTainted(region, 'piece-export')).toBe(true);
+      expect(preview.stackOutputTainted(region, 'Prod', 'Out')).toBe(true);
+      expect(preview.exportTainted(region, 'again-export')).toBe(true);
+      expect(preview.exportTainted(region, 'plain-export')).toBe(false);
+    }
+    expect(preview.taintedValues().size).toBe(0);
+  });
+
+  it('taints every export when a secret-fed output exports under a computed name', () => {
+    const preview = new CrossStackPreview();
+    markAppProducerTaint(preview, [
+      {
+        stackName: 'Prod',
+        template: rowFed({
+          Out: {
+            Value: { 'Fn::GetAtt': ['Row', 'Outputs.Piece'] },
+            Export: { Name: { 'Fn::Sub': '${AWS::StackName}-x' } as unknown as string },
+          },
+        }),
+      },
+    ]);
+    expect(preview.exportTainted(REGION, 'anything')).toBe(true);
+  });
+
+  it('marks nothing in an app with no secret-fed name', () => {
+    const preview = new CrossStackPreview();
+    markAppProducerTaint(preview, [
+      {
+        stackName: 'Prod',
+        template: { Resources: {}, Outputs: { Out: { Value: IMPORT } } } as CloudFormationTemplate,
+      },
+    ]);
+    expect(preview.anyTainted()).toBe(false);
+  });
+});
+
+describe('nested subtrees, read from disk (#7090)', () => {
+  let dir: string;
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'cdkd-7090-paths-'));
+    // A child exporting a piece of a parameter its row mixes with a reference.
+    writeFileSync(
+      join(dir, 'exporting.json'),
+      JSON.stringify({
+        Parameters: { X: { Type: 'String' } },
+        Resources: {},
+        Outputs: {
+          Piece: {
+            Value: { 'Fn::Select': [0, { 'Fn::Split': ['/', { Ref: 'X' }] }] },
+            Export: { Name: 'child-export' },
+          },
+          Plain: { Value: 'literal', Export: { Name: 'child-plain' } },
+        },
+      })
+    );
+    // A consumer's child importing the tainted export, and outputting it.
+    writeFileSync(
+      join(dir, 'relay.json'),
+      JSON.stringify({
+        Resources: {},
+        Outputs: { Y: { Value: { 'Fn::ImportValue': 'child-export' } } },
+      })
+    );
+  });
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  const nestedRow = (asset: string, parameters: Record<string, unknown> = {}) => ({
+    Type: 'AWS::CloudFormation::Stack',
+    Metadata: { 'aws:asset:path': asset },
+    Properties: { TemplateURL: 'u', Parameters: parameters },
+  });
+  type AppStack = {
+    stackName: string;
+    template: CloudFormationTemplate;
+    nestedTemplates: Record<string, string>;
+  };
+  const app = (): AppStack[] => [
+    {
+      stackName: 'Prod',
+      template: {
+        Resources: {
+          Row: nestedRow('exporting.json', {
+            X: { 'Fn::Join': ['', [{ Ref: 'Sep' }, '/{{resolve:ssm-secure:/a}}']] },
+          }),
+        },
+      } as unknown as CloudFormationTemplate,
+      nestedTemplates: { Row: join(dir, 'exporting.json') },
+    },
+    {
+      stackName: 'Cons',
+      template: {
+        Resources: { Row2: nestedRow('relay.json') },
+        Outputs: {
+          X: { Value: { 'Fn::GetAtt': ['Row2', 'Outputs.Y'] }, Export: { Name: 'relay-export' } },
+        },
+      } as unknown as CloudFormationTemplate,
+      nestedTemplates: { Row2: join(dir, 'relay.json') },
+    },
+  ];
+
+  it("marks a nested child's own export, without diffing the child", () => {
+    const preview = new CrossStackPreview();
+    markAppProducerTaint(preview, app());
+    expect(preview.exportTainted(REGION, 'child-export')).toBe(true);
+    expect(preview.exportTainted(REGION, 'child-plain')).toBe(false);
+  });
+
+  it("taints a row whose child reads a tainted export, and a root output reading the row", () => {
+    const preview = new CrossStackPreview();
+    markAppProducerTaint(preview, app());
+    const [, cons] = app();
+    const tainted = subtreeTaintedNames(cons!.template, cons!.nestedTemplates, [], preview);
+    expect(tainted.has('Row2')).toBe(true);
+    // ...so a third stack importing the root's re-export is masked too.
+    expect(preview.exportTainted(REGION, 'relay-export')).toBe(true);
+  });
+
+  it('marks nothing when the row passes no reference', () => {
+    const preview = new CrossStackPreview();
+    const [prod] = app();
+    (prod!.template.Resources['Row']!.Properties as Record<string, unknown>)['Parameters'] = {
+      X: { Ref: 'Sep' },
+    };
+    markAppProducerTaint(preview, [prod!]);
+    expect(preview.anyTainted()).toBe(false);
   });
 });

@@ -887,7 +887,7 @@ export async function computeStackDiff(
       holdsSecret: (text) => printing.mask(text) !== text,
     });
   } else if (crossStackPreview && readsSecretFed) {
-    await markProducerTaint(crossStackPreview, region, resolveFn, producer);
+    await markProducerTaint(crossStackPreview, resolveFn, producer);
   }
 
   // go-to-k/cdkd#4049: mask what this node PRINTS, at the value, once every

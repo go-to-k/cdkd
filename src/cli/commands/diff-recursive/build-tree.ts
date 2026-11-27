@@ -70,7 +70,7 @@ import {
   securityDiffWithPassedSecretWithheld,
   taintedNamesOf,
 } from './passed-secret-display.js';
-import { crossStackTaintSeedsOf } from './cross-stack-taint.js';
+import { subtreeTaintedNames } from './cross-stack-taint.js';
 import { computeStackDiff } from './compute-stack-diff.js';
 import type { CrossStackPreview } from '../../../analyzer/cross-stack-preview.js';
 import {
@@ -387,16 +387,22 @@ export async function buildDiffTree(args: {
   // go-to-k/cdkd#7068: every name of this node deriving from a passed mixed
   // secret, read off the unpruned template (a superset of the diffed one).
   // go-to-k/cdkd#7090: and every cross-stack read of a producer output this
-  // run's preview marks as secret-fed, so an imported value is masked by
-  // provenance as a passed one is.
-  const passedSecretNames = taintedNamesOf(template, [
-    ...(inheritedMixedSecretParameters ?? []),
-    ...crossStackTaintSeedsOf(template, region, crossStackPreview),
-  ]);
-  // What the records of those names store (a physical id built from the
-  // value), as mask-only needles of this node's own lines.
+  // run's preview marks as secret-fed, and each nested row whose subtree
+  // makes one, so an imported value is masked by provenance as a passed one is.
+  const ownSecretNames = taintedNamesOf(template, inheritedMixedSecretParameters);
+  const passedSecretNames = crossStackPreview?.anyTainted()
+    ? subtreeTaintedNames(
+        template,
+        nestedTemplates,
+        inheritedMixedSecretParameters ?? [],
+        crossStackPreview
+      )
+    : ownSecretNames;
+  const readsTaintedCrossStack = passedSecretNames.size > ownSecretNames.size;
   const passedSecretRecordNeedles = recordedValuesOf(state.resources ?? {}, passedSecretNames);
-  for (const value of crossStackPreview?.taintedValues() ?? []) {
+  // The tainted outputs' values, on a node reading one: its lines can embed
+  // the imported value outside any template leaf.
+  for (const value of readsTaintedCrossStack ? (crossStackPreview?.taintedValues() ?? []) : []) {
     recordLogOnlyValue(passedSecretRecordNeedles, value);
   }
   // Every resolution of this node's values runs under them: its diff, and its

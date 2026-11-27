@@ -28,29 +28,30 @@ export class CrossStackPreview {
   /**
    * go-to-k/cdkd#7090: PROVENANCE, beside the values and never in them. The
    * exports and outputs whose template reads a secret-fed name
-   * (`passed-secret-display.ts`), changed or not, so a consumer diffed later
-   * MASKS what it prints from them while comparing on the real value (a
-   * masked comparison value plans phantom changes, go-to-k/cdkd#7060).
+   * (`passed-secret-display.ts`), changed or not, so a consumer MASKS what it
+   * prints from them while comparing on the real value (a masked comparison
+   * value plans phantom changes, go-to-k/cdkd#7060). Kept for EVERY region:
+   * a cross-region read is masked too (the safe side).
    */
   private readonly taintedExports = new Set<string>();
   private readonly taintedOutputs = new Set<string>();
   private readonly taintedTexts = new Set<string>();
-  /** A tainted output exports under a name this diff could not resolve: every export is. */
+  /** A tainted output exports under a name that did not resolve: every export is. */
   private everyExportTainted = false;
 
-  /** Is export `name` in `region` derived from a secret, by provenance? */
-  exportTainted(region: string, name: string): boolean {
-    return this.everyExportTainted || this.taintedExports.has(key(region, name));
+  /** Is export `name` derived from a secret, by provenance (in any region)? */
+  exportTainted(_region: string, name: string): boolean {
+    return this.everyExportTainted || this.taintedExports.has(name);
   }
 
-  /** Is `stackName`'s output `outputName` in `region` derived from a secret? */
-  stackOutputTainted(region: string, stackName: string, outputName: string): boolean {
-    return this.taintedOutputs.has(key(region, stackName, outputName));
+  /** Is `stackName`'s output `outputName` derived from a secret (in any region)? */
+  stackOutputTainted(_region: string, stackName: string, outputName: string): boolean {
+    return this.taintedOutputs.has(JSON.stringify([stackName, outputName]));
   }
 
   /** Does this run hold any tainted export or output? */
   anyTainted(): boolean {
-    return this.taintedExports.size > 0 || this.taintedOutputs.size > 0;
+    return this.everyExportTainted || this.taintedOutputs.size > 0;
   }
 
   /**
@@ -65,23 +66,28 @@ export class CrossStackPreview {
   /**
    * Mark `stackName`'s output `outputName` (and its export) tainted; `values`
    * become needles. `exportName` is `null` for an export whose name did not
-   * resolve, which taints every export (fail closed).
+   * resolve, which taints every export (fail closed). Made by a diff of the
+   * stack, and before any diff from the app's templates alone
+   * (`markAppProducerTaint`), so a consumer whose producer this run does not
+   * diff still masks it. True when the output was not marked before.
    */
   markTainted(
-    region: string,
     stackName: string,
     outputName: string,
     exportName: string | null | undefined,
-    values: readonly unknown[]
-  ): void {
-    this.taintedOutputs.add(key(region, stackName, outputName));
+    values: readonly unknown[] = []
+  ): boolean {
+    const outputKey = JSON.stringify([stackName, outputName]);
+    const added = !this.taintedOutputs.has(outputKey);
+    this.taintedOutputs.add(outputKey);
     if (exportName === null) this.everyExportTainted = true;
-    else if (exportName !== undefined) this.taintedExports.add(key(region, exportName));
+    else if (exportName !== undefined) this.taintedExports.add(exportName);
     for (const value of values) {
       if (isScalar(value) && value !== '' && value !== SECRET_MASK) {
         this.taintedTexts.add(String(value));
       }
     }
+    return added;
   }
 
   /** The previewed value of export `name` in `region`, if a producer in this run changes it. */
@@ -263,7 +269,6 @@ export interface ProducerTaintInput {
  */
 export async function markProducerTaint(
   preview: CrossStackPreview,
-  region: string,
   resolve: (value: unknown) => Promise<unknown>,
   input: ProducerTaintInput,
   exportNames?: ReadonlyMap<string, string>
@@ -279,7 +284,7 @@ export async function markProducerTaint(
     // An export whose name did not resolve taints every export (fail closed).
     const exportName =
       exportNameOf.get(outputName) ?? (output?.Export === undefined ? undefined : null);
-    preview.markTainted(region, input.stackName, outputName, exportName, [
+    preview.markTainted(input.stackName, outputName, exportName, [
       Object.hasOwn(input.desiredOutputs, outputName)
         ? input.desiredOutputs[outputName]
         : undefined,
@@ -301,7 +306,7 @@ export async function recordProducerPreview(
   input: Omit<ProducerPreviewInput, 'exportNameOf'> & Pick<ProducerTaintInput, 'readsSecretFedName'>
 ): Promise<void> {
   const exportNameOf = await resolvedExportNames(input.template, resolve);
-  await markProducerTaint(preview, region, resolve, input, exportNameOf);
+  await markProducerTaint(preview, resolve, input, exportNameOf);
   const readsUnknownPreview = (value: unknown): boolean =>
     crossStackReads(value).some((read) => {
       const found =

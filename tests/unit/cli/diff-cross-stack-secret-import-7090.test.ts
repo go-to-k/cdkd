@@ -56,6 +56,8 @@ import { getLogger } from '../../../src/utils/logger.js';
 import { MIN_NEEDLE_LENGTH } from '../../../src/deployment/secret-redaction.js';
 import type { DiffTreeNode } from '../../../src/cli/commands/diff-recursive/types.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
+import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import { markAppProducerTaint } from '../../../src/cli/commands/diff-recursive/cross-stack-taint.js';
 
 const A = '{{resolve:ssm-secure:/app/a}}';
 const IMPORT = { 'Fn::ImportValue': 'piece-export' };
@@ -155,6 +157,11 @@ interface Case {
   /** The consumer's records already hold the value. */
   consumerHolds: boolean;
   shape: string;
+  /**
+   * `cdkd diff Cons` alone: the producer is not diffed, so only the app-wide
+   * marks (`markAppProducerTaint`, as `diff.ts` makes them) reach the consumer.
+   */
+  consumerOnly?: boolean;
 }
 
 /**
@@ -164,7 +171,12 @@ interface Case {
  */
 async function diffPair(
   c: Case
-): Promise<{ prod: DiffTreeNode; cons: DiffTreeNode; prodLog: string[]; consLog: string[] }> {
+): Promise<{
+  prod: DiffTreeNode | undefined;
+  cons: DiffTreeNode;
+  prodLog: string[];
+  consLog: string[];
+}> {
   const { secret } = c;
   const read = READ_SHAPES[c.shape]!;
   const held = c.consumerHolds ? read.holding(secret) : 'old-import';
@@ -223,31 +235,34 @@ async function diffPair(
     crossStackPreview: preview,
     recursive: true,
   };
-  const prod = await buildDiffTree({
-    ...common,
-    stackName: 'Prod',
-    displayName: 'Prod',
-    parameters: { Sep: secret },
-    nestedTemplates: { Row: join(dir, 'piece.json') },
-    template: {
-      Parameters: { Sep: { Type: 'String' } },
-      Resources: {
-        Row: {
-          Type: 'AWS::CloudFormation::Stack',
-          Metadata: { 'aws:asset:path': 'piece.json' },
-          Properties: {
-            TemplateURL: 'u',
-            Parameters: {
-              X: c.secretFed ? { 'Fn::Join': ['', [{ Ref: 'Sep' }, '/', A]] } : { Ref: 'Sep' },
-            },
-          },
+  const prodTemplate = {
+  Parameters: { Sep: { Type: 'String' } },
+  Resources: {
+    Row: {
+      Type: 'AWS::CloudFormation::Stack',
+      Metadata: { 'aws:asset:path': 'piece.json' },
+      Properties: {
+        TemplateURL: 'u',
+        Parameters: {
+          X: c.secretFed ? { 'Fn::Join': ['', [{ Ref: 'Sep' }, '/', A]] } : { Ref: 'Sep' },
         },
       },
-      Outputs: {
-        Out: { Value: { 'Fn::GetAtt': ['Row', 'Outputs.Piece'] }, Export: { Name: 'piece-export' } },
-      },
     },
-  } as never);
+  },
+  Outputs: {
+    Out: { Value: { 'Fn::GetAtt': ['Row', 'Outputs.Piece'] }, Export: { Name: 'piece-export' } },
+  },
+} as CloudFormationTemplate;
+  const prod = c.consumerOnly
+    ? (markAppProducerTaint(preview, [{ stackName: 'Prod', template: prodTemplate }]), undefined)
+    : await buildDiffTree({
+        ...common,
+        stackName: 'Prod',
+        displayName: 'Prod',
+        parameters: { Sep: secret },
+        nestedTemplates: { Row: join(dir, 'piece.json') },
+        template: prodTemplate,
+      } as never);
   const prodLog = captured.splice(0);
   const cons = await buildDiffTree({
     ...common,
@@ -309,9 +324,14 @@ const SECRETS = ['Q7', 'жщ', 'Q7longsecretvalue'];
 describe('cdkd diff: a consumer reading a secret-fed producer output (#7090)', () => {
   for (const shape of Object.keys(READ_SHAPES)) {
     for (const secret of SECRETS) {
-      for (const producerUnchanged of [false, true]) {
+      for (const [producerUnchanged, consumerOnly] of [
+        [false, false],
+        [true, false],
+        [true, true],
+      ] as const) {
         for (const consumerHolds of [false, true]) {
-          const label = `${shape}, "${secret}", producer ${producerUnchanged ? 'unchanged' : 'changed'}, consumer ${consumerHolds ? 'holds it' : 'differs'}`;
+          const producer = consumerOnly ? 'not diffed' : producerUnchanged ? 'unchanged' : 'changed';
+          const label = `${shape}, "${secret}", producer ${producer}, consumer ${consumerHolds ? 'holds it' : 'differs'}`;
           it(`never prints the value (${label})`, async () => {
             const { prod, cons, prodLog, consLog } = await diffPair({
               secret,
@@ -319,12 +339,18 @@ describe('cdkd diff: a consumer reading a secret-fed producer output (#7090)', (
               producerUnchanged,
               consumerHolds,
               shape,
+              consumerOnly,
             });
-            const text = [await printed(prod, prodLog), await printed(cons, consLog)].join('\n');
+            const text = [
+              prod === undefined ? '' : await printed(prod, prodLog),
+              await printed(cons, consLog),
+            ].join('\n');
             expect(text.includes(secret), text).toBe(false);
             // The consumer's resolver lines too (`--verbose`), once the value
             // clears the masker's floor (a sub-floor piece there is #7077's).
-            if (secret.length >= MIN_NEEDLE_LENGTH) {
+            // Not when the producer is not diffed: the app-wide marks carry no
+            // value to mask the resolver's lines with (go-to-k/cdkd#7077).
+            if (secret.length >= MIN_NEEDLE_LENGTH && !consumerOnly) {
               const resolved = consLog.join('\n');
               expect(resolved.includes(secret), resolved).toBe(false);
             }
@@ -344,8 +370,11 @@ describe('cdkd diff: a consumer reading a secret-fed producer output (#7090)', (
   // A NESTED child's export: only `--recursive` diffs the child, whose own
   // node marks the export (`markProducerTaint`); the consumer reads it from
   // the child's legacy state.
-  for (const secret of SECRETS) {
-    it(`never prints a nested child's export read by a consumer ("${secret}")`, async () => {
+  for (const [secret, recursive] of SECRETS.flatMap((v) => [
+    [v, true],
+    [v, false],
+  ] as const)) {
+    it(`never prints a nested child's export read by a consumer ("${secret}", recursive: ${recursive})`, async () => {
       writeFileSync(
         join(dir, 'exporting.json'),
         JSON.stringify({
@@ -385,27 +414,36 @@ describe('cdkd diff: a consumer reading a secret-fed producer output (#7090)', (
         diffCalculator: new DiffCalculator(),
         isNestedChild: false,
         crossStackPreview: preview,
-        recursive: true,
+        recursive,
       };
+      const prodTemplate = {
+        Parameters: { Sep: { Type: 'String' } },
+        Resources: {
+          Row: {
+            Type: 'AWS::CloudFormation::Stack',
+            Metadata: { 'aws:asset:path': 'exporting.json' },
+            Properties: {
+              TemplateURL: 'u',
+              Parameters: { X: { 'Fn::Join': ['', [{ Ref: 'Sep' }, '/', A]] } },
+            },
+          },
+        },
+      } as CloudFormationTemplate;
+      // As `diff.ts` does before any diff: the app's templates, nested ones included.
+      markAppProducerTaint(preview, [
+        {
+          stackName: 'Prod',
+          template: prodTemplate,
+          nestedTemplates: { Row: join(dir, 'exporting.json') },
+        },
+      ]);
       const prod = await buildDiffTree({
         ...common,
         stackName: 'Prod',
         displayName: 'Prod',
         parameters: { Sep: secret },
         nestedTemplates: { Row: join(dir, 'exporting.json') },
-        template: {
-          Parameters: { Sep: { Type: 'String' } },
-          Resources: {
-            Row: {
-              Type: 'AWS::CloudFormation::Stack',
-              Metadata: { 'aws:asset:path': 'exporting.json' },
-              Properties: {
-                TemplateURL: 'u',
-                Parameters: { X: { 'Fn::Join': ['', [{ Ref: 'Sep' }, '/', A]] } },
-              },
-            },
-          },
-        },
+        template: prodTemplate,
       } as never);
       const prodLog = captured.splice(0);
       const cons = await buildDiffTree({

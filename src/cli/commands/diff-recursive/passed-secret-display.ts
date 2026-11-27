@@ -103,7 +103,7 @@ function holdsDynamicReference(value: unknown): boolean {
  * a lookup that fails) cannot be told from a public `String` here, and a
  * reader of the row's outputs masked over a public one is the safe side.
  */
-function templateMixesDynamicReference(value: unknown, depth = 0): boolean {
+export function templateMixesDynamicReference(value: unknown, depth = 0): boolean {
   if (typeof value === 'string') return mixesDynamicReference(value);
   if (!isRecord(value) || depth > 64) return holdsDynamicReference(value);
   const branches = value['Fn::If'];
