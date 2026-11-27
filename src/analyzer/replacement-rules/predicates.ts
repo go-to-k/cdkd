@@ -820,9 +820,18 @@ export function ssmDocumentChangeReplaces(
  * (us-east-1): a `ThingTypeDescription` or `SearchableAttributes` change
  * replaced the type (a new id, or "a custom-named resource requires
  * replacing"), while a `Mqtt5Configuration` change, or its addition, applied
- * in place under the same thing type id.
+ * in place under the same thing type id. Cloud Control refuses the
+ * description change in place ("cannot be added/updated/removed"). A block
+ * that is itself an unresolved intrinsic hides its members, so a change
+ * involving one answers a replacement.
  */
 export function thingTypeReplacingMemberChanged(oldValue: unknown, newValue: unknown): boolean {
+  const intrinsic = (value: unknown): boolean =>
+    value !== null &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    Object.keys(value).some((key) => key === 'Ref' || key.startsWith('Fn::'));
+  if (intrinsic(oldValue) || intrinsic(newValue)) return !isDeepStrictEqual(oldValue, newValue);
   const member = (value: unknown, key: string): unknown =>
     value !== null && typeof value === 'object' && !Array.isArray(value)
       ? (value as Record<string, unknown>)[key]

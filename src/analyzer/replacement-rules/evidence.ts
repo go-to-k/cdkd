@@ -571,17 +571,17 @@ export const REPLACEMENT_EVIDENCE: ReadonlyMap<string, ReplacementEvidence> = ne
     'AWS::Timestream::ScheduledQuery#ClientToken',
     cannotProbe('Only existing Timestream for LiveAnalytics customers can use the service'),
   ],
-  // ModifyVpnConnection / ModifyVpnTunnelOptions: each applied under the same
-  // VPN connection id, the gateway moves read back live.
   // CloudFormation switched the registration between the service-linked role
   // and its own role in place, both ways (same ARN, new role read back).
   // Cloud Control refuses the switch to its own role (#7121).
   ['AWS::LakeFormation::Resource#UseServiceLinkedRole', update('cfn-measured', 7083, 7121)],
-  // CloudFormation updated the session in place under the same id
-  // (UPDATE_COMPLETE, no replacement). Cloud Control reported the same update
-  // a success while the live session kept its source interface: EC2's
-  // ModifyTrafficMirrorSession has no member for it.
+  // CloudFormation reported UPDATE_COMPLETE under the same session id, with
+  // no replacement; its live interface was not read. Cloud Control reported
+  // the same update a success while the live session kept its source
+  // interface: EC2's ModifyTrafficMirrorSession has no member for it.
   ['AWS::EC2::TrafficMirrorSession#NetworkInterfaceId', update('cfn-measured', 7083)],
+  // ModifyVpnConnection / ModifyVpnTunnelOptions: each applied under the same
+  // VPN connection id, the gateway moves read back live.
   ['AWS::EC2::VPNConnection#CustomerGatewayId', update('cc-measured', 7083)],
   ['AWS::EC2::VPNConnection#TransitGatewayId', update('cc-measured', 7083)],
   ['AWS::EC2::VPNConnection#VpnGatewayId', update('cc-measured', 7083)],

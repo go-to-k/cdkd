@@ -44,6 +44,18 @@ describe('thingTypeReplacingMemberChanged (go-to-k/cdkd#7083)', () => {
     ['both absent', undefined, undefined, false],
     ['the whole block added with only Mqtt5Configuration', undefined, { Mqtt5Configuration: mqtt('k1') }, false],
     ['the whole block added with a description', undefined, { ThingTypeDescription: 'one' }, true],
+    [
+      'a block that is an unresolved intrinsic',
+      { 'Fn::If': ['C', { ThingTypeDescription: 'a' }, { ThingTypeDescription: 'b' }] },
+      { ThingTypeDescription: 'a' },
+      true,
+    ],
+    [
+      'an unchanged intrinsic block',
+      { 'Fn::If': ['C', { ThingTypeDescription: 'a' }, {}] },
+      { 'Fn::If': ['C', { ThingTypeDescription: 'a' }, {}] },
+      false,
+    ],
   ])('%s -> %s', (_label, oldValue, newValue, expected) => {
     expect(thingTypeReplacingMemberChanged(oldValue, newValue)).toBe(expected);
   });

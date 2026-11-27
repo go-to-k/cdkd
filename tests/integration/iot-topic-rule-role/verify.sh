@@ -284,7 +284,7 @@ echo "    diff reports no changes"
 # --- Phase 3: in-place UPDATE through Cloud Control -------------------------
 echo "==> Phase 3: update (new SQL and description, error action removed; thing type changes)"
 if ! CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes; then
-  echo "FAIL: #7083: the update deploy failed; a SearchableAttributes change must replace ${SEARCH_TYPE_LOGICAL}, not update it in place" >&2
+  echo "FAIL: the update deploy failed (the rule update, or #7083: a SearchableAttributes change must replace ${SEARCH_TYPE_LOGICAL}, not update it in place)" >&2
   exit 1
 fi
 
