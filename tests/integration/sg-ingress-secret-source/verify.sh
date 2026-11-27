@@ -14,7 +14,7 @@
 #      created resource was deleted again, and the group still admits exactly
 #      A (pre-fix: A and B, B untracked);
 #   3. deploy with secret B and --replace: succeeds; exactly B, recorded under
-#      its sgr- id; drift is clean;
+#      its sgr- id; drift reports the masked rule as not compared (exit 2);
 #   4. destroy: no group, VPC, secret or state file of this fixture left.
 #
 # Required env vars:
@@ -201,12 +201,17 @@ deploy "${DEPLOY_LOG}" --replace || { echo "FAIL: phase 3: deploy --replace fail
 ID3="$(only_rule "phase 3" "${DST}" 443 203.0.113.0/24)"
 [ "$(state_field '.resources.InCidr.attributes.Id // ""')" = "${ID3}" ] || {
   echo "FAIL: phase 3: InCidr does not record ${ID3}" >&2; exit 1; }
+# A masked source cannot be compared, so drift reports InCidr as unknown
+# (exit 2), never as clean or drifted.
 set +e
-node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}"
+DRIFT_OUT="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)"
 DRIFT_RC=$?
 set -e
-[ "${DRIFT_RC}" = "0" ] || { echo "FAIL: phase 3: cdkd drift exited ${DRIFT_RC}, expected 0" >&2; exit 1; }
-echo "    OK: 443 from B (${ID3}), recorded; drift clean"
+printf '%s\n' "${DRIFT_OUT}" | sed 's/^/    | /'
+[ "${DRIFT_RC}" = "2" ] || { echo "FAIL: phase 3: cdkd drift exited ${DRIFT_RC}, expected 2 (InCidr's masked source cannot be compared)" >&2; exit 1; }
+grep -q 'could not be compared' <<<"$(sed 's/\x1b\[[0-9;]*m//g' <<<"${DRIFT_OUT}")" || {
+  echo "FAIL: phase 3: drift did not report the masked rule as not compared (if cdkd reworded it, update this check)" >&2; exit 1; }
+echo "    OK: 443 from B (${ID3}), recorded; drift reports the masked rule as not compared"
 
 echo "==> Phase 4: destroy"
 VPC_ID="$(state_field '.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::VPC") | .value.physicalId')"
