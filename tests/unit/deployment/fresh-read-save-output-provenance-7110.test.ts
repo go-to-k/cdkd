@@ -19,6 +19,7 @@ import {
   outputReferenceProvenanceFor,
 } from '../../../src/deployment/deploy-engine/state-persist.js';
 import type { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { codeLines } from '../_code-lines.js';
 
 const ROOT = join(__dirname, '..', '..', '..');
 const SRC = join(ROOT, 'src');
@@ -59,16 +60,22 @@ function tsFiles(dir: string): string[] {
   return out;
 }
 
-/** `text` without comments, so a call written in a comment counts for nothing. */
-function code(text: string): string {
-  return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`])\/\/.*$/gm, '$1');
+/**
+ * `text` without comments, so a call written in a comment counts for nothing.
+ * The comment spans come from a real parser (`codeLines`), never a regex that
+ * would read `'resources/*'` as a comment opener and drop real code.
+ */
+function code(text: string, file: string): string {
+  return codeLines(text, file)
+    .map((l) => l.text)
+    .join('\n');
 }
 
 /** Call sites of the persist choke point, by repo-relative file. */
 function saveSiteCounts(): Map<string, number> {
   const counts = new Map<string, number>();
   for (const path of tsFiles(SRC)) {
-    const text = code(readFileSync(path, 'utf8'));
+    const text = code(readFileSync(path, 'utf8'), path);
     // Also the optional-call and bare-reference spellings (a method passed on).
     const n = (text.match(/\b(?:withParentInfo|redactStateForPersist)\b(?!\s*[:=])/g) ?? [])
       .length;
@@ -94,7 +101,7 @@ describe('engine saves carry output reference provenance (go-to-k/cdkd#7110)', (
     const written = Object.entries(SAVE_SITES).filter(([, s]) => s.outputs === 'written-back-read');
     expect(written.length).toBeGreaterThanOrEqual(1);
     for (const [file] of written) {
-      expect(code(readFileSync(join(ROOT, file), 'utf8')), file).toMatch(/\bcarryReadOutputs\(current\.state\)/);
+      expect(code(readFileSync(join(ROOT, file), 'utf8'), file), file).toMatch(/\bcarryReadOutputs\(current\.state\)/);
     }
   });
 
