@@ -213,6 +213,9 @@ export async function update(
         previousProperties,
         {
           maskSecrets: log.mask,
+          // go-to-k/cdkd#7117: the stack's principals attaching the old ARN
+          // move to the new policy only after this update returns.
+          detachUndeclaredPrincipals: true,
           // go-to-k/cdkd#6655: the old record's ids, so a stranger holding
           // the old ARN is refused rather than deleted.
           ...(context?.recordedAttributes && { recordedAttributes: context.recordedAttributes }),

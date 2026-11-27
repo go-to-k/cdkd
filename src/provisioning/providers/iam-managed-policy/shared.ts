@@ -72,6 +72,39 @@ export const principalsOf = (bag: Record<string, unknown>) =>
   readPrincipalLists({ Groups: bag['Groups'], Roles: bag['Roles'], Users: bag['Users'] });
 export const PRINCIPAL_NAMES = 'group / role / user names';
 
+/** The principals a record declares, each name lowercased: IAM compares them ignoring case. */
+export type DeclaredPrincipals = Readonly<
+  Record<'Groups' | 'Roles' | 'Users', ReadonlySet<string>>
+>;
+
+/** A principal attached to the policy that its record does not declare (go-to-k/cdkd#7117). */
+export interface UndeclaredPrincipal {
+  readonly kind: keyof DeclaredPrincipals;
+  readonly name: string;
+}
+
+/**
+ * go-to-k/cdkd#7117: the principals a delete may detach, read from the record's
+ * `Groups` / `Roles` / `Users`; an absent list declares none. `undefined` when
+ * the bag is absent or a list is unreadable (malformed, or a secret reference
+ * state keeps as `{{resolve:` / `***`): the record cannot tell its own
+ * principals from others then, and the delete detaches every one, as before.
+ */
+export function declaredPrincipalsOf(
+  bag: Record<string, unknown> | undefined
+): DeclaredPrincipals | undefined {
+  if (!bag) return undefined;
+  const read = principalsOf(bag);
+  if ('malformed' in read) return undefined;
+  const set = (names: string[] | undefined) =>
+    new Set((names ?? []).map((name) => name.toLowerCase()));
+  return {
+    Groups: set(read.lists.Groups),
+    Roles: set(read.lists.Roles),
+    Users: set(read.lists.Users),
+  };
+}
+
 /**
  * go-to-k/cdkd#4606 / #4655: a managed policy's identity token is its
  * `PolicyId` (`ANPA…`). IAM assigns it at `CreatePolicy` and never changes

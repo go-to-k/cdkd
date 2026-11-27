@@ -56,7 +56,11 @@ import {
   MANAGED_POLICY_READ_BACK_KEYS,
   managedPolicyAttributes,
 } from './iam-managed-policy/shared.js';
-import { policyIdentityToken } from './iam-managed-policy/shared.js';
+import {
+  policyIdentityToken,
+  type DeclaredPrincipals,
+  type UndeclaredPrincipal,
+} from './iam-managed-policy/shared.js';
 import {
   assertInlinePolicyAttachTargets,
   MANAGED_POLICY_OWNER,
@@ -593,7 +597,20 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     return live;
   }
 
-  async detachAllPrincipals(policyArn: string, progress?: DeleteProgress): Promise<void> {
+  /**
+   * Detach the policy from the principals AWS reports attached. With `declared`
+   * (go-to-k/cdkd#7117), when any attached principal is not one the record
+   * names, NOTHING is detached and those principals are returned for the caller
+   * to refuse over: detaching the declared ones first would leave the kept
+   * record claiming attachments AWS no longer holds, which a later deploy never
+   * re-attaches. Otherwise every attached principal is detached.
+   */
+  async detachAllPrincipals(
+    policyArn: string,
+    progress?: DeleteProgress,
+    declared?: DeclaredPrincipals
+  ): Promise<UndeclaredPrincipal[]> {
+    const attached: UndeclaredPrincipal[] = [];
     try {
       let marker: string | undefined;
       // eslint-disable-next-line no-constant-condition
@@ -605,45 +622,46 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
           })
         );
         for (const g of resp.PolicyGroups ?? []) {
-          if (!g.GroupName) continue;
-          try {
-            await this.iamClient.send(
-              new DetachGroupPolicyCommand({ GroupName: g.GroupName, PolicyArn: policyArn })
-            );
-            if (progress) progress.stripped = true;
-          } catch (err) {
-            if (!(err instanceof NoSuchEntityException)) throw err;
-          }
+          if (g.GroupName) attached.push({ kind: 'Groups', name: g.GroupName });
         }
         for (const r of resp.PolicyRoles ?? []) {
-          if (!r.RoleName) continue;
-          try {
-            await this.iamClient.send(
-              new DetachRolePolicyCommand({ RoleName: r.RoleName, PolicyArn: policyArn })
-            );
-            if (progress) progress.stripped = true;
-          } catch (err) {
-            if (!(err instanceof NoSuchEntityException)) throw err;
-          }
+          if (r.RoleName) attached.push({ kind: 'Roles', name: r.RoleName });
         }
         for (const u of resp.PolicyUsers ?? []) {
-          if (!u.UserName) continue;
-          try {
-            await this.iamClient.send(
-              new DetachUserPolicyCommand({ UserName: u.UserName, PolicyArn: policyArn })
-            );
-            if (progress) progress.stripped = true;
-          } catch (err) {
-            if (!(err instanceof NoSuchEntityException)) throw err;
-          }
+          if (u.UserName) attached.push({ kind: 'Users', name: u.UserName });
         }
         if (!resp.IsTruncated) break;
         marker = resp.Marker;
       }
     } catch (err) {
-      if (err instanceof NoSuchEntityException) return;
+      if (err instanceof NoSuchEntityException) return [];
       throw err;
     }
+    const undeclared = declared
+      ? attached.filter((p) => !declared[p.kind].has(p.name.toLowerCase()))
+      : [];
+    if (undeclared.length > 0) return undeclared;
+    for (const p of attached) {
+      try {
+        if (p.kind === 'Groups') {
+          await this.iamClient.send(
+            new DetachGroupPolicyCommand({ GroupName: p.name, PolicyArn: policyArn })
+          );
+        } else if (p.kind === 'Roles') {
+          await this.iamClient.send(
+            new DetachRolePolicyCommand({ RoleName: p.name, PolicyArn: policyArn })
+          );
+        } else {
+          await this.iamClient.send(
+            new DetachUserPolicyCommand({ UserName: p.name, PolicyArn: policyArn })
+          );
+        }
+        if (progress) progress.stripped = true;
+      } catch (err) {
+        if (!(err instanceof NoSuchEntityException)) throw err;
+      }
+    }
+    return [];
   }
 
   /**

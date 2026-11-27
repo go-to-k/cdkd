@@ -715,14 +715,16 @@ describe.each(KINDS)('delete of a journaled $type already gone (go-to-k/cdkd#460
     expect(mockSend.mock.calls.some(([c]) => K.isDelete(c))).toBe(true);
 
     // Without the flag it is the quiet debug line; in another region, refused.
+    // A record's own delete passes its bag: a managed policy detaches only the
+    // principals it declares (go-to-k/cdkd#7117), here the one IAM lists.
     providerLogger.info.mockClear();
     providerLogger.debug.mockClear();
-    await provider.delete('Orphan', pid, K.type, {}, { expectedRegion: 'us-east-1' });
+    await provider.delete('Orphan', pid, K.type, K.props, { expectedRegion: 'us-east-1' });
     expect(providerLogger.info).not.toHaveBeenCalled();
     expect(skipDebugLines()).toBe(1);
     clientRegion.value = 'eu-west-1';
     await expect(
-      provider.delete('Orphan', pid, K.type, {}, { expectedRegion: 'us-east-1' })
+      provider.delete('Orphan', pid, K.type, K.props, { expectedRegion: 'us-east-1' })
     ).rejects.toThrow(/does not match stack state region us-east-1/);
   });
 
