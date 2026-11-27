@@ -597,6 +597,13 @@ export default defineConfig({
         command: 'node --experimental-strip-types scripts/refresh-registry-create-only-paths.ts',
         cache: false,
       },
+      // go-to-k/cdkd#7061 slice (c): every type's write-only and secret-named
+      // property paths, read OFFLINE by the schema redaction invariant.
+      // Network-only, refreshed weekly beside the create-only snapshot.
+      'gen:cfn-registry-secret-paths': {
+        command: 'node --experimental-strip-types scripts/refresh-registry-secret-paths.ts',
+        cache: false,
+      },
       // Issue #6676: the measured table of Cloud Control update paths; every type
       // measured as refusing has a registered fix or a recorded exemption.
       'gen:cc-update-measurements': {
