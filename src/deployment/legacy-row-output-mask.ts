@@ -267,8 +267,12 @@ function knownConditions(
   const parameters = recordOf(template.Parameters);
   const verdicts = Object.create(null) as Record<string, boolean>;
   const visiting = new Set<string>();
+  // A string holding a dynamic reference is resolved by the engine before the
+  // compare, so its written text decides nothing (review).
+  const asWritten = (value: unknown): string | undefined =>
+    typeof value === 'string' && !value.includes('{{resolve:') ? value : undefined;
   const valueOf = (node: unknown): string | undefined => {
-    if (typeof node === 'string') return node;
+    if (typeof node === 'string') return asWritten(node);
     const ref = recordOf(node)['Ref'];
     if (typeof ref !== 'string' || Object.keys(recordOf(node)).length !== 1) return undefined;
     if (!Object.hasOwn(parameters, ref)) return undefined;
@@ -278,7 +282,7 @@ function knownConditions(
     if (!comparesAsWritten(recordOf(parameters[ref])['Type'])) return undefined;
     if (Object.hasOwn(passedValues, ref)) return passedValues[ref];
     const fallback = recordOf(parameters[ref])['Default'];
-    return typeof fallback === 'string' ? fallback : undefined;
+    return asWritten(fallback);
   };
   const evaluate = (node: unknown): boolean | undefined => {
     const record = recordOf(node);

@@ -374,6 +374,20 @@ describe('conditions and resource properties decide as a current record would (r
       { N: '1' },
     ],
     [
+      'a condition literal holding a dynamic reference (resolved first)',
+      { Mode: { Type: 'String' } },
+      { 'Fn::Equals': [{ Ref: 'Mode' }, '{{resolve:ssm:/flag}}'] },
+      ['C', { Ref: 'X' }, 'plain'],
+      { Mode: 'prod' },
+    ],
+    [
+      'a Default holding a dynamic reference (resolved first)',
+      { Mode: { Type: 'String', Default: '{{resolve:ssm:/flag}}' } },
+      { 'Fn::Equals': [{ Ref: 'Mode' }, 'prod'] },
+      ['C', { Ref: 'X' }, 'plain'],
+      {},
+    ],
+    [
       'a CommaDelimitedList passed "a,b" (compared as a list)',
       { L: { Type: 'CommaDelimitedList' } },
       { 'Fn::Equals': [{ Ref: 'L' }, 'a,b'] },
