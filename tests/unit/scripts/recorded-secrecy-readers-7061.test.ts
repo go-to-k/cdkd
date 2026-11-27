@@ -119,10 +119,17 @@ const SEARCHES = new Set([
 ]);
 const COLLECTION_SEARCHES = new Set(['includes', 'has', 'indexOf']);
 const MARKER_TEXT = /\*\*\*|\{\{resolve/;
+/** A CONSTANT's whole text that is a marker (the mask, the opener, an opener with its service), not prose naming one. */
+const MARKER_CONSTANT = /^(?:\*{3,4}|\{\{resolve:(?:[a-z-]+:)?)$/;
 /** Each marker, and the same text with one character changed: a pattern matching the first but not the second names the marker. */
 const MARKER_SAMPLES: ReadonlyArray<readonly [string, string]> = [
   ['***', '*+*'],
+  ['"***"', '"*+*"'],
+  ['a***b', 'a*+*b'],
   ['{{resolve:', '{{resolvX:'],
+  ['{{resolve:ssm:/p}}', '{{resolvX:ssm:/p}}'],
+  ['{{resolve:ssm-secure:/p}}', '{{resolvX:ssm-secure:/p}}'],
+  ['{{resolve:secretsmanager:s:SecretString:k::}}', '{{resolvX:secretsmanager:s:SecretString:k::}}'],
 ];
 
 function groupFiles(): string[] {
@@ -174,7 +181,17 @@ function markerNames(): Set<string> {
       const decl = stmt.type === 'ExportNamedDeclaration' ? (stmt['declaration'] as Node | null) : stmt;
       if (decl?.type !== 'VariableDeclaration') continue;
       for (const d of decl['declarations'] as Node[]) {
-        if (isNode(d['id']) && d['id'].type === 'Identifier' && spellsMarkerLiteral(d['init'])) {
+        if (!isNode(d['id']) || d['id'].type !== 'Identifier') continue;
+        const init = d['init'] as Node | null;
+        const isConstant = (n: unknown): boolean => {
+          const t = literalText(n);
+          return t !== undefined && MARKER_CONSTANT.test(t);
+        };
+        // A marker constant, or a list of them (`MASKS.includes(v)`).
+        if (
+          isConstant(init) ||
+          (init?.type === 'ArrayExpression' && (init['elements'] as unknown[]).some(isConstant))
+        ) {
           names.add(d['id']['name'] as string);
         }
       }
@@ -200,12 +217,69 @@ function memberName(callee: Node): string | undefined {
   return property.type === 'Identifier' ? (property['name'] as string) : undefined;
 }
 
-function handTestsIn(file: string, text: string, names: ReadonlySet<string>): string[] {
+/** Strip value-position wrappers that change nothing: `(x)`, `x as T`, `x satisfies T`, `x!`. */
+function unwrap(node: unknown): unknown {
+  let n = node;
+  while (
+    isNode(n) &&
+    ['ParenthesizedExpression', 'TSAsExpression', 'TSSatisfiesExpression', 'TSNonNullExpression'].includes(n.type)
+  ) {
+    n = n['expression'];
+  }
+  return n;
+}
+
+/** The file's own spellings of a marker name: a renamed import, or a destructuring alias. */
+function aliasesIn(program: Node, names: ReadonlySet<string>): Set<string> {
+  const local = new Set(names);
+  const nameOf = (n: unknown): string | undefined =>
+    isNode(n) ? ((n['name'] as string | undefined) ?? literalText(n)) : undefined;
+  const visit = (node: Node): void => {
+    if (node.type === 'ImportSpecifier') {
+      const imported = nameOf(node['imported']);
+      const as = nameOf(node['local']);
+      if (imported !== undefined && as !== undefined && names.has(imported)) local.add(as);
+    }
+    if (node.type === 'ObjectPattern') {
+      for (const prop of node['properties'] as Node[]) {
+        if (prop.type !== 'Property') continue;
+        const key = nameOf(prop['key']);
+        const value = unwrap(prop['value']);
+        const as = isNode(value) && value.type === 'AssignmentPattern' ? nameOf(value['left']) : nameOf(value);
+        if (key !== undefined && as !== undefined && names.has(key)) local.add(as);
+      }
+    }
+    for (const v of Object.values(node)) {
+      if (Array.isArray(v)) {
+        for (const c of v) if (isNode(c)) visit(c);
+      } else if (isNode(v)) {
+        visit(v);
+      }
+    }
+  };
+  visit(program);
+  return local;
+}
+
+function handTestsIn(file: string, text: string, globalNames: ReadonlySet<string>): string[] {
   const out: string[] = [];
-  const isMarker = (node: unknown): boolean =>
-    isNode(node) &&
-    ((node.type === 'Identifier' && names.has(node['name'] as string)) || spellsMarkerLiteral(node));
-  const holdsMarker = (node: Node): boolean => {
+  const program = parseOrThrow(file, text);
+  const names = aliasesIn(program, globalNames);
+  const isMarker = (raw: unknown): boolean => {
+    const node = unwrap(raw);
+    if (!isNode(node)) return false;
+    if (node.type === 'Identifier') return names.has(node['name'] as string);
+    // A namespace import's member (`sr.SECRET_MASK`).
+    if (node.type === 'MemberExpression' && node['computed'] !== true && isNode(node['property'])) {
+      if (names.has(node['property']['name'] as string)) return true;
+    }
+    // A template literal interpolating one (`${SECRET_MASK}`).
+    if (node.type === 'TemplateLiteral' && (node['expressions'] as unknown[]).some(isMarker)) return true;
+    return spellsMarkerLiteral(node);
+  };
+  const holdsMarker = (raw: Node): boolean => {
+    const node = unwrap(raw) as Node;
+    if (node.type === 'Identifier') return names.has(node['name'] as string);
     if (node.type === 'ArrayExpression') return (node['elements'] as unknown[]).some(isMarker);
     if (node.type === 'NewExpression' && isNode(node['callee']) && node['callee']['name'] === 'Set') {
       const first = (node['arguments'] as Node[])[0];
@@ -269,7 +343,17 @@ function handTestsIn(file: string, text: string, names: ReadonlySet<string>): st
       const { pattern, flags } = node['regex'] as { pattern: string; flags: string };
       if (patternNamesMarker(pattern, flags)) flag();
     }
-    if (node.type === 'VariableDeclarator' && spellsMarkerLiteral(node['init'])) flag();
+    if (
+      node.type === 'VariableDeclarator' &&
+      (spellsMarkerLiteral(node['init']) ||
+        (isNode(node['init']) &&
+          (node['init'] as Node).type === 'ArrayExpression' &&
+          ((node['init'] as Node)['elements'] as unknown[]).some(spellsMarkerLiteral)))
+    ) {
+      flag();
+      // ...and every later use of it is a hand test too.
+      if (isNode(node['id']) && node['id'].type === 'Identifier') names.add(node['id']['name'] as string);
+    }
     for (const v of Object.values(node)) {
       if (Array.isArray(v)) {
         for (const c of v) if (isNode(c)) walk(c, here);
@@ -278,7 +362,7 @@ function handTestsIn(file: string, text: string, names: ReadonlySet<string>): st
       }
     }
   };
-  walk(parseOrThrow(file, text), '<module>');
+  walk(program, '<module>');
   return out;
 }
 
@@ -339,6 +423,15 @@ describe('readers ask recorded-secrecy, never test a marker by hand (go-to-k/cdk
     ['an array literal search', "export const h3 = (v: string) => ['***'].includes(v);"],
     ['a Set literal search', 'export const h4 = (v: string) => new Set([SECRET_MASK]).has(v);'],
     ['a direct carriesSecretMask call', 'export const h5 = (v: unknown) => carriesSecretMask(v);'],
+    ['a renamed import of the mask', "import { SECRET_MASK as M } from '../../secret-redaction/pairs.js';\nexport const j = (v: unknown) => v === M;"],
+    ['a destructured alias', "import * as pairs from '../../secret-redaction/pairs.js';\nconst { SECRET_MASK: M2 } = pairs;\nexport const j2 = (v: unknown) => v === M2;"],
+    ['a namespace member', "import * as sr from '../../secret-redaction/pairs.js';\nexport const j3 = (v: unknown) => v === sr.SECRET_MASK;"],
+    ['a parenthesized mask', 'export const j4 = (v: unknown) => v === (SECRET_MASK);'],
+    ['a cast mask', "export const j5 = (v: unknown) => v === ('***' as string);"],
+    ['an interpolated mask', 'export const j6 = (v: unknown) => v === `${SECRET_MASK}`;'],
+    ['a list constant of markers', "const MASKS = ['***'];\nexport const j7 = (v: string) => MASKS.includes(v);"],
+    ['a regex naming a reference service', 'export const j8 = (v: string) => /\\{\\{resolve:ssm:/.test(v);'],
+    ['a regex naming a quoted mask', 'export const j9 = (v: string) => /"\\*\\*\\*"/.test(v);'],
   ])('probe: %s fails', (_what, line) => {
     const problems = violations({ [NAME]: `${real(NAME)}\n${line}\n` });
     expect(problems.length).toBeGreaterThanOrEqual(1);

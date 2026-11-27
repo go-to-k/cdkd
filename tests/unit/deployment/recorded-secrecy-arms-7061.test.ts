@@ -34,6 +34,12 @@ describe('maskUnmovedRedactionMasks: a desired side already carrying a mask (#70
     expect(out['Tags']).toEqual(['***', 'y']);
   });
 
+  it('a record masking a LEAF masks an unmasked desired side at that leaf', async () => {
+    // The arm reads the desired side too: one holding no mask is not skipped.
+    const out = await run(['x', '***'], ['x', 'y']);
+    expect(out['Tags']).toEqual(['x', '***']);
+  });
+
   it('a record masking the key WHOLE still masks a desired side holding a mask', async () => {
     // A nested child's read of a masked parameter: the arm must not skip it.
     const out = await run('***', ['***']);
