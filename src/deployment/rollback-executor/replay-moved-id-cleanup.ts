@@ -17,6 +17,7 @@ import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import {
   addSuperseded,
   canRecordSuperseded,
+  namesSameResource,
   removeSuperseded,
   supersededResourcesOf,
   SUPERSEDED_KEPT_REMEDY,
@@ -99,10 +100,7 @@ export function segmentCleanupOptions(
       removeSuperseded(host, entry);
       if (base === undefined) return;
       for (const own of supersededResourcesOf(base)) {
-        if (
-          own.state.physicalId === entry.state.physicalId &&
-          own.state.resourceType === entry.state.resourceType
-        ) {
+        if (namesSameResource(own.state, entry.state)) {
           removeSuperseded(base, own);
         }
       }

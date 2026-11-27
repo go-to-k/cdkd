@@ -14,6 +14,7 @@ import {
 } from '../nested-cleanup-scope.js';
 import {
   isSupersededHeld,
+  sameSupersededEntry,
   isSupersededResourceRecord,
   supersededResourcesOf,
 } from '../superseded-resources.js';
@@ -358,13 +359,7 @@ async function runQueuedNestedCleanup(
   }
 }
 
-function sameSuperseded(row: SupersededResourceRecord, entry: SupersededResourceRecord): boolean {
-  return (
-    row.logicalId === entry.logicalId &&
-    row.state.physicalId === entry.state.physicalId &&
-    row.state.resourceType === entry.state.resourceType
-  );
-}
+const sameSuperseded = sameSupersededEntry;
 
 /** Conditional writes `persistDropped` makes before it gives up on conflicts. */
 export const PERSIST_DROPPED_ATTEMPTS = 4;
