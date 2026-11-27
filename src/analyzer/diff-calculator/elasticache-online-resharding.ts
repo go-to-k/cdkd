@@ -7,7 +7,11 @@ export const ONLINE_RESHARDING_PROPERTIES: readonly string[] = [
   'NodeGroupConfiguration',
 ];
 
-/** `UpdatePolicy.UseOnlineResharding` is `true` / `"true"`. */
+/**
+ * `UpdatePolicy.UseOnlineResharding` is a literal `true` / `"true"`. An
+ * intrinsic (an `Fn::If`) reads as false: the diff then plans the replacement
+ * and the stateful gate refuses it before any call, the safe side.
+ */
 export function usesOnlineResharding(updatePolicy: unknown): boolean {
   if (typeof updatePolicy !== 'object' || updatePolicy === null) return false;
   const value = (updatePolicy as Record<string, unknown>)['UseOnlineResharding'];

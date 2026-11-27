@@ -157,12 +157,29 @@ describe('ElastiCache replication group shard-count replacement (go-to-k/cdkd#71
   });
 
   it('the NotUpdatable remedy for a shard change names online resharding, never a replacement', () => {
+    const remedy = (changed: string, updatePolicy: unknown): string =>
+      notUpdatableRemedy({
+        logicalId: 'Rg',
+        resourceType: 'AWS::ElastiCache::ReplicationGroup',
+        stackName: 'S',
+        changedProperties: new Set([changed]),
+        record: { physicalId: 'p', resourceType: 'AWS::ElastiCache::ReplicationGroup', properties: {} } as never,
+        updatePolicy,
+        updateReplacePolicy: undefined,
+        nestedChild: false,
+      });
+    // Without the policy the generic remedy stands.
+    expect(remedy('NumNodeGroups', undefined)).toContain('--replace-resource Rg');
+    expect(remedy('NodeGroupConfiguration', { UseOnlineResharding: true })).toContain(
+      'CloudFormation fails a NodeGroupConfiguration replica-count change too'
+    );
     const text = notUpdatableRemedy({
       logicalId: 'Rg',
       resourceType: 'AWS::ElastiCache::ReplicationGroup',
       stackName: 'S',
       changedProperties: new Set(['NumNodeGroups']),
       record: { physicalId: 'p', resourceType: 'AWS::ElastiCache::ReplicationGroup', properties: {} } as never,
+      updatePolicy: { UseOnlineResharding: true },
       updateReplacePolicy: undefined,
       nestedChild: false,
     });

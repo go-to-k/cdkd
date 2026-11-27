@@ -663,6 +663,7 @@ export async function updateInPlace(
             changedProperties,
             record: currentResource,
             desiredProperties: resolvedProps,
+            updatePolicy: template?.Resources[logicalId]?.UpdatePolicy,
             updateReplacePolicy,
             nestedChild: engine.options.parentStackInfo !== undefined,
           })

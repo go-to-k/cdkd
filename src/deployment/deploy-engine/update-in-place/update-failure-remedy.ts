@@ -1,4 +1,5 @@
 import { isInterruptedWaitError } from '../../../provisioning/interrupt-watch.js';
+import { usesOnlineResharding } from '../../../analyzer/diff-calculator/elasticache-online-resharding.js';
 import { isStatefulRecreateTargetForReplace } from '../../../provisioning/stateful-types.js';
 import { isWaitAbandonedError } from '../../../provisioning/wait-abandoned.js';
 import type { ResourceState } from '../../../types/state.js';
@@ -94,6 +95,8 @@ export function notUpdatableRemedy(input: {
   record: ResourceState;
   /** The properties this update sent: the template being deployed. */
   desiredProperties?: Record<string, unknown> | undefined;
+  /** The template's `UpdatePolicy` for this resource. */
+  updatePolicy?: unknown;
   /** The template's `UpdateReplacePolicy`: `Retain` keeps the old resource and its data. */
   updateReplacePolicy: string | undefined;
   nestedChild: boolean;
@@ -136,15 +139,20 @@ export function notUpdatableRemedy(input: {
       )
     );
   }
-  // go-to-k/cdkd#7100: the diff keeps a shard change in place only under
-  // `UseOnlineResharding`, which CloudFormation honours by resharding online.
+  // go-to-k/cdkd#7100: under `UseOnlineResharding` the diff keeps a shard
+  // change in place, which CloudFormation applies online (NumNodeGroups) or
+  // fails (a NodeGroupConfiguration replica-count change), never replacing.
   if (
     input.resourceType === 'AWS::ElastiCache::ReplicationGroup' &&
+    usesOnlineResharding(input.updatePolicy) &&
     properties.some((p) => p === 'NumNodeGroups' || p === 'NodeGroupConfiguration')
   ) {
+    const reshards = properties.includes('NumNodeGroups');
     return (
       safeMsg`\n${input.logicalId} (${input.resourceType}): Cloud Control refused this update in place (${CC_NOT_UPDATABLE_CODE})${changes}.` +
-      ' Under UpdatePolicy UseOnlineResharding, CloudFormation reshards the group online and keeps its data;' +
+      (reshards
+        ? ' Under UpdatePolicy UseOnlineResharding, CloudFormation reshards the group online and keeps its data;'
+        : ' Under UpdatePolicy UseOnlineResharding, CloudFormation fails a NodeGroupConfiguration replica-count change too;') +
       ' cdkd has no online-resharding path, and never replaces the group here.' +
       ' Reshard it with `aws elasticache modify-replication-group-shard-configuration`' +
       ' (or `increase-replica-count` / `decrease-replica-count`), then deploy the matching template.'
