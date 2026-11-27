@@ -340,20 +340,11 @@ const PATH_SHAPES: Readonly<Record<GapShape, (path: readonly string[]) => boolea
  * such a path is absorbed, and a gap that no longer fails is itself a failure.
  * A plaintext gap absorbs only a plaintext found SOLELY under the readback's
  * echo key ({@link problemsOf}); without that echo every writer and form is
- * asserted clean, except #7154, which needs no echo (list paths only).
+ * asserted clean, except #7154, which needs no echo (list paths only). The
+ * #7152 / #7158 rows are gone: those writers and forms are asserted clean
+ * with the echo too.
  */
 const GAPS: Readonly<Record<string, { readonly issue: string; readonly shape: GapShape }>> = {
-  // go-to-k/cdkd#7152: an unchanged pass has no needles; it learns a pair only from an unambiguous object position.
-  'unchanged-persist whole plaintext persisted only in the readback echo': { issue: 'go-to-k/cdkd#7152 (a reference inside a list)', shape: 'list' },
-  'unchanged-persist embedded plaintext persisted only in the readback echo': { issue: 'go-to-k/cdkd#7152 (a reference inside a list)', shape: 'list' },
-  'unchanged-persist twin plaintext persisted only in the readback echo': { issue: 'go-to-k/cdkd#7152 (two references, one plaintext)', shape: 'any' },
-  // go-to-k/cdkd#7158: a NoEcho leaf no needle covers, echoed under a key the template lacks.
-  'deploy-persist subfloor-embedded plaintext persisted only in the readback echo': { issue: 'go-to-k/cdkd#7158 (a sub-floor value embedded in a longer leaf)', shape: 'any' },
-  'journal subfloor-embedded plaintext persisted only in the readback echo': { issue: 'go-to-k/cdkd#7158 (carried from the deploy persist)', shape: 'any' },
-  'rollback-restore subfloor-embedded plaintext persisted only in the readback echo': { issue: 'go-to-k/cdkd#7158 (carried from the deploy persist)', shape: 'any' },
-  'unchanged-persist noecho plaintext persisted only in the readback echo': { issue: 'go-to-k/cdkd#7158 (an unchanged pass has no needle)', shape: 'any' },
-  'unchanged-persist noecho-embedded plaintext persisted only in the readback echo': { issue: 'go-to-k/cdkd#7158 (an unchanged pass has no needle)', shape: 'any' },
-  'unchanged-persist subfloor-embedded plaintext persisted only in the readback echo': { issue: 'go-to-k/cdkd#7158 (an unchanged pass has no needle)', shape: 'any' },
   // go-to-k/cdkd#7154: no plaintext; one spurious update after the scrub. Needs no echo.
   'scrub twin an unchanged redeploy plans a change': { issue: 'go-to-k/cdkd#7154 (two references, one plaintext, inside a list)', shape: 'list' },
 };
@@ -417,7 +408,7 @@ describe('schema redaction invariant: the #7061 holes (go-to-k/cdkd#7151)', { ti
   });
 
   it('probe: a gap absorbs only its key, on a path of its shape, and a plaintext only under the echo key', () => {
-    const listGap = 'unchanged-persist whole plaintext persisted only in the readback echo';
+    const listGap = 'scrub twin an unchanged redeploy plans a change';
     expect(absorbed({ gap: listGap, path: ['Users', '*', 'Password'], detail: '' })).toBe(true);
     // The same key on a plain path or a map value is a leak outside the gap.
     expect(absorbed({ gap: listGap, path: ['Password'], detail: '' })).toBe(false);
