@@ -101,9 +101,10 @@ export async function deleteImpl(
     //    attaching it by ARN have let go by now: a removal deletes after every
     //    update, a destroy deletes them first (they reference the policy), and a
     //    replacement's old copy is deleted in the cleanup phase.
-    // A failed CREATE's orphan (`failedCreateOrphan`) is a policy this stack
-    // made seconds ago from the attempted bag, never a record's: whatever is
-    // attached is what that create attached, so every principal is detached.
+    // A failed CREATE's orphan (`failedCreateOrphan`) is a policy no record
+    // ever held: its bag is the attempt's, which is no authority on what is
+    // attached, however long the journal entry waited for this delete. Every
+    // principal is detached, as before go-to-k/cdkd#7117.
     const declared =
       context?.detachUndeclaredPrincipals || context?.failedCreateOrphan
         ? undefined
