@@ -158,6 +158,23 @@ wait_domain_gone() { # usage: wait_domain_gone <domain-id>
 DOMAIN_ID=""
 EFS_ID=""
 
+# The domain ids this stack's state records, one per word (empty without one).
+recorded_domain_ids() {
+  [ -n "${STATE_BUCKET:-}" ] || return 0
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" 2>/dev/null | python3 -c '
+import json, sys
+try:
+    s = json.load(sys.stdin)
+except ValueError:
+    sys.exit(0)
+for v in (s.get("resources") or {}).values():
+    if v.get("resourceType") == "AWS::SageMaker::Domain":
+        pid = str(v.get("physicalId") or "").rsplit("/", 1)[-1]
+        if pid.startswith("d-"):
+            print(pid)
+' 2>/dev/null || true
+}
+
 cdkd_state_destroy() {
   if [ -f "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
@@ -170,7 +187,11 @@ cleanup() {
   # Every live domain under the name, read BEFORE `state destroy` (which may
   # delete one and leave its EFS and groups with no id to find them by).
   local id efs pairs=""
-  for id in $(domain_ids 2>/dev/null); do
+  # Plus every domain the state records: an earlier run killed before its
+  # trap ran used another per-run name, and `state destroy` deletes its
+  # domain without its EFS and groups.
+  for id in $(domain_ids 2>/dev/null) $(recorded_domain_ids); do
+    case " ${pairs} " in *" ${id}:"*) continue ;; esac
     efs="$(aws sagemaker describe-domain --domain-id "${id}" --region "${REGION}" \
       --query HomeEfsFileSystemId --output text 2>/dev/null)"
     pairs="${pairs} ${id}:${efs}"
@@ -303,8 +324,9 @@ if [ "${P2A_RC}" -eq 0 ]; then
 fi
 if ! grep -qE 'Domain.*requires replacement.*VpcId' "${P2A_LOG}" \
   || ! grep -qF 'CloudFormation was measured replacing it on a VpcId change, and failing that replacement on the DomainName it keeps' "${P2A_LOG}" \
+  || ! grep -qF 'Change DomainName as well and re-run with --force-stateful-recreation' "${P2A_LOG}" \
   || ! grep -qF -- '--force-stateful-recreation' "${P2A_LOG}"; then
-  echo "FAIL: #7126: the deploy exited ${P2A_RC} without the stateful refusal naming Domain, VpcId, the CloudFormation measurement and --force-stateful-recreation" >&2
+  echo "FAIL: #7126: the deploy exited ${P2A_RC} without the stateful refusal naming Domain, VpcId, the CloudFormation measurement and the change-DomainName-too advice" >&2
   exit 1
 fi
 assert_domain_untouched 2a
