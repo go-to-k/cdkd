@@ -79,13 +79,32 @@ export function secretNamedPaths(schema: Json): string[][] {
   const definitions = isObject(schema['definitions']) ? schema['definitions'] : {};
   const out: string[][] = [];
   const seen = new Set<string>();
+  // A `$ref` chain (a definition that is itself a `$ref`) is followed to its end.
   const deref = (node: unknown, refs: ReadonlySet<string>): { node: Json; refs: Set<string> } | undefined => {
-    if (!isObject(node)) return undefined;
-    const ref = node['$ref'];
-    if (typeof ref !== 'string') return { node, refs: new Set(refs) };
-    const name = ref.startsWith('#/definitions/') ? ref.slice('#/definitions/'.length) : undefined;
-    if (name === undefined || refs.has(name) || !isObject(definitions[name])) return undefined;
-    return { node: definitions[name], refs: new Set([...refs, name]) };
+    let at: unknown = node;
+    let seen = new Set(refs);
+    for (;;) {
+      if (!isObject(at)) return undefined;
+      const ref = at['$ref'];
+      if (typeof ref !== 'string') return { node: at, refs: seen };
+      const name = ref.startsWith('#/definitions/') ? ref.slice('#/definitions/'.length) : undefined;
+      if (name === undefined || seen.has(name) || !isObject(definitions[name])) return undefined;
+      seen = new Set([...seen, name]);
+      at = definitions[name];
+    }
+  };
+  /** A node and each `oneOf` / `anyOf` / `allOf` branch of it, dereferenced. */
+  const branches = (at: { node: Json; refs: Set<string> }): Array<{ node: Json; refs: Set<string> }> => {
+    const out = [at];
+    for (const combinator of ['oneOf', 'anyOf', 'allOf']) {
+      const list = at.node[combinator];
+      if (!Array.isArray(list)) continue;
+      for (const branch of list) {
+        const d = deref(branch, at.refs);
+        if (d !== undefined) out.push(d);
+      }
+    }
+    return out;
   };
   const walk = (properties: unknown, prefix: string[], refs: ReadonlySet<string>): void => {
     if (!isObject(properties) || prefix.length >= MAX_DEPTH) return;
@@ -105,10 +124,12 @@ export function secretNamedPaths(schema: Json): string[][] {
         itemPath = [...itemPath, '*'];
         at = deref(at.node['items'], at.refs);
       }
-      if (at !== undefined) walk(at.node['properties'], itemPath, at.refs);
+      if (at !== undefined) for (const b of branches(at)) walk(b.node['properties'], itemPath, b.refs);
     }
   };
   walk(schema['properties'], [], new Set());
+  // A property declared only inside a top-level combinator branch.
+  for (const b of branches({ node: schema, refs: new Set() }).slice(1)) walk(b.node['properties'], [], b.refs);
   return out.sort(comparePaths);
 }
 

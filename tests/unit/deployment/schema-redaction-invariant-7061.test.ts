@@ -22,9 +22,15 @@
  *
  * For each case, through the writer choke point (`scrubResourceRecord`):
  * 1. no plaintext reaches the persisted record;
- * 2. an unchanged redeploy plans no change. The persisted `properties` equal
- *    what the diff side computes: the template's own spelling of a reference
- *    it keeps unresolved, or the mask a `NoEcho` parameter is redacted to.
+ * 2. an unchanged redeploy plans no change. The diff side's desired bag is
+ *    the template's own spelling of a reference it keeps unresolved, or, for a
+ *    `NoEcho` parameter, what the deploy diff's own `NoEcho` comparison
+ *    (`noEchoComparisonForTemplate`) makes of both sides. It equals the
+ *    persisted bag.
+ *
+ * The redaction reads values and provenance, never a property's name or path,
+ * so today every case runs the same code path. The path dimension guards
+ * against path-specific logic landing later.
  *
  * A case that may not hold is listed in {@link EXCEPTIONS} with its reason,
  * and an entry that no longer fails is itself a failure.
@@ -33,12 +39,13 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it, expect } from 'vite-plus/test';
 import {
-  SECRET_MASK,
   recordMaskOnlyValue,
   recordResolvedPair,
   scrubResourceRecord,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { noEchoComparisonForTemplate } from '../../../src/deployment/deploy-engine/noecho.js';
+import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
 
 const FIXTURES = join(import.meta.dirname, '..', '..', 'fixtures');
@@ -101,11 +108,13 @@ function placed(path: readonly string[], value: unknown): Record<string, unknown
  */
 type Form = 'whole' | 'embedded' | 'noecho';
 const FORMS: readonly Form[] = ['whole', 'embedded', 'noecho'];
+type Scrub = typeof scrubResourceRecord;
 function scrubbed(
   c: Case,
   index: number,
-  form: Form
-): { persisted: unknown; source: Record<string, unknown>; expected: Record<string, unknown>; plaintext: string } {
+  form: Form,
+  scrub: Scrub = scrubResourceRecord
+): { persisted: unknown; source: Record<string, unknown>; resolved: Record<string, unknown>; plaintext: string } {
   const plaintext = `inv7061-pl4intext-${index}-${form}`;
   const expression = `{{resolve:secretsmanager:inv7061/${index}:SecretString:${form}::}}`;
   const wrap = (v: string): string => (form === 'embedded' ? `pre-${v}-post` : v);
@@ -117,15 +126,13 @@ function scrubbed(
     recordResolvedPair(secrets, expression, plaintext);
   }
   const source = placed(c.path, form === 'noecho' ? { Ref: 'SecretParam' } : wrap(expression));
-  // What the diff side computes for the key: the reference kept as written, or
-  // the mask a `NoEcho` parameter is redacted to.
-  const expected = form === 'noecho' ? placed(c.path, SECRET_MASK) : source;
   const record = {
     properties: placed(c.path, wrap(plaintext)),
     attributes: {},
     observedProperties: placed(c.path, wrap(plaintext)),
   };
-  return { persisted: scrubResourceRecord(record, secrets, source), source, expected, plaintext };
+  const resolved = placed(c.path, wrap(plaintext));
+  return { persisted: scrub(record, secrets, source), source, resolved, plaintext };
 }
 
 /**
@@ -133,6 +140,52 @@ function scrubbed(
  * Empty: every generated case holds.
  */
 const EXCEPTIONS: Readonly<Record<string, string>> = {};
+
+/**
+ * The diff side's two bags for the case's key, as an unchanged redeploy
+ * computes them. A reference is kept as written (`skipDynamicReferences`), so
+ * the desired side is the template's spelling. A `NoEcho` parameter is
+ * compared through the deploy diff's own `NoEcho` comparison
+ * (`noEchoComparisonForTemplate`).
+ */
+function diffSides(
+  c: Case,
+  form: Form,
+  source: Record<string, unknown>,
+  resolved: Record<string, unknown>,
+  current: Record<string, unknown>,
+  plaintext: string
+): { desired: unknown; current: unknown } {
+  if (form !== 'noecho') return { desired: source, current };
+  const template = {
+    Parameters: { SecretParam: { Type: 'String', NoEcho: true } },
+    Resources: { R: { Type: c.type, Properties: source } },
+  } as unknown as CloudFormationTemplate;
+  const compare = noEchoComparisonForTemplate(template, undefined, { SecretParam: plaintext }, {});
+  const sides = compare?.({ logicalId: 'R', resourceType: c.type, templateProperties: source, desired: resolved, current });
+  return sides ?? { desired: resolved, current };
+}
+
+/** Every case breaking the invariant under `scrub`, and the exceptions that held. */
+function invariantFailures(cases: readonly Case[], scrub: Scrub = scrubResourceRecord): { failures: string[]; excepted: Set<string> } {
+  const failures: string[] = [];
+  const excepted = new Set<string>();
+  cases.forEach((c, index) => {
+    for (const form of FORMS) {
+      const key = `${c.type} ${c.path.join('/')} ${form}`;
+      const { persisted, source, resolved, plaintext } = scrubbed(c, index, form, scrub);
+      const record = persisted as { properties: Record<string, unknown> };
+      const problems: string[] = [];
+      if (JSON.stringify(persisted).includes(plaintext)) problems.push('plaintext persisted');
+      const sides = diffSides(c, form, source, resolved, record.properties, plaintext);
+      if (JSON.stringify(sides.desired) !== JSON.stringify(sides.current)) problems.push('an unchanged redeploy plans a change');
+      if (problems.length === 0) continue;
+      if (Object.hasOwn(EXCEPTIONS, key)) excepted.add(key);
+      else failures.push(`${key}: ${problems.join(', ')}`);
+    }
+  });
+  return { failures, excepted };
+}
 
 describe('schema redaction invariant (go-to-k/cdkd#7061 slice (c))', { timeout: CONTENDED_CASE_TIMEOUT_MS }, () => {
   const cases = casesOf();
@@ -150,31 +203,17 @@ describe('schema redaction invariant (go-to-k/cdkd#7061 slice (c))', { timeout: 
   });
 
   it('every write-only and secret-named path is redacted on persist and plans no change on an unchanged redeploy', () => {
-    const failures: string[] = [];
-    const excepted = new Set<string>();
-    cases.forEach((c, index) => {
-      for (const form of FORMS) {
-        const key = `${c.type} ${c.path.join('/')} ${form}`;
-        const { persisted, expected, plaintext } = scrubbed(c, index, form);
-        const record = persisted as { properties: unknown; observedProperties?: unknown };
-        const problems: string[] = [];
-        if (JSON.stringify(persisted).includes(plaintext)) problems.push('plaintext persisted');
-        if (JSON.stringify(record.properties) !== JSON.stringify(expected)) problems.push('properties differ from what the diff side computes');
-        if (problems.length === 0) continue;
-        if (Object.hasOwn(EXCEPTIONS, key)) excepted.add(key);
-        else failures.push(`${key}: ${problems.join(', ')}`);
-      }
-    });
+    const { failures, excepted } = invariantFailures(cases);
     expect(failures).toEqual([]);
     // An exception that no longer fails is stale.
     expect(Object.keys(EXCEPTIONS).filter((k) => !excepted.has(k))).toEqual([]);
   });
 
-  it('probe: a persist that kept the plaintext fails the invariant', () => {
-    const c = cases[0]!;
-    const { expected, plaintext } = scrubbed(c, 0, 'whole');
-    const leaked = { properties: placed(c.path, plaintext) };
-    expect(JSON.stringify(leaked).includes(plaintext)).toBe(true);
-    expect(JSON.stringify(leaked.properties)).not.toBe(JSON.stringify(expected));
+  it('probe: a writer that persists the record as handed fails the invariant on every case and form', () => {
+    const passThrough = ((record: unknown) => record) as Scrub;
+    const sample = cases.slice(0, 20);
+    const { failures } = invariantFailures(sample, passThrough);
+    expect(failures).toHaveLength(sample.length * FORMS.length);
+    for (const f of failures) expect(f).toMatch(/plaintext persisted/);
   });
 });

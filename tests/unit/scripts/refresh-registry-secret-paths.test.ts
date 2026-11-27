@@ -23,11 +23,14 @@ const SCHEMA = {
     Auth: { $ref: '#/definitions/Auth' },
     Users: { type: 'array', items: { $ref: '#/definitions/User' } },
     Loop: { $ref: '#/definitions/Loop' },
+    Chained: { $ref: '#/definitions/Alias' },
+    Either: { oneOf: [{ $ref: '#/definitions/Auth' }, { type: 'object', properties: { ClientSecret: { type: 'string' } } }] },
   },
   definitions: {
     Auth: { type: 'object', properties: { AuthToken: { type: 'string' }, Mode: { type: 'string' } } },
     User: { type: 'object', properties: { PrivateKey: { type: 'string' } } },
     Loop: { type: 'object', properties: { Next: { $ref: '#/definitions/Loop' }, Credentials: { type: 'string' } } },
+    Alias: { $ref: '#/definitions/User' },
   },
   writeOnlyProperties: ['/properties/MasterUserPassword', '/properties/Auth/AuthToken'],
 };
@@ -48,9 +51,12 @@ describe('refresh-registry-secret-paths (#7061)', () => {
     expect(isSampledSecretName('Name')).toBe(false);
   });
 
-  it('walks $ref definitions, array items and a cycle', () => {
+  it('walks $ref definitions (chained too), oneOf branches, array items and a cycle', () => {
     expect(secretNamedPaths(SCHEMA)).toEqual([
       ['Auth', 'AuthToken'],
+      ['Chained', 'PrivateKey'],
+      ['Either', 'AuthToken'],
+      ['Either', 'ClientSecret'],
       // The cycle stops at the definition it re-enters.
       ['Loop', 'Credentials'],
       ['MasterUserPassword'],
