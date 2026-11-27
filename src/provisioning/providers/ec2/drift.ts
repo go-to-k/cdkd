@@ -1,3 +1,4 @@
+import { holdsMaskLeaf } from '../../../deployment/secret-redaction/recorded-secrecy.js';
 import type { Subnet } from '@aws-sdk/client-ec2';
 import { DescribeSubnetsCommand } from '@aws-sdk/client-ec2';
 import { canonicalizeIpv6Cidr } from '../../../utils/ipv6-cidr.js';
@@ -22,7 +23,6 @@ import {
   subnetPrivateDnsOptionsRefusal,
 } from './subnet-support.js';
 import type { EC2Provider } from '../ec2-provider.js';
-import { carriesSecretMask } from '../../../deployment/secret-redaction.js';
 import { declaredBlockDeviceNames, isInstanceSubReadFailure } from './read-instance-state.js';
 
 /** Recovery must not mistake an in-flight IPv6 association for absence. */
@@ -373,7 +373,7 @@ export function getDriftUnknownPaths(
         'Ipv6Addresses',
         'LaunchTemplate',
         'LicenseSpecifications',
-        ...(carriesSecretMask(properties?.['UserData']) ? ['UserData'] : []),
+        ...(holdsMaskLeaf(properties?.['UserData']) ? ['UserData'] : []),
       ];
     // go-to-k/cdkd#5633: DescribeVpcs names no IPAM pool; the netmask is
     // read back from the CIDR instead. A `monitor` encryption control

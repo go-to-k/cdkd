@@ -1,3 +1,4 @@
+import { mentionsDynamicReference } from '../deployment/secret-redaction/recorded-secrecy.js';
 /**
  * Drift detection between cdkd state-recorded properties and AWS-current
  * properties.
@@ -288,7 +289,7 @@ function diffAt(
   // per-resource and falls back to the unresolved baseline for exactly those,
   // and this line is what then keeps the resource's other properties comparable
   // instead of drowning them in phantom drift.
-  if (typeof stateValue === 'string' && stateValue.includes('{{resolve:')) return;
+  if (typeof stateValue === 'string' && mentionsDynamicReference(stateValue)) return;
 
   if (
     isPlainObject(stateForm) &&

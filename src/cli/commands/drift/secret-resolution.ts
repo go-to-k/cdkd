@@ -1,3 +1,7 @@
+import {
+  isMaskLeaf,
+  mentionsDynamicReference,
+} from '../../../deployment/secret-redaction/recorded-secrecy.js';
 /**
  * `cdkd drift`: secret dynamic-reference handling: recorded-secret paths, per-region resolvers and the baseline re-resolution.
  * Split out of `../drift.ts`, which re-exports the public names.
@@ -31,7 +35,6 @@ import {
   MIN_NEEDLE_LENGTH,
   type RecordedSecretValues,
   dynamicReferenceTokens,
-  SECRET_MASK,
 } from '../../../deployment/secret-redaction.js';
 import type { StackState } from '../../../types/state.js';
 
@@ -44,7 +47,7 @@ import type { StackState } from '../../../types/state.js';
  * of their property bag.
  */
 function containsDynamicReference(value: unknown): boolean {
-  if (typeof value === 'string') return value.includes('{{resolve:');
+  if (typeof value === 'string') return mentionsDynamicReference(value);
   if (Array.isArray(value)) return value.some(containsDynamicReference);
   if (value !== null && typeof value === 'object') {
     return Object.values(value as Record<string, unknown>).some(containsDynamicReference);
@@ -146,7 +149,7 @@ function survivingDynamicReferences(value: string): string[] {
  */
 export function collectDynamicReferencePaths(value: unknown, into: SecretPathSet, path = ''): void {
   if (typeof value === 'string') {
-    if (value.includes('{{resolve:')) into.add(path);
+    if (mentionsDynamicReference(value)) into.add(path);
     return;
   }
   if (Array.isArray(value)) {
@@ -184,7 +187,7 @@ export function collectDynamicReferencePaths(value: unknown, into: SecretPathSet
  */
 export function collectSecretMaskPaths(value: unknown, into: SecretPathSet, path = ''): void {
   if (typeof value === 'string') {
-    if (value === SECRET_MASK) into.add(path);
+    if (isMaskLeaf(value)) into.add(path);
     return;
   }
   if (Array.isArray(value)) {
@@ -700,7 +703,7 @@ export async function resolveStateSecretExpressions(
   };
   const walk = async (v: unknown, path: string): Promise<unknown> => {
     if (typeof v === 'string') {
-      if (!v.includes('{{resolve:')) return v;
+      if (!mentionsDynamicReference(v)) return v;
       // Issue #2108: decide the REGION of every reference in this leaf before
       // any of them is fetched. See {@link classifyReplaySecretRegion}.
       refuseUnprovenDriftSecret(

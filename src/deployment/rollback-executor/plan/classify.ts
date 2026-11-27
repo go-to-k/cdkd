@@ -1,10 +1,10 @@
+import { mentionsMask } from '../../secret-redaction/recorded-secrecy.js';
 import { cdkdRemedy } from '../../../utils/pasteable-command.js';
 import type { ResourceState } from '../../../types/state.js';
 import { equalIdNamesDifferentResources } from '../../type-change-guard.js';
 import { effectiveDeletionPolicy } from '../../../provisioning/final-snapshot.js';
 import { CdkdError } from '../../../utils/error-handler.js';
 import { markNonRetryable } from '../../retryable-errors.js';
-import { SECRET_MASK } from '../../secret-redaction.js';
 import {
   type OldTypeSources,
   nonEmptyString,
@@ -267,7 +267,7 @@ function sameIdReversalDone(
  */
 function holdsRedactedLeaf(value: unknown): boolean {
   if (typeof value === 'string') {
-    return value.includes(SECRET_MASK);
+    return mentionsMask(value);
   }
   if (value === null || typeof value !== 'object') return false;
   return Object.values(value).some(holdsRedactedLeaf);

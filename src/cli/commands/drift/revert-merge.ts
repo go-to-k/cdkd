@@ -1,3 +1,4 @@
+import { mentionsDynamicReference } from '../../../deployment/secret-redaction/recorded-secrecy.js';
 /**
  * `cdkd drift`: `--revert` merge helpers: tag lists, untemplated values, unresolved tokens.
  * Split out of `../drift.ts`, which re-exports the public names.
@@ -548,7 +549,7 @@ export function preserveLiveValuesAtUnresolvedTokens(
   secrets: RecordedSecretValues
 ): Record<string, unknown> {
   const walk = (value: unknown, live: unknown): unknown => {
-    if (typeof value === 'string' && value.includes('{{resolve:')) {
+    if (typeof value === 'string' && mentionsDynamicReference(value)) {
       // A leaf whose WHOLE value is not one token — a token EMBEDDED in a
       // longer string (`"jdbc:...password={{resolve:...}}"`), or a MIXED leaf
       // (`{{notaservice:/host}}:{{secretsmanager:db}}`) that arrives here

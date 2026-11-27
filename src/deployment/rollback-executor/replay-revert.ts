@@ -1,3 +1,4 @@
+import { mentionsMask } from '../secret-redaction/recorded-secrecy.js';
 import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
 import { ccIdentifierFromSdkRecord } from '../../provisioning/cc-identifier-from-sdk.js';
 import { identityWarner } from '../../provisioning/recorded-identity.js';
@@ -16,7 +17,6 @@ import {
   createSecretMasker,
   recordNestedStackParameterExpressions,
   recordNoEchoAttributeValues,
-  SECRET_MASK,
 } from '../secret-redaction.js';
 import { updatePartialMessage, updatePartialReason } from '../update-outcome.js';
 import { redactRollbackRecord } from './replay-secrets.js';
@@ -168,7 +168,7 @@ export async function replayReadopt(s: ReplayOpScope, survivor?: ReadoptSurvivor
           (describedPhysicalIdPointer(target) !== ''
             ? ` That id is left out of the prose above: it is not a plain identifier — read ` +
               `it from the rollback journal.`
-            : target.includes(SECRET_MASK)
+            : mentionsMask(target)
               ? ` That id is shown masked — read the full value from the rollback journal.`
               : '');
     throw new CdkdError(

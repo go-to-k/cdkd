@@ -23,8 +23,8 @@
  * matches nothing fails too.
  *
  * BOUNDS. The groups grow one PR at a time (#7061's plan): update compare and
- * preflight here; then rollback and drift; export and import, delete, nested
- * child resolution and scrub; and the diff rendering with the cross-stack
+ * preflight, then rollback and drift, are here; export and import, delete,
+ * nested child resolution and scrub follow; and the diff rendering with the cross-stack
  * preview. A file outside every group is outside the fence (the legacy-row
  * output mask joins the export group). Within a group, the fence finds hand
  * tests for a MARKER only: a reader that compares, sends or addresses a
@@ -39,8 +39,10 @@ import { join, relative } from 'node:path';
 import { parseSync } from 'vite-plus';
 import { describe, expect, it } from 'vite-plus/test';
 import {
+  dynamicReferenceBody,
   dynamicReferenceOpeners,
   isMaskLeaf,
+  isMaskRun,
   mentionsDynamicReference,
   mentionsMask,
   usableRecordedName,
@@ -95,6 +97,34 @@ const GROUPS: Readonly<Record<string, readonly string[]>> = {
     'src/deployment/masked-baseline-recapture.ts',
     'src/provisioning/cloud-control/unapplied-update.ts',
     'src/cli/commands/recreate-downstream-consumers.ts',
+  ],
+  'rollback and drift': [
+    'src/deployment/rollback-executor',
+    'src/deployment/rollback-executor.ts',
+    'src/deployment/deploy-engine/rollback',
+    'src/deployment/deploy-engine/rollback.ts',
+    'src/deployment/deploy-engine/execute/rollback-after-failure.ts',
+    'src/deployment/inline-policy-claims/rollback-writers.ts',
+    'src/cli/commands/rollback',
+    'src/cli/commands/rollback.ts',
+    'src/cli/commands/rollback-drop-failed.ts',
+    'src/types/rollback-journal.ts',
+    'src/analyzer/drift-calculator.ts',
+    'src/analyzer/drift-normalize.ts',
+    'src/analyzer/drift-principal-normalize.ts',
+    'src/analyzer/drift-protocol-normalize.ts',
+    'src/analyzer/drift-undeclared-grants.ts',
+    'src/analyzer/drift-verbatim-paths.ts',
+    'src/cli/commands/drift',
+    'src/cli/commands/drift.ts',
+    'src/cli/commands/state/refresh-observed-stack.ts',
+    'src/cli/commands/state/refresh-observed.ts',
+    'src/provisioning/drift-declared-projection.ts',
+    'src/provisioning/providers/codebuild/drift.ts',
+    'src/provisioning/providers/dynamodb-globaltable/drift.ts',
+    'src/provisioning/providers/dynamodb-table/drift.ts',
+    'src/provisioning/providers/ec2/drift.ts',
+    'src/provisioning/providers/rds/drift.ts',
   ],
 };
 
@@ -399,7 +429,7 @@ function violations(extra: Record<string, string> = {}): string[] {
 describe('readers ask recorded-secrecy, never test a marker by hand (go-to-k/cdkd#7061)', () => {
   it('no migrated group holds a hand test', () => {
     // A floor the scan does not read: a group that lost its files proves nothing.
-    expect(groupFiles().length).toBeGreaterThanOrEqual(63);
+    expect(groupFiles().length).toBeGreaterThanOrEqual(158);
     expect(violations()).toEqual([]);
   });
 
@@ -519,6 +549,24 @@ describe('readers ask recorded-secrecy, never test a marker by hand (go-to-k/cdk
       expect(dynamicReferenceOpeners(text)).toEqual(before);
     }
   );
+
+  it.each([
+    '{{resolve:secretsmanager:s}}',
+    '{{resolve:secretsmanager:arn:aws:secretsmanager:r:1:secret:s:SecretString:k::}}',
+    '{{resolve:secretsmanager:}}',
+    '{{resolve:ssm:/p}}',
+    'x{{resolve:secretsmanager:s}}',
+    '{{resolve:secretsmanager:s}}x',
+    '{{resolve:secretsmanager:s',
+  ])('dynamicReferenceBody(%j, secretsmanager) is the hand slice it replaced', (token) => {
+    const prefix = ['{{', 'resolve:secretsmanager:'].join('');
+    const before = !token.startsWith(prefix) || !token.endsWith('}}') ? undefined : token.slice(prefix.length, -2);
+    expect(dynamicReferenceBody(token, 'secretsmanager')).toBe(before);
+  });
+
+  it.each(['', '*', '**', '***', '****', '***a', ' ***', '*+*'])('isMaskRun(%j)', (text) => {
+    expect(isMaskRun(text)).toBe(/^\*{3,}$/.test(text));
+  });
 
   it.each<[unknown, string | undefined]>([
     ['my-name', 'my-name'],

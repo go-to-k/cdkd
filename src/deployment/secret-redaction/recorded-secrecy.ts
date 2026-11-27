@@ -95,3 +95,21 @@ export function usableRecordedName(value: unknown): string | undefined {
   if (typeof value !== 'string' || value === '' || isMaskLeaf(value)) return undefined;
   return mentionsDynamicReference(value) ? undefined : value;
 }
+
+/**
+ * The body of a WHOLE `{{resolve:<service>:...}}` token (between the
+ * `<service>:` and the closing `}}`), or `undefined` when `token` is not one.
+ */
+export function dynamicReferenceBody(token: string, service: string): string | undefined {
+  const prefix = `${DYNAMIC_REFERENCE_OPENER}${service}:`;
+  if (!token.startsWith(prefix) || !token.endsWith('}}')) return undefined;
+  return token.slice(prefix.length, -2);
+}
+
+/**
+ * A text that is a run of three or more `*` and nothing else: the mask, or a
+ * placeholder a provider or an older cdkd wrote in its shape.
+ */
+export function isMaskRun(text: string): boolean {
+  return /^\*{3,}$/.test(text);
+}

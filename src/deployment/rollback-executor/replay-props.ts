@@ -1,3 +1,4 @@
+import { holdsMaskLeaf, mentionsDynamicReference } from '../secret-redaction/recorded-secrecy.js';
 import {
   cdkdRemedy,
   commandHole,
@@ -13,7 +14,6 @@ import { classifyRecordedSecretRegion } from '../secret-region-classification.js
 import { getLogger } from '../../utils/logger.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import {
-  carriesSecretMask,
   dynamicReferenceTokens,
   MIN_NEEDLE_LENGTH,
   SECRET_MASK,
@@ -152,7 +152,7 @@ export async function resolveReplayProps(
   const pins = new ReplayPins(record, resolvers, execCtx, logicalId);
   const walk = async (v: unknown, path: string): Promise<unknown> => {
     if (typeof v === 'string') {
-      if (!v.includes('{{resolve:')) return v;
+      if (!mentionsDynamicReference(v)) return v;
       // Issue #2057: decide the REGION of every reference in this leaf before
       // any of them is fetched. See `classifyReplaySecretRegion`.
       refuseUnprovenReplaySecret(v, path, logicalId, execCtx, recordedRegions);
@@ -304,7 +304,7 @@ class ReplayPins {
         provenanceSuppressed: true,
         referencePins: new Map([[token, pin]]),
       });
-      ok = served.includes('{{resolve:') || served.length >= MIN_NEEDLE_LENGTH;
+      ok = mentionsDynamicReference(served) || served.length >= MIN_NEEDLE_LENGTH;
       if (!ok) {
         getLogger().warn(
           safeMsg`Rollback of ${this.logicalId} restores a secret reference at its current version, not the version its record names: that value is shorter than four characters, so cdkd could not keep it out of state.`
@@ -354,7 +354,7 @@ export function refuseMaskedReplayBaseline(
   logicalId: string,
   inert: readonly NoEchoCoordinate[] = []
 ): void {
-  if (props === undefined || !carriesSecretMask(props)) return;
+  if (props === undefined || !holdsMaskLeaf(props)) return;
   // go-to-k/cdkd#4043 Phase C: a marked NoEcho leaf no call sends (see
   // `NoEchoReplaySubstitution.inert`) is no reason to refuse.
   if (inert.length > 0 && masksOnlyAt(props, inert)) return;

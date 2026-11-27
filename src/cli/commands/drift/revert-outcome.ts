@@ -1,3 +1,4 @@
+import { mentionsMask } from '../../../deployment/secret-redaction/recorded-secrecy.js';
 /**
  * `cdkd drift`: `--revert`: one drifted resource's revert payload.
  * Split out of `../drift.ts`, which re-exports the public names.
@@ -11,7 +12,6 @@ import {
   type RecordedSecretValues,
   recordPhysicalNameCopy,
   maskSecretsInText,
-  SECRET_MASK,
   spelledKeysOf,
   noEchoLeavesOf,
   isMarkedCoordinate,
@@ -255,7 +255,7 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
   // refusal pointed the user here. Say it instead.
   const unrevertablePaths = outcome.changes
     .map((c) => c.path)
-    .filter((path) => (path.split('.', 1)[0] ?? '').includes(SECRET_MASK));
+    .filter((path) => mentionsMask(path.split('.', 1)[0] ?? ''));
   // Issue #2855: an unresolved intrinsic OBJECT (`{Fn::Join: ...}`,
   // `{Ref: ...}`) in the send bag must never reach `provider.update`.
   // Measured on both routes (see the helper's doc): no provider fails

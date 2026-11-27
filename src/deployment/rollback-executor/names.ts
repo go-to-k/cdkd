@@ -1,3 +1,4 @@
+import { isMaskLeaf, mentionsDynamicReference } from '../secret-redaction/recorded-secrecy.js';
 import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
 import type { ResourceState } from '../../types/state.js';
 import type { Logger } from '../../types/config.js';
@@ -35,7 +36,6 @@ import { cdkdRemedy, proseQuoted } from '../../utils/pasteable-command.js';
 import {
   createUnionSecretMasker,
   maskSecretsInText,
-  SECRET_MASK,
   type RecordedSecretValues,
 } from '../secret-redaction.js';
 import { safe, shownLogicalId, SKIP_FINAL_SNAPSHOT_FLAG } from './messages.js';
@@ -489,7 +489,7 @@ export function secretDerivedNamePairs(record: {
       // Nor a value that IS the mask (`***`, a NoEcho-recorded name): its
       // "derivation" is `MyStack-***` -> `MyStack`, a needle that would mask
       // every `MyStack` in the op's text. Its ids stay needles above.
-      key === primary && !value.includes('{{resolve:') && value !== SECRET_MASK
+      key === primary && !mentionsDynamicReference(value) && !isMaskLeaf(value)
         ? rewrittenNameSpellings(resourceType, value, logicalId)
         : [];
     for (const spelling of [...idSpellings, ...derived]) pairs.push([value, spelling]);

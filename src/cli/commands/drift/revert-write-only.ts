@@ -1,3 +1,4 @@
+import { holdsMaskLeaf } from '../../../deployment/secret-redaction/recorded-secrecy.js';
 /**
  * `cdkd drift --revert`: the template's write-only values a Cloud Control
  * routed update sends (go-to-k/cdkd#6498, #6499).
@@ -26,7 +27,6 @@
  * did would read each key as narrowed in `collectNarrowedTopLevelKeys`.
  */
 import { hasOwnKey, defineOwnKey } from '../../../utils/own-keys.js';
-import { carriesSecretMask } from '../../../deployment/secret-redaction.js';
 import { carriesDynamicReference } from '../../../deployment/intrinsic-resolver/context/log-twins.js';
 import { getTopLevelKeysHoldingUnreadableCreateOnly } from '../../../provisioning/write-only-properties.js';
 import { isPlainRecord } from './revert-merge.js';
@@ -63,7 +63,7 @@ export function revertWriteOnlyResendNames(
     if (!hasOwnKey(properties, name) || unreadableCreateOnly.has(name)) continue;
     const value = properties[name];
     if (value === undefined || value === null) continue;
-    if (carriesSecretMask(value) || carriesIntrinsicObject(value)) continue;
+    if (holdsMaskLeaf(value) || carriesIntrinsicObject(value)) continue;
     names.push(name);
   }
   return names;
@@ -137,7 +137,7 @@ export function withDeclaredWriteOnlyValues(
         wholesale.push(name);
       }
     }
-    if (carriesDynamicReference(next) || carriesSecretMask(next)) {
+    if (carriesDynamicReference(next) || holdsMaskLeaf(next)) {
       skipped.push(name);
       const at = wholesale.indexOf(name);
       if (at !== -1) wholesale.splice(at, 1);
