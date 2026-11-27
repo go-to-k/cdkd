@@ -1,4 +1,5 @@
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
+import { crossStackTaintOf, markCrossStackReadTainted } from '../display-taint.js';
 import type { IntrinsicFunctionResolver } from '../../intrinsic-function-resolver.js';
 import { displayLeaf, displayMasked, logOperand } from '../masking-display.js';
 import { markNonRetryable } from '../../retryable-errors.js';
@@ -90,6 +91,11 @@ export async function resolveImportValue(
   const loggedExportName = logOperand(resolver, exportName, context, { render: 'plain' });
   resolver.logger.debug(`Resolving Fn::ImportValue: ${loggedExportName}`);
 
+  // go-to-k/cdkd#7077: an export the preview marks as derived from a secret
+  // taints every call enclosing this read, diffed producer or not.
+  if (crossStackTaintOf(context)?.exportTainted(resolver.resolverRegion, exportName) === true) {
+    markCrossStackReadTainted();
+  }
   // `cdkd diff` (go-to-k/cdkd#6796): a producer diffed earlier in this run
   // that changes the export decides it, as its deploy will before this one.
   const previewed = context.crossStackPreview?.exportValue(resolver.resolverRegion, exportName);

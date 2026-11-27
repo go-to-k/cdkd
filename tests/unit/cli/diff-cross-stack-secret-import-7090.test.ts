@@ -53,7 +53,6 @@ import {
   renderDiffTree,
 } from '../../../src/cli/commands/diff-recursive.js';
 import { getLogger } from '../../../src/utils/logger.js';
-import { MIN_NEEDLE_LENGTH } from '../../../src/deployment/secret-redaction.js';
 import type { DiffTreeNode } from '../../../src/cli/commands/diff-recursive/types.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -346,15 +345,11 @@ describe('cdkd diff: a consumer reading a secret-fed producer output (#7090)', (
               await printed(cons, consLog),
             ].join('\n');
             expect(text.includes(secret), text).toBe(false);
-            // The consumer's resolver lines too (`--verbose`), once the value
-            // clears the masker's floor (a sub-floor piece there is #7077's).
-            // Not when the producer is not diffed: the app-wide marks carry no
-            // value to mask the resolver's lines with. Its fix is resolver-side,
-            // folded into go-to-k/cdkd#7077 as this case.
-            if (secret.length >= MIN_NEEDLE_LENGTH && !consumerOnly) {
-              const resolved = consLog.join('\n');
-              expect(resolved.includes(secret), resolved).toBe(false);
-            }
+            // The consumer's resolver lines too (`--verbose`), at any length and
+            // whether or not the producer is diffed: a tainted read masks every
+            // line reading it by provenance (go-to-k/cdkd#7077).
+            const resolved = consLog.join('\n');
+            expect(resolved.includes(secret), resolved).toBe(false);
             // Display only: a consumer already holding the value plans nothing.
             if (consumerHolds) {
               for (const id of ['Reader', 'Echo', 'Pol']) {

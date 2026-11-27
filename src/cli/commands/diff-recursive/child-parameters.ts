@@ -4,6 +4,7 @@ import type { ResourceState, StackState } from '../../../types/state.js';
 import {
   AWS_NO_VALUE,
   IntrinsicFunctionResolver,
+  type ResolverContext,
 } from '../../../deployment/intrinsic-function-resolver.js';
 import type { ProducerLookup } from '../../../deployment/intrinsic-resolver/cdk-cross-account-ref.js';
 import {
@@ -155,7 +156,13 @@ export async function resolveChildStackParameters(
   secretTokens?: {
     inherited: SecretTokensByParameter | undefined;
     child: Map<string, ReadonlySet<string>>;
-  }
+  },
+  /**
+   * go-to-k/cdkd#7077: the run's cross-stack taint marks (`CrossStackPreview`),
+   * so a row reading a tainted export or output masks its resolver lines. The
+   * read still resolves from state: display only.
+   */
+  crossStackTaint?: ResolverContext['crossStackTaint']
 ): Promise<Record<string, unknown>> {
   const rawParams = parentStackRow.Properties?.['Parameters'];
   if (!rawParams || typeof rawParams !== 'object' || Array.isArray(rawParams)) {
@@ -216,6 +223,7 @@ export async function resolveChildStackParameters(
         // could not be split.
         skipDynamicReferences: true,
         skippedSecretReferences,
+        ...(crossStackTaint && { crossStackTaint }),
         ...(inheritedStandIns && { secretStandInTokens: inheritedStandIns }),
         ...(attributeHealer && { attributeHealer }),
       });

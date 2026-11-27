@@ -1,4 +1,5 @@
 import { cdkdRemedy, proseQuoted } from '../../utils/pasteable-command.js';
+import { crossStackTaintOf, markCrossStackReadTainted } from './display-taint.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { describeAvailableOutputs } from './cfn-fallback.js';
 import { displayLeaf, displayMasked, displayMaskedIdent, logOperand } from './masking-display.js';
@@ -367,6 +368,11 @@ export async function resolveGetStackOutput(
       `OutputName=${logOutputName}${roleArn ? `, RoleArn=${shownRoleArn}` : ''}`
   );
 
+  // go-to-k/cdkd#7077: an output the preview marks as derived from a secret
+  // taints every call enclosing this read, diffed producer or not.
+  if (crossStackTaintOf(context)?.stackOutputTainted(region, stackName, outputName) === true) {
+    markCrossStackReadTainted();
+  }
   // `cdkd diff` (go-to-k/cdkd#6796): a same-account producer diffed earlier in
   // this run that changes the output decides it, as its deploy will first.
   const previewed = roleArn

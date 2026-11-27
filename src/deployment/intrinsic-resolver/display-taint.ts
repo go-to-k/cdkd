@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import { MIN_NEEDLE_LENGTH, type RecordedSecretValues } from '../secret-redaction.js';
-import { logOnlyValuesOf } from '../secret-redaction/log-only.js';
+import { logOnlyValuesOf, recordLogOnlyValue } from '../secret-redaction/log-only.js';
 import { attributionRefusedParameters } from '../secret-redaction/nested-stack/parameter-tables.js';
 import { literalTextHoldsSubFloorSecret } from '../secret-redaction/positions.js';
 import { readsNoEchoSource } from '../secret-redaction/noecho-leaves.js';
@@ -192,8 +192,19 @@ function computeTaintedNames(
 
 const EMPTY: ReadonlySet<string> = new Set();
 
-/** The innermost intrinsic call being resolved, and whether it reads a tainted name. */
-const scope = new AsyncLocalStorage<{ readonly node: object; readonly tainted: boolean }>();
+/**
+ * The innermost intrinsic call being resolved, whether it is tainted, and the
+ * call enclosing it. `tainted` is set from the template when the scope opens
+ * ({@link withDisplayScope}) and can be raised later by a tainted cross-stack
+ * read ({@link markCrossStackReadTainted}), for the call and every call
+ * enclosing it.
+ */
+interface DisplayFrame {
+  readonly node: object;
+  tainted: boolean;
+  readonly parent: DisplayFrame | undefined;
+}
+const scope = new AsyncLocalStorage<DisplayFrame>();
 
 /** Is `node` the innermost call on the display scope (already opened)? */
 export function displayScopeOpenFor(node: object): boolean {
@@ -212,12 +223,56 @@ export function withDisplayScope<T>(
   resolve: () => Promise<T>
 ): Promise<T> | undefined {
   const names = displayTaintedNames(context);
-  if (names.size === 0) return undefined;
-  const tainted = readsNoEchoSource(node, {
-    parameters: names,
-    attributeIsNoEcho: (logicalId) => names.has(logicalId),
-  });
-  return scope.run({ node, tainted }, resolve);
+  // A diff whose preview holds a tainted export or output opens the scope
+  // too, so a consumer's read of one can taint the calls enclosing it.
+  if (names.size === 0 && crossStackTaintOf(context)?.holdsAnyTaint() !== true) return undefined;
+  const tainted =
+    names.size > 0 &&
+    readsNoEchoSource(node, {
+      parameters: names,
+      attributeIsNoEcho: (logicalId) => names.has(logicalId),
+    });
+  return scope.run({ node, tainted, parent: scope.getStore() }, resolve);
+}
+
+/**
+ * go-to-k/cdkd#7077 (the go-to-k/cdkd#7090 sibling): the call being resolved
+ * READ an export or stack output the run's preview marks as derived from a
+ * secret (`CrossStackPreview.exportTainted` / `stackOutputTainted`). Taint
+ * it and every call enclosing it, so a `Fn::Join` over the read prints `***`
+ * at any length. The read's value is recorded as a log-only needle of the
+ * pass too ({@link recordTaintedCrossStackValue}), for a line outside the
+ * resolver. A consumer diffed without its producer holds no previewed value
+ * to mask with, only these marks.
+ */
+export function markCrossStackReadTainted(): void {
+  for (let frame = scope.getStore(); frame !== undefined; frame = frame.parent) {
+    frame.tainted = true;
+  }
+}
+
+/** The run's cross-stack taint marks: the preview's, or a fingerprint pass's taint-only view. */
+export function crossStackTaintOf(
+  context: ResolverContext
+): NonNullable<ResolverContext['crossStackTaint']> | undefined {
+  return context.crossStackPreview ?? context.crossStackTaint;
+}
+
+/** Was the innermost call marked by {@link markCrossStackReadTainted}? */
+export function innermostCallTainted(): boolean {
+  return scope.getStore()?.tainted === true;
+}
+
+/**
+ * Record a tainted cross-stack read's string value as a log-only needle of
+ * the pass (`recordLogOnlyValue`): masked whole at any length, and embedded
+ * at or above the floor, on any line the pass prints. Masking only: nothing
+ * persisted or compared reads a log-only needle.
+ */
+export function recordTaintedCrossStackValue(context: ResolverContext, value: unknown): void {
+  const bag = context.recordedSecretValues;
+  if (bag === undefined || typeof value !== 'string' || value === '') return;
+  recordLogOnlyValue(bag, value);
 }
 
 /** What a log render knows about the operand it prints. */

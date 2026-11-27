@@ -3,7 +3,12 @@ import {
   withConsumptionScope,
 } from './secret-redaction/consumed-references.js';
 import { GetParameterCommand } from '@aws-sdk/client-ssm';
-import { displayScopeOpenFor, withDisplayScope } from './intrinsic-resolver/display-taint.js';
+import {
+  displayScopeOpenFor,
+  innermostCallTainted,
+  recordTaintedCrossStackValue,
+  withDisplayScope,
+} from './intrinsic-resolver/display-taint.js';
 import { getLogger } from '../utils/logger.js';
 import { canonicalizeRegion, sameRegion } from '../utils/aws-partition.js';
 import { withSharedDrainBudget } from './drain-budget.js';
@@ -421,6 +426,9 @@ export class IntrinsicFunctionResolver {
     value: unknown,
     reresolved = false
   ): unknown {
+    // go-to-k/cdkd#7077: a read the preview marked tainted is a log-only
+    // needle of this pass too, for a line the resolver's scope does not cover.
+    if (reresolved && innermostCallTainted()) recordTaintedCrossStackValue(context, value);
     if (typeof value === 'string') {
       // go-to-k/cdkd#7050: a cross-stack read whose producer value spelled a
       // token keeps that spelling and where each token was substituted.
