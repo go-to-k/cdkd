@@ -15,10 +15,17 @@
  * also when the template changed the list and the live list differs from it,
  * whether or not the live list still equals the previous one. Addresses are
  * assigned before any is unassigned: a refused assignment then leaves the
- * interface as it was, never short of an address it serves. (Measured on an
- * unattached interface; on an attached one at its instance type's address
- * limit, a swap is refused at the assignment and changes nothing.) `AllowReassignment` stays off,
+ * interface as it was, never short of an address it serves. Only an
+ * unattached interface was measured. On an attached one at its instance
+ * type's address limit, the assignment is expected to refuse a swap before
+ * anything changes, but that is unmeasured. `AllowReassignment` stays off,
  * so an address another interface holds is refused, never taken from it.
+ * One consequence: moving an address from interface A to interface B in one
+ * deploy can be refused, because nothing orders B's assignment after A's
+ * unassignment. That fails safe (the refused assignment changes nothing on B,
+ * and no address is taken from A), and the next deploy converges once A's
+ * unassignment has run. What
+ * CloudFormation does for such a move is unmeasured.
  *
  * Only an explicit secondary list is handled. A desired side that also
  * declares `SecondaryPrivateIpAddressCount` (AWS picks those addresses), lacks

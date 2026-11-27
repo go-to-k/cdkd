@@ -176,12 +176,16 @@ export class Ec2VpcStack extends cdk.Stack {
     // and so does cdkd, through EC2 AssignPrivateIpAddresses. The interface
     // has no SDK provider, so it is created and updated through Cloud Control.
     // The public subnet is 10.0.0.0/24 (the VPC's first /24).
+    // CDKD_TEST_ENI_UNASSIGN (a later phase, on top of CDKD_TEST_REMOVAL)
+    // drops the secondary again, so the EC2 UnassignPrivateIpAddresses path
+    // runs live too. Every other resource keeps its removal-phase shape.
+    const eniUnassign = process.env.CDKD_TEST_ENI_UNASSIGN === 'true';
     new ec2.CfnNetworkInterface(this, 'SecondaryIpEni', {
       subnetId: vpc.publicSubnets[0]!.subnetId,
       description: 'cdkd integ ec2-vpc (issue #7099)',
       privateIpAddresses: [
         { privateIpAddress: '10.0.0.200', primary: true },
-        ...(isRemoval ? [{ privateIpAddress: '10.0.0.201', primary: false }] : []),
+        ...(isRemoval && !eniUnassign ? [{ privateIpAddress: '10.0.0.201', primary: false }] : []),
       ],
     });
 

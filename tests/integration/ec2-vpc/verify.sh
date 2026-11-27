@@ -17,7 +17,11 @@
 # changes two VPCs' InstanceTenancy: a removal from dedicated is one in-place
 # ModifyVpcTenancy, default -> dedicated replaces the VPC (issue #5449). A
 # fifth VPC carries VpcEncryptionControl, read back after create on the SDK
-# path (issue #5633). Then destroys clean.
+# path (issue #5633). The same deploy adds a secondary address to a network
+# interface, applied through EC2 AssignPrivateIpAddresses; a following deploy
+# (CDKD_TEST_ENI_UNASSIGN=true) drops it again through one
+# UnassignPrivateIpAddresses on the same interface (go-to-k/cdkd#7099). Then
+# destroys clean.
 #
 # Required env vars:
 #   STATE_BUCKET - cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -91,6 +95,10 @@ cleanup() {
   if [ -n "${P2_CALLS_DIR:-}" ]; then
     rm -f "${P2_CALLS_DIR}/calls.jsonl" "${P2_CALLS_DIR}/deploy.log"
     rmdir "${P2_CALLS_DIR}" 2>/dev/null
+  fi
+  if [ -n "${P2B_CALLS_DIR:-}" ]; then
+    rm -f "${P2B_CALLS_DIR}/calls.jsonl" "${P2B_CALLS_DIR}/deploy.log"
+    rmdir "${P2B_CALLS_DIR}" 2>/dev/null
   fi
   set -eu
 }
@@ -326,7 +334,7 @@ P2_CALLS="${P2_CALLS_DIR}/calls.jsonl"
 # the deploy's exit code).
 P2_LOG="${P2_CALLS_DIR}/deploy.log"
 set +e
-CDKD_SDK_CALL_LOG="${P2_CALLS}" CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_ENI_UNASSIGN CDKD_SDK_CALL_LOG="${P2_CALLS}" CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes 2>&1 | tee "${P2_LOG}"
@@ -410,8 +418,11 @@ if [ ! -s "${P2_CALLS}" ]; then
   exit 1
 fi
 # Summed over every line (one per cdkd process); 0 when the command is absent.
+sdk_calls() { # <call log> <command name> [client name, default EC2Client]
+  node -e 'const fs=require("fs");let n=0;for(const l of fs.readFileSync(process.argv[1],"utf8").split("\n")){if(l.trim()==="")continue;n+=JSON.parse(l).counts[process.argv[3]+"."+process.argv[2]]??0}process.stdout.write(String(n))' "$1" "$2" "${3:-EC2Client}"
+}
 p2_calls() { # <command name> [client name, default EC2Client]
-  node -e 'const fs=require("fs");let n=0;for(const l of fs.readFileSync(process.argv[1],"utf8").split("\n")){if(l.trim()==="")continue;n+=JSON.parse(l).counts[process.argv[3]+"."+process.argv[2]]??0}process.stdout.write(String(n))' "${P2_CALLS}" "$1" "${2:-EC2Client}"
+  sdk_calls "${P2_CALLS}" "$@"
 }
 P2_TENANCY="$(p2_calls ModifyVpcTenancyCommand)"
 if [ "${P2_TENANCY}" != "1" ]; then
@@ -544,9 +555,83 @@ for pid in ${P2_TAGGED_IDS}; do
 done
 echo "    OK: cdkd-5448 changed to two and cdkd-5448-gone removed in place on ${P2_TAGGED_IDS} (issue #5448)"
 
+# --- Phase 2b: drop the ENI's secondary address again (go-to-k/cdkd#7099) ---
+# Phase 2 proved the assign path; this phase proves the unassign path. The
+# template keeps every Phase 2 change and drops only 10.0.0.201 from
+# SecondaryIpEni (CDKD_TEST_ENI_UNASSIGN), so cdkd must send one EC2
+# UnassignPrivateIpAddresses on the same interface. The fixture holds one
+# network interface, so the call log's per-command count is that interface's.
+# Premises first: the interface and the record hold .201 now, so its absence
+# afterwards is this phase's doing.
+P2B_PRE_ENI=$(eni_addresses "${ENI_ID}") || P2B_PRE_ENI="<describe-network-interfaces failed>"
+P2B_PRE_RECORD=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '[.resources.SecondaryIpEni.properties.PrivateIpAddresses[]?.PrivateIpAddress] | sort | join(" ")')
+if [ "${P2B_PRE_ENI}" != "10.0.0.200:true 10.0.0.201:false" ] || [ "${P2B_PRE_RECORD}" != "10.0.0.200 10.0.0.201" ]; then
+  echo "FAIL: Phase 2b premise: ${ENI_ID} must hold 10.0.0.201 live and in the record before the unassign, got live '${P2B_PRE_ENI}', record '${P2B_PRE_RECORD}' (issue #7099)" >&2
+  exit 1
+fi
+echo "==> Phase 2b: drop the secondary 10.0.0.201 from SecondaryIpEni"
+P2B_CALLS_DIR="$(mktemp -d -t cdkd-ec2-vpc-p2b-calls.XXXXXX)"
+P2B_CALLS="${P2B_CALLS_DIR}/calls.jsonl"
+P2B_LOG="${P2B_CALLS_DIR}/deploy.log"
+set +e
+CDKD_SDK_CALL_LOG="${P2B_CALLS}" CDKD_TEST_REMOVAL=true CDKD_TEST_ENI_UNASSIGN=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes 2>&1 | tee "${P2B_LOG}"
+P2B_RC=${PIPESTATUS[0]}
+set -e
+if [ "${P2B_RC}" -ne 0 ]; then
+  if grep -qF '[cc-silent-noop]' "${P2B_LOG}"; then
+    echo "FAIL: Phase 2b failed with [cc-silent-noop]: Cloud Control left the secondary-address removal unapplied and cdkd did not apply it; CloudFormation removes it in place (issue #7099)" >&2
+    grep -F '[cc-silent-noop]' "${P2B_LOG}" >&2
+    exit 1
+  fi
+  echo "FAIL: Phase 2b deploy exited ${P2B_RC} (issue #7099)" >&2
+  exit 1
+fi
+if grep -qF '[cc-silent-noop]' "${P2B_LOG}"; then
+  echo "FAIL: Phase 2b warned [cc-silent-noop]: Cloud Control left a change unapplied on some resource (issue #7099)" >&2
+  grep -F '[cc-silent-noop]' "${P2B_LOG}" >&2
+  exit 1
+fi
+if [ ! -s "${P2B_CALLS}" ]; then
+  echo "FAIL: the SDK call log ${P2B_CALLS} was not written in Phase 2b - CDKD_SDK_CALL_LOG did not take effect, so the call counts below prove nothing (issue #7099)" >&2
+  exit 1
+fi
+P2B_ENI_ID=$(physical_id SecondaryIpEni)
+if [ "${P2B_ENI_ID}" != "${ENI_ID}" ]; then
+  echo "FAIL: SecondaryIpEni was replaced by the secondary-address removal (must update in place, as CloudFormation does): '${ENI_ID}' -> '${P2B_ENI_ID}' (issue #7099)" >&2
+  exit 1
+fi
+P2B_UNASSIGN="$(sdk_calls "${P2B_CALLS}" UnassignPrivateIpAddressesCommand)"
+P2B_ASSIGN="$(sdk_calls "${P2B_CALLS}" AssignPrivateIpAddressesCommand)"
+if [ "${P2B_UNASSIGN}" != "1" ] || [ "${P2B_ASSIGN}" != "0" ]; then
+  echo "FAIL: expected exactly one EC2 UnassignPrivateIpAddresses and no AssignPrivateIpAddresses in Phase 2b (the SecondaryIpEni secondary address), found Unassign=${P2B_UNASSIGN} Assign=${P2B_ASSIGN} (issue #7099)" >&2
+  cat "${P2B_CALLS}" >&2
+  exit 1
+fi
+P2B_ENI=""
+for _ in 1 2 3 4 5 6; do
+  P2B_ENI=$(eni_addresses "${ENI_ID}") || P2B_ENI="<describe-network-interfaces failed>"
+  [ "${P2B_ENI}" = "10.0.0.200:true" ] && break
+  sleep 5
+done
+if [ "${P2B_ENI}" != "10.0.0.200:true" ]; then
+  echo "FAIL: ${ENI_ID} after the removal holds '${P2B_ENI}', expected the primary 10.0.0.200 only, without the secondary 10.0.0.201 (issue #7099)" >&2
+  exit 1
+fi
+P2B_RECORD=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '[.resources.SecondaryIpEni.properties.PrivateIpAddresses[]?.PrivateIpAddress] | sort | join(" ")')
+if [ "${P2B_RECORD}" != "10.0.0.200" ]; then
+  echo "FAIL: the SecondaryIpEni record holds addresses '${P2B_RECORD}' after the removal, expected '10.0.0.200' without 10.0.0.201 (issue #7099)" >&2
+  exit 1
+fi
+echo "    OK: ${ENI_ID} dropped the secondary 10.0.0.201 in place with one UnassignPrivateIpAddresses, recorded (issue #7099)"
+rm -f "${P2B_CALLS}" "${P2B_LOG}"
+rmdir "${P2B_CALLS_DIR}"
+
 # --- Phase 3: destroy -------------------------------------------------
 echo "==> Phase 3: destroy"
-env -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" destroy "${STACK}" \
+env -u CDKD_TEST_REMOVAL -u CDKD_TEST_ENI_UNASSIGN node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
@@ -566,4 +651,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> ec2-vpc test passed (removed VPC DNS attributes reset + in-place NACL entry change + kept private zone VPCs + in-place IGW / RouteTable / NACL tags + VPC InstanceTenancy + VPC encryption control + ENI secondary address in place + clean destroy)"
+echo "==> ec2-vpc test passed (removed VPC DNS attributes reset + in-place NACL entry change + kept private zone VPCs + in-place IGW / RouteTable / NACL tags + VPC InstanceTenancy + VPC encryption control + ENI secondary address assigned and unassigned in place + clean destroy)"
