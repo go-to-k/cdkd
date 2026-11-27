@@ -163,9 +163,12 @@ if ! grep -qF 'requires replacement (immutable property changed: NumNodeGroups)'
   tail -40 "${DEPLOY_LOG}" >&2
   exit 1
 fi
-if ! grep -qF 'CloudFormation replaces it for this change too' "${DEPLOY_LOG}" \
+# The arm adds NumNodeGroups (absent -> 1) to a cluster-mode-disabled group: it
+# proves the gate, not CloudFormation's verdict for this transition (CFn was
+# measured replacing on 1 -> 2; the unit test pins the refusal's wording).
+if ! grep -qF 'stateful resource' "${DEPLOY_LOG}" \
   || ! grep -qF -- '--force-stateful-recreation' "${DEPLOY_LOG}"; then
-  echo "FAIL: #7100: the stateful refusal does not say CloudFormation replaces too or name --force-stateful-recreation" >&2
+  echo "FAIL: #7100: the refusal is not the stateful replacement gate naming --force-stateful-recreation" >&2
   tail -40 "${DEPLOY_LOG}" >&2
   exit 1
 fi

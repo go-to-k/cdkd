@@ -92,8 +92,9 @@ export function refuseUnsafeReplacement(
           .map((pc) => pc.path)
           .join(', ') || 'Type';
       // go-to-k/cdkd#7100: a property the registry schema calls mutable but
-      // CloudFormation was measured replacing on. Say so, since the user may
-      // expect the in-place update the schema suggests.
+      // CloudFormation replaces on (the spec says so, and each row is measured:
+      // a CloudFormation execution or the service API's own refusal). Say so,
+      // since the user may expect the in-place update the schema suggests.
       const replacedProps = new Set(
         change.propertyChanges?.filter((pc) => pc.requiresReplacement).map((pc) => pc.path)
       );
