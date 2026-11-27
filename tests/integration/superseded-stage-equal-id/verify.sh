@@ -117,17 +117,11 @@ command -v openssl >/dev/null || { echo "FAIL: openssl is required (the self-sig
 command -v jq >/dev/null || { echo "FAIL: jq is required" >&2; exit 1; }
 [ -d node_modules ] || npm install
 # An earlier run that crashed left its own names behind; sweep those started
-# over 2 hours ago (their names carry the start time), never a live peer run's.
+# over 2 hours ago (their names carry the start time), never a live peer run's:
+# a domain (its mappings first) before the API it maps and the certificate it uses.
 sweep_stale_runs() {
   set +eu
   local cutoff=$(( $(date +%s) - 7200 )) name id started
-  aws apigateway get-rest-apis --region "${REGION}" \
-    --query "items[?starts_with(name, 'cdkd-integ-superseded-stage-')].[id,name]" --output text 2>/dev/null |
-    while read -r id name; do
-      started="${name#cdkd-integ-superseded-stage-}"; started="${started%%-*}"
-      case "${started}" in ''|*[!0-9]*) continue ;; esac
-      [ "${started}" -lt "${cutoff}" ] && aws apigateway delete-rest-api --rest-api-id "${id}" --region "${REGION}" >/dev/null 2>&1
-    done
   aws apigateway get-domain-names --region "${REGION}" \
     --query "items[?starts_with(domainName, 'superseded-stage-')].domainName" --output text 2>/dev/null | tr '\t' '\n' |
     while read -r name; do
@@ -140,6 +134,13 @@ sweep_stale_runs() {
           aws apigateway delete-base-path-mapping --domain-name "${name}" --base-path "${bp}" --region "${REGION}" >/dev/null 2>&1
         done
       aws apigateway delete-domain-name --domain-name "${name}" --region "${REGION}" >/dev/null 2>&1
+    done
+  aws apigateway get-rest-apis --region "${REGION}" \
+    --query "items[?starts_with(name, 'cdkd-integ-superseded-stage-')].[id,name]" --output text 2>/dev/null |
+    while read -r id name; do
+      started="${name#cdkd-integ-superseded-stage-}"; started="${started%%-*}"
+      case "${started}" in ''|*[!0-9]*) continue ;; esac
+      [ "${started}" -lt "${cutoff}" ] && aws apigateway delete-rest-api --rest-api-id "${id}" --region "${REGION}" >/dev/null 2>&1
     done
   aws acm list-certificates --region "${REGION}" \
     --query "CertificateSummaryList[?starts_with(DomainName, 'superseded-stage-')].[CertificateArn,DomainName]" --output text 2>/dev/null |
