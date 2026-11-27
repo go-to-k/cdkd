@@ -95,19 +95,20 @@ export function batchComputeResourcesChangeReplaces(
   if (CREATE_ONLY_PATHS.some((p) => !isDeepStrictEqual(at(oldValue, p), at(newValue, p)))) {
     return true;
   }
+  // Either side: Batch refuses an update FROM such an environment and an
+  // update TO one (EC2 -> FARGATE, a strategy moved to BEST_FIT), and a
+  // rollback replay runs the same pair backward.
+  const refusedSide = noInfrastructureUpdate(oldValue) ?? noInfrastructureUpdate(newValue);
   const changed = (member: string): boolean =>
     !isDeepStrictEqual(at(oldValue, [member]), at(newValue, [member]));
   if (!INFRASTRUCTURE_UPDATE_MEMBERS.some(changed)) {
     // A BEST_FIT environment takes no infrastructure update at all, so its
     // subnets and security groups cannot move in place either.
-    return (
-      noInfrastructureUpdate(oldValue) === 'best-fit' &&
-      (changed('Subnets') || changed('SecurityGroupIds'))
-    );
+    return refusedSide === 'best-fit' && (changed('Subnets') || changed('SecurityGroupIds'));
   }
   // Batch itself refuses these environments any infrastructure update, so
   // nothing but a replacement applies the change, whatever the template says.
-  if (noInfrastructureUpdate(oldValue) !== undefined) return true;
+  if (refusedSide !== undefined) return true;
   if (siblings === undefined) return false;
   return replacesComputeEnvironment(siblings.newProperties['ReplaceComputeEnvironment']);
 }

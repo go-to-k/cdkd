@@ -95,6 +95,16 @@ describe('Batch compute environment ComputeResources replacement (go-to-k/cdkd#7
     }
   });
 
+  it('a change TO a Fargate or BEST_FIT environment replaces too, in either direction', () => {
+    const fargate = { Type: 'FARGATE', MaxvCpus: 2, Subnets: ['subnet-a'], SecurityGroupIds: ['sg-a'] };
+    expect(replaces({ Type: 'FARGATE', AllocationStrategy: undefined }, false)).toBe(true);
+    expect(replaces({ AllocationStrategy: 'BEST_FIT' }, false)).toBe(true);
+    expect(replaces({ AllocationStrategy: undefined }, false)).toBe(true);
+    // The rollback replay of the BEST_FIT move.
+    expect(replaces({ AllocationStrategy: 'BEST_FIT_PROGRESSIVE' }, false, { ...base, AllocationStrategy: 'BEST_FIT' })).toBe(true);
+    expect(replaces({ Type: 'EC2', AllocationStrategy: 'BEST_FIT_PROGRESSIVE' }, false, fargate)).toBe(true);
+  });
+
   it('a schema create-only member replaces even under ReplaceComputeEnvironment: false', () => {
     expect(replaces({ SpotIamFleetRole: 'arn:aws:iam::123456789012:role/b' }, false)).toBe(true);
     expect(
