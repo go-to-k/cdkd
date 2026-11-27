@@ -15,7 +15,7 @@ what cdkd does; `update` and `baseline` rows keep the in-place update, and a `ha
 is decided by `src/analyzer/replacement-rules/rules.ts` or a provider-replacement planner.
 Evidence: `REPLACEMENT_EVIDENCE`.
 
-Candidates: 389 (replace 2, update 105, baseline 212, hand rule 70).
+Candidates: 389 (replace 2, update 103, baseline 195, hand rule 89).
 
 | Candidate | Spec | Verdict |
 | --- | --- | --- |
@@ -31,25 +31,25 @@ Candidates: 389 (replace 2, update 105, baseline 212, hand rule 70).
 | `AWS::AuditManager::Assessment#Scope.AwsAccounts.*.EmailAddress` | maybe | baseline |
 | `AWS::AuditManager::Assessment#Scope.AwsAccounts.*.Id` | maybe | baseline |
 | `AWS::AuditManager::Assessment#Scope.AwsAccounts.*.Name` | maybe | baseline |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.AllocationStrategy` | maybe | baseline |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.BidPercentage` | maybe | baseline |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.Ec2Configuration` | maybe | baseline |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.Ec2Configuration.*.ImageIdOverride` | maybe | baseline |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.Ec2Configuration.*.ImageKubernetesVersion` | maybe | baseline |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.Ec2Configuration.*.ImageType` | maybe | baseline |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.Ec2KeyPair` | maybe | baseline |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.ImageId` | maybe | baseline |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.InstanceRole` | maybe | baseline |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.InstanceTypes` | maybe | baseline |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.LaunchTemplate` | maybe | baseline |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.LaunchTemplate.LaunchTemplateId` | maybe | baseline |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.LaunchTemplate.LaunchTemplateName` | maybe | baseline |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.LaunchTemplate.Version` | maybe | baseline |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.PlacementGroup` | maybe | baseline |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.SecurityGroupIds` | maybe | update |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.Subnets` | maybe | update |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.Tags` | maybe | baseline |
-| `AWS::Batch::ComputeEnvironment#ComputeResources.Type` | maybe | baseline |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.AllocationStrategy` | maybe | hand rule |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.BidPercentage` | maybe | hand rule |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.Ec2Configuration` | maybe | hand rule |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.Ec2Configuration.*.ImageIdOverride` | maybe | hand rule |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.Ec2Configuration.*.ImageKubernetesVersion` | maybe | hand rule |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.Ec2Configuration.*.ImageType` | maybe | hand rule |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.Ec2KeyPair` | maybe | hand rule |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.ImageId` | maybe | hand rule |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.InstanceRole` | maybe | hand rule |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.InstanceTypes` | maybe | hand rule |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.LaunchTemplate` | maybe | hand rule |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.LaunchTemplate.LaunchTemplateId` | maybe | hand rule |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.LaunchTemplate.LaunchTemplateName` | maybe | hand rule |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.LaunchTemplate.Version` | maybe | hand rule |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.PlacementGroup` | maybe | hand rule |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.SecurityGroupIds` | maybe | hand rule |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.Subnets` | maybe | hand rule |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.Tags` | maybe | hand rule |
+| `AWS::Batch::ComputeEnvironment#ComputeResources.Type` | maybe | hand rule |
 | `AWS::Batch::ComputeEnvironment#EksConfiguration` | yes | baseline |
 | `AWS::Batch::JobDefinition#Tags` | yes | update |
 | `AWS::Batch::JobQueue#Tags` | yes | update |

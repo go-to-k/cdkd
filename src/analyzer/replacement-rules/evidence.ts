@@ -168,6 +168,9 @@ export const REPLACEMENT_EVIDENCE: ReadonlyMap<string, ReplacementEvidence> = ne
     conditional('cfn-measured', 5458, 5558, 7038, 7045),
   ],
   ['AWS::EMR::Cluster#Instances', conditional('cfn-measured', 5418)],
+  // Measured through Cloud Control on #7083: in place with
+  // `ReplaceComputeEnvironment: false`, `NotUpdatable` without it.
+  ['AWS::Batch::ComputeEnvironment#ComputeResources', conditional('cc-measured', 7083, 7098)],
   // --- provider-replacement planners
   ['AWS::SNS::Subscription#DeliveryPolicy', conditional('cfn-measured', 6509)],
   ['AWS::SNS::Subscription#FilterPolicy', conditional('cfn-measured', 6509)],
@@ -318,8 +321,6 @@ export const REPLACEMENT_EVIDENCE: ReadonlyMap<string, ReplacementEvidence> = ne
   ['AWS::AppConfig::ConfigurationProfile#Type', replace('aws-api', 7083)],
   ['AWS::AppConfig::Extension#Tags', update('cc-measured', 7083)],
   ['AWS::AppConfig::ExtensionAssociation#Tags', update('cc-measured', 7083)],
-  ['AWS::Batch::ComputeEnvironment#ComputeResources.SecurityGroupIds', update('cc-measured', 7083)],
-  ['AWS::Batch::ComputeEnvironment#ComputeResources.Subnets', update('cc-measured', 7083)],
   // A new revision under the same name: CloudFormation's update, too.
   ['AWS::Batch::JobDefinition#Tags', update('cc-measured', 7083)],
   ['AWS::Batch::JobQueue#Tags', update('cc-measured', 7083)],

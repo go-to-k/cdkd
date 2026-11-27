@@ -6996,6 +6996,7 @@
     {
       "resourceType": "AWS::IAM::InstanceProfile",
       "integs": [
+        "batch",
         "cc-to-sdk-reroute-common-types-2",
         "ec2-instance",
         "ec2-instance-fanout",
@@ -7012,6 +7013,9 @@
         "remove-protection"
       ],
       "signals": {
+        "batch": [
+          "l1"
+        ],
         "cc-to-sdk-reroute-common-types-2": [
           "l1",
           "literal"
