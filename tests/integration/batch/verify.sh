@@ -15,6 +15,11 @@
 #        one;
 #      - the EC2 environment's InstanceTypes goes optimal -> m5.large: assert
 #        the SAME ARN now holds m5.large.
+#   2b. Re-deploy with CDKD_TEST_FARGATE_FALSE_TYPE=true too: the Fargate
+#      environment declaring ReplaceComputeEnvironment: false changes Type.
+#      Assert the deploy FAILS naming ReplaceComputeEnvironment, the
+#      environment keeps its ARN and FARGATE type, and its queue still points
+#      at it: nothing is deleted.
 #   3. Destroy + assert cdkd state is gone.
 #
 # Required env vars:
@@ -105,13 +110,15 @@ ce_field() { # usage: ce_field <arn> <jmespath under computeEnvironments[0]>
 
 # --- Phase 1: deploy --------------------------------------------------
 echo "==> Phase 1: deploy"
-env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_UPDATE -u CDKD_TEST_FARGATE_FALSE_TYPE node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 OLD_FARGATE_ARN="$(output_of ComputeEnvironmentArn)"
 EC2_ARN="$(output_of Ec2ComputeEnvironmentArn)"
 QUEUE_ARN="$(output_of JobQueueArn)"
-for v in OLD_FARGATE_ARN EC2_ARN QUEUE_ARN; do
+KEPT_ARN="$(output_of FargateKeptEnvironmentArn)"
+KEPT_QUEUE_ARN="$(output_of KeptJobQueueArn)"
+for v in OLD_FARGATE_ARN EC2_ARN QUEUE_ARN KEPT_ARN KEPT_QUEUE_ARN; do
   if [ -z "${!v}" ]; then
     echo "FAIL: #7098 premise: stack output for ${v} is empty after Phase 1" >&2
     exit 1
@@ -132,7 +139,7 @@ echo "    deployed: Fargate ${OLD_FARGATE_ARN}, EC2 ${EC2_ARN}"
 echo "==> Phase 2: Type FARGATE -> FARGATE_SPOT (replace) and InstanceTypes -> m5.large (in place)"
 P2_LOG="$(mktemp)"
 set +e
-CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+CDKD_TEST_UPDATE=true env -u CDKD_TEST_FARGATE_FALSE_TYPE node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${P2_LOG}"
 P2_RC=${PIPESTATUS[0]}
 set -e
@@ -180,12 +187,44 @@ if [ "$(ce_field "${EC2_ARN}" 'computeResources.instanceTypes | join(`,`, @)')" 
 fi
 echo "    Fargate replaced (${OLD_FARGATE_ARN} -> ${NEW_FARGATE_ARN}), queue follows; EC2 updated in place"
 
+# --- Phase 2b: a Type change under ReplaceComputeEnvironment: false ------
+if [ "$(ce_field "${KEPT_ARN}" computeResources.type)" != "FARGATE" ]; then
+  echo "FAIL: #7098 premise: the ReplaceComputeEnvironment: false environment is not FARGATE before its Type change" >&2
+  exit 1
+fi
+echo "==> Phase 2b: Type FARGATE -> FARGATE_SPOT under ReplaceComputeEnvironment: false (must fail, delete nothing)"
+P2B_LOG="$(mktemp)"
+set +e
+CDKD_TEST_UPDATE=true CDKD_TEST_FARGATE_FALSE_TYPE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${P2B_LOG}"
+P2B_RC=${PIPESTATUS[0]}
+set -e
+if [ "${P2B_RC}" -eq 0 ]; then
+  echo "FAIL: #7098: the Type change under ReplaceComputeEnvironment: false deployed (it must fail, as under CloudFormation, not replace)" >&2
+  exit 1
+fi
+if ! grep -qF 'ReplaceComputeEnvironment is false' "${P2B_LOG}"; then
+  echo "FAIL: #7098: the failed deploy (exit ${P2B_RC}) does not name ReplaceComputeEnvironment in its remedy" >&2
+  exit 1
+fi
+KEPT_LIVE="$(aws batch describe-compute-environments --compute-environments "${KEPT_ARN}" --region "${REGION}" --query "computeEnvironments[?status!='DELETED' && status!='DELETING'] | [0].computeResources.type" --output text)"
+if [ "${KEPT_LIVE}" != "FARGATE" ]; then
+  echo "FAIL: #7098: the ReplaceComputeEnvironment: false environment ${KEPT_ARN} was replaced or changed (live type '${KEPT_LIVE}'); it must be left as it was" >&2
+  exit 1
+fi
+KEPT_QUEUE_CE="$(aws batch describe-job-queues --job-queues "${KEPT_QUEUE_ARN}" --region "${REGION}" --query 'jobQueues[0].computeEnvironmentOrder[0].computeEnvironment' --output text)"
+if [ "${KEPT_QUEUE_CE}" != "${KEPT_ARN}" ]; then
+  echo "FAIL: #7098: the kept environment's job queue now points at '${KEPT_QUEUE_CE}', not ${KEPT_ARN}" >&2
+  exit 1
+fi
+echo "    refused under ReplaceComputeEnvironment: false; ${KEPT_ARN} and its queue untouched"
+
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
-for arn in "${NEW_FARGATE_ARN}" "${EC2_ARN}"; do
+for arn in "${NEW_FARGATE_ARN}" "${EC2_ARN}" "${KEPT_ARN}"; do
   LEFT=""
   for _ in $(seq 1 30); do
     LEFT="$(aws batch describe-compute-environments --compute-environments "${arn}" --region "${REGION}" --query "length(computeEnvironments[?status!='DELETED'])" --output text)"

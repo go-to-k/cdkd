@@ -23,11 +23,17 @@ import * as batch from 'aws-cdk-lib/aws-batch';
  * the job queue that references it must follow. An EC2 environment with
  * `ReplaceComputeEnvironment: false` (min 0 vCPUs, so no instance runs) changes
  * `InstanceTypes` and must be UPDATED in place.
+ *
+ * FALSE ARM (CDKD_TEST_FARGATE_FALSE_TYPE=true, #7098): a second Fargate
+ * environment declares `ReplaceComputeEnvironment: false` (what CDK's L2
+ * emits). Its Type change must NOT replace it: Batch refuses the update and the
+ * deploy fails, as under CloudFormation, deleting nothing.
  */
 export class BatchStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
     const updating = process.env.CDKD_TEST_UPDATE === 'true';
+    const falseTypeChange = process.env.CDKD_TEST_FARGATE_FALSE_TYPE === 'true';
 
     // VPC with 1 AZ and public subnet only (no NAT for cost saving)
     const vpc = new ec2.Vpc(this, 'Vpc', {
@@ -70,6 +76,22 @@ export class BatchStack extends cdk.Stack {
         subnets: vpc.publicSubnets.map((s) => s.subnetId),
         securityGroupIds: [sg.securityGroupId],
       },
+    });
+
+    // Fargate environment under ReplaceComputeEnvironment: false (#7098).
+    const fargateKept = new batch.CfnComputeEnvironment(this, 'FargateKeptEnv', {
+      type: 'MANAGED',
+      replaceComputeEnvironment: false,
+      computeResources: {
+        type: falseTypeChange ? 'FARGATE_SPOT' : 'FARGATE',
+        maxvCpus: 2,
+        subnets: vpc.publicSubnets.map((s) => s.subnetId),
+        securityGroupIds: [sg.securityGroupId],
+      },
+    });
+    const keptQueue = new batch.CfnJobQueue(this, 'KeptJobQueue', {
+      priority: 1,
+      computeEnvironmentOrder: [{ order: 1, computeEnvironment: fargateKept.ref }],
     });
 
     // EC2 compute environment updated in place (go-to-k/cdkd#7098).
@@ -139,6 +161,11 @@ export class BatchStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'Ec2ComputeEnvironmentArn', {
       value: ec2Env.attrComputeEnvironmentArn,
     });
+
+    new cdk.CfnOutput(this, 'FargateKeptEnvironmentArn', {
+      value: fargateKept.attrComputeEnvironmentArn,
+    });
+    new cdk.CfnOutput(this, 'KeptJobQueueArn', { value: keptQueue.attrJobQueueArn });
 
     new cdk.CfnOutput(this, 'JobQueueArn', {
       value: jobQueue.attrJobQueueArn,

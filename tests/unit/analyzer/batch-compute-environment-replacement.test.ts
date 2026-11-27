@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ReplacementRulesRegistry } from '../../../src/analyzer/replacement-rules.js';
 import { CREATE_ONLY_PATHS } from '../../../src/analyzer/replacement-rules/batch-compute-environment.js';
+import { notUpdatableRemedy } from '../../../src/deployment/deploy-engine/update-in-place/update-failure-remedy.js';
 
 // go-to-k/cdkd#7098: a Batch compute environment's ComputeResources change that
 // needs an infrastructure update replaces unless the template sets
@@ -55,6 +56,7 @@ describe('Batch compute environment ComputeResources replacement (go-to-k/cdkd#7
     ['PlacementGroup', { PlacementGroup: 'pg' }],
     ['Tags', { Tags: { k: 'v' } }],
     ['Type', { Type: 'SPOT' }],
+    ['UpdateToLatestImageVersion', { UpdateToLatestImageVersion: true }],
   ];
 
   it.each(infrastructure)('%s replaces when ReplaceComputeEnvironment is absent or true', (_, change) => {
@@ -75,34 +77,48 @@ describe('Batch compute environment ComputeResources replacement (go-to-k/cdkd#7
     }
   });
 
-  // Batch refuses these any infrastructure update, ReplaceComputeEnvironment
-  // false or not (measured on #7098).
-  it('a Fargate environment replaces on an infrastructure member even under false', () => {
+  // An explicit false never replaces, even where Batch refuses the update: the
+  // CDK L2 Fargate environment emits false, and CloudFormation then fails the
+  // update rather than deleting the environment.
+  it('a Fargate environment replaces on an infrastructure member only without an explicit false', () => {
     const fargate = { Type: 'FARGATE', MaxvCpus: 2, Subnets: ['subnet-a'], SecurityGroupIds: ['sg-a'] };
-    expect(replaces({ Type: 'FARGATE_SPOT' }, false, fargate)).toBe(true);
-    expect(replaces({ Tags: { k: 'v' } }, false, fargate)).toBe(true);
-    expect(replaces({ Subnets: ['subnet-b'] }, false, fargate)).toBe(false);
+    expect(replaces({ Type: 'FARGATE_SPOT' }, undefined, fargate)).toBe(true);
+    expect(replaces({ Type: 'FARGATE_SPOT' }, false, fargate)).toBe(false);
+    expect(replaces({ Type: 'FARGATE_SPOT' }, 'false', fargate)).toBe(false);
+    expect(replaces({ Tags: { k: 'v' } }, true, fargate)).toBe(true);
+    expect(replaces({ Subnets: ['subnet-b'] }, undefined, fargate)).toBe(false);
     expect(replaces({ MaxvCpus: 4 }, undefined, fargate)).toBe(false);
   });
 
-  it('a BEST_FIT environment (or no strategy) replaces on infrastructure and network changes', () => {
+  it('a BEST_FIT environment (or no strategy) replaces on network changes too, unless false', () => {
     for (const strategy of ['BEST_FIT', undefined]) {
       const bestFit = { ...base, AllocationStrategy: strategy };
-      expect(replaces({ InstanceTypes: ['m5.large'] }, false, bestFit)).toBe(true);
-      expect(replaces({ Subnets: ['subnet-b'] }, false, bestFit)).toBe(true);
-      expect(replaces({ SecurityGroupIds: ['sg-b'] }, false, bestFit)).toBe(true);
-      expect(replaces({ MaxvCpus: 8 }, false, bestFit)).toBe(false);
+      expect(replaces({ InstanceTypes: ['m5.large'] }, undefined, bestFit)).toBe(true);
+      expect(replaces({ Subnets: ['subnet-b'] }, undefined, bestFit)).toBe(true);
+      expect(replaces({ SecurityGroupIds: ['sg-b'] }, true, bestFit)).toBe(true);
+      expect(replaces({ Subnets: ['subnet-b'] }, false, bestFit)).toBe(false);
+      expect(replaces({ InstanceTypes: ['m5.large'] }, false, bestFit)).toBe(false);
+      expect(replaces({ MaxvCpus: 8 }, undefined, bestFit)).toBe(false);
     }
+    // A move TO BEST_FIT counts too.
+    expect(replaces({ AllocationStrategy: 'BEST_FIT', Subnets: ['subnet-b'] }, undefined)).toBe(true);
   });
 
-  it('a change TO a Fargate or BEST_FIT environment replaces too, in either direction', () => {
-    const fargate = { Type: 'FARGATE', MaxvCpus: 2, Subnets: ['subnet-a'], SecurityGroupIds: ['sg-a'] };
-    expect(replaces({ Type: 'FARGATE', AllocationStrategy: undefined }, false)).toBe(true);
-    expect(replaces({ AllocationStrategy: 'BEST_FIT' }, false)).toBe(true);
-    expect(replaces({ AllocationStrategy: undefined }, false)).toBe(true);
-    // The rollback replay of the BEST_FIT move.
-    expect(replaces({ AllocationStrategy: 'BEST_FIT_PROGRESSIVE' }, false, { ...base, AllocationStrategy: 'BEST_FIT' })).toBe(true);
-    expect(replaces({ Type: 'EC2', AllocationStrategy: 'BEST_FIT_PROGRESSIVE' }, false, fargate)).toBe(true);
+  // The rollback replay of a deploy that set false and changed InstanceTypes
+  // runs the diff backward: old false, new absent. It must not replace.
+  it('an explicit false on either side keeps the update in place', () => {
+    const change = { InstanceTypes: ['m5.large'] };
+    const withRce = (rce: unknown): Record<string, unknown> =>
+      rce === undefined ? {} : { ReplaceComputeEnvironment: rce };
+    const run = (oldRce: unknown, newRce: unknown): boolean =>
+      registry.requiresReplacement(TYPE, 'ComputeResources', base, { ...base, ...change }, {
+        oldProperties: { ComputeResources: base, ...withRce(oldRce) },
+        newProperties: { ComputeResources: { ...base, ...change }, ...withRce(newRce) },
+      });
+    expect(run(undefined, false)).toBe(false);
+    expect(run(false, undefined)).toBe(false);
+    expect(run(false, true)).toBe(false);
+    expect(run(true, undefined)).toBe(true);
   });
 
   it('a schema create-only member replaces even under ReplaceComputeEnvironment: false', () => {
@@ -134,5 +150,30 @@ describe('Batch compute environment ComputeResources replacement (go-to-k/cdkd#7
       .sort();
     expect(fromSchema.length).toBeGreaterThan(0);
     expect(CREATE_ONLY_PATHS.map((p) => p.join('.')).sort()).toEqual(fromSchema);
+  });
+
+  // Under false the refusal stands, as in CloudFormation, so the remedy names
+  // the property instead of claiming CloudFormation would replace.
+  it('the NotUpdatable remedy under ReplaceComputeEnvironment: false names the property', () => {
+    const remedy = (rce: unknown): string =>
+      notUpdatableRemedy({
+        logicalId: 'ComputeEnv',
+        resourceType: TYPE,
+        stackName: 'S',
+        changedProperties: new Set(['ComputeResources']),
+        record: {
+          physicalId: 'arn',
+          resourceType: TYPE,
+          properties: rce === undefined ? {} : { ReplaceComputeEnvironment: rce },
+        } as never,
+        updateReplacePolicy: undefined,
+        nestedChild: false,
+      });
+    const underFalse = remedy(false);
+    expect(underFalse).toContain('ReplaceComputeEnvironment is false');
+    expect(underFalse).toContain('Set ReplaceComputeEnvironment to true');
+    expect(underFalse).toContain('--replace-resource ComputeEnv');
+    expect(underFalse).not.toContain('CloudFormation replaces the resource');
+    expect(remedy(undefined)).toContain('CloudFormation replaces the resource');
   });
 });

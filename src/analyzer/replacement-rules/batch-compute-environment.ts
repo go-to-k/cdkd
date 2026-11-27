@@ -10,7 +10,11 @@ import type { ReplacementSiblings } from './types.js';
  * With it `true` or absent, every member here answered `NotUpdatable`. That
  * covers `Type` too (EC2 -> SPOT, and FARGATE -> FARGATE_SPOT). `Subnets`,
  * `SecurityGroupIds` and the vCPU counts applied in place either way, so they
- * are not listed.
+ * are not listed. `UpdateToLatestImageVersion` is on AWS's list of
+ * infrastructure-update properties ("Updating compute environments"), not
+ * measured here. `CapacityTags` and `ScalingPolicy` are not measured either
+ * and keep the in-place update (a refusal fails the deploy and deletes
+ * nothing).
  */
 const INFRASTRUCTURE_UPDATE_MEMBERS = [
   'AllocationStrategy',
@@ -24,6 +28,7 @@ const INFRASTRUCTURE_UPDATE_MEMBERS = [
   'PlacementGroup',
   'Tags',
   'Type',
+  'UpdateToLatestImageVersion',
 ] as const;
 
 /**
@@ -63,23 +68,27 @@ function noInfrastructureUpdate(current: unknown): 'fargate' | 'best-fit' | unde
   return strategy === undefined || strategy === 'BEST_FIT' ? 'best-fit' : undefined;
 }
 
-/** `false` / `"false"` is false; anything else, absence included, is CloudFormation's default `true`. */
-function replacesComputeEnvironment(value: unknown): boolean {
-  return !(value === false || value === 'false');
+/** An explicit `false` / `"false"`; absence is CloudFormation's default `true`. */
+function isExplicitFalse(value: unknown): boolean {
+  return value === false || value === 'false';
 }
 
 /**
  * Conditional-replacement predicate for `AWS::Batch::ComputeEnvironment`
  * `ComputeResources` (go-to-k/cdkd#7098). A change to a schema create-only
  * member always replaces. A change to an infrastructure-update member
- * replaces unless the desired template sets `ReplaceComputeEnvironment:
- * false`, which is CloudFormation's documented switch and the shape measured
- * applying in place. On a Fargate or BEST_FIT environment, which Batch never
- * updates that way, it replaces regardless, and on BEST_FIT so does a subnet
- * or security-group change. CDK's L2 `ManagedEc2EcsComputeEnvironment` emits
- * `false` and BEST_FIT_PROGRESSIVE by default, so an L2 EC2 environment keeps
- * its in-place update. Anything else (`Subnets`, `SecurityGroupIds` and vCPU
- * counts elsewhere) stays in place.
+ * replaces unless `ReplaceComputeEnvironment: false` is set, which is
+ * CloudFormation's documented switch and the shape measured applying in
+ * place. On a BEST_FIT environment (the default when unset), which Batch never
+ * updates that way, a subnet or security-group change replaces too.
+ *
+ * An explicit `false` NEVER replaces, on either side of the change, even where
+ * Batch refuses the update (a Fargate environment, BEST_FIT): CloudFormation
+ * attempts the update and fails rather than replacing, and a replacement would
+ * delete the environment and drain its queue. CDK's L2 compute environments
+ * emit `false` by default. Reading both sides keeps a rollback replay, whose
+ * diff runs backward, from replacing what the forward deploy updated in place
+ * (an RCE flip to `false` beside an InstanceTypes change).
  *
  * Without the sibling bags the common case answers in place, as the other
  * sibling predicates do. Known residue: a synthetic probe with no values (an
@@ -95,20 +104,18 @@ export function batchComputeResourcesChangeReplaces(
   if (CREATE_ONLY_PATHS.some((p) => !isDeepStrictEqual(at(oldValue, p), at(newValue, p)))) {
     return true;
   }
-  // Either side: Batch refuses an update FROM such an environment and an
-  // update TO one (EC2 -> FARGATE, a strategy moved to BEST_FIT), and a
-  // rollback replay runs the same pair backward.
-  const refusedSide = noInfrastructureUpdate(oldValue) ?? noInfrastructureUpdate(newValue);
   const changed = (member: string): boolean =>
     !isDeepStrictEqual(at(oldValue, [member]), at(newValue, [member]));
-  if (!INFRASTRUCTURE_UPDATE_MEMBERS.some(changed)) {
-    // A BEST_FIT environment takes no infrastructure update at all, so its
-    // subnets and security groups cannot move in place either.
-    return refusedSide === 'best-fit' && (changed('Subnets') || changed('SecurityGroupIds'));
-  }
-  // Batch itself refuses these environments any infrastructure update, so
-  // nothing but a replacement applies the change, whatever the template says.
-  if (refusedSide !== undefined) return true;
-  if (siblings === undefined) return false;
-  return replacesComputeEnvironment(siblings.newProperties['ReplaceComputeEnvironment']);
+  // Either side: Batch refuses an update FROM a BEST_FIT environment and TO one.
+  const bestFit =
+    noInfrastructureUpdate(oldValue) === 'best-fit' ||
+    noInfrastructureUpdate(newValue) === 'best-fit';
+  const needsReplacement =
+    INFRASTRUCTURE_UPDATE_MEMBERS.some(changed) ||
+    (bestFit && (changed('Subnets') || changed('SecurityGroupIds')));
+  if (!needsReplacement || siblings === undefined) return false;
+  return !(
+    isExplicitFalse(siblings.oldProperties['ReplaceComputeEnvironment']) ||
+    isExplicitFalse(siblings.newProperties['ReplaceComputeEnvironment'])
+  );
 }

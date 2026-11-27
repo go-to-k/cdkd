@@ -80,6 +80,11 @@ export function replacementRuleIssueUrl(
  * to report the missing rule. A nested child's resource is out of the flag's
  * reach (it names a top-level stack's resources), so no command is offered.
  */
+/** An explicit `false` / `"false"`. */
+function isExplicitFalse(value: unknown): boolean {
+  return value === false || value === 'false';
+}
+
 export function notUpdatableRemedy(input: {
   logicalId: string;
   resourceType: string;
@@ -113,6 +118,21 @@ export function notUpdatableRemedy(input: {
       (stateful
         ? safeMsg` ${input.logicalId} is stateful: replacing it deletes its data, which the deploy asks you to confirm with --force-stateful-recreation.`
         : '');
+  // go-to-k/cdkd#7098: under `ReplaceComputeEnvironment: false` CloudFormation
+  // does not replace a Batch compute environment either; it fails the same way.
+  if (
+    input.resourceType === 'AWS::Batch::ComputeEnvironment' &&
+    isExplicitFalse(input.record.properties?.['ReplaceComputeEnvironment'])
+  ) {
+    return (
+      safeMsg`\n${input.logicalId} (${input.resourceType}): Batch refused this update in place (${CC_NOT_UPDATABLE_CODE})${changes}. ReplaceComputeEnvironment is false, so neither cdkd nor CloudFormation replaces the environment.` +
+      ` Set ReplaceComputeEnvironment to true (or remove it) to have the change replace it, which deletes the old environment once its job queues move.` +
+      how.replace(
+        ' To replace it in this deploy, as CloudFormation does: ',
+        ' Or replace it in this deploy only: '
+      )
+    );
+  }
   const issueUrl = replacementRuleIssueUrl(input.resourceType, properties);
   return (
     safeMsg`\n${input.logicalId} (${input.resourceType}): Cloud Control refused this update in place (${CC_NOT_UPDATABLE_CODE})${changes}; CloudFormation replaces the resource for such a change.` +
