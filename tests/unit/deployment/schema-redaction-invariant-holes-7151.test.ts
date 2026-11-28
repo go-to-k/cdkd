@@ -64,7 +64,7 @@ import { redactRollbackRecord } from '../../../src/deployment/rollback-executor/
 import { maskRestoredNoEchoRecord } from '../../../src/deployment/rollback-executor/replay-noecho.js';
 import { withRefreshedObservedBaseline } from '../../../src/deployment/rollback-executor/replay-observed-refresh.js';
 import { applyScrubNoEcho, planScrubNoEcho, scrubMigrationNeedles } from '../../../src/cli/commands/scrub/noecho.js';
-import { positionTwinReferences } from '../../../src/cli/commands/scrub/twin-references.js';
+import { positionTwinReferences, withObservedTwinsPositioned } from '../../../src/cli/commands/scrub/twin-references.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
@@ -219,7 +219,8 @@ const WRITERS: readonly Writer[] = ['deploy-persist', 'unchanged-persist', 'scru
  * - `scrub`: `cdkd scrub` over a record an older binary wrote in plaintext,
  *   the redaction steps of `src/cli/commands/scrub/stack-rewrite.ts` (position
  *   against the template, twin references put back on their own expression
- *   by `positionTwinReferences` (#7154), `scrubResourceRecord` under `state-cross-generation`
+ *   by `positionTwinReferences` (#7154), `scrubResourceRecord` and the same
+ *   pairing for the observed bag (`withObservedTwinsPositioned`) under `state-cross-generation`
  *   with `propertiesPositioned`, the `NoEcho` migration needles,
  *   `applyScrubNoEcho`); left out: `keepTemplateLiteralLeaves` and
  *   `keepHeldTokenProvenance`, which only KEEP leaves, and the public tokens
@@ -277,11 +278,16 @@ async function written(
           s.secrets
         ) as Record<string, unknown>,
       };
-      const walked = scrubResourceRecord(positioned, s.secrets, undefined, 'state-cross-generation', {
-        properties: 'unproven',
-        observed: 'unproven',
-        propertiesPositioned: true,
-      });
+      const walked = withObservedTwinsPositioned(
+        scrubResourceRecord(positioned, s.secrets, undefined, 'state-cross-generation', {
+          properties: 'unproven',
+          observed: 'unproven',
+          propertiesPositioned: true,
+        }),
+        memory,
+        positioned.properties,
+        s.secrets
+      );
       const needles = scrubMigrationNeedles(plan, new Set());
       const migrated =
         needles === undefined

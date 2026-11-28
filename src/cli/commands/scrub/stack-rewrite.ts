@@ -30,7 +30,7 @@ import {
 import { isReadableBag } from '../../../state/malformed-resources-bag.js';
 import { renderStateKeyForLine } from './errors.js';
 import { saveScrubbedState } from './save-state.js';
-import { positionTwinReferences } from './twin-references.js';
+import { positionTwinReferences, withObservedTwinsPositioned } from './twin-references.js';
 import {
   NESTED_STACK_TYPE,
   type NestedChildScrubInput,
@@ -424,14 +424,20 @@ export async function scrubStackRewritePass({
     // deployed, which `cdkd drift --revert` then pushes to AWS. The
     // trust-any-expression relaxation is kept — that source is still a STATE
     // bag — because it is what cleans a legacy PLAINTEXT observed leaf.
+    // go-to-k/cdkd#7154: observed twins too, against `positioned.properties`.
     const walked =
       secrets || templateProps
-        ? scrubResourceRecord(positioned, ownSecrets, undefined, 'state-cross-generation', {
-            // A record read from `state.json`: no bag this run produced.
-            properties: 'unproven',
-            observed: 'unproven',
-            propertiesPositioned: templateProps !== undefined,
-          })
+        ? withObservedTwinsPositioned(
+            scrubResourceRecord(positioned, ownSecrets, undefined, 'state-cross-generation', {
+              // A record read from `state.json`: no bag this run produced.
+              properties: 'unproven',
+              observed: 'unproven',
+              propertiesPositioned: templateProps !== undefined,
+            }),
+            record,
+            templateProps && positioned.properties,
+            ownSecrets
+          )
         : record;
     // go-to-k/cdkd#6303: that walk's source is a STATE bag, so it value-scans
     // an observed leaf even where the leaf is the template's own plain literal

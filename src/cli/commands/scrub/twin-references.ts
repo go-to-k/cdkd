@@ -3,6 +3,35 @@ import {
   type RecordedSecretValues,
 } from '../../../deployment/secret-redaction/pairs.js';
 import { dynamicReferenceSpans } from '../../../deployment/secret-redaction/redact-path/reference-tokens.js';
+import type { ResourceState } from '../../../types/state.js';
+
+/**
+ * The same pairing for the drift baseline (go-to-k/cdkd#7154): a `walked`
+ * record's `observedProperties` against `properties` as the scrub positioned
+ * them, each observed leaf proven against the STORED readback. A readback
+ * that reordered a list, or added a key, never corroborates and keeps the
+ * walk's leaf. `positionedProperties` is `undefined` when no template
+ * positioned the record, and the record is returned as walked.
+ */
+export function withObservedTwinsPositioned(
+  walked: ResourceState,
+  stored: ResourceState,
+  positionedProperties: unknown,
+  secrets: RecordedSecretValues
+): ResourceState {
+  if (positionedProperties === undefined) return walked;
+  if (stored.observedProperties === undefined || walked.observedProperties === undefined)
+    return walked;
+  const observed = positionTwinReferences(
+    stored.observedProperties,
+    walked.observedProperties,
+    positionedProperties,
+    secrets
+  ) as Record<string, unknown>;
+  return observed === walked.observedProperties
+    ? walked
+    : { ...walked, observedProperties: observed };
+}
 
 /**
  * Re-position the leaves of a scrubbed `properties` bag whose template

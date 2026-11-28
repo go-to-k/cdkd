@@ -143,7 +143,15 @@ describe('scrub twin references (go-to-k/cdkd#7154)', () => {
       region: 'us-east-1',
       stackName: 'S',
       resources: {
-        Task: { physicalId: 'arn:task', resourceType: 'AWS::ECS::TaskDefinition', properties: stored, attributes: {}, dependencies: [] },
+        Task: {
+          physicalId: 'arn:task',
+          resourceType: 'AWS::ECS::TaskDefinition',
+          properties: stored,
+          // The drift baseline: the same readback, a twin inside a list too.
+          observedProperties: structuredClone(stored),
+          attributes: {},
+          dependencies: [],
+        },
       },
       outputs: {},
       lastModified: 0,
@@ -166,5 +174,6 @@ describe('scrub twin references (go-to-k/cdkd#7154)', () => {
     expect(saved).toBeDefined();
     expect(JSON.stringify(saved)).not.toContain(PLAIN);
     expect(saved!.resources.Task!.properties).toEqual(properties);
+    expect(saved!.resources.Task!.observedProperties).toEqual(properties);
   });
 });
