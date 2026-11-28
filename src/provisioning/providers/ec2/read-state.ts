@@ -30,7 +30,7 @@ import {
   withRecordedCidrSpelling,
   sgProtocolKey,
   sgRuleKey,
-  stackIngressRuleHolder,
+  sharedIngressRuleDescriptions,
 } from './sg-support.js';
 import { SUBNET_PRIVATE_DNS_MEMBERS, cidrPrefixLength } from './subnet-support.js';
 import {
@@ -702,12 +702,13 @@ export async function readSecurityGroupIngressCurrentState(
  *   `DescribeSecurityGroupRules`, an ingress rule of this group matching the
  *   template's identity and carrying the SAME description as the one live
  *   identity match. A stale id (the rule was re-created) answers nothing;
- * - no sibling `AWS::EC2::SecurityGroupIngress` declares the same rule or
+ * - every sibling `AWS::EC2::SecurityGroupIngress` declaring the same rule
  *   records the same rule id, and no inline rule of the group's own
- *   `AWS::EC2::SecurityGroup` record declares it
- *   (go-to-k/cdkd#4492): AWS keeps one rule for both, with the first
- *   description, so the other record would read false drift and its revert
- *   would revoke the shared rule.
+ *   `AWS::EC2::SecurityGroup` record declares it (go-to-k/cdkd#4492): AWS
+ *   keeps one rule for both, with the first description. Such a shared rule
+ *   (go-to-k/cdkd#7198) answers for each record, in its own description when
+ *   AWS's is one a sharing record declares, so neither reads false drift; a
+ *   holder recording another id, or none, still answers nothing.
  *
  * The by-id call has its own catch: `readCurrentState`'s maps
  * `InvalidSecurityGroupRuleId.NotFound` to GONE, which a stale id is not.
@@ -740,20 +741,17 @@ export async function readSgIngressByIdentity(
   const matches = flat.filter((r) => identity(r) === wanted);
   if (matches.length !== 1) return undefined;
   const match = matches[0]!;
-  const siblings = Object.entries(context?.siblings ?? {});
-  if (
-    stackIngressRuleHolder(siblings, '', groupId, properties) !== undefined ||
-    // The same rule spelled another way (a group name for its id, a CIDR
-    // written differently) does not pair by identity, but a record sharing
-    // it recorded the same rule id.
-    siblings.some(
-      ([, sibling]) =>
-        sibling.resourceType === 'AWS::EC2::SecurityGroupIngress' &&
-        recordedSgRuleId(sibling.attributes) === recordedId
-    )
-  ) {
-    return undefined;
-  }
+  // go-to-k/cdkd#7198: a holder recording the SAME rule id shares the one rule
+  // AWS keeps (also when it spells the rule another way, a CIDR with host
+  // bits, so it does not pair by identity); any other holder leaves the rule
+  // unknown (#4492).
+  const sharers = sharedIngressRuleDescriptions(
+    Object.entries(context?.siblings ?? {}),
+    groupId,
+    properties,
+    recordedId
+  );
+  if (sharers === undefined) return undefined;
   let owned: SecurityGroupRule | undefined;
   try {
     const resp = await this.ec2Client.send(
@@ -789,11 +787,22 @@ export async function readSgIngressByIdentity(
   // and AWS's `3306` against the record's `"3306"` would read as port drift
   // on every run, with `--revert` re-authorizing the same rule each time.
   // (`IpProtocol` needs no echo: `canonicalizeIpProtocols` folds both sides.)
-  return {
+  const out: CfnSgRule = {
     ...withRecordedCidrSpelling(match, properties),
     ...(properties['FromPort'] != null && { FromPort: properties['FromPort'] }),
     ...(properties['ToPort'] != null && { ToPort: properties['ToPort'] }),
   };
+  // go-to-k/cdkd#7198: a shared rule holds ONE description, the first
+  // writer's. One a sharing record declares is this record's in sync (the
+  // update keeps the rule as it is for the same reason, `sg-ingress-update.ts`),
+  // so it answers in this record's own; any other is an out-of-band edit,
+  // reported on every sharing record.
+  const live = descriptionKey(match['Description']);
+  if (sharers.some((d) => descriptionKey(d) === live)) {
+    delete out['Description'];
+    if (properties['Description'] != null) out['Description'] = properties['Description'];
+  }
+  return out;
 }
 
 /**

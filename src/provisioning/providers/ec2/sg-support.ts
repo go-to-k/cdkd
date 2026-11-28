@@ -391,6 +391,47 @@ export function stackIngressRuleHolder(
 }
 
 /**
+ * go-to-k/cdkd#7198: the other standalone records sharing the live rule
+ * `ruleId` with the record read (`rule` on `groupId`), as their recorded
+ * `Description`s. Two records declaring one rule (Aurora's
+ * `addIngressRule(sg, 3306)` beside a `DatabaseProxy`'s `Endpoint.Port` rule)
+ * share the ONE rule AWS keeps: the second create met the first's rule and
+ * recorded its `sgr-` id. `[]` when no other record holds the rule;
+ * `undefined` when a holder is not proven to share THIS rule (it records
+ * another id or none, the group's own record declares the rule inline, or a
+ * holder's description is redacted), so the caller cannot tell.
+ */
+export function sharedIngressRuleDescriptions(
+  records: Iterable<readonly [string, IngressHolderRecord]>,
+  groupId: string,
+  rule: Record<string, unknown>,
+  ruleId: string
+): unknown[] | undefined {
+  const wanted = comparableIngressIdentity(groupId, rule);
+  const descriptions: unknown[] = [];
+  for (const [, record] of records) {
+    const props = record.properties;
+    if (record.resourceType === 'AWS::EC2::SecurityGroupIngress') {
+      const sameId = recordedSgRuleId(record.attributes) === ruleId;
+      const sameIdentity =
+        wanted !== undefined &&
+        isPlainRecord(props) &&
+        comparableIngressIdentity(props['GroupId'], props) === wanted;
+      if (!sameId && !sameIdentity) continue;
+      if (!sameId || !isPlainRecord(props) || props['GroupId'] !== groupId) return undefined;
+      if (isRedactedRecordedValue(props['Description'])) return undefined;
+      descriptions.push(props['Description']);
+    } else if (
+      record.resourceType === 'AWS::EC2::SecurityGroup' &&
+      stackIngressRuleHolder([['', record]], 'self', groupId, rule) !== undefined
+    ) {
+      return undefined;
+    }
+  }
+  return descriptions;
+}
+
+/**
  * Do two CFn `[{Key, Value}]` tag lists hold the same pairs, in any order? A
  * malformed entry on either side makes them differ.
  */

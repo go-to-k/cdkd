@@ -72,7 +72,8 @@ cdkd deploy MyStack \
 ```
 
 When an operation passes the `--resource-warn-after` threshold, its progress
-line gains `[taking longer than expected, Nm+]` and cdkd logs a `WARN` line.
+line gains `[taking longer than expected, Nm+]` (`Ns+` below a minute) and cdkd
+logs a `WARN` line.
 The operation keeps running.
 
 When an operation passes the `--resource-timeout` threshold, the deploy or

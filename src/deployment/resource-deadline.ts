@@ -55,6 +55,21 @@ export class InvalidResourceDeadlineError extends Error {
   }
 }
 
+/**
+ * Label the elapsed time a `--resource-warn-after` warning reports: seconds
+ * below a minute (`10s`), minutes from there, with any remaining seconds
+ * (`1m`, `1m30s`, `12m`), never rounded up past the time actually spent. Rounding a
+ * sub-minute warn-after up to `1m` printed "updating for 1m" ahead of a
+ * "timed out after 20s" line (go-to-k/cdkd#7197).
+ */
+export function formatWarnElapsed(elapsedMs: number): string {
+  const seconds = Math.max(1, Math.round(elapsedMs / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return rest === 0 ? `${minutes}m` : `${minutes}m${rest}s`;
+}
+
 function validateOptions(opts: ResourceDeadlineOptions): void {
   const { warnAfterMs, timeoutMs } = opts;
   if (

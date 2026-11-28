@@ -201,7 +201,7 @@ elasticache-replicationgroup-getatt	2026-11-27T11:04:07Z	PASS	691	verify.sh	rc o
 elasticache-snapshot-arns	2026-11-06T20:58:31Z	PASS	692	verify.sh	#5915 elasticache split head; rc ok, orph clean
 elbv2-same-name-replacement	2026-11-16T08:22:27Z	PASS	95	verify.sh	rc ok, orph clean (#6374 sweep)
 emr-cluster	2026-11-23T13:13:13Z	PASS	2136	verify.sh	rc ok, orph clean, clusters terminated
-emr-instance-configs	2026-11-22T06:33:25Z	PASS	1995	verify.sh	#6810 rerun at 9430853b6 (probe fix); rc ok, orph clean (us-east-1)
+emr-instance-configs	2026-11-28T16:23:59Z	PASS	2061	verify.sh	PR7199 at a65e0b671 (rebased on #7192): Phase 1c premise held; rc 0, destroy 0 errors, orph clean (us-east-1)
 emr-instance-fleets	2026-11-22T05:59:15Z	PASS	1516	verify.sh	#6810 run at b9718f87f; rc ok, orph clean (us-east-1)
 esm-replacement-rollback	2026-11-26T02:14:10Z	PASS	110	verify.sh	rc ok, orph clean; pre-fix delete.ts fails step 2 (Rollback failed ResourceInUseException)
 event-driven	2026-11-04T05:26:26Z	PASS	52	standard	batch 3 (rc=0, destroy 19 deleted 0 errors); account clean
@@ -409,7 +409,7 @@ pipes-input-template-removal	2026-11-13T18:07:10Z	PASS	115	verify.sh	rc ok, orph
 profile-region-default	2026-11-04T18:01:46Z	PASS	160	verify.sh	rc ok, orph clean (state keys + live resources, us-east-1/us-west-2/us-east-2; no Lambda log groups), own temp state bucket deleted; sweep batch 19 on test/integ-sweep-1104e
 propagation-races-2	2026-11-05T10:06:21Z	PASS	101	verify.sh	rc 0, 0 orphans, own state bucket, on cognito sms retry branch
 raw-cfn-conditions-params	2026-11-04T05:57:23Z	PASS	79	verify.sh	rc ok, orph clean
-rds-aurora	2026-11-20T19:36:46Z	PASS	4718	verify.sh	PR6691 run at 3d802a13c, same PR delta; us-west-2; rc ok, orph clean
+rds-aurora	2026-11-28T16:23:59Z	PASS	5230	verify.sh	PR7199 at a65e0b671 (rebased on #7192): Phase 1a drift clean (#7198); rc 0, destroy 0 errors, orph clean (us-east-1)
 rds-dbcluster-pitr-restore	2026-11-13T12:45:42Z	PASS	501	verify.sh	rc ok, orph clean (#6212 RDS wait delegators to base class)
 rds-dbinstance-additional-storage-volumes	2026-11-12T04:20:11Z	PASS	2256	verify.sh	rc ok, orph clean; sqlserver-se us-east-1, 4 phases sdk route
 rds-dbinstance-backfill	2026-11-26T14:54:31Z	PASS	4860	verify.sh	rc ok, orph clean; #7057 phase 2c-az-legacy OK
