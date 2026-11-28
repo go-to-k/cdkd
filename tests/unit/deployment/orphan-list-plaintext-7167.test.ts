@@ -201,6 +201,25 @@ describe('an orphan / superseded record holding list-positioned plaintext (go-to
     expect(out).toEqual([{ Password: ref }, { Password: '***' }]);
   });
 
+  it('keeps a public element its identity field pairs with another recorded element', () => {
+    const [ref] = REFS['ssm-secure'];
+    const observed = [{ Key: 'k2', Value: 'public' }];
+    expect(
+      users(
+        [
+          { Key: 'k1', Value: ref },
+          { Key: 'k2', Value: 'public' },
+        ],
+        observed
+      )
+    ).toEqual(observed);
+  });
+
+  it('masks a string standing where the record holds an object', () => {
+    const [ref, plain] = REFS['ssm-secure'];
+    expect(users([{ Password: ref }], [plain])).toEqual(['***']);
+  });
+
   it('a renamed identity-keyed element holding the plaintext is masked', () => {
     const [ref, plain] = REFS['ssm-secure'];
     const out = users(

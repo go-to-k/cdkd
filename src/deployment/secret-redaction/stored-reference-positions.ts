@@ -73,6 +73,16 @@ export function withStoredReferencePositionsMasked<R extends OffTemplateEchoReco
       }
       const segment = coordinate[depth]!;
       if (typeof segment === 'string') {
+        // A string standing where the record holds an object can be the
+        // value itself; an object lacking the key holds no copy.
+        if (
+          typeof live === 'string' &&
+          !mentionsMask(live) &&
+          dynamicReferenceTokens(live).length === 0
+        ) {
+          mask.push(path);
+          return;
+        }
         if (!isPlainObject(live) || !Object.hasOwn(live, segment)) return;
         walk(
           live[segment],
@@ -93,8 +103,18 @@ export function withStoredReferencePositionsMasked<R extends OffTemplateEchoReco
         walk(live[paired], element, depth + 1, [...path, paired], ambiguous);
         return;
       }
+      // A readback element the identity field pairs with ANOTHER recorded
+      // element is that element's, never a candidate for this one.
+      const claimed = new Set(
+        pairing === undefined
+          ? []
+          : recorded.flatMap((_, j) => {
+              const index = j === segment ? undefined : pairing(j);
+              return index === undefined ? [] : [index];
+            })
+      );
       const corroborating = live.flatMap((item, i) =>
-        corroborates(item, element, isSecretReference) ? [i] : []
+        !claimed.has(i) && corroborates(item, element, isSecretReference) ? [i] : []
       );
       if (corroborating.length === 1) {
         const only = corroborating[0]!;
@@ -105,7 +125,10 @@ export function withStoredReferencePositionsMasked<R extends OffTemplateEchoReco
       // the coordinate, and only the leaf there is masked: an element lacking
       // that leaf (AWS omits a write-only secret from its readback) holds no
       // copy, and masking it whole would replace a correct baseline.
-      const pool = corroborating.length > 0 ? corroborating : live.map((_, i) => i);
+      const pool =
+        corroborating.length > 0
+          ? corroborating
+          : live.flatMap((_, i) => (claimed.has(i) ? [] : [i]));
       for (const i of pool) walk(live[i], element, depth + 1, [...path, i], true);
     };
     walk(observed, properties, 0, [], false);
