@@ -385,6 +385,14 @@ describe('CognitoUserPoolProvider.canonicalizeDriftPair (#7134)', () => {
 
   // SMS_MFA beside the token (go-to-k/cdkd#7172): drift-cognito-mfa-sms-leftover-7172.test.ts.
 
+  it('applies when the record declares WebAuthn properties only (#7177)', async () => {
+    const out = await provider.canonicalizeDriftPair(RESOURCE_TYPE, legacy, live, {
+      MfaConfiguration: 'OFF',
+      WebAuthnRelyingPartyID: 'example.com',
+    });
+    expect(out.baseline['EnabledMfas']).toEqual([]);
+  });
+
   it('leaves an empty list by identity', async () => {
     const baseline = { MfaConfiguration: 'OFF', EnabledMfas: [] };
     const out = await provider.canonicalizeDriftPair(RESOURCE_TYPE, baseline, live, {});
@@ -394,7 +402,6 @@ describe('CognitoUserPoolProvider.canonicalizeDriftPair (#7134)', () => {
   it.each([
     ['the record declares the factor', { MfaConfiguration: 'OPTIONAL', EnabledMfas: [TOTP] }],
     ['the record declares MFA ON', { MfaConfiguration: 'ON' }],
-    ['the record declares a WebAuthn property', { WebAuthnRelyingPartyID: 'example.com' }],
     ['the record declares an email-OTP message', { EmailAuthenticationMessage: 'code {####}' }],
   ])('returns both bags by identity when %s', async (_label, properties) => {
     const out = await provider.canonicalizeDriftPair(RESOURCE_TYPE, legacy, live, properties);

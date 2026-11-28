@@ -24,7 +24,8 @@ import {
   hasMfaConfigProps,
   classifyDeclaredMfaConfiguration,
   clearsRemovedMfaConfig,
-  withoutOffSmsEcho,
+  withoutOffFactorEchoes,
+  withOffEmailOtpCleared,
 } from './mfa-request.js';
 import {
   ProvisioningError,
@@ -268,9 +269,9 @@ export function dcrConfigurationUpdate(
  * of the desired bag (`replayingState` / `desiredFromAwsReadback`), which
  * decides whether the `MfaConfiguration` shape guard below refuses (a
  * template-path update) or warns (a rollback revert or `cdkd drift
- * --revert`) — issue #3728. `desiredFromAwsReadback` also drops the
- * `SMS_MFA` echo under OFF from both bags (`withoutOffSmsEcho`,
- * go-to-k/cdkd#7172). This provider has no empty-collection-means-delete
+ * --revert`) — issue #3728. `desiredFromAwsReadback` also drops the factor
+ * echoes under OFF (`withoutOffFactorEchoes`, go-to-k/cdkd#7172, #7177; the
+ * previous side keeps EMAIL_OTP). This provider has no empty-collection-means-delete
  * shape, so nothing here treats a readback value as a removal.
  */
 export async function update(
@@ -283,13 +284,15 @@ export async function update(
   context?: UpdateContext
 ): Promise<ResourceUpdateResult> {
   this.logger.debug(`Updating Cognito User Pool ${logicalId}: ${physicalId}`);
-  // The bag as received: the record `effectiveProperties` describes. The SMS
-  // echo dropped below is left out of what is SENT only, so a narrowed record
-  // keeps the `SMS_MFA` the pool still reads back.
+  // The bag as received, which `effectiveProperties` is compared against. The
+  // SMS echo is dropped from what is SENT only, so the record keeps it; the
+  // email-OTP echo is cleared on AWS by this update, so the record drops it.
   const receivedProperties = properties;
+  let recordedProperties = properties;
   if (context?.desiredFromAwsReadback === true) {
-    properties = withoutOffSmsEcho(properties);
-    previousProperties = withoutOffSmsEcho(previousProperties);
+    recordedProperties = withOffEmailOtpCleared(properties);
+    properties = withoutOffFactorEchoes(properties);
+    previousProperties = withoutOffFactorEchoes(previousProperties, { keepEmailOtp: true });
   }
 
   // The update-path twin of `create()`'s guard (issue #1925 item 2), split
@@ -703,7 +706,9 @@ export async function update(
     if (removedMfa !== '') {
       await this.turnOffRemovedMfa(logicalId, physicalId, removedMfa);
     } else if (clearRemovedMfa) {
-      await this.resetMfaConfigOff(logicalId, physicalId, 'skip');
+      // A skipped reset leaves the email block, so the record keeps it.
+      const reset = await this.resetMfaConfigOff(logicalId, physicalId, 'skip');
+      if (!reset) recordedProperties = receivedProperties;
     }
 
     this.logger.debug(`Successfully updated Cognito User Pool ${logicalId}`);
@@ -721,7 +726,7 @@ export async function update(
     // without it a `--revert` re-issued the same substitution forever while
     // the record kept describing a value AWS does not hold.
     const narrowed = withPreviousCreateTimeOnly(
-      narrowMfaConfiguration(receivedProperties),
+      narrowMfaConfiguration(recordedProperties),
       previousProperties,
       keptCreateTimeOnly
     );

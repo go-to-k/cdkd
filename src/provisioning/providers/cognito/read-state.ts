@@ -15,7 +15,7 @@ import {
   MFA_FACTOR_SMS,
   MFA_FACTOR_SOFTWARE_TOKEN,
   MFA_FACTOR_EMAIL_OTP,
-  hasMfaConfigProps,
+  readEnabledMfas,
 } from './mfa-request.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { derivePartitionAndUrlSuffix } from '../../../utils/aws-partition.js';
@@ -46,7 +46,7 @@ export function canonicalizeDesiredProperties(
 
 /**
  * The drift PAIR rule for a pool a pre-#7128 release left holding the
- * software-token factor (go-to-k/cdkd#7134, #7172).
+ * software-token or email-OTP factor (go-to-k/cdkd#7134, #7172, #7177).
  *
  * Before #7135, an update that removed every MFA factor under
  * `MfaConfiguration: OFF` sent `UpdateUserPool` OFF only, which keeps
@@ -56,8 +56,9 @@ export function canonicalizeDesiredProperties(
  * `SOFTWARE_TOKEN_MFA` in `EnabledMfas` while `properties` declare no factor,
  * and drift compared the leftover against itself: clean.
  *
- * When the recorded `properties` declare no MFA-config-routed property and
- * leave `MfaConfiguration` absent or `OFF`, and the baseline reads `OFF` too,
+ * When the recorded `properties` declare no MFA factor nor email-OTP message
+ * (WebAuthn properties alone count as none, #7177) and leave
+ * `MfaConfiguration` absent or `OFF`, and the baseline reads `OFF` too,
  * the template asks for no software token, and CloudFormation ends an OFF
  * update without one (#7128's A/B). So the BASELINE's `EnabledMfas` loses
  * `SOFTWARE_TOKEN_MFA` and a live factor surfaces as drift. The readback is
@@ -69,14 +70,22 @@ export function canonicalizeDesiredProperties(
  * WebAuthn block (so the readback-derived desired bag declares it), with the
  * full-replace `SetUserPoolMfaConfig` carrying that block and no factor.
  *
- * Only a baseline whose other factors are `SMS_MFA` (#7172: a pool that went
- * from OPTIONAL + SMS + token to OFF). `SMS_MFA` reads back from an
- * `SmsMfaConfiguration` no OFF call removes, so it stays in the baseline,
- * matching the readback after the reset, and `update()` leaves it out of the
- * revert's request (`withoutOffSmsEcho`). `EMAIL_OTP`'s leftover is
- * unmeasured, so a list holding it is left as recorded. The WebAuthn keys are
- * left alone: the reset carries the live WebAuthn block on purpose
- * (`resetMfaConfigOff`).
+ * `EMAIL_OTP` is the same leftover (#7177). MEASURED us-east-1 2026-11-28 on
+ * a throwaway Essentials pool sending through a temporarily verified SES email
+ * identity: after OPTIONAL + `EmailMfaConfiguration`, `UpdateUserPool` OFF read
+ * back `{EmailMfaConfiguration: {Message, Subject}, MfaConfiguration: OFF}`,
+ * and a bare `SetUserPoolMfaConfig` OFF read back `{MfaConfiguration: OFF}`.
+ * So the baseline loses `EMAIL_OTP` too, its message and subject read `''`
+ * (the readback's value without the block), and the revert's reset clears
+ * the block. `update()` keeps the live `EMAIL_OTP` on the previous side so
+ * that reset is sent (`withoutOffFactorEchoes`).
+ *
+ * Only a baseline whose remaining factors are `SMS_MFA` (#7172: a pool that
+ * went from OPTIONAL + SMS + token to OFF). `SMS_MFA` reads back from an
+ * `SmsMfaConfiguration` no OFF call removes (measured), so it stays in the
+ * baseline, matching the readback after the reset, and `update()` leaves it
+ * out of the revert's request. The WebAuthn keys are left alone: the reset
+ * carries the live WebAuthn block on purpose (`resetMfaConfigOff`).
  *
  * A pool the fixed release updated reads the same list on both sides, so
  * nothing changes. An `--accept`ed leftover is indistinguishable from the
@@ -96,27 +105,35 @@ export function canonicalizeDriftPair(
   if (resourceType !== 'AWS::Cognito::UserPool') return unchanged;
   const declared = properties['MfaConfiguration'];
   if (declared !== undefined && declared !== 'OFF') return unchanged;
-  if (hasMfaConfigProps(properties)) return unchanged;
-  if (baseline['MfaConfiguration'] !== 'OFF') return unchanged;
-  const recorded = baseline['EnabledMfas'];
-  // The software token, alone or beside SMS: beside `EMAIL_OTP` the revert
-  // would send that factor under OFF, which the pre-flight refuses
-  // (`describeUnsupportedMfaCombination`), so the rule would advertise a
-  // revert that cannot succeed.
+  // A declared factor or email-OTP message is the template's to compare. A
+  // WebAuthn-only declaration is not (#7177): the revert's full-replace call
+  // carries that block and no factor, which clears the leftovers too.
   if (
-    !Array.isArray(recorded) ||
-    !recorded.includes(MFA_FACTOR_SOFTWARE_TOKEN) ||
-    recorded.some((factor) => factor !== MFA_FACTOR_SOFTWARE_TOKEN && factor !== MFA_FACTOR_SMS)
+    readEnabledMfas(properties).declaresFactor ||
+    !!properties['EmailAuthenticationMessage'] ||
+    !!properties['EmailAuthenticationSubject']
   ) {
     return unchanged;
   }
-  return Promise.resolve({
-    baseline: {
-      ...baseline,
-      EnabledMfas: recorded.filter((factor) => factor !== MFA_FACTOR_SOFTWARE_TOKEN),
-    },
-    aws,
-  });
+  if (baseline['MfaConfiguration'] !== 'OFF') return unchanged;
+  const recorded = baseline['EnabledMfas'];
+  if (!Array.isArray(recorded)) return unchanged;
+  const remaining = recorded.filter(
+    (factor) => factor !== MFA_FACTOR_SOFTWARE_TOKEN && factor !== MFA_FACTOR_EMAIL_OTP
+  );
+  // Nothing to clear, or a member beside the leftovers that the revert would
+  // send under OFF, which the pre-flight refuses
+  // (`describeUnsupportedMfaCombination`), so the rule would advertise a
+  // revert that cannot succeed.
+  if (remaining.length === recorded.length) return unchanged;
+  if (remaining.some((factor) => factor !== MFA_FACTOR_SMS)) return unchanged;
+  const next: Record<string, unknown> = { ...baseline, EnabledMfas: remaining };
+  if (recorded.includes(MFA_FACTOR_EMAIL_OTP)) {
+    for (const key of ['EmailAuthenticationMessage', 'EmailAuthenticationSubject']) {
+      if (key in baseline) next[key] = '';
+    }
+  }
+  return Promise.resolve({ baseline: next, aws });
 }
 
 /**

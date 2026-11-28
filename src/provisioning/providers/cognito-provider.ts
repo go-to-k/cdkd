@@ -411,7 +411,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     onReadFailure: 'bare' | 'skip'
-  ): Promise<void> {
+  ): Promise<boolean> {
     return resetMfaConfigOff.call(this, logicalId, physicalId, onReadFailure);
   }
 
