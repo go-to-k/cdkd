@@ -337,5 +337,30 @@ describe('an orphan / superseded record holding list-positioned plaintext (go-to
         expect(text).not.toContain(SM_PLAIN);
       }
     );
+
+    it.each(['orphan', 'superseded'] as const)(
+      "%s: a value under the needle floor is repaired by the record's own needles",
+      async (row) => {
+        // Three characters: below MIN_NEEDLE_LENGTH, so the stack-wide union drops it.
+        const SHORT = 'q7z';
+        ssmSend.mockResolvedValue({ Parameter: { Value: SHORT, Type: 'SecureString', Version: 1 } });
+        const [ref] = REFS['ssm-secure'];
+        const record: ResourceState = {
+          physicalId: 'o-7167',
+          resourceType: TYPE,
+          properties: { Password: ref },
+          attributes: { Echo: SHORT },
+        };
+        const saved = await scrub(
+          base(
+            row === 'orphan'
+              ? { orphans: [{ logicalId: 'Gone', orphanedAt: 1, state: record }] }
+              : { supersededResources: [{ logicalId: 'Gone', supersededAt: 1, state: record }] }
+          )
+        );
+        const kept = row === 'orphan' ? saved.orphans![0]!.state : saved.supersededResources![0]!.state;
+        expect(kept.attributes).toEqual({ Echo: ref });
+      }
+    );
   });
 });

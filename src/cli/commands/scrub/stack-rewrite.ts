@@ -530,14 +530,18 @@ export async function scrubStackRewritePass({
     return { ...record, state: withoutLapsedStaleShapeStamp(scrubbed) };
   });
   // go-to-k/cdkd#5111: a superseded resource's record moved out of
-  // `resources` verbatim, so it gets the same pass an orphan does, with this
-  // run's needles (it has no logical-id slot of its own to resolve).
+  // `resources` verbatim, so it gets the same pass an orphan does: this run's
+  // needles, and its own (go-to-k/cdkd#7167: the resolve pass resolves its
+  // references under `superseded:<index>`), folded back as the orphan arm
+  // does, since the union drops a value under the needle floor.
   const newSuperseded = Array.isArray(state.supersededResources)
-    ? state.supersededResources.map((entry) => {
+    ? state.supersededResources.map((entry, supersededIndex) => {
         if (!isSupersededResourceRecord(entry)) return entry;
+        const own = orphanSecrets.get(`superseded:${supersededIndex}`);
         const needles = new Map(
           allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets)
         );
+        for (const [plaintext, expression] of own ?? []) needles.set(plaintext, expression);
         if (needles.size === 0) return entry;
         const scrubbed = finishStored(
           keepHeldTokenProvenance(
