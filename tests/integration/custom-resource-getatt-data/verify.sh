@@ -546,13 +546,11 @@ assert_no_secret_in_versions "after the secret-echo deploy"
 
 # Drift: a custom resource is not compared, so the secret-echo arm adds
 # nothing to the report and its revert must change nothing. The report is
-# asserted WHOLE, because the stack is not drift-clean by design: the
-# embedded-NoEcho parameter's Value is masked whole by containment with no
-# `noEchoLeaves` coordinate, so it reads drifted at Value with both sides
-# masked (the #2274 disposition, pinned in tests/unit/cli/drift-noecho-v11),
-# and `--revert` re-sends its live value (go-to-k/cdkd#7189 tracks making it
-# not compared, which flips this to exit 0). The equal-NoEcho parameter's marked
-# Value is not compared. Nothing else may appear.
+# asserted WHOLE: the embedded-NoEcho parameter's Value is masked whole by
+# containment, and the deploy names that position in `noEchoLeaves`
+# (go-to-k/cdkd#7189), so like the equal-NoEcho parameter's marked Value it is
+# not compared (`noEchoParameter`), and the run exits 0. Nothing else may
+# appear, so `--revert` has nothing to send.
 EMBEDDED_ID="$(jq -r --arg n "${PARAM_NOECHO_EMBEDDED}" '[.resources | to_entries[] | select(.value.properties.Name == $n) | .key] | if length == 1 then .[0] else "<\(length) matches>" end' <<<"${STATE_ECHO}")"
 NOECHO_ID="$(jq -r --arg n "${PARAM_NOECHO}" '[.resources | to_entries[] | select(.value.properties.Name == $n) | .key] | if length == 1 then .[0] else "<\(length) matches>" end' <<<"${STATE_ECHO}")"
 case "${EMBEDDED_ID}${NOECHO_ID}" in
@@ -569,18 +567,19 @@ rc=$?
 set -e
 drift_carries_secret "${DRIFT_JSON}" && secret_echo_fail "cdkd drift --json printed a secret value (value withheld)"
 drift_carries_secret "${SECRET_ECHO_LOG}" && secret_echo_fail "cdkd drift --json logged a secret value (value withheld)"
-[ "${rc}" -eq 1 ] || secret_echo_fail "cdkd drift exited ${rc}, expected 1 (the embedded-NoEcho Value only)" "${DRIFT_JSON}"
-want_drifted="$(jq -cn --arg id "${EMBEDDED_ID}" --arg m "${SECRET_MASK}" '[{logicalId: $id, changes: [{path: "Value", stateValue: $m, awsValue: $m}]}]')"
+[ "$(jq -c --arg id "${EMBEDDED_ID}" '.resources[$id].noEchoLeaves' <<<"${STATE_ECHO}")" = '[["Value"]]' ] \
+  || secret_echo_fail "premise: the embedded-NoEcho record does not name its Value in noEchoLeaves (go-to-k/cdkd#7189)"
+[ "${rc}" -eq 0 ] || secret_echo_fail "cdkd drift exited ${rc}, expected 0 (every masked Value not compared)" "${DRIFT_JSON}"
 got_drifted="$(jq -c '[.[0].drifted[] | {logicalId, changes}]' "${DRIFT_JSON}")"
-[ "${got_drifted}" = "${want_drifted}" ] \
-  || secret_echo_fail "drift reported '${got_drifted}', expected '${want_drifted}'" "${DRIFT_JSON}"
-want_not_compared="$(jq -cn --arg id "${NOECHO_ID}" '[{logicalId: $id, cause: "noEchoParameter"}]')"
-got_not_compared="$(jq -c '[.[0].notCompared[] | {logicalId, cause}]' "${DRIFT_JSON}")"
+[ "${got_drifted}" = "[]" ] \
+  || secret_echo_fail "drift reported '${got_drifted}', expected nothing" "${DRIFT_JSON}"
+want_not_compared="$(jq -cn --arg a "${NOECHO_ID}" --arg b "${EMBEDDED_ID}" '[{logicalId: $a, cause: "noEchoParameter"}, {logicalId: $b, cause: "noEchoParameter"}] | sort_by(.logicalId)')"
+got_not_compared="$(jq -c '[.[0].notCompared[] | {logicalId, cause}] | sort_by(.logicalId)' "${DRIFT_JSON}")"
 [ "${got_not_compared}" = "${want_not_compared}" ] \
   || secret_echo_fail "drift notCompared is '${got_not_compared}', expected '${want_not_compared}'" "${DRIFT_JSON}"
 [ "$(jq -c '[.[0].deleted[]]' "${DRIFT_JSON}")" = "[]" ] \
   || secret_echo_fail "drift reported a deleted resource" "${DRIFT_JSON}"
-echo "    OK: cdkd drift exits 1 on the embedded-NoEcho Value alone (masked both sides), the equal-NoEcho Value is not compared, and no secret is printed"
+echo "    OK: cdkd drift exits 0, both NoEcho Values are not compared, and no secret is printed"
 set +e
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes \
   > "${SECRET_ECHO_LOG}" 2>&1
@@ -589,7 +588,7 @@ set -e
 drift_carries_secret "${SECRET_ECHO_LOG}" && secret_echo_fail "cdkd drift --revert printed a secret value (value withheld)"
 [ "${rc}" -eq 0 ] || secret_echo_fail "cdkd drift --revert --yes exited ${rc}, expected 0" "${SECRET_ECHO_LOG}"
 echo "    OK: cdkd drift --revert --yes exits 0 and prints no secret value"
-# The revert re-sent the live value, never the mask.
+# Nothing was reverted: AWS keeps the real value, never the mask.
 assert_param "${PARAM_NOECHO_EMBEDDED}" "$(embedded_value "${EXPECTED_NOECHO_ROTATED}")" "embedded NoEcho Token after drift --revert"
 STATE_AFTER_DRIFT=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
 [ "$(secret_echo_record "${STATE_AFTER_DRIFT}")" = "${ECHO_RECORD}" ] \

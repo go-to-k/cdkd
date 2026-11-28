@@ -105,7 +105,7 @@ How drift reports it depends on where the mask came from:
 
 | Source of the mask | Effect on drift |
 | --- | --- |
-| A `NoEcho` custom-resource response value used in a property | Drifted on every run |
+| A `NoEcho` custom-resource response value used in a property | Listed as `noEchoParameter` |
 | The `Fn::Base64` encoding of a secret, such as a `UserData` script | Drifted on every run |
 | A `NoEcho` template parameter | Listed as `noEchoParameter` |
 | A secret AWS returns in a property the template does not set | Listed as `maskedEcho` |
@@ -115,8 +115,10 @@ second row: drift does not read it back and does not compare it.
 
 ### A mask that is reported as drift on every run
 
-This applies to the first two rows. State holds the mask and AWS holds the
-real value, so the two never match. The report prints `***` on both sides:
+This applies to the second row. It also applies to a custom-resource value
+in a record that an older cdkd wrote, until a `cdkd deploy` that changes
+something in the stack saves the record again. State holds the mask and AWS holds the real value, so the two
+never match. The report prints `***` on both sides:
 
 ```text
   ~ Handler (AWS::Lambda::Function)
@@ -136,9 +138,9 @@ The two flags treat the masked property like this:
   reports nothing at the property, or the mask sits in a list whose elements
   cdkd cannot match to the recorded ones.
 
-If a stack like this has to pass a drift check in CI, you have two choices.
-Stop marking the custom resource's response `NoEcho`, or check the `--json`
-output and filter the known property out.
+For a custom-resource value, deploy a change to the stack once: the save
+names the position, and the property is then listed as not compared. For an
+encoded secret, check the `--json` output and filter the known property out.
 
 When `--revert` refused because AWS reports nothing at the property, the
 custom resource has to supply the value again. Change a property of the custom
@@ -150,9 +152,11 @@ A property whose real value is the string `***` is treated the same way; see
 cdkd matches list elements, and the remaining refusal cases, are in
 [cdkd drift internals](cli-drift-internals.md#redacted-noecho-baselines).
 
-### A mask from a `NoEcho` template parameter
+### A mask from a `NoEcho` template parameter or custom-resource value
 
-The third row behaves differently. The resource is listed as not compared,
+The first and third rows behave differently. State records where the mask
+sits, also when the value is part of a longer string such as a connection
+URL. The resource is listed as not compared,
 with the cause `noEchoParameter` and the path of the property. Every other
 property of the resource is compared, and the exit code is not affected.
 

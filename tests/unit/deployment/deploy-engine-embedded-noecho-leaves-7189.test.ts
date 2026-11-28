@@ -5,6 +5,10 @@ import {
   clearRecoverableMaskedOutputs,
   recoverMaskedOutput,
 } from '../../../src/deployment/secret-redaction.js';
+import {
+  canRecordSuperseded,
+  deleteNeedsThisRunsNoEchoValues,
+} from '../../../src/deployment/superseded-resources.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 import {
@@ -256,6 +260,57 @@ describe('DeployEngine - a leaf EMBEDDING a NoEcho custom-resource value is posi
     expect(JSON.stringify(savedState())).not.toContain(GENERATED);
   });
 
+  it('a CUSTOM resource whose property embeds the value now defers its superseded delete in memory (behaviour change)', async () => {
+    // A custom resource's delete hands its handler the values only this run
+    // re-resolved; a record naming a coordinate is never recorded superseded
+    // for a later run that has none (go-to-k/cdkd#6445). The embedded leaf
+    // could not be re-resolved before either: the handler is skipped either way.
+    const consumerProps = { ServiceToken: 'arn:aws:lambda:...', Conn: PARAM_PROPS.Value };
+    mockDiffCalculator.calculateDiff.mockResolvedValue(
+      new Map<string, ResourceChange>([
+        [
+          'Cr',
+          {
+            logicalId: 'Cr',
+            changeType: 'CREATE',
+            resourceType: 'Custom::Thing',
+            desiredProperties: CR_PROPS,
+          },
+        ],
+        [
+          'Param',
+          {
+            logicalId: 'Param',
+            changeType: 'CREATE',
+            resourceType: 'Custom::Consumer',
+            desiredProperties: consumerProps,
+          },
+        ],
+      ])
+    );
+    mockProvider.create.mockImplementation((logicalId: string) =>
+      Promise.resolve(
+        logicalId === 'Cr'
+          ? { physicalId: 'cr-phys', attributes: CR_ATTRIBUTES, noEchoAttributes: true }
+          : { physicalId: 'consumer-phys' }
+      )
+    );
+
+    await makeEngine().deploy(STACK, {
+      Resources: {
+        Cr: { Type: 'Custom::Thing', Properties: CR_PROPS },
+        Param: { Type: 'Custom::Consumer', Properties: consumerProps },
+      },
+    });
+
+    const consumer = savedState().resources['Param']!;
+    expect(consumer.properties['Conn']).toBe(SECRET_MASK);
+    expect(consumer.noEchoLeaves).toEqual([['Conn']]);
+    expect(deleteNeedsThisRunsNoEchoValues(consumer, undefined)).toBe(true);
+    expect(canRecordSuperseded(consumer, { persistedRecord: true })).toBe(false);
+    expect(JSON.stringify(savedState())).not.toContain(GENERATED);
+  });
+
   it('heals a record an older binary wrote (masked whole, no coordinate) on a deploy that does not touch it', async () => {
     mockStateBackend.getState.mockResolvedValue(priorState({}));
     mockDiffCalculator.calculateDiff.mockResolvedValue(
@@ -352,6 +407,24 @@ describe('DeployEngine - a leaf EMBEDDING a NoEcho custom-resource value is posi
         for (const call of mockProvider.update.mock.calls.filter((c) => c[0] === 'Param')) {
           expect((call[3] as Record<string, unknown>)['Value']).toBe(embeddedValue(GENERATED));
         }
+        // The coordinate is still served by its source, so it is not STALE:
+        // the update path takes no readback of Param to settle it (a stale
+        // leaf is read back like a parameter's, and the no-change skip would
+        // rewrite it to today's plaintext).
+        const order = (mock: ReturnType<typeof vi.fn>, i: number): number =>
+          mock.mock.invocationCallOrder[i]!;
+        const updateOrder = (id: string): number =>
+          order(
+            mockProvider.update,
+            mockProvider.update.mock.calls.findIndex((c) => c[0] === id)
+          );
+        const settleReads = mockProvider.readCurrentState.mock.calls.filter(
+          (c, i) =>
+            c[0] === 'param-phys' &&
+            order(mockProvider.readCurrentState, i) > updateOrder('Cr') &&
+            order(mockProvider.readCurrentState, i) < updateOrder('Param')
+        );
+        expect(settleReads).toHaveLength(0);
         const state = savedState();
         const param = state.resources['Param']!;
         expect(param.properties['Value']).toBe(SECRET_MASK);

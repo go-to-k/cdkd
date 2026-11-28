@@ -199,7 +199,7 @@ export function noEchoCoordinatesOf(
     if (positioned) push(path, node);
     else if (embedsMasked(node, path)) push(path, node, true);
   };
-  const walk =(source: unknown, value: unknown, path: (string | number)[]): void => {
+  const walk = (source: unknown, value: unknown, path: (string | number)[]): void => {
     if (value === undefined) return;
     if (source === null || typeof source !== 'object') return;
     if (ancestors.has(source)) return;
