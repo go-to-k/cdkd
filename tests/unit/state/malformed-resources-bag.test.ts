@@ -344,6 +344,7 @@ const DESTROY_RUNNER_ORDER = [
   'under-lock.ts',
   'under-lock-steps.ts',
   'superseded-schedule.ts',
+  'delete-dag.ts',
   'delete-resource.ts',
   'protection-refusal-hint.ts',
   'state-and-receiver.ts',

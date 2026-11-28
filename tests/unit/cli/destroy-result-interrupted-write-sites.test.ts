@@ -147,6 +147,13 @@ const ALLOWED: Array<{ statement: string; rationale: string }> = [
       'changing the assigned value drops this entry so the fence reds.',
   },
   {
+    statement: 'interrupted: () => lock.interrupted,',
+    rationale:
+      "A READ: the drain check `runDeletesInDependencyOrder` asks before each " +
+      'dispatch (go-to-k/cdkd#7208), an option of the delete walk, never the ' +
+      'result field. It writes nothing to the per-stack owner.',
+  },
+  {
     statement: 'interrupted: stackInterrupted || stackCancelled,',
     rationale:
       'A READ of the per-stack owner passed as an argument to ' +
