@@ -454,9 +454,14 @@ export async function refreshObservedForStack(
             // with evidence behind it.
             //
             // Inherited residual, not introduced here: `cdkd import`'s warn path
-            // can leave a PUBLIC expression in `properties`, and
+            // (a resolve that threw) still writes the record with the raw
+            // template bag, so a PUBLIC expression can stay in `properties`, and
             // `trustAnyExpression` would then copy it over the observed value —
             // the same trade every other caller of this rules constant makes.
+            // That import also marks the record `observedBaselineRefused`
+            // (`incomplete-resolution`), which the refusal check above skips, so
+            // this walk reaches such a record only under `--accept-refused` or
+            // when an import older than that marker wrote it.
             //
             // A PRE-GHSA record is not repaired by either pass and cannot be:
             // its `properties` hold the plaintext too, so the position source
