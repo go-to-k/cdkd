@@ -11,7 +11,12 @@ import {
   GetUserPoolMfaConfigCommand,
   ListUserPoolsCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
-import { MFA_FACTOR_SMS, MFA_FACTOR_SOFTWARE_TOKEN, MFA_FACTOR_EMAIL_OTP } from './mfa-request.js';
+import {
+  MFA_FACTOR_SMS,
+  MFA_FACTOR_SOFTWARE_TOKEN,
+  MFA_FACTOR_EMAIL_OTP,
+  hasMfaConfigProps,
+} from './mfa-request.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { derivePartitionAndUrlSuffix } from '../../../utils/aws-partition.js';
 import { definedAttributes } from '../../attribute-map.js';
@@ -37,6 +42,74 @@ export function canonicalizeDesiredProperties(
 ): Record<string, unknown> {
   if (resourceType !== 'AWS::Cognito::UserPool') return properties;
   return narrowMfaConfiguration(properties);
+}
+
+/**
+ * The drift PAIR rule for a pool a pre-#7128 release left holding the
+ * software-token factor (go-to-k/cdkd#7134).
+ *
+ * Before #7135, an update that removed every MFA factor under
+ * `MfaConfiguration: OFF` sent `UpdateUserPool` OFF only, which keeps
+ * `SoftwareTokenMfaConfiguration` enabled (measured, see
+ * `clearsRemovedMfaConfig`). The readback captured right after that update
+ * became the `observedProperties` baseline, so it records
+ * `EnabledMfas: [SOFTWARE_TOKEN_MFA]` while `properties` declare no factor,
+ * and drift compared the leftover against itself: clean.
+ *
+ * When the recorded `properties` declare no MFA-config-routed property and
+ * leave `MfaConfiguration` absent or `OFF`, and the baseline reads `OFF` too,
+ * the template asks for no software token, and CloudFormation ends an OFF
+ * update without one (#7128's A/B). So the BASELINE's `EnabledMfas` loses
+ * `SOFTWARE_TOKEN_MFA` and a live factor surfaces as drift. The readback is
+ * never touched: `--accept` (which writes `awsValue` from these bags) records
+ * the live list as read, and `drift --revert` (whose desired bag passes
+ * through here) sends the list without the factor, which `update()` answers
+ * with #7128's reset (`clearsRemovedMfaConfig`: previous = the live readback
+ * holding the factor, desired = none, OFF), or, when the live pool holds a
+ * WebAuthn block (so the readback-derived desired bag declares it), with the
+ * full-replace `SetUserPoolMfaConfig` carrying that block and no factor.
+ *
+ * Only a baseline whose factors are that member alone. `SMS_MFA` reads back
+ * from an `SmsMfaConfiguration` the reset leaves in place (measured for
+ * #7135), so dropping it would be phantom drift `--revert` cannot clear, and
+ * a list holding it beside the software token is left as recorded (see
+ * below; go-to-k/cdkd#7172); `EMAIL_OTP`'s leftover is unmeasured. The
+ * WebAuthn keys are left alone: the reset carries the live WebAuthn block on
+ * purpose (`resetMfaConfigOff`).
+ *
+ * A pool the fixed release updated reads `EnabledMfas: []` on both sides, so
+ * nothing changes. An `--accept`ed leftover is indistinguishable from the
+ * pre-fix capture (both record the live list), so it keeps reporting: the
+ * template cannot declare that state (OFF beside a factor block is refused,
+ * `describeUnsupportedMfaCombination`), and reporting it is the side that
+ * hides nothing.
+ */
+export function canonicalizeDriftPair(
+  this: CognitoUserPoolProvider,
+  resourceType: string,
+  baseline: Record<string, unknown>,
+  aws: Record<string, unknown>,
+  properties: Record<string, unknown> = {}
+): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }> {
+  const unchanged = Promise.resolve({ baseline, aws });
+  if (resourceType !== 'AWS::Cognito::UserPool') return unchanged;
+  const declared = properties['MfaConfiguration'];
+  if (declared !== undefined && declared !== 'OFF') return unchanged;
+  if (hasMfaConfigProps(properties)) return unchanged;
+  if (baseline['MfaConfiguration'] !== 'OFF') return unchanged;
+  const recorded = baseline['EnabledMfas'];
+  // The software token ALONE: beside another factor the revert would send
+  // that factor under OFF, which the pre-flight refuses
+  // (`describeUnsupportedMfaCombination`), so the rule would advertise a
+  // revert that cannot succeed.
+  if (
+    !Array.isArray(recorded) ||
+    recorded.length === 0 ||
+    recorded.some((factor) => factor !== MFA_FACTOR_SOFTWARE_TOKEN)
+  ) {
+    return unchanged;
+  }
+  return Promise.resolve({ baseline: { ...baseline, EnabledMfas: [] }, aws });
 }
 
 /**

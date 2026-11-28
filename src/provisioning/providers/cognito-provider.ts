@@ -53,6 +53,7 @@ import {
 } from './cognito/mfa-apply.js';
 import {
   canonicalizeDesiredProperties,
+  canonicalizeDriftPair,
   readCurrentState,
   userPoolAttributes,
   importImpl,
@@ -249,6 +250,15 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Record<string, unknown> {
     return canonicalizeDesiredProperties.call(this, resourceType, properties);
+  }
+
+  canonicalizeDriftPair(
+    resourceType: string,
+    baseline: Record<string, unknown>,
+    aws: Record<string, unknown>,
+    properties?: Record<string, unknown>
+  ): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }> {
+    return canonicalizeDriftPair.call(this, resourceType, baseline, aws, properties);
   }
 
   getClient(): CognitoIdentityProviderClient {
