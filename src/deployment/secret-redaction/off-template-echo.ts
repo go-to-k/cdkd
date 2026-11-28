@@ -212,11 +212,26 @@ export function listPairing(
 ): ((recordedIndex: number) => number | undefined) | undefined {
   const key = identityKeyFor(live, recorded);
   if (key !== undefined) {
+    // The first live index per identity value, built once (go-to-k/cdkd#7188:
+    // a scan per element made a wide keyed list quadratic). A value `===`
+    // cannot match itself through a Map key (NaN) or by identity alone (an
+    // object) keeps the scan.
+    let firstIndex: Map<unknown, number> | undefined;
     return (index) => {
       const element = recorded[index];
       if (!isPlainObject(element)) return undefined;
-      const found = live.findIndex((item) => isPlainObject(item) && item[key] === element[key]);
-      return found < 0 ? undefined : found;
+      const wanted = element[key];
+      if (typeof wanted === 'object' || Number.isNaN(wanted)) {
+        const found = live.findIndex((item) => isPlainObject(item) && item[key] === wanted);
+        return found < 0 ? undefined : found;
+      }
+      if (firstIndex === undefined) {
+        firstIndex = new Map();
+        live.forEach((item, i) => {
+          if (isPlainObject(item) && !firstIndex!.has(item[key])) firstIndex!.set(item[key], i);
+        });
+      }
+      return firstIndex.get(wanted);
     };
   }
   if (
