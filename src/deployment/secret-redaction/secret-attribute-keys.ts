@@ -26,7 +26,7 @@ import { noEchoLeavesOf, valueAtCoordinate } from './noecho-leaves.js';
  */
 
 /** The resource types CloudFormation treats as custom resources. */
-function isCustomResourceType(resourceType: unknown): boolean {
+export function isCustomResourceType(resourceType: unknown): boolean {
   return (
     typeof resourceType === 'string' &&
     (resourceType === 'AWS::CloudFormation::CustomResource' || resourceType.startsWith('Custom::'))
