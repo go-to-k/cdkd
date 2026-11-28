@@ -172,6 +172,37 @@ describe('cdkd scrub - a short NoEcho echo an older binary persisted (go-to-k/cd
     expect(saved!.orphans![0]!.state.attributes).toEqual(REPAIRED);
     expect(saved!.orphans![0]!.state.noEchoAttributeNames).toEqual(['Out', 'Whole']);
     expect(saved!.supersededResources![0]!.state.attributes).toEqual(REPAIRED);
+    expect(saved!.supersededResources![0]!.state.noEchoAttributeNames).toEqual(['Out', 'Whole']);
+  });
+
+  it('repairs an orphan and a superseded record when no needle exists and the live one is clean', async () => {
+    const info = stackInfo();
+    const template = info.template as unknown as {
+      Parameters: Record<string, unknown>;
+      Resources: Record<string, { Properties: Record<string, unknown> }>;
+    };
+    delete template.Parameters['InId'];
+    delete template.Parameters['Named'];
+    template.Resources['Cr']!.Properties = { ServiceToken: 'arn', Pw: { Ref: 'Short' } };
+    const stale = (): ResourceState => ({
+      ...customRecord(),
+      properties: { ServiceToken: 'arn', Pw: '***' },
+      noEchoLeaves: [['Pw']],
+      attributes: { Out: SHORT, Count: '3' },
+    });
+    const live = { ...stale(), attributes: { Out: '***', Count: '3' }, noEchoAttributeNames: ['Out'] };
+    const saved = await scrub(
+      stateWith({
+        resources: { Cr: live },
+        orphans: [{ logicalId: 'Cr', orphanedAt: 1, state: stale() }],
+        supersededResources: [{ logicalId: 'Cr', supersededAt: 1, state: stale() }],
+      }),
+      info
+    );
+    for (const row of [saved!.orphans![0]!, saved!.supersededResources![0]!]) {
+      expect(row.state.attributes).toEqual({ Out: '***', Count: '3' });
+      expect(row.state.noEchoAttributeNames).toEqual(['Out']);
+    }
   });
 
   it('keeps an attribute a template Fn::GetAtt reads', async () => {

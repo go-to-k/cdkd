@@ -1,4 +1,5 @@
 import { SECRET_MASK } from './pairs.js';
+import { isPlainObject } from './rules.js';
 import { noEchoLeavesOf, valueAtCoordinate } from './noecho-leaves.js';
 import { isCustomResourceType, templateGetAttNamesOf } from './secret-attribute-keys.js';
 
@@ -66,9 +67,7 @@ export function withWholeNoEchoEchoesDeclared<
   stored?: Record<string, unknown>
 ): R {
   const attributes = record.attributes;
-  if (attributes === undefined || attributes === null || typeof attributes !== 'object') {
-    return record;
-  }
+  if (!isPlainObject(attributes)) return record;
   const coordinates = noEchoLeavesOf(record);
   if (coordinates === undefined || coordinates.length === 0) return record;
   const inputs = bags.flatMap((bag) =>
