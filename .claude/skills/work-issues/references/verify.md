@@ -39,7 +39,8 @@ fixture at DISPATCH whenever the plan touches a scoped file, not at merge
 (#6762's display-only wraps met the gate at `gh pr merge`).
 The gate's `hash: diff` stales on a rebase only when main changed a scoped
 file THIS branch changes too, so a set marker on a MERGEABLE PR needs no
-rebase (`mise exec -- markgate status`) — unless main changed code the fixture
+rebase (`mise exec -- markgate status`; after ANY rebase or main merge, re-read
+`markgate status integ-destroy` before `gh pr merge`) — unless main changed code the fixture
 EXERCISES (a code path its run takes, not merely a file it loads; #4683):
 re-run it on the rebased head (#3726). With the marker still set, a commit
 that only MOVES that code is no such change — proven by
@@ -240,6 +241,8 @@ never substitute for it** (#2383) — they are its children and
 inherit its premise. The parent runs its round once the lane's push
 is CI-green, ONCE, on the final sha — brief each reviewer with the maintainer's
 design answers and "what does this break that CFn or the CDK CLI accepts?" (a
+recurrence of a closed issue adds "can a THIRD instance of the class land?",
+`implement.md` §5-b, #7037; a
 redaction slice adds: "sweep every helper that returns or mutates the ORIGINAL
 SDK error after the try — created-before-failure cleanup, orphan notes, retire
 paths", #5161; a state machine adds the table to walk: path × previous side ×

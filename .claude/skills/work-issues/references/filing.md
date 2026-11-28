@@ -47,13 +47,18 @@ carries it. Put a type's claim, measurement or decision in a comment on ITS
 issue; the sync never rewrites comments. A PR writes `Closes` on the type's
 issue only if it takes that type to zero, `Refs` otherwise.
 
-**Resolve whatever you file against the issues ALREADY OPEN** — a sibling
-ISSUE, not a sibling site.
+**Resolve whatever you file against the issues ALREADY FILED, closed ones
+included** — a sibling ISSUE, not a sibling site. A CLOSED hit sharing the root
+cause is a RECURRENCE: the earlier fix closed an instance, not the class. Title
+and body say `recurrence of #N`, and its fix owes `implement.md` §5-b's class
+closure, unasked (#7037 recurred #6303's value-matched redaction; the class
+closure came only when the maintainer asked).
 
 ```bash
-# The CONCEPT, not this instance's spelling:
-gh issue list --state open --limit 200 --search '<root-cause concept>' \
-  --json number,title
+# The CONCEPT, not this instance's spelling. `--state all`: a recurrence hides
+# in the CLOSED set.
+gh issue list --state all --limit 200 --search '<root-cause concept>' \
+  --json number,title,state
 # Then BODIES, where an umbrella names its sites. `(.body // "")` is
 # load-bearing: one body-less issue aborts the whole jq program.
 gh issue list --state open --limit 200 --json number,title,body \

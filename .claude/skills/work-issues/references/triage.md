@@ -116,6 +116,11 @@ unreached ones stood down with a four-field comment.
   Taking a `next`, the claim says why it no longer applies ("an integ run" is
   no reason).
 
+**A candidate whose root cause a CLOSED issue already fixed is a RECURRENCE**
+(`gh issue list --state all --search '<root-cause concept>'`). Return that
+issue number in the table, and brief the lane with `implement.md` §5-b's class
+closure; never brief it as a second instance (#7037 of #6303).
+
 **Resolve every premise against the tree at CLAIM time**, the issue's OWN
 record included (its comments; a body's "conditional on #N": read N's `state`;
 an umbrella's row ticks lag its claim-release comments — `ship.md`'s "Release
@@ -132,7 +137,9 @@ cdkd bump PR closes the issue (#6717); a body PROPOSING a mechanism has no symbo
 update, or a backfill wiring a shape (#5204), has a CFn premise:
 `aws cloudformation describe-type --type RESOURCE --type-name <T> --query
 Schema` (`required`, `createOnlyProperties`), else a throwaway change set
-(delete its stack, then its leftovers, e.g. FSx final backups, #5206),
+(set `SkipFinalBackup` / `FinalBackup: false` where the type allows; delete its
+stack, then its leftovers — FSx final backups carry no tags, so sweep them by
+the persisted fs id before reporting zero resources, #5206),
 BEFORE design (#3769): measure a removal ALONE and BESIDE another change, poll
 reads for minutes (lag reads as "CFn ignores it"), and measure an ORDER, never
 reason it (#5107). MEASURE an `Fn::GetAtt` value's shape and JSON type with a

@@ -33,6 +33,8 @@
   squash-merged branch stays ahead of `origin/main`. Removing that worktree is
   forbidden (SKILL.md "Launch mode"): confirm the PR is MERGED and clear the tree
   only by LEAVING the lane branch (§9's IN-PLACE arm).
+- **AWS credentials expiring mid-run stop the run**: ask the maintainer to run
+  `aws-relogin` in their terminal; never run `aws login` or write credentials.
 - **A usage-limit interruption need not end the run: leave a one-shot checkpoint
   at the reset time**, scheduled when the limit is ANNOUNCED.
 - **Qualify every published issue/PR reference as `owner/repo#N`** — a bare `#N`

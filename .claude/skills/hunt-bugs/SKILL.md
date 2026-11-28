@@ -130,7 +130,10 @@ claims the issue BEFORE the first edit). Then fix:
 
 ### 7. Close the class, not just the instance
 
-For every `severity:high` finding, ask whether its root cause is a *class*:
+For every `severity:high` finding, and for EVERY finding whose root cause a
+CLOSED issue already fixed (a recurrence: that fix closed an instance, so the
+new fix owes work-issues `implement.md` §5-b's class closure), ask whether its
+root cause is a *class*:
 the same mechanism reachable from other types or paths. Typical shapes: a
 hand-maintained list a type can be missing from, a fail-open default (an
 unknown case treated as safe), a per-type special case where a general rule

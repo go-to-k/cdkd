@@ -47,7 +47,10 @@ git fetch origin && git switch -c <branch> origin/main   # unchained, a failed
 **A STACKED lane** (needing an unmerged lane's branch) branches off that branch;
 its claim names the base branch and sha. No PR until the base merges, then
 `git rebase --onto origin/main <recorded base sha>`: the squash-merge rewrote
-the base, and a plain rebase replays it.
+the base, and a plain rebase replays it. Take that sha from the claim (the
+merged base branch is auto-deleted, so `origin/<base>` is gone) and assert it
+first: `[ -n "$OLD" ] && git merge-base --is-ancestor "$OLD" HEAD` — an empty
+`$OLD` drops every commit of the branch.
 
 ### 5-b. Sweep the class, not the instance
 
@@ -76,6 +79,26 @@ done                                                               # RIGHT
   A masking fix's population is every SINK the value reaches, each `warn` that
   names the error CLASS included (a test puts the secret IN the class), and the
   lane prompt NAMES each one (#5248).
+- **A RECURRENCE closes the CLASS, not a second instance** — the issue names
+  `recurrence of #N`, or `gh issue list --state all --search '<root-cause
+  concept>'` finds a closed one (`filing.md`). Both instances share a mechanism
+  (e.g. a match by VALUE that ignores where the value came from), so a fix
+  keyed on this instance's shape leaves the third open. The PR owes three
+  things, named in its body:
+  1. **The mechanism changed**, so the class cannot occur: decide on the
+     property that separates the cases (provenance, not value), not on a
+     list of known bad inputs.
+  2. **Both comparison sides normalized** wherever an artifact of the
+     mechanism could still surface (a diff, a drift compare, a preflight),
+     through ONE shared helper.
+  3. **A generated invariant test over the class's input space**, in its own
+     file, never the two known instances alone: e.g. short secret values ×
+     literal positions → scrub, then diff, assert `NO_CHANGE` and no
+     plaintext. Break the mechanism and it must fail on cases neither
+     instance covered.
+
+  The parent's review brief asks "can a THIRD instance land?" (`verify.md`
+  §8-i).
 - A defect this lane is NOT fixing gets FILED (`filing.md`, §5-f) — a PR-body
   "residual" or "not acted on" note is not filing: once merged it is never
   read again (#6871).
@@ -179,7 +202,15 @@ A subagent's Bash bypasses the PreToolUse hooks.
   prompt; run it yourself, serially, and start ANY vitest of yours only while
   no lane's is running** — concurrent suites trip the 600s watchdog (#6871).
   Remote `rx --vitest` runs the FULL suite (capped) whatever files follow:
-  named files go `rx -- vp test run <files>` (#6928).
+  named files go `rx -- vp test run <files>` (#6928). **ONE rx per lane at a
+  time**: stop the previous sha's run before starting the next. rx FALLS BACK
+  to this Mac when a VM sends no report, so grep its log for `running this
+  shard locally`; on a hit, stop it, because it is the forbidden local suite.
+  The #7006 lane's 3-4 overlapping runs fell back and ran 32 min locally.
+  **Stop a hung test by its process GROUP**, then check
+  `ps -eo pid,ppid,command | grep vitest` for PPID-1 workers in the lane's
+  tree. #7006's hung `sdk-wire-coverage-19` left an orphan worker spinning
+  at 75% CPU.
   Each runs `vp test run <its own suite>`, its files spelled out or inside
   `bash -c`: zsh passes an unquoted `$files` as ONE argument. In any shell an
   EMPTY list (a `$(ls <glob>)` matching nothing) runs the FULL suite: guard it.

@@ -98,7 +98,14 @@ The user provides a kebab-case test name (e.g., `ses-email-identity`,
      `LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"`.
    - Match a large capture with `grep -q '<needle>' <<<"${OUT}"`, never
      `printf '%s' "${OUT}" | grep -q`: on a match `printf` takes SIGPIPE and
-     `pipefail` inverts the test (#2582).
+     `pipefail` inverts the test (#2582). A failed assertion prints the
+     captured log; a `mktemp` log is gone after cleanup.
+   - A plain `cdkd diff` marks a replacement only as `[requires replacement]`
+     on the property; `<Type> <id> will be replaced` prints only under
+     `--fail-on=destructive` (#7155).
+   - Assert a `state.json` version DERIVED from the record's shape (cdkd writes
+     the lowest version the record needs, as #7148 does), never the binary's
+     newest schema version (#7147, #7163).
    - Require `STATE_BUCKET` (fail fast if unset) and the built `dist/cli.js`.
    - Define a `cleanup()` and arm it on EXIT **and both signals**; run it once
      up-front as a pre-run cleanup:
