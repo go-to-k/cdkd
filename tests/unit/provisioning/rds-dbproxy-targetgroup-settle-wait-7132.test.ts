@@ -213,6 +213,55 @@ describe('DBProxyTargetGroup target wait through the provider (#7132)', () => {
     expect(isMarkedNonRetryable(error)).toBe(true);
   });
 
+  it('update() adding a cluster waits for its member rows to read AVAILABLE', async () => {
+    route([
+      [tracked('c2'), member('i2', 'c2', { State: 'REGISTERING' })],
+      [tracked('c2'), member('i2', 'c2', { State: 'AVAILABLE' })],
+    ]);
+    await drive(
+      provider.update(
+        'Tg',
+        TG_ARN,
+        TYPE,
+        { DBProxyName: PROXY, DBClusterIdentifiers: ['c2'] },
+        { DBProxyName: PROXY }
+      )
+    );
+    expect(targetReads()).toBe(2);
+  });
+
+  it('create() stopped by Ctrl-C during the wait rethrows the interrupt and deregisters nothing', async () => {
+    vi.useRealTimers();
+    const baseline = process.listeners('SIGINT');
+    disarmInterruptWatchForTests();
+    interruptWatchTestSeam.commandOwnsInterrupts = () => true;
+    interruptWatchTestSeam.forceQuit = vi.fn();
+    try {
+      route([[instance('db1', { State: 'REGISTERING' })]]);
+      const inner = mockSend.getMockImplementation()!;
+      mockSend.mockImplementation(async (cmd: { constructor: { name: string } }) => {
+        if (cmd.constructor.name === 'DescribeDBProxyTargetsCommand') {
+          for (const l of process.listeners('SIGINT').filter((x) => !baseline.includes(x))) {
+            (l as unknown as () => void)();
+          }
+        }
+        return inner(cmd);
+      });
+      const error = await provider
+        .create('Tg', TYPE, { DBProxyName: PROXY, DBInstanceIdentifiers: ['db1'] })
+        .then(
+          () => new Error('expected the create to fail'),
+          (e: unknown) => e
+        );
+      expect(isInterruptedWaitError(error)).toBe(true);
+      expect(sentNames()).not.toContain('DeregisterDBProxyTargetsCommand');
+    } finally {
+      disarmInterruptWatchForTests();
+      delete interruptWatchTestSeam.commandOwnsInterrupts;
+      delete interruptWatchTestSeam.forceQuit;
+    }
+  });
+
   it('--no-wait (CDKD_NO_WAIT=true) skips the create and update waits', async () => {
     vi.stubEnv('CDKD_NO_WAIT', 'true');
     route([[instance('db1', { State: 'REGISTERING' })]]);

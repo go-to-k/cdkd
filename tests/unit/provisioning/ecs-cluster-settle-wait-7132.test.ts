@@ -43,6 +43,10 @@ import {
   CLUSTER_STALE_READ_GRACE_POLLS,
 } from '../../../src/provisioning/providers/ecs/cluster-attachments.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors/marks.js';
 import { createMaskedLogSinks } from '../../../src/provisioning/masked-retry-logger.js';
 import { withResourceDeadline } from '../../../src/deployment/resource-deadline.js';
@@ -163,6 +167,41 @@ describe('ECS cluster settle wait (#7132)', () => {
     expect(String(error)).not.toContain('123456789012:role');
     expect(isMarkedNonRetryable(error)).toBe(true);
     expect(createdBeforeFailure(error, 'C', TYPE)).toBe(NAME);
+  });
+
+  it('a create reports the cluster to the created-resource sink before the wait fails', async () => {
+    route(PROVISIONING, [PROVISIONING, FAILED_ATTACHMENTS]);
+    const sink = new CreatedResourceSink('C', TYPE);
+    await collectCreatedResources(sink, () =>
+      provider.create('C', TYPE, { ClusterName: NAME, ServiceConnectDefaults: { Namespace: NS } })
+    ).catch(() => undefined);
+    expect(sink.report?.physicalId).toBe(NAME);
+  });
+
+  it('create() answered settled takes its first settled read at once: a new cluster has no earlier state', async () => {
+    route(ACTIVE, [ACTIVE]);
+    await provider.create('C', TYPE, {
+      ClusterName: NAME,
+      ServiceConnectDefaults: { Namespace: NS },
+    });
+    expect(sentNames()).toEqual(['CreateClusterCommand', 'DescribeClustersCommand']);
+  });
+
+  it('update() answered in progress takes its first settled read at once', async () => {
+    route(UPDATING, [ACTIVE]);
+    await provider.update(
+      'C',
+      NAME,
+      TYPE,
+      { ClusterName: NAME, ServiceConnectDefaults: { Namespace: NS } },
+      { ClusterName: NAME }
+    );
+    const settleReads = mockSend.mock.calls.filter(
+      (c) =>
+        c[0] instanceof DescribeClustersCommand &&
+        (c[0] as DescribeClustersCommand).input.include !== undefined
+    );
+    expect(settleReads).toHaveLength(1);
   });
 
   it('a create whose cluster reads FAILED fails', async () => {

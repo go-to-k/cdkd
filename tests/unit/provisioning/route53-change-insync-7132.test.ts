@@ -223,7 +223,76 @@ describe('Route 53 change INSYNC wait per call site (#7132)', () => {
     expect(sentNames()).not.toContain('GetChangeCommand');
   });
 
+  /**
+   * Route the writes as `route` does, but refuse the first `refusals`
+   * `ChangeResourceRecordSets` sends with the given errors, in turn.
+   */
+  function refuseChanges(...refusals: Error[]): void {
+    route();
+    const inner = mockSend.getMockImplementation()!;
+    mockSend.mockImplementation(async (cmd: unknown) => {
+      if (name(cmd) === 'ChangeResourceRecordSetsCommand' && refusals.length > 0) {
+        throw refusals.shift()!;
+      }
+      return inner(cmd);
+    });
+  }
+  const mutationRefusal = (): Error =>
+    new Error(`HostedZone ${ZONE} is marked disabled for mutation`);
+  const notFoundRefusal = (): Error =>
+    Object.assign(
+      new Error('Tried to delete resource record set [name=x, type=A] but it was not found'),
+      { name: 'InvalidChangeBatch' }
+    );
+
   it.each([
+    [
+      'RecordSet',
+      () => provider.delete('Rec', `${ZONE}|a.example.com.|A`, 'AWS::Route53::RecordSet', RECORD),
+    ],
+    [
+      'RecordSetGroup',
+      () => provider.delete('Group', `${ZONE}|Group`, 'AWS::Route53::RecordSetGroup', GROUP),
+    ],
+  ])('%s delete: --full-wait waits on the change the AcceleratedRecovery retry answered', async (_, run) => {
+    vi.stubEnv('CDKD_FULL_WAIT', 'true');
+    (
+      provider as unknown as { waitForAcceleratedRecoveryMutable: () => Promise<void> }
+    ).waitForAcceleratedRecoveryMutable = async () => {};
+    refuseChanges(mutationRefusal());
+    await run();
+    expect(idsOf('ChangeResourceRecordSetsCommand')).toHaveLength(1);
+    expect(getChangeIds()).toEqual(idsOf('ChangeResourceRecordSetsCommand'));
+  });
+
+  it('RecordSetGroup delete: --full-wait waits on every change of the record-by-record fallback', async () => {
+    vi.stubEnv('CDKD_FULL_WAIT', 'true');
+    const B_RECORD = { ...A_RECORD, Name: 'b.example.com.' };
+    const C_RECORD = { ...A_RECORD, Name: 'c.example.com.' };
+    const group = { HostedZoneId: ZONE, RecordSets: [A_RECORD, B_RECORD, C_RECORD] };
+    // The batch names a record already gone, so it is refused whole; then
+    // the first and third record delete, and the second is gone.
+    refuseChanges(notFoundRefusal());
+    const inner = mockSend.getMockImplementation()!;
+    let perRecord = 0;
+    mockSend.mockImplementation(async (cmd: unknown) => {
+      if (name(cmd) === 'ChangeResourceRecordSetsCommand' && perRecord++ === 2) {
+        throw notFoundRefusal();
+      }
+      return inner(cmd);
+    });
+    await provider.delete('Group', `${ZONE}|Group`, 'AWS::Route53::RecordSetGroup', group);
+    expect(idsOf('ChangeResourceRecordSetsCommand')).toHaveLength(2);
+    expect(getChangeIds()).toEqual(idsOf('ChangeResourceRecordSetsCommand'));
+  });
+
+  it.each([
+    [
+      'HostedZone',
+      'AWS::Route53::HostedZone',
+      { Name: 'example.internal', VPCs: [VPC_A, VPC_B] },
+      ZONE,
+    ],
     ['RecordSet', 'AWS::Route53::RecordSet', RECORD, `${ZONE}|a.example.com.|A`],
     ['RecordSetGroup', 'AWS::Route53::RecordSetGroup', GROUP, `${ZONE}|X`],
   ])('%s create: a Ctrl-C during the wait names the live record for the journal', async (_, type, props, id) => {

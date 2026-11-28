@@ -28,6 +28,13 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js';
+import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import { withResourceDeadline } from '../../../src/deployment/resource-deadline.js';
+import {
+  disarmInterruptWatchForTests,
+  interruptWatchTestSeam,
+  isInterruptedWaitError,
+} from '../../../src/provisioning/interrupt-watch.js';
 
 const RESOURCE_TYPE = 'AWS::EC2::Instance';
 const INSTANCE_ID = 'i-0123456789abcdef0';
@@ -249,4 +256,65 @@ describe('EC2Provider createInstance fresh-instance-profile bind', () => {
     // reopen the fresh-profile propagation race the helper exists to close.
     expect(callCount('AssociateIamInstanceProfileCommand')).toBe(1);
   });
+  // go-to-k/cdkd#7132: an association never confirmed fails the create,
+  // never returns as bound; the wiring cleanup terminates the instance.
+  it('fails non-retryably, never as bound, when the association never reads associated', async () => {
+    wire([[], ['associating']], ['ok']);
+
+    const error = await provider.create('Instance', RESOURCE_TYPE, props()).catch((e: unknown) => e);
+
+    expect(String(error)).toMatch(/did not read associated within the propagation window.*not confirmed/);
+    expect(isMarkedNonRetryable(error)).toBe(true);
+    expect(callCount('TerminateInstancesCommand')).toBe(1);
+  });
+
+  it('fails non-retryably once the per-resource deadline has run out', async () => {
+    wire([[], ['associating']], ['ok']);
+    // The deadline runs out while the provider sleeps between polls.
+    (provider as unknown as { sleep: (ms: number) => Promise<void> }).sleep = () =>
+      new Promise((resolve) => setTimeout(resolve, 30));
+
+    let inner: Promise<unknown> | undefined;
+    // The engine's own timeout rejects first; the wait then meets the expired
+    // deadline at its next checkpoint and throws instead of polling on.
+    await withResourceDeadline(
+      () => (inner = provider.create('Instance', RESOURCE_TYPE, props())),
+      { warnAfterMs: 20, timeoutMs: 40, onTimeout: () => new Error('resource deadline fired') }
+    ).catch(() => undefined);
+    const error = await inner!.catch((e: unknown) => e);
+
+    expect(String(error)).toMatch(/did not read associated before the resource timeout.*not confirmed/);
+    expect(isMarkedNonRetryable(error)).toBe(true);
+    expect(callCount('DescribeIamInstanceProfileAssociationsCommand')).toBeLessThan(11);
+  });
+
+  it('stops on Ctrl-C with the interrupt error, without another read', async () => {
+    const baseline = process.listeners('SIGINT');
+    disarmInterruptWatchForTests();
+    interruptWatchTestSeam.commandOwnsInterrupts = () => true;
+    interruptWatchTestSeam.forceQuit = vi.fn();
+    try {
+      wire([[], ['associating']], ['ok']);
+      const inner = mockSend.getMockImplementation()!;
+      mockSend.mockImplementation((cmd: { constructor: { name: string } }) => {
+        if (cmd.constructor.name === 'AssociateIamInstanceProfileCommand') {
+          for (const l of process.listeners('SIGINT').filter((x) => !baseline.includes(x))) {
+            (l as unknown as () => void)();
+          }
+        }
+        return inner(cmd);
+      });
+
+      const error = await provider.create('Instance', RESOURCE_TYPE, props()).catch((e: unknown) => e);
+
+      expect(isInterruptedWaitError(error)).toBe(true);
+      // The pre-associate read only: no poll after the interrupt.
+      expect(callCount('DescribeIamInstanceProfileAssociationsCommand')).toBe(1);
+    } finally {
+      disarmInterruptWatchForTests();
+      delete interruptWatchTestSeam.commandOwnsInterrupts;
+      delete interruptWatchTestSeam.forceQuit;
+    }
+  });
 });
+

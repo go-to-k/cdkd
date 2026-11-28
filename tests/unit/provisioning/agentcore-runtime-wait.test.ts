@@ -8,6 +8,7 @@ import { ResourceNotFoundException } from '@aws-sdk/client-bedrock-agentcore-con
 
 const mockSend = vi.fn();
 const debug = vi.fn();
+const warn = vi.fn();
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
@@ -22,7 +23,7 @@ vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
     debug: (...args: unknown[]) => debug(...args),
     info: vi.fn(),
-    warn: vi.fn(),
+    warn: (...args: unknown[]) => warn(...args),
     error: vi.fn(),
     child: vi.fn(function (this: unknown) { return this; }),
   };
@@ -65,7 +66,7 @@ function sent(): string[] {
 function answer(
   statuses: (string | Error)[],
   extra: Record<string, unknown> = {},
-  afterDelete: string[] = []
+  afterDelete: (string | undefined)[] = []
 ): void {
   const queue = [...statuses];
   // go-to-k/cdkd#7132: after the delete, GetAgentRuntime answers
@@ -83,10 +84,11 @@ function answer(
         return { agentRuntimeId: ID, status: 'DELETING' };
       case 'GetAgentRuntimeCommand': {
         if (deleted) {
-          const status = deleting.shift();
-          if (status === undefined) {
+          if (deleting.length === 0) {
             throw new ResourceNotFoundException({ $metadata: {}, message: 'gone' });
           }
+          // An `undefined` entry is a read answering without a status.
+          const status = deleting.shift();
           return { agentRuntimeId: ID, agentRuntimeArn: ARN, status };
         }
         const next = queue.length > 1 ? queue.shift()! : queue[0]!;
@@ -455,6 +457,8 @@ describe('AgentCoreRuntimeProvider status waits (go-to-k/cdkd#6490)', () => {
         'GetAgentRuntimeCommand',
       ]);
       expect(sleeps).toEqual([RUNTIME_WAIT_POLL_MS, RUNTIME_WAIT_POLL_MS]);
+      // The not-found answer is GONE, not an unreadable status that warns.
+      expect(warn).not.toHaveBeenCalled();
     });
 
     it('waits after the delete under --no-wait too (go-to-k/cdkd#7132)', async () => {
@@ -466,6 +470,26 @@ describe('AgentCoreRuntimeProvider status waits (go-to-k/cdkd#6490)', () => {
         'GetAgentRuntimeCommand',
         'GetAgentRuntimeCommand',
       ]);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('reads a status-less answer after the delete as still DELETING, not gone (go-to-k/cdkd#7132)', async () => {
+      answer(['READY'], {}, [undefined, 'DELETING']);
+      await provider.delete('Rt', ID, TYPE);
+      expect(sent().slice(1)).toEqual([
+        'DeleteAgentRuntimeCommand',
+        'GetAgentRuntimeCommand',
+        'GetAgentRuntimeCommand',
+        'GetAgentRuntimeCommand',
+      ]);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('throws, keeping the record, when the runtime reaches DELETE_FAILED after the delete (go-to-k/cdkd#7132)', async () => {
+      answer(['READY'], {}, ['DELETING', 'DELETE_FAILED']);
+      await expect(provider.delete('Rt', ID, TYPE)).rejects.toThrow(
+        /reached DELETE_FAILED after its delete was accepted/
+      );
     });
   });
 });

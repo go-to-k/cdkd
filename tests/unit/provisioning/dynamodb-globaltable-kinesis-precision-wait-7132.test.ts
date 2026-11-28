@@ -6,6 +6,7 @@ import {
 } from '@aws-sdk/client-dynamodb';
 import {
   waitForKinesisPrecisionSettled,
+  waitForKinesisUpdatable,
   SETTLE_STALE_READ_GRACE_POLLS,
 } from '../../../src/provisioning/providers/dynamodb-settle-waits.js';
 import { sendReplicaSettingOp } from '../../../src/provisioning/providers/dynamodb-globaltable/replica-ops.js';
@@ -114,6 +115,20 @@ describe('waitForKinesisPrecisionSettled (#7132)', () => {
     await waitForKinesisPrecisionSettled(client, 't', STREAM, 'MILLISECOND', 'r', opts);
     expect(send).not.toHaveBeenCalled();
     expect(debug).toHaveBeenCalledWith(expect.stringContaining('CDKD_NO_WAIT=true'));
+  });
+});
+
+describe('waitForKinesisUpdatable (#7132)', () => {
+  it('says the update was NOT sent, and stays retryable, when its cap runs out before the send', async () => {
+    send.mockResolvedValue({ KinesisDataStreamDestinations: [dest('UPDATING', 'MICROSECOND')] });
+    const err = await waitForKinesisUpdatable(client, 't', STREAM, 'r', {
+      ...opts,
+      maxPolls: 2,
+    }).catch((e: unknown) => e as Error);
+    expect((err as Error).message).toMatch(/still UPDATING after .*the change was NOT sent/);
+    expect((err as Error).message).not.toContain('not confirmed');
+    expect(isMarkedNonRetryable(err)).toBe(false);
+    expect(send).toHaveBeenCalledTimes(2);
   });
 });
 

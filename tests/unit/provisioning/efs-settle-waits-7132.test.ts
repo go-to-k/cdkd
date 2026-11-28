@@ -45,6 +45,10 @@ import {
   EFS_STALE_READ_GRACE_POLLS,
 } from '../../../src/provisioning/providers/efs/settle-waits.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors/marks.js';
 import { createMaskedLogSinks } from '../../../src/provisioning/masked-retry-logger.js';
 import { withResourceDeadline } from '../../../src/deployment/resource-deadline.js';
@@ -138,6 +142,42 @@ describe('EFS settle waits through the provider (#7132)', () => {
     expect(isMarkedNonRetryable(error)).toBe(true);
     expect(createdBeforeFailure(error, 'Ap', AP_TYPE)).toBe(AP_ID);
   });
+
+  it('create() AccessPoint reports the access point to the created-resource sink before the wait fails', async () => {
+    route('DescribeAccessPointsCommand', [ap('error')], {
+      CreateAccessPointCommand: { AccessPointId: AP_ID, AccessPointArn: AP_ARN },
+    });
+    const sink = new CreatedResourceSink('Ap', AP_TYPE);
+    await collectCreatedResources(sink, () =>
+      provider.create('Ap', AP_TYPE, { FileSystemId: FS_ID })
+    ).catch(() => undefined);
+    expect(sink.report?.physicalId).toBe(AP_ID);
+  });
+
+  it.each([
+    ['ENABLED', 'ENABLING', { BackupPolicy: { Status: 'DISABLED' } }],
+    ['DISABLED', 'DISABLING', { BackupPolicy: { Status: 'ENABLED' } }],
+  ])(
+    'update() BackupPolicy to %s: Put answering %s makes a first settled read stale for the grace polls',
+    async (target, answered, previous) => {
+      // The real PutBackupPolicy answers the transitional status; a read of
+      // the target before any transitional read can predate the call.
+      route('DescribeBackupPolicyCommand', [backup(target)], {
+        PutBackupPolicyCommand: backup(answered),
+      });
+      vi.useFakeTimers();
+      try {
+        const p = provider.update('Fs', FS_ID, FS_TYPE, { BackupPolicy: { Status: target } }, previous);
+        await vi.runAllTimersAsync();
+        await p;
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(sentNames().filter((n) => n === 'DescribeBackupPolicyCommand')).toHaveLength(
+        EFS_STALE_READ_GRACE_POLLS + 1
+      );
+    }
+  );
 
   it('create() AccessPoint that ADOPTS a creating access point waits for it too', async () => {
     let token = '';

@@ -31,7 +31,12 @@ import {
   EMRInstanceGroupConfigProvider,
   resetEMRInstanceGroupCreateRetryStateForTests,
 } from '../../../src/provisioning/providers/emr-instance-group-config-provider.js';
-import { SCALING_POLICY_STALE_READ_GRACE_POLLS } from '../../../src/provisioning/providers/emr-instance-group-config/scaling-policy-wait.js';
+import {
+  SCALING_POLICY_SETTLE_POLLS,
+  SCALING_POLICY_SETTLE_POLL_MS,
+  SCALING_POLICY_STALE_READ_GRACE_POLLS,
+  scalingPolicyWaitBudget,
+} from '../../../src/provisioning/providers/emr-instance-group-config/scaling-policy-wait.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors/marks.js';
 
 /**
@@ -238,5 +243,49 @@ describe('EMR instance group send sites wait for the policy (#7132)', () => {
     });
     await provider().create('Grp', TYPE, BASE);
     expect(lists()).toBe(1);
+  });
+
+  it('update: a Put answering PENDING makes a first ATTACHED read stale for the grace polls', async () => {
+    route({
+      PutAutoScalingPolicyCommand: { AutoScalingPolicy: { Status: { State: 'PENDING' } } },
+      ListInstanceGroupsCommand: listing('ATTACHED'),
+    });
+    await withFakeTimers(() =>
+      provider().update('Grp', GROUP, TYPE, { ...BASE, AutoScalingPolicy: POLICY }, BASE)
+    );
+    expect(lists()).toBe(SCALING_POLICY_STALE_READ_GRACE_POLLS + 1);
+  });
+
+  it.each([
+    ['update', () => small().update('Grp', GROUP, TYPE, { ...BASE, AutoScalingPolicy: POLICY }, BASE), 2],
+    // One more read: the RUNNING wait before the policy wait.
+    ['create', () => small().create('Grp', TYPE, { ...BASE, AutoScalingPolicy: POLICY }), 3],
+  ])('%s: the policy wait stays inside the provider maxWaitMs', async (_, run, reads) => {
+    route({
+      AddInstanceGroupsCommand: { InstanceGroupIds: [GROUP] },
+      PutAutoScalingPolicyCommand: { AutoScalingPolicy: { Status: { State: 'PENDING' } } },
+      ListInstanceGroupsCommand: listing('PENDING'),
+    });
+    const err = await withFakeTimers(() => run().catch((e: unknown) => e as Error));
+    expect((err as Error).message).toMatch(/still PENDING after 4 seconds; the change is not confirmed/);
+    expect(lists()).toBe(reads);
+  });
+});
+
+/** A provider whose delegate budget is two policy polls. */
+const small = (): EMRInstanceGroupConfigProvider =>
+  new EMRInstanceGroupConfigProvider({
+    pollIntervalMs: 0,
+    maxWaitMs: 2 * SCALING_POLICY_SETTLE_POLL_MS,
+  });
+
+describe('scalingPolicyWaitBudget (#7132)', () => {
+  it('caps the polls at the budget, rounding up, never below one or above the default cap', () => {
+    expect(scalingPolicyWaitBudget(2 * SCALING_POLICY_SETTLE_POLL_MS)).toEqual({ maxPolls: 2 });
+    expect(scalingPolicyWaitBudget(2 * SCALING_POLICY_SETTLE_POLL_MS + 1)).toEqual({ maxPolls: 3 });
+    expect(scalingPolicyWaitBudget(0)).toEqual({ maxPolls: 1 });
+    expect(scalingPolicyWaitBudget(Number.MAX_SAFE_INTEGER)).toEqual({
+      maxPolls: SCALING_POLICY_SETTLE_POLLS,
+    });
   });
 });

@@ -19,7 +19,7 @@ import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors/m
  * only when it sent the call.
  */
 
-const { mockSend } = vi.hoisted(() => ({ mockSend: vi.fn() }));
+const { mockSend, debugSpy } = vi.hoisted(() => ({ mockSend: vi.fn(), debugSpy: vi.fn() }));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
@@ -29,7 +29,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 
 vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
-    debug: vi.fn(),
+    debug: debugSpy,
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
@@ -208,6 +208,24 @@ describe('AWS::EC2::Instance update waits for its asynchronous changes (#7132)',
     ).catch((e: unknown) => e);
     expect(String(err)).toContain('settled as disassociated, expected associated');
     expect(isMarkedNonRetryable(err)).toBe(true);
+  });
+
+  it('the profile wait logs through the update context masker', async () => {
+    process.env['CDKD_NO_WAIT'] = 'true';
+    world.associations = [[{ AssociationId: 'iip-old', State: 'associated' }]];
+    await new EC2Provider().update(
+      'Web',
+      ID,
+      'AWS::EC2::Instance',
+      { ImageId: 'ami-1', IamInstanceProfile: 'profile-2' },
+      { ImageId: 'ami-1', IamInstanceProfile: 'profile-1' },
+      { maskSecrets: (t: string) => t.replaceAll(ID, '***') }
+    );
+    const lines = debugSpy.mock.calls.map((c) => String(c[0]));
+    expect(lines).toContain(
+      'Skipping the wait for the IAM instance profile association of EC2 Instance Web (***) to read associated (CDKD_NO_WAIT=true)'
+    );
+    expect(lines.filter((l) => l.includes('instance profile') && l.includes(ID))).toEqual([]);
   });
 
   it('DisassociateIamInstanceProfile: waits until the association is gone', async () => {
