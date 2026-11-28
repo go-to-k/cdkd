@@ -25,7 +25,11 @@ import {
 } from './replacement.js';
 import { recordedDependencies } from './dependencies.js';
 import { retryCarriedSupersededResources } from './superseded-retry.js';
-import { carriedNotHeldByConsumers, markHeldForConsumers } from './consumer-held-superseded.js';
+import {
+  carriedNotHeldByConsumers,
+  markHeldForConsumers,
+  oldCopiesHeldByConsumers,
+} from './consumer-held-superseded.js';
 import { isConditionFailure } from '../../state/s3-state-backend/shared.js';
 import { carryReadOutputs } from './state-persist.js';
 
@@ -79,6 +83,10 @@ export async function runCleanupPhase(
  * (`deleteDeferredUsersOfRemovals`). Their ops are re-stamped at once: a
  * later failure's rollback must re-create an old copy deleted here, never
  * re-adopt it on the journaled `'deferred'` verdict.
+ *
+ * go-to-k/cdkd#7204: a producer whose cleanup waits for the run's consumers
+ * (go-to-k/cdkd#7012) takes none while one of them still names an old copy;
+ * the removal it uses is then kept (go-to-k/cdkd#6969).
  */
 export async function deleteUsersOfRemovalsFirst(
   engine: DeployEngine,
@@ -86,8 +94,12 @@ export async function deleteUsersOfRemovalsFirst(
   counts: { updated: number; updatePartial: number },
   removedIds: ReadonlySet<string>,
   currentState: StackState,
-  completedOperations: CompletedOperation[]
+  completedOperations: CompletedOperation[],
+  live: Record<string, ResourceState>
 ): Promise<void> {
+  const held =
+    engine.options.parentStackInfo === undefined &&
+    engine.options.consumerCleanupQueue !== undefined;
   try {
     await deleteDeferredUsersOfRemovals(
       engine.replacementRun,
@@ -95,7 +107,16 @@ export async function deleteUsersOfRemovalsFirst(
       stackName,
       counts,
       removedIds,
-      recordedDependencies(currentState.resources)
+      recordedDependencies(currentState.resources),
+      held
+        ? (taken) =>
+            oldCopiesHeldByConsumers(
+              engine,
+              stackName,
+              [...taken].map((id) => engine.replacementRun.supersededEntries.get(id)),
+              live
+            )
+        : undefined
     );
   } finally {
     restampReplacedVerdicts(engine, completedOperations);

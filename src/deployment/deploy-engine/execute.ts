@@ -432,7 +432,8 @@ async function executeDeploymentBody(
         actualCounts,
         deleteChanges,
         currentState,
-        completedOperations
+        completedOperations,
+        newResources
       );
       // go-to-k/cdkd#7076: so does one an earlier deploy kept.
       carriedSuperseded = await deleteCarriedUsersOfRemovalsFirst(run, carriedSuperseded);

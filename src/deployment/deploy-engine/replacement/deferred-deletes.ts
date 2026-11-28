@@ -98,6 +98,9 @@ export async function retryDeferredReplacedDeletes(
  * removed resource uses one of the old copies taken here, no order deletes
  * both correctly in two passes, so nothing is taken and the cleanup phase
  * deletes them as before.
+ *
+ * `heldElsewhere` answers whether something outside this stack still needs
+ * one of the old copies taken (go-to-k/cdkd#7204); `true` takes nothing.
  */
 export async function deleteDeferredUsersOfRemovals(
   run: ReplacementRunState,
@@ -105,7 +108,8 @@ export async function deleteDeferredUsersOfRemovals(
   stackName: string,
   counts: { updated: number; updatePartial: number },
   removedIds: ReadonlySet<string>,
-  removedDependencies: (logicalId: string) => readonly string[]
+  removedDependencies: (logicalId: string) => readonly string[],
+  heldElsewhere?: (taken: ReadonlySet<string>) => Promise<boolean>
 ): Promise<void> {
   const deferred = run.deferredReplacedDeletes;
   if (deferred === undefined || deferred.size === 0 || removedIds.size === 0) return;
@@ -128,6 +132,7 @@ export async function deleteDeferredUsersOfRemovals(
   for (const removed of removedIds) {
     if (removedDependencies(removed).some((dep) => dep !== removed && taken.has(dep))) return;
   }
+  if (heldElsewhere !== undefined && (await heldElsewhere(new Set(taken.keys())))) return;
   for (const logicalId of taken.keys()) deferred.delete(logicalId);
   deps.logger.info(
     safeMsg`Deleting the old resource of ${taken.size} replaced resource(s) first: they use a resource removed from the template`

@@ -69,8 +69,40 @@ export async function carriedNotHeldByConsumers(
   return carried.filter((entry) => !kept.has(entry));
 }
 
-/** Entry to the display names of the consumer stacks whose records name it. */
-async function consumersNaming(
+/**
+ * go-to-k/cdkd#7204: whether a producer whose cleanup waits for the run's
+ * consumers (go-to-k/cdkd#7012) must leave these old copies to that cleanup
+ * rather than delete them before its removals (go-to-k/cdkd#6977). A consumer
+ * that fails rolls back to the records read here, so one naming an old copy
+ * would be left on a deleted resource. A copy with no superseded record
+ * cannot be checked and holds. One line names the stacks.
+ */
+export async function oldCopiesHeldByConsumers(
+  engine: DeployEngine,
+  stackName: string,
+  entries: ReadonlyArray<SupersededResourceRecord | undefined>,
+  /** This stack's live records: a value one of them still carries is no needle. */
+  live: Record<string, ResourceState>
+): Promise<boolean> {
+  const recorded = entries.filter((entry) => entry !== undefined);
+  if (recorded.length < entries.length) return true;
+  const holders = await consumersNaming(engine, stackName, recorded, live);
+  const names = [...new Set([...holders.values()].flat())];
+  if (names.length === 0) return false;
+  withPrintingSecrets(orphanRecordsPrintingBag(recorded), () =>
+    engine.logger.info(
+      safeMsg`  ${names.join(', ')} (importing this stack's outputs) still uses an old copy of a replaced resource, so it is deleted after those stacks deploy, not before the removed resources it uses`
+    )
+  );
+  return true;
+}
+
+/**
+ * Entry to the display names of the consumer stacks whose records name it.
+ * Also asked before a producer's early delete of an old copy
+ * (go-to-k/cdkd#7204).
+ */
+export async function consumersNaming(
   engine: DeployEngine,
   stackName: string,
   entries: readonly SupersededResourceRecord[],
