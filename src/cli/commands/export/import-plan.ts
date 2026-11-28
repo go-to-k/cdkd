@@ -9,6 +9,7 @@ import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { AwsClients } from '../../../utils/aws-clients.js';
 import { NESTED_STACK_RESOURCE_TYPE } from '../retire-cfn-stack.js';
 import { type ResourceState, type StackState } from '../../../types/state.js';
+import { type CloudFormationTemplate } from '../../../types/resource.js';
 import {
   noEchoCoordinatesOf,
   noEchoLeavesOf,
@@ -845,7 +846,15 @@ function withoutEmbeddedAttributeLeaves(
     properties,
     record.properties,
     {
-      parameters: noEchoParameterNamesOf(template as never),
+      parameters: noEchoParameterNamesOf(
+        isPlainRecord(template['Parameters'])
+          ? {
+              Parameters: template['Parameters'] as NonNullable<
+                CloudFormationTemplate['Parameters']
+              >,
+            }
+          : undefined
+      ),
       attributeIsNoEcho: (id, attribute) =>
         Object.hasOwn(state.resources, id) &&
         noEchoAttributeNamesOf(state.resources[id])?.includes(attribute) === true,
@@ -855,4 +864,8 @@ function withoutEmbeddedAttributeLeaves(
   ).map((coordinate) => JSON.stringify(coordinate));
   if (embedded.length === 0) return leaves;
   return leaves.filter((coordinate) => !embedded.includes(JSON.stringify(coordinate)));
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }

@@ -307,7 +307,7 @@ export function noEchoLeavesFor(
     const keys =
       template === undefined || persisted === undefined
         ? new Set<string>()
-        : uncoveredMaskKeysOf(persisted, existing);
+        : uncoveredMaskKeysOf(persisted, [...existing, ...confirmed]);
     const embedded =
       keys.size === 0
         ? []
@@ -333,8 +333,8 @@ export function noEchoLeavesFor(
 
 /**
  * go-to-k/cdkd#7189: the top-level keys of `bag` holding a whole-leaf mask that
- * no coordinate in `covered` covers (at or above it). One allocation-free walk:
- * the path is copied only at a mask, which is rare.
+ * no coordinate in `covered` covers (at or above it). One walk over a shared
+ * path stack: coverage is checked only at a mask, which is rare.
  */
 function uncoveredMaskKeysOf(bag: unknown, covered: readonly NoEchoCoordinate[]): Set<string> {
   const keys = new Set<string>();
