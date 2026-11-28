@@ -209,6 +209,10 @@ beforeEach(() => {
         IamInstanceProfileAssociations: [{ AssociationId: 'iip-1', State: 'associated' }],
       });
     }
+    // go-to-k/cdkd#7132: the replaced association reads `associated` above.
+    if (cmd instanceof ReplaceIamInstanceProfileAssociationCommand) {
+      return Promise.resolve({ IamInstanceProfileAssociation: { AssociationId: 'iip-1' } });
+    }
     if (cmd instanceof DescribeInstancesCommand) {
       if (failDescribeAfterAssociation && held.length > 0) {
         return Promise.reject(failDescribeAfterAssociation);

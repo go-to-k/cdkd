@@ -181,10 +181,29 @@ describe('EC2Provider updateInstance security props (#609)', () => {
   beforeEach(() => {
     mockSend.mockReset();
     provider = new EC2Provider();
-    // update() always ends with a DescribeInstances attribute refresh.
+    // update() always ends with a DescribeInstances attribute refresh. It
+    // reads the monitoring / metadata options the last call settled on, which
+    // the #7132 waits read back.
+    let monitoring = 'disabled';
+    let metadata: Record<string, unknown> = {};
     mockSend.mockImplementation((cmd) => {
+      if (cmd instanceof MonitorInstancesCommand) monitoring = 'enabled';
+      if (cmd instanceof UnmonitorInstancesCommand) monitoring = 'disabled';
+      if (cmd instanceof ModifyInstanceMetadataOptionsCommand) metadata = { ...cmd.input };
       if (cmd?.constructor?.name === 'DescribeInstancesCommand') {
-        return Promise.resolve({ Reservations: [{ Instances: [{ InstanceId: 'i-1' }] }] });
+        return Promise.resolve({
+          Reservations: [
+            {
+              Instances: [
+                {
+                  InstanceId: 'i-1',
+                  Monitoring: { State: monitoring },
+                  MetadataOptions: { ...metadata, State: 'applied' },
+                },
+              ],
+            },
+          ],
+        });
       }
       return Promise.resolve({});
     });

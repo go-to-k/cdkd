@@ -51,6 +51,7 @@ import {
   refusedBeforeApplying,
   staleSsmAssociationRemedy,
 } from './instance-support.js';
+import { waitForInstanceProfileAssociationSettled } from './instance-settle-wait.js';
 import type { EC2Provider } from '../ec2-provider.js';
 
 /**
@@ -287,6 +288,11 @@ export async function vpcDefaultSecurityGroupId(
  * (issue #5446). A profile created in the same deploy can still be
  * propagating, so the associate / replace call retries through the same
  * signals {@link ensureIamInstanceProfileAssociated} does.
+ *
+ * go-to-k/cdkd#7132: each call answers `associating` / `disassociating`, and
+ * DescribeInstances can show the old (or no) profile until it settles, so the
+ * update waits for the association to read `associated` (or be gone) before
+ * the drift baseline is read, as CloudFormation's update does.
  */
 export async function applyInstanceProfileChange(
   this: EC2Provider,
@@ -317,33 +323,43 @@ export async function applyInstanceProfileChange(
   const current = assoc.IamInstanceProfileAssociations?.find(
     (a) => a.State === 'associated' || a.State === 'associating'
   );
+  const site = {
+    client: this.ec2Client,
+    logicalId,
+    instanceId: physicalId,
+    maskSecrets: maskerOrIdentity(undefined),
+    debug: (message: string) => this.logger.debug(message),
+  };
   if (change.kind === 'remove') {
     if (current?.AssociationId === undefined) return;
     await this.ec2Client.send(
       new DisassociateIamInstanceProfileCommand({ AssociationId: current.AssociationId })
     );
+    await waitForInstanceProfileAssociationSettled(site, {
+      kind: 'disassociated',
+      associationId: current.AssociationId,
+    });
     return;
   }
   const spec = change.arn !== undefined ? { Arn: change.arn } : { Name: change.name };
   const maxAttempts = 10;
   for (let attempt = 1; ; attempt++) {
+    let sent;
     try {
-      if (current?.AssociationId !== undefined) {
-        await this.ec2Client.send(
-          new ReplaceIamInstanceProfileAssociationCommand({
-            AssociationId: current.AssociationId,
-            IamInstanceProfile: spec,
-          })
-        );
-      } else {
-        await this.ec2Client.send(
-          new AssociateIamInstanceProfileCommand({
-            InstanceId: physicalId,
-            IamInstanceProfile: spec,
-          })
-        );
-      }
-      return;
+      sent =
+        current?.AssociationId !== undefined
+          ? await this.ec2Client.send(
+              new ReplaceIamInstanceProfileAssociationCommand({
+                AssociationId: current.AssociationId,
+                IamInstanceProfile: spec,
+              })
+            )
+          : await this.ec2Client.send(
+              new AssociateIamInstanceProfileCommand({
+                InstanceId: physicalId,
+                IamInstanceProfile: spec,
+              })
+            );
     } catch (error) {
       const msg = describeAwsFailure(error).detail;
       if (this.isInstanceProfilePropagationError(msg) && attempt < maxAttempts) {
@@ -355,6 +371,13 @@ export async function applyInstanceProfileChange(
       }
       throw error;
     }
+    await waitForInstanceProfileAssociationSettled(site, {
+      kind: 'associated',
+      associationId: sent?.IamInstanceProfileAssociation?.AssociationId,
+      arn: change.arn,
+      name: change.name,
+    });
+    return;
   }
 }
 

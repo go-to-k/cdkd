@@ -52,9 +52,15 @@ describe('EC2Provider AWS::EC2::Instance property removal (#1160)', () => {
     mockSend.mockReset();
     warn.mockReset();
     provider = new EC2Provider();
+    // The monitoring state the last call settled on, which the #7132 wait reads.
+    let monitoring = 'enabled';
     mockSend.mockImplementation((cmd) => {
+      if (cmd instanceof MonitorInstancesCommand) monitoring = 'enabled';
+      if (cmd instanceof UnmonitorInstancesCommand) monitoring = 'disabled';
       if (cmd?.constructor?.name === 'DescribeInstancesCommand') {
-        return Promise.resolve({ Reservations: [{ Instances: [{ InstanceId: 'i-1' }] }] });
+        return Promise.resolve({
+          Reservations: [{ Instances: [{ InstanceId: 'i-1', Monitoring: { State: monitoring } }] }],
+        });
       }
       return Promise.resolve({});
     });

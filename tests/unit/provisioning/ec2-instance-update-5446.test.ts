@@ -167,6 +167,20 @@ function install(): void {
     ) {
       return Promise.reject(world.associateErrors!.shift());
     }
+    // go-to-k/cdkd#7132: the association a call made settles, so the wait
+    // after it reads `associated` (or the association gone).
+    if (
+      command instanceof AssociateIamInstanceProfileCommand ||
+      command instanceof ReplaceIamInstanceProfileAssociationCommand
+    ) {
+      world.associationSeq = undefined;
+      world.association = { AssociationId: 'iip-assoc-made', State: 'associated' };
+      return Promise.resolve({ IamInstanceProfileAssociation: world.association });
+    }
+    if (command instanceof DisassociateIamInstanceProfileCommand) {
+      world.associationSeq = undefined;
+      world.association = undefined;
+    }
     if (command instanceof ModifyInstanceAttributeCommand && world.failModify) {
       const err = world.failModify(command.input as unknown as Record<string, unknown>);
       if (err) return Promise.reject(err);
@@ -860,8 +874,12 @@ describe('parent review round (#5457)', () => {
     const { IamInstanceProfile: _none, ...rest } = BASE;
     await update({ ...BASE, IamInstanceProfile: 'profile-2' }, rest);
     expect(mutatingCalls().map((c) => c.name)).toEqual(['AssociateIamInstanceProfileCommand']);
+    // Two reads before the associate; the #7132 settle wait reads after it.
+    const sent = mockSend.mock.calls.findIndex((c) => c[0] instanceof AssociateIamInstanceProfileCommand);
     expect(
-      mockSend.mock.calls.filter((c) => c[0] instanceof DescribeIamInstanceProfileAssociationsCommand)
+      mockSend.mock.calls
+        .slice(0, sent)
+        .filter((c) => c[0] instanceof DescribeIamInstanceProfileAssociationsCommand)
     ).toHaveLength(2);
   });
 
