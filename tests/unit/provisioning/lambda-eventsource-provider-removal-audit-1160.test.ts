@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
-import { UpdateEventSourceMappingCommand } from '@aws-sdk/client-lambda';
+import { GetEventSourceMappingCommand, UpdateEventSourceMappingCommand } from '@aws-sdk/client-lambda';
 import { prepareRemovalForUpdate } from '../../../src/provisioning/update-removal.js';
 
 // Issue #1160: AWS::Lambda::EventSourceMapping is registered in
@@ -67,7 +67,9 @@ describe('LambdaEventSourceMappingProvider removal audit (issue #1160)', () => {
       Promise.resolve(
         cmd instanceof UpdateEventSourceMappingCommand
           ? { UUID, EventSourceMappingArn: ESM_ARN }
-          : { Tags: {} }
+          : cmd instanceof GetEventSourceMappingCommand
+            ? { State: 'Enabled', Tags: {} }
+            : { Tags: {} }
       )
     );
     provider = new LambdaEventSourceMappingProvider();
@@ -359,7 +361,9 @@ describe('LambdaEventSourceMappingProvider DocumentDBEventSourceConfig on update
       Promise.resolve(
         cmd instanceof UpdateEventSourceMappingCommand
           ? { UUID, EventSourceMappingArn: ESM_ARN }
-          : { Tags: {} }
+          : cmd instanceof GetEventSourceMappingCommand
+            ? { State: 'Enabled', Tags: {} }
+            : { Tags: {} }
       )
     );
     provider = new LambdaEventSourceMappingProvider();

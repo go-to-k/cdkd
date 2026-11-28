@@ -27,6 +27,11 @@ import {
   replayableKafkaConfig,
   toSdkSelfManagedEventSource,
 } from './shared.js';
+import { coerceCfnBoolean } from '../../config-shape.js';
+import { markCreatedBeforeFailure } from '../../auxiliary-failure.js';
+import { reportCreatedResource } from '../../created-resource-sink.js';
+import { markNonRetryable } from '../../../deployment/retryable-errors.js';
+import { MAPPING_STALE_READ_GRACE_POLLS, waitForMappingSettled } from './settle-wait.js';
 
 /**
  * Create a Lambda Event Source Mapping
@@ -67,6 +72,9 @@ export async function create(
     );
   }
 
+  // The mapping's UUID once CreateEventSourceMapping returned it: a failure
+  // after that (the settle wait) leaves a mapping no state record holds.
+  let createdUuid: string | undefined;
   try {
     const params: import('@aws-sdk/client-lambda').CreateEventSourceMappingCommandInput = {
       FunctionName: functionName,
@@ -226,6 +234,22 @@ export async function create(
       );
     }
 
+    // go-to-k/cdkd#5511: reported before the wait, so a deadline that drops
+    // the wait's error still journals the mapping for --revert-failed.
+    createdUuid = uuid;
+    reportCreatedResource(logicalId, resourceType, uuid);
+    // go-to-k/cdkd#7132: the mapping is `Creating`; CloudFormation completes
+    // only once it reads `Enabled` (or `Disabled` for `Enabled: false`).
+    await waitForMappingSettled(
+      this.lambdaClient,
+      logicalId,
+      uuid,
+      coerceCfnBoolean(properties['Enabled']) ?? true,
+      log,
+      // No earlier state to read back; a mapping not yet visible is read again.
+      { staleReadGracePolls: 0, notFoundGracePolls: MAPPING_STALE_READ_GRACE_POLLS }
+    );
+
     log.debug(`Successfully created event source mapping ${logicalId}: ${uuid}`);
 
     return {
@@ -249,7 +273,7 @@ export async function create(
     };
   } catch (error) {
     const cause = error instanceof Error ? error : undefined;
-    throw this.wrapMaskedError(
+    const thrown = this.wrapMaskedError(
       log,
       error,
       (text) =>
@@ -261,6 +285,10 @@ export async function create(
           cause
         )
     );
+    // The mapping exists: name it for the failed-CREATE journal, and never
+    // let a retry create a second one beside it.
+    if (createdUuid === undefined) throw thrown;
+    throw markNonRetryable(markCreatedBeforeFailure(thrown, logicalId, resourceType, createdUuid));
   }
 }
 

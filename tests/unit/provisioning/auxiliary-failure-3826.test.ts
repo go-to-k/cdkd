@@ -1053,6 +1053,17 @@ const CASES: Case[] = [
             'arn:aws:dynamodb:us-east-1:123456789012:table/table/stream/2026-01-01T00:00:00.000',
         },
       },
+      // The waits after the Kinesis enable and the Contributor Insights enable
+      // read the settled state (#7132).
+      DescribeKinesisStreamingDestinationCommand: {
+        KinesisDataStreamDestinations: [
+          {
+            StreamArn: 'arn:aws:kinesis:us-east-1:123456789012:stream/s',
+            DestinationStatus: 'ACTIVE',
+          },
+        ],
+      },
+      DescribeContributorInsightsCommand: { ContributorInsightsStatus: 'ENABLED' },
     },
   },
   {

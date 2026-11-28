@@ -2,9 +2,9 @@
   "issue": 7132,
   "total": 173,
   "counts": {
-    "unmeasured": 59,
-    "waits": 97,
-    "no-wait-by-design": 17
+    "unmeasured": 52,
+    "waits": 101,
+    "no-wait-by-design": 20
   },
   "rows": [
     {
@@ -472,8 +472,8 @@
         "src/provisioning/providers/cloudtrail-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "no-wait-by-design",
+        "reason": "settled when AWS answers: GetTrailStatus read IsLogging true on the first read after the call (3 of 3, ~0.2 s); CloudFormation completes with it true (#7132)"
       }
     },
     {
@@ -1163,8 +1163,15 @@
         "src/provisioning/providers/dynamodb-table-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (the destination answers ENABLING)"
+        "verdict": "waits",
+        "helpers": [
+          "waitForKinesisEnableActive"
+        ],
+        "failureStatuses": [
+          "ENABLE_FAILED",
+          "DISABLED / absent after the stale-read grace"
+        ],
+        "note": "--no-wait skips it (docs/cli-deploy.md); CloudFormation completes only once the destination reads ACTIVE (#7132)"
       }
     },
     {
@@ -1186,8 +1193,15 @@
         "src/provisioning/providers/dynamodb-table-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B; the answer is ENABLING / DISABLING. #6778 fixed the drift baseline, not the wait"
+        "verdict": "waits",
+        "helpers": [
+          "waitForContributorInsightsSettled"
+        ],
+        "failureStatuses": [
+          "FAILED",
+          "the opposite status after the stale-read grace"
+        ],
+        "note": "table and index; --no-wait skips it (docs/cli-deploy.md); CloudFormation completes only once it reads ENABLED / DISABLED (#7132)"
       }
     },
     {
@@ -2943,8 +2957,8 @@
         "src/provisioning/providers/glue-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "no-wait-by-design",
+        "reason": "sent by no create / update / delete (only the exported startSchedule()); settled when AWS answers: GetCrawler read SCHEDULED on the first read after the call (3 of 3) (#7132)"
       }
     },
     {
@@ -2964,8 +2978,8 @@
         "src/provisioning/providers/glue-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "no-wait-by-design",
+        "reason": "settled when AWS answers: GetTrigger read ACTIVATED on the first read after the call (3 of 3, ~0.2 s); CloudFormation completes an update with the trigger ACTIVATED (#7132)"
       }
     },
     {
@@ -3360,8 +3374,14 @@
         "src/provisioning/providers/lambda-eventsource-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns while the mapping is Creating; #5737 fixed the drift baseline, not the wait"
+        "verdict": "waits",
+        "helpers": [
+          "waitForMappingSettled"
+        ],
+        "failureStatuses": [
+          "Deleting / an unknown state"
+        ],
+        "note": "--no-wait skips it (docs/cli-deploy.md); CloudFormation completes only once the mapping leaves Creating (#7132); Disabled where Enabled was asked: warns, unmeasured"
       }
     },
     {
@@ -3491,8 +3511,14 @@
         "src/provisioning/providers/lambda-eventsource-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "waits",
+        "helpers": [
+          "waitForMappingSettled"
+        ],
+        "failureStatuses": [
+          "Deleting / an unknown state"
+        ],
+        "note": "--no-wait skips it (docs/cli-deploy.md); CloudFormation completes only once the mapping leaves Updating (#7132); the opposite of a sent Enabled: warns, unmeasured"
       }
     },
     {

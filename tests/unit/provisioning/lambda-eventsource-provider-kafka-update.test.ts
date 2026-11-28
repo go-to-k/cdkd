@@ -42,7 +42,7 @@ describe.each(['SelfManagedKafkaEventSourceConfig', 'AmazonManagedKafkaEventSour
     beforeEach(() => {
       vi.clearAllMocks();
       provider = new LambdaEventSourceMappingProvider();
-      mockSend.mockResolvedValue({ UUID, EventSourceMappingArn: `arn:esm:${UUID}` });
+      mockSend.mockResolvedValue({ UUID, EventSourceMappingArn: `arn:esm:${UUID}`, State: 'Enabled' });
     });
 
     function props(config?: unknown): Record<string, unknown> {
@@ -133,7 +133,7 @@ describe.each(['SelfManagedKafkaEventSourceConfig', 'AmazonManagedKafkaEventSour
 describe('LambdaEventSourceMappingProvider.update — ConsumptionMode stays out of the block', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockSend.mockResolvedValue({ UUID, EventSourceMappingArn: `arn:esm:${UUID}` });
+    mockSend.mockResolvedValue({ UUID, EventSourceMappingArn: `arn:esm:${UUID}`, State: 'Enabled' });
   });
 
   it('never names an unchanged ConsumptionMode when the schema registry changes', async () => {

@@ -207,6 +207,9 @@ class FakeLambda {
           EventSourceMappingArn: `arn:aws:lambda:eu-west-3:123456789012:event-source-mapping:${created.UUID}`,
         };
       }
+      // The settle wait after a create reads the mapping until it is Enabled.
+      case 'GetEventSourceMappingCommand':
+        return { State: 'Enabled' };
       case 'ListEventSourceMappingsCommand':
         this.onList?.();
         this.listInputs.push(input);
@@ -1013,7 +1016,8 @@ describe('Lambda tokenless create retry safety (issue #2080, detection only)', (
 
         await esm.create('Res', ESM, KAFKA_PROPS);
 
-        expect(aws.calls).toEqual(['CreateEventSourceMappingCommand']);
+        // The settle wait reads the new mapping once; no ListEventSourceMappings lookup.
+        expect(aws.calls).toEqual(['CreateEventSourceMappingCommand', 'GetEventSourceMappingCommand']);
         expect(warnLines()).toEqual([]);
       });
     });

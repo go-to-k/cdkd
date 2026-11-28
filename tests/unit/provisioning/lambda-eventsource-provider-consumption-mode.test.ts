@@ -69,7 +69,7 @@ describe('LambdaEventSourceMappingProvider — ConsumptionMode (issue #3850)', (
   beforeEach(() => {
     vi.clearAllMocks();
     provider = new LambdaEventSourceMappingProvider();
-    mockSend.mockResolvedValue({ UUID, EventSourceMappingArn: `arn:esm:${UUID}` });
+    mockSend.mockResolvedValue({ UUID, EventSourceMappingArn: `arn:esm:${UUID}`, State: 'Enabled' });
   });
 
   it.each(['Stream', 'Queue'])('sends a declared %s on create', async (mode) => {
@@ -132,7 +132,7 @@ describe('LambdaEventSourceMappingProvider — ConsumptionMode (issue #3850)', (
     await provider.create('Esm', TYPE, sendable, { replayingState: true });
     await provider.create('Esm', TYPE, { ...sendable, StartingPosition: 'TRIM_HORIZON' });
     expect(mockWarn).not.toHaveBeenCalled();
-    for (const call of mockSend.mock.calls) {
+    for (const call of mockSend.mock.calls.filter((c) => c[0] instanceof CreateEventSourceMappingCommand)) {
       const command = call[0] as CreateEventSourceMappingCommand;
       expect(command.input.SelfManagedKafkaEventSourceConfig).toEqual({ ConsumptionMode: 'Queue' });
     }

@@ -74,6 +74,7 @@ function armGlobalTable(_physicalId: string, bag: Bag): void {
     destinations.set(String(kinesis['StreamArn']), kinesis['ApproximateCreationDateTimePrecision']);
   }
   const policies = new Map<string, string>();
+  const insightsApplied = new Map<string, { enabled: boolean; mode: unknown }>();
   const scalingIds = [
     `table/${TABLE}`,
     ...gsis.map((g) => `table/${TABLE}/index/${String(g['IndexName'])}`),
@@ -161,6 +162,32 @@ function armGlobalTable(_physicalId: string, bag: Bag): void {
     GetResourcePolicyCommand: (input) => {
       const policy = policies.get(String(input['ResourceArn']));
       return policy === undefined ? {} : { Policy: policy };
+    },
+    // The wait after each Contributor Insights write reads the status that
+    // write left (#7132); a table or index never written reads DISABLED.
+    UpdateContributorInsightsCommand: (input) => {
+      insightsApplied.set(String(input['IndexName'] ?? ''), {
+        enabled: input['ContributorInsightsAction'] === 'ENABLE',
+        mode: input['ContributorInsightsMode'],
+      });
+      return {};
+    },
+    DescribeContributorInsightsCommand: (input) => {
+      const index = input['IndexName'];
+      // Never written: what the last deploy (this bag) left.
+      const spec = rec(
+        index === undefined
+          ? local['ContributorInsightsSpecification']
+          : localGsi(index)['ContributorInsightsSpecification']
+      );
+      const live = insightsApplied.get(String(index ?? '')) ?? {
+        enabled: spec['Enabled'] === true,
+        mode: spec['Mode'],
+      };
+      return {
+        ContributorInsightsStatus: live.enabled ? 'ENABLED' : 'DISABLED',
+        ...(live.enabled && live.mode !== undefined && { ContributorInsightsMode: live.mode }),
+      };
     },
     EnableKinesisStreamingDestinationCommand: (input) => {
       destinations.set(

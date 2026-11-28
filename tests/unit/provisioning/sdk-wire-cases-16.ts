@@ -49,6 +49,7 @@ const POLICY = (sid: string): Record<string, unknown> => ({
 function armTable(_physicalId: string, bag: Bag): void {
   const kinesis = bag['KinesisStreamSpecification'] as Record<string, unknown> | undefined;
   const destinations = new Map<string, unknown>();
+  const insightsApplied = new Map<string, string>();
   if (kinesis?.['StreamArn']) {
     destinations.set(String(kinesis['StreamArn']), kinesis['ApproximateCreationDateTimePrecision']);
   }
@@ -116,8 +117,18 @@ function armTable(_physicalId: string, bag: Bag): void {
         },
       },
     }),
-    DescribeContributorInsightsCommand: () => ({
-      ContributorInsightsStatus: insights?.['Enabled'] === true ? 'ENABLED' : 'DISABLED',
+    UpdateContributorInsightsCommand: (input) => {
+      // The wait after each write reads the status that write left (#7132).
+      insightsApplied.set(
+        String(input['IndexName'] ?? ''),
+        input['ContributorInsightsAction'] === 'ENABLE' ? 'ENABLED' : 'DISABLED'
+      );
+      return {};
+    },
+    DescribeContributorInsightsCommand: (input) => ({
+      ContributorInsightsStatus:
+        insightsApplied.get(String(input['IndexName'] ?? '')) ??
+        (insights?.['Enabled'] === true ? 'ENABLED' : 'DISABLED'),
     }),
     GetResourcePolicyCommand: () =>
       policy ? { Policy: JSON.stringify(policy['PolicyDocument']) } : {},

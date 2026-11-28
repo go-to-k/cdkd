@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   CreateEventSourceMappingCommand,
+  GetEventSourceMappingCommand,
   UpdateEventSourceMappingCommand,
 } from '@aws-sdk/client-lambda';
 
@@ -68,7 +69,9 @@ describe('LambdaEventSourceMappingProvider (issue #5356)', () => {
     mockSend.mockImplementation(async (cmd: unknown) =>
       cmd instanceof UpdateEventSourceMappingCommand || cmd instanceof CreateEventSourceMappingCommand
         ? { UUID, EventSourceMappingArn: ARN }
-        : {}
+        : cmd instanceof GetEventSourceMappingCommand
+          ? { State: 'Enabled' }
+          : {}
     );
     provider = new LambdaEventSourceMappingProvider();
   });

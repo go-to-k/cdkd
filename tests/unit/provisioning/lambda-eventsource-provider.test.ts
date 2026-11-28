@@ -149,7 +149,7 @@ describe('LambdaEventSourceMappingProvider', () => {
 
     beforeEach(() => {
       // CreateEventSourceMapping returns the new mapping's UUID
-      mockSend.mockResolvedValue({ UUID });
+      mockSend.mockResolvedValue({ UUID, State: 'Enabled' });
     });
 
     function getCreateInput(): Record<string, unknown> {
@@ -394,6 +394,9 @@ describe('LambdaEventSourceMappingProvider', () => {
       mockSend.mockImplementation((cmd: unknown) => {
         if (cmd instanceof UpdateEventSourceMappingCommand) {
           return Promise.resolve({ UUID, EventSourceMappingArn: ARN });
+        }
+        if (cmd instanceof GetEventSourceMappingCommand) {
+          return Promise.resolve({ State: 'Enabled', Tags: {} });
         }
         return Promise.resolve({ Tags: {} });
       });
@@ -1003,6 +1006,16 @@ describe('LambdaEventSourceMappingProvider', () => {
     });
 
     it('forwards a still-declared Enabled: false instead of the reset', async () => {
+      // The mapping settles Disabled once the update turned it off.
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof UpdateEventSourceMappingCommand) {
+          return Promise.resolve({ UUID, EventSourceMappingArn: ARN });
+        }
+        if (cmd instanceof GetEventSourceMappingCommand) {
+          return Promise.resolve({ State: 'Disabled', Tags: {} });
+        }
+        return Promise.resolve({ Tags: {} });
+      });
       await provider.update(
         'L',
         UUID,
@@ -1164,7 +1177,7 @@ describe('LambdaEventSourceMappingProvider', () => {
     const ARN = 'arn:aws:lambda:us-east-1:123456789012:event-source-mapping:' + UUID;
 
     it('create() caches EventSourceMappingArn under its CFn name so Fn::GetAtt resolves', async () => {
-      mockSend.mockResolvedValue({ UUID, EventSourceMappingArn: ARN });
+      mockSend.mockResolvedValue({ UUID, EventSourceMappingArn: ARN, State: 'Enabled' });
 
       const result = await provider.create('L', 'AWS::Lambda::EventSourceMapping', {
         FunctionName: 'fn',

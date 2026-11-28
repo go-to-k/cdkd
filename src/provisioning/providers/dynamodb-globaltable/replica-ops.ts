@@ -45,6 +45,10 @@ import {
   SETTLING_RETRY_INITIAL_MS,
 } from './capacity.js';
 import type { DynamoDBGlobalTableProvider } from '../dynamodb-globaltable-provider.js';
+import {
+  waitForContributorInsightsSettled,
+  waitForKinesisEnableActive,
+} from '../dynamodb-settle-waits.js';
 
 /**
  * Delete the resource policy of a stream a `StreamViewType` change retired.
@@ -217,6 +221,9 @@ export async function sendReplicaSettingOp(
     markUnsettled('Replicas');
     return this.retrySettlingRefusal(call, `${op.kind} on ${scope}`, maskSecrets);
   };
+  // go-to-k/cdkd#7132: Contributor Insights and a Kinesis enable answer
+  // ENABLING / DISABLING; CloudFormation completes only once they settle.
+  const settleWait = { maskSecrets, debug: (message: string) => this.logger.debug(message) };
   switch (op.kind) {
     case 'pitr':
       await send(() =>
@@ -233,51 +240,61 @@ export async function sendReplicaSettingOp(
         )
       );
       break;
-    case 'contributorInsights':
-      await send(() =>
-        client.send(
-          new UpdateContributorInsightsCommand({
-            TableName: tableName,
-            ContributorInsightsAction: op.action,
-            ...(op.mode !== undefined && {
-              ContributorInsightsMode: op.mode as ContributorInsightsMode,
-            }),
-          })
-        )
-      );
+    case 'contributorInsights': {
+      let answered: string | undefined;
+      await send(async () => {
+        answered = (
+          await client.send(
+            new UpdateContributorInsightsCommand({
+              TableName: tableName,
+              ContributorInsightsAction: op.action,
+              ...(op.mode !== undefined && {
+                ContributorInsightsMode: op.mode as ContributorInsightsMode,
+              }),
+            })
+          )
+        ).ContributorInsightsStatus;
+      });
+      await waitForContributorInsightsSettled(client, tableName, undefined, op.action, scope, {
+        ...settleWait,
+        ...(answered !== undefined && { answeredStatus: answered }),
+      });
       break;
+    }
     case 'kinesisEnable':
       // Already streaming there (a re-run): enabling it again is refused, and
       // that refusal can be one the settling retry would wait out first.
       // A read that fails here falls through to the enable, which decides.
       if (
-        await this.activeKinesisStreamArns(client, tableName).then(
+        !(await this.activeKinesisStreamArns(client, tableName).then(
           (arns) => arns.has(op.streamArn),
           () => false
-        )
+        ))
       ) {
-        break;
+        try {
+          await send(() =>
+            client.send(
+              new EnableKinesisStreamingDestinationCommand({
+                TableName: tableName,
+                StreamArn: op.streamArn,
+                ...(op.precision !== undefined && {
+                  EnableKinesisStreamingConfiguration: {
+                    ApproximateCreationDateTimePrecision:
+                      op.precision as ApproximateCreationDateTimePrecision,
+                  },
+                }),
+              })
+            )
+          );
+        } catch (error) {
+          // A re-run after a deploy that enabled it and failed before state
+          // recorded it: the destination is what the template asks for.
+          if (!(await this.kinesisStreaming(client, tableName, op.streamArn, error))) throw error;
+        }
       }
-      try {
-        await send(() =>
-          client.send(
-            new EnableKinesisStreamingDestinationCommand({
-              TableName: tableName,
-              StreamArn: op.streamArn,
-              ...(op.precision !== undefined && {
-                EnableKinesisStreamingConfiguration: {
-                  ApproximateCreationDateTimePrecision:
-                    op.precision as ApproximateCreationDateTimePrecision,
-                },
-              }),
-            })
-          )
-        );
-      } catch (error) {
-        // A re-run after a deploy that enabled it and failed before state
-        // recorded it: the destination is what the template asks for.
-        if (!(await this.kinesisStreaming(client, tableName, op.streamArn, error))) throw error;
-      }
+      // Every arm, the re-run's too: a destination already there may still
+      // be ENABLING.
+      await waitForKinesisEnableActive(client, tableName, op.streamArn, scope, settleWait);
       break;
     case 'kinesisDisable':
       try {
@@ -330,20 +347,32 @@ export async function sendReplicaSettingOp(
       }
       break;
     }
-    case 'indexContributorInsights':
-      await send(() =>
-        client.send(
-          new UpdateContributorInsightsCommand({
-            TableName: tableName,
-            IndexName: op.indexName,
-            ContributorInsightsAction: op.action,
-            ...(op.mode !== undefined && {
-              ContributorInsightsMode: op.mode as ContributorInsightsMode,
-            }),
-          })
-        )
+    case 'indexContributorInsights': {
+      let answered: string | undefined;
+      await send(async () => {
+        answered = (
+          await client.send(
+            new UpdateContributorInsightsCommand({
+              TableName: tableName,
+              IndexName: op.indexName,
+              ContributorInsightsAction: op.action,
+              ...(op.mode !== undefined && {
+                ContributorInsightsMode: op.mode as ContributorInsightsMode,
+              }),
+            })
+          )
+        ).ContributorInsightsStatus;
+      });
+      await waitForContributorInsightsSettled(
+        client,
+        tableName,
+        op.indexName,
+        op.action,
+        `index ${op.indexName} of ${scope}`,
+        { ...settleWait, ...(answered !== undefined && { answeredStatus: answered }) }
       );
       break;
+    }
     case 'untagStream': {
       // No stream left means no stream tags left: the goal.
       if ((await describe()).streamArn === undefined) break;

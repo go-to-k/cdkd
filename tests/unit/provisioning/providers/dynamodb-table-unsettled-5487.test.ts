@@ -51,8 +51,20 @@ interface Live {
 }
 
 function serve(live: Live): void {
-  mockSend.mockImplementation(async (cmd: { constructor: { name: string } }) => {
+  // What the writes left, which the waits after them read (#7132).
+  const insights = new Map<string, string>();
+  const kinesis: string[] = [];
+  mockSend.mockImplementation(async (cmd: { constructor: { name: string }; input?: Record<string, any> }) => {
     switch (cmd.constructor.name) {
+      case 'UpdateContributorInsightsCommand':
+        insights.set(
+          String(cmd.input?.IndexName ?? ''),
+          cmd.input?.ContributorInsightsAction === 'ENABLE' ? 'ENABLED' : 'DISABLED'
+        );
+        return {};
+      case 'EnableKinesisStreamingDestinationCommand':
+        kinesis.push(String(cmd.input?.StreamArn));
+        return {};
       case 'DescribeTableCommand':
         return {
           Table: {
@@ -92,9 +104,16 @@ function serve(live: Live): void {
       case 'ListTagsOfResourceCommand':
         return { Tags: live.tags ?? [] };
       case 'DescribeKinesisStreamingDestinationCommand':
-        return { KinesisDataStreamDestinations: [] };
+        return {
+          KinesisDataStreamDestinations: kinesis.map((StreamArn) => ({
+            StreamArn,
+            DestinationStatus: 'ACTIVE',
+          })),
+        };
       case 'DescribeContributorInsightsCommand':
-        return { ContributorInsightsStatus: 'DISABLED' };
+        return {
+          ContributorInsightsStatus: insights.get(String(cmd.input?.IndexName ?? '')) ?? 'DISABLED',
+        };
       case 'GetResourcePolicyCommand':
         if (live.noPolicy === true) {
           throw new PolicyNotFoundException({ message: 'no policy', $metadata: {} });

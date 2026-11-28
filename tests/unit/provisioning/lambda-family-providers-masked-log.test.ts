@@ -1101,7 +1101,10 @@ describe('LambdaEventSourceMappingProvider masked log sinks (issue #2177)', () =
 
   it('routes the create path lines through the masker', async () => {
     const spy = spyMasker();
-    fakeLambda({ CreateEventSourceMappingCommand: () => ({ UUID: 'uuid-1' }) });
+    fakeLambda({
+      CreateEventSourceMappingCommand: () => ({ UUID: 'uuid-1' }),
+      GetEventSourceMappingCommand: () => ({ State: 'Enabled' }),
+    });
     await new LambdaEventSourceMappingProvider().create(
       'Esm',
       type,
@@ -1119,6 +1122,7 @@ describe('LambdaEventSourceMappingProvider masked log sinks (issue #2177)', () =
     const spy = spyMasker();
     fakeLambda({
       UpdateEventSourceMappingCommand: () => ({ EventSourceMappingArn: 'arn:esm' }),
+      GetEventSourceMappingCommand: () => ({ State: 'Enabled' }),
     });
     const provider = new LambdaEventSourceMappingProvider();
     const uuid = '11111111-2222-3333-4444-555555555555';
@@ -1157,6 +1161,7 @@ describe('LambdaEventSourceMappingProvider masked log sinks (issue #2177)', () =
     const sink = vi.fn((text: string) => text);
     fakeLambda({
       UpdateEventSourceMappingCommand: () => ({ EventSourceMappingArn: 'arn:esm' }),
+      GetEventSourceMappingCommand: () => ({ State: 'Enabled' }),
     });
     await new LambdaEventSourceMappingProvider().update(
       'Esm',

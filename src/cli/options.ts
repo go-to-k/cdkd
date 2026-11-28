@@ -223,7 +223,10 @@ export function guardStackRegionOptions(cmd: Command): void {
  * Skip waiting for async-stabilization resources (RDS, ElastiCache,
  * NAT Gateway, EC2 Instance, ELBv2 LoadBalancer, Lambda MicroVM Image,
  * Bedrock AgentCore Runtime `READY` (go-to-k/cdkd#6490; a runtime endpoint created or updated on it still waits, go-to-k/cdkd#6962), EventBridge Archive leaving `CREATING` / `UPDATING`, Connect Instance `ACTIVE` after it accepts dependent calls (go-to-k/cdkd#6912; a `Fn::GetAtt` of its `ServiceRole` still waits), VPC Endpoint `available` (go-to-k/cdkd#6939; a `Fn::GetAtt` of its `DnsEntries` / `NetworkInterfaceIds` after a modify still waits), ECS Service steady state, the Auto Scaling instance refresh an
- * `--update-policy` rolling update starts, go-to-k/cdkd#6437) on deploy.
+ * `--update-policy` rolling update starts, go-to-k/cdkd#6437; a Lambda event
+ * source mapping leaving `Creating` / `Updating`, and a DynamoDB Table /
+ * GlobalTable Kinesis streaming destination or Contributor Insights toggle
+ * settling, go-to-k/cdkd#7132) on deploy.
  * NOT the wait of an `AutoScalingReplacingUpdate` for its new group's
  * instances, which runs whatever the flag says: deleting the old group
  * before the new one serves would drop the group's capacity. Nor the wait of
@@ -263,7 +266,7 @@ export function guardStackRegionOptions(cmd: Command): void {
  */
 export const noWaitOption = new Option(
   '--no-wait',
-  'Skip waiting for async resources to stabilize (RDS, ElastiCache, NAT Gateway, EC2 Instance, ELBv2 LoadBalancer, Lambda MicroVM Image, Bedrock AgentCore Runtime, EventBridge Archive, Connect Instance, VPC Endpoint, ECS Service steady state, Auto Scaling instance refresh under --update-policy; an AutoScalingReplacingUpdate still waits for its new instances, and a Lambda alias CodeDeploy deployment for its traffic shift; a Fn::GetAtt of a value that exists only once a resource is ready, or that an RDS instance update changed and has not applied yet (a port, a CA certificate, a Multi-AZ standby zone), or a custom resource invoked after one, still waits for it)'
+  'Skip waiting for async resources to stabilize (RDS, ElastiCache, NAT Gateway, EC2 Instance, ELBv2 LoadBalancer, Lambda MicroVM Image, Bedrock AgentCore Runtime, EventBridge Archive, Connect Instance, VPC Endpoint, ECS Service steady state, Auto Scaling instance refresh under --update-policy, Lambda event source mapping, DynamoDB Kinesis streaming destination and Contributor Insights; an AutoScalingReplacingUpdate still waits for its new instances, and a Lambda alias CodeDeploy deployment for its traffic shift; a Fn::GetAtt of a value that exists only once a resource is ready, or that an RDS instance update changed and has not applied yet (a port, a CA certificate, a Multi-AZ standby zone), or a custom resource invoked after one, still waits for it)'
 );
 
 /**

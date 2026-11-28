@@ -264,6 +264,24 @@ replica_settings() {
     "$(policy_state "$1" "${arn}")" "$(policy_state "$1" "${sarn}")"
 }
 
+# go-to-k/cdkd#7132: ONE read right after a deploy. The deploy waits for a
+# Contributor Insights toggle and a Kinesis enable to land, as CloudFormation
+# does, so region $1's insights (gsi1's with $3) must read ENABLED and no
+# destination may still read ENABLING.
+assert_toggles_settled() { # usage: assert_toggles_settled <region> <phase label> [index]
+  local ci ks
+  ci="$(aws dynamodb describe-contributor-insights --table-name "${TABLE}" ${3:+--index-name "$3"} \
+    --region "$1" --query 'ContributorInsightsStatus' --output text)" || return 1
+  ks="$(aws dynamodb describe-kinesis-streaming-destination --table-name "${TABLE}" --region "$1" \
+    --query "join(',', KinesisDataStreamDestinations[?DestinationStatus=='ENABLING'].StreamArn)" \
+    --output text)" || return 1
+  if [ "${ci}" != "ENABLED" ] || [ -n "${ks}" ]; then
+    echo "FAIL (issue go-to-k/cdkd#7132): $2: right after the deploy, $1${3:+ index $3} Contributor Insights reads '${ci}' (expected ENABLED) and the destinations still ENABLING are '${ks}' (expected none)" >&2
+    exit 1
+  fi
+  echo "    OK (issue #7132): $1${3:+ index $3} insights ENABLED, no destination ENABLING right after the deploy"
+}
+
 # Poll until region $1's #5365 settings match the extended regex $2 (insights
 # and streaming pass through ENABLING / DISABLING), then FAIL with $3.
 await_replica() { # usage: await_replica <region> <regex> <failure message>
@@ -715,6 +733,8 @@ echo "    ${REPLICA_KINESIS_ARN}"
 # --- Phase 1: deploy with every replica setting --------------------------
 echo "==> Phase 1: deploy (${REGION} + ${SECOND_REGION}): customer managed keys, STANDARD_INFREQUENT_ACCESS, replica protected"
 deploy "" "${LOG_DIR}/phase1.log"
+assert_toggles_settled "${REGION}" "Phase 1"
+assert_toggles_settled "${SECOND_REGION}" "Phase 1"
 wait_settled
 LOCAL_KEY_ARN="$(aws kms describe-key --key-id "${LOCAL_ALIAS}" --region "${REGION}" \
   --query 'KeyMetadata.Arn' --output text)"
@@ -934,6 +954,8 @@ echo "    the unsettled Replicas converged with no replica change (go-to-k/cdkd#
 # --- Phase 1b: per-index insights, stream tags, replication mode (#5489) ---
 echo "==> Phase 1b: add gsi1 with per-replica insights, stream tags, and a one-replica ModeTable"
 deploy "idx" "${LOG_DIR}/phase1b.log"
+assert_toggles_settled "${REGION}" "Phase 1b" gsi1
+assert_toggles_settled "${SECOND_REGION}" "Phase 1b" gsi1
 wait_settled
 # CDK renders the second region's replica first (stream-0) and the deploy
 # region's last (stream-1). A pre-fix binary sends neither the insights nor

@@ -198,6 +198,7 @@ const regionDouble = (
   live: Live,
   replicas: string[] | undefined
 ) => {
+  let tableCi = 'DISABLED';
   return async (command: Sent): Promise<unknown> => {
     const name = command.constructor.name;
     const refusal = live.refuse?.(name, command.input);
@@ -207,7 +208,7 @@ const regionDouble = (
         const index = command.input['IndexName'];
         return {
           ContributorInsightsStatus:
-            index === undefined ? 'DISABLED' : (live.indexCi?.[index] ?? 'DISABLED'),
+            index === undefined ? tableCi : (live.indexCi?.[index] ?? 'DISABLED'),
         };
       }
       case ListTagsOfResourceCommand.name: {
@@ -239,6 +240,14 @@ const regionDouble = (
             const mode = command.input['GlobalTableSettingsReplicationMode'];
             live.mode = mode === 'DISABLED' ? undefined : mode;
           }
+          return {};
+        }
+        if (name === UpdateContributorInsightsCommand.name) {
+          // The wait after a write reads the status that write left (#7132).
+          const status = command.input['ContributorInsightsAction'] === 'ENABLE' ? 'ENABLED' : 'DISABLED';
+          const index = command.input['IndexName'];
+          if (index === undefined) tableCi = status;
+          else live.indexCi = { ...live.indexCi, [index]: status };
           return {};
         }
         if (WRITES.includes(name)) return {};

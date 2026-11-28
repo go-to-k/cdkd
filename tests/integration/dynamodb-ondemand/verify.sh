@@ -301,6 +301,16 @@ if [ "${ACTUAL_STREAM_ARN}" != "${EXPECTED_STREAM_ARN}" ]; then
   exit 1
 fi
 echo "    OK: KinesisStreamSpecification.StreamArn reached AWS (silent-drop CLOSED by #609)"
+# go-to-k/cdkd#7132: the deploy waits for the enable to land, as CloudFormation
+# does, so the destination reads ACTIVE (never ENABLING) once it returns.
+KDS_STATUS=$(echo "${KDS}" | jq -r --arg arn "${EXPECTED_STREAM_ARN}" '
+  [.KinesisDataStreamDestinations[]? | select(.StreamArn == $arn and .DestinationStatus != "DISABLED")][0]
+  | .DestinationStatus // "absent"')
+if [ "${KDS_STATUS}" != "ACTIVE" ]; then
+  echo "FAIL (issue go-to-k/cdkd#7132): the Kinesis destination reads '${KDS_STATUS}' right after the deploy, expected ACTIVE" >&2
+  exit 1
+fi
+echo "    OK (issue #7132): the Kinesis destination reads ACTIVE right after the deploy"
 
 # go-to-k/cdkd#5385 BASELINE: the precision the Phase 1.5 deploy changes must
 # read MILLISECOND first, or the MICROSECOND assertion there passes vacuously
@@ -314,7 +324,7 @@ read_kinesis_precision() {
 }
 KDS_PRECISION_BASE=$(read_kinesis_precision)
 case "${KDS_PRECISION_BASE}" in
-  "ACTIVE MILLISECOND" | "ENABLING MILLISECOND") ;;
+  "ACTIVE MILLISECOND") ;;
   *)
     echo "FAIL (Phase 1, issue #5385): Kinesis destination reads '${KDS_PRECISION_BASE}', expected MILLISECOND before the precision change" >&2
     exit 1
@@ -323,13 +333,14 @@ esac
 echo "    OK (Phase 1): Kinesis destination precision is MILLISECOND before the change"
 
 # --- Assertion 4: ContributorInsightsSpecification reached AWS --------
-# DescribeContributorInsights returns the status + mode. ENABLING is a
-# valid transient terminal-bound state shortly after deploy.
+# DescribeContributorInsights returns the status + mode. The deploy waits for
+# the toggle to land, as CloudFormation does (go-to-k/cdkd#7132), so ENABLING
+# right after it is a failure.
 CI=$(aws dynamodb describe-contributor-insights \
   --table-name "${TABLE_NAME}" --region "${REGION}" --output json 2>/dev/null)
 CI_STATUS=$(echo "${CI}" | jq -r 'if has("ContributorInsightsStatus") then .ContributorInsightsStatus else "null" end')
-if [ "${CI_STATUS}" != "ENABLED" ] && [ "${CI_STATUS}" != "ENABLING" ]; then
-  echo "FAIL: ContributorInsightsStatus is '${CI_STATUS}', expected ENABLED/ENABLING (silent-drop NOT closed)" >&2
+if [ "${CI_STATUS}" != "ENABLED" ]; then
+  echo "FAIL (issue go-to-k/cdkd#7132): ContributorInsightsStatus is '${CI_STATUS}' right after the deploy, expected ENABLED" >&2
   echo "${CI}" | jq .
   exit 1
 fi
@@ -344,8 +355,8 @@ fi
 echo "    OK: ContributorInsightsSpecification.Mode == ${EXPECTED_CI_MODE} on AWS"
 
 # --- Phase 1.1 (issue go-to-k/cdkd#6778): Contributor Insights drift ---------
-# The deploy does not wait for the toggle, so the post-deploy observed baseline
-# is read while AWS reports ENABLING. Before the fix that read omitted the
+# Before #7132 the deploy did not wait for the toggle, so the post-deploy
+# observed baseline was read while AWS reported ENABLING. That read omitted the
 # block, the baseline had no ContributorInsightsSpecification key, and a
 # disable made outside cdkd reported NO drift (the comparator walks the
 # baseline's own top-level keys). Now: the baseline records the block, the
@@ -412,6 +423,12 @@ rm -f "${CI_DRIFT_JSON}"
 echo "    OK (Phase 1.1): the out-of-band disable is drift (${CI_DRIFT_PATHS}, rc=1)"
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" --revert --yes
+# go-to-k/cdkd#7132: the revert's update waits for the re-enable to land.
+CI_AFTER_REVERT=$(read_ci_status || echo error)
+if [ "${CI_AFTER_REVERT}" != "ENABLED" ]; then
+  echo "FAIL (issue go-to-k/cdkd#7132): ContributorInsightsStatus reads '${CI_AFTER_REVERT}' right after drift --revert, expected ENABLED" >&2
+  exit 1
+fi
 wait_ci_status ENABLED "after drift --revert"
 CI_MODE_AFTER=$(aws dynamodb describe-contributor-insights --table-name "${TABLE_NAME}" --region "${REGION}" \
   --query 'ContributorInsightsMode' --output text)

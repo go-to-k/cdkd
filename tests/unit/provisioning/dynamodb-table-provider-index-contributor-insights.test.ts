@@ -115,7 +115,17 @@ function primeAws(
   // the opening DescribeTable, or update() takes its already-exists recovery
   // arm and never issues the Create at all.
   const liveIndexNames = [...initialIndexNames];
+  // What an UpdateContributorInsights left behind, per index ('' = the table):
+  // the wait after each write reads that status until it settles (#7132).
+  const applied = new Map<string, string>();
   mockSend.mockImplementation((cmd: unknown) => {
+    if (cmd instanceof UpdateContributorInsightsCommand) {
+      applied.set(
+        cmd.input.IndexName ?? '',
+        cmd.input.ContributorInsightsAction === 'ENABLE' ? 'ENABLED' : 'DISABLED'
+      );
+      return Promise.resolve({});
+    }
     if (cmd instanceof UpdateTableCommand) {
       for (const op of cmd.input.GlobalSecondaryIndexUpdates ?? []) {
         if (op.Create?.IndexName !== undefined) liveIndexNames.push(op.Create.IndexName);
@@ -137,6 +147,14 @@ function primeAws(
     }
     if (cmd instanceof DescribeContributorInsightsCommand) {
       const indexName = cmd.input.IndexName;
+      const settled = applied.get(indexName ?? '');
+      if (settled !== undefined) {
+        return Promise.resolve({
+          TableName: TABLE_NAME,
+          ...(indexName === undefined ? {} : { IndexName: indexName }),
+          ContributorInsightsStatus: settled,
+        });
+      }
       if (indexName === undefined) return Promise.resolve({ ContributorInsightsStatus: 'DISABLED' });
       const answer = insights[indexName];
       if (answer instanceof Error) return Promise.reject(answer);

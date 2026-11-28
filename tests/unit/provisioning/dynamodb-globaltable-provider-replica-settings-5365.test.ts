@@ -212,6 +212,7 @@ const regionDouble = (
   let pendingDisable: { streamArn: string; statuses: string[]; drop: () => void } | undefined;
   // A history entry stays listed for good once its stream was disabled.
   let historyStream: string | undefined;
+  const indexCi = new Map<string, string>();
   return async (command: Sent): Promise<unknown> => {
     const name = command.constructor.name;
     const refusal = refuse(name, command.input);
@@ -226,8 +227,14 @@ const regionDouble = (
             },
           },
         };
-      case DescribeContributorInsightsCommand.name:
-        return { ContributorInsightsStatus: live.ci ?? 'DISABLED' };
+      case DescribeContributorInsightsCommand.name: {
+        // What a write left, which the wait after it reads (#7132).
+        const index = command.input['IndexName'];
+        return {
+          ContributorInsightsStatus:
+            (index === undefined ? undefined : indexCi.get(String(index))) ?? live.ci ?? 'DISABLED',
+        };
+      }
       case DescribeKinesisStreamingDestinationCommand.name: {
         const pending = pendingDisable;
         let status: string | undefined;
@@ -281,6 +288,18 @@ const regionDouble = (
           const statuses = [...(live.kinesisAfterDisable ?? [])];
           if (statuses.length === 0) drop();
           else pendingDisable = { streamArn: off, statuses, drop };
+          return {};
+        }
+        if (name === UpdateContributorInsightsCommand.name) {
+          const status = command.input['ContributorInsightsAction'] === 'ENABLE' ? 'ENABLED' : 'DISABLED';
+          const index = command.input['IndexName'];
+          if (index === undefined) live.ci = status;
+          else indexCi.set(String(index), status);
+          return {};
+        }
+        if (name === EnableKinesisStreamingDestinationCommand.name) {
+          const arnEnabled = command.input['StreamArn'];
+          if (!(live.kinesis ?? []).includes(arnEnabled)) live.kinesis = [...(live.kinesis ?? []), arnEnabled];
           return {};
         }
         if (WRITES.includes(name)) return {};
@@ -1033,10 +1052,19 @@ describe('DynamoDB GlobalTable replica settings writes (go-to-k/cdkd#5365)', () 
     });
 
     it('still enables Kinesis when the pre-check read fails', async () => {
+      // Only the pre-check read is refused: the read after the enable, which
+      // confirms the destination is ACTIVE (#7132), answers.
+      const refuse = refuseWith(DescribeKinesisStreamingDestinationCommand.name, () =>
+        Object.assign(new Error('denied'), { name: 'AccessDeniedException' })
+      );
+      let preCheckRefused = false;
       setLive({}, {}, {
-        refuseRemote: refuseWith(DescribeKinesisStreamingDestinationCommand.name, () =>
-          Object.assign(new Error('denied'), { name: 'AccessDeniedException' })
-        ),
+        refuseRemote: (name: string) => {
+          if (preCheckRefused) return undefined;
+          const refusal = refuse(name);
+          if (refusal) preCheckRefused = true;
+          return refusal;
+        },
       });
       await provider.update(
         'T',
