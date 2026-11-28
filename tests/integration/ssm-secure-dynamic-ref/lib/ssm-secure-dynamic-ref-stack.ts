@@ -1,6 +1,8 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
+import * as events from 'aws-cdk-lib/aws-events';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 
 /**
  * Integ probe for issue #2482: a `{{resolve:ssm-secure:<name>}}` dynamic
@@ -58,6 +60,15 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
  * the Tags-only in-place UPDATE that verify.sh uses to assert the re-deploy
  * still carries the plaintext (never the token) and leaves state on the
  * expression.
+ *
+ * CDKD_TEST_SCRUB_TWIN=true (verify.sh sets it under CDKD_INTEG_SCRUB_TWIN=1)
+ * adds the go-to-k/cdkd#7154 shape: a disabled EventBridge rule whose two
+ * targets carry the FIRST parameter in their `Input`, one as `NAME` and one as
+ * `NAME:1`. That is two references, one plaintext, in list elements with no
+ * `Name` / `Key`. The target ARN is a LITERAL (the queue's fixed name), so each
+ * element's non-secret leaves are plain text the scrub can match. `t1` is
+ * declared last, so the value-keyed map's survivor is the `:1` spelling.
+ * CDKD_TEST_SCRUB_TWIN_SUFFIX makes the names unique per run.
  */
 export class SsmSecureDynamicRefStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -94,6 +105,23 @@ export class SsmSecureDynamicRefStack extends cdk.Stack {
     if (isUpdate) {
       // The ONLY change in the update phase.
       cdk.Tags.of(fn).add('cdkd-update-probe', 'true');
+    }
+
+    if (process.env.CDKD_TEST_SCRUB_TWIN === 'true') {
+      const suffix = process.env.CDKD_TEST_SCRUB_TWIN_SUFFIX ?? 'local';
+      const queueName = `cdkd-scrub-twin-${suffix}`;
+      const queue = new sqs.Queue(this, 'ScrubTwinQueue', { queueName });
+      const queueArn = `arn:aws:sqs:${this.region}:${this.account}:${queueName}`;
+      const rule = new events.CfnRule(this, 'ScrubTwinRule', {
+        name: `cdkd-scrub-twin-${suffix}`,
+        state: 'DISABLED',
+        scheduleExpression: 'rate(1 day)',
+        targets: [
+          { id: 't0', arn: queueArn, input: `{"pw":"{{resolve:ssm-secure:${paramName}}}"}` },
+          { id: 't1', arn: queueArn, input: `{"pw":"{{resolve:ssm-secure:${paramName}:1}}"}` },
+        ],
+      });
+      rule.node.addDependency(queue);
     }
 
     new cdk.CfnOutput(this, 'FunctionName', { value: fn.functionName });

@@ -35,6 +35,12 @@
 #      resolved in memory and compared, no longer "unresolvable").
 #   2. UPDATE (CDKD_TEST_UPDATE=true): a tag only. Assert the env vars still
 #      hold the marker (never the token) and state still holds the expressions.
+#   1e. (CDKD_INTEG_SCRUB_TWIN=1 only, go-to-k/cdkd#7154) A record an older
+#      binary wrote in plaintext: the EventBridge rule's two target `Input`s
+#      are rewritten to the marker in state, then `cdkd scrub --purge-history`
+#      must put EACH back on its own expression (`NAME` / `NAME:1`), `diff
+#      --fail` and a re-deploy must report no change, and no surviving object
+#      version under the stack prefix may carry the marker.
 #   3. Destroy; assert the function and the state file are gone, sweep the
 #      Lambda log group, remove the parameters, purge the state bucket's object
 #      versions and assert zero survive.
@@ -52,6 +58,8 @@
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
 #   AWS_REGION   — defaults to us-east-1
+# Optional:
+#   CDKD_INTEG_SCRUB_TWIN=1 — add the #7154 rule + queue and run Phase 1e.
 
 set -euo pipefail
 
@@ -115,6 +123,16 @@ TOKEN_VERSIONED_SAME="{{resolve:ssm-secure:${PARAM_NAME}:1}}"
 EXPECTED_EMBEDDED="postgres://app-svc:${MARKER}@db.internal:5432/app"
 EXPECTED_EMBEDDED_EXPR="postgres://app-svc:${TOKEN_WHOLE}@db.internal:5432/app"
 
+# go-to-k/cdkd#7154 arm: every cdkd command of the run synthesizes the rule, so
+# the flag is exported once, with a per-run suffix for the fixed names.
+SCRUB_TWIN="${CDKD_INTEG_SCRUB_TWIN:-0}"
+if [ "${SCRUB_TWIN}" = "1" ]; then
+  export CDKD_TEST_SCRUB_TWIN=true
+  CDKD_TEST_SCRUB_TWIN_SUFFIX="${CDKD_TEST_SCRUB_TWIN_SUFFIX:-$(date +%s)}"
+  export CDKD_TEST_SCRUB_TWIN_SUFFIX
+fi
+TWIN_RULE_NAME="cdkd-scrub-twin-${CDKD_TEST_SCRUB_TWIN_SUFFIX:-local}"
+
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
 # reports it instead. We are in the fixture dir, three levels below repo root.
@@ -149,6 +167,17 @@ cleanup() {
   aws ssm delete-parameter --name "${PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${PARAM_NAME_VERSIONED}" --region "${REGION}" >/dev/null 2>&1 || true
   sweep_log_groups
+  # The #7154 arm's rule and queue, swept by prefix: a killed earlier run
+  # carries another suffix.
+  for rule in $(aws events list-rules --name-prefix cdkd-scrub-twin- --region "${REGION}" \
+      --query 'Rules[].Name' --output text 2>/dev/null); do
+    aws events remove-targets --rule "${rule}" --ids t0 t1 --region "${REGION}" >/dev/null 2>&1
+    aws events delete-rule --name "${rule}" --region "${REGION}" >/dev/null 2>&1
+  done
+  for q in $(aws sqs list-queues --queue-name-prefix cdkd-scrub-twin- --region "${REGION}" \
+      --query 'QueueUrls[]' --output text 2>/dev/null); do
+    [ "${q}" = "None" ] || aws sqs delete-queue --queue-url "${q}" --region "${REGION}" >/dev/null 2>&1
+  done
   rm -f "${DEPLOY_LOG:-}"
   if [ -n "${STATE_BUCKET:-}" ]; then
     # The state record is removed ONLY after `state destroy` succeeded: on a
@@ -469,6 +498,151 @@ if grep -q 'unresolvedToken' <<<"${DRIFT_OUT}"; then
 fi
 echo "    OK: drift exits 0 with the reference compared, not reported as unresolvable"
 
+# --- Phase 1e: scrub puts twin references back on their own expressions -------
+# go-to-k/cdkd#7154. Pre-fix, the scrub positioned a list element with no
+# `Name` / `Key` by the value scan, whose map is keyed by plaintext: both
+# target `Input`s came back as the `:1` spelling, and the next deploy planned
+# an update of the rule.
+twin_rule_record() { # twin_rule_record <raw state.json> -> the rule's record
+  printf '%s' "$1" | jq -c '.resources | to_entries[]
+    | select(.value.resourceType=="AWS::Events::Rule") | .value' | head -1
+}
+twin_input() { # twin_input <record> <bag> <target id>
+  printf '%s' "$1" | jq -r --arg b "$2" --arg id "$3" '.[$b].Targets // [] | map(select(.Id==$id)) | first | .Input // empty'
+}
+# Every object version under the stack prefix, the marker in none of them.
+assert_no_marker_in_versions() { # <description>
+  local desc="$1" rows key vid body scanned=0
+  if ! rows="$(aws s3api list-object-versions --bucket "${STATE_BUCKET}" \
+      --prefix "${STATE_PREFIX}" --query 'Versions[].[Key,VersionId]' --output text 2>&1)"; then
+    echo "FAIL (${desc}): could not list object versions under the stack prefix" >&2
+    diag_output "${rows}"
+    exit 1
+  fi
+  while IFS=$'\t' read -r key vid || [ -n "${key}" ]; do
+    [ -n "${key}" ] && [ -n "${vid}" ] && [ "${vid}" != "None" ] || continue
+    if ! body="$(aws s3api get-object --bucket "${STATE_BUCKET}" --key "${key}" \
+        --version-id "${vid}" /dev/stdout < /dev/null 2>&1)"; then
+      echo "FAIL (${desc}): could not read ${key} version ${vid}" >&2
+      exit 1
+    fi
+    if leaks_marker "${body}"; then
+      echo "FAIL (${desc}, issue #7154): ${key} version ${vid} still carries a SecureString value (withheld)" >&2
+      exit 1
+    fi
+    scanned=$((scanned + 1))
+  done <<< "${rows}"
+  if [ "${scanned}" -eq 0 ]; then
+    echo "FAIL (${desc}): scanned ZERO object versions under the stack prefix, so a clean verdict would be about nothing" >&2
+    exit 1
+  fi
+  echo "    OK (${desc}): ${scanned} surviving object version(s) scanned, none carries a SecureString value"
+}
+if [ "${SCRUB_TWIN}" = "1" ]; then
+  echo "==> Phase 1e: 'cdkd scrub' positions two references sharing one plaintext in a list (issue #7154)"
+  TWIN_STATE_FILE="$(mktemp "${TMPDIR:-/tmp}/cdkd-7154-state.XXXXXX")"
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${TWIN_STATE_FILE}" --quiet
+  TWIN_RECORD="$(twin_rule_record "$(cat "${TWIN_STATE_FILE}")")"
+  TWIN_T0_EXPR="{\"pw\":\"${TOKEN_WHOLE}\"}"
+  TWIN_T1_EXPR="{\"pw\":\"${TOKEN_VERSIONED_SAME}\"}"
+  # PREMISE: the deploy wrote each target on its own expression, so the
+  # rewrite below is what puts the plaintext there.
+  if [ "$(twin_input "${TWIN_RECORD}" properties t0)" != "${TWIN_T0_EXPR}" ] \
+      || [ "$(twin_input "${TWIN_RECORD}" properties t1)" != "${TWIN_T1_EXPR}" ]; then
+    echo "FAIL: premise: the deployed rule record does not hold both target Inputs as their own expressions" >&2
+    diag_output "${TWIN_RECORD}"
+    exit 1
+  fi
+  # The record an older binary wrote: both target Inputs (and the readback's,
+  # where it has them) in plaintext. `split | join`, so the tokens' braces are
+  # not regex.
+  jq --arg a "${TOKEN_WHOLE}" --arg b "${TOKEN_VERSIONED_SAME}" --arg m "${MARKER}" '
+    def plain: if type == "string" then split($b) | join($m) | split($a) | join($m) else . end;
+    .resources |= with_entries(
+      if .value.resourceType == "AWS::Events::Rule" then
+        .value.properties.Targets |= map(.Input |= plain)
+        | if (.value.observedProperties.Targets | type) == "array"
+          then .value.observedProperties.Targets |= map(if has("Input") then .Input |= plain else . end)
+          else . end
+      else . end)' "${TWIN_STATE_FILE}" > "${TWIN_STATE_FILE}.legacy"
+  LEGACY_RECORD="$(twin_rule_record "$(cat "${TWIN_STATE_FILE}.legacy")")"
+  if [ "$(twin_input "${LEGACY_RECORD}" properties t0)" != "{\"pw\":\"${MARKER}\"}" ] \
+      || [ "$(twin_input "${LEGACY_RECORD}" properties t1)" != "{\"pw\":\"${MARKER}\"}" ]; then
+    echo "FAIL: premise: could not write the plaintext into the rule's target Inputs, so the scrub would test nothing" >&2
+    exit 1
+  fi
+  aws s3 cp "${TWIN_STATE_FILE}.legacy" "s3://${STATE_BUCKET}/${STATE_KEY}" --quiet
+  rm -f "${TWIN_STATE_FILE}" "${TWIN_STATE_FILE}.legacy"
+  set +e
+  SCRUB_TWIN_OUT=$(node "${LOCAL_DIST}" scrub "${STACK}" --state-bucket "${STATE_BUCKET}" \
+    --region "${REGION}" --yes --purge-history 2>&1)
+  SCRUB_TWIN_RC=$?
+  set -e
+  if leaks_marker "${SCRUB_TWIN_OUT}"; then
+    echo "FAIL: 'cdkd scrub' output leaked a SecureString value (withheld)" >&2
+    exit 1
+  fi
+  if [ "${SCRUB_TWIN_RC}" -ne 0 ]; then
+    echo "FAIL: 'cdkd scrub' exited ${SCRUB_TWIN_RC} over the plaintext rule record" >&2
+    diag_output "${SCRUB_TWIN_OUT}"
+    exit 1
+  fi
+  SCRUBBED_STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)"
+  if leaks_marker "${SCRUBBED_STATE}"; then
+    echo "FAIL (issue #7154): the scrubbed state still carries a SecureString value (withheld)" >&2
+    exit 1
+  fi
+  SCRUBBED_RECORD="$(twin_rule_record "${SCRUBBED_STATE}")"
+  TWIN_FAIL=0
+  for pair in "t0|${TWIN_T0_EXPR}" "t1|${TWIN_T1_EXPR}"; do
+    id="${pair%%|*}"
+    want="${pair#*|}"
+    got="$(twin_input "${SCRUBBED_RECORD}" properties "${id}")"
+    if [ "${got}" != "${want}" ]; then
+      echo "FAIL (issue #7154): after scrub, target ${id}'s Input is not its own expression" >&2
+      echo "      want: ${want}" >&2
+      diag_output "${got}"
+      TWIN_FAIL=1
+    fi
+  done
+  if [ "${TWIN_FAIL}" -ne 0 ]; then
+    diag_output "${SCRUB_TWIN_OUT}"
+    exit 1
+  fi
+  echo "    OK: scrub wrote each target Input back on its own expression"
+  set +e
+  DIFF_TWIN_OUT=$(node "${LOCAL_DIST}" diff "${STACK}" --state-bucket "${STATE_BUCKET}" \
+    --region "${REGION}" --fail 2>&1)
+  DIFF_TWIN_RC=$?
+  set -e
+  if leaks_marker "${DIFF_TWIN_OUT}"; then
+    echo "FAIL: 'cdkd diff' after scrub leaked a SecureString value (withheld)" >&2
+    exit 1
+  fi
+  if [ "${DIFF_TWIN_RC}" -ne 0 ]; then
+    echo "FAIL (issue #7154): 'cdkd diff --fail' after scrub reported changes (rc=${DIFF_TWIN_RC})" >&2
+    diag_output "${DIFF_TWIN_OUT}"
+    exit 1
+  fi
+  if ! node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" \
+      --region "${REGION}" --yes > "${DEPLOY_LOG}" 2>&1; then
+    echo "FAIL: the re-deploy after scrub exited non-zero" >&2
+    show_deploy_log "post-scrub deploy" >&2
+    exit 1
+  fi
+  if leaks_marker "$(cat "${DEPLOY_LOG}")"; then
+    echo "FAIL: the re-deploy after scrub leaked a SecureString value (output withheld)" >&2
+    exit 1
+  fi
+  if ! grep -qF 'No changes detected' "${DEPLOY_LOG}"; then
+    echo "FAIL (issue #7154): the re-deploy after scrub planned a change (NO_CHANGE expected)" >&2
+    show_deploy_log "post-scrub deploy" >&2
+    exit 1
+  fi
+  echo "    OK: diff --fail is clean and the re-deploy reports NO_CHANGE"
+  assert_no_marker_in_versions "Phase 1e"
+fi
+
 # --- Phase 2: Tags-only UPDATE ---------------------------------------------
 echo "==> Phase 2: re-deploy with a tag added (Tags-only in-place UPDATE)"
 if ! CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -516,6 +690,11 @@ fi
 show_deploy_log "destroy"
 assert_gone "Lambda function ${FN_NAME} still exists after destroy" aws lambda get-function --function-name "${FN_NAME}" --region "${REGION}"
 echo "    consumer function deleted"
+if [ "${SCRUB_TWIN}" = "1" ]; then
+  assert_gone "EventBridge rule ${TWIN_RULE_NAME} still exists after destroy" aws events describe-rule --name "${TWIN_RULE_NAME}" --region "${REGION}"
+  assert_gone "SQS queue ${TWIN_RULE_NAME} still exists after destroy" aws sqs get-queue-url --queue-name "${TWIN_RULE_NAME}" --region "${REGION}"
+  echo "    #7154 rule and queue deleted"
+fi
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
 
