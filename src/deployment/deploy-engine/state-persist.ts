@@ -418,23 +418,34 @@ export function redactStateForPersist(this: DeployEngine, state: StackState): St
         // needles for the same resource, and with a `NoEcho` attribute's
         // in-memory value (a record this deploy's rollback minted).
         withSecretAttributeKeysDropped(
-          // go-to-k/cdkd#4043 (review M4): the `NoEcho` arms too, positioned
-          // by today's template while it still names the logical id as that
-          // type.
-          applyNoEchoPersist(
-            this.noEchoRun,
-            this.noEchoDeps(),
-            entry.logicalId,
-            entry.state,
-            scrubResourceRecord(
+          // go-to-k/cdkd#7158 / #7160: a secret its readback echoed under a key
+          // the template lacks, as on a live record.
+          withOffTemplateEchoesMasked(
+            // go-to-k/cdkd#4043 (review M4): the `NoEcho` arms too, positioned
+            // by today's template while it still names the logical id as that
+            // type.
+            applyNoEchoPersist(
+              this.noEchoRun,
+              this.noEchoDeps(),
+              entry.logicalId,
               entry.state,
-              orphanSecrets ?? new Map<string, string>(),
+              scrubResourceRecord(
+                entry.state,
+                orphanSecrets ?? new Map<string, string>(),
+                orphanTemplateProps,
+                undefined,
+                sameGenerationClaimsOf(entry.state)
+              ),
               orphanTemplateProps,
-              undefined,
-              sameGenerationClaimsOf(entry.state)
+              state.resources
             ),
-            orphanTemplateProps,
-            state.resources
+            {
+              properties: entry.state.properties,
+              ...(entry.state.observedProperties !== undefined && {
+                readback: entry.state.observedProperties,
+              }),
+            },
+            publicTokens
           ),
           entry.state,
           orphanSecrets,

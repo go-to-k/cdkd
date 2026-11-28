@@ -1214,6 +1214,16 @@ describe('cdkd state refresh-observed — secret redaction (issue #1926)', () =>
       expect(publicSsmProof.askedAbout).toEqual([properties]);
     });
 
+    it('an unproven plain ssm token inside a list teaches its embedded off-template echo (go-to-k/cdkd#7160)', async () => {
+      const properties = { Users: [{ Password: '{{resolve:ssm:/db/pw}}' }] };
+      const observed = await refreshWith(properties, {
+        Users: [{ Password: 'pw-refresh-7160' }],
+        ConnEcho7160: 'u:pw-refresh-7160@h',
+      });
+      expect(JSON.stringify(observed)).not.toContain('pw-refresh-7160');
+      expect(observed['ConnEcho7160']).toBe('***');
+    });
+
     it('a proven-public value echoed under a key the template lacks stays (go-to-k/cdkd#7160)', async () => {
       const properties = { Environment: { Variables: { URL: MIXED } } };
       const live = { Environment: { Variables: { URL: RESOLVED } }, HostEcho7160: 'db.public.internal' };

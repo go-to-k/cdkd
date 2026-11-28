@@ -502,8 +502,8 @@ export async function refreshObservedForStack(
               physicalId: resource.physicalId,
               publicTokens: new Set([region, stackName]),
               // go-to-k/cdkd#7160: a plain `ssm` token this pass proved public
-              // teaches nothing.
-              provenPublic: (token) => provenPublicValue(publicSsmProof, token) !== undefined,
+              // teaches nothing while the readback holds the proven value.
+              provenPublic: (token) => provenPublicValue(publicSsmProof, token),
             });
             // Redacted again over the masked bag: the walk is idempotent on its own
             // output, and the write keeps the redaction at the site.

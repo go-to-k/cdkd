@@ -55,22 +55,29 @@ type SecretReferenceTest = (token: string) => boolean;
  * parameter RESOLVED, so a token SURVIVING in a persisted bag names a
  * `SecureString` (`expressionMaySeedANeedle`). The premise is evidence the
  * record holds, not the token text: the same token in a template names a
- * public parameter as often as not. Only a LEGACY record breaks it (one
- * `cdkd import` wrote before the #2944 refusal marker, or a hand edit), and
- * there the cost is an over-mask in the safe direction: a template-absent key,
- * which CloudFormation never compares, reported as `maskedEcho`, until the
- * next write resolves the token and the entry lapses with the mask. Nothing
+ * public parameter as often as not. A record whose `properties` hold a
+ * PUBLIC token breaks it: one `cdkd import` wrote before the #2944 refusal
+ * marker, a hand edit, and the import warn path `refresh-observed-stack.ts`
+ * names as an inherited residual. There the cost is an over-mask in the safe
+ * direction: a template-absent key, which CloudFormation never compares,
+ * reported as `maskedEcho`, until a write of the resource (a create or an
+ * update; an unchanged deploy keeps the record) resolves the token and the
+ * entry lapses with the mask. Only `cdkd state refresh-observed` holds a
+ * proof (`PublicSsmProver`) to lift it; every other writer has none. Nothing
  * is sent from it (`--revert` sends AWS's own value at a masked position).
  * CloudFormation itself refuses the shape ("Non-secure ssm prefix was used
  * for secure parameter"); cdkd resolves it (#1901), so its plaintext reaches
  * the readback.
  */
-function secretReferenceTest(provenPublic?: (token: string) => boolean): SecretReferenceTest {
+function secretReferenceTest(provenPublic?: ProvenPublicValue): SecretReferenceTest {
   return (token) =>
     opensDynamicReferenceTo(token, 'ssm-secure') ||
     opensDynamicReferenceTo(token, 'secretsmanager') ||
-    (opensDynamicReferenceTo(token, 'ssm') && provenPublic?.(token) !== true);
+    (opensDynamicReferenceTo(token, 'ssm') && provenPublic?.(token) === undefined);
 }
+
+/** The value a plain `ssm` token was PROVEN public at, else `undefined`. */
+type ProvenPublicValue = (token: string) => string | undefined;
 
 /**
  * Read a persisted `observedMaskedLeaves` field, tolerating a malformed one as
@@ -355,10 +362,12 @@ export interface OffTemplateEchoInput {
   /** Values that name nothing secret (the region, the stack name). */
   readonly publicTokens?: ReadonlySet<string> | undefined;
   /**
-   * A plain `ssm` token this writer PROVED public (`PublicSsmProver`), which
-   * then teaches nothing (go-to-k/cdkd#7160).
+   * The value a plain `ssm` token was PROVED public at (`PublicSsmProver`,
+   * go-to-k/cdkd#7160). A leaf whose readback holds that value teaches
+   * nothing; one holding ANOTHER value (a parameter retyped since the deploy)
+   * still does, as the value scan's mixed-leaf proof admits only an equal one.
    */
-  readonly provenPublic?: ((token: string) => boolean) | undefined;
+  readonly provenPublic?: ProvenPublicValue | undefined;
 }
 
 /**
@@ -418,6 +427,21 @@ export function maskOffTemplateEchoes(input: OffTemplateEchoInput): {
   for (const { coordinate, text } of secretReferenceLeaves(properties, isSecretReference)) {
     learn(plaintextFor(text, readbackValueAt(readback, properties, coordinate, isSecretReference)));
     learn(plaintextFor(text, valueAtCoordinate(resolved, coordinate)));
+  }
+  // A leaf whose one token is proven public teaches only a value other than the proven one.
+  const provenPublic = input.provenPublic;
+  if (provenPublic !== undefined) {
+    const proven = (token: string): boolean =>
+      opensDynamicReferenceTo(token, 'ssm') && provenPublic(token) !== undefined;
+    for (const { coordinate, text } of secretReferenceLeaves(properties, proven)) {
+      const tokens = dynamicReferenceTokens(text);
+      if (tokens.length !== 1) continue;
+      const live = plaintextFor(
+        text,
+        readbackValueAt(readback, properties, coordinate, isSecretReference)
+      );
+      if (live !== provenPublic(tokens[0]!)) learn(live);
+    }
   }
   const found =
     needles.size === 0

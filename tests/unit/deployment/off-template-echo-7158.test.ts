@@ -524,8 +524,13 @@ describe('a secret echoed under a key the template lacks (go-to-k/cdkd#7158, #71
       const readback = { Version: 'v=release-2026-11', Extra: 'release-2026-11' };
       const input = { bag: readback, readback, properties, physicalId: 'p' };
       expect(
-        maskOffTemplateEchoes({ ...input, provenPublic: (t) => t === '{{resolve:ssm:/public/version}}' }).bag['Extra']
+        maskOffTemplateEchoes({
+          ...input,
+          provenPublic: (t) => (t === '{{resolve:ssm:/public/version}}' ? 'release-2026-11' : undefined),
+        }).bag['Extra']
       ).toBe('release-2026-11');
+      // A proof at ANOTHER value (the parameter retyped since) does not vouch for this one.
+      expect(maskOffTemplateEchoes({ ...input, provenPublic: () => 'release-2026-10' }).bag['Extra']).toBe('***');
       // Control: without the proof the surviving token names a SecureString.
       expect(maskOffTemplateEchoes(input).bag['Extra']).toBe('***');
     });
@@ -764,6 +769,21 @@ describe('a custom resource attribute KEY holding a secret (go-to-k/cdkd#7153)',
       expect(JSON.stringify(saved)).not.toContain(`By-${NOECHO}`);
       expect(saved.orphans![0]!.state.attributes).toEqual({ Generated: '***', Plain: '***' });
       expect(saved.supersededResources![0]!.state.attributes).toEqual({ Generated: '***', Plain: '***' });
+    });
+
+    it('masks and names a secret its readback echoed under a key the template lacks (go-to-k/cdkd#7160)', () => {
+      const echoed: ResourceState = {
+        physicalId: 'o-1',
+        resourceType: TYPE,
+        properties: { Password: '{{resolve:ssm:/orphan/pw}}' },
+        observedProperties: { Password: 'pw-orphan-7160', Extra: 'x-pw-orphan-7160-y' },
+      };
+      const saved = persistDropped(engine(), echoed);
+      for (const row of [saved.orphans![0]!, saved.supersededResources![0]!]) {
+        expect(row.state.observedProperties?.['Extra']).toBe('***');
+        expect(row.state.observedMaskedLeaves).toEqual([['Extra']]);
+      }
+      expect(JSON.stringify(saved)).not.toContain('pw-orphan-7160');
     });
 
     it('keeps a key a template Fn::GetAtt spells', () => {

@@ -22,11 +22,20 @@ vi.mock('../../../../src/utils/logger.js', () => {
   return { getLogger: () => fns };
 });
 
+const ssmSend = vi.hoisted(() => vi.fn());
+vi.mock('../../../../src/utils/aws-clients.js', () => ({
+  getAwsClients: () => ({
+    sts: { send: vi.fn().mockResolvedValue({ Account: '123456789012' }) },
+    ssm: { send: ssmSend },
+  }),
+}));
+
 import { scrubStack } from '../../../../src/cli/commands/scrub.js';
 
 const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 const VALUE = 'scrub-7161-noecho-value';
 const KEY = `By-${VALUE}`;
+const ORPHAN_VALUE = 'scrub-7161-orphan-value';
 
 function stackInfo(getAtt?: string): { stackName: string; template: CloudFormationTemplate } {
   return {
@@ -75,6 +84,7 @@ describe('cdkd scrub - a custom resource attribute KEY holding a secret (go-to-k
 
   beforeEach(() => {
     vi.clearAllMocks();
+    ssmSend.mockResolvedValue({ Parameter: { Value: ORPHAN_VALUE, Type: 'SecureString', Version: 1 } });
     stateBackend = {
       getState: vi.fn(),
       saveState: vi.fn().mockResolvedValue('etag-2'),
@@ -99,11 +109,30 @@ describe('cdkd scrub - a custom resource attribute KEY holding a secret (go-to-k
     expect(saved!.resources['Cr']!.attributes).toEqual({ Plain: 'ok' });
   });
 
-  it('drops it from an orphan and a superseded record', async () => {
+  it("drops it from an orphan by the orphan's own needles, and from a superseded record", async () => {
+    const orphan: ResourceState = {
+      ...customRecord(),
+      properties: { ServiceToken: 'arn', Pw: '{{resolve:ssm-secure:/orphan/pw}}' },
+      attributes: { [`By-${ORPHAN_VALUE}`]: 'x', Plain: 'ok' },
+    };
+    const saved = await scrub(
+      stateWith({
+        orphans: [{ logicalId: 'Gone', orphanedAt: 1, state: orphan }],
+        supersededResources: [{ logicalId: 'Cr', supersededAt: 1, state: customRecord() }],
+      })
+    );
+    expect(JSON.stringify(saved)).not.toContain(VALUE);
+    expect(JSON.stringify(saved)).not.toContain(ORPHAN_VALUE);
+    expect(saved!.orphans![0]!.state.attributes).toEqual({ Plain: 'ok' });
+    expect(saved!.supersededResources![0]!.state.attributes).toEqual({ Plain: 'ok' });
+  });
+
+  it("an orphan's and a superseded record's key holding ANY secret this run knows is dropped", async () => {
+    const superseded: ResourceState = { ...customRecord(), resourceType: 'Custom::Other' };
     const saved = await scrub(
       stateWith({
         orphans: [{ logicalId: 'Gone', orphanedAt: 1, state: customRecord() }],
-        supersededResources: [{ logicalId: 'Cr', supersededAt: 1, state: customRecord() }],
+        supersededResources: [{ logicalId: 'Cr', supersededAt: 1, state: superseded }],
       })
     );
     expect(JSON.stringify(saved)).not.toContain(VALUE);
@@ -120,6 +149,24 @@ describe('cdkd scrub - a custom resource attribute KEY holding a secret (go-to-k
     const saved = await scrub(stateWith({ resources: { Cr: record } }));
     expect(JSON.stringify(saved)).not.toContain(OLD);
     expect(saved!.resources['Cr']!.attributes).toEqual({ Plain: 'ok' });
+  });
+
+  it("masks an orphan's and a superseded record's off-template echo (go-to-k/cdkd#7158 / #7160)", async () => {
+    const echoed: ResourceState = {
+      physicalId: 'o-1',
+      resourceType: 'AWS::Test::Echo7160',
+      properties: { Password: '{{resolve:ssm:/orphan/pw}}' },
+      observedProperties: { Password: 'pw-orphan-7160', Extra: 'x-pw-orphan-7160-y' },
+    };
+    const saved = await scrub(
+      stateWith({
+        orphans: [{ logicalId: 'Gone', orphanedAt: 1, state: echoed }],
+        supersededResources: [{ logicalId: 'Cr', supersededAt: 1, state: echoed }],
+      })
+    );
+    expect(JSON.stringify(saved)).not.toContain('pw-orphan-7160');
+    expect(saved!.orphans![0]!.state.observedMaskedLeaves).toEqual([['Extra']]);
+    expect(saved!.supersededResources![0]!.state.observedMaskedLeaves).toEqual([['Extra']]);
   });
 
   it('keeps a key a template Fn::GetAtt spells', async () => {

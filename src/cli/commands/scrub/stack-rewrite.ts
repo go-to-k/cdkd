@@ -10,8 +10,7 @@ import {
   redactForState,
   printingCorpusOf,
   maskSecretsInText,
-  withOffTemplateEchoesMasked,
-  storedSecretAttributeKeysDropper,
+  storedRecordFinisher,
   type RecordedSecretValues,
 } from '../../../deployment/secret-redaction.js';
 import { keepHeldTokenProvenance } from '../../../deployment/reference-provenance-record.js';
@@ -309,10 +308,7 @@ export async function scrubStackRewritePass({
   };
 
   const noEchoPublicTokens: ReadonlySet<string> = new Set([region, stack.stackName]);
-  const withSecretKeysDropped = storedSecretAttributeKeysDropper(
-    stack.template,
-    noEchoPublicTokens
-  );
+  const finishStored = storedRecordFinisher(stack.template, noEchoPublicTokens);
 
   const totalSecrets =
     outputSecrets.size +
@@ -479,22 +475,11 @@ export async function scrubStackRewritePass({
     // go-to-k/cdkd#4847: provenance only for the tokens the record still holds.
     // go-to-k/cdkd#7015: a stamp over inputs this pass rewrote names values
     // the record no longer holds; a record this pass leaves alone keeps it.
-    // go-to-k/cdkd#7158 / #7152: a secret the readback echoed under a key
-    // the template lacks, learned from the record as it was stored; #7161: a
-    // custom resource attribute KEY holding a secret is dropped.
-    const rewritten = withSecretKeysDropped(
-      keepHeldTokenProvenance(
-        withOffTemplateEchoesMasked(
-          applyScrubNoEcho(migrated, record, plan),
-          {
-            properties: record.properties,
-            ...(record.observedProperties !== undefined && { readback: record.observedProperties }),
-          },
-          noEchoPublicTokens
-        )
-      ),
+    // go-to-k/cdkd#7158 / #7152 / #7161: echoes and attribute keys (`storedRecordFinisher`).
+    const rewritten = finishStored(
+      keepHeldTokenProvenance(applyScrubNoEcho(migrated, record, plan)),
       new Map([...ownSecrets, ...(migrationNeedles ?? [])]),
-      logicalId
+      { logicalId, state: record }
     );
     const written =
       JSON.stringify(rewritten) === JSON.stringify(record)
@@ -530,7 +515,7 @@ export async function scrubStackRewritePass({
     const needles = new Map(allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets));
     for (const [plaintext, expression] of own ?? []) needles.set(plaintext, expression);
     if (needles.size === 0) return record;
-    const scrubbed = withSecretKeysDropped(
+    const scrubbed = finishStored(
       keepHeldTokenProvenance(
         scrubResourceRecord(record.state, needles, undefined, 'state-cross-generation', {
           properties: 'unproven',
@@ -538,7 +523,7 @@ export async function scrubStackRewritePass({
         })
       ),
       needles,
-      record.logicalId
+      record
     );
     if (JSON.stringify(scrubbed) === JSON.stringify(record.state)) return record;
     recordsChanged++;
@@ -554,7 +539,7 @@ export async function scrubStackRewritePass({
           allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets)
         );
         if (needles.size === 0) return entry;
-        const scrubbed = withSecretKeysDropped(
+        const scrubbed = finishStored(
           keepHeldTokenProvenance(
             scrubResourceRecord(entry.state, needles, undefined, 'state-cross-generation', {
               properties: 'unproven',
@@ -562,7 +547,7 @@ export async function scrubStackRewritePass({
             })
           ),
           needles,
-          entry.logicalId
+          entry
         );
         if (JSON.stringify(scrubbed) === JSON.stringify(entry.state)) return entry;
         recordsChanged++;
