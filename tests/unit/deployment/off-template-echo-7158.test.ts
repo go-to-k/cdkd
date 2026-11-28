@@ -655,6 +655,16 @@ describe('a secret echoed under a key the template lacks (go-to-k/cdkd#7158, #71
       expect(unchanged.observedMaskedLeaves).toEqual([['Count']]);
     });
 
+    it('a short readback value still teaches a whole-leaf value when the resolved bag holds nothing at the position', () => {
+      const readback = { Secret: 'q7Z', Extra: 'q7Z' };
+      const out = withOffTemplateEchoesMasked<OffTemplateEchoRecord>(
+        { physicalId: 'p', properties: { Secret: '***' }, observedProperties: readback, noEchoLeaves: [['Secret']] },
+        { properties: { Other: 'x' }, readback }
+      );
+      expect(out.observedProperties?.['Extra']).toBe('***');
+      expect(out.observedMaskedLeaves).toEqual([['Extra']]);
+    });
+
     it('a short reference plaintext the readback spells differently from the resolved bag teaches only the resolved one', () => {
       const out = withOffTemplateEchoesMasked<OffTemplateEchoRecord>(
         { physicalId: 'p', properties: { Pin: '{{resolve:ssm-secure:/pin}}' }, observedProperties: { Extra: '0', Other: 'Zq9' } },

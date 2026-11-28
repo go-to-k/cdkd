@@ -420,9 +420,12 @@ export function maskOffTemplateEchoes(input: OffTemplateEchoInput): {
   // noEchoLeaves arm, which learns that leaf whole.
   const exact = new Set<string>();
   // `whole: false` for a readback value that differs from the plaintext this
-  // write holds for the same position: a short one is then AWS's placeholder
-  // or normalized form, not the secret, and as a whole-leaf value it would
-  // only over-mask an equal public leaf.
+  // write holds for the same position: a short one is then usually AWS's
+  // placeholder (`0`, an empty-ish default), and as a whole-leaf value it
+  // would over-mask an equal public leaf on a stack whose secrets are all
+  // long. Known bound: if AWS instead returns a NORMALIZED spelling of a 1-3
+  // character secret (case-folded, trimmed), an off-template leaf equal to
+  // that spelling stays in the clear; the held plaintext is still learned.
   const learn = (value: unknown, whole = true): void => {
     if (typeof value !== 'string' || value === '') return;
     // A readback or resolved leaf, never a record bag: one carrying the mask
