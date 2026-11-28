@@ -820,7 +820,8 @@ export async function updateInPlace(
       }),
     },
     updateSecrets,
-    resolvedProps
+    resolvedProps,
+    stackName
   );
 
   const recordedProperties = propertiesToRecord(

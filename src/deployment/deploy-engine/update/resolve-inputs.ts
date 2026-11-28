@@ -313,7 +313,8 @@ export async function resolveUpdateInputs(
       { physicalId: currentResource.physicalId }
     ),
     updateSecrets,
-    resolvedProps
+    resolvedProps,
+    stackName
   );
   // go-to-k/cdkd#4043: where a `NoEcho` PARAMETER (or an attribute declared
   // `NoEcho`) served this bag, by template position. The persisted bag holds

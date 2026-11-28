@@ -21,13 +21,14 @@ import { dynamicReferenceTokens } from './redact-path/reference-tokens.js';
  * `NoEcho` value, or a secret reference's plaintext, under a key the template
  * does not set at all (a derived field, a second spelling of the same input).
  * That copy is at no position, and when no needle covers it (a value shorter
- * than the needle floor embedded in a longer leaf, an unchanged resource whose
+ * than the needle floor, an unchanged resource whose
  * pass resolved nothing, a reference inside a list, two references with one
  * plaintext) it used to be persisted in plaintext.
  *
  * {@link withOffTemplateEchoesMasked} learns each such value from the readback
  * itself, AT the positions the record marks as secret, and masks every string
- * leaf under a template-absent key that contains it. The masked coordinates
+ * leaf under a template-absent key that contains it (or, for a value too short
+ * to scan for, or one the physical id contains, that equals it). The masked coordinates
  * are recorded in `observedMaskedLeaves`, so `cdkd drift` reports them as not
  * compared (`maskedEcho`) instead of as drift, and `--accept` / `--revert`
  * re-mask them in the baselines they write.
@@ -258,7 +259,7 @@ function readbackValueAt(
 
 /**
  * The coordinates of `observed`'s string leaves under a key `properties` lacks
- * that contain one of `needles`. A list the template also holds is entered
+ * that contain one of `needles` or equal one of `exact`. A list the template also holds is entered
  * only through {@link listPairing}; an unpaired element is a template
  * position, never an off-template one.
  */
@@ -266,6 +267,7 @@ function offTemplateEchoes(
   observed: Record<string, unknown>,
   properties: Record<string, unknown>,
   needles: readonly string[],
+  exact: ReadonlySet<string>,
   isSecretReference: SecretReferenceTest
 ): (string | number)[][] {
   const hits: (string | number)[][] = [];
@@ -276,7 +278,7 @@ function offTemplateEchoes(
     offTemplate: boolean
   ): void => {
     if (typeof node === 'string') {
-      if (offTemplate && needles.some((needle) => node.includes(needle))) {
+      if (offTemplate && (exact.has(node) || needles.some((needle) => node.includes(needle)))) {
         hits.push(path);
       }
       return;
@@ -385,9 +387,16 @@ export interface OffTemplateEchoInput {
  *   plain `ssm` one no proof calls public): the readback's plaintext for it
  *   (the text between the template's literal prefix and suffix).
  *
- * A value is no needle when it is shorter than the needle floor, equals one of
- * `publicTokens`, or is contained in the physical id, which AWS publishes and
- * state keeps in the clear.
+ * A value equal to one of `publicTokens` (the region, the stack name) is
+ * never learned. A value shorter than the needle floor, or one the physical id
+ * contains (AWS publishes the id and state keeps it in the clear), masks only
+ * a leaf EQUAL to it: as a substring it would match incidental text, so a
+ * public leaf that merely contains it stays in the clear. The cost is an
+ * over-mask of a public leaf that happens to equal such a value (a short
+ * secret like `1` beside a count of `1`): the position is named in
+ * `observedMaskedLeaves`, so drift reports it as `maskedEcho` (not compared,
+ * exit 0) and `--revert` sends nothing for it, rather than a plaintext copy
+ * of the secret being persisted.
  *
  * The echoes are FOUND in the raw readback too, so one this write already
  * masked (a needle of the value scan) is named as well: a mask no field names
@@ -405,29 +414,44 @@ export function maskOffTemplateEchoes(input: OffTemplateEchoInput): {
   const physicalId = typeof input.physicalId === 'string' ? input.physicalId : '';
   const isSecretReference = secretReferenceTest(input.provenPublic);
   const needles = new Set<string>();
-  // Known limits of what is learned:
-  // - a secret of MIN_NEEDLE_LENGTH or more characters that is, by
-  //   coincidence, a substring of the physical id is not learned, so its
-  //   off-template echo stays in the clear;
-  // - a value under MIN_NEEDLE_LENGTH is not learned either, so one echoed
-  //   WHOLE stays in the clear. This follows the floor go-to-k/cdkd#7151
-  //   names; a sub-floor value embedded in a longer leaf is covered by the
-  //   noEchoLeaves arm, which learns that leaf whole.
-  const learn = (value: unknown): void => {
-    if (typeof value !== 'string' || value.length < MIN_NEEDLE_LENGTH) return;
+  // Whole-leaf-only values (go-to-k/cdkd#7181; a Set: one lookup per leaf,
+  // whatever their count).
+  // A sub-floor value embedded in a longer leaf is covered by the
+  // noEchoLeaves arm, which learns that leaf whole.
+  const exact = new Set<string>();
+  // `whole: false` for a readback value that differs from the plaintext this
+  // write holds for the same position: a short one is then usually AWS's
+  // placeholder (`0`, an empty-ish default), and as a whole-leaf value it
+  // would over-mask an equal public leaf on a stack whose secrets are all
+  // long. Known bound: if AWS instead returns a NORMALIZED spelling of a 1-3
+  // character secret (case-folded, trimmed), an off-template leaf equal to
+  // that spelling stays in the clear; the held plaintext is still learned.
+  const learn = (value: unknown, whole = true): void => {
+    if (typeof value !== 'string' || value === '') return;
     // A readback or resolved leaf, never a record bag: one carrying the mask
     // already teaches nothing.
     if (mentionsMask(value)) return;
-    if (publicTokens?.has(value) === true || physicalId.includes(value)) return;
-    needles.add(value);
+    if (publicTokens?.has(value) === true) return;
+    if (value.length < MIN_NEEDLE_LENGTH || physicalId.includes(value)) {
+      if (whole) exact.add(value);
+    } else needles.add(value);
   };
+  const corroborated = (live: unknown, held: unknown): boolean =>
+    typeof held !== 'string' || mentionsMask(held) || held === live;
   for (const coordinate of noEchoLeavesOf({ noEchoLeaves: input.noEchoLeaves }) ?? []) {
-    learn(readbackValueAt(readback, resolved, coordinate, isSecretReference));
-    learn(valueAtCoordinate(resolved, coordinate));
+    const live = readbackValueAt(readback, resolved, coordinate, isSecretReference);
+    const held = valueAtCoordinate(resolved, coordinate);
+    learn(live, corroborated(live, held));
+    learn(held);
   }
   for (const { coordinate, text } of secretReferenceLeaves(properties, isSecretReference)) {
-    learn(plaintextFor(text, readbackValueAt(readback, properties, coordinate, isSecretReference)));
-    learn(plaintextFor(text, valueAtCoordinate(resolved, coordinate)));
+    const live = plaintextFor(
+      text,
+      readbackValueAt(readback, properties, coordinate, isSecretReference)
+    );
+    const held = plaintextFor(text, valueAtCoordinate(resolved, coordinate));
+    learn(live, held === undefined || held === live);
+    learn(held);
   }
   // A leaf whose one token is proven public teaches only a value other than the proven one.
   // Known limits (no leak, the pre-#7160 behaviour): a leaf with two proven tokens, and one
@@ -447,9 +471,9 @@ export function maskOffTemplateEchoes(input: OffTemplateEchoInput): {
     }
   }
   const found =
-    needles.size === 0
+    needles.size === 0 && exact.size === 0
       ? []
-      : offTemplateEchoes(readback, properties, [...needles], isSecretReference);
+      : offTemplateEchoes(readback, properties, [...needles], exact, isSecretReference);
   const hits = found.filter((coordinate) => {
     const leaf = valueAtCoordinate(bag, coordinate);
     if (leaf === undefined) return false;

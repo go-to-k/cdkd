@@ -11,6 +11,7 @@ import {
   valueAtCoordinate,
   type RecordedSecretValues,
   recordNoEchoAttributeValues,
+  templateGetAttNamesOf,
 } from '../../secret-redaction.js';
 import { noEchoPositionSources } from '../noecho.js';
 import type { MaskingDeps, SecretsRunState } from '../masking.js';
@@ -88,7 +89,8 @@ export function registerNoEchoAttributes(
     noEchoAttributeNames?: readonly string[];
   },
   secrets: RecordedSecretValues,
-  ownProperties?: Record<string, unknown>
+  ownProperties?: Record<string, unknown>,
+  stackName?: string
 ): void {
   // The needles are the shared half (`recordNoEchoAttributeValues`, which the
   // rollback executor's record rebuilds call too, go-to-k/cdkd#4434); what is
@@ -105,7 +107,8 @@ export function registerNoEchoAttributes(
     result.attributes,
     secrets,
     ownProperties,
-    (result as { physicalId?: unknown }).physicalId
+    (result as { physicalId?: unknown }).physicalId,
+    stackName
   );
   if (declared === true) {
     deps.noEchoRun().noEchoAttributeResources.set(logicalId, true);
@@ -121,6 +124,22 @@ export function registerNoEchoAttributes(
  * itself was given in this deploy: a leaf equal to, or embedding, a fresh
  * needle of its bag, or equal to the resolved leaf at one of its `NoEcho`
  * PARAMETER positions (a `Number`, a value under the needle floor).
+ *
+ * go-to-k/cdkd#7183: a CUSTOM RESOURCE attribute EQUAL to a string `NoEcho`
+ * input under the needle floor, under ANY name, when no template `Fn::GetAtt`
+ * (or `Fn::Sub` `${X.Attr}`) reads that attribute. (A value of needle length
+ * is a `fresh` needle: equal or embedded, under any name, physical id or not.)
+ * A handler's `Data` is its own text, so such a value is the secret echoed
+ * back. One the template reads keeps resolving in the clear, undeclared. A
+ * template that names an attribute through an expression may read any, so
+ * nothing is declared on equality alone there. The stack name is public and
+ * never declared. A `NoEcho` input equal to the region is declared, as the
+ * `fresh` arm already declared it.
+ *
+ * The cost: an UNREAD public attribute that happens to equal such a value is
+ * declared, so a reader a LATER template adds, while the custom resource does
+ * not run, is refused with the remedy `refuseRedactedAttributeReads` names
+ * (change one of its properties so its handler runs in the same deploy).
  */
 function echoedNoEchoAttributes(
   run: SecretsRunState,
@@ -129,7 +148,8 @@ function echoedNoEchoAttributes(
   attributes: Record<string, unknown> | undefined,
   secrets: RecordedSecretValues,
   ownProperties: Record<string, unknown> | undefined,
-  physicalId?: unknown
+  physicalId?: unknown,
+  stackName?: string
 ): Set<string> {
   const echoed = new Set<string>();
   if (attributes === undefined) return echoed;
@@ -144,6 +164,14 @@ function echoedNoEchoAttributes(
   // attributes too often to declare them on equality alone. A number may come
   // back as its string spelling.
   const positioned = new Map<string, Set<string>>();
+  // go-to-k/cdkd#7183: the string inputs, matched whole (the short ones are
+  // what no needle covers).
+  const wholeOnly = new Set<string>();
+  const noteWholeOnly = (value: unknown): void => {
+    if (typeof value !== 'string' || value === '' || value.includes(SECRET_MASK)) return;
+    // No floor here: a value of needle length is a `fresh` needle already.
+    if (value !== stackName) wholeOnly.add(value);
+  };
   if (templateProps !== undefined && ownProperties !== undefined && sources !== undefined) {
     for (const coordinate of noEchoCoordinatesOf(templateProps, ownProperties, {
       parameters: sources.parameters,
@@ -152,6 +180,7 @@ function echoedNoEchoAttributes(
       const name = coordinate[0];
       if (typeof name !== 'string') continue;
       const value = valueAtCoordinate(ownProperties, coordinate);
+      noteWholeOnly(value);
       const spellings = positioned.get(name) ?? new Set<string>();
       spellings.add(keyOrderFreeJson(value));
       if (typeof value === 'number' || typeof value === 'boolean') {
@@ -171,12 +200,28 @@ function echoedNoEchoAttributes(
       if (fresh.includes(value)) return true;
       if (!value.startsWith('arn:') && fresh.some((needle) => value.includes(needle))) return true;
     }
-    return positioned.get(name)?.has(keyOrderFreeJson(value)) === true;
+    if (positioned.get(name)?.has(keyOrderFreeJson(value)) === true) return true;
+    return typeof value === 'string' && wholeOnly.has(value) && unread(name);
   };
+  const template = deps.noEchoRun().constructPathTemplate;
+  const reads =
+    wholeOnly.size === 0 || !isCustomResource(run.perResourceResolvedType.get(logicalId))
+      ? 'any'
+      : template === undefined
+        ? 'any'
+        : templateGetAttNamesOf(template, logicalId);
+  const unread = (name: string): boolean => reads !== 'any' && !reads.has(name);
   for (const [name, value] of Object.entries(attributes)) {
     if (holds(name, value)) echoed.add(name);
   }
   return echoed;
+}
+
+function isCustomResource(resourceType: unknown): boolean {
+  return (
+    typeof resourceType === 'string' &&
+    (resourceType === 'AWS::CloudFormation::CustomResource' || resourceType.startsWith('Custom::'))
+  );
 }
 
 /**

@@ -324,6 +324,15 @@ export const READS_RECORD_TEXT_DEEP: Readonly<Record<string, { count: number; wh
     count: 1,
     why: "finds the reference tokens the replay resolves: it needs the marker KIND, and a plaintext leaf has nothing to resolve",
   },
+  // go-to-k/cdkd#7181: reached through the `live` / `held` locals that pair a readback leaf with the plaintext this write holds.
+  "src/deployment/secret-redaction/off-template-echo.ts#learn#mentionsMask(value)": {
+    count: 1,
+    why: 'a readback or resolved leaf already holding the mask is no needle (go-to-k/cdkd#7158); a wider `masked` would learn fewer needles and mask LESS',
+  },
+  "src/deployment/secret-redaction/off-template-echo.ts#corroborated#mentionsMask(held)": {
+    count: 1,
+    why: 'the plaintext this write holds at a secret position; the mask there (an unchanged record) means none is held, so the readback teaches a whole-leaf value as before: a wider `masked` lets MORE readbacks teach one and masks MORE',
+  },
   "src/deployment/secret-redaction/off-template-echo.ts#maskOffTemplateEchoes#mentionsMask(leaf)": {
     count: 1,
     why: 'a leaf the redaction left as its reference (no mask in it) keeps the reference, drift resolves it; one holding the mask is masked and named (go-to-k/cdkd#7158): a wider `masked` masks MORE, never less',

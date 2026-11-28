@@ -1132,10 +1132,6 @@ const READS_RECORD_TEXT: Readonly<Record<string, { count: number; why: string }>
     count: 1,
     why: 'a readback leaf already holding the mask teaches no needle (go-to-k/cdkd#7158); a wider `masked` would learn fewer needles and mask LESS',
   },
-  'src/deployment/secret-redaction/off-template-echo.ts#learn#mentionsMask(value)': {
-    count: 1,
-    why: 'a readback or resolved leaf already holding the mask is no needle (go-to-k/cdkd#7158); a wider `masked` would learn fewer needles and mask LESS',
-  },
   'src/deployment/secret-redaction/secret-attribute-keys.ts#learn#mentionsMask(value)': {
     count: 1,
     why: 'an attribute value already holding the mask is no needle for a key (go-to-k/cdkd#7153); a wider `masked` would drop fewer keys',
