@@ -40,7 +40,9 @@
 #      are rewritten to the marker in state, then `cdkd scrub --purge-history`
 #      must put EACH back on its own expression (`NAME` / `NAME:1`), `diff
 #      --fail` and a re-deploy must report no change, and no surviving object
-#      version under the stack prefix may carry the marker.
+#      version under the stack prefix may carry the marker. The same holds
+#      for a second rule whose target ARN is `Fn::GetAtt` on the queue
+#      (go-to-k/cdkd#7180): its elements pair only by that resolution.
 #   3. Destroy; assert the function and the state file are gone, sweep the
 #      Lambda log group, remove the parameters, purge the state bucket's object
 #      versions and assert zero survive.
@@ -132,6 +134,8 @@ if [ "${SCRUB_TWIN}" = "1" ]; then
   export CDKD_TEST_SCRUB_TWIN_SUFFIX
 fi
 TWIN_RULE_NAME="cdkd-scrub-twin-${CDKD_TEST_SCRUB_TWIN_SUFFIX:-local}"
+# go-to-k/cdkd#7180: the variant whose target ARN is `Fn::GetAtt` on the queue.
+TWIN_GETATT_RULE_NAME="${TWIN_RULE_NAME}-getatt"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -503,9 +507,9 @@ echo "    OK: drift exits 0 with the reference compared, not reported as unresol
 # `Name` / `Key` by the value scan, whose map is keyed by plaintext: both
 # target `Input`s came back as the `:1` spelling, and the next deploy planned
 # an update of the rule.
-twin_rule_record() { # twin_rule_record <raw state.json> -> the rule's record
-  printf '%s' "$1" | jq -c '.resources | to_entries[]
-    | select(.value.resourceType=="AWS::Events::Rule") | .value' | head -1
+twin_rule_record() { # twin_rule_record <raw state.json> <rule name> -> that rule's record
+  printf '%s' "$1" | jq -c --arg n "$2" '.resources | to_entries[]
+    | select(.value.resourceType=="AWS::Events::Rule" and .value.properties.Name==$n) | .value' | head -1
 }
 twin_input() { # twin_input <record> <bag> <target id>
   printf '%s' "$1" | jq -r --arg b "$2" --arg id "$3" '.[$b].Targets // [] | map(select(.Id==$id)) | first | .Input // empty'
@@ -542,15 +546,28 @@ if [ "${SCRUB_TWIN}" = "1" ]; then
   echo "==> Phase 1e: 'cdkd scrub' positions two references sharing one plaintext in a list (issue #7154)"
   TWIN_STATE_FILE="$(mktemp "${TMPDIR:-/tmp}/cdkd-7154-state.XXXXXX")"
   aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${TWIN_STATE_FILE}" --quiet
-  TWIN_RECORD="$(twin_rule_record "$(cat "${TWIN_STATE_FILE}")")"
   TWIN_T0_EXPR="{\"pw\":\"${TOKEN_WHOLE}\"}"
   TWIN_T1_EXPR="{\"pw\":\"${TOKEN_VERSIONED_SAME}\"}"
   # PREMISE: the deploy wrote each target on its own expression, so the
-  # rewrite below is what puts the plaintext there.
-  if [ "$(twin_input "${TWIN_RECORD}" properties t0)" != "${TWIN_T0_EXPR}" ] \
-      || [ "$(twin_input "${TWIN_RECORD}" properties t1)" != "${TWIN_T1_EXPR}" ]; then
-    echo "FAIL: premise: the deployed rule record does not hold both target Inputs as their own expressions" >&2
-    diag_output "${TWIN_RECORD}"
+  # rewrite below is what puts the plaintext there -- for both rules, and the
+  # #7180 variant's target ARN is the queue's resolved ARN, not a literal the
+  # template spells.
+  for rule_name in "${TWIN_RULE_NAME}" "${TWIN_GETATT_RULE_NAME}"; do
+    TWIN_RECORD="$(twin_rule_record "$(cat "${TWIN_STATE_FILE}")" "${rule_name}")"
+    if [ -z "${TWIN_RECORD}" ] \
+        || [ "$(twin_input "${TWIN_RECORD}" properties t0)" != "${TWIN_T0_EXPR}" ] \
+        || [ "$(twin_input "${TWIN_RECORD}" properties t1)" != "${TWIN_T1_EXPR}" ]; then
+      echo "FAIL: premise: the deployed rule ${rule_name} record does not hold both target Inputs as their own expressions" >&2
+      diag_output "${TWIN_RECORD}"
+      exit 1
+    fi
+  done
+  if ! cdk_synth_getatt="$(jq -e '.Resources | to_entries[]
+      | select(.value.Type=="AWS::Events::Rule" and (.value.Properties.Name | type)=="string"
+               and (.value.Properties.Name | endswith("-getatt")))
+      | .value.Properties.Targets | all(.Arn | type=="object" and has("Fn::GetAtt"))' \
+      "${SYNTH_TEMPLATE}" 2>/dev/null)" || [ "${cdk_synth_getatt}" != "true" ]; then
+    echo "FAIL: premise: the #7180 rule's synthesized targets do not carry Fn::GetAtt ARNs" >&2
     exit 1
   fi
   # The record an older binary wrote: both target Inputs (and the readback's,
@@ -565,12 +582,14 @@ if [ "${SCRUB_TWIN}" = "1" ]; then
           then .value.observedProperties.Targets |= map(if has("Input") then .Input |= plain else . end)
           else . end
       else . end)' "${TWIN_STATE_FILE}" > "${TWIN_STATE_FILE}.legacy"
-  LEGACY_RECORD="$(twin_rule_record "$(cat "${TWIN_STATE_FILE}.legacy")")"
-  if [ "$(twin_input "${LEGACY_RECORD}" properties t0)" != "{\"pw\":\"${MARKER}\"}" ] \
-      || [ "$(twin_input "${LEGACY_RECORD}" properties t1)" != "{\"pw\":\"${MARKER}\"}" ]; then
-    echo "FAIL: premise: could not write the plaintext into the rule's target Inputs, so the scrub would test nothing" >&2
-    exit 1
-  fi
+  for rule_name in "${TWIN_RULE_NAME}" "${TWIN_GETATT_RULE_NAME}"; do
+    LEGACY_RECORD="$(twin_rule_record "$(cat "${TWIN_STATE_FILE}.legacy")" "${rule_name}")"
+    if [ "$(twin_input "${LEGACY_RECORD}" properties t0)" != "{\"pw\":\"${MARKER}\"}" ] \
+        || [ "$(twin_input "${LEGACY_RECORD}" properties t1)" != "{\"pw\":\"${MARKER}\"}" ]; then
+      echo "FAIL: premise: could not write the plaintext into rule ${rule_name}'s target Inputs, so the scrub would test nothing" >&2
+      exit 1
+    fi
+  done
   aws s3 cp "${TWIN_STATE_FILE}.legacy" "s3://${STATE_BUCKET}/${STATE_KEY}" --quiet
   rm -f "${TWIN_STATE_FILE}" "${TWIN_STATE_FILE}.legacy"
   set +e
@@ -592,24 +611,28 @@ if [ "${SCRUB_TWIN}" = "1" ]; then
     echo "FAIL (issue #7154): the scrubbed state still carries a SecureString value (withheld)" >&2
     exit 1
   fi
-  SCRUBBED_RECORD="$(twin_rule_record "${SCRUBBED_STATE}")"
   TWIN_FAIL=0
-  for pair in "t0|${TWIN_T0_EXPR}" "t1|${TWIN_T1_EXPR}"; do
-    id="${pair%%|*}"
-    want="${pair#*|}"
-    got="$(twin_input "${SCRUBBED_RECORD}" properties "${id}")"
-    if [ "${got}" != "${want}" ]; then
-      echo "FAIL (issue #7154): after scrub, target ${id}'s Input is not its own expression" >&2
-      echo "      want: ${want}" >&2
-      diag_output "${got}"
-      TWIN_FAIL=1
-    fi
+  for rule_case in "${TWIN_RULE_NAME}|#7154" "${TWIN_GETATT_RULE_NAME}|#7180"; do
+    rule_name="${rule_case%%|*}"
+    rule_issue="${rule_case#*|}"
+    SCRUBBED_RECORD="$(twin_rule_record "${SCRUBBED_STATE}" "${rule_name}")"
+    for pair in "t0|${TWIN_T0_EXPR}" "t1|${TWIN_T1_EXPR}"; do
+      id="${pair%%|*}"
+      want="${pair#*|}"
+      got="$(twin_input "${SCRUBBED_RECORD}" properties "${id}")"
+      if [ "${got}" != "${want}" ]; then
+        echo "FAIL (issue ${rule_issue}): after scrub, rule ${rule_name} target ${id}'s Input is not its own expression" >&2
+        echo "      want: ${want}" >&2
+        diag_output "${got}"
+        TWIN_FAIL=1
+      fi
+    done
   done
   if [ "${TWIN_FAIL}" -ne 0 ]; then
     diag_output "${SCRUB_TWIN_OUT}"
     exit 1
   fi
-  echo "    OK: scrub wrote each target Input back on its own expression"
+  echo "    OK: scrub wrote each target Input of both rules back on its own expression"
   set +e
   DIFF_TWIN_OUT=$(node "${LOCAL_DIST}" diff "${STACK}" --state-bucket "${STATE_BUCKET}" \
     --region "${REGION}" --fail 2>&1)
@@ -692,8 +715,9 @@ assert_gone "Lambda function ${FN_NAME} still exists after destroy" aws lambda g
 echo "    consumer function deleted"
 if [ "${SCRUB_TWIN}" = "1" ]; then
   assert_gone "EventBridge rule ${TWIN_RULE_NAME} still exists after destroy" aws events describe-rule --name "${TWIN_RULE_NAME}" --region "${REGION}"
+  assert_gone "EventBridge rule ${TWIN_GETATT_RULE_NAME} still exists after destroy" aws events describe-rule --name "${TWIN_GETATT_RULE_NAME}" --region "${REGION}"
   assert_gone "SQS queue ${TWIN_RULE_NAME} still exists after destroy" aws sqs get-queue-url --queue-name "${TWIN_RULE_NAME}" --region "${REGION}"
-  echo "    #7154 rule and queue deleted"
+  echo "    #7154 / #7180 rules and queue deleted"
 fi
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"

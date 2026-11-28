@@ -5,7 +5,6 @@ import {
 import {
   mentionsDynamicReference,
   mentionsMask,
-  mentionsMaskedIdSegment,
 } from '../../../deployment/secret-redaction/recorded-secrecy.js';
 import { dynamicReferenceSpans } from '../../../deployment/secret-redaction/redact-path/reference-tokens.js';
 import type { ResourceState } from '../../../types/state.js';
@@ -213,14 +212,14 @@ function memberOf(r: unknown, t: Record<string, unknown>, key: string): unknown 
 /**
  * Is `r` a resolution to compare against? JSON data only (an `AWS::NoValue`
  * symbol or an unresolved leaf is not), and nothing secret-shaped: no mask
- * (an attribute recorded masked), no masked id segment, no `{{resolve:`
- * token, no plaintext this pass recorded. Anything else is UNCERTAIN, and the
- * element pairs as it did before go-to-k/cdkd#7180.
+ * (an attribute recorded masked; a masked id segment's `****` holds it too),
+ * no `{{resolve:` token, no plaintext this pass recorded. Anything else is
+ * UNCERTAIN, and the element pairs as it did before go-to-k/cdkd#7180.
  */
 function certainResolution(r: unknown, plaintexts: readonly string[]): boolean {
   const leaves: string[] = [];
   if (r === undefined || !jsonLeaves(r, leaves)) return false;
-  if (mentionsMask(r) || mentionsMaskedIdSegment(r)) return false;
+  if (mentionsMask(r)) return false;
   return leaves.every(
     (leaf) => !mentionsDynamicReference(leaf) && !plaintexts.some((p) => leaf.includes(p))
   );
