@@ -301,23 +301,10 @@ export function noEchoLeavesFor(
     // holds the mask (#7189).
     const confirmed = run.witnessConfirmedLeaves.get(logicalId) ?? [];
     const template = templatePropertiesFor(run, logicalId, record.resourceType);
-    // Only the keys whose saved value holds the mask can position one: most
-    // carried records hold none, and then nothing is walked.
-    const maskedKeys =
-      template === undefined ||
-      persisted === null ||
-      typeof persisted !== 'object' ||
-      !holdsMaskLeaf(persisted)
-        ? []
-        : Object.keys(template).filter(
-            (key) =>
-              Object.hasOwn(persisted, key) &&
-              holdsMaskLeaf((persisted as Record<string, unknown>)[key])
-          );
+    // The walk reads the saved bag beside the template, so a leaf that is
+    // not wholly the mask stops it there.
     const embedded =
-      maskedKeys.length === 0
-        ? []
-        : positionsOf(Object.fromEntries(maskedKeys.map((key) => [key, template![key]])), true);
+      template === undefined || persisted === undefined ? [] : positionsOf(template, true);
     return canonicalCoordinates([...existing, ...confirmed, ...embedded]);
   }
   // The bag THIS deploy resolved describes the record only when it was
