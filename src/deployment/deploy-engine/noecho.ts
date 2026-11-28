@@ -268,6 +268,9 @@ export function noEchoPositionSources(
  *   for the same logical id and type: the migration of a record this deploy
  *   did not reach. Over-masking a leaf that no longer reads one only costs
  *   the next deploy a re-send; leaving one unmasked would keep the plaintext.
+ *   An EMPTY field (go-to-k/cdkd#7194: a writer evaluated the record and
+ *   found no position) takes this branch too, so a `NoEcho` declaration that
+ *   reaches a leaf since that write still positions it.
  *
  * `persisted` (the bag as saved, go-to-k/cdkd#7189) also positions a leaf
  * that EMBEDS a declared `NoEcho` attribute where the containment rule
@@ -295,7 +298,7 @@ export function noEchoLeavesFor(
     return canonicalCoordinates(positionsOf(templateProps));
   }
   const existing = noEchoLeavesOf(record);
-  if (existing !== undefined) {
+  if (existing !== undefined && existing.length > 0) {
     // Plus every leaf the migration witness confirmed this deploy (#4831),
     // and every embedded leaf today's template positions where the record
     // holds the mask (#7189).
@@ -533,7 +536,8 @@ export function withAttemptedItemsMasked<R extends ResourceState>(
  * - `observedProperties` at the same coordinates, through each list's
  *   identity field, or the whole list where none pairs them (review B4);
  * - `attributes` at every declared name, whatever the value's type or length;
- * - both fields are written, an empty set omitted.
+ * - both fields are written; an empty `noEchoAttributeNames` is omitted, an
+ *   empty `noEchoLeaves` written (go-to-k/cdkd#7194).
  */
 export function applyNoEchoPersist(
   run: NoEchoRunState,
@@ -573,8 +577,10 @@ export function applyNoEchoPersist(
         ),
       });
     }
-    if (leaves.length > 0) next.noEchoLeaves = leaves;
-    else delete next.noEchoLeaves;
+    // go-to-k/cdkd#7194: an empty set is WRITTEN, as the marker that a v11+
+    // writer evaluated this record and found no position, so `cdkd scrub` can
+    // tell it from a record written before v11 (no field).
+    next.noEchoLeaves = leaves;
     // go-to-k/cdkd#4656: an echo-fidelity entry describes a coordinate the
     // record still marks, or nothing.
     const marked = new Set(leaves.map((coordinate) => JSON.stringify(coordinate)));

@@ -113,8 +113,10 @@ export function positionImportedNoEcho(
     const resource = resources[id]!;
     if (leaves.length > 0) {
       resource.properties = maskAtCoordinates(resource.properties, leaves);
-      resource.noEchoLeaves = leaves.map((coordinate) => [...coordinate]);
     }
+    // go-to-k/cdkd#7194: an empty set too, as the marker that this record was
+    // positioned and holds none.
+    resource.noEchoLeaves = leaves.map((coordinate) => [...coordinate]);
     const names = declared.get(id);
     const echoed = [...(names ?? [])].filter(
       (name) => resource.attributes !== undefined && Object.hasOwn(resource.attributes, name)

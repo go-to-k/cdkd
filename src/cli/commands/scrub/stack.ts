@@ -104,6 +104,12 @@ export async function scrubStack(
      * regardless. Ignored under `dryRun`.
      */
     purgeHistory?: boolean | undefined;
+    /**
+     * `--mask-unpositioned` (go-to-k/cdkd#7194): mask every string leaf of an
+     * orphan or superseded record scrub reports as unverifiable, and position
+     * them. Under `dryRun` it only reports the counts.
+     */
+    maskUnpositioned?: boolean | undefined;
     roleArn?: string | undefined;
     logger: ReturnType<typeof getLogger>;
     /**

@@ -289,6 +289,7 @@ export async function runScrubTargets({
       scrubbed = await scrubStack(stack, stackRegion, stateBackend, lockManager, {
         dryRun: options.dryRun ?? false,
         purgeHistory: options.purgeHistory ?? false,
+        maskUnpositioned: options.maskUnpositioned ?? false,
         roleArn: options.roleArn,
         logger,
         // Every stack of the APP, not just this run's targets: the producer of

@@ -121,9 +121,11 @@ export function planScrubNoEcho(
     for (let round = 0; round <= eligible.length; round++) {
       let grew = false;
       for (const [logicalId, record] of eligible) {
+        // An EMPTY field (go-to-k/cdkd#7194's marker) is positioned by today's
+        // template, as an absent one is, so a later `NoEcho` declaration counts.
         const own = noEchoLeavesOf(record);
         const leaves = canonicalCoordinates(
-          own ??
+          (own !== undefined && own.length > 0 ? own : undefined) ??
             // go-to-k/cdkd#7189: a leaf embedding a declared `NoEcho` attribute,
             // where the stored bag holds it wholly as the mask.
             noEchoCoordinatesOf(templateProps.get(logicalId), record.properties, from, undefined, {

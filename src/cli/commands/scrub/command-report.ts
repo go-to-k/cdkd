@@ -460,7 +460,11 @@ export async function reportScrubOutcome({
       totalStacksWithReadOutputKeys > 0 ||
       totalIndexEntriesAbsentWithSecret > 0 ||
       totalParentAttributesUnmatched > 0 ||
-      totalStacksWithUnverifiableLeaves > 0)
+      totalStacksWithUnverifiableLeaves > 0 ||
+      // go-to-k/cdkd#7194: a v11+ writer now records an empty `noEchoLeaves`,
+      // so a record with none is one no such writer positioned, and
+      // `--mask-unpositioned` clears it.
+      totalStacksWithUnverifiableNoEchoRecords > 0)
   ) {
     throw new ScrubNeededError();
   }
