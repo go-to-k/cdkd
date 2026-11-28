@@ -11,7 +11,7 @@ import {
   valueAtCoordinate,
   type RecordedSecretValues,
   recordNoEchoAttributeValues,
-  templateGetAttNamesOf,
+  wholeNoEchoEchoTest,
 } from '../../secret-redaction.js';
 import { noEchoPositionSources } from '../noecho.js';
 import type { MaskingDeps, SecretsRunState } from '../masking.js';
@@ -164,14 +164,10 @@ function echoedNoEchoAttributes(
   // attributes too often to declare them on equality alone. A number may come
   // back as its string spelling.
   const positioned = new Map<string, Set<string>>();
-  // go-to-k/cdkd#7183: the string inputs, matched whole (the short ones are
-  // what no needle covers).
-  const wholeOnly = new Set<string>();
-  const noteWholeOnly = (value: unknown): void => {
-    if (typeof value !== 'string' || value === '' || value.includes(SECRET_MASK)) return;
-    // No floor here: a value of needle length is a `fresh` needle already.
-    if (value !== stackName) wholeOnly.add(value);
-  };
+  // go-to-k/cdkd#7183: the inputs, matched whole (`wholeNoEchoEchoTest`; the
+  // short ones are what no needle covers). `cdkd scrub` applies the same test
+  // to a stored record (go-to-k/cdkd#7188).
+  const wholeInputs: unknown[] = [];
   if (templateProps !== undefined && ownProperties !== undefined && sources !== undefined) {
     for (const coordinate of noEchoCoordinatesOf(templateProps, ownProperties, {
       parameters: sources.parameters,
@@ -180,7 +176,7 @@ function echoedNoEchoAttributes(
       const name = coordinate[0];
       if (typeof name !== 'string') continue;
       const value = valueAtCoordinate(ownProperties, coordinate);
-      noteWholeOnly(value);
+      wholeInputs.push(value);
       const spellings = positioned.get(name) ?? new Set<string>();
       spellings.add(keyOrderFreeJson(value));
       if (typeof value === 'number' || typeof value === 'boolean') {
@@ -201,27 +197,20 @@ function echoedNoEchoAttributes(
       if (!value.startsWith('arn:') && fresh.some((needle) => value.includes(needle))) return true;
     }
     if (positioned.get(name)?.has(keyOrderFreeJson(value)) === true) return true;
-    return typeof value === 'string' && wholeOnly.has(value) && unread(name);
+    return wholeEcho?.(name, value) === true;
   };
-  const template = deps.noEchoRun().constructPathTemplate;
-  const reads =
-    wholeOnly.size === 0 || !isCustomResource(run.perResourceResolvedType.get(logicalId))
-      ? 'any'
-      : template === undefined
-        ? 'any'
-        : templateGetAttNamesOf(template, logicalId);
-  const unread = (name: string): boolean => reads !== 'any' && !reads.has(name);
+  const wholeEcho = wholeNoEchoEchoTest(
+    run.perResourceResolvedType.get(logicalId),
+    deps.noEchoRun().constructPathTemplate,
+    logicalId,
+    wholeInputs,
+    stackName,
+    physicalId
+  );
   for (const [name, value] of Object.entries(attributes)) {
     if (holds(name, value)) echoed.add(name);
   }
   return echoed;
-}
-
-function isCustomResource(resourceType: unknown): boolean {
-  return (
-    typeof resourceType === 'string' &&
-    (resourceType === 'AWS::CloudFormation::CustomResource' || resourceType.startsWith('Custom::'))
-  );
 }
 
 /**

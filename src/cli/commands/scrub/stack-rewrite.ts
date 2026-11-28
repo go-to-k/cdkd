@@ -11,6 +11,7 @@ import {
   printingCorpusOf,
   maskSecretsInText,
   storedRecordFinisher,
+  storedNoEchoInputsKnown,
   type RecordedSecretValues,
 } from '../../../deployment/secret-redaction.js';
 import { keepHeldTokenProvenance } from '../../../deployment/reference-provenance-record.js';
@@ -147,13 +148,20 @@ export async function scrubStackRewritePass({
   // there (a stack deployed before v11, or under an older `Default`), that
   // stored value becomes a value-arm needle of a second scrub of that record
   // alone, so its other copies in the record are masked too.
+  // go-to-k/cdkd#7190: the pseudo parameters an output's literal text may
+  // spell, kept around the mask.
+  const pseudoValues: ReadonlyMap<string, string> = new Map([
+    ['AWS::Region', region],
+    ['AWS::StackName', stack.stackName],
+  ]);
   const noEchoPlans = planScrubNoEcho(
     state,
     stack.template,
     perResourceTemplateProps,
     conditions,
     nestedInput?.noEchoParameters ?? [],
-    nestedInput?.noEchoConditionalParameters ?? []
+    nestedInput?.noEchoConditionalParameters ?? [],
+    pseudoValues
   );
 
   // The nested children this stack deploys (go-to-k/cdkd#2252): every
@@ -309,7 +317,35 @@ export async function scrubStackRewritePass({
   };
 
   const noEchoPublicTokens: ReadonlySet<string> = new Set([region, stack.stackName]);
-  const finishStored = storedRecordFinisher(stack.template, noEchoPublicTokens);
+  const finishStored = storedRecordFinisher(stack.template, noEchoPublicTokens, stack.stackName);
+  // go-to-k/cdkd#7188: what this scrub resolved for a logical id, beside
+  // today's template bag (the finish reads only the positions that teach).
+  const storedInput = <S>(logicalId: string, state: S) => ({
+    logicalId,
+    state,
+    resolved: perResourceResolvedProps.get(logicalId),
+    templateProps: perResourceTemplateProps.get(logicalId),
+  });
+  // Whether the finish repairs, with no needle at all, an echo of a `NoEcho`
+  // value too short for one. Asked only when nothing else would send the stack
+  // through the rewrite below, and only of a record whose inputs it can know.
+  const finishRepairsAny = (): boolean =>
+    [
+      ...Object.entries(state.resources ?? {}).map(([logicalId, record]) => ({
+        logicalId,
+        state: record,
+      })),
+      ...(state.orphans ?? []),
+      ...(Array.isArray(state.supersededResources)
+        ? state.supersededResources.filter(isSupersededResourceRecord)
+        : []),
+    ].some((row) => {
+      const stored = storedInput(row.logicalId, row.state);
+      return (
+        storedNoEchoInputsKnown(row.state, stored) &&
+        finishStored(row.state, undefined, stored) !== row.state
+      );
+    });
 
   const totalSecrets =
     outputSecrets.size +
@@ -319,7 +355,7 @@ export async function scrubStackRewritePass({
     // zero-needle branch below, returns `recordsChanged: 0`, and prints
     // "No plaintext secrets found" over the record it never examined.
     [...orphanSecrets.values()].reduce((n, m) => n + m.size, 0);
-  if (totalSecrets === 0 && !noEchoPlans.changesAny) {
+  if (totalSecrets === 0 && !noEchoPlans.changesAny && !finishRepairsAny()) {
     // NOT a blanket "nothing found": `unverifiableReads` is carried out even
     // here, because a stack whose only cross-stack read cdkd declined by
     // design has exactly this shape — zero needles — and reporting it clean
@@ -481,7 +517,7 @@ export async function scrubStackRewritePass({
     const rewritten = finishStored(
       keepHeldTokenProvenance(applyScrubNoEcho(migrated, record, plan)),
       new Map([...ownSecrets, ...(migrationNeedles ?? [])]),
-      { logicalId, state: record }
+      storedInput(logicalId, record)
     );
     const written =
       JSON.stringify(rewritten) === JSON.stringify(record)
@@ -516,17 +552,21 @@ export async function scrubStackRewritePass({
     const own = orphanSecrets.get(String(orphanIndex));
     const needles = new Map(allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets));
     for (const [plaintext, expression] of own ?? []) needles.set(plaintext, expression);
-    if (needles.size === 0) return record;
-    const scrubbed = finishStored(
-      keepHeldTokenProvenance(
-        scrubResourceRecord(record.state, needles, undefined, 'state-cross-generation', {
-          properties: 'unproven',
-          observed: 'unproven',
-        })
-      ),
-      needles,
-      record
-    );
+    // go-to-k/cdkd#7188: what today's template resolves for its logical id.
+    const stored = storedInput(record.logicalId, record.state);
+    const scrubbed =
+      needles.size === 0
+        ? finishStored(record.state, needles, stored)
+        : finishStored(
+            keepHeldTokenProvenance(
+              scrubResourceRecord(record.state, needles, undefined, 'state-cross-generation', {
+                properties: 'unproven',
+                observed: 'unproven',
+              })
+            ),
+            needles,
+            stored
+          );
     if (JSON.stringify(scrubbed) === JSON.stringify(record.state)) return record;
     recordsChanged++;
     return { ...record, state: withoutLapsedStaleShapeStamp(scrubbed) };
@@ -544,17 +584,20 @@ export async function scrubStackRewritePass({
           allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets)
         );
         for (const [plaintext, expression] of own ?? []) needles.set(plaintext, expression);
-        if (needles.size === 0) return entry;
-        const scrubbed = finishStored(
-          keepHeldTokenProvenance(
-            scrubResourceRecord(entry.state, needles, undefined, 'state-cross-generation', {
-              properties: 'unproven',
-              observed: 'unproven',
-            })
-          ),
-          needles,
-          entry
-        );
+        const stored = storedInput(entry.logicalId, entry.state);
+        const scrubbed =
+          needles.size === 0
+            ? finishStored(entry.state, needles, stored)
+            : finishStored(
+                keepHeldTokenProvenance(
+                  scrubResourceRecord(entry.state, needles, undefined, 'state-cross-generation', {
+                    properties: 'unproven',
+                    observed: 'unproven',
+                  })
+                ),
+                needles,
+                stored
+              );
         if (JSON.stringify(scrubbed) === JSON.stringify(entry.state)) return entry;
         recordsChanged++;
         return { ...entry, state: withoutLapsedStaleShapeStamp(scrubbed) };
@@ -657,7 +700,13 @@ export async function scrubStackRewritePass({
     redactedOutputs,
     noEchoPlans.outputKeys,
     new Set(Object.keys(stack.template.Outputs ?? {})),
-    declaredAliasOf
+    declaredAliasOf,
+    // go-to-k/cdkd#7190: an output EMBEDDING such a value keeps its literal text.
+    {
+      templateOutputs: stack.template.Outputs ?? {},
+      sources: noEchoPlans.sources,
+      pseudo: pseudoValues,
+    }
   );
   emitAbandonedScanNotes();
   // THE DROP (go-to-k/cdkd#4120): a stored key today's template cannot name

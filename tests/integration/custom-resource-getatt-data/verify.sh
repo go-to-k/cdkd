@@ -13,7 +13,8 @@
 # Phases: 1 deploy + assertions (incl. the NoEcho arms, #2274 / #2453),
 # 2 redeploy with a rotated NoEcho token (#2453), 3 the secret-echo arm
 # (go-to-k/cdkd#7182: secrets a handler echoes in its `Data` values and keys),
-# 4 destroy and sweep every state object version.
+# 3b `cdkd scrub` over a planted short echo an older binary left
+# (go-to-k/cdkd#7188), 4 destroy and sweep every state object version.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -623,6 +624,84 @@ STATE_REDEPLOY=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
   || secret_echo_fail "the NO_CHANGE redeploy rewrote the secret-echo record" "${SECRET_ECHO_LOG}"
 echo "    OK: the diff is clean and the redeploy leaves the secret-echo record as it was"
 assert_no_secret_in_versions "after the secret-echo redeploy"
+rm -f "${SECRET_ECHO_LOG}"
+SECRET_ECHO_LOG=""
+
+# --- Phase 3b: scrub repairs a short echo an older binary left (go-to-k/cdkd#7188) ---
+# An older binary persisted `Data.Other` (the 3-character NoEcho value, under
+# a key no template reads) in plaintext and declared nothing, on the live
+# record and on a rollback orphan of it. A NO_CHANGE deploy registers nothing
+# for an unchanged custom resource, so only `cdkd scrub` repairs it: from the
+# value it resolves for the NoEcho parameter, since the stored bag holds `***`
+# at the position. Planted by rewriting state.json; the scrub must purge the
+# planted version, so no surviving object version carries the value.
+echo "==> Phase 3b: cdkd scrub repairs a planted short NoEcho echo (go-to-k/cdkd#7188)"
+SECRET_ECHO_LOG="$(mktemp)"
+SCRUB_PLANT="$(mktemp)"
+STATE_PRE_SCRUB=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null) || STATE_PRE_SCRUB=""
+[ -n "${STATE_PRE_SCRUB}" ] || secret_echo_fail "premise: could not read the state file before phase 3b"
+ECHO_ID="$(jq -r --arg t "${SECRET_ECHO_TYPE}" '[.resources | to_entries[] | select(.value.resourceType == $t) | .key] | if length == 1 then .[0] else "<\(length) matches>" end' <<<"${STATE_PRE_SCRUB}")"
+case "${ECHO_ID}" in
+  '<'*) secret_echo_fail "premise: state holds ${ECHO_ID} ${SECRET_ECHO_TYPE} records before phase 3b, expected 1" ;;
+esac
+[ "$(jq -r --arg id "${ECHO_ID}" '.resources[$id].attributes.Other' <<<"${STATE_PRE_SCRUB}")" = "${SECRET_MASK}" ] \
+  || secret_echo_fail "premise: attributes.Other is not '${SECRET_MASK}' before the plant (value withheld)"
+[ "$(jq -r '(.orphans // []) | length' <<<"${STATE_PRE_SCRUB}")" = "0" ] \
+  || secret_echo_fail "premise: state already holds a rollback orphan before phase 3b"
+# The older binary's record: `Other` in plaintext, undeclared. The orphan is a
+# copy of it under the same logical id, so the scrub resolves its inputs too.
+jq --arg id "${ECHO_ID}" --arg s "${SHORT_SECRET}" '
+  .resources[$id].attributes.Other = $s
+  | .resources[$id].noEchoAttributeNames = ((.resources[$id].noEchoAttributeNames // []) - ["Other"])
+  | .orphans = [{logicalId: $id, orphanedAt: 1, state: .resources[$id]}]' \
+  <<<"${STATE_PRE_SCRUB}" > "${SCRUB_PLANT}"
+aws s3 cp "${SCRUB_PLANT}" "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" --quiet
+rm -f "${SCRUB_PLANT}"
+STATE_PLANTED=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+[ "$(jq -r --arg id "${ECHO_ID}" --arg s "${SHORT_SECRET}" '.resources[$id].attributes.Other == $s and .orphans[0].state.attributes.Other == $s' <<<"${STATE_PLANTED}")" = "true" ] \
+  || secret_echo_fail "premise: the plant did not land (live and orphan attributes.Other)"
+set +e
+CDKD_TEST_NOECHO_SEED="${ROTATED_SEED}" CDKD_TEST_SECRET_ECHO=true node "${LOCAL_DIST}" scrub "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" > "${SECRET_ECHO_LOG}" 2>&1
+rc=$?
+set -e
+log_carries_secret "${SECRET_ECHO_LOG}" && secret_echo_fail "cdkd scrub printed a secret-echo value (value withheld)"
+[ "${rc}" -eq 0 ] || secret_echo_fail "cdkd scrub exited ${rc}" "${SECRET_ECHO_LOG}"
+STATE_SCRUBBED=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+[ -n "${STATE_SCRUBBED}" ] || secret_echo_fail "could not read the state file after cdkd scrub"
+for where in ".resources[\$id]" ".orphans[0].state"; do
+  [ "$(jq -r --arg id "${ECHO_ID}" "${where}.attributes.Other" <<<"${STATE_SCRUBBED}")" = "${SECRET_MASK}" ] \
+    || secret_echo_fail "after cdkd scrub ${where}.attributes.Other is not '${SECRET_MASK}' (value withheld): the short NoEcho echo was not repaired (go-to-k/cdkd#7188)" "${SECRET_ECHO_LOG}"
+  jq -e --arg id "${ECHO_ID}" "${where}.noEchoAttributeNames | index(\"Other\") != null" <<<"${STATE_SCRUBBED}" >/dev/null \
+    || secret_echo_fail "after cdkd scrub ${where}.noEchoAttributeNames does not name Other (go-to-k/cdkd#7188)" "${SECRET_ECHO_LOG}"
+done
+[ "$(jq -r --arg id "${ECHO_ID}" '.resources[$id].attributes.Public' <<<"${STATE_SCRUBBED}")" = "public-secret-echo-value" ] \
+  || secret_echo_fail "cdkd scrub masked attributes.Public: the repair over-applied to a public value"
+echo "    OK: cdkd scrub masked and declared the planted short echo on the live record and the orphan"
+assert_no_secret_in_versions "after cdkd scrub"
+# The orphan was only a plant: drop it, so the redeploy and the destroy see
+# the stack as phase 3 left it.
+jq 'del(.orphans)' <<<"${STATE_SCRUBBED}" > "${SECRET_ECHO_LOG}"
+aws s3 cp "${SECRET_ECHO_LOG}" "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" --quiet
+SCRUBBED_RECORD="$(secret_echo_record "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)")"
+set +e
+CDKD_TEST_NOECHO_SEED="${ROTATED_SEED}" CDKD_TEST_SECRET_ECHO=true node "${LOCAL_DIST}" diff "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" > "${SECRET_ECHO_LOG}" 2>&1
+set -e
+log_carries_secret "${SECRET_ECHO_LOG}" && secret_echo_fail "cdkd diff after cdkd scrub printed a secret-echo value (value withheld)"
+grep -q "No changes detected" "${SECRET_ECHO_LOG}" \
+  || secret_echo_fail "the diff after cdkd scrub is not clean: the repair reads as a change" "${SECRET_ECHO_LOG}"
+set +e
+CDKD_TEST_NOECHO_SEED="${ROTATED_SEED}" CDKD_TEST_SECRET_ECHO=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes > "${SECRET_ECHO_LOG}" 2>&1
+rc=$?
+set -e
+[ "${rc}" -eq 0 ] || secret_echo_fail "the redeploy after cdkd scrub exited ${rc}" "${SECRET_ECHO_LOG}"
+log_carries_secret "${SECRET_ECHO_LOG}" && secret_echo_fail "the redeploy after cdkd scrub printed a secret-echo value (value withheld)"
+[ "$(secret_echo_record "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)")" = "${SCRUBBED_RECORD}" ] \
+  || secret_echo_fail "the NO_CHANGE redeploy after cdkd scrub rewrote the repaired record" "${SECRET_ECHO_LOG}"
+echo "    OK: after cdkd scrub the diff is clean and the redeploy leaves the repaired record as it was"
+assert_no_secret_in_versions "after the redeploy following cdkd scrub"
 rm -f "${SECRET_ECHO_LOG}"
 SECRET_ECHO_LOG=""
 
