@@ -28,8 +28,10 @@ update. When the deploy fails after that, the rollback finds it gone and
 creates it again. It is not deleted early when a stack of the same
 `cdkd deploy` run imports this stack's outputs and that stack's records name
 the old resource (or cannot be read): a failing consumer would roll back onto
-it. It then waits for the consumers, the removed resource it uses stays in AWS
-and in state, the deploy exits 2, and the next deploy deletes it.
+it. It then waits for the consumers. When AWS refuses to delete the removed
+resource while the old one uses it (an alias still pointing at a version), the
+removed resource stays in AWS and in state, the deploy exits 2, and the next
+deploy deletes it.
 
 The same wait applies to a record holding a NoEcho value and to a resource
 under `UpdateReplacePolicy: Snapshot`, whose final snapshot is taken when the
