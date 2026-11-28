@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it, expect } from 'vite-plus/test';
+import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.ts';
 import {
   OUT_JSON,
   OUT_MD,
@@ -80,7 +81,7 @@ describe('the committed classification (#7132)', () => {
       missingHelper: [],
       uncoveredSites: [],
     });
-  });
+  }, CONTENDED_CASE_TIMEOUT_MS);
 
   it('keeps the generated files current', () => {
     expect(readFileSync(OUT_JSON, 'utf8')).toBe(renderJson(population));
@@ -121,7 +122,7 @@ describe('the frozen unmeasured set (#7132)', () => {
 describe('the out-of-scope send sites', () => {
   it('names every asynchronous send outside providers/', () => {
     expect(collectOutOfScopeAsyncSends()).toEqual([...OUT_OF_SCOPE_SEND_SITES].sort());
-  });
+  }, CONTENDED_CASE_TIMEOUT_MS);
 });
 
 describe('docs/cli-deploy.md wait table (#7132 step 4)', () => {
@@ -325,7 +326,7 @@ describe('the per-site check (#7132)', () => {
     expect(sites.checked).toBeGreaterThanOrEqual(212);
     expect(sites.uncovered).toEqual([]);
     expect(sites.staleExemptions).toEqual([]);
-  });
+  }, CONTENDED_CASE_TIMEOUT_MS);
 
   it('fails a send that waits nowhere, though another send of it in the same unit waits', () => {
     // The EC2 delete waits for `terminated`; the failed-launch cleanup in
