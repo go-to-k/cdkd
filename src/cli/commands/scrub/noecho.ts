@@ -23,6 +23,7 @@ import {
   withAttemptedItemsMasked,
 } from '../../../deployment/deploy-engine/noecho.js';
 import type { StackState } from '../../../types/state.js';
+import { exactNoEchoOutputMask } from './noecho-output-exact.js';
 import type { CloudFormationTemplate } from '../../../types/resource.js';
 
 /** One record's `NoEcho` positions in scrub (go-to-k/cdkd#4043 Phase C). */
@@ -196,9 +197,11 @@ export function planScrubNoEcho(
       if (!Object.hasOwn(stored, key)) continue;
       const value = (stored as Record<string, unknown>)[key];
       if (value === undefined || value === null || persisted(value)) continue;
-      if (!readsNoEchoSource((output as { Value?: unknown } | undefined)?.Value, outputSources)) {
-        continue;
-      }
+      const outputValue = (output as { Value?: unknown } | undefined)?.Value;
+      if (!readsNoEchoSource(outputValue, outputSources)) continue;
+      // go-to-k/cdkd#7190: already in the deploy's exact form (`token=***;`).
+      const exact = exactNoEchoOutputMask(value, outputValue, outputSources);
+      if (JSON.stringify(exact) === JSON.stringify(value)) continue;
       outputKeys.push(key);
     }
   }
@@ -247,22 +250,35 @@ export function maskScrubNoEchoOutputs(
   outputs: Record<string, unknown> | undefined,
   keys: readonly string[],
   declared: ReadonlySet<string>,
-  aliasOf: ReadonlyMap<string, string>
+  aliasOf: ReadonlyMap<string, string>,
+  exact?: { templateOutputs: Record<string, unknown>; sources: NoEchoPositionSources }
 ): Record<string, unknown> | undefined {
   if (outputs === undefined || keys.length === 0) return outputs;
   const ownAliases = new Set(keys.flatMap((key) => (aliasOf.has(key) ? [aliasOf.get(key)!] : [])));
   const otherAliases = new Set(
     [...aliasOf].filter(([key]) => !keys.includes(key)).map(([, alias]) => alias)
   );
-  const spelled = new Set(
-    keys.filter((key) => Object.hasOwn(outputs, key)).map((key) => JSON.stringify(outputs[key]))
-  );
+  // go-to-k/cdkd#7190: each key's persisted form, the template's literal text
+  // kept around the mask where it matches exactly; an alias holding the same
+  // stored value takes the same form.
+  const formOf = new Map<string, unknown>();
+  for (const key of keys) {
+    if (!Object.hasOwn(outputs, key)) continue;
+    const templateValue = (exact?.templateOutputs[key] as { Value?: unknown } | undefined)?.Value;
+    formOf.set(
+      JSON.stringify(outputs[key]),
+      exact === undefined
+        ? maskWholeValue(outputs[key])
+        : exactNoEchoOutputMask(outputs[key], templateValue, exact.sources)
+    );
+  }
   const masked: Record<string, unknown> = nullPrototypeRecord();
   for (const [key, value] of Object.entries(outputs)) {
-    const byValue =
-      !declared.has(key) && !otherAliases.has(key) && spelled.has(JSON.stringify(value));
-    masked[key] =
-      keys.includes(key) || ownAliases.has(key) || byValue ? maskWholeValue(value) : value;
+    const spelling = JSON.stringify(value);
+    const byValue = !declared.has(key) && !otherAliases.has(key) && formOf.has(spelling);
+    if (keys.includes(key) || byValue) masked[key] = formOf.get(spelling) ?? maskWholeValue(value);
+    else if (ownAliases.has(key)) masked[key] = maskWholeValue(value);
+    else masked[key] = value;
   }
   return masked;
 }

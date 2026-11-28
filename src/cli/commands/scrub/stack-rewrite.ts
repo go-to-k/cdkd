@@ -693,7 +693,9 @@ export async function scrubStackRewritePass({
     redactedOutputs,
     noEchoPlans.outputKeys,
     new Set(Object.keys(stack.template.Outputs ?? {})),
-    declaredAliasOf
+    declaredAliasOf,
+    // go-to-k/cdkd#7190: an output EMBEDDING such a value keeps its literal text.
+    { templateOutputs: stack.template.Outputs ?? {}, sources: noEchoPlans.sources }
   );
   emitAbandonedScanNotes();
   // THE DROP (go-to-k/cdkd#4120): a stored key today's template cannot name
