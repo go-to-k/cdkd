@@ -29,15 +29,18 @@ type DeleteNode =
  *
  * A superseded slot `k` of `scheduleSupersededDeletes` keeps its place
  * exactly: its rows run one after another, after every resource of a
- * deletion step before `k`, and before every resource of step `k` (and so,
- * through their edges, before every later step). The rows of the last slot
- * are left to the caller, which runs them after this resolves.
+ * deletion step before `k`, and before every resource of step `k` or later.
+ * A later step's resource is not reached through step `k`'s edges (a subnet
+ * nothing depends on sits on any step), so each resource waits for the last
+ * row of the latest slot at or before its step, which follows every earlier
+ * slot. The rows of the last slot are left to the caller, which runs them
+ * after this resolves.
  *
  * A delete that fails or is skipped reports through its own counters and
  * resolves, so what depends on it still runs (go-to-k/cdkd#5670 keeps what it
- * must). One that THROWS ends the destroy as the level walk's `Promise.all`
- * did, after the deletes in flight settle. Once `interrupted()` answers true
- * no new delete starts; the ones in flight finish and this resolves.
+ * must). One that THROWS skips what depends on it, and the destroy fails with
+ * its error once every other delete has run. Once `interrupted()` answers
+ * true no new delete starts; the ones in flight finish and this resolves.
  */
 export async function runDeletesInDependencyOrder(args: {
   dagBuilder: DagBuilder;
@@ -73,17 +76,19 @@ export async function runDeletesInDependencyOrder(args: {
     return id;
   };
   const earlier: string[] = [];
+  let previous: string | undefined;
   for (let step = 0; step < last; step++) {
-    let previous: string | undefined;
+    let first = true;
     for (const entry of supersededSlots[step] ?? []) {
       const id = rowId();
       executor.add({
         id,
-        dependencies: new Set(previous !== undefined ? [previous] : earlier),
+        dependencies: new Set(first ? earlier : [previous!]),
         state: 'pending',
         data: { kind: 'superseded', entry },
       });
       previous = id;
+      first = false;
     }
     const level = resourcesByStep[step] ?? [];
     if (previous !== undefined) {

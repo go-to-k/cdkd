@@ -5,6 +5,7 @@ import {
   runDeletesInDependencyOrder,
 } from '../../../src/cli/commands/destroy-runner/delete-dag.js';
 import { buildDeleteGraph } from '../../../src/cli/commands/destroy-runner/under-lock-steps.js';
+import { scheduleSupersededDeletes } from '../../../src/cli/commands/destroy-runner/superseded-schedule.js';
 import type { StackState, SupersededResourceRecord } from '../../../src/types/state.js';
 
 /**
@@ -174,6 +175,42 @@ describe('runDeletesInDependencyOrder (#7208)', () => {
     expect(r.before('old:Y', 'M')).toBe(true);
     expect(r.before('old:Y', 'C')).toBe(true);
     expect(r.before('old:Y', 'N')).toBe(true);
+  });
+
+  it('holds a later step that no step-k edge reaches behind the slot (old VPC Lambda before its subnet)', async () => {
+    // Deletion steps: 0 {Db}, 1 {Sg}, 2 {Subnet, Param}, 3 {Vpc}. The old
+    // function must go before its Subnet (recorded) and before Sg (type
+    // pair), so it takes slot 1; nothing depends on Subnet, so no edge
+    // through Sg holds it there.
+    const state = makeState({
+      Vpc: { type: 'AWS::EC2::VPC' },
+      Subnet: { type: 'AWS::EC2::Subnet', deps: ['Vpc'] },
+      Param: { type: 'AWS::SSM::Parameter', deps: ['Vpc'] },
+      Sg: { type: 'AWS::EC2::SecurityGroup', deps: ['Vpc', 'Param'] },
+      Db: { type: 'AWS::RDS::DBInstance', deps: ['Sg'] },
+    });
+    const row = {
+      logicalId: 'OldFn',
+      state: {
+        physicalId: 'old-fn',
+        resourceType: 'AWS::Lambda::Function',
+        properties: {},
+        dependencies: ['Subnet'],
+      },
+    } as unknown as SupersededResourceRecord;
+    const { executionLevels } = buildDeleteGraph(state, logger as never);
+    const slots = scheduleSupersededDeletes(
+      { ...state, supersededResources: [row] } as StackState,
+      executionLevels,
+      new Set()
+    );
+    expect(slots.findIndex((slot) => slot.includes(row))).toBe(1);
+    const r = await run(state, { slots, delayMs: { 'old:OldFn': 20 } });
+    expect(r.before('Db', 'old:OldFn')).toBe(true);
+    expect(r.before('old:OldFn', 'Sg')).toBe(true);
+    expect(r.before('old:OldFn', 'Subnet')).toBe(true);
+    expect(r.before('old:OldFn', 'Param')).toBe(true);
+    expect(r.before('old:OldFn', 'Vpc')).toBe(true);
   });
 
   it('leaves the last slot to the caller', async () => {

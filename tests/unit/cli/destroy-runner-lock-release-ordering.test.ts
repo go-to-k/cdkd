@@ -440,9 +440,11 @@ describe('runDestroyForStack releases the lock BEFORE unregistering its SIGINT h
       state,
       etag: 'e',
     });
-    // Armed when B's delete begins, so only the walk reads A's policy after it.
+    // Armed by B's resource line (its delete settled), so only the walk's
+    // dispatch of A reads A's policy after it.
     logs.info.mockImplementation((msg: unknown) => {
-      if (String(msg).includes('B')) armed = true;
+      const line = String(msg);
+      if (/\bB\b/.test(line) && line.includes('AWS::DynamoDB::Table')) armed = true;
     });
 
     try {
