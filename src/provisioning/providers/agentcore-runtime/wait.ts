@@ -199,11 +199,13 @@ export const RUNTIME_DELETE_MAX_WAIT_MS = 10 * 60_000;
  * gone (measured us-east-1: DELETE_COMPLETE one second after the runtime read
  * not found). Runs in every mode, as every destroy wait does; the delete was
  * accepted, so a cap, Ctrl-C or unreadable status warns and returns
- * (`delete-gone-wait.ts`).
+ * (`delete-gone-wait.ts`). `DELETE_FAILED` throws instead: AWS will not
+ * finish that delete, so returning would drop the record of a live runtime.
  */
 export async function waitForRuntimeGoneAfterDelete(
   deps: RuntimeWaitDeps & { logger: { debug(message: string): void; warn(message: string): void } },
   agentRuntimeId: string,
+  logicalId: string,
   resourceType: string
 ): Promise<void> {
   await waitForGoneAfterDelete({
@@ -223,6 +225,16 @@ export async function waitForRuntimeGoneAfterDelete(
         throw error;
       }
     },
+    failedStatus: (status) =>
+      status === 'DELETE_FAILED'
+        ? new ProvisioningError(
+            `BedrockAgentCore Runtime ${logicalId} (${agentRuntimeId}) reached DELETE_FAILED after ` +
+              `its delete was accepted; AWS will not finish the delete on its own, so cdkd keeps its record`,
+            resourceType,
+            logicalId,
+            agentRuntimeId
+          )
+        : undefined,
     logger: deps.logger,
     pollIntervalMs: RUNTIME_WAIT_POLL_MS,
     maxWaitMs: RUNTIME_DELETE_MAX_WAIT_MS,

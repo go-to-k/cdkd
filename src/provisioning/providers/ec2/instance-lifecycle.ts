@@ -30,7 +30,11 @@ import {
   protectionFlipKey,
   type ProtectionFlipRecord,
 } from '../deletion-protection-compensation.js';
-import { maskerOrIdentity } from '../../masked-retry-logger.js';
+import {
+  createMaskedLogSinks,
+  maskerOrIdentity,
+  type MaskerFn,
+} from '../../masked-retry-logger.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import { startInterruptWatch } from '../../interrupt-watch.js';
@@ -298,7 +302,8 @@ export async function applyInstanceProfileChange(
   this: EC2Provider,
   logicalId: string,
   physicalId: string,
-  change: NonNullable<InstanceMemberPlan['profile']>
+  change: NonNullable<InstanceMemberPlan['profile']>,
+  maskSecrets?: MaskerFn
 ): Promise<void> {
   // An association still `disassociating` (a removal moments ago) makes a
   // new associate fail with IncorrectState; let it finish first.
@@ -323,12 +328,13 @@ export async function applyInstanceProfileChange(
   const current = assoc.IamInstanceProfileAssociations?.find(
     (a) => a.State === 'associated' || a.State === 'associating'
   );
+  const log = createMaskedLogSinks(this.logger, maskSecrets);
   const site = {
     client: this.ec2Client,
     logicalId,
     instanceId: physicalId,
-    maskSecrets: maskerOrIdentity(undefined),
-    debug: (message: string) => this.logger.debug(message),
+    maskSecrets: log.mask,
+    debug: log.debug,
   };
   if (change.kind === 'remove') {
     if (current?.AssociationId === undefined) return;

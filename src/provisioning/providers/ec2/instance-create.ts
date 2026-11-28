@@ -21,6 +21,8 @@ import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../../auxiliary-
 import { reportCreatedResource, retractCreatedResource } from '../../created-resource-sink.js';
 import { deferReadiness } from '../../deferred-readiness.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
+import { enclosingDeadlineRemainingMs } from '../../../deployment/resource-deadline.js';
+import { startInterruptWatch } from '../../interrupt-watch.js';
 import {
   describedInstanceAttributes,
   instanceSsmAssociationEntries,
@@ -613,6 +615,12 @@ export function normalizeIamInstanceProfile(
  *    genuinely bound by the time `createInstance` returns — the verify.sh
  *    `describe-instances .IamInstanceProfile` check sees it immediately.
  *    This mirrors the settle CloudFormation gets for free via its latency.
+ *  - go-to-k/cdkd#7132: an association not `associated` after the last
+ *    read, or the per-resource deadline running out, THROWS non-retryably
+ *    ("not confirmed") rather than warning: the create fails and its wiring
+ *    cleanup terminates the instance (reported to the created-resource sink
+ *    at launch, marked created-before-failure if that terminate fails).
+ *    Ctrl-C stops the wait with the interrupt error.
  */
 export async function ensureIamInstanceProfileAssociated(
   this: EC2Provider,
@@ -636,77 +644,96 @@ export async function ensureIamInstanceProfileAssociated(
       `associating ${arn ?? name} explicitly`
   );
 
+  // go-to-k/cdkd#7132: Ctrl-C-aware and bounded by the per-resource
+  // deadline; a profile not confirmed bound fails the create (the caller's
+  // wiring cleanup terminates the instance), never returns as bound.
+  const notConfirmed = (why: string): ProvisioningError =>
+    new ProvisioningError(
+      `The IAM instance profile association of EC2 Instance ${logicalId} (${instanceId}) ` +
+        `${why}; the association is not confirmed`,
+      'AWS::EC2::Instance',
+      logicalId,
+      instanceId
+    );
+  const watch = startInterruptWatch(`EC2 Instance ${logicalId} IAM instance profile association`);
+  const checkpoint = (): void => {
+    if (watch.isInterrupted()) throw watch.onInterrupted();
+    if (enclosingDeadlineRemainingMs() <= 0) {
+      throw markNonRetryable(notConfirmed('did not read associated before the resource timeout'));
+    }
+  };
+  const pause = (ms: number): Promise<void> =>
+    this.sleep(Math.max(0, Math.min(ms, enclosingDeadlineRemainingMs())));
   const maxAttempts = 10;
-  let associated = false;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      await this.ec2Client.send(
-        new AssociateIamInstanceProfileCommand({
-          InstanceId: instanceId,
-          IamInstanceProfile: { Arn: arn, Name: name },
-        })
-      );
-      this.logger.debug(
-        `AssociateIamInstanceProfile issued for instance ${instanceId} (${logicalId}) ` +
-          `on attempt ${attempt}`
-      );
-      associated = true;
-      break;
-    } catch (error) {
-      // `.detail`, never `.summary`: this value feeds the `includes` tests
-      // below, so it must stay AWS's own wording. `.detail` is byte-identical
-      // to the old expression for an `Error` and the guarded stringification
-      // otherwise, while `.summary` reduces an AWS-authored failure to
-      // `<name>. Re-run with --verbose...` and would blind them. (An earlier
-      // revision of this comment warned against `.display`, which is not a
-      // member of `AwsFailureText` at all -- inert guidance pointing away
-      // from the real sibling.)
-      const msg = describeAwsFailure(error).detail;
-      // Already associated (a concurrent RunInstances-side bind landed
-      // between our describe and this associate) is success, not failure.
-      if (msg.includes('IncorrectState') || msg.includes('already associated')) {
-        this.logger.debug(
-          `IAM instance profile already associated with instance ${instanceId} (${logicalId})`
+  try {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      checkpoint();
+      try {
+        await this.ec2Client.send(
+          new AssociateIamInstanceProfileCommand({
+            InstanceId: instanceId,
+            IamInstanceProfile: { Arn: arn, Name: name },
+          })
         );
-        associated = true;
+        this.logger.debug(
+          `AssociateIamInstanceProfile issued for instance ${instanceId} (${logicalId}) ` +
+            `on attempt ${attempt}`
+        );
         break;
+      } catch (error) {
+        // `.detail`, never `.summary`: this value feeds the `includes` tests
+        // below, so it must stay AWS's own wording. `.detail` is byte-identical
+        // to the old expression for an `Error` and the guarded stringification
+        // otherwise, while `.summary` reduces an AWS-authored failure to
+        // `<name>. Re-run with --verbose...` and would blind them. (An earlier
+        // revision of this comment warned against `.display`, which is not a
+        // member of `AwsFailureText` at all -- inert guidance pointing away
+        // from the real sibling.)
+        const msg = describeAwsFailure(error).detail;
+        // Already associated (a concurrent RunInstances-side bind landed
+        // between our describe and this associate) is success, not failure.
+        if (msg.includes('IncorrectState') || msg.includes('already associated')) {
+          this.logger.debug(
+            `IAM instance profile already associated with instance ${instanceId} (${logicalId})`
+          );
+          break;
+        }
+        if (this.isInstanceProfilePropagationError(msg) && attempt < maxAttempts) {
+          this.logger.debug(
+            `IAM instance profile not yet propagated for instance ${instanceId} ` +
+              `(associate attempt ${attempt}/${maxAttempts}: ${msg}), retrying in ${attempt}s...`
+          );
+          await pause(attempt * 1000);
+          continue;
+        }
+        throw error;
       }
-      if (this.isInstanceProfilePropagationError(msg) && attempt < maxAttempts) {
+    }
+
+    // AssociateIamInstanceProfile returns while the association is still
+    // `associating`. Poll until it flips to `associated` so the profile is
+    // genuinely bound before createInstance returns.
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      checkpoint();
+      if (await this.isInstanceProfileAssociated(instanceId)) {
         this.logger.debug(
-          `IAM instance profile not yet propagated for instance ${instanceId} ` +
-            `(associate attempt ${attempt}/${maxAttempts}: ${msg}), retrying in ${attempt}s...`
+          `IAM instance profile is now associated with instance ${instanceId} (${logicalId})`
         );
-        await this.sleep(attempt * 1000);
-        continue;
+        return;
       }
-      throw error;
+      if (attempt < maxAttempts) {
+        this.logger.debug(
+          `Waiting for IAM instance profile association to reach 'associated' for ` +
+            `instance ${instanceId} (${logicalId}) (poll ${attempt}/${maxAttempts})...`
+        );
+        await pause(attempt * 1000);
+      }
     }
+  } finally {
+    watch.dispose();
   }
-
-  if (!associated) return;
-
-  // AssociateIamInstanceProfile returns while the association is still
-  // `associating`. Poll until it flips to `associated` so the profile is
-  // genuinely bound before createInstance returns.
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    if (await this.isInstanceProfileAssociated(instanceId)) {
-      this.logger.debug(
-        `IAM instance profile is now associated with instance ${instanceId} (${logicalId})`
-      );
-      return;
-    }
-    if (attempt < maxAttempts) {
-      this.logger.debug(
-        `Waiting for IAM instance profile association to reach 'associated' for ` +
-          `instance ${instanceId} (${logicalId}) (poll ${attempt}/${maxAttempts})...`
-      );
-      await this.sleep(attempt * 1000);
-    }
-  }
-  this.logger.warn(
-    `IAM instance profile association for instance ${instanceId} (${logicalId}) did not ` +
-      `reach 'associated' within the propagation window; the instance may still be missing ` +
-      `its profile`
+  throw markNonRetryable(
+    notConfirmed(`did not read associated within the propagation window (${maxAttempts} reads)`)
   );
 }
 

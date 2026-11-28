@@ -82,7 +82,17 @@ export const SETTLE_STALE_READ_GRACE_POLLS = 5;
 async function pollUntilSettled<T>(
   what: string,
   opts: DynamoDBSettleWaitOptions,
-  defaults: { pollMs: number; maxPolls: number; runsUnderNoWait?: boolean },
+  defaults: {
+    pollMs: number;
+    maxPolls: number;
+    runsUnderNoWait?: boolean;
+    /**
+     * A wait BEFORE the change is sent: its cap and deadline say the change
+     * was NOT sent, and the cap stays retryable, since a retry sends nothing
+     * twice.
+     */
+    beforeSend?: boolean;
+  },
   read: () => Promise<T>,
   /** `'settled'`, `'pending'`, or a failure message to throw. */
   judge: (value: T, poll: number) => 'settled' | 'pending' | Error,
@@ -95,6 +105,8 @@ async function pollUntilSettled<T>(
     opts.debug(maskSecrets(`Skipping the wait for ${what} (CDKD_NO_WAIT=true)`));
     return;
   }
+  const outcome =
+    defaults.beforeSend === true ? 'the change was NOT sent' : 'the change is not confirmed';
   const watch = startInterruptWatch(maskSecrets(what));
   let last: T | undefined;
   try {
@@ -107,7 +119,7 @@ async function pollUntilSettled<T>(
           new Error(
             maskSecrets(
               `The resource timeout expired while waiting for ${what} (last status: ` +
-                `${describeLast(last)}); the change is not confirmed`
+                `${describeLast(last)}); ${outcome}`
             )
           )
         );
@@ -134,14 +146,13 @@ async function pollUntilSettled<T>(
   } finally {
     watch.dispose();
   }
-  throw markNonRetryable(
-    new Error(
-      maskSecrets(
-        `Timed out waiting for ${what}: still ${describeLast(last)} after ` +
-          `${(maxPolls * pollMs) / 1000} seconds; the change is not confirmed`
-      )
+  const timedOut = new Error(
+    maskSecrets(
+      `Timed out waiting for ${what}: still ${describeLast(last)} after ` +
+        `${(maxPolls * pollMs) / 1000} seconds; ${outcome}`
     )
   );
+  throw defaults.beforeSend === true ? timedOut : markNonRetryable(timedOut);
 }
 
 /** A failure whose AWS reason goes to debug, with the `--verbose` pointer thrown. */
@@ -338,7 +349,9 @@ export const KINESIS_PRE_UPDATE_POLLS = 150;
  * ACTIVE state"), and a `--no-wait` deploy can leave it `UPDATING`, so this
  * wait runs under `--no-wait` too, as the Table side's pre-update wait in
  * `waitForKinesisDestinationSettled` does. Any other status ends the wait:
- * the update itself decides.
+ * the update itself decides. The update is not sent yet, so the cap says so
+ * (`the change was NOT sent`, the destination still `UPDATING`) and stays
+ * retryable: a retry re-reads before it sends.
  */
 export async function waitForKinesisUpdatable(
   client: DynamoDBClient,
@@ -354,6 +367,7 @@ export async function waitForKinesisUpdatable(
       pollMs: KINESIS_ENABLE_SETTLE_POLL_MS,
       maxPolls: KINESIS_PRE_UPDATE_POLLS,
       runsUnderNoWait: true,
+      beforeSend: true,
     },
     async () =>
       currentDestination(

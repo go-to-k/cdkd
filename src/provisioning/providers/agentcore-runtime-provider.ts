@@ -859,6 +859,7 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
     await waitForRuntimeGoneAfterDelete(
       { ...this.waitDeps(), logger: this.logger },
       physicalId,
+      logicalId,
       resourceType
     );
     this.logger.debug(`Successfully deleted BedrockAgentCore Runtime ${logicalId}`);

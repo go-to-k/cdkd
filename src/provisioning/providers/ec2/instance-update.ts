@@ -96,6 +96,7 @@ export async function updateInstance(
     context
   );
 
+  const mask = maskerOrIdentity(context?.maskSecrets);
   try {
     // Reads and refusals, before the first mutating call below.
     await this.prepareInstanceMemberUpdates(logicalId, physicalId, resourceType, memberPlan);
@@ -106,15 +107,15 @@ export async function updateInstance(
       logicalId,
       previousProperties['Tags'],
       properties['Tags'],
-      maskerOrIdentity(context?.maskSecrets)
+      mask
     );
 
     await this.updateInstanceSecurityProps(physicalId, properties, previousProperties, {
       logicalId,
-      maskSecrets: maskerOrIdentity(context?.maskSecrets),
+      maskSecrets: mask,
     });
 
-    await this.applyInstanceMemberUpdates(logicalId, physicalId, resourceType, memberPlan);
+    await this.applyInstanceMemberUpdates(logicalId, physicalId, resourceType, memberPlan, mask);
 
     // go-to-k/cdkd#5630: after the members above, an IamInstanceProfile
     // change included, which the association needs.
@@ -124,7 +125,7 @@ export async function updateInstance(
         physicalId,
         resourceType,
         memberPlan.ssmAssociation,
-        maskerOrIdentity(context?.maskSecrets),
+        mask,
         context?.expectedRegion
       );
     }
@@ -158,7 +159,7 @@ export async function updateInstance(
     if (error instanceof CdkdError || isInterruptedWaitError(error)) throw error;
     const cause = error instanceof Error ? error : undefined;
     throw this.wrapCaughtError(
-      maskerOrIdentity(context?.maskSecrets),
+      mask,
       error,
       (text) =>
         new ProvisioningError(
