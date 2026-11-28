@@ -81,6 +81,16 @@ describe('scrub twin references (go-to-k/cdkd#7154)', () => {
     }
   });
 
+  it('keeps the masked leaf when the token resolved to a plaintext the map does not hold', () => {
+    // A map the resolver did not populate this way: the pair survives, the entry does not.
+    const secrets = passSecrets();
+    recordResolvedPair(secrets, '{{resolve:ssm-secure:/app/gone}}', 'g0ne-7154-value');
+    const template = { L: ['{{resolve:ssm-secure:/app/gone}}'] };
+    const stored = { L: ['g0ne-7154-value'] };
+    const positioned = { L: ['***'] };
+    expect(positionTwinReferences(stored, positioned, template, secrets)).toBe(positioned);
+  });
+
   it('keeps the masked leaf when the template token resolved to two values this pass', () => {
     const secrets = passSecrets();
     recordResolvedPair(secrets, OWN, 'another-value-7154');

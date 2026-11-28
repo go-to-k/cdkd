@@ -22,8 +22,7 @@ import { dynamicReferenceSpans } from '../../../deployment/secret-redaction/reda
  * same length there, an object by the keys all three hold. At a string leaf it
  * writes the template's own text, and only when that is PROVEN to be what the
  * stored leaf is:
- * - the template text holds at least one `{{resolve:...}}` token, and every
- *   token is one THIS pass resolved (its own pair table, so a twin that lost
+ * - every `{{resolve:...}}` token of the template text is one THIS pass resolved (its own pair table, so a twin that lost
  *   the collapsed map's slot still answers), to a plaintext the map records;
  * - substituting each token by its plaintext gives the STORED leaf exactly, so
  *   the stored value is this pass's resolution of that very text (a leaf that
@@ -50,7 +49,8 @@ export function positionTwinReferences(
       return provenTemplateText(s, t, secrets, plaintexts) ? t : p;
     }
     if (Array.isArray(t)) {
-      if (!Array.isArray(s) || !Array.isArray(p) || s.length !== t.length || p.length !== t.length) return p;
+      if (!Array.isArray(s) || !Array.isArray(p) || s.length !== t.length || p.length !== t.length)
+        return p;
       let changed = false;
       const out = p.map((item, i) => {
         const next = walk(s[i], item, t[i]);
@@ -81,8 +81,9 @@ function provenTemplateText(
   secrets: RecordedSecretValues,
   plaintexts: readonly string[]
 ): boolean {
+  // A text with no token is never written: it equals the stored value only
+  // when it spells that value's plaintext, which the literal check refuses.
   const spans = dynamicReferenceSpans(text);
-  if (spans.length === 0) return false;
   let resolved = '';
   let cursor = 0;
   for (const { start, end } of spans) {
