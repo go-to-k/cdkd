@@ -170,8 +170,8 @@ export async function reportScrubOutcome({
     );
   }
 
-  // Every counter that gates the clean line below; the `--dry-run --fail` arm
-  // below is reached only when one of them pushed the run past it. An orphan or
+  // Every counter that gates the clean line below, and the `--dry-run --fail`
+  // arm below throws when one of them pushed the run past it. An orphan or
   // superseded record no evidence positions (go-to-k/cdkd#7191) is one too
   // since go-to-k/cdkd#7194: a current cdkd records an empty `noEchoLeaves` on
   // a record with no position, and `--mask-unpositioned` clears the finding.
@@ -382,9 +382,7 @@ export async function reportScrubOutcome({
     if (droppedReadersUnverifiedStacks.length > 0) {
       throw droppedOutputReadersUnverifiedError(droppedReadersUnverifiedStacks);
     }
-    // Reached only past the clean branch, which every `failingFindingsAbsent`
-    // run takes and leaves (go-to-k/cdkd#7194): some finding is set here.
-    if (options.fail) throw new ScrubNeededError();
+    if (options.fail && !failingFindingsAbsent) throw new ScrubNeededError();
     return;
   }
 
