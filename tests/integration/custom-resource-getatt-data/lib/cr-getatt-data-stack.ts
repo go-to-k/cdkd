@@ -40,7 +40,30 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  * direct-payload-return path, which is the cheapest way to surface a
  * GetAtt-of-CR-Data resolution bug). Multiple Data keys + a dependent that
  * `addDependency`s the CR make this a fan-out regression net.
+ *
+ * `CDKD_TEST_SECRET_ECHO=true` adds the secret-echo arm (go-to-k/cdkd#7182):
+ * see {@link SECRET_ECHO}.
  */
+/**
+ * The secret-echo arm's inert literals (go-to-k/cdkd#7182). Each is the
+ * default of a `NoEcho` template parameter, so CloudFormation and cdkd hand it
+ * to the handler in the clear and cdkd must keep it out of state. verify.sh
+ * spells the same values.
+ *
+ * - `echo`: returned as the VALUE of `Data.Echo`, a key the template never
+ *   reads (go-to-k/cdkd#7158's shape), and inside the KEY `Key-<echo>`
+ *   (go-to-k/cdkd#7153's shape), which must be dropped;
+ * - `named`: inside the KEY `Named-<named>`, which a template `Fn::GetAtt`
+ *   spells, so the key is template text and is kept;
+ * - `short`: a 3-character value returned as a whole KEY (go-to-k/cdkd#7181),
+ *   which must be dropped, beside a key that only CONTAINS it, which stays.
+ */
+export const SECRET_ECHO = {
+  echo: 'offtpl-echo-secret-7182',
+  named: 'offtpl-named-secret-7182',
+  short: 'q~7',
+} as const;
+
 export class CrGetAttDataStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
@@ -59,15 +82,25 @@ export class CrGetAttDataStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
       code: lambda.Code.fromInline(`
 exports.handler = async (event) => {
-  console.log('CR event:', JSON.stringify(event));
   const requestType = event.RequestType;
   const props = event.ResourceProperties || {};
+  // The secret-echo resource's event carries its NoEcho inputs in the clear:
+  // never logged, so they reach no CloudWatch log group.
+  if (props.Mode !== 'secret-echo') console.log('CR event:', JSON.stringify(event));
   // Delete must succeed (return SUCCESS) so destroy is clean.
   if (requestType === 'Delete') {
     return {
       Status: 'SUCCESS',
       PhysicalResourceId: event.PhysicalResourceId || 'cr-getatt-data',
     };
+  }
+  if (props.Mode === 'secret-echo') {
+    const data = { Echo: props.Echo, Public: 'public-secret-echo-value' };
+    data['Key-' + props.Echo] = 'k-echo';
+    data['Named-' + props.Named] = 'k-named';
+    data[props.Short] = 'k-short';
+    data['X' + props.Short + 'x'] = 'k-contains-short';
+    return { PhysicalResourceId: 'cr-secret-echo', Data: data };
   }
   const seed = props.Seed || 'noseed';
   const region = props.Region || 'noregion';
@@ -132,6 +165,34 @@ exports.handler = async (event) => {
       value: cr.getAttString('ComputedValue'),
       description: 'The CR ComputedValue Data attr resolved at synth/deploy time',
     });
+
+    // --- The secret-echo arm (go-to-k/cdkd#7182) -------------------------
+    //
+    // allow-mode-gated-drop: verify.sh runs this arm last, then destroys the stack.
+    if (process.env.CDKD_TEST_SECRET_ECHO === 'true') {
+      const param = (name: string, value: string): string => {
+        const p = new cdk.CfnParameter(this, name, { type: 'String', noEcho: true, default: value });
+        p.overrideLogicalId(name);
+        return p.valueAsString;
+      };
+      const secretEcho = new cdk.CustomResource(this, 'SecretEchoResource', {
+        serviceToken: handler.functionArn,
+        resourceType: 'Custom::CdkdSecretEcho',
+        properties: {
+          Mode: 'secret-echo',
+          Echo: param('EchoSecret', SECRET_ECHO.echo),
+          Named: param('NamedSecret', SECRET_ECHO.named),
+          Short: param('ShortSecret', SECRET_ECHO.short),
+        },
+      });
+      // The template reads `Named-<named>`, so that key is template text.
+      new cdk.CfnOutput(this, 'SecretEchoNamedValue', {
+        value: secretEcho.getAttString(`Named-${SECRET_ECHO.named}`),
+      }).overrideLogicalId('SecretEchoNamedValue');
+      new cdk.CfnOutput(this, 'SecretEchoPublicValue', {
+        value: secretEcho.getAttString('Public'),
+      }).overrideLogicalId('SecretEchoPublicValue');
+    }
 
     // --- The `NoEcho` arm (issue #2274) ---------------------------------
     //

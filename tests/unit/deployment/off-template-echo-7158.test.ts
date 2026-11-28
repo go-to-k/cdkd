@@ -577,7 +577,7 @@ describe('a secret echoed under a key the template lacks (go-to-k/cdkd#7158, #71
     });
 
     it('a short value equal to the region or the stack name, which stay public', () => {
-      const out = withOffTemplateEchoesMasked(
+      const out = withOffTemplateEchoesMasked<OffTemplateEchoRecord>(
         { physicalId: 'p', properties: { Secret: '***' }, observedProperties: { Secret: 'S1', Extra: 'S1' }, noEchoLeaves: [['Secret']] },
         { readback: { Secret: 'S1', Extra: 'S1' } },
         new Set(['us-east-1', 'S1'])
@@ -815,6 +815,14 @@ describe('a custom resource attribute KEY holding a secret (go-to-k/cdkd#7153)',
         templateGetAttNamesOf(t, 'Cr')
       );
       expect(Object.keys(out.attributes ?? {})).toEqual(['Generated', 'By-cr-1-name']);
+    });
+
+    it('learns a NoEcho value from the in-memory bag at its noEchoLeaves position; a stored bag teaches nothing', () => {
+      const t = template();
+      const input = record({ q7Z: 'v', Plain: 'ok' }, { properties: { Pin: '***' }, noEchoLeaves: [['Pin']] });
+      const out = withSecretAttributeKeysDropped(input, { properties: { Pin: 'q7Z' } }, new Map(), templateGetAttNamesOf(t, 'Cr'));
+      expect(out.attributes).toEqual({ Plain: 'ok' });
+      expect(withSecretAttributeKeysDropped(input, input, new Map(), templateGetAttNamesOf(t, 'Cr'))).toBe(input);
     });
 
     it('never drops a key equal to the region or the stack name, nor an empty key', () => {

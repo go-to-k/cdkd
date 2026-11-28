@@ -2,6 +2,7 @@ import { MIN_NEEDLE_LENGTH, isPlainObject } from './rules.js';
 import type { RecordedSecretValues } from './pairs.js';
 import { mentionsMask } from './recorded-secrecy.js';
 import { splitGetAttStringForm } from './cross-stack.js';
+import { noEchoLeavesOf, valueAtCoordinate } from './noecho-leaves.js';
 
 /**
  * A custom resource's attribute KEY holding a secret (go-to-k/cdkd#7153).
@@ -94,8 +95,10 @@ function templateGetAttReadsOf(template: unknown): Map<string, Set<string> | 'an
 
 /**
  * `record` with every attribute dropped whose KEY contains a secret this
- * resource's pass knows (a key of `secrets`, or the in-memory value of an
- * attribute it declares `NoEcho`, from `raw`), unless `getAttNames` spells the
+ * resource's pass knows (a key of `secrets`, the in-memory value of an
+ * attribute it declares `NoEcho`, or the in-memory value at one of its
+ * `noEchoLeaves` positions, both from `raw`; `secrets` holds no `NoEcho`
+ * parameter value under the needle floor), unless `getAttNames` spells the
  * key. Only a custom resource's attributes, only with a template to read the
  * names from. A value equal to a public token (the region, the stack name) is
  * no needle; one under the needle floor, or contained in the physical id,
@@ -108,10 +111,11 @@ export function withSecretAttributeKeysDropped<
     physicalId?: unknown;
     attributes?: Record<string, unknown>;
     noEchoAttributeNames?: unknown;
+    noEchoLeaves?: unknown;
   },
 >(
   record: R,
-  raw: { attributes?: Record<string, unknown> },
+  raw: { attributes?: Record<string, unknown>; properties?: Record<string, unknown> },
   secrets: RecordedSecretValues | undefined,
   getAttNames: Set<string> | 'any' | undefined,
   publicTokens?: ReadonlySet<string>
@@ -129,6 +133,11 @@ export function withSecretAttributeKeysDropped<
     else needles.add(value);
   };
   for (const plaintext of secrets?.keys() ?? []) learn(plaintext);
+  // go-to-k/cdkd#7181: a `NoEcho` value the resource was given; a stored
+  // record's `properties` hold the mask there, which teaches nothing.
+  for (const coordinate of noEchoLeavesOf(record) ?? []) {
+    learn(valueAtCoordinate(raw.properties, coordinate));
+  }
   const declared = record.noEchoAttributeNames;
   if (Array.isArray(declared) && isPlainObject(raw.attributes)) {
     for (const name of declared) {

@@ -765,6 +765,29 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       expect(cr.attributes).toEqual({ Secret: '***', Pin: '***', Count: '***' });
     });
 
+    it('drops a custom resource attribute KEY equal to a 1-3 character NoEcho input, keeping one that only contains it (go-to-k/cdkd#7181)', async () => {
+      stateBackend.getState.mockResolvedValue({ state: null, etag: undefined });
+      provider.create.mockImplementation((logicalId: string) =>
+        Promise.resolve(
+          logicalId === 'Cr'
+            ? { physicalId: 'cr-1', attributes: { abc: 'k-short', xabcx: 'k-contains', Plain: 'ok' } }
+            : { physicalId: `${logicalId}-phys`, attributes: {} }
+        )
+      );
+      await makeEngine().deploy(
+        STACK,
+        template(TOKEN, {
+          Cr: {
+            Type: 'Custom::Thing',
+            Properties: { ServiceToken: 'arn:aws:lambda:us-east-1:1:function:h', Pin: { Ref: 'Short' } },
+          },
+        })
+      );
+      const cr = lastSaved().resources['Cr']!;
+      expect(cr.properties['Pin']).toBe('***');
+      expect(cr.attributes).toEqual({ xabcx: 'k-contains', Plain: 'ok' });
+    });
+
     it('declares and masks an attribute that ECHOES a NoEcho parameter value, in the producer and its same-run reader', async () => {
       stateBackend.getState.mockResolvedValue({ state: null, etag: undefined });
       provider.create.mockImplementation((logicalId: string) =>
