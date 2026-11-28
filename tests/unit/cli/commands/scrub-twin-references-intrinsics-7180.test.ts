@@ -127,6 +127,14 @@ describe('scrub twin references across intrinsics (go-to-k/cdkd#7180)', () => {
     expect(positionTwinReferences(s, positioned, t, secrets, r)).toBe(positioned);
   });
 
+  it('with no resolution, compares an intrinsic-shaped stored element structurally, as before', () => {
+    const secrets = passSecrets();
+    const t = { L: [{ A: { Ref: 'Q' }, B: OWN }] };
+    const s = { L: [{ A: { Ref: 'Q' }, B: PLAIN }] };
+    const positioned = positionedOf(s, t, secrets);
+    expect(positionTwinReferences(s, positioned, t, secrets)).toEqual(t);
+  });
+
   it('still refuses a mismatched literal next to a resolved intrinsic', () => {
     const secrets = passSecrets();
     const s = { Targets: [{ Arn: ARN_A, Id: 'other', Input: PLAIN }], Description: PLAIN };
@@ -135,17 +143,22 @@ describe('scrub twin references across intrinsics (go-to-k/cdkd#7180)', () => {
   });
 
   /** One `cdkd scrub` over an EventBridge rule targeting a queue by `Fn::GetAtt`; `undefined` attributes: no queue record in state. */
-  async function scrubRule(queueAttributes: Record<string, unknown> | undefined, twinFirst: boolean): Promise<StackState> {
-    const targets = [{ Arn: GET_A, Id: 'T', Input: OWN }];
+  async function scrubRule(
+    queueAttributes: Record<string, unknown> | undefined,
+    twinFirst: boolean,
+    extraTargets: { template: unknown[]; stored: unknown[] } = { template: [], stored: [] }
+  ): Promise<StackState> {
+    const targets = [{ Arn: GET_A, Id: 'T', Input: OWN }, ...extraTargets.template];
     const properties = twinFirst ? { Description: TWIN, Targets: targets } : { Targets: targets, Description: TWIN };
     const tpl = {
+      Parameters: { NoDefault: { Type: 'String' } },
       Resources: {
         QueueA: { Type: 'AWS::SQS::Queue', Properties: {} },
         Rule: { Type: 'AWS::Events::Rule', Properties: properties, DependsOn: [] },
       },
       Outputs: {},
     } as unknown as CloudFormationTemplate;
-    const ruleStored = { Targets: [{ Arn: ARN_A, Id: 'T', Input: PLAIN }], Description: PLAIN };
+    const ruleStored = { Targets: [{ Arn: ARN_A, Id: 'T', Input: PLAIN }, ...extraTargets.stored], Description: PLAIN };
     const state = {
       version: 11,
       region: 'us-east-1',
@@ -218,6 +231,21 @@ describe('scrub twin references across intrinsics (go-to-k/cdkd#7180)', () => {
     // Today's leaf: masked, on the expression holding the map slot, not OWN.
     expect(target['Input']).not.toBe(OWN);
     expect(target['Arn']).toBe(ARN_A);
+  });
+
+  it('cdkd scrub still pairs when a sibling element holds a Ref the resolver abandons', async () => {
+    // A `Ref` to a Default-less parameter is abandoned (kept raw); its element stays unpaired, T pairs.
+    const saved = await scrubRule({ Arn: ARN_A }, false, {
+      template: [{ Arn: { Ref: 'NoDefault' }, Id: 'U' }],
+      stored: [{ Arn: 'arn:aws:sqs:us-east-1:123456789012:other', Id: 'U' }],
+    });
+    expect(saved.resources.Rule!.properties).toEqual({
+      Targets: [
+        { Arn: ARN_A, Id: 'T', Input: OWN },
+        { Arn: 'arn:aws:sqs:us-east-1:123456789012:other', Id: 'U' },
+      ],
+      Description: TWIN,
+    });
   });
 
   it('cdkd scrub pairs on an ARN the resolver builds from the physical id when the attribute is missing', async () => {

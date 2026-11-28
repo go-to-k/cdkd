@@ -13,9 +13,9 @@ import { effectiveIntrinsicKey } from './cross-stack-refusals.js';
 
 /**
  * Record one resolve unit of a resource for {@link positionTwinReferences}
- * (go-to-k/cdkd#7180): `propertyName` `''` is a bag resolved WHOLE. Only a
- * unit the resolver finished with nothing abandoned is recorded, so a unit
- * that kept an unresolved intrinsic has no counterpart and pairs as before.
+ * (go-to-k/cdkd#7180): `propertyName` `''` is a bag resolved WHOLE. A key the
+ * resolver abandoned keeps its raw intrinsic there, which no stored value
+ * equals, so that element pairs as it did before.
  * In memory only: the bag holds this pass's plaintexts and is never persisted.
  */
 export function recordResolvedUnit(
@@ -157,8 +157,10 @@ export function positionTwinReferences(
  * Does template element `t` describe stored element `s`: the same shape, every
  * string leaf without a token equal, every other leaf equal? A string leaf
  * holding a token stands for any stored string, which the leaf proof checks.
- * An INTRINSIC node (go-to-k/cdkd#7180) stands for its resolved counterpart
- * `r`, and corroborates only when that is CERTAIN and equals the stored value.
+ * An INTRINSIC leaf inside the element (go-to-k/cdkd#7180), such as a target
+ * `Arn`, stands for its resolved counterpart `r` too, when that is CERTAIN and
+ * equals the stored value. An element that is itself an intrinsic corroborates
+ * the same way but positions nothing: the walk never descends its arguments.
  */
 function corroborates(s: unknown, t: unknown, r: unknown, plaintexts: readonly string[]): boolean {
   if (typeof t === 'string') {
@@ -172,7 +174,8 @@ function corroborates(s: unknown, t: unknown, r: unknown, plaintexts: readonly s
     );
   }
   if (isPlainRecord(t)) {
-    if (isIntrinsicNode(t)) return certainResolution(r, plaintexts) && sameValue(s, r);
+    // Otherwise (no certain resolution) the structural comparison below, as before #7180.
+    if (isIntrinsicNode(t) && certainResolution(r, plaintexts) && sameValue(s, r)) return true;
     if (!isPlainRecord(s)) return false;
     const keys = Object.keys(t);
     return (

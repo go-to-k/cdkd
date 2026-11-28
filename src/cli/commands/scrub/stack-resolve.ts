@@ -366,9 +366,9 @@ export async function scrubStackResolvePass({
             ...resourceContext,
             abandonedResolutions: abandoned,
           });
-          // go-to-k/cdkd#7180: a unit resolved CERTAINLY positions twin references.
-          if (abandoned.length === 0)
-            recordResolvedUnit(perResourceResolvedProps, logicalId, propertyName, resolvedUnit);
+          // go-to-k/cdkd#7180: the resolution positions twin references. An
+          // ABANDONED key keeps its raw intrinsic, which never corroborates.
+          recordResolvedUnit(perResourceResolvedProps, logicalId, propertyName, resolvedUnit);
           if (isNestedRow && propertyName !== '') resolvedRowProps[propertyName] = resolvedUnit;
           if (isNestedRow && propertyName === 'Parameters') {
             nestedRowParameters.set(logicalId, {
