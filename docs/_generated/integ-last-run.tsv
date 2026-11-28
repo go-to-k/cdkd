@@ -113,7 +113,7 @@ cross-stack-export-in-use	2026-11-23T13:25:53Z	PASS	514	verify.sh	rc ok, orph cl
 cross-stack-references	2026-11-24T05:54:34Z	PASS	65	standard	rc ok, orph clean (#6899 @bdc1448b)
 cross-stack-replace-consumer-rollback	2026-11-26T03:28:33Z	PASS	190	verify.sh	rc ok, orph clean; step 2b producer-alone keeps q1
 cross-stack-secret-import	2026-11-27T14:15:54Z	PASS	607	verify.sh	PR #7116 3c1fcbcb2 step 11g (#7097) temp bucket cdkd-integ-7097-f-1795788299 (deleted); rc 0, 0 orphans
-custom-resource-getatt-data	2026-11-28T10:53:54Z	PASS	356	verify.sh	#7193 9c5ae141b rc 0; phases 3,3b,3c,4 ok; orph clean, 0 versions
+custom-resource-getatt-data	2026-11-28T11:56:34Z	PASS	411	verify.sh	rc ok, orph clean, 0 versions; 42af0d727 (#7200 3c)
 custom-resource-masked-service-token	2026-11-28T00:22:30Z	PASS	206	verify.sh	rc 0, destroy 0 errors, 0 orphans, no readable state versions; PR #7162 @fe146162a
 custom-resource-noecho-nested	2026-11-28T05:49:46Z	PASS	1443	verify.sh	rc ok, orph clean, 0 versions; #7179 helper, derived v17
 custom-resource-payload-types	2026-11-14T19:25:11Z	PASS	150	verify.sh	rc ok, orph clean
@@ -272,7 +272,7 @@ import-migrate-appsync	2026-11-27T18:52:08Z	PASS	131	verify.sh	rc ok, orph clean
 import-migrate-pending-change	2026-11-22T21:43:53Z	PASS	176	verify.sh	rc ok, orph clean; PR #6844 aa10e2386
 import-migrate-vpc	2026-11-04T22:03:16Z	PASS	356	verify.sh	rc ok, orph clean; VPC confirmed gone; us-east-1; own temp state bucket
 import-nested-stack	2026-11-24T07:55:55Z	PASS	155	verify.sh	rc ok, orph clean; #6900 step 9c migration writes nestedStackTags
-import-noecho-parameter	2026-11-04T20:04:01Z	PASS	126	verify.sh	rc ok, orph clean
+import-noecho-parameter	2026-11-28T11:59:53Z	PASS	171	verify.sh	rc ok, orph clean, 0 versions; 42af0d727 (#7200)
 import-reimport-masked-attrs	2026-11-04T21:03:16Z	PASS	174	verify.sh	rc 0, destroy 0 errors, 0 surviving state versions, orph clean (state keys, live resources, no leaked log groups); own temp state bucket
 import-retain-destroy	2026-11-04T08:44:47Z	PASS	140	verify.sh	rc 0, destroy clean, retained Kept param removed by fixture, orph clean (own state bucket)
 import-secret-observed	2026-11-04T21:00:19Z	PASS	138	verify.sh	rc 0, destroy 0 errors, 0 surviving state versions, orph clean (state keys, live resources, no leaked log groups); own temp state bucket
@@ -394,7 +394,7 @@ no-wait-cr-nat-egress	2026-11-24T20:15:56Z	PASS	872	verify.sh	rc ok, orph clean;
 no-wait-getatt-rds-endpoint	2026-11-24T20:15:56Z	PASS	474	verify.sh	rc ok, orph clean; GetAtt endpoint readiness wait
 nodejs-function	2026-11-04T05:36:33Z	PASS	79	verify.sh	batch 4; rc ok, 0 orph
 noecho-named-producer	2026-11-04T19:47:52Z	PASS	105	verify.sh	rc ok, orph clean
-noecho-parameter-masking	2026-11-28T05:24:44Z	PASS	1508	verify.sh	rc ok, orph clean, 0 versions; #7179 helper; 1st attempt blocked by untrusted mise (no assertions)
+noecho-parameter-masking	2026-11-28T12:29:33Z	PASS	1438	verify.sh	rc ok, orph clean, 0 versions, PR7200 @42af0d727
 noecho-restapi-body-mac	2026-11-13T16:57:39Z	PASS	117	verify.sh	rc ok, orph clean
 opensearch-domain-getatt	2026-11-20T16:10:37Z	PASS	1754	verify.sh	rc ok, orph clean (step 2b #6676)
 orphan-getatt-takeover	2026-11-07T11:44:37Z	PASS	211	verify.sh	rc ok, orph clean, PR #5991 subnet orphan live attrs
@@ -491,7 +491,7 @@ sagemaker-domain-vpc	2026-11-27T19:25:29Z	PASS	616	verify.sh	rc ok, orph clean; 
 schedule-group-rename-rollback	2026-11-16T15:41:55Z	PASS	228	verify.sh	rc ok, orph clean; phase 2b red on pre-fix build (#6423)
 scheduled-task	2026-11-04T05:01:38Z	PASS	44	standard	deploy+destroy 0 errors, orph clean
 scheduler-custom-group	2026-11-06T23:58:18Z	PASS	119	verify.sh	#5935 scheduler-schedule split head; rc ok, orph clean
-schema-v10-to-v11-migration	2026-11-11T19:34:00Z	PASS	541	verify.sh	rc ok, destroy 0 err, orph clean (#6117 set)
+schema-v10-to-v11-migration	2026-11-28T12:03:36Z	FAIL	175	verify.sh	v11 migration deploy: state.version is 16, expected 18; 42af0d727 (#7200); orph clean
 schema-v11-to-v12-migration	2026-11-04T19:21:11Z	PASS	125	verify.sh	rc ok, orph clean
 schema-v12-to-v13-migration	2026-11-05T10:28:51Z	PASS	135	verify.sh	rc 0, destroy 0 errors, orph clean (sweep N4, own bucket)
 schema-v14-to-v15-migration	2026-10-29T20:43:22Z	PASS	1664	verify.sh	PR #5535 dd4c69bb9; rc 0, destroy 0 errors, orph clean

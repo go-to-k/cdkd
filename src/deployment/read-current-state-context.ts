@@ -61,7 +61,9 @@ export function buildReadCurrentStateContext(
   // provider asks `recordedSecrecyOf` rather than the value's text alone.
   // Set only when the record holds either field.
   const ownFields = isReadableResourceEntry(own) ? (own as Record<string, unknown>) : {};
-  const noEchoLeaves = ownFields['noEchoLeaves'];
+  // An EMPTY `noEchoLeaves` (go-to-k/cdkd#7194's marker) is no provenance.
+  const rawLeaves = ownFields['noEchoLeaves'];
+  const noEchoLeaves = Array.isArray(rawLeaves) && rawLeaves.length === 0 ? undefined : rawLeaves;
   const maskedPropertyFingerprints = ownFields['maskedPropertyFingerprints'];
   const ownProvenance =
     noEchoLeaves !== undefined || maskedPropertyFingerprints !== undefined

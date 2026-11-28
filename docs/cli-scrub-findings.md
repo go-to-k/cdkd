@@ -138,11 +138,34 @@ today's template still declares as the same type, but no longer fills from a
 `NoEcho` source, is read by that definition: a value an older definition
 filled from one is neither masked nor reported.
 
-A cdkd of state schema v11 or later also writes no positions for a record
-that has none, so the record may well be clean. That is why this finding
-alone does not make `--fail` exit `1`: it is a warning, and the stack is not
-reported clean. Check the record in the state file by hand. Running scrub
-again does not change the warning while the record is kept.
+A current cdkd records an empty `noEchoLeaves` on a record it positioned and
+found no `NoEcho` value in, so a record with no `noEchoLeaves` at all is one
+no such writer positioned. This finding makes `--fail` exit `1`, and the stack
+is not reported clean. A cdkd release before that change also wrote no
+positions for a record that has none, so such a record may well be clean, but
+nothing in state says which.
+
+To clear it, run scrub with `--mask-unpositioned`:
+
+```sh
+cdkd scrub MyStack --mask-unpositioned
+```
+
+For each such record, it replaces every string value in `properties`,
+`observedProperties` and `attributes` with `***`, at any depth, and records
+those positions as `NoEcho` positions. It does not change keys, numbers,
+booleans, empty strings, a whole `{{resolve:...}}` reference, the resource
+type, the physical id, the logical id, or the AWS-minted id attribute (such as
+an IAM role's `RoleId`) that cdkd checks before it deletes a resource by
+name. It touches no live record and no
+record scrub could position. It also masks an attempted item name the record
+built from one of those values. The cost: those values are gone from state,
+so a later adoption of the record compares and re-sends without them. A
+delete that reads its address or payload from the record's properties (a
+custom resource's `Delete` handler, a Route 53 record set, a Lambda
+permission, and others) is skipped with a warning, and the record is kept
+while the resource stays in AWS. With `--dry-run`, it prints how many values it would mask in
+each record, never a value or a key, and writes nothing.
 
 ### A leftover output key was kept
 

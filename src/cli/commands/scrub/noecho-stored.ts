@@ -25,6 +25,7 @@ import {
   withoutFnIf,
   type ScrubNoEchoPlan,
 } from './noecho.js';
+import type { UnpositionedMaskCounts } from './unpositioned.js';
 
 /** A record `state.resources` does not hold: a rollback orphan or a superseded one. */
 export interface StoredNoEchoRow {
@@ -37,6 +38,8 @@ export interface StoredNoEchoRow {
 
 /** A stored record whose `NoEcho` positions no evidence names (go-to-k/cdkd#7191). */
 export interface UnverifiableNoEchoRecord {
+  /** The row's {@link StoredNoEchoRow.key}, which `--mask-unpositioned` rewrites by. */
+  readonly key: string;
   readonly kind: StoredNoEchoRow['kind'];
   readonly logicalId: string;
   readonly resourceType: string;
@@ -98,11 +101,16 @@ function holdsUnmaskedLeaf(value: unknown): boolean {
  * `state.resources`. The coordinates come from the first evidence that names
  * them, never from a value match:
  *
- * 1. the record's own `noEchoLeaves` (a v11+ writer recorded them);
+ * 1. the record's own `noEchoLeaves`, when it names a position (a v11+
+ *    writer recorded them);
  * 2. else today's template, where it still declares the logical id as the
  *    record's type, read over the STORED properties (as for a live record);
- * 3. else the live record of the same logical id and type, when it holds
- *    `noEchoLeaves` (a v11+ deploy positioned that type there).
+ * 3. else the live record of the same logical id and type, when its
+ *    `noEchoLeaves` name a position (a v11+ deploy positioned that type there);
+ * 4. else the record's own EMPTY `noEchoLeaves` (go-to-k/cdkd#7194): a writer
+ *    evaluated the record and found no position, so it is positioned, with
+ *    none. A live record's empty field is no evidence for this one: it
+ *    describes another generation of the logical id.
  *
  * A record none of them positions, that holds an unmasked leaf, in a stack
  * with any `NoEcho` evidence at all, is UNVERIFIABLE: a pre-v11 record whose
@@ -154,7 +162,7 @@ export function planScrubStoredNoEcho(
       live?.resourceType === record.resourceType ? noEchoLeavesOf(live) : undefined;
     let leaves: NoEchoCoordinate[] | undefined;
     let needleAt: ((coordinate: NoEchoCoordinate) => boolean) | undefined;
-    if (own !== undefined) {
+    if (own !== undefined && own.length > 0) {
       leaves = canonicalCoordinates(own);
     } else if (definition?.Type === record.resourceType) {
       leaves = canonicalCoordinates(
@@ -164,12 +172,15 @@ export function planScrubStoredNoEcho(
       );
       const needles = needleCoordinatesOf(definition.Properties, record.properties, needleSources);
       needleAt = (coordinate) => needles.has(JSON.stringify(coordinate));
-    } else if (liveLeaves !== undefined) {
+    } else if (liveLeaves !== undefined && liveLeaves.length > 0) {
       leaves = canonicalCoordinates(liveLeaves);
+    } else if (own !== undefined) {
+      leaves = [];
     }
     if (leaves === undefined) {
       if (stackHoldsEvidence && holdsUnmaskedLeaf(record.properties)) {
         unverifiable.push({
+          key: row.key,
           kind: row.kind,
           logicalId: row.logicalId,
           resourceType: record.resourceType,
@@ -301,7 +312,32 @@ export function unverifiableNoEchoRecordWarning(
   shownStack: string,
   record: UnverifiableNoEchoRecord
 ): string {
-  return safeMsg`The ${record.kind} ${record.logicalId} (${record.resourceType}) in ${shownStack} names no NoEcho positions, and today's template no longer declares its logical id as that type: if a cdkd older than state schema v11 wrote it, a NoEcho value may sit in its properties in plaintext, and scrub cannot tell which leaf, so this stack is not reported clean. Check that record in the state file by hand.`;
+  return safeMsg`The ${record.kind} ${record.logicalId} (${record.resourceType}) in ${shownStack} names no NoEcho positions, and today's template no longer declares its logical id as that type: if a cdkd older than state schema v11 wrote it, a NoEcho value may sit in its properties in plaintext, and scrub cannot tell which leaf, so this stack is not reported clean and --fail exits non-zero. ${UNPOSITIONED_REMEDY}`;
+}
+
+/**
+ * The remedy every unverifiable-record warning names (go-to-k/cdkd#7194):
+ * the option, what it does and what it costs.
+ */
+export const UNPOSITIONED_REMEDY =
+  "Re-run scrub with --mask-unpositioned to mask every string value in that record (its properties, observed properties and attributes) and record those positions as NoEcho, which clears this finding. The cost: those values are lost from state, so a later adoption of the record compares and re-sends without them, and a delete that reads its address or payload from the record's properties (a custom resource, a Route 53 record set, a Lambda permission, and others) is skipped, keeping the record while the resource stays in AWS.";
+
+/** The `--dry-run --mask-unpositioned` line for one such record. Counts only, never a value or a key. */
+export function unpositionedMaskPlanNote(
+  shownStack: string,
+  record: UnverifiableNoEchoRecord,
+  counts: UnpositionedMaskCounts
+): string {
+  return safeMsg`--mask-unpositioned would mask, in the ${record.kind} ${record.logicalId} (${record.resourceType}) in ${shownStack}, ${String(counts.properties)} string value(s) in properties, ${String(counts.observed)} in the readback (observed properties) and ${String(counts.attributes)} in attributes (--dry-run, nothing written).`;
+}
+
+/** The `--mask-unpositioned` line for one record it masked. Counts only, never a value or a key. */
+export function unpositionedMaskDoneNote(
+  shownStack: string,
+  record: UnverifiableNoEchoRecord,
+  counts: UnpositionedMaskCounts
+): string {
+  return safeMsg`--mask-unpositioned: masked, in the ${record.kind} ${record.logicalId} (${record.resourceType}) in ${shownStack}, ${String(counts.properties)} string value(s) in properties, ${String(counts.observed)} in the readback (observed properties) and ${String(counts.attributes)} in attributes, and recorded those positions as NoEcho.`;
 }
 
 /**

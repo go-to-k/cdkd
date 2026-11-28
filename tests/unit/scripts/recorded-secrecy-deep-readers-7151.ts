@@ -156,6 +156,10 @@ export const READS_RECORD_TEXT_DEEP: Readonly<Record<string, { count: number; wh
     count: 1,
     why: "finds the reference tokens to resolve into needles: it needs the marker KIND, a hit adds needles, and a plaintext leaf has no token to resolve",
   },
+  "src/cli/commands/scrub/unpositioned.ts#isUnpositionedStringLeaf#holdsMaskLeaf(value)": {
+    count: 1,
+    why: "`--mask-unpositioned` (go-to-k/cdkd#7194) skips a leaf that already IS the mask and masks every other string: a wider `masked` would mask LESS of a record no position names",
+  },
   "src/cli/commands/scrub/twin-references.ts#certainResolution#mentionsMask(r)": {
     count: 1,
     why: "fails safe (go-to-k/cdkd#7180): a hit makes a resolved intrinsic UNCERTAIN, so its list element pairs as before; the resolution is only compared, never written or printed",

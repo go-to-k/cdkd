@@ -59,12 +59,8 @@ import {
   applyScrubNoEcho,
   noEchoFilledRowParameters,
 } from './noecho.js';
-import {
-  planScrubStoredNoEcho,
-  scrubStoredRecord,
-  storedNoEchoRows,
-  unverifiableNoEchoRecordWarning,
-} from './noecho-stored.js';
+import { planScrubStoredNoEcho, scrubStoredRecord, storedNoEchoRows } from './noecho-stored.js';
+import { maskUnpositionedRecord, planUnpositionedMasks } from './unpositioned.js';
 
 /**
  * {@link scrubStack}'s rewrite pass, moved verbatim (go-to-k/cdkd#5835): from
@@ -171,16 +167,23 @@ export async function scrubStackRewritePass({
   );
   // go-to-k/cdkd#7191: the orphan and superseded records too, by their own
   // evidence; one no evidence positions is reported, never called clean.
+  const storedRows = storedNoEchoRows(state.orphans, state.supersededResources);
   const storedNoEcho = planScrubStoredNoEcho(
     state,
-    storedNoEchoRows(state.orphans, state.supersededResources),
+    storedRows,
     stack.template,
     noEchoPlans.sources,
     noEchoPlans.needleSources
   );
-  for (const record of storedNoEcho.unverifiable) {
-    logger.warn(unverifiableNoEchoRecordWarning(shownStack, record));
-  }
+  // go-to-k/cdkd#7194: `--mask-unpositioned` masks every string leaf of such
+  // a record and positions it; a dry run reports the counts and writes nothing.
+  const unpositioned = planUnpositionedMasks(
+    storedRows,
+    storedNoEcho.unverifiable,
+    opts,
+    logger,
+    shownStack
+  );
 
   // The nested children this stack deploys (go-to-k/cdkd#2252): every
   // `AWS::CloudFormation::Stack` row the template declares OR the record
@@ -377,6 +380,7 @@ export async function scrubStackRewritePass({
     totalSecrets === 0 &&
     !noEchoPlans.changesAny &&
     !storedNoEcho.changesAny &&
+    unpositioned.masked.size === 0 &&
     !finishRepairsAny()
   ) {
     // NOT a blanket "nothing found": `unverifiableReads` is carried out even
@@ -407,8 +411,8 @@ export async function scrubStackRewritePass({
       // with none recorded no performed read's spelling holds a token, so
       // `findUnrepairedCrossStackReadNames` has nothing to flag against.
       unrepairedReadNames: 0,
-      ...(storedNoEcho.unverifiable.length > 0 && {
-        unverifiableNoEchoRecords: storedNoEcho.unverifiable.length,
+      ...(unpositioned.unverifiable > 0 && {
+        unverifiableNoEchoRecords: unpositioned.unverifiable,
       }),
       ...(malformedResources ? { malformedResources } : {}),
       ...(malformedResourceRows ? { malformedResourceRows } : {}),
@@ -596,13 +600,17 @@ export async function scrubStackRewritePass({
     }
     // go-to-k/cdkd#7188: what today's template resolves for its logical id.
     const stored = storedInput(row.logicalId, row.state);
-    const scrubbed = scrubStoredRecord(
+    const finished = scrubStoredRecord(
       row.state,
       needles,
       storedNoEcho.byKey.get(key),
       noEchoPublicTokens,
       (record, bag) => finishStored(record, bag, stored)
     );
+    // go-to-k/cdkd#7194: `--mask-unpositioned`, over the record as scrubbed.
+    const scrubbed = unpositioned.masked.has(key)
+      ? maskUnpositionedRecord(finished).record
+      : finished;
     if (JSON.stringify(scrubbed) === JSON.stringify(row.state)) return row;
     recordsChanged++;
     return { ...row, state: withoutLapsedStaleShapeStamp(scrubbed) };
@@ -957,8 +965,8 @@ export async function scrubStackRewritePass({
     unverifiableProducerRecords: prePassFindings.damagedProducerRecords.length,
     unverifiableLeaves,
     unrepairedReadNames: unrepairedReadNames.length,
-    ...(storedNoEcho.unverifiable.length > 0 && {
-      unverifiableNoEchoRecords: storedNoEcho.unverifiable.length,
+    ...(unpositioned.unverifiable > 0 && {
+      unverifiableNoEchoRecords: unpositioned.unverifiable,
     }),
     ...(malformedResources ? { malformedResources } : {}),
     ...(malformedOutputs ? { malformedOutputs } : {}),

@@ -3542,6 +3542,7 @@
     "--logical-resource-id",
     "--long",
     "--lookup-attributes",
+    "--mask-unpositioned",
     "--max-items",
     "--max-number-of-messages",
     "--max-records",

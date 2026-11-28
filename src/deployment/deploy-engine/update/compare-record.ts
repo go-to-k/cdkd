@@ -353,7 +353,8 @@ export async function compareWithRecord(
   // persist walk writes WITHOUT the `NoEcho` arms (the dynamic-reference
   // form), an equal leaf is an unchanged value with no readback, and a
   // different one a change the comparison below sees as moved.
-  const unmarkedRecord = noEchoLeavesOf(currentResource) === undefined;
+  // An EMPTY field (go-to-k/cdkd#7194) names no position either: read as unmarked.
+  const unmarkedRecord = (noEchoLeavesOf(currentResource)?.length ?? 0) === 0;
   // For a MARKED record too (go-to-k/cdkd#4831): it can still hold a
   // plaintext where today's template masks, a leaf a `NoEcho` declaration
   // reaches only since that write. A leaf it holds as `***` is no witness

@@ -105,7 +105,8 @@ export async function withRefreshedObservedBaseline(
   if (!provider.readCurrentState || !hasAddressablePhysicalId(record)) return record;
   const noEchoFields = restored as { noEchoLeaves?: unknown; noEchoAttributeNames?: unknown };
   if (
-    noEchoFields.noEchoLeaves !== undefined ||
+    // An EMPTY `noEchoLeaves` (go-to-k/cdkd#7194's marker) marks nothing.
+    marksNoEchoLeaf(noEchoFields.noEchoLeaves) ||
     noEchoFields.noEchoAttributeNames !== undefined ||
     refresh.noEcho.substituted.length > 0 ||
     maskedLeafCoordinatesOf(restored.properties).length > 0 ||
@@ -165,4 +166,13 @@ export async function withRefreshedObservedBaseline(
     { properties: restored.properties, readback: observed },
     refresh.publicTokens
   );
+}
+
+/**
+ * Whether a restored record's raw `noEchoLeaves` marks anything: present and
+ * not the empty marker a v11+ writer leaves on a record with no position
+ * (go-to-k/cdkd#7194). A malformed field still counts, as before.
+ */
+function marksNoEchoLeaf(field: unknown): boolean {
+  return field !== undefined && !(Array.isArray(field) && field.length === 0);
 }

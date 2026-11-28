@@ -2,9 +2,9 @@
  * go-to-k/cdkd#7191: through `scrubCommand`, a rollback orphan whose logical
  * id has left the template, written before state schema v11 (no
  * `noEchoLeaves`), in a stack with a `NoEcho` parameter, is reported: the
- * stack is not reported clean. It does not fail `--fail`, with or without
- * `--dry-run`: a current cdkd writes the same shape for a record with no
- * `NoEcho` position.
+ * stack is not reported clean, and (go-to-k/cdkd#7194: a current cdkd records
+ * an empty `noEchoLeaves` for a record with no `NoEcho` position) it fails
+ * `--fail`, with or without `--dry-run`.
  * The same stack with no such orphan is reported clean.
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
@@ -147,7 +147,7 @@ describe('cdkd scrub reports an orphan it cannot position (go-to-k/cdkd#7191)', 
     stateBackend.listStacks.mockReset().mockResolvedValue([]);
   });
 
-  it('is not reported clean, and --fail does not exit over it', async () => {
+  it('is not reported clean, and --fail exits over it', async () => {
     seed([
       {
         logicalId: 'Gone',
@@ -156,7 +156,7 @@ describe('cdkd scrub reports an orphan it cannot position (go-to-k/cdkd#7191)', 
       },
     ]);
     const err = await run({ fail: true });
-    expect(err).toBeUndefined();
+    expect(err).toBeInstanceOf(ScrubNeededError);
     const text = logLines.join('\n');
     expect(text).not.toContain('No plaintext secrets found');
     expect(text).toContain('orphan record Gone');
@@ -165,7 +165,7 @@ describe('cdkd scrub reports an orphan it cannot position (go-to-k/cdkd#7191)', 
 
   // The integ fixture's gate, `scrub --dry-run --fail`: the dry-run plan arm
   // threw on `--fail` alone, whatever brought the run past the clean line.
-  it('--dry-run --fail: not reported clean, and does not exit over it', async () => {
+  it('--dry-run --fail: not reported clean, and exits over it (go-to-k/cdkd#7194)', async () => {
     seed([
       {
         logicalId: 'Gone',
@@ -174,7 +174,7 @@ describe('cdkd scrub reports an orphan it cannot position (go-to-k/cdkd#7191)', 
       },
     ]);
     const err = await run({ dryRun: true, fail: true });
-    expect(err).toBeUndefined();
+    expect(err).toBeInstanceOf(ScrubNeededError);
     const text = logLines.join('\n');
     expect(text).not.toContain('No plaintext secrets found');
     expect(text).toContain('orphan record Gone');

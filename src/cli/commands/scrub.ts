@@ -70,6 +70,12 @@ export function createScrubCommand(): Command {
       ).conflicts('dryRun')
     )
     .option(
+      '--mask-unpositioned',
+      'Mask every string value of an orphan or superseded record whose NoEcho positions scrub cannot tell ' +
+        '(its logical id left the template, no noEchoLeaves recorded) and record those positions as NoEcho; ' +
+        'those values are lost from state, so a later adoption of the record compares without them'
+    )
+    .option(
       '--fail',
       'With --dry-run, exit non-zero if a value the template names through a {{resolve:...}} reference ' +
         'is found in plaintext (CI gate). ' +

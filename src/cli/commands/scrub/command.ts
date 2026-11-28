@@ -42,6 +42,11 @@ export interface ScrubOptions {
   fail?: boolean;
   /** go-to-k/cdkd#2624: also purge the history of every record examined, rewritten or not. */
   purgeHistory?: boolean;
+  /**
+   * go-to-k/cdkd#7194: mask every string leaf of an orphan or superseded
+   * record scrub cannot position, and record those positions as `NoEcho`.
+   */
+  maskUnpositioned?: boolean;
   yes?: boolean;
   region?: string;
   profile?: string;

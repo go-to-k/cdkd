@@ -268,6 +268,9 @@ export function noEchoPositionSources(
  *   for the same logical id and type: the migration of a record this deploy
  *   did not reach. Over-masking a leaf that no longer reads one only costs
  *   the next deploy a re-send; leaving one unmasked would keep the plaintext.
+ *   An EMPTY field (go-to-k/cdkd#7194: a writer evaluated the record and
+ *   found no position) takes this branch too, so a `NoEcho` declaration that
+ *   reaches a leaf since that write still positions it.
  *
  * `persisted` (the bag as saved, go-to-k/cdkd#7189) also positions a leaf
  * that EMBEDS a declared `NoEcho` attribute where the containment rule
@@ -295,7 +298,7 @@ export function noEchoLeavesFor(
     return canonicalCoordinates(positionsOf(templateProps));
   }
   const existing = noEchoLeavesOf(record);
-  if (existing !== undefined) {
+  if (existing !== undefined && existing.length > 0) {
     // Plus every leaf the migration witness confirmed this deploy (#4831),
     // and every embedded leaf today's template positions where the record
     // holds the mask (#7189).
@@ -533,7 +536,16 @@ export function withAttemptedItemsMasked<R extends ResourceState>(
  * - `observedProperties` at the same coordinates, through each list's
  *   identity field, or the whole list where none pairs them (review B4);
  * - `attributes` at every declared name, whatever the value's type or length;
- * - both fields are written, an empty set omitted.
+ * - both fields are written, an empty set omitted, except an empty
+ *   `noEchoLeaves` (go-to-k/cdkd#7194): it is the marker that a writer
+ *   positioned THIS bag and found none, so it is written only under
+ *   `markEmpty` (the live record's save) for a bag this deploy WROTE from
+ *   today's template. Any other bag may be of another template generation:
+ *   a carried orphan or superseded record, a journal's previous record, a
+ *   failed update's kept bag, or a record this deploy never reached (no
+ *   template bag either way, so "unchanged" cannot be told from "not
+ *   reached" here). Today's template proves nothing about it, so it keeps an
+ *   empty field it already had, and gains none.
  */
 export function applyNoEchoPersist(
   run: NoEchoRunState,
@@ -544,7 +556,8 @@ export function applyNoEchoPersist(
   templateProps: Record<string, unknown> | undefined,
   resources: Record<string, ResourceState>,
   secrets?: RecordedSecretValues,
-  carried = false
+  carried = false,
+  markEmpty = false
 ): ResourceState {
   scrubbed = withNoEchoItemsMasked(run, deps, logicalId, scrubbed);
   const sources = noEchoPositionSources(run, resources);
@@ -573,8 +586,12 @@ export function applyNoEchoPersist(
         ),
       });
     }
-    if (leaves.length > 0) next.noEchoLeaves = leaves;
-    else delete next.noEchoLeaves;
+    // go-to-k/cdkd#7194: an empty set is the marker that a writer positioned
+    // this bag and found none, so `cdkd scrub` can tell it from a record
+    // written before v11 (no field); see the conditions above.
+    const sameGeneration = isWrittenFromDeployedTemplate(record.properties);
+    if (leaves.length > 0 || (markEmpty && sameGeneration)) next.noEchoLeaves = leaves;
+    else if (noEchoLeavesOf(scrubbed)?.length !== 0) delete next.noEchoLeaves;
     // go-to-k/cdkd#4656: an echo-fidelity entry describes a coordinate the
     // record still marks, or nothing.
     const marked = new Set(leaves.map((coordinate) => JSON.stringify(coordinate)));

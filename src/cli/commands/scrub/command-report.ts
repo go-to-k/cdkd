@@ -170,17 +170,18 @@ export async function reportScrubOutcome({
     );
   }
 
-  // Every counter but the go-to-k/cdkd#7191 warning: an orphan or superseded
-  // record no evidence positions gates the clean line below, but is NOT a
-  // `--fail` finding (a current cdkd writes the same shape for a record with
-  // no position, so no run could clear the exit), and the `--dry-run --fail`
-  // arm below throws only when one of THESE pushed the run past the clean line.
+  // Every counter that gates the clean line below, and the `--dry-run --fail`
+  // arm below throws when one of them pushed the run past it. An orphan or
+  // superseded record no evidence positions (go-to-k/cdkd#7191) is one too
+  // since go-to-k/cdkd#7194: a current cdkd records an empty `noEchoLeaves` on
+  // a record with no position, and `--mask-unpositioned` clears the finding.
   const failingFindingsAbsent =
     totalStacksScrubbed === 0 &&
     totalStacksWithUnscrubbableKeys === 0 &&
     totalStacksWithUnverifiableReads === 0 &&
     totalStacksWithUnverifiableLeaves === 0 &&
     totalStacksWithUnrepairedReadNames === 0 &&
+    totalStacksWithUnverifiableNoEchoRecords === 0 &&
     totalStacksWithReadOutputKeys === 0 &&
     totalIndexEntriesAbsentWithSecret === 0 &&
     droppedReadersUnverifiedStacks.length === 0 &&
@@ -200,7 +201,7 @@ export async function reportScrubOutcome({
     // The `orphans` half of the same (go-to-k/cdkd#3379): the repaired list is
     // empty, so no orphan row is reported and every counter stays zero.
     malformedOrphanRecords.length === 0;
-  if (failingFindingsAbsent && totalStacksWithUnverifiableNoEchoRecords === 0) {
+  if (failingFindingsAbsent) {
     // `totalIndexEntriesAbsent` and `totalIndexEntriesUnexamined` are
     // deliberately NOT in this condition (issue #2667). Past it, the `--dry-run
     // --fail` arm below throws on any counter in `failingFindingsAbsent`, so
@@ -460,7 +461,11 @@ export async function reportScrubOutcome({
       totalStacksWithReadOutputKeys > 0 ||
       totalIndexEntriesAbsentWithSecret > 0 ||
       totalParentAttributesUnmatched > 0 ||
-      totalStacksWithUnverifiableLeaves > 0)
+      totalStacksWithUnverifiableLeaves > 0 ||
+      // go-to-k/cdkd#7194: a v11+ writer now records an empty `noEchoLeaves`,
+      // so a record with none is one no such writer positioned, and
+      // `--mask-unpositioned` clears it.
+      totalStacksWithUnverifiableNoEchoRecords > 0)
   ) {
     throw new ScrubNeededError();
   }

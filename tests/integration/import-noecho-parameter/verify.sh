@@ -178,10 +178,10 @@ P3_SHAPE=$(jq -c '[
   .resources.NoEchoShortConsumer.properties.Value,
   (.resources.NoEchoShortConsumer.noEchoLeaves // [] | index([["Value"]]) != null),
   .resources.PlainConsumer.properties.Value,
-  (.resources.PlainConsumer.noEchoLeaves == null)
+  (.resources.PlainConsumer.noEchoLeaves == [])
 ]' <<< "${STATE_P3}")
 if [ "${P3_SHAPE}" != '["***",true,"***",true,"plain-control-value",true]' ]; then
-  echo "FAIL: state.json after cdkd import does not hold *** at both NoEcho positions named in noEchoLeaves, with the plain control in the clear (got ${P3_SHAPE})" >&2
+  echo "FAIL: state.json after cdkd import does not hold *** at both NoEcho positions named in noEchoLeaves, with the plain control in the clear and marked as positioned with none, noEchoLeaves [] (go-to-k/cdkd#7194) (got ${P3_SHAPE})" >&2
   exit 1
 fi
 # The import compares each parameter with what CloudFormation was deployed
