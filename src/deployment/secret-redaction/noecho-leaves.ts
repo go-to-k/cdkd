@@ -173,6 +173,7 @@ export function noEchoCoordinatesOf(
   onCoordinate?: (coordinate: NoEchoCoordinate, templateNode: unknown) => void,
   embedded?: { readonly maskedAt: unknown; readonly only?: boolean }
 ): NoEchoCoordinate[] {
+  if (embedded?.only === true && sources.attributeIsNoEcho === undefined) return [];
   const coordinates: NoEchoCoordinate[] = [];
   const push = (path: NoEchoCoordinate, node: unknown, isEmbedded = false): void => {
     if (embedded?.only === true && !isEmbedded) return;
@@ -188,18 +189,33 @@ export function noEchoCoordinatesOf(
     isPlainObject(node) &&
     intrinsicKeyOf(node) === 'Fn::GetAtt' &&
     getAttReadsNoEcho(node['Fn::GetAtt'], sources);
-  const embedsMasked = (node: unknown, path: NoEchoCoordinate): boolean =>
-    embedded !== undefined &&
+  // `masked` is the persisted bag's node at the same path, walked alongside.
+  const embedsMasked = (node: unknown, masked: unknown): boolean =>
+    masked !== undefined &&
     sources.attributeIsNoEcho !== undefined &&
-    isWhollyMask(valueAtCoordinate(embedded.maskedAt, path)) &&
+    isWhollyMask(masked) &&
     readsNoEchoSource(node, sources);
   // A leaf a parameter or a bare declared `GetAtt` positions, else one the
   // containment rule masked (`embedsMasked`).
-  const pushIfReads = (path: NoEchoCoordinate, node: unknown, positioned: boolean): void => {
+  const pushIfReads = (
+    path: NoEchoCoordinate,
+    node: unknown,
+    positioned: boolean,
+    masked: unknown
+  ): void => {
     if (positioned) push(path, node);
-    else if (embedsMasked(node, path)) push(path, node, true);
+    else if (embedsMasked(node, masked)) push(path, node, true);
   };
-  const walk = (source: unknown, value: unknown, path: (string | number)[]): void => {
+  const childOf = (masked: unknown, key: string | number): unknown =>
+    masked !== null && typeof masked === 'object' && Object.hasOwn(masked, key)
+      ? (masked as Record<string | number, unknown>)[key]
+      : undefined;
+  const walk = (
+    source: unknown,
+    value: unknown,
+    path: (string | number)[],
+    masked: unknown
+  ): void => {
     if (value === undefined) return;
     if (source === null || typeof source !== 'object') return;
     if (ancestors.has(source)) return;
@@ -208,12 +224,15 @@ export function noEchoCoordinatesOf(
       if (Array.isArray(source)) {
         if (!readsNoEchoSource(source, sources)) return;
         if (Array.isArray(value) && value.length === source.length) {
-          source.forEach((item, index) => walk(item, value[index], [...path, index]));
+          source.forEach((item, index) =>
+            walk(item, value[index], [...path, index], childOf(masked, index))
+          );
         } else {
           pushIfReads(
             path,
             source,
-            readsNoEchoSource(source, parametersOnly) || source.some(isBareDeclaredGetAtt)
+            readsNoEchoSource(source, parametersOnly) || source.some(isBareDeclaredGetAtt),
+            masked
           );
         }
         return;
@@ -222,11 +241,13 @@ export function noEchoCoordinatesOf(
       const intrinsic = intrinsicKeyOf(record);
       if (intrinsic === undefined) {
         if (!isPlainObject(value)) {
-          pushIfReads(path, source, readsNoEchoSource(record, parametersOnly));
+          pushIfReads(path, source, readsNoEchoSource(record, parametersOnly), masked);
           return;
         }
         for (const [key, child] of Object.entries(record)) {
-          if (Object.hasOwn(value, key)) walk(child, value[key], [...path, key]);
+          if (Object.hasOwn(value, key)) {
+            walk(child, value[key], [...path, key], childOf(masked, key));
+          }
         }
         return;
       }
@@ -235,7 +256,7 @@ export function noEchoCoordinatesOf(
         if (Array.isArray(argument) && argument.length === 3) {
           const verdict = conditionVerdict(sources, argument[0]);
           if (verdict !== undefined) {
-            walk(verdict ? argument[1] : argument[2], value, path);
+            walk(verdict ? argument[1] : argument[2], value, path, masked);
             return;
           }
           // Unknown verdict: either branch being a bare declared GetAtt
@@ -252,7 +273,7 @@ export function noEchoCoordinatesOf(
           const index = literalIndex(argument[0]);
           const list = argument[1] as unknown[];
           if (index !== undefined && index < list.length) {
-            walk(list[index], value, path);
+            walk(list[index], value, path, masked);
             return;
           }
         }
@@ -268,12 +289,12 @@ export function noEchoCoordinatesOf(
         if (getAttReadsNoEcho(record['Fn::GetAtt'], sources)) push(path, source);
         return;
       }
-      pushIfReads(path, source, readsNoEchoSource(record, parametersOnly));
+      pushIfReads(path, source, readsNoEchoSource(record, parametersOnly), masked);
     } finally {
       ancestors.delete(source);
     }
   };
-  walk(template, resolved, []);
+  walk(template, resolved, [], embedded?.maskedAt);
   return coordinates;
 }
 
