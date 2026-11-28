@@ -31,6 +31,13 @@
 #      token NOT enabled, as CloudFormation ends, and `cdkd drift` is clean
 #      (issue #7128: UpdateUserPool OFF kept the factor enabled). A WebAuthn
 #      relying party set out of band in 2c must survive the reset.
+#   2e. Seed the pre-#7128 leftover out of band (OPTIONAL + software token,
+#      then UpdateUserPool OFF, which keeps the factor) and its baseline
+#      (written into state.json: over 2d's `[]` baseline the leftover is not
+#      drift, which a plain drift asserts, so `--accept` cannot seed it).
+#      Assert `cdkd drift` reports EnabledMfas (issue #7134: it compared
+#      the factor against itself, clean), `drift --revert` clears the factor
+#      and keeps the WebAuthn relying party, and drift is clean afterwards.
 #   3. Destroy + assert the pool is gone and the cdkd state file is removed.
 #
 # Required env vars:
@@ -335,6 +342,100 @@ case "${DRIFT_OUT}" in
   *) printf '%s\n' "${DRIFT_OUT}" >&2; echo "FAIL: cdkd drift after Phase 2d left the pool unsupported (compared nothing)" >&2; exit 1 ;;
 esac
 echo "    cdkd drift clean"
+
+# --- Phase 2e: a pre-#7128 leftover factor is reported and reverted (issue #7134) ---
+echo "==> Phase 2e: seed the pre-#7128 leftover (software token under OFF) and its baseline"
+# The leftover as a pre-fix release left it: OPTIONAL + software token, then
+# `UpdateUserPool` OFF, which keeps the factor (measured for #7128). The MFA
+# call re-sends the WebAuthn relying party (it is a full replace); the
+# UpdateUserPool call re-sends every member the pool describes with, since an
+# omitted one resets to its default (AutoVerifiedAttributes is even refused).
+aws cognito-idp set-user-pool-mfa-config --user-pool-id "${PID}" --region "${REGION}" \
+  --mfa-configuration OPTIONAL --software-token-mfa-configuration Enabled=true \
+  --web-authn-configuration RelyingPartyId=example.com,UserVerification=required >/dev/null
+P2E_INPUT="$(aws cognito-idp describe-user-pool --user-pool-id "${PID}" --region "${REGION}" --output json \
+  | jq -c --arg id "${PID}" '.UserPool
+      | {Policies, DeletionProtection, LambdaConfig, AutoVerifiedAttributes, SmsVerificationMessage,
+         EmailVerificationMessage, EmailVerificationSubject, VerificationMessageTemplate,
+         SmsAuthenticationMessage, UserAttributeUpdateSettings, DeviceConfiguration,
+         EmailConfiguration, SmsConfiguration, UserPoolTags, AdminCreateUserConfig,
+         UserPoolAddOns, AccountRecoverySetting, UserPoolTier, PoolName: .Name}
+      | del(.AdminCreateUserConfig.UnusedAccountValidityDays)
+      | (if .UserPoolTags then .UserPoolTags |= with_entries(select(.key | startswith("aws:") | not)) else . end)
+      | with_entries(select(.value != null))
+      | . + {UserPoolId: $id, MfaConfiguration: "OFF"}')"
+aws cognito-idp update-user-pool --region "${REGION}" --cli-input-json "${P2E_INPUT}" >/dev/null
+MFA_P2E="$(mfa_state "${PID}")"
+if [ "${MFA_P2E}" != "$(printf 'OFF\tTrue')" ]; then
+  echo "FAIL: Phase 2e could not seed the leftover (expected OFF with the software token enabled), got '${MFA_P2E}'" >&2
+  exit 1
+fi
+echo "    leftover seeded (${MFA_P2E})"
+# Over 2d's baseline (`EnabledMfas: []`, an undeclared key captured empty,
+# which drift skips) the leftover is not drift, so `--accept` cannot seed the
+# legacy baseline. This plain drift must be CLEAN: it also proves the
+# UpdateUserPool re-send above changed nothing else on the pool.
+set +e
+DRIFT_OUT="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)"
+DRIFT_RC=$?
+set -e
+if [ "${DRIFT_RC}" -ne 0 ]; then
+  printf '%s\n' "${DRIFT_OUT}" >&2
+  echo "FAIL: cdkd drift after the out-of-band seed exited ${DRIFT_RC}, expected 0 (the UpdateUserPool re-send changed another property?)" >&2
+  exit 1
+fi
+# The baseline a pre-fix release captured after its OFF update, written into
+# the record the way other fixtures seed legacy records. Assignments, so a
+# failed read or jq aborts under `set -e` instead of uploading an empty file.
+P2E_STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
+P2E_SEEDED="$(printf '%s' "${P2E_STATE}" | jq '(.resources[] | select(.resourceType == "AWS::Cognito::UserPool") | .observedProperties.EnabledMfas) = ["SOFTWARE_TOKEN_MFA"]')"
+[ -n "${P2E_SEEDED}" ] || { echo "FAIL: Phase 2e: the seeded state is empty -- not uploading it" >&2; exit 1; }
+printf '%s\n' "${P2E_SEEDED}" | aws s3 cp - "s3://${STATE_BUCKET}/${STATE_KEY}" --content-type application/json >/dev/null
+P2E_BASELINE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
+  | jq -c '[.resources[] | select(.resourceType == "AWS::Cognito::UserPool") | .observedProperties.EnabledMfas][0]')"
+if [ "${P2E_BASELINE}" != '["SOFTWARE_TOKEN_MFA"]' ]; then
+  echo "FAIL: Phase 2e baseline: expected observedProperties.EnabledMfas [SOFTWARE_TOKEN_MFA], got '${P2E_BASELINE}'" >&2
+  exit 1
+fi
+
+echo "==> Phase 2e: cdkd drift reports the leftover; --revert clears it"
+set +e
+DRIFT_OUT="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)"
+DRIFT_RC=$?
+set -e
+if [ "${DRIFT_RC}" -ne 1 ]; then
+  printf '%s\n' "${DRIFT_OUT}" >&2
+  echo "FAIL: cdkd drift on the leftover exited ${DRIFT_RC}, expected 1 (drift): the software token under OFF went unreported (issue #7134)" >&2
+  exit 1
+fi
+case "${DRIFT_OUT}" in
+  *"EnabledMfas"*) ;;
+  *) printf '%s\n' "${DRIFT_OUT}" >&2; echo "FAIL: cdkd drift on the leftover did not name EnabledMfas (issue #7134)" >&2; exit 1 ;;
+esac
+echo "    drift reported on EnabledMfas"
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes
+MFA_P2E_AFTER="$(mfa_state "${PID}")"
+if [ "$(echo "${MFA_P2E_AFTER}" | awk '{print $1}')" != "OFF" ] || [ "$(echo "${MFA_P2E_AFTER}" | awk '{print $2}')" = "True" ]; then
+  echo "FAIL: drift --revert left the software token enabled (issue #7134), got '${MFA_P2E_AFTER}'" >&2
+  exit 1
+fi
+RP_P2E="$(aws cognito-idp get-user-pool-mfa-config --user-pool-id "${PID}" --region "${REGION}" \
+  --query 'WebAuthnConfiguration.RelyingPartyId' --output text)"
+if [ "${RP_P2E}" != "example.com" ]; then
+  echo "FAIL: drift --revert dropped the pool's WebAuthn relying party (issue #7134), got '${RP_P2E}'" >&2
+  exit 1
+fi
+echo "    software token cleared, WebAuthn relying party kept (${MFA_P2E_AFTER})"
+set +e
+DRIFT_OUT="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)"
+DRIFT_RC=$?
+set -e
+if [ "${DRIFT_RC}" -ne 0 ]; then
+  printf '%s\n' "${DRIFT_OUT}" >&2
+  echo "FAIL: cdkd drift after the Phase 2e revert exited ${DRIFT_RC}, expected 0" >&2
+  exit 1
+fi
+echo "    cdkd drift clean after the revert"
 
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy"

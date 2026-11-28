@@ -100,6 +100,61 @@ export function setAtPath(target: Record<string, unknown>, path: string, value: 
 // the analyzer-side canonicalizers rebuild by the same rule.
 
 /**
+ * The accepted paths a provider's `canonicalizeDriftPair` REWRITES in the
+ * baseline `--accept` is about to write, away from both the accepted value and
+ * the readback (go-to-k/cdkd#7134: the Cognito software-token leftover is
+ * compared against the template, not the record). Keyed on the pair rule's own
+ * rewrite of each path, not on the whole comparison: this replays none of
+ * `compare.ts`'s other passes, and a rule that rebuilds the bag every time
+ * (Step Functions, DLM) rewrites no accepted value. A rule that throws
+ * reports nothing: the warning is advisory and never blocks the write.
+ */
+export async function stillReportedAfterAccept(
+  provider: {
+    canonicalizeDriftProperties?(
+      resourceType: string,
+      properties: Record<string, unknown>
+    ): Record<string, unknown>;
+    canonicalizeDriftPair?(
+      resourceType: string,
+      baseline: Record<string, unknown>,
+      aws: Record<string, unknown>,
+      properties?: Record<string, unknown>
+    ): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }>;
+  },
+  resourceType: string,
+  newBaseline: Record<string, unknown>,
+  aws: Record<string, unknown>,
+  properties: Record<string, unknown>,
+  acceptedPaths: readonly string[]
+): Promise<string[]> {
+  if (!provider.canonicalizeDriftPair || acceptedPaths.length === 0) return [];
+  const side = (bag: Record<string, unknown>): Record<string, unknown> =>
+    provider.canonicalizeDriftProperties
+      ? provider.canonicalizeDriftProperties(resourceType, bag)
+      : bag;
+  try {
+    const baseline = side(newBaseline);
+    const pair = await provider.canonicalizeDriftPair(
+      resourceType,
+      baseline,
+      side(aws),
+      properties
+    );
+    if (pair.baseline === baseline) return [];
+    return acceptedPaths.filter((path) => {
+      const rewritten = getAtPath(pair.baseline, path);
+      return (
+        !deepEqualUnordered(rewritten, getAtPath(baseline, path)) &&
+        !deepEqualUnordered(rewritten, getAtPath(pair.aws, path))
+      );
+    });
+  } catch {
+    return [];
+  }
+}
+
+/**
  * `--accept`: state ← AWS.
  *
  * For each drifted resource, walk every property drift and write the
@@ -433,6 +488,29 @@ export async function runAccept(
           );
         }
         if (recordedChanges > 0) acceptedResourceCount++;
+        // go-to-k/cdkd#7134: a provider's pair rule can compare a path against
+        // what the template declares rather than against the baseline (the
+        // Cognito software-token leftover under `MfaConfiguration: OFF`), so
+        // the value just recorded is drift again on the next run. Say so,
+        // rather than let a successful accept read as the end of the report.
+        for (const path of await stillReportedAfterAccept(
+          regionScope(report.region).registry.getProviderFor({
+            resourceType: outcome.resourceType,
+            provisionedBy: existing.provisionedBy,
+          }).provider,
+          outcome.resourceType,
+          newBaseline,
+          outcome.awsProperties,
+          existing.properties ?? {},
+          accepted.map((change) => change.path)
+        )) {
+          logger.warn(
+            safeMsg`  ! ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
+              safeMsg`'${displayDriftPath(outcome, path)}' was recorded, but cdkd drift will keep reporting it: ` +
+              `this property is compared against what the template declares. Only ` +
+              safeMsg`${proseQuoted(cdkdRemedy('cdkd drift', '--revert'))} or a template change clears the report.`
+          );
+        }
         // go-to-k/cdkd#4043 Phase C: AFTER the recorded check, which compares
         // what the user accepted: a marked coordinate is `***` in what is
         // written, whatever a changed parent path carried there.

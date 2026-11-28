@@ -58,6 +58,13 @@ each one.
   [Clearing a baseline refusal](cli-drift-not-compared.md#clearing-a-baseline-refusal).
 - **A deleted resource.** See [Deleted resources](#deleted-resources).
 
+One accepted value keeps being reported, and `--accept` warns that it will.
+On a Cognito user pool whose template declares no MFA factor under
+`MfaConfiguration: OFF`, a software-token factor in `EnabledMfas` is compared
+against the template, not the recorded value. Only `cdkd drift --revert`, or
+a template that declares the factor with `MfaConfiguration` set to `OPTIONAL`
+or `ON`, clears it.
+
 ## `--revert` (AWS ← state)
 
 `--revert` updates each drifted resource in AWS so that its drifted properties

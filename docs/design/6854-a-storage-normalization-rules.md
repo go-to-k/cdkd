@@ -85,6 +85,7 @@ bucket policy) is tested in that provider's own suites under
 | Blank `MfaConfiguration` narrowed to what cdkd sends | `cognito/read-state.ts` `canonicalizeDesiredProperties`, `mfa-request.ts` | Not an AWS equivalence: the same helper decides what create and update send, so state and template compare like for like. | A declared `ON` / `OPTIONAL` / `OFF` is never rewritten. | Correct |
 | Placeholders for unset blocks | `readCurrentState` | An unset block reads as `[]`, `{}` or `''` so an out-of-band add is seen. | A set value is compared. | Correct |
 | No unordered paths | (none) | Lists are compared as written, so a reorder is reported. | - | Correct (may over-report, never hides) |
+| Baseline `EnabledMfas` loses `SOFTWARE_TOKEN_MFA` when the template declares no MFA property under `OFF` | `cognito/read-state.ts` `canonicalizeDriftPair` | Not an equivalence: compares MORE. A pre-#7128 release left the factor and captured it in the baseline (#7134); CloudFormation's OFF update clears it. | Baseline side only; the readback and `--accept` keep the live list. A list holding another factor (`SMS_MFA` survives the reset), a declared factor, a non-`OFF` baseline. | Correct |
 
 ## AWS::S3::Bucket
 
