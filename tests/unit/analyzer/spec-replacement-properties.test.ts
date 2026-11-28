@@ -245,9 +245,11 @@ describe('spec-replacement table (go-to-k/cdkd#7070)', () => {
   });
 
   // go-to-k/cdkd#7083 slice 5: CloudFormation A/B chains. An EKS compute
-  // environment's EksConfiguration replaced it (a new ARN); the EMR Serverless
-  // image and KafkaConnect connector members applied in place.
-  it('a Batch EKS compute environment replaces on EksConfiguration, the in-place rows stay', async () => {
+  // environment's EksConfiguration replaced it (a new ARN), which the schema's
+  // nested create-only members (EksClusterArn, KubernetesNamespace) already
+  // planned: this pins it. The EMR Serverless image and KafkaConnect connector
+  // members applied in place.
+  it('a Batch EKS compute environment still replaces on EksConfiguration, the in-place rows stay', async () => {
     expect(await replacesOnChange('AWS::Batch::ComputeEnvironment', ['EksConfiguration'])).toBe(
       true
     );

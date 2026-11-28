@@ -204,6 +204,21 @@ describe('nested measured replacement in the stateful refusal (go-to-k/cdkd#7083
     expect(text).not.toContain('ReadOnly');
   });
 
+  it('names a Windows member CloudFormation was measured replacing on', async () => {
+    const win = (deploymentType: string) => ({
+      WindowsConfiguration: { DeploymentType: deploymentType, ThroughputCapacity: 8 },
+    });
+    const from = win('SINGLE_AZ_1');
+    const to = win('SINGLE_AZ_2');
+    const text = await refusalOf(TYPE, from, to, [
+      { path: 'WindowsConfiguration', oldValue: from.WindowsConfiguration, newValue: to.WindowsConfiguration, requiresReplacement: true },
+    ]);
+    expect(text).toContain(
+      'CloudFormation was measured replacing it on a WindowsConfiguration.DeploymentType change, so the data is lost there as well.'
+    );
+    expect(text).not.toContain('ThroughputCapacity change');
+  });
+
   it('names no member that did not change', async () => {
     const text = await refusalOf(TYPE, lustre(1024, 50), lustre(2048, 100), change(lustre(1024, 50), lustre(2048, 100)));
     expect(text).not.toContain('PerUnitStorageThroughput change');

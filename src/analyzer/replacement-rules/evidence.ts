@@ -858,7 +858,9 @@ export const REPLACEMENT_EVIDENCE: ReadonlyMap<string, ReplacementEvidence> = ne
   // CloudFormation A/B on an EKS compute environment: a KubernetesNamespace
   // change and an EksClusterArn change (another cluster) each replaced it
   // (a new compute environment ARN; with a ComputeEnvironmentName, the update
-  // failed "a custom-named resource requires replacing").
+  // failed "a custom-named resource requires replacing"). The schema's nested
+  // create-only members (EksClusterArn, KubernetesNamespace) already planned
+  // both changes as replacements; the row adds adding or dropping the block.
   ['AWS::Batch::ComputeEnvironment#EksConfiguration', replace('cfn-measured', 7083)],
   // --- updateableProperties beyond the fixture or the spec
   ['AWS::Budgets::Budget#NotificationsWithSubscribers', update('deviation', 7038)],

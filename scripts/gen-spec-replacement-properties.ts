@@ -107,7 +107,14 @@ export function renderRow(type: string, paths: readonly (readonly string[])[]): 
   if (!matrix && `    [${each.join(', ')}],`.length <= 100) {
     return ['  [', `    '${type}',`, `    [${each.join(', ')}],`, '  ],'];
   }
-  return ['  [', `    '${type}',`, '    [', ...each.map((p) => `      ${p},`), '    ],', '  ],'];
+  // A path too long for its own line breaks one segment per line, as
+  // `vp fmt` does (FSx `WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.*`).
+  const lines = paths.flatMap((p, i) =>
+    `      ${each[i]},`.length <= 100
+      ? [`      ${each[i]},`]
+      : ['      [', ...p.map((s) => `        '${s}',`), '      ],']
+  );
+  return ['  [', `    '${type}',`, '    [', ...lines, '    ],', '  ],'];
 }
 
 /** The `replace` rows as a `src/` module (formatted as `vp fmt` leaves it). */

@@ -58,6 +58,7 @@ function fsProperties(deploymentType: string, subnet: string): Record<string, un
       ThroughputCapacity: 8,
       AutomaticBackupRetentionDays: 0,
       WeeklyMaintenanceStartTime: '2:06:00',
+      DiskIopsConfiguration: { Mode: 'AUTOMATIC' },
       Aliases: ['keep.corp.cdkd-integ.com', 'add.corp.cdkd-integ.com'],
     },
     Tags: [
