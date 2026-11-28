@@ -103,7 +103,11 @@ function templateGetAttReadsOf(template: unknown): Map<string, Set<string> | 'an
  * names from. A value equal to a public token (the region, the stack name) is
  * no needle; one under the needle floor, or contained in the physical id,
  * drops only a key EQUAL to it (as a substring it would match incidental
- * key text). Returns `record` by identity when nothing is dropped.
+ * key text). The cost is an over-drop, never an exposure: a key that only
+ * coincides with such a value (a pre-v11 record positioned by today's
+ * template can hold a public literal at a `NoEcho` position) is dropped, and a
+ * later template that adds a `Fn::GetAtt` of it finds no attribute until the
+ * handler runs again. Returns `record` by identity when nothing is dropped.
  */
 export function withSecretAttributeKeysDropped<
   R extends {
