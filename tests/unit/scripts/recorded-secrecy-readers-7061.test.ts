@@ -1183,6 +1183,15 @@ const READS_RECORD_TEXT: Readonly<Record<string, { count: number; why: string }>
     count: 1,
     why: 'asks whether a value IS a persisted marker (the mask or a whole reference token): it needs the marker KIND',
   },
+  // go-to-k/cdkd#7191: the same question over an orphan's or superseded record's value.
+  'src/cli/commands/scrub/noecho-stored.ts#persisted#holdsMaskLeaf(value)': {
+    count: 1,
+    why: 'asks whether a value IS a persisted marker (the mask or a whole reference token): it needs the marker KIND',
+  },
+  'src/deployment/deploy-engine/carried-noecho.ts#carriedRecordsHoldNoEchoPlaintext#holdsMaskLeaf(value)': {
+    count: 1,
+    why: 'asks whether the value at a NoEcho position is ALREADY the mask (or a whole reference token), to decide whether the save would rewrite it: it needs the marker KIND',
+  },
   'src/deployment/deploy-engine/update/helpers.ts#walk#mentionsDynamicReference(node)': {
     count: 1,
     why: 'finds a reference MIXED with other text: it needs the marker KIND',

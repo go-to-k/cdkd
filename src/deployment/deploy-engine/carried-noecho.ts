@@ -1,9 +1,8 @@
-import { noEchoLeavesFor, noEchoPositionSources } from '../noecho.js';
-import { isSingleDynamicReferenceToken, valueAtCoordinate } from '../../secret-redaction.js';
-import { holdsMaskLeaf } from '../../secret-redaction/recorded-secrecy.js';
-import { supersededResourcesOf } from '../../superseded-resources.js';
-import type { DeployEngine } from '../../deploy-engine.js';
-import type { StackState } from '../../../types/state.js';
+import { noEchoLeavesFor, noEchoPositionSources } from './noecho.js';
+import { isSingleDynamicReferenceToken, valueAtCoordinate } from '../secret-redaction.js';
+import { holdsMaskLeaf } from '../secret-redaction/recorded-secrecy.js';
+import type { DeployEngine } from '../deploy-engine.js';
+import type { StackState, SupersededResourceRecord } from '../../types/state.js';
 
 /**
  * Whether a carried rollback-orphan or superseded record still holds a value
@@ -16,18 +15,18 @@ import type { StackState } from '../../../types/state.js';
  * It asks `noEchoLeavesFor` with no resolved bag, exactly as the save's
  * `scrubDroppedRecord` does on this path (the no-change diff resolves no
  * record), so a record it flags is one the save masks: the next unchanged
- * deploy finds the mask there and saves nothing more.
+ * deploy finds the mask there and saves nothing more. The caller hands the
+ * containers in, read below its own guards.
  */
 export function carriedRecordsHoldNoEchoPlaintext(
   engine: Pick<DeployEngine, 'noEchoRun' | 'noEchoDeps'>,
-  state: Pick<StackState, 'resources' | 'orphans' | 'supersededResources'>
+  resources: StackState['resources'],
+  orphans: StackState['orphans'] | undefined,
+  superseded: readonly SupersededResourceRecord[]
 ): boolean {
-  const rows = [
-    ...(Array.isArray(state.orphans) ? state.orphans : []),
-    ...supersededResourcesOf(state),
-  ];
+  const rows = [...(Array.isArray(orphans) ? orphans : []), ...superseded];
   if (rows.length === 0) return false;
-  const sources = noEchoPositionSources(engine.noEchoRun, state.resources);
+  const sources = noEchoPositionSources(engine.noEchoRun, resources);
   if (sources === undefined) return false;
   const deps = engine.noEchoDeps();
   return rows.some((row) => {

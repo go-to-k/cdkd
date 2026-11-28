@@ -59,7 +59,11 @@ import {
   applyScrubNoEcho,
   noEchoFilledRowParameters,
 } from './noecho.js';
-import { planScrubStoredNoEcho, unverifiableNoEchoRecordWarning } from './noecho-stored.js';
+import {
+  planScrubStoredNoEcho,
+  storedNoEchoRows,
+  unverifiableNoEchoRecordWarning,
+} from './noecho-stored.js';
 import { noEchoAttributeNamesOf } from '../../../deployment/deploy-engine/noecho.js';
 
 /**
@@ -169,6 +173,7 @@ export async function scrubStackRewritePass({
   // evidence; one no evidence positions is reported, never called clean.
   const storedNoEcho = planScrubStoredNoEcho(
     state,
+    storedNoEchoRows(state.orphans, state.supersededResources),
     stack.template,
     noEchoPlans.sources,
     noEchoPlans.needleSources
@@ -402,7 +407,9 @@ export async function scrubStackRewritePass({
       // with none recorded no performed read's spelling holds a token, so
       // `findUnrepairedCrossStackReadNames` has nothing to flag against.
       unrepairedReadNames: 0,
-      unverifiableNoEchoRecords: storedNoEcho.unverifiable.length,
+      ...(storedNoEcho.unverifiable.length > 0 && {
+        unverifiableNoEchoRecords: storedNoEcho.unverifiable.length,
+      }),
       ...(malformedResources ? { malformedResources } : {}),
       ...(malformedResourceRows ? { malformedResourceRows } : {}),
       ...(malformedOutputs ? { malformedOutputs } : {}),
@@ -972,7 +979,9 @@ export async function scrubStackRewritePass({
     unverifiableProducerRecords: prePassFindings.damagedProducerRecords.length,
     unverifiableLeaves,
     unrepairedReadNames: unrepairedReadNames.length,
-    unverifiableNoEchoRecords: storedNoEcho.unverifiable.length,
+    ...(storedNoEcho.unverifiable.length > 0 && {
+      unverifiableNoEchoRecords: storedNoEcho.unverifiable.length,
+    }),
     ...(malformedResources ? { malformedResources } : {}),
     ...(malformedOutputs ? { malformedOutputs } : {}),
     ...(malformedOrphans ? { malformedOrphans } : {}),

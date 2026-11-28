@@ -31,14 +31,20 @@ export interface UnverifiableNoEchoRecord {
   readonly resourceType: string;
 }
 
-/** The orphan and superseded rows of `state`, keyed as `orphanSecrets` is. */
-export function storedNoEchoRows(state: StackState): StoredNoEchoRow[] {
+/**
+ * The orphan and superseded rows, keyed as `orphanSecrets` is. The caller
+ * hands both containers in, read below its own guards.
+ */
+export function storedNoEchoRows(
+  orphans: StackState['orphans'] | undefined,
+  supersededResources: StackState['supersededResources'] | undefined
+): StoredNoEchoRow[] {
   const rows: StoredNoEchoRow[] = [];
   const readable = (record: unknown): record is ResourceState =>
     record !== null &&
     typeof record === 'object' &&
     typeof (record as ResourceState).resourceType === 'string';
-  for (const [index, row] of (Array.isArray(state.orphans) ? state.orphans : []).entries()) {
+  for (const [index, row] of (Array.isArray(orphans) ? orphans : []).entries()) {
     if (readable(row?.state) && typeof row.logicalId === 'string') {
       rows.push({
         key: String(index),
@@ -48,7 +54,7 @@ export function storedNoEchoRows(state: StackState): StoredNoEchoRow[] {
       });
     }
   }
-  const superseded = Array.isArray(state.supersededResources) ? state.supersededResources : [];
+  const superseded = Array.isArray(supersededResources) ? supersededResources : [];
   for (const [index, row] of superseded.entries()) {
     if (isSupersededResourceRecord(row) && readable(row.state)) {
       rows.push({
@@ -97,7 +103,8 @@ function holdsUnmaskedLeaf(value: unknown): boolean {
  * branch's position is the safe direction for state at rest.
  */
 export function planScrubStoredNoEcho(
-  state: StackState,
+  state: Pick<StackState, 'resources'>,
+  rows: readonly StoredNoEchoRow[],
   template: CloudFormationTemplate,
   sources: NoEchoPositionSources,
   needleSources: NoEchoPositionSources
@@ -109,7 +116,6 @@ export function planScrubStoredNoEcho(
   const byKey = new Map<string, ScrubNoEchoPlan>();
   const unverifiable: UnverifiableNoEchoRecord[] = [];
   let changesAny = false;
-  const rows = storedNoEchoRows(state);
   if (rows.length === 0) return { byKey, changesAny, unverifiable };
   const resources = state.resources ?? {};
   const templateResources = template.Resources ?? {};

@@ -2,7 +2,7 @@ import { retryCarriedSupersededResources } from '../superseded-retry.js';
 import { queueNestedCleanup } from '../nested-cleanup.js';
 import { carriedNotHeldByConsumers } from '../consumer-held-superseded.js';
 import { supersededResourcesOf } from '../../superseded-resources.js';
-import { carriedRecordsHoldNoEchoPlaintext } from './carried-noecho.js';
+import { carriedRecordsHoldNoEchoPlaintext } from '../carried-noecho.js';
 import { redactOutputs } from '../masking.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { settleJournalAfterSuccess } from '../rollback.js';
@@ -132,7 +132,13 @@ export async function deployWithoutChanges(
   // (a pre-v11 binary wrote it) is saved, so the save's positioning masks it.
   // After the retry above, which may have dropped a superseded one.
   const carriedNoEchoPending =
-    !engine.options.dryRun && carriedRecordsHoldNoEchoPlaintext(engine, currentState);
+    !engine.options.dryRun &&
+    carriedRecordsHoldNoEchoPlaintext(
+      engine,
+      currentState.resources,
+      currentState.orphans,
+      supersededResourcesOf(currentState)
+    );
 
   // The diff only inspects Resources, so an Outputs-only change (a new
   // Export added because a downstream stack now references this one — its
