@@ -101,8 +101,9 @@ figure in one line:
 `Deploying 4 resource(s) (DAG: 3 levels, max parallel: 20)`.
 
 During a deploy each resource starts as soon as its own dependencies
-complete, so cdkd does not wait for a whole level to finish. A destroy
-deletes level by level, in reverse order.
+complete, so cdkd does not wait for a whole level to finish. A destroy works
+the same way in reverse: a resource is deleted as soon as every resource that
+depends on it is gone, so one slow delete does not hold back unrelated ones.
 
 ### Remove dependencies the template does not need
 

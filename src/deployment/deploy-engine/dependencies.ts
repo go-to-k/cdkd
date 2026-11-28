@@ -184,7 +184,7 @@ export function addImplicitDeleteDependencies(
     const resource = state.resources[id];
     if (resource) scoped[id] = resource;
   }
-  for (const { before, after } of computeImplicitDeleteEdges(scoped)) {
+  for (const { before, after } of computeImplicitDeleteEdges(scoped, state.resources)) {
     // `before` must be deleted before `after`, so `before` is in `after`'s
     // deletion deps (picked / deleted first).
     if (!dependedBy.has(after)) dependedBy.set(after, new Set());

@@ -46,6 +46,7 @@ import {
   withoutSuperseded,
 } from '../../../deployment/superseded-resources.js';
 import { scheduleSupersededDeletes } from './superseded-schedule.js';
+import { runDeletesInDependencyOrder } from './delete-dag.js';
 import {
   createUnionSecretMasker,
   unionOfSecretBags,
@@ -460,15 +461,16 @@ export async function destroyStackUnderLock({
       }
     }
 
-    const { dagBuilder, blockingGraph, executionLevels } = buildDeleteGraph(state, logger);
+    const { dagBuilder, graph, blockingGraph, executionLevels } = buildDeleteGraph(state, logger);
 
     // go-to-k/cdkd#5670: a resource whose delete FAILED may still need what it depends on to be
     // deleted later -- an ECS gateway's infrastructure role, a VPC gateway attachment's internet
     // gateway. So every resource it TRANSITIVELY depends on (over `blockingGraph`) is left in AWS
     // and in state, mapped to the first failed resource that blocked it, as CloudFormation's
     // DELETE_FAILED leaves them; resources unrelated to it are still deleted, as CloudFormation
-    // also does. A dependency always sits on a LATER deletion level than its dependent, so marking
-    // it when the dependent's delete settles is in time. A SKIP does not block: like the deploy
+    // also does. A dependency is never started before its dependent's delete settles (the delete
+    // graph orders it after, and `blockingGraph` is a subset of it), so marking it then is in
+    // time. A SKIP does not block: like the deploy
     // engine's DELETE phase, which keeps a failure's dependencies but not a skip's (#6969), the destroy still deletes
     // what a skipped resource depends on -- the custom-resource skip flow relies on its backing
     // Lambda being gone for the re-run.
@@ -652,47 +654,37 @@ export async function destroyStackUnderLock({
     }
     // go-to-k/cdkd#7073: the rest in dependency order with the levels.
     const slots = scheduleSupersededDeletes(state, executionLevels, retryLate);
-    const deleteSupersededSlot = async (step: number): Promise<void> => {
-      for (const entry of slots[step] ?? []) {
-        if (!lock.interrupted) await deleteSupersededRow(entry);
-      }
-    };
 
-    // Process levels in reverse order for deletion.
-    for (let levelIndex = executionLevels.length - 1; levelIndex >= 0; levelIndex--) {
-      await deleteSupersededSlot(executionLevels.length - 1 - levelIndex);
-      // Graceful SIGINT (issue #816): once draining, do not start a new
-      // deletion level. Any level already in flight finished via its own
-      // `Promise.all` below; remaining levels are left untouched and their
-      // resources stay in the preserved state for a clean re-run.
-      if (lock.interrupted) {
-        logger.debug('Interrupted (draining) — not scheduling further deletion levels');
-        break;
-      }
-
-      const level = executionLevels[levelIndex];
-      if (!level) continue;
-      logger.debug(
-        `Deletion level ${executionLevels.length - levelIndex}/${executionLevels.length} (${level.length} resources)`
-      );
-
-      const stackRegion = state.region ?? ctx.baseRegion;
+    // go-to-k/cdkd#7208: event-driven, as the deploy's DELETE phase runs. A
+    // resource is deleted once what must go before it has settled, not its
+    // whole deletion level. Graceful SIGINT (issue #816): once draining, no
+    // new delete starts; what was not started stays in the preserved state
+    // for a clean re-run.
+    const stackRegion = state.region ?? ctx.baseRegion;
+    await runDeletesInDependencyOrder({
+      dagBuilder,
+      graph,
+      executionLevels,
+      supersededSlots: slots,
       // go-to-k/cdkd#3869: each resource's delete runs under a PRINTING bag of
       // its own name spellings and those of each secret-named sibling its
       // record holds, so its provider's delete lines, a deleted reader's
       // warnings and the final-snapshot lines mask a name derived from a
       // secret. `getCurrentResourceSecrets` never returns it.
-      const deletePromises = level.map((logicalId) =>
+      deleteResource: (logicalId) =>
         withPrintingSecrets(printingBagOf(logicalId), () =>
           deleteStackResource(resourceFrame, logicalId, stackRegion)
-        )
-      );
-
-      await Promise.all(deletePromises);
-    }
+        ),
+      deleteSupersededRow: async (entry) => {
+        if (!lock.interrupted) await deleteSupersededRow(entry);
+      },
+      interrupted: () => lock.interrupted,
+    });
 
     // The rows naming no remaining resource, AFTER the stack's own resources.
-    await deleteSupersededSlot(executionLevels.length);
+    for (const entry of slots[executionLevels.length] ?? []) {
+      if (!lock.interrupted) await deleteSupersededRow(entry);
+    }
 
     // A superseded row cdkd cannot read is carried, never acted on, and may
     // name a live resource: a skip, so the state that holds it is kept.

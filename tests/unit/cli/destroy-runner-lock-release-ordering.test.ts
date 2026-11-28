@@ -421,24 +421,34 @@ describe('runDestroyForStack releases the lock BEFORE unregistering its SIGINT h
         }),
       } as unknown as LockManager,
     };
-    // Two levels: B (depends on A) is deleted first and schedules a persist;
-    // the second level's log line then throws out of the loop.
+    // B (depends on A) is deleted first and schedules a persist; A's delete,
+    // dispatched once B's settles, then throws out of the delete walk.
     const state = makeState('A');
     state.resources['B'] = { ...state.resources['A']!, dependencies: ['A'] };
+    let armed = false;
+    const recordA = state.resources['A']!;
+    const deletionPolicyA = recordA.deletionPolicy;
+    Object.defineProperty(recordA, 'deletionPolicy', {
+      get() {
+        if (armed) throw new Error('EPIPE: broken pipe');
+        return deletionPolicyA;
+      },
+    });
     // Under-lock re-read (#5220): the same two-resource record, so it must
     // not pre-empt the mid-loop EPIPE throw this case is actually about.
     (ctx.stateBackend.getState as ReturnType<typeof vi.fn>).mockResolvedValue({
       state,
       etag: 'e',
     });
-    logs.debug.mockImplementation((msg: unknown) => {
-      if (String(msg).startsWith('Deletion level 2/')) throw new Error('EPIPE: broken pipe');
+    // Armed when B's delete begins, so only the walk reads A's policy after it.
+    logs.info.mockImplementation((msg: unknown) => {
+      if (String(msg).includes('B')) armed = true;
     });
 
     try {
       await expect(runDestroyForStack('TestStack', state, ctx)).rejects.toThrow(/EPIPE/);
     } finally {
-      logs.debug.mockReset();
+      logs.info.mockReset();
     }
 
     expect(order).toEqual(['save', 'release']);

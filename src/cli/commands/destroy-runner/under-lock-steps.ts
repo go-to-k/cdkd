@@ -308,6 +308,7 @@ export function buildDeleteGraph(
   logger: DestroyLogger
 ): {
   dagBuilder: DagBuilder;
+  graph: ReturnType<DagBuilder['buildGraph']>;
   blockingGraph: ReturnType<DagBuilder['buildGraph']>;
   executionLevels: string[][];
 } {
@@ -406,7 +407,7 @@ export function buildDeleteGraph(
   const executionLevels = dagBuilder.getExecutionLevels(graph);
 
   logger.debug(`Dependency graph: ${executionLevels.length} level(s)`);
-  return { dagBuilder, blockingGraph, executionLevels };
+  return { dagBuilder, graph, blockingGraph, executionLevels };
 }
 
 /** What {@link makePrintingBagOf} reads from `destroyStackUnderLock`. */

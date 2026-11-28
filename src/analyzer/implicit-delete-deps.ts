@@ -112,6 +112,22 @@ export interface DeleteOrderingResource {
   resourceType: string;
   physicalId?: string;
   properties?: Record<string, unknown>;
+  dependencies?: readonly string[];
+}
+
+const IAM_ROLE_POLICY_TYPES: ReadonlySet<string> = new Set([
+  'AWS::IAM::Policy',
+  'AWS::IAM::RolePolicy',
+  'AWS::IAM::ManagedPolicy',
+]);
+
+function isCustomResourceType(type: string): boolean {
+  return type === 'AWS::CloudFormation::CustomResource' || type.startsWith('Custom::');
+}
+
+function recordedDependencies(resource: DeleteOrderingResource | undefined): readonly string[] {
+  const deps: unknown = resource?.dependencies;
+  return Array.isArray(deps) ? deps.filter((d): d is string => typeof d === 'string') : [];
 }
 
 /**
@@ -174,11 +190,31 @@ export function extractReferencedAlarmNames(alarmRule: string): string[] {
  * We therefore emit an edge making the composite alarm delete BEFORE every
  * alarm its `AlarmRule` references (handling composite-of-composite too).
  *
+ * It also deletes a custom resource BEFORE each IAM policy attached to its
+ * ServiceToken Lambda's role (go-to-k/cdkd#7208), the delete-side mirror of
+ * `DagBuilder`'s custom-resource policy edge: the handler's `Delete` call needs
+ * the policy's grants. The recorded `dependencies` carry the chain (custom
+ * resource -> Lambda -> role <- policy), since a record's properties hold
+ * resolved values and no `Ref`. An edge that would close a cycle is skipped, as
+ * `DagBuilder` skips one, so the delete graph stays acyclic.
+ *
  * @param resources logical id -> resource (the subset of resources participating
  *   in the delete). Only entries whose logical id is a key in this record are
  *   considered as edge endpoints.
+ * @param context every record of the stack, for the custom resource's chain
+ *   through records outside `resources` (a Lambda the delete keeps). Defaults to
+ *   `resources`.
  */
 export function computeImplicitDeleteEdges(
+  resources: Record<string, DeleteOrderingResource>,
+  context: Record<string, DeleteOrderingResource> = resources
+): ImplicitDeleteEdge[] {
+  const edges = computeAlarmRuleEdges(resources);
+  edges.push(...computeCustomResourcePolicyEdges(resources, context, edges));
+  return edges;
+}
+
+function computeAlarmRuleEdges(
   resources: Record<string, DeleteOrderingResource>
 ): ImplicitDeleteEdge[] {
   const edges: ImplicitDeleteEdge[] = [];
@@ -213,5 +249,96 @@ export function computeImplicitDeleteEdges(
     }
   }
 
+  return edges;
+}
+
+function computeCustomResourcePolicyEdges(
+  resources: Record<string, DeleteOrderingResource>,
+  context: Record<string, DeleteOrderingResource>,
+  existing: readonly ImplicitDeleteEdge[]
+): ImplicitDeleteEdge[] {
+  const own = (bag: Record<string, DeleteOrderingResource>, id: string) =>
+    Object.prototype.hasOwnProperty.call(bag, id) && typeof bag[id] === 'object' && bag[id] !== null
+      ? bag[id]
+      : undefined;
+
+  // roleId -> the participating policies attached to it.
+  const policiesOfRole = new Map<string, string[]>();
+  for (const [policyId, policy] of Object.entries(resources)) {
+    if (typeof policy !== 'object' || policy === null) continue;
+    if (!IAM_ROLE_POLICY_TYPES.has(policy.resourceType)) continue;
+    for (const roleId of recordedDependencies(policy)) {
+      if (own(context, roleId)?.resourceType !== 'AWS::IAM::Role') continue;
+      const list = policiesOfRole.get(roleId) ?? [];
+      list.push(policyId);
+      policiesOfRole.set(roleId, list);
+    }
+  }
+  // No policy, no work: an ordinary delete pays nothing for this.
+  if (policiesOfRole.size === 0) return [];
+
+  const edges: ImplicitDeleteEdge[] = [];
+  // Delete-before adjacency over `context`, built on the first candidate.
+  let before: Map<string, Set<string>> | undefined;
+  const addBefore = (first: string, then: string): void => {
+    let set = before!.get(first);
+    if (!set) before!.set(first, (set = new Set()));
+    set.add(then);
+  };
+  const buildBefore = (): void => {
+    before = new Map();
+    const byType = new Map<string, string[]>();
+    for (const [id, r] of Object.entries(context)) {
+      if (typeof r !== 'object' || r === null) continue;
+      // A dependent is deleted before what it depends on.
+      for (const dep of recordedDependencies(r)) addBefore(id, dep);
+      const ids = byType.get(r.resourceType) ?? [];
+      ids.push(id);
+      byType.set(r.resourceType, ids);
+    }
+    for (const [type, ids] of byType) {
+      for (const earlierType of typesDeletedBefore(type)) {
+        for (const earlier of byType.get(earlierType) ?? []) {
+          for (const id of ids) addBefore(earlier, id);
+        }
+      }
+    }
+    for (const edge of existing) addBefore(edge.before, edge.after);
+  };
+  const reaches = (from: string, to: string): boolean => {
+    const seen = new Set<string>([from]);
+    const queue = [from];
+    while (queue.length > 0) {
+      const id = queue.pop()!;
+      if (id === to) return true;
+      for (const next of before!.get(id) ?? []) {
+        if (!seen.has(next)) {
+          seen.add(next);
+          queue.push(next);
+        }
+      }
+    }
+    return false;
+  };
+
+  for (const [crId, cr] of Object.entries(resources)) {
+    if (typeof cr !== 'object' || cr === null || !isCustomResourceType(cr.resourceType)) continue;
+    for (const lambdaId of recordedDependencies(cr)) {
+      const lambda = own(context, lambdaId);
+      if (lambda?.resourceType !== 'AWS::Lambda::Function') continue;
+      for (const roleId of recordedDependencies(lambda)) {
+        for (const policyId of policiesOfRole.get(roleId) ?? []) {
+          if (policyId === crId) continue;
+          if (before === undefined) buildBefore();
+          if (before!.get(crId)?.has(policyId)) continue;
+          // The policy already goes before the custom resource: an edge back
+          // would close a cycle.
+          if (reaches(policyId, crId)) continue;
+          addBefore(crId, policyId);
+          edges.push({ before: crId, after: policyId });
+        }
+      }
+    }
+  }
   return edges;
 }
