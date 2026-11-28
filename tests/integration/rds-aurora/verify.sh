@@ -1238,6 +1238,7 @@ if [ "${STACK_DRIFT_RC}" -ne 0 ]; then
       (.drifted[]? | "drifted: " + .logicalId + " (" + .type + "): " + ([.changes[].path] | join(" "))),
       (.notCompared[]? | "notCompared: " + .logicalId + " (" + .type + "): cause " + (.cause | tostring)),
       (.notSupported[]? | "notSupported: " + .logicalId + " (" + .type + ")"),
+      (.deleted[]? | "deleted: " + .logicalId + " (" + .type + ")"),
       (.warnings[]? | "warning: " + .)
     )' >&2 || printf 'raw drift output: %s\n' "${STACK_DRIFT}" >&2
   echo "FAIL: #5723: cdkd drift on the freshly deployed stack exited ${STACK_DRIFT_RC}, want 0 (phantom drift; an AWS::RDS::DBProxy Auth row is #5723)" >&2

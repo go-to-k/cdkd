@@ -356,15 +356,18 @@ describe('enclosingDeadlineRemainingMs (issue #5155)', () => {
 describe('formatWarnElapsed (go-to-k/cdkd#7197)', () => {
   it('prints seconds below a minute instead of rounding up to 1m', () => {
     expect(formatWarnElapsed(10_003)).toBe('10s');
+    expect(formatWarnElapsed(59_500)).toBe('1m');
+    expect(formatWarnElapsed(90_000)).toBe('1m30s');
+    expect(formatWarnElapsed(720_000)).toBe('12m');
     expect(formatWarnElapsed(45_000)).toBe('45s');
     expect(formatWarnElapsed(59_400)).toBe('59s');
     expect(formatWarnElapsed(200)).toBe('1s');
   });
 
-  it('prints whole minutes from a minute on', () => {
+  it('prints minutes from a minute on, with the remaining seconds, never rounding up', () => {
     expect(formatWarnElapsed(59_600)).toBe('1m');
     expect(formatWarnElapsed(60_000)).toBe('1m');
     expect(formatWarnElapsed(5 * 60_000)).toBe('5m');
-    expect(formatWarnElapsed(12 * 60_000 + 10_000)).toBe('12m');
+    expect(formatWarnElapsed(12 * 60_000 + 10_000)).toBe('12m10s');
   });
 });
