@@ -175,7 +175,7 @@ dynamodb-tableclass-switch	2026-11-25T18:42:11Z	PASS	201	verify.sh	PR6997 63e602
 dynamodb-ttl-attr-change	2026-11-25T18:29:59Z	PASS	1915	verify.sh	PR6997 152e7344b pre-review, own state bucket; rc ok, orph clean
 ec2-association-replace	2026-11-25T15:12:38Z	PASS	296	verify.sh	rc ok, orph clean, phase 4b EIP assoc replaced delete-first after AMI change (PR 6993)
 ec2-eip-instance-association	2026-11-24T20:15:56Z	PASS	181	verify.sh	rc ok, orph clean; Phase 3 --no-wait EIP waits for instance
-ec2-instance	2026-11-28T11:10:12Z	FAIL	1980	verify.sh	PR7192 at 20c566bc7: Phase 0 SsmInstance5630 SSM CreateAssociation(InstanceId) NotAuthorized: could not validate caller login credentials (tag-target CreateAssociation works); 1p/1q not reached; orph clean
+ec2-instance	2026-11-28T14:38:29Z	PASS	897	verify.sh	PR7192 at ee1c1aa39: #7132 Phases 1p/1q settled right after deploy; rc 0, destroy 28 deleted 0 errors, orph clean (us-east-1)
 ec2-instance-fanout	2026-11-26T05:45:44Z	PASS	95	verify.sh	rc ok, orph clean
 ec2-instance-volume-attachment-drift	2026-11-26T05:45:44Z	PASS	251	verify.sh	rc ok, orph clean
 ec2-route-targets	2026-11-26T16:07:25Z	PASS	837	verify.sh	PR7067 479dd6c1a us-east-1 rc 0 ok, orph clean
