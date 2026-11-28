@@ -26,9 +26,9 @@
  *   function's `Active`, #5002; NAT address associations, #2762); `reason`
  *   names the evidence.
  * - `unmeasured`: no wait on at least one create / update / delete path, and
- *   whether CloudFormation waits there needs an A/B run; #7132 tracks it. The
- *   set is frozen in the test and only shrinks: a NEW operation arrives as
- *   `waits` or `no-wait-by-design`.
+ *   whether CloudFormation waits there needs an A/B run. #7132 measured every
+ *   such row, so none remains; the test's frozen set is empty and refuses a
+ *   NEW one: an operation arrives as `waits` or `no-wait-by-design`.
  *
  * A LEAF with no imports: the generator, run by Node's type stripping, reads it.
  */
@@ -55,9 +55,6 @@ const byDesign = (reason: string): AsyncOperationVerdict => ({
   verdict: 'no-wait-by-design',
   reason,
 });
-const unmeasured = (reason: string): AsyncOperationVerdict => ({ verdict: 'unmeasured', reason });
-
-const NO_WAIT = 'returns after the call; no code comment says why; needs a CloudFormation A/B';
 /** `isTerminalDbWaitStatus` (deletion-protection-compensation/final-snapshot-wait.ts). */
 const DB_TERMINAL = [
   'deleting',
@@ -145,8 +142,12 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
   'cloudtrail:StartLogging': byDesign(
     'settled when AWS answers: GetTrailStatus read IsLogging true on the first read after the call (3 of 3, ~0.2 s); CloudFormation completes with it true (#7132)'
   ),
-  'codebuild:CreateWebhook': unmeasured(NO_WAIT),
-  'codebuild:UpdateWebhook': unmeasured(NO_WAIT),
+  'codebuild:CreateWebhook': byDesign(
+    'settled when AWS answers: the response and the first BatchGetProjects read report webhook status ACTIVE (3 of 3, CodeConnections GitHub source) (#7132)'
+  ),
+  'codebuild:UpdateWebhook': byDesign(
+    'settled when AWS answers: the first BatchGetProjects read reports status ACTIVE with the new filter groups (3 of 3) (#7132)'
+  ),
   'docdb:CreateDBCluster': waits(['waitForClusterAvailable'], DB_TERMINAL, DEFERRED),
   'docdb:CreateDBInstance': waits(['waitForInstanceAvailable'], DB_TERMINAL, DEFERRED),
   'docdb:CreateDBSubnetGroup': byDesign(

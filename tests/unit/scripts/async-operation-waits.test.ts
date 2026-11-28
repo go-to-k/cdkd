@@ -38,8 +38,6 @@ const FIREHOSE_ROOT_ONLY = 'src/provisioning/providers/firehose-provider.ts';
  * pass forever.
  */
 const FROZEN_UNMEASURED: ReadonlySet<string> = new Set([
-  'codebuild:CreateWebhook',
-  'codebuild:UpdateWebhook',
 ]);
 
 /**
