@@ -95,7 +95,11 @@ function stateFrom(tpl: CloudFormationTemplate, attributes: Record<string, unkno
   };
 }
 
-async function importOf(value: unknown, type?: string): Promise<ResourceState> {
+async function importOf(
+  value: unknown,
+  type?: string,
+  readbackOnly: Record<string, unknown> = {}
+): Promise<ResourceState> {
   const tpl = template(value, type);
   const state = stateFrom(tpl, { Value: value, Type: 'String' });
   const refusals = await resolveImportedProperties(
@@ -113,6 +117,7 @@ async function importOf(value: unknown, type?: string): Promise<ResourceState> {
           Type: 'String',
           Value: value,
           Description: 'plain-value',
+          ...readbackOnly,
         }),
       },
       provisionedBy: 'sdk',
@@ -150,6 +155,22 @@ describe('cdkd import positions a NoEcho parameter (go-to-k/cdkd#4043 Phase C)',
     // The ordinary parameter beside it stays in the clear.
     expect(record.observedProperties?.['Description']).toBe('plain-value');
     expect(JSON.stringify(record)).not.toContain(`:${JSON.stringify(value)}`);
+  });
+
+  it('masks and names the value the readback echoes under a key the template lacks (go-to-k/cdkd#7158)', async () => {
+    const value = 'cdkd-import-noecho-7158-value';
+    const record = await importOf(value, 'String', { Echo: value, Label: `pre-${value}-post` });
+
+    expect(JSON.stringify(record)).not.toContain(value);
+    expect(record.observedProperties?.['Echo']).toBe('***');
+    expect(record.observedProperties?.['Label']).toBe('***');
+    expect(record.observedMaskedLeaves).toEqual([['Echo'], ['Label']]);
+  });
+
+  it('never learns the region as a needle (go-to-k/cdkd#7158)', async () => {
+    const record = await importOf('us-east-1', 'String', { Region: 'us-east-1' });
+    expect(record.observedProperties?.['Region']).toBe('us-east-1');
+    expect(record.observedMaskedLeaves).toBeUndefined();
   });
 
   it('writes no noEchoLeaves where no NoEcho source serves a leaf', async () => {

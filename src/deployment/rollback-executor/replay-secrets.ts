@@ -18,6 +18,7 @@ import {
   redactForState,
   dynamicReferenceTokens,
   type RecordedSecretValues,
+  withSecretAttributeKeysDropped,
 } from '../secret-redaction.js';
 import { hasOwnKey, hasPlainPrototype } from '../../utils/own-keys.js';
 // `ReplayResolvers` below calls the classifier; `rollback-executor.ts`
@@ -408,15 +409,38 @@ export async function resolveLeafByRegion(
  * `properties` (against `journaledProps`) and `attributes` (against
  * `journaledAttributes`); see {@link keepPersistedPlainLeaves}.
  *
- * No-op when the op resolved no secret.
+ * When the op resolved no secret, only the go-to-k/cdkd#7153 attribute-key
+ * drop runs (a `NoEcho` attribute value is a needle of its own).
+ *
+ * `publicTokens` is the stack's region and name, as the deploy engine's persist
+ * passes them: a `NoEcho` attribute value equal to either is not a needle, so a
+ * fresh public key that merely spells the stack name (`Arn-<stack>`) is kept.
+ * Required, so that no restore arm can forget it.
  */
 export function redactRollbackRecord(
   record: ResourceState,
   secrets: RecordedSecretValues,
+  publicTokens: ReadonlySet<string>,
   journaledProps?: Record<string, unknown>,
   journaledAttributes?: Record<string, unknown>
 ): ResourceState {
-  if (secrets.size === 0) return record;
+  // go-to-k/cdkd#7153: a custom resource attribute whose KEY holds a secret
+  // (a re-created resource's fresh `Data`) is not restored. With no template
+  // in hand, the keys the persisted record already held stand for the ones a
+  // template `Fn::GetAtt` spells: its own save kept only those. This runs
+  // whether or not the op resolved a secret: a value the handler returned
+  // under a `NoEcho` attribute is a needle too.
+  const persistedAttributeNames =
+    journaledAttributes === undefined ? undefined : new Set(Object.keys(journaledAttributes));
+  if (secrets.size === 0) {
+    return withSecretAttributeKeysDropped(
+      record,
+      record,
+      secrets,
+      persistedAttributeNames,
+      publicTokens
+    );
+  }
   // Deliberately NOT passed as `sourceProperties`: that parameter means "a
   // TEMPLATE bag", which suppresses the trust-any-expression relaxation a state
   // bag is entitled to. Positioning `properties` against the journaled bag is
@@ -445,10 +469,17 @@ export function redactRollbackRecord(
   const scrubbed = scrubResourceRecord(positioned, secrets, undefined, undefined, {
     observed: isSameGenerationBag(positioned.observedProperties) ? 'same-generation' : 'unproven',
   });
-  return keepPersistedPlainRecordLeaves(scrubbed, record, {
-    properties: journaledProps,
-    attributes: journaledAttributes,
-  });
+  // go-to-k/cdkd#7153, as above.
+  return withSecretAttributeKeysDropped(
+    keepPersistedPlainRecordLeaves(scrubbed, record, {
+      properties: journaledProps,
+      attributes: journaledAttributes,
+    }),
+    record,
+    secrets,
+    persistedAttributeNames,
+    publicTokens
+  );
 }
 
 /**

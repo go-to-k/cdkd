@@ -116,6 +116,25 @@ describe('cdkd scrub - the NoEcho positional arm and migration rule (go-to-k/cdk
     expect(JSON.stringify(saved)).not.toContain(`:${JSON.stringify(value)}`);
   });
 
+  it('masks and names a value a migrated record still holds in its readback under a key the template lacks (go-to-k/cdkd#7158)', async () => {
+    const value = 'scrub-7158-noecho-value';
+    const state = legacyState(value, { Echo: value, Label: 'pre-q7Z-post' });
+    const record = state.resources['Param']!;
+    // Already migrated: `properties` holds the mask and names the position;
+    // the readback still holds the value, under the template-absent key too.
+    record.properties = { Name: '/app/p', Type: 'String', Value: '***' };
+    record.noEchoLeaves = [['Value']];
+    record.attributes = { Type: 'String' };
+    const { saved } = await scrub(state, stackInfo('a-later-default-7158'));
+
+    const out = saved!.resources['Param']!;
+    expect(JSON.stringify(saved)).not.toContain(value);
+    expect(out.observedProperties?.['Echo']).toBe('***');
+    expect(out.observedMaskedLeaves).toEqual([['Echo']]);
+    // An unrelated readback-only leaf stays.
+    expect(out.observedProperties?.['Label']).toBe('pre-q7Z-post');
+  });
+
   it('a stack deployed under an OLDER Default: the stored value is the needle, even embedded elsewhere', async () => {
     const stored = 'old-noecho-default-4043';
     const { saved } = await scrub(

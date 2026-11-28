@@ -164,6 +164,13 @@ const EXPECTED: Readonly<Record<string, { readonly sites: number; readonly why: 
     sites: 1,
     why: '`cdkd state refresh-observed` — the issue #1926 site, the first of this class.',
   },
+  'src/deployment/secret-redaction/off-template-echo.ts': {
+    sites: 1,
+    why:
+      '`withOffTemplateEchoesMasked` (go-to-k/cdkd#7158) — writes back the bag it was handed, ' +
+      'already redacted by its caller, with more leaves masked: it adds no leaf, only removes ' +
+      'secrets echoed under keys the template lacks.',
+  },
   'src/deployment/secret-redaction/redact-state/scrub-record.ts': {
     sites: 1,
     why:
@@ -356,9 +363,10 @@ describe('observedProperties write population (issue #2828)', () => {
     // go-to-k/cdkd#6526's rollback baseline refresh added two: 20 across 14.
     // go-to-k/cdkd#6610's table-driven sibling prune added one: 21 across 14.
     // go-to-k/cdkd#6958's failed-op re-create strip added one: 22 across 15.
+    // go-to-k/cdkd#7158's off-template echo mask added one: 23 across 16.
     const actual = scanPopulation();
-    expect(Object.values(actual).reduce((a, b) => a + b, 0)).toBe(22);
-    expect(Object.keys(EXPECTED)).toHaveLength(15);
+    expect(Object.values(actual).reduce((a, b) => a + b, 0)).toBe(23);
+    expect(Object.keys(EXPECTED)).toHaveLength(16);
   });
 
   it('every ASSIGNMENT-form site redacts at the call site, or is allow-listed', () => {

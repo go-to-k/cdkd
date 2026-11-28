@@ -2,6 +2,7 @@ import { getLogger } from '../../../utils/logger.js';
 import { ProviderRegistry } from '../../../provisioning/provider-registry.js';
 import {
   maskReadbackAtCoordinates,
+  maskOffTemplateEchoes,
   noEchoLeavesOf,
   redactForState,
   type RecordedSecretValues,
@@ -338,7 +339,7 @@ export async function captureObservedForImportedResources(
             // marks, through each list's identity field (the whole list where
             // nothing pairs), as the deploy's capture is.
             const marked = noEchoLeavesOf(resource) ?? [];
-            resource.observedProperties = redactForState(
+            const redacted = redactForState(
               marked.length > 0
                 ? maskReadbackAtCoordinates(observed, resource.properties ?? {}, marked)
                 : observed,
@@ -348,6 +349,32 @@ export async function captureObservedForImportedResources(
                 source: resource.properties ?? {},
               }
             );
+            // go-to-k/cdkd#7158 / #7152: a secret the readback echoes under a
+            // key the template lacks, learned from the raw readback at the
+            // positions the record marks, masked in the redacted bag (an echo
+            // the value scan rewrote into its reference keeps it) and named in
+            // `observedMaskedLeaves`.
+            const echoes = maskOffTemplateEchoes({
+              bag: redacted,
+              readback: observed,
+              properties: resource.properties ?? {},
+              noEchoLeaves: resource.noEchoLeaves,
+              physicalId: resource.physicalId,
+              publicTokens: new Set(
+                [stackState.region, stackState.stackName].filter(
+                  (token): token is string => typeof token === 'string' && token !== ''
+                )
+              ),
+            });
+            // Redacted again over the masked bag: the walk is idempotent on its own
+            // output, and the write keeps the redaction at the site.
+            resource.observedProperties = redactForState(echoes.bag, {
+              provenance: 'state-baseline',
+              secrets: NO_RECORDED_SECRETS,
+              source: resource.properties ?? {},
+            });
+            if (echoes.leaves.length > 0) resource.observedMaskedLeaves = echoes.leaves;
+            else delete resource.observedMaskedLeaves;
           }
         } catch (err) {
           // NAME AND SHAPE, never the message. The sibling warn in

@@ -51,6 +51,7 @@ import {
 } from './secret-resolution.js';
 import {
   partitionNoEchoParameterChanges,
+  partitionMaskedEchoChanges,
   partitionUncertifiedBaselineChanges,
   redactDriftChanges,
 } from './redaction.js';
@@ -574,8 +575,14 @@ export async function compareDriftReadback(args: CompareDriftReadbackArgs): Prom
   // go-to-k/cdkd#4043: a `NoEcho` parameter's marked position first; what
   // remains goes to the uncertified-baseline partition.
   const noEchoPartitioned = partitionNoEchoParameterChanges(changes, resource, baseline);
+  // go-to-k/cdkd#7158 / #7152: a secret the readback echoed under a key the
+  // template lacks, held as the mask at an `observedMaskedLeaves` coordinate.
+  // The observed baseline only: no such coordinate is in `properties`.
+  const echoPartitioned = useObserved
+    ? partitionMaskedEchoChanges(noEchoPartitioned.kept, resource, baseline)
+    : { kept: noEchoPartitioned.kept, maskedEchoPaths: [] };
   const partitioned = partitionUncertifiedBaselineChanges(
-    noEchoPartitioned.kept,
+    echoPartitioned.kept,
     resource.properties ?? {},
     baseline
   );
@@ -619,7 +626,9 @@ export async function compareDriftReadback(args: CompareDriftReadbackArgs): Prom
         ? 'unresolvedToken'
         : noEchoPartitioned.noEchoParameterPaths.length > 0
           ? 'noEchoParameter'
-          : undefined;
+          : echoPartitioned.maskedEchoPaths.length > 0
+            ? 'maskedEcho'
+            : undefined;
   if (reported.changes.length === 0) {
     if (notComparedCause !== undefined) {
       // Issue #2135: its OWN variant rather than a `clean` carrying a flag.
@@ -650,6 +659,7 @@ export async function compareDriftReadback(args: CompareDriftReadbackArgs): Prom
       printingNeedles: unionOfSecretBags([printing, stackSecretNames]),
       uncertifiedPaths: partitioned.uncertifiedPaths,
       noEchoParameterPaths: noEchoPartitioned.noEchoParameterPaths,
+      maskedEchoPaths: echoPartitioned.maskedEchoPaths,
       secretsIncomplete: secretResolutionFailed || unresolvedTokens.size > 0,
       notComparedCause,
     });

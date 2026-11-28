@@ -824,12 +824,14 @@ export async function replayFailedOperationsUnbound(
                     logger,
                     inScope: inOriginalPrefix,
                     capture: ctx.captureObservedState,
+                    publicTokens: new Set([ctx.region, stackName]),
                   }
                 ),
                 op.logicalId,
                 op.nameGeneration
               ),
               secrets,
+              new Set([ctx.region, stackName]),
               prev.properties,
               prev.attributes
             ),

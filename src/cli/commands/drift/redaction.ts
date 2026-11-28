@@ -15,6 +15,8 @@ import {
 import { displaySafe } from '../../../utils/display-safe.js';
 import {
   noEchoLeavesOf,
+  observedMaskedLeavesOf,
+  maskOffTemplateEchoes,
   isMarkedCoordinate,
   pathCrossesDottedKey,
   SECRET_MASK,
@@ -38,7 +40,18 @@ import type { SecretPathSet } from './secret-resolution.js';
  * never a value.
  */
 export function noEchoPathsClause(record: ResourceState | undefined): string {
-  const marked = record === undefined ? undefined : noEchoLeavesOf(record);
+  return pathsClause(record === undefined ? undefined : noEchoLeavesOf(record));
+}
+
+/**
+ * The record's `observedMaskedLeaves` coordinates (go-to-k/cdkd#7158), as
+ * {@link noEchoPathsClause} renders its own. Paths only, never a value.
+ */
+export function maskedEchoPathsClause(record: ResourceState | undefined): string {
+  return pathsClause(record === undefined ? undefined : observedMaskedLeavesOf(record));
+}
+
+function pathsClause(marked: readonly (readonly (string | number)[])[] | undefined): string {
   if (marked === undefined || marked.length === 0) return '';
   const paths = marked.map((coordinate) =>
     coordinate
@@ -86,11 +99,71 @@ export function partitionNoEchoParameterChanges(
   record: ResourceState,
   baseline: Record<string, unknown>
 ): { kept: PropertyDrift[]; noEchoParameterPaths: string[] } {
-  const marked = noEchoLeavesOf(record);
-  if (marked === undefined || marked.length === 0) {
-    return { kept: changes, noEchoParameterPaths: [] };
+  const { kept, paths } = partitionMarkedMaskChanges(
+    changes,
+    noEchoLeavesOf(record),
+    record.properties ?? {},
+    baseline
+  );
+  return { kept, noEchoParameterPaths: paths };
+}
+
+/**
+ * Split off the changes whose ONLY difference is the mask at a coordinate the
+ * record's `observedMaskedLeaves` names (go-to-k/cdkd#7158, #7152): a secret
+ * the readback echoed under a key the template lacks, which state holds only
+ * as `***`. Reported as `notCompared: maskedEcho` by PATH, never drift, and
+ * neither side is printed. CloudFormation compares no property the template
+ * does not set, so nothing it compares is lost. Runs on the COMPARISON
+ * values, like {@link partitionNoEchoParameterChanges}.
+ */
+export function partitionMaskedEchoChanges(
+  changes: PropertyDrift[],
+  record: ResourceState,
+  baseline: Record<string, unknown>
+): { kept: PropertyDrift[]; maskedEchoPaths: string[] } {
+  const { kept, paths } = partitionMarkedMaskChanges(
+    changes,
+    observedMaskedLeavesOf(record),
+    record.properties ?? {},
+    baseline,
+    true
+  );
+  return { kept, maskedEchoPaths: paths };
+}
+
+/**
+ * The segments of a marked coordinate's prefix whose dotted spelling is
+ * `path` (the comparator stops at a list, so a prefix is enough), else
+ * `undefined`.
+ */
+function segmentsOf(
+  path: string,
+  marked: readonly (readonly (string | number)[])[]
+): (string | number)[] | undefined {
+  for (const leaf of marked) {
+    let spelled = '';
+    for (let k = 0; k < leaf.length; k++) {
+      const segment = leaf[k]!;
+      if (typeof segment === 'number') break;
+      spelled = k === 0 ? segment : `${spelled}.${segment}`;
+      if (spelled === path) return leaf.slice(0, k + 1) as (string | number)[];
+    }
   }
-  const properties = record.properties ?? {};
+  return undefined;
+}
+
+/** The shared walk of the two partitions above, over one set of marked coordinates. */
+function partitionMarkedMaskChanges(
+  changes: PropertyDrift[],
+  marked: readonly (readonly (string | number)[])[] | undefined,
+  properties: Record<string, unknown>,
+  baseline: Record<string, unknown>,
+  bySegments = false
+): { kept: PropertyDrift[]; paths: string[] } {
+  if (marked === undefined || marked.length === 0) {
+    return { kept: changes, paths: [] };
+  }
   // Marked, or an ANCESTOR of a marked coordinate: a readback the save could
   // not pair by identity is masked as a whole list, so a wholly masked
   // subtree that holds a marked coordinate accepts any present live value
@@ -102,7 +175,7 @@ export function partitionNoEchoParameterChanges(
         leaf.length > coordinate.length &&
         coordinate.every((segment, i) => String(segment) === String(leaf[i]))
     );
-  // AT or inside a marked coordinate: the whole value there is the NoEcho one.
+  // AT or inside a marked coordinate: the whole value there is the masked one.
   const isWithinMarked = (coordinate: readonly (string | number)[]): boolean =>
     marked.some(
       (leaf) =>
@@ -110,19 +183,30 @@ export function partitionNoEchoParameterChanges(
         leaf.every((segment, i) => String(segment) === String(coordinate[i]))
     );
   const kept: PropertyDrift[] = [];
-  const noEchoParameterPaths: string[] = [];
+  const paths: string[] = [];
   for (const change of changes) {
-    const coordinate = change.path.split('.');
-    const touchesMarked = marked.some((leaf) => {
-      const n = Math.min(leaf.length, coordinate.length);
-      for (let i = 0; i < n; i++) if (leaf[i] !== coordinate[i]) return false;
-      return true;
-    });
+    // `bySegments` (the `observedMaskedLeaves` partition): the recorded
+    // coordinates are SEGMENT arrays the writer took from the bag itself, so
+    // the comparator's dotted path is read back through them: the segments of
+    // a marked coordinate whose dotted spelling IS the path. A key holding a
+    // dot is then one segment, never ambiguous (ECS docker labels, Spark
+    // arguments), so the dotted-key exclusion is not needed there.
+    const segmented = bySegments ? segmentsOf(change.path, marked) : undefined;
+    const coordinate: (string | number)[] = segmented ?? change.path.split('.');
+    const touchesMarked =
+      segmented !== undefined ||
+      (!bySegments &&
+        marked.some((leaf) => {
+          const n = Math.min(leaf.length, coordinate.length);
+          for (let i = 0; i < n; i++) if (leaf[i] !== coordinate[i]) return false;
+          return true;
+        }));
     if (
       touchesMarked &&
       holdsMaskLeaf(change.stateValue) &&
-      !pathCrossesDottedKey(properties, change.path) &&
-      !pathCrossesDottedKey(baseline, change.path) &&
+      (bySegments ||
+        (!pathCrossesDottedKey(properties, change.path) &&
+          !pathCrossesDottedKey(baseline, change.path))) &&
       equalModuloMarkedMask(
         change.stateValue,
         change.awsValue,
@@ -132,12 +216,12 @@ export function partitionNoEchoParameterChanges(
         isWithinMarked
       )
     ) {
-      noEchoParameterPaths.push(change.path);
+      paths.push(change.path);
       continue;
     }
     kept.push(change);
   }
-  return { kept, noEchoParameterPaths };
+  return { kept, paths };
 }
 
 /**
@@ -556,7 +640,8 @@ export function redactDriftChanges(
 export function maskMarkedNoEchoBaseline(
   baseline: Record<string, unknown>,
   record: ResourceState,
-  observed: boolean
+  observed: boolean,
+  live?: Record<string, unknown>
 ): Record<string, unknown> {
   const marked = noEchoLeavesOf(record) ?? [];
   // An observed baseline also at every `***` leaf of `properties`, named or
@@ -564,9 +649,51 @@ export function maskMarkedNoEchoBaseline(
   // the mask (as the deploy's capture masks it).
   if (observed) {
     const coordinates = [...marked, ...maskedLeafCoordinatesOf(record.properties ?? {})];
-    return coordinates.length === 0
-      ? baseline
-      : maskReadbackAtCoordinates(baseline, record.properties ?? {}, coordinates);
+    const positioned =
+      coordinates.length === 0
+        ? baseline
+        : maskReadbackAtCoordinates(baseline, record.properties ?? {}, coordinates);
+    // go-to-k/cdkd#7158 / #7152: a readback-only coordinate the record holds
+    // as the mask stays masked in the baseline written over it, so a changed
+    // parent path never brings the live secret into state.
+    // A coordinate through a list the write replaced (AWS's order, not the
+    // record's) masks the whole list, which the drift partition accepts as
+    // the ancestor of a named coordinate.
+    // With the `live` readback in hand, the secret values are learned from it
+    // at the record's own positions and every off-template echo of them is
+    // masked BY VALUE first (`maskOffTemplateEchoes`), so a list whose public
+    // element changed is not masked whole; the whole-list fallback stays only
+    // for a list no value was learned for.
+    const named = observedMaskedLeavesOf(record) ?? [];
+    // Only the COORDINATES are taken from it: the bag written stays
+    // `positioned`, masked further.
+    const learnedLeaves =
+      live === undefined || named.length === 0
+        ? []
+        : maskOffTemplateEchoes({
+            bag: positioned,
+            readback: live,
+            properties: record.properties ?? {},
+            noEchoLeaves: record.noEchoLeaves,
+            physicalId: record.physicalId,
+          }).leaves;
+    const valueMasked = maskAtCoordinates(positioned, learnedLeaves);
+    const byIndex = maskAtCoordinates(valueMasked, named);
+    const echoes = named.map((coordinate) => {
+      const list = coordinate.findIndex((segment) => typeof segment === 'number');
+      if (list < 0) return coordinate;
+      const path = coordinate.slice(0, list);
+      const recorded = valueAtCoordinate(record.observedProperties, path);
+      if (JSON.stringify(valueAtCoordinate(byIndex, path)) === JSON.stringify(recorded)) {
+        return coordinate;
+      }
+      const maskedByValue = learnedLeaves.some(
+        (leaf) => leaf.length > path.length && path.every((segment, i) => segment === leaf[i])
+      );
+      return maskedByValue ? undefined : path;
+    });
+    const remaining = echoes.filter((c): c is (string | number)[] => c !== undefined);
+    return maskAtCoordinates(valueMasked, remaining);
   }
   if (marked.length === 0) return baseline;
   // By index, except where a written value REPLACED the list a coordinate

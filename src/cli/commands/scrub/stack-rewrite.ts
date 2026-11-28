@@ -10,6 +10,7 @@ import {
   redactForState,
   printingCorpusOf,
   maskSecretsInText,
+  withOffTemplateEchoesMasked,
   type RecordedSecretValues,
 } from '../../../deployment/secret-redaction.js';
 import { keepHeldTokenProvenance } from '../../../deployment/reference-provenance-record.js';
@@ -458,7 +459,18 @@ export async function scrubStackRewritePass({
     // go-to-k/cdkd#4847: provenance only for the tokens the record still holds.
     // go-to-k/cdkd#7015: a stamp over inputs this pass rewrote names values
     // the record no longer holds; a record this pass leaves alone keeps it.
-    const rewritten = keepHeldTokenProvenance(applyScrubNoEcho(migrated, record, plan));
+    // go-to-k/cdkd#7158 / #7152: a secret the readback echoed under a key
+    // the template lacks, learned from the record as it was stored.
+    const rewritten = keepHeldTokenProvenance(
+      withOffTemplateEchoesMasked(
+        applyScrubNoEcho(migrated, record, plan),
+        {
+          properties: record.properties,
+          ...(record.observedProperties !== undefined && { readback: record.observedProperties }),
+        },
+        noEchoPublicTokens
+      )
+    );
     const written =
       JSON.stringify(rewritten) === JSON.stringify(record)
         ? rewritten

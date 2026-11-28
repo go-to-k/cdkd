@@ -37,14 +37,15 @@ entry has a `cause` field holding one of the names below.
 | [`unreadableMap`](#unreadablerecord-and-unreadablemap-damaged-state) | Nothing | Yes |
 | [`refused`](#refused-a-secret-reference-with-no-region) | Part | Yes |
 | [`uncertifiedBaseline`](#uncertifiedbaseline-a-masked-secret-position) | Part | Yes |
-| [`unresolvedToken`](#unresolvedtoken-and-noechoparameter-permanent-causes) | Part | No |
-| [`noEchoParameter`](#unresolvedtoken-and-noechoparameter-permanent-causes) | Part | No |
+| [`unresolvedToken`](#unresolvedtoken-noechoparameter-and-maskedecho-permanent-causes) | Part | No |
+| [`noEchoParameter`](#unresolvedtoken-noechoparameter-and-maskedecho-permanent-causes) | Part | No |
+| [`maskedEcho`](#unresolvedtoken-noechoparameter-and-maskedecho-permanent-causes) | Part | No |
 
 The last column applies to a run without `--accept` or `--revert`, and only
 when nothing drifted. A run that found drift exits `1` whatever else it
 found.
 
-The two causes marked "No" are permanent. Running drift again can never
+The causes marked "No" are permanent. Running drift again can never
 compare the value, so if they produced exit `2`, a CI job that checks drift
 would fail forever.
 
@@ -140,9 +141,9 @@ stored:
 cdkd state show MyStack --json
 ```
 
-### `unresolvedToken` and `noEchoParameter`: permanent causes
+### `unresolvedToken`, `noEchoParameter` and `maskedEcho`: permanent causes
 
-These two do not change the exit code, because nothing you run can clear
+These three do not change the exit code, because nothing you run can clear
 them.
 
 - **`unresolvedToken`**: state holds `{{resolve:...}}` text that cdkd does not
@@ -151,8 +152,12 @@ them.
 - **`noEchoParameter`**: state holds the value of a `NoEcho` template
   parameter only as `***`. See
   [Redacted (`NoEcho`) baselines](cli-drift-secrets.md#redacted-noecho-baselines).
+- **`maskedEcho`**: AWS returned a `NoEcho` value, or the plaintext of an
+  `ssm-secure` / `secretsmanager` reference, in a property the template does
+  not set, and state holds that copy only as `***`. CloudFormation does not
+  compare a property the template does not set either.
 
-In both cases every other property of the resource is compared.
+In every case every other property of the resource is compared.
 
 ### When a secret reference cannot be resolved
 

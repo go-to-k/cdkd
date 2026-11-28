@@ -8,6 +8,7 @@ import { withCurrentResourceSecrets } from '../resource-secrets-scope.js';
 import {
   maskedLeafCoordinatesOf,
   scrubResourceRecord,
+  withOffTemplateEchoesMasked,
   type RecordedSecretValues,
 } from '../secret-redaction.js';
 
@@ -39,6 +40,12 @@ export interface ObservedBaselineRefresh {
    * as after a deploy's CREATE, so a readback is taken for it too.
    */
   recreated?: true | undefined;
+  /**
+   * go-to-k/cdkd#7158: the values that name nothing secret (the region and
+   * the stack name), which the off-template echo pass never learns, as every
+   * other readback writer passes them.
+   */
+  publicTokens: ReadonlySet<string>;
 }
 
 /**
@@ -151,5 +158,11 @@ export async function withRefreshedObservedBaseline(
     { observed: 'same-generation' }
   ).observedProperties;
   if (scrubbed === undefined) return record;
-  return { ...record, observedProperties: scrubbed };
+  // go-to-k/cdkd#7152: a secret reference's plaintext the readback echoed
+  // under a key the template lacks, learned from the raw readback.
+  return withOffTemplateEchoesMasked(
+    { ...record, observedProperties: scrubbed },
+    { properties: restored.properties, readback: observed },
+    refresh.publicTokens
+  );
 }

@@ -161,7 +161,13 @@ export async function recreateFailedReplacedDeleted(s: ReplacedDeletedScope): Pr
     secrets,
     resolvedPrevProps
   );
-  const { observedProperties: _staleObserved, noEchoValueMacs: _staleMacs, ...prevRecord } = prev;
+  const {
+    observedProperties: _staleObserved,
+    // go-to-k/cdkd#7158: the positions name the dropped baseline only.
+    observedMaskedLeaves: _staleMaskedLeaves,
+    noEchoValueMacs: _staleMacs,
+    ...prevRecord
+  } = prev;
   const restoredProperties =
     recordedPropertiesAfterReplayCreate(prevRecord, createResult) ?? prev.properties;
   stateResources[op.logicalId] = withoutVersionAttestation(
@@ -179,6 +185,7 @@ export async function recreateFailedReplacedDeleted(s: ReplacedDeletedScope): Pr
         ),
       },
       secrets,
+      new Set([ctx.region, s.stackName]),
       prevRecord.properties,
       prevRecord.attributes
     )
@@ -201,6 +208,7 @@ export async function recreateFailedReplacedDeleted(s: ReplacedDeletedScope): Pr
         // The create above ran outside any prefix scope, so its readback does.
         inScope: (fn) => fn(),
         capture: ctx.captureObservedState,
+        publicTokens: new Set([ctx.region, s.stackName]),
         recreated: true,
       }
     );

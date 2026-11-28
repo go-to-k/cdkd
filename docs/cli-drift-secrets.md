@@ -108,6 +108,7 @@ How drift reports it depends on where the mask came from:
 | A `NoEcho` custom-resource response value used in a property | Drifted on every run |
 | The `Fn::Base64` encoding of a secret, such as a `UserData` script | Drifted on every run |
 | A `NoEcho` template parameter | Listed as `noEchoParameter` |
+| A secret AWS returns in a property the template does not set | Listed as `maskedEcho` |
 
 An EC2 instance's own `UserData` holding the mask is the exception to the
 second row: drift does not read it back and does not compare it.

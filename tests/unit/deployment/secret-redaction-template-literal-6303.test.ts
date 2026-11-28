@@ -198,6 +198,7 @@ describe('a rollback restore of a record with the literal (#6303)', () => {
         dependencies: [],
       } as never,
       pass(),
+      new Set<string>(),
       { Engine: 'aurora-postgresql', MasterUsername: USERNAME }
     );
     expect(out.properties).toEqual({ Engine: 'aurora-postgresql', MasterUsername: USERNAME });

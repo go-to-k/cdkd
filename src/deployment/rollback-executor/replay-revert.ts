@@ -718,8 +718,10 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
         logger,
         inScope: inOriginalPrefix,
         capture: ctx.captureObservedState,
+        publicTokens: new Set([ctx.region, stackName]),
       }),
       secrets,
+      new Set([ctx.region, stackName]),
       previousState.properties,
       previousState.attributes
     ),

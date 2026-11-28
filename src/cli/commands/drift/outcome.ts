@@ -107,6 +107,16 @@ export type NotComparedCause =
    */
   | 'noEchoParameter'
   /**
+   * The record's `observedMaskedLeaves` (go-to-k/cdkd#7158, #7152) names a
+   * position, under a key the template does not set, where the readback
+   * echoed a `NoEcho` value or a secret reference's plaintext, so state holds
+   * it only as the mask, and the ONLY difference found there is that mask.
+   * Everything else about the resource was compared. Exit 0, like
+   * `noEchoParameter`: the position is masked by design, so no re-run can
+   * clear it. CloudFormation compares no property the template does not set.
+   */
+  | 'maskedEcho'
+  /**
    * The record holds a row nothing can read as a resource (go-to-k/cdkd#3018),
    * or one whose `properties` map is not an object (go-to-k/cdkd#3315) — a
    * baseline read as `{}` walks no keys, so comparing it would report CLEAN.
@@ -258,6 +268,16 @@ export type DriftOutcome =
        * never reaches AWS. Paths only. Optional: absent means none.
        */
       noEchoParameterPaths?: string[];
+      /**
+       * The comparator paths split off as `observedMaskedLeaves` positions
+       * (go-to-k/cdkd#7158): a secret echoed under a key the template lacks,
+       * held only as the mask. Never in `changes`; a revert whose bag still
+       * holds the mask there sends AWS's own value back
+       * (`preserveLiveValuesAtMaskedLeaves`), and the baseline it writes keeps
+       * the mask (`maskMarkedNoEchoBaseline`). Paths only. Optional: absent
+       * means none.
+       */
+      maskedEchoPaths?: string[];
       /**
        * Can `secrets` NOT name every value this resource's positions hold? True
        * when resolution was refused or a token survived it — the two cases
@@ -469,8 +489,10 @@ export class DriftDetectedError extends CdkdError {
  * re-run can clear it.
  *
  * NOT everything the report calls `notCompared`: `unresolvedToken` (a
- * `{{resolve:...}}` spelling cdkd resolves for nobody) and `noEchoParameter`
- * (a value state holds only as the mask) still exit 0. Both leave one masked
+ * `{{resolve:...}}` spelling cdkd resolves for nobody), `noEchoParameter`
+ * (a value state holds only as the mask) and `maskedEcho` (a secret echoed
+ * under a key the template lacks, held only as the mask) still exit 0. Each
+ * leaves one masked
  * or unresolvable POSITION of a resource cdkd otherwise compared, by design,
  * and exiting non-zero would fail every such stack forever. The report names
  * them all the same. See `NotComparedCause` and `outcomeExitSignal`.
@@ -587,9 +609,9 @@ export function notComparedOutcomes(
  * impossible.
  *
  * `incomplete` covers every cause {@link notComparedOutcomes} rolls up but
- * `unresolvedToken` and `noEchoParameter`, plus the `unsupported` variant
- * (go-to-k/cdkd#6696: drift unknown is an incomplete comparison). The two
- * excluded causes leave a property cdkd masks or cannot resolve BY DESIGN, so
+ * `unresolvedToken`, `noEchoParameter` and `maskedEcho`, plus the `unsupported`
+ * variant (go-to-k/cdkd#6696: drift unknown is an incomplete comparison). The
+ * three excluded causes leave a property cdkd masks or cannot resolve BY DESIGN, so
  * exiting non-zero on them would fail every such stack in CI forever. The
  * report still names them. See {@link NotComparedCause}.
  *
@@ -608,7 +630,9 @@ export function outcomeExitSignal(outcome: DriftOutcome): 'drifted' | 'incomplet
     // omission, which is the "report a resource cdkd never compared as a pass"
     // failure one level down.
     notCompared: (n) =>
-      n.notComparedCause === 'unresolvedToken' || n.notComparedCause === 'noEchoParameter'
+      n.notComparedCause === 'unresolvedToken' ||
+      n.notComparedCause === 'noEchoParameter' ||
+      n.notComparedCause === 'maskedEcho'
         ? 'none'
         : 'incomplete',
     clean: () => 'none',
@@ -771,6 +795,12 @@ export const UNCOMPARED_REASONS: Record<
       'only PARTIALLY compared: their state holds a NoEcho parameter value only as the ' +
       'redaction mask, which no re-run can clear',
   },
+  maskedEcho: {
+    kind: 'unknown',
+    phrase:
+      'only PARTIALLY compared: AWS echoes a secret into a property the template does not ' +
+      'set, which their state holds only as the redaction mask, so no re-run can clear it',
+  },
   skipped: {
     kind: 'byDesign',
     phrase: 'not compared AT ALL: cdkd does not drift-check the type',
@@ -802,6 +832,7 @@ export const ANY_OF_IT_COMPARED: Record<NotComparedCause, boolean> = {
   unresolvedToken: true,
   uncertifiedBaseline: true,
   noEchoParameter: true,
+  maskedEcho: true,
   readFailed: false,
   readAborted: false,
   baselineRefused: false,

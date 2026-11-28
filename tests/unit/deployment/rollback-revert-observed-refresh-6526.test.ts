@@ -39,6 +39,7 @@ import { RESOURCE_NOT_FOUND, type ResourceProvider } from '../../../src/types/re
 import { getCurrentResourceSecrets } from '../../../src/deployment/resource-secrets-scope.js';
 import { isSameGenerationBag } from '../../../src/deployment/secret-redaction.js';
 import { withRefreshedObservedBaseline } from '../../../src/deployment/rollback-executor/replay-observed-refresh.js';
+import { redactRollbackRecord } from '../../../src/deployment/rollback-executor/replay-secrets.js';
 import type { ResourceState } from '../../../src/types/state.js';
 
 const BUCKET = 'AWS::S3::Bucket';
@@ -320,6 +321,7 @@ describe('withRefreshedObservedBaseline (go-to-k/cdkd#6526)', () => {
     logger: { debug: vi.fn() },
     inScope,
     capture: undefined,
+    publicTokens: new Set(['us-east-1', 'Stack6526']),
   });
 
   it("reads inside the revert's own scope", async () => {
@@ -358,6 +360,95 @@ describe('withRefreshedObservedBaseline (go-to-k/cdkd#6526)', () => {
     );
     expect(out.observedProperties).toEqual({ L: ['b', '***'] });
   });
+
+  it('masks and names a secret reference plaintext the readback echoes under a key the template lacks (go-to-k/cdkd#7152)', async () => {
+    // A reference inside a list no identity field pairs: the scrub cannot
+    // learn the pair, so only the raw readback teaches the value.
+    const restored = res(
+      { Users: [{ Password: '{{resolve:ssm-secure:/p7152}}' }] },
+      { Users: [{ Password: '{{resolve:ssm-secure:/p7152}}' }] }
+    );
+    const live = { Users: [{ Password: 'pw-rollback-7152' }], Login: 'user:pw-rollback-7152' };
+    const out = await withRefreshedObservedBaseline(
+      restored,
+      args(restored, vi.fn().mockResolvedValue(live))
+    );
+    expect(JSON.stringify(out)).not.toContain('pw-rollback-7152');
+    expect(out.observedProperties?.['Login']).toBe('***');
+    expect(out.observedMaskedLeaves).toEqual([['Login']]);
+  });
+
+  it('never learns the region or the stack name as an echoed secret (go-to-k/cdkd#7158)', async () => {
+    for (const token of ['us-east-1', 'Stack6526']) {
+      const restored = res(
+        { Users: [{ Password: '{{resolve:ssm-secure:/p7158}}' }] },
+        { Users: [{ Password: '{{resolve:ssm-secure:/p7158}}' }] }
+      );
+      const live = { Users: [{ Password: token }], Where: token };
+      const out = await withRefreshedObservedBaseline(
+        restored,
+        args(restored, vi.fn().mockResolvedValue(live))
+      );
+      expect(out.observedProperties?.['Where']).toBe(token);
+      expect(out.observedMaskedLeaves).toBeUndefined();
+    }
+  });
+
+  it('a restore that resolved no secret still drops an attribute keyed by a NoEcho attribute value (go-to-k/cdkd#7153)', () => {
+    const token = 'abc123xyz';
+    const record: ResourceState = {
+      physicalId: 'cr-1',
+      resourceType: 'Custom::X',
+      properties: {},
+      attributes: { Token: token, [`Key.${token}`]: 1 },
+      noEchoAttributeNames: ['Token'],
+    };
+    const out = redactRollbackRecord(record, new Map(), new Set<string>(), {}, { Token: '***' });
+    expect(Object.keys(out.attributes ?? {})).toEqual(['Token']);
+    expect(out.noEchoAttributeNames).toEqual(['Token']);
+  });
+
+  it('a restored custom resource drops a NEW attribute whose key holds a secret, and keeps a persisted one (go-to-k/cdkd#7153)', () => {
+    const secret = 'rollback-k3y-7153';
+    const record: ResourceState = {
+      physicalId: 'cr-1',
+      resourceType: 'Custom::Thing',
+      properties: {},
+      attributes: { [`New.${secret}`]: 'v', [`Kept.${secret}`]: 'w', Plain: 'ok' },
+    };
+    const out = redactRollbackRecord(record, new Map([[secret, '{{resolve:ssm-secure:/k}}']]), new Set<string>(), {}, {
+      [`Kept.${secret}`]: 'w',
+      Plain: 'ok',
+    });
+    expect(Object.keys(out.attributes ?? {})).toEqual([`Kept.${secret}`, 'Plain']);
+  });
+
+  it.each([
+    ['resolved no secret', new Map<string, string>()],
+    ['resolved a secret', new Map([['unrelated-s3cret-7162', '{{resolve:ssm-secure:/k}}']])],
+  ])(
+    'a restore that %s keeps a fresh public key spelling the stack name a NoEcho attribute equals (go-to-k/cdkd#7162)',
+    (_arm, secrets) => {
+      // A `NoEcho` attribute whose value IS the stack name (or region) is no
+      // needle, as on the deploy engine's persist: the public key stays.
+      const stackName = 'Stack7158';
+      const record: ResourceState = {
+        physicalId: 'cr-1',
+        resourceType: 'Custom::X',
+        properties: {},
+        attributes: { Token: stackName, [`Arn-${stackName}`]: 'arn' },
+        noEchoAttributeNames: ['Token'],
+      };
+      const out = redactRollbackRecord(
+        record,
+        secrets,
+        new Set(['us-east-1', stackName]),
+        {},
+        { Token: '***' }
+      );
+      expect(Object.keys(out.attributes ?? {})).toEqual(['Token', `Arn-${stackName}`]);
+    }
+  );
 
   it('never aliases the object the provider returned', async () => {
     const live = { ...RESTORED_LIVE };

@@ -4,6 +4,9 @@ import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import {
   redactForState,
   scrubResourceRecord,
+  withOffTemplateEchoesMasked,
+  withSecretAttributeKeysDropped,
+  templateGetAttNamesOf,
   isSameGenerationBag,
   redactionClaimOf,
   type ScrubGenerationClaims,
@@ -250,6 +253,13 @@ export function redactStateForPersist(this: DeployEngine, state: StackState): St
     this.noEchoRun.noEchoMacs === undefined
       ? undefined
       : noEchoPositionSources(this.noEchoRun, state.resources);
+  // go-to-k/cdkd#7158: values that name nothing secret, never learned as one.
+  const publicTokens = new Set(
+    [state.region ?? this.stackRegion, state.stackName].filter(
+      (token): token is string => typeof token === 'string' && token !== ''
+    )
+  );
+  const template = this.noEchoRun.constructPathTemplate;
   for (const [logicalId, record] of Object.entries(state.resources)) {
     // Redact each record ONLY with the secrets substituted during that
     // resource's own resolution — see the `SecretsRunState.perResourceSecrets` doc.
@@ -286,17 +296,35 @@ export function redactStateForPersist(this: DeployEngine, state: StackState): St
     // template value that holds one as a literal.
     // go-to-k/cdkd#4043 / #2449: the `NoEcho` arms, BEFORE the fingerprints,
     // which read the `***` keys of the persisted bag.
-    const noEchoScrubbed = applyNoEchoPersist(
-      this.noEchoRun,
-      this.noEchoDeps(),
-      logicalId,
-      record,
-      // go-to-k/cdkd#4656: this deploy's echo-fidelity verdicts join the
-      // record's own; only this loop's records are the ones it read back.
-      withNoEchoExactEchoes(this.noEchoRun, logicalId, scrubbed),
-      templateProps,
-      state.resources,
-      secrets
+    const noEchoScrubbed = withSecretAttributeKeysDropped(
+      withOffTemplateEchoesMasked(
+        applyNoEchoPersist(
+          this.noEchoRun,
+          this.noEchoDeps(),
+          logicalId,
+          record,
+          // go-to-k/cdkd#4656: this deploy's echo-fidelity verdicts join the
+          // record's own; only this loop's records are the ones it read back.
+          withNoEchoExactEchoes(this.noEchoRun, logicalId, scrubbed),
+          templateProps,
+          state.resources,
+          secrets
+        ),
+        // go-to-k/cdkd#7158 / #7152: a secret the readback echoed under a key
+        // the template lacks, learned from the readback before this save's
+        // redaction, at the positions the persisted record marks.
+        {
+          properties: healed.properties,
+          ...(healed.observedProperties !== undefined && { readback: healed.observedProperties }),
+        },
+        publicTokens
+      ),
+      // go-to-k/cdkd#7153: a custom resource attribute whose KEY holds a
+      // secret is not persisted, unless the template's `Fn::GetAtt` spells it.
+      healed,
+      secrets,
+      template === undefined ? undefined : templateGetAttNamesOf(template, logicalId),
+      publicTokens
     );
     resources[logicalId] = withReferenceProvenance(
       withConstructPath(
