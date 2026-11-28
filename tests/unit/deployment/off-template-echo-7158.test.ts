@@ -728,8 +728,8 @@ describe('a custom resource attribute KEY holding a secret (go-to-k/cdkd#7153)',
   });
 
   describe('orphan and superseded records (go-to-k/cdkd#7161)', () => {
-    const persistDropped = (engine: DeployEngine, dropped: ResourceState): StackState => {
-      engine.noEchoRun.constructPathTemplate = template() as never;
+    const persistDropped = (engine: DeployEngine, dropped: ResourceState, getAtt?: unknown): StackState => {
+      engine.noEchoRun.constructPathTemplate = template(getAtt) as never;
       const state: StackState = {
         version: 18,
         stackName: 'S',
@@ -764,6 +764,14 @@ describe('a custom resource attribute KEY holding a secret (go-to-k/cdkd#7153)',
       expect(JSON.stringify(saved)).not.toContain(`By-${NOECHO}`);
       expect(saved.orphans![0]!.state.attributes).toEqual({ Generated: '***', Plain: '***' });
       expect(saved.supersededResources![0]!.state.attributes).toEqual({ Generated: '***', Plain: '***' });
+    });
+
+    it('keeps a key a template Fn::GetAtt spells', () => {
+      const e = engine();
+      e.secretsRun.perResourceSecrets.set('Cr', secrets);
+      e.secretsRun.perResourceResolvedType.set('Cr', 'Custom::Thing');
+      const saved = persistDropped(e, record({ [`Endpoint.${SECRET}`]: 'v' }), { 'Fn::GetAtt': ['Cr', `Endpoint.${SECRET}`] });
+      expect(Object.keys(saved.orphans![0]!.state.attributes ?? {})).toEqual([`Endpoint.${SECRET}`]);
     });
 
     it("a needle of another type's resource under the same logical id drops nothing", () => {

@@ -111,6 +111,17 @@ describe('cdkd scrub - a custom resource attribute KEY holding a secret (go-to-k
     expect(saved!.supersededResources![0]!.state.attributes).toEqual({ Plain: 'ok' });
   });
 
+  it('drops a key naming the value an OLDER Default left at the position (the migration needle)', async () => {
+    const OLD = 'scrub-7161-older-default';
+    const record = customRecord();
+    record.properties = { ServiceToken: 'arn', Pw: OLD };
+    delete record.noEchoLeaves;
+    record.attributes = { [`By-${OLD}`]: 'x', Plain: 'ok' };
+    const saved = await scrub(stateWith({ resources: { Cr: record } }));
+    expect(JSON.stringify(saved)).not.toContain(OLD);
+    expect(saved!.resources['Cr']!.attributes).toEqual({ Plain: 'ok' });
+  });
+
   it('keeps a key a template Fn::GetAtt spells', async () => {
     const state = stateWith();
     const saved = await scrub(state, stackInfo(KEY));
