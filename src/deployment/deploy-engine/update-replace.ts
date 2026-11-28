@@ -133,7 +133,9 @@ export async function updateByReplacement(
     updateReplacePolicy,
   });
 
-  // Resource replacement: DELETE old → CREATE new
+  // Resource replacement. The order is chosen by the arms below: CREATE new
+  // first by default (the old one is deleted in the cleanup phase), DELETE
+  // old first for `--recreate-via-*` and the delete-first types.
   let replacementReason: string;
   if (recreateViaCcApi) {
     replacementReason = '--recreate-via-cc-api flag (mid-life SDK→CC migration)';
