@@ -364,8 +364,9 @@ export interface OffTemplateEchoInput {
   /**
    * The value a plain `ssm` token was PROVED public at (`PublicSsmProver`,
    * go-to-k/cdkd#7160). A leaf whose readback holds that value teaches
-   * nothing; one holding ANOTHER value (a parameter retyped since the deploy)
-   * still does, as the value scan's mixed-leaf proof admits only an equal one.
+   * nothing; one holding ANOTHER value (the parameter's value changed since
+   * the deploy, or it was retyped) still does, as the value scan's mixed-leaf
+   * proof admits only an equal one.
    */
   readonly provenPublic?: ProvenPublicValue | undefined;
 }
@@ -429,6 +430,8 @@ export function maskOffTemplateEchoes(input: OffTemplateEchoInput): {
     learn(plaintextFor(text, valueAtCoordinate(resolved, coordinate)));
   }
   // A leaf whose one token is proven public teaches only a value other than the proven one.
+  // Known limits (no leak, the pre-#7160 behaviour): a leaf with two proven tokens, and one
+  // inside an unkeyed list, which pairs only when the readback equals the recorded token.
   const provenPublic = input.provenPublic;
   if (provenPublic !== undefined) {
     const proven = (token: string): boolean =>
