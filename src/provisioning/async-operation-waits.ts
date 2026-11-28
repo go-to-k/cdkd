@@ -73,16 +73,30 @@ const DEFERRED =
 const FLIP = 'a DeletionProtection flip or re-enable around a delete does not wait after the call';
 
 export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperationVerdict>> = {
-  'api-gateway:CreateStage': unmeasured(`${NO_WAIT} (a cache cluster answers CREATE_IN_PROGRESS)`),
-  'api-gateway:CreateRestApi': unmeasured(NO_WAIT),
-  'api-gateway:ImportRestApi': unmeasured(NO_WAIT),
-  'api-gateway:PutRestApi': unmeasured(NO_WAIT),
-  'api-gateway:UpdateRestApi': unmeasured(NO_WAIT),
-  'api-gateway:UpdateStage': unmeasured(
-    `${NO_WAIT} (a CacheClusterEnabled change answers CREATE_IN_PROGRESS / DELETE_IN_PROGRESS)`
+  'api-gateway:CreateStage': byDesign(
+    'CloudFormation does not wait for the cache cluster either: its stage CREATE_COMPLETE came in 3.7 s while GetStage read cacheClusterStatus CREATE_IN_PROGRESS (AVAILABLE ~256 s later); a stage without a cache stays NOT_AVAILABLE (#7132)'
   ),
-  'appconfig:CreateEnvironment': unmeasured(NO_WAIT),
-  'appconfig:UpdateEnvironment': unmeasured(NO_WAIT),
+  'api-gateway:CreateRestApi': byDesign(
+    'settled when AWS answers: GetRestApi read apiStatus AVAILABLE on the first read, REGIONAL and EDGE (#7132)'
+  ),
+  'api-gateway:ImportRestApi': byDesign(
+    'settled when AWS answers: GetRestApi read apiStatus AVAILABLE on the first read after an OpenAPI import (2 of 2) (#7132)'
+  ),
+  'api-gateway:PutRestApi': byDesign(
+    'settled when AWS answers: GetRestApi read apiStatus AVAILABLE on the first read after an OpenAPI put (#7132)'
+  ),
+  'api-gateway:UpdateRestApi': byDesign(
+    'settled when AWS answers: GetRestApi read apiStatus AVAILABLE on the first read, an EDGE to REGIONAL endpoint change included (#7132)'
+  ),
+  'api-gateway:UpdateStage': byDesign(
+    'CloudFormation does not wait for a cache-size change either (cacheClusterStatus CREATE_IN_PROGRESS ~196 s after the call); AWS refuses a second cache change meanwhile, and CloudFormation fails the same way (#7132)'
+  ),
+  'appconfig:CreateEnvironment': byDesign(
+    'settled when AWS answers: GetEnvironment read State ReadyForDeployment on the first read, with and without Monitors (3 of 3); DEPLOYING follows only StartDeployment (#7132)'
+  ),
+  'appconfig:UpdateEnvironment': byDesign(
+    'settled when AWS answers: GetEnvironment read State ReadyForDeployment on the first read, with and without Monitors (3 of 3) (#7132)'
+  ),
   'appsync:StartSchemaCreation': waits(
     ['waitForSchemaCreation'],
     ['FAILED', 'NOT_APPLICABLE', 'DELETING'],
@@ -125,7 +139,9 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
   'codebuild:UpdateWebhook': unmeasured(NO_WAIT),
   'docdb:CreateDBCluster': waits(['waitForClusterAvailable'], DB_TERMINAL, DEFERRED),
   'docdb:CreateDBInstance': waits(['waitForInstanceAvailable'], DB_TERMINAL, DEFERRED),
-  'docdb:CreateDBSubnetGroup': unmeasured(NO_WAIT),
+  'docdb:CreateDBSubnetGroup': byDesign(
+    'settled when AWS answers: the create response and the first DescribeDBSubnetGroups read SubnetGroupStatus Complete (3 of 3); there is no transitional state (#7132)'
+  ),
   'docdb:DeleteDBCluster': waits(['waitForClusterDeleted'], []),
   'docdb:DeleteDBInstance': waits(['waitForInstanceDeleted'], []),
   'docdb:ModifyDBCluster': waits(
@@ -138,7 +154,9 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
     [],
     `only CACertificateIdentifier / EnablePerformanceInsights are read back, and it warns on its cap; ${FLIP}`
   ),
-  'docdb:ModifyDBSubnetGroup': unmeasured(NO_WAIT),
+  'docdb:ModifyDBSubnetGroup': byDesign(
+    'settled when AWS answers: the response and the first DescribeDBSubnetGroups read SubnetGroupStatus Complete with the new subnets (3 of 3) (#7132)'
+  ),
   'docdb:RemoveFromGlobalCluster': waits(['detachFromGlobalCluster'], []),
   'docdb:RestoreDBClusterFromSnapshot': waits(
     ['waitForClusterAvailable'],
@@ -188,7 +206,9 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
   'ec2:AssociateNatGatewayAddress': byDesign(
     'CloudFormation waits, cdkd deliberately does not: the gateway keeps serving its other zones (ec2/nat-gateway.ts comment, measured on #2762)'
   ),
-  'ec2:AssociateRouteTable': unmeasured(NO_WAIT),
+  'ec2:AssociateRouteTable': byDesign(
+    'settled when AWS answers: AssociationState associated in the response and on the first DescribeRouteTables read (7 of 7) (#7132)'
+  ),
   'ec2:AttachVolume': waits(
     ['waitForVolumeAttachment'],
     [],
@@ -200,10 +220,12 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
     ['failed', 'deleting', 'deleted'],
     DEFERRED
   ),
-  'ec2:CreateSubnet': unmeasured(
-    `${NO_WAIT} (only an IPv6 association and attribute read-back wait)`
+  'ec2:CreateSubnet': byDesign(
+    'settled when AWS answers: available in the response and on the first DescribeSubnets read (7 of 7); the IPv6 association and attribute read-back waits stay (#7132)'
   ),
-  'ec2:CreateVpc': unmeasured(NO_WAIT),
+  'ec2:CreateVpc': byDesign(
+    'settled when AWS answers: the response says pending, but DescribeVpcs read right after the call returns available (7 of 7, ~0.4 s read latency) (#7132)'
+  ),
   'ec2:CreateVpcEndpoint': waits(
     ['waitForSettled'],
     ['failed', 'rejected', 'expired', 'partial', 'deleting', 'deleted'],
@@ -227,7 +249,9 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
     ['MISSING', 'DRAINING', 'INACTIVE', 'a FAILED deployment'],
     `${DEFERRED}; a non-ECS deployment controller skips it`
   ),
-  'ecs:DeleteCluster': unmeasured(NO_WAIT),
+  'ecs:DeleteCluster': byDesign(
+    'settled when AWS answers: DescribeClusters reads INACTIVE on the first read and a same-named cluster can be created at once (3 of 3) (#7132)'
+  ),
   'ecs:DeleteService': waits(
     ['waitForServiceInactive'],
     [],
@@ -289,14 +313,18 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
     ['FAILED'],
     'STORAGE_OPTIMIZATION is not waited for'
   ),
-  'glue:CreateConnection': unmeasured(NO_WAIT),
+  'glue:CreateConnection': byDesign(
+    'settled when AWS answers: GetConnection reads a JDBC or NETWORK connection with no Status on the first read (3 of 3 each); only managed connector types carry one (#7132)'
+  ),
   'glue:StartCrawlerSchedule': byDesign(
     'sent by no create / update / delete (only the exported startSchedule()); settled when AWS answers: GetCrawler read SCHEDULED on the first read after the call (3 of 3) (#7132)'
   ),
   'glue:StartTrigger': byDesign(
     'settled when AWS answers: GetTrigger read ACTIVATED on the first read after the call (3 of 3, ~0.2 s); CloudFormation completes an update with the trigger ACTIVATED (#7132)'
   ),
-  'glue:UpdateTrigger': unmeasured(`${NO_WAIT} (it waits only for the deactivation before)`),
+  'glue:UpdateTrigger': byDesign(
+    'settled when AWS answers: GetTrigger reads the new definition on the first read, and the StartTrigger after it reads ACTIVATED at once (#7132)'
+  ),
   'kinesis:RegisterStreamConsumer': waits(
     ['waitForConsumerActive'],
     ['any status other than CREATING / ACTIVE']
@@ -305,7 +333,9 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
     ['waitForStreamActive'],
     ['any status other than ACTIVE / CREATING / UPDATING']
   ),
-  'kms:CreateKey': unmeasured(NO_WAIT),
+  'kms:CreateKey': byDesign(
+    'settled when AWS answers: DescribeKey reads KeyState Enabled on the first read, symmetric and RSA_2048 (3 of 3) (#7132)'
+  ),
   'kms:ScheduleKeyDeletion': byDesign(
     'the call sets PendingDeletion, which holds for the whole 7-30 day window: nothing is in progress to wait for'
   ),
@@ -341,8 +371,8 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
   'lambda:CreateFunction': byDesign(
     'Pending is accepted by every dependent except a synchronous invoke and a Lambda target group, which wait themselves; waiting for Active doubled benchmark deploys (lambda-function/create.ts comment, #5002); a capacity-provider or RuntimeManagementConfig create waits'
   ),
-  'lambda:DeleteEventSourceMapping': unmeasured(
-    'waits only after a ResourceInUseException refusal (#7011); an accepted delete returns while Deleting'
+  'lambda:DeleteEventSourceMapping': byDesign(
+    'CloudFormation does not wait either: DELETE_COMPLETE after 1.75 s while the mapping read Deleting for ~5-9 s; only a same function + source re-create is refused meanwhile, which create retries (#7011) (#7132)'
   ),
   'lambda:PublishVersion': waits(['waitForLatestPublishedSettled'], ['Failed']),
   'lambda:PutFunctionScalingConfig': waits(['waitForLatestPublishedSettled'], ['Failed']),
@@ -363,7 +393,9 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
     `${DEFERRED}, unless a follow-up ModifyDBCluster needs it`
   ),
   'neptune:CreateDBInstance': waits(['waitForInstanceAvailable'], DB_TERMINAL, DEFERRED),
-  'neptune:CreateDBSubnetGroup': unmeasured(NO_WAIT),
+  'neptune:CreateDBSubnetGroup': byDesign(
+    'settled when AWS answers: the create response and the first DescribeDBSubnetGroups read SubnetGroupStatus Complete (3 of 3); there is no transitional state (#7132)'
+  ),
   'neptune:DeleteDBCluster': waits(['waitForClusterDeleted'], []),
   'neptune:DeleteDBInstance': waits(['waitForInstanceDeleted'], []),
   'neptune:ModifyDBCluster': waits(
@@ -376,7 +408,9 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
     [],
     `only PubliclyAccessible is read back, and it warns on its cap; ${FLIP}`
   ),
-  'neptune:ModifyDBSubnetGroup': unmeasured(NO_WAIT),
+  'neptune:ModifyDBSubnetGroup': byDesign(
+    'settled when AWS answers: the response and the first DescribeDBSubnetGroups read SubnetGroupStatus Complete with the new subnets (3 of 3) (#7132)'
+  ),
   'neptune:RestoreDBClusterFromSnapshot': waits(
     ['waitForClusterAvailable'],
     DB_TERMINAL,
@@ -411,7 +445,9 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
     ['incompatible-network', 'insufficient-resource-limits'],
     'an inline poll in create(), every mode'
   ),
-  'rds:CreateDBSubnetGroup': unmeasured(NO_WAIT),
+  'rds:CreateDBSubnetGroup': byDesign(
+    'settled when AWS answers: the create response and the first DescribeDBSubnetGroups read SubnetGroupStatus Complete (3 of 3); there is no transitional state (#7132)'
+  ),
   'rds:DeleteDBCluster': waits(
     ['waitForClusterDeleted'],
     [],
@@ -453,7 +489,9 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
     'every mode'
   ),
   'rds:ModifyDBProxyTargetGroup': unmeasured(NO_WAIT),
-  'rds:ModifyDBSubnetGroup': unmeasured(NO_WAIT),
+  'rds:ModifyDBSubnetGroup': byDesign(
+    'settled when AWS answers: the response and the first DescribeDBSubnetGroups read SubnetGroupStatus Complete with the new subnets (3 of 3) (#7132)'
+  ),
   'rds:PromoteReadReplica': waits(['waitForInstanceState'], DB_TERMINAL, 'every mode'),
   'rds:RebootDBInstance': waits(['waitForInstanceState'], DB_TERMINAL, 'skipped under --no-wait'),
   'rds:RemoveFromGlobalCluster': waits(['detachFromGlobalCluster'], []),
@@ -498,11 +536,17 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
   'route-53:DisassociateVPCFromHostedZone': unmeasured(
     `${NO_WAIT} (the change answers PENDING; nothing reads GetChange)`
   ),
-  's3tables:PutTableBucketReplication': unmeasured(NO_WAIT),
-  'secrets-manager:CreateSecret': unmeasured(`${NO_WAIT} (replica regions answer InProgress)`),
-  'secrets-manager:RemoveRegionsFromReplication': unmeasured(NO_WAIT),
-  'secrets-manager:ReplicateSecretToRegions': unmeasured(
-    `${NO_WAIT} (replica regions answer InProgress)`
+  's3tables:PutTableBucketReplication': byDesign(
+    'settled when AWS answers: the call returns status success and GetTableBucketReplication reads the new configuration on the next call, with no status field (3 of 3) (#7132)'
+  ),
+  'secrets-manager:CreateSecret': byDesign(
+    'CloudFormation does not wait for replication either: its create completed in 0.5 s while ReplicationStatus read InProgress (InSync ~2 s later); without ReplicaRegions there is no status (#7132)'
+  ),
+  'secrets-manager:RemoveRegionsFromReplication': byDesign(
+    'settled when AWS answers: DescribeSecret reads no ReplicationStatus on the first read, and a force delete of the primary right after succeeds (3 of 3) (#7132)'
+  ),
+  'secrets-manager:ReplicateSecretToRegions': byDesign(
+    'CloudFormation does not wait for replication either: adding a replica completed in 1.3 s while ReplicationStatus read InProgress (InSync ~2 s later) (#7132)'
   ),
   'codebuild:CreateProject': byDesign(
     'settled once AWS answers: the flagged `project.webhook.status` belongs to the separate CreateWebhook call, its own row'
@@ -563,5 +607,7 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
   'route-53:UpdateHostedZoneComment': byDesign(
     'the call changes only the comment; the flagged feature statuses belong to UpdateHostedZoneFeatures'
   ),
-  'ssm:CreateAssociation': unmeasured(`${NO_WAIT} (the association answers Pending)`),
+  'ssm:CreateAssociation': byDesign(
+    'CloudFormation does not wait for the first execution either: the association read Pending right after UPDATE_COMPLETE and Success 67-81 s later (3 of 3) (#7132)'
+  ),
 };
