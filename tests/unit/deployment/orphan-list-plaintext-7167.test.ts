@@ -149,6 +149,8 @@ describe('an orphan / superseded record holding list-positioned plaintext (go-to
     for (const observed of [
       [{ Name: 'a' }, { Password: ref }],
       [{ Password: ref, Name: 'x' }, { Name: 'A' }],
+      // Ambiguous (two elements corroborate), yet the reference is already there.
+      [{ Name: 'A', Password: 'public-7167' }, { Password: ref }],
     ]) {
       const record: ResourceState = {
         physicalId: 'o-7167',
