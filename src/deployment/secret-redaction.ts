@@ -237,7 +237,7 @@ export {
 export { wholeNoEchoEchoTest } from './secret-redaction/whole-noecho-echo.js';
 export {
   storedRecordFinisher,
-  resolvedNoEchoTeacher,
+  storedNoEchoInputsKnown,
 } from './secret-redaction/stored-record-finish.js';
 export {
   withStoredReferencePositionsMasked,

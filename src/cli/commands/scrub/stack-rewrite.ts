@@ -11,7 +11,7 @@ import {
   printingCorpusOf,
   maskSecretsInText,
   storedRecordFinisher,
-  resolvedNoEchoTeacher,
+  storedNoEchoInputsKnown,
   type RecordedSecretValues,
 } from '../../../deployment/secret-redaction.js';
 import { keepHeldTokenProvenance } from '../../../deployment/reference-provenance-record.js';
@@ -321,7 +321,7 @@ export async function scrubStackRewritePass({
   });
   // Whether the finish repairs, with no needle at all, an echo of a `NoEcho`
   // value too short for one. Asked only when nothing else would send the stack
-  // through the rewrite below, and only of a record the resolution teaches.
+  // through the rewrite below, and only of a record whose inputs it can know.
   const finishRepairsAny = (): boolean =>
     [
       ...Object.entries(state.resources ?? {}).map(([logicalId, record]) => ({
@@ -335,7 +335,7 @@ export async function scrubStackRewritePass({
     ].some((row) => {
       const stored = storedInput(row.logicalId, row.state);
       return (
-        resolvedNoEchoTeacher(row.state, stored) !== undefined &&
+        storedNoEchoInputsKnown(row.state, stored) &&
         finishStored(row.state, undefined, stored) !== row.state
       );
     });

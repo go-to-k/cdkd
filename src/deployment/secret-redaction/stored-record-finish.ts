@@ -1,4 +1,4 @@
-import type { RecordedSecretValues } from './pairs.js';
+import { SECRET_MASK, type RecordedSecretValues } from './pairs.js';
 import { isPlainObject } from './rules.js';
 import { maskAtCoordinates, noEchoLeavesOf, valueAtCoordinate } from './noecho-leaves.js';
 import { withOffTemplateEchoesMasked, type OffTemplateEchoRecord } from './off-template-echo.js';
@@ -53,6 +53,24 @@ export function resolvedNoEchoTeacher(
     }
   }
   return silent.length === coordinates.length ? undefined : maskAtCoordinates(resolved, silent);
+}
+
+/**
+ * Whether the finish can learn a `NoEcho` input for `record` at all: a
+ * teaching resolved position ({@link resolvedNoEchoTeacher}), or a string the
+ * record as read still holds in plaintext at one of its `noEchoLeaves` (a
+ * pre-v11 record, which needs no resolution). The zero-needle scrub asks the
+ * finish only about such a record.
+ */
+export function storedNoEchoInputsKnown(
+  record: { noEchoLeaves?: unknown },
+  stored: StoredRecordInput
+): boolean {
+  if (resolvedNoEchoTeacher(record, stored) !== undefined) return true;
+  return (noEchoLeavesOf(record) ?? []).some((coordinate) => {
+    const value = valueAtCoordinate(stored.state.properties, coordinate);
+    return typeof value === 'string' && value !== '' && value !== SECRET_MASK;
+  });
 }
 
 /**
