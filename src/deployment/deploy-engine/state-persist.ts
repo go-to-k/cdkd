@@ -404,34 +404,46 @@ export function redactStateForPersist(this: DeployEngine, state: StackState): St
     const orphanTemplateProps = sameResource
       ? this.secretsRun.perResourceTemplateProps.get(entry.logicalId)
       : undefined;
+    const orphanSecrets = sameResource
+      ? this.secretsRun.perResourceSecrets.get(entry.logicalId)
+      : undefined;
     return (
       // go-to-k/cdkd#4451: a record THIS deploy created and its rollback
       // orphaned carries a bag this deploy wrote, so it gets its masked
       // properties' fingerprints here too, or a later adoption backfills
       // them from whatever template that deploy carries.
       withMaskedPropertyFingerprints(
-        // go-to-k/cdkd#4043 (review M4): the `NoEcho` arms too, positioned
-        // by today's template while it still names the logical id as that
-        // type.
-        applyNoEchoPersist(
-          this.noEchoRun,
-          this.noEchoDeps(),
-          entry.logicalId,
-          entry.state,
-          scrubResourceRecord(
+        // go-to-k/cdkd#7161: a custom resource attribute whose KEY holds a
+        // secret is dropped here too, as on a live record: with this deploy's
+        // needles for the same resource, and with a `NoEcho` attribute's
+        // in-memory value (a record this deploy's rollback minted).
+        withSecretAttributeKeysDropped(
+          // go-to-k/cdkd#4043 (review M4): the `NoEcho` arms too, positioned
+          // by today's template while it still names the logical id as that
+          // type.
+          applyNoEchoPersist(
+            this.noEchoRun,
+            this.noEchoDeps(),
+            entry.logicalId,
             entry.state,
-            (sameResource ? this.secretsRun.perResourceSecrets.get(entry.logicalId) : undefined) ??
-              new Map<string, string>(),
+            scrubResourceRecord(
+              entry.state,
+              orphanSecrets ?? new Map<string, string>(),
+              orphanTemplateProps,
+              undefined,
+              sameGenerationClaimsOf(entry.state)
+            ),
             orphanTemplateProps,
-            undefined,
-            sameGenerationClaimsOf(entry.state)
+            state.resources
           ),
-          orphanTemplateProps,
-          state.resources
+          entry.state,
+          orphanSecrets,
+          template === undefined ? undefined : templateGetAttNamesOf(template, entry.logicalId),
+          publicTokens
         ),
         entry.state.properties,
         orphanTemplateProps,
-        sameResource ? this.secretsRun.perResourceSecrets.get(entry.logicalId) : undefined,
+        orphanSecrets,
         sameResource ? this.secretsRun.fingerprintNoEchoValues : undefined,
         sameResource
           ? this.secretsRun.perResourceInputFingerprints.get(entry.logicalId)

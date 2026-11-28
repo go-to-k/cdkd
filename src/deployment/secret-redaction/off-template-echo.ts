@@ -42,11 +42,34 @@ export interface OffTemplateEchoRecord {
   observedMaskedLeaves?: unknown;
 }
 
-/** Only these references stand for a secret; a public `ssm` parameter's value is no secret. */
-function isSecretReference(token: string): boolean {
-  return (
-    opensDynamicReferenceTo(token, 'ssm-secure') || opensDynamicReferenceTo(token, 'secretsmanager')
-  );
+/** Does a token the record's `properties` hold stand for a secret? */
+type SecretReferenceTest = (token: string) => boolean;
+
+/**
+ * The secret references of a record's persisted `properties`: every
+ * `ssm-secure` / `secretsmanager` token, and every plain `ssm` token unless
+ * `provenPublic` proves its parameter public (go-to-k/cdkd#7160).
+ *
+ * A plain `ssm` token is secret on the #1901 premise the value scan's
+ * whole-token arm acts on: a deploy persists a `String` / `StringList`
+ * parameter RESOLVED, so a token SURVIVING in a persisted bag names a
+ * `SecureString` (`expressionMaySeedANeedle`). The premise is evidence the
+ * record holds, not the token text: the same token in a template names a
+ * public parameter as often as not. Only a LEGACY record breaks it (one
+ * `cdkd import` wrote before the #2944 refusal marker, or a hand edit), and
+ * there the cost is an over-mask in the safe direction: a template-absent key,
+ * which CloudFormation never compares, reported as `maskedEcho`, until the
+ * next write resolves the token and the entry lapses with the mask. Nothing
+ * is sent from it (`--revert` sends AWS's own value at a masked position).
+ * CloudFormation itself refuses the shape ("Non-secure ssm prefix was used
+ * for secure parameter"); cdkd resolves it (#1901), so its plaintext reaches
+ * the readback.
+ */
+function secretReferenceTest(provenPublic?: (token: string) => boolean): SecretReferenceTest {
+  return (token) =>
+    opensDynamicReferenceTo(token, 'ssm-secure') ||
+    opensDynamicReferenceTo(token, 'secretsmanager') ||
+    (opensDynamicReferenceTo(token, 'ssm') && provenPublic?.(token) !== true);
 }
 
 /**
@@ -106,7 +129,8 @@ function plaintextFor(recorded: string, readback: unknown): string | undefined {
 
 /** Each coordinate of a string leaf of `bag` that holds a SECRET reference, with the leaf. */
 function secretReferenceLeaves(
-  bag: unknown
+  bag: unknown,
+  isSecretReference: SecretReferenceTest
 ): Array<{ coordinate: (string | number)[]; text: string }> {
   const out: Array<{ coordinate: (string | number)[]; text: string }> = [];
   const walk = (node: unknown, path: (string | number)[]): void => {
@@ -134,7 +158,11 @@ function secretReferenceLeaves(
  * value carrying it, a secret reference): those are the positions being
  * learned. A key the readback lacks, or a shape that differs, refuses.
  */
-function corroborates(live: unknown, recorded: unknown): boolean {
+function corroborates(
+  live: unknown,
+  recorded: unknown,
+  isSecretReference: SecretReferenceTest
+): boolean {
   if (typeof recorded === 'string') {
     // The recorded side holding the mask is a position being learned.
     if (mentionsMask(recorded)) return true;
@@ -147,14 +175,15 @@ function corroborates(live: unknown, recorded: unknown): boolean {
     return (
       Array.isArray(live) &&
       live.length === recorded.length &&
-      recorded.every((item, i) => corroborates(live[i], item))
+      recorded.every((item, i) => corroborates(live[i], item, isSecretReference))
     );
   }
   if (isPlainObject(recorded)) {
     return (
       isPlainObject(live) &&
       Object.entries(recorded).every(
-        ([key, value]) => Object.hasOwn(live, key) && corroborates(live[key], value)
+        ([key, value]) =>
+          Object.hasOwn(live, key) && corroborates(live[key], value, isSecretReference)
       )
     );
   }
@@ -170,7 +199,8 @@ function corroborates(live: unknown, recorded: unknown): boolean {
  */
 function listPairing(
   live: readonly unknown[],
-  recorded: readonly unknown[]
+  recorded: readonly unknown[],
+  isSecretReference: SecretReferenceTest
 ): ((recordedIndex: number) => number | undefined) | undefined {
   const key = identityKeyFor(live, recorded);
   if (key !== undefined) {
@@ -181,7 +211,10 @@ function listPairing(
       return found < 0 ? undefined : found;
     };
   }
-  if (live.length === recorded.length && recorded.every((item, i) => corroborates(live[i], item))) {
+  if (
+    live.length === recorded.length &&
+    recorded.every((item, i) => corroborates(live[i], item, isSecretReference))
+  ) {
     return (index) => index;
   }
   return undefined;
@@ -195,14 +228,15 @@ function listPairing(
 function readbackValueAt(
   readback: unknown,
   properties: unknown,
-  coordinate: NoEchoCoordinate
+  coordinate: NoEchoCoordinate,
+  isSecretReference: SecretReferenceTest
 ): unknown {
   let live = readback;
   let recorded = properties;
   for (const segment of coordinate) {
     if (typeof segment === 'number') {
       if (!Array.isArray(live) || !Array.isArray(recorded)) return undefined;
-      const index = listPairing(live, recorded)?.(segment);
+      const index = listPairing(live, recorded, isSecretReference)?.(segment);
       if (index === undefined) return undefined;
       live = live[index];
       recorded = recorded[segment];
@@ -224,7 +258,8 @@ function readbackValueAt(
 function offTemplateEchoes(
   observed: Record<string, unknown>,
   properties: Record<string, unknown>,
-  needles: readonly string[]
+  needles: readonly string[],
+  isSecretReference: SecretReferenceTest
 ): (string | number)[][] {
   const hits: (string | number)[][] = [];
   const walk = (
@@ -245,7 +280,7 @@ function offTemplateEchoes(
         return;
       }
       if (!Array.isArray(source)) return;
-      const pairing = listPairing(node, source);
+      const pairing = listPairing(node, source, isSecretReference);
       if (pairing === undefined) return;
       source.forEach((item, i) => {
         const index = pairing(i);
@@ -279,14 +314,15 @@ function offTemplateEchoes(
 function isOffTemplate(
   observed: unknown,
   properties: unknown,
-  coordinate: NoEchoCoordinate
+  coordinate: NoEchoCoordinate,
+  isSecretReference: SecretReferenceTest
 ): boolean {
   let live = observed;
   let source = properties;
   for (const segment of coordinate) {
     if (typeof segment === 'number') {
       if (!Array.isArray(live) || !Array.isArray(source)) return false;
-      const pairing = listPairing(live, source);
+      const pairing = listPairing(live, source, isSecretReference);
       if (pairing === undefined) return false;
       const recordedIndex = source.findIndex((_, i) => pairing(i) === segment);
       if (recordedIndex < 0) return false;
@@ -318,6 +354,11 @@ export interface OffTemplateEchoInput {
   readonly previous?: unknown;
   /** Values that name nothing secret (the region, the stack name). */
   readonly publicTokens?: ReadonlySet<string> | undefined;
+  /**
+   * A plain `ssm` token this writer PROVED public (`PublicSsmProver`), which
+   * then teaches nothing (go-to-k/cdkd#7160).
+   */
+  readonly provenPublic?: ((token: string) => boolean) | undefined;
 }
 
 /**
@@ -329,10 +370,10 @@ export interface OffTemplateEchoInput {
  * - at each `noEchoLeaves` coordinate: the readback's leaf (through
  *   {@link listPairing}) and the resolved leaf, each WHOLE, so a sub-floor
  *   value embedded in a longer leaf is covered by that leaf;
- * - at each leaf of `properties` holding an `ssm-secure` / `secretsmanager`
- *   reference: the readback's plaintext for it (the text between the
- *   template's literal prefix and suffix). A public `ssm` reference teaches
- *   nothing.
+ * - at each leaf of `properties` holding a secret reference
+ *   ({@link secretReferenceTest}: an `ssm-secure` / `secretsmanager` one, or a
+ *   plain `ssm` one no proof calls public): the readback's plaintext for it
+ *   (the text between the template's literal prefix and suffix).
  *
  * A value is no needle when it is shorter than the needle floor, equals one of
  * `publicTokens`, or is contained in the physical id, which AWS publishes and
@@ -352,6 +393,7 @@ export function maskOffTemplateEchoes(input: OffTemplateEchoInput): {
   const readback = input.readback ?? bag;
   const resolved = input.resolvedProperties ?? properties;
   const physicalId = typeof input.physicalId === 'string' ? input.physicalId : '';
+  const isSecretReference = secretReferenceTest(input.provenPublic);
   const needles = new Set<string>();
   // Known limits of what is learned:
   // - a secret of MIN_NEEDLE_LENGTH or more characters that is, by
@@ -370,14 +412,17 @@ export function maskOffTemplateEchoes(input: OffTemplateEchoInput): {
     needles.add(value);
   };
   for (const coordinate of noEchoLeavesOf({ noEchoLeaves: input.noEchoLeaves }) ?? []) {
-    learn(readbackValueAt(readback, resolved, coordinate));
+    learn(readbackValueAt(readback, resolved, coordinate, isSecretReference));
     learn(valueAtCoordinate(resolved, coordinate));
   }
-  for (const { coordinate, text } of secretReferenceLeaves(properties)) {
-    learn(plaintextFor(text, readbackValueAt(readback, properties, coordinate)));
+  for (const { coordinate, text } of secretReferenceLeaves(properties, isSecretReference)) {
+    learn(plaintextFor(text, readbackValueAt(readback, properties, coordinate, isSecretReference)));
     learn(plaintextFor(text, valueAtCoordinate(resolved, coordinate)));
   }
-  const found = needles.size === 0 ? [] : offTemplateEchoes(readback, properties, [...needles]);
+  const found =
+    needles.size === 0
+      ? []
+      : offTemplateEchoes(readback, properties, [...needles], isSecretReference);
   const hits = found.filter((coordinate) => {
     const leaf = valueAtCoordinate(bag, coordinate);
     if (leaf === undefined) return false;
@@ -393,7 +438,7 @@ export function maskOffTemplateEchoes(input: OffTemplateEchoInput): {
   // masked whole, still holds the mask.
   const kept = (observedMaskedLeavesOf({ observedMaskedLeaves: input.previous }) ?? []).filter(
     (coordinate) =>
-      isOffTemplate(masked, properties, coordinate) &&
+      isOffTemplate(masked, properties, coordinate, isSecretReference) &&
       coordinate.some((_, i) => isWhollyMask(valueAtCoordinate(masked, coordinate.slice(0, i + 1))))
   );
   return { bag: masked, leaves: canonicalCoordinates([...kept, ...hits]) };

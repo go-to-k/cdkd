@@ -25,6 +25,7 @@ import {
   maskOffTemplateEchoes,
 } from '../../../deployment/secret-redaction.js';
 import { PublicSsmProver } from '../../../deployment/public-ssm-proof.js';
+import { provenPublicValue } from '../../../deployment/secret-redaction/mask-only.js';
 import { secretNamePrintingBags } from '../../../deployment/secret-name-needles.js';
 import { withPrintingSecrets } from '../../../deployment/resource-secrets-scope.js';
 import { buildReadCurrentStateContext, driftProducerRegionEvidence } from '../drift.js';
@@ -500,6 +501,9 @@ export async function refreshObservedForStack(
               noEchoLeaves: resource.noEchoLeaves,
               physicalId: resource.physicalId,
               publicTokens: new Set([region, stackName]),
+              // go-to-k/cdkd#7160: a plain `ssm` token this pass proved public
+              // teaches nothing.
+              provenPublic: (token) => provenPublicValue(publicSsmProof, token) !== undefined,
             });
             // Redacted again over the masked bag: the walk is idempotent on its own
             // output, and the write keeps the redaction at the site.

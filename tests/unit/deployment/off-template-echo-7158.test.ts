@@ -8,7 +8,9 @@
  * element with and without an identity field, a list of strings) x value
  * forms (a `NoEcho` parameter whole, embedded, and under the needle floor
  * embedded in a longer leaf; an `ssm-secure` reference whole and embedded; a
- * `secretsmanager` one; two references with one plaintext) x writers (the
+ * `secretsmanager` one; two references with one plaintext; and, for
+ * go-to-k/cdkd#7160, a plain `ssm` reference naming a `SecureString` whole,
+ * embedded and twinned) x writers (the
  * deploy persist and an unchanged resource's persist with a fresh readback),
  * through the REAL resolver and `redactStateForPersist`, and asserts:
  * - no plaintext reaches the record;
@@ -24,6 +26,7 @@ import {
 } from '../../../src/deployment/intrinsic-function-resolver.js';
 import {
   markSameGenerationBag,
+  maskOffTemplateEchoes,
   observedMaskedLeavesOf,
   templateGetAttNamesOf,
   withOffTemplateEchoesMasked,
@@ -68,7 +71,10 @@ type Form =
   | 'whole'
   | 'embedded'
   | 'secretsmanager'
-  | 'twin';
+  | 'twin'
+  | 'ssm-whole'
+  | 'ssm-embedded'
+  | 'ssm-twin';
 const FORMS: readonly Form[] = [
   'noecho',
   'noecho-embedded',
@@ -77,8 +83,13 @@ const FORMS: readonly Form[] = [
   'embedded',
   'secretsmanager',
   'twin',
+  'ssm-whole',
+  'ssm-embedded',
+  'ssm-twin',
 ];
 const isNoEcho = (form: Form): boolean => form.startsWith('noecho') || form.startsWith('subfloor');
+/** go-to-k/cdkd#7160: the plain `ssm` forms name a `SecureString` (the mock's `Type`). */
+const serviceOf = (form: Form): string => (form.startsWith('ssm-') ? 'ssm' : 'ssm-secure');
 
 /** Each shape places the value at a coordinate of a template bag. */
 const SHAPES: Record<string, (value: unknown) => Record<string, unknown>> = {
@@ -106,13 +117,15 @@ async function seeded(shape: string, form: Form, index: number): Promise<Seeded>
     ? form === 'noecho'
       ? { Ref: 'SecretParam' }
       : { 'Fn::Join': ['', ['pre-', { Ref: 'SecretParam' }, '-post']] }
-    : form === 'embedded'
-      ? `pre-{{resolve:ssm-secure:${name}}}-post`
+    : form === 'embedded' || form === 'ssm-embedded'
+      ? `pre-{{resolve:${serviceOf(form)}:${name}}}-post`
       : form === 'secretsmanager'
         ? `{{resolve:secretsmanager:${name}}}`
-        : `{{resolve:ssm-secure:${name}}}`;
+        : `{{resolve:${serviceOf(form)}:${name}}}`;
   const source = SHAPES[shape]!(value);
-  if (form === 'twin') source['Twin7158'] = `{{resolve:ssm-secure:${name}/twin}}`;
+  if (form === 'twin' || form === 'ssm-twin') {
+    source['Twin7158'] = `{{resolve:${serviceOf(form)}:${name}/twin}}`;
+  }
   const template = {
     Parameters: { SecretParam: { Type: 'String', NoEcho: true } },
     Resources: { [ID]: { Type: TYPE, Properties: source } },
@@ -131,7 +144,7 @@ async function seeded(shape: string, form: Form, index: number): Promise<Seeded>
 /** The leaf the readback echoes under the template-absent key: what the template position resolved to. */
 function echoOf(s: Seeded, form: Form): string {
   const text = JSON.stringify(s.resolved);
-  if (form === 'noecho' || form === 'whole' || form === 'secretsmanager' || form === 'twin') return s.plaintext;
+  if (!form.endsWith('embedded')) return s.plaintext;
   // An embedded form echoes the whole leaf it embeds in.
   expect(text).toContain(`pre-${s.plaintext}-post`);
   return `pre-${s.plaintext}-post`;
@@ -221,6 +234,8 @@ function resolvedBaseline(baseline: Record<string, unknown>): Record<string, unk
       .split(`{{resolve:ssm-secure:${name}}}`)
       .join(value)
       .split(`{{resolve:secretsmanager:${name}}}`)
+      .join(value)
+      .split(`{{resolve:ssm:${name}}}`)
       .join(value);
   }
   return JSON.parse(text) as Record<string, unknown>;
@@ -268,7 +283,7 @@ describe('a secret echoed under a key the template lacks (go-to-k/cdkd#7158, #71
   );
 
   it('the generated population is the full product', () => {
-    expect(cases).toHaveLength(5 * 7 * 4 * 2);
+    expect(cases).toHaveLength(5 * 10 * 4 * 2);
   });
 
   it.each(cases.map((c, i) => [c.writer, c.shape, c.form, c.placement, i] as const))(
@@ -316,6 +331,19 @@ describe('a secret echoed under a key the template lacks (go-to-k/cdkd#7158, #71
     // too, read off the raw readback: a mask no field names is phantom drift.
     expect(record.observedProperties?.['Extra']).toBe('***');
     expect(record.observedMaskedLeaves).toEqual([['Extra']]);
+  });
+
+  it('the #7160 repro: an unchanged record learns a plain ssm SecureString plaintext inside a list', () => {
+    const record = withOffTemplateEchoesMasked<OffTemplateEchoRecord>(
+      {
+        physicalId: 'p',
+        properties: { Users: ['plain', { Password: '{{resolve:ssm:/db/pw}}' }] },
+        observedProperties: { Users: ['plain', { Password: 'pw-plain-7160' }], Extra: 'pw-plain-7160' },
+      },
+      { readback: { Users: ['plain', { Password: 'pw-plain-7160' }], Extra: 'pw-plain-7160' } }
+    );
+    expect(record.observedProperties?.['Extra']).toBe('***');
+    expect(observedMaskedLeavesOf(record)).toEqual([['Extra']]);
   });
 
   it('learns an EMBEDDED reference plaintext from between the template literal prefix and suffix', () => {
@@ -481,12 +509,25 @@ describe('a secret echoed under a key the template lacks (go-to-k/cdkd#7158, #71
         new Set(['us-east-1', 'Stack7158'])
       ).observedProperties;
 
-    it('a public ssm (non-secure) reference whose value equals an off-template value', () => {
+    it('a public ssm (String) parameter, which a deploy persists RESOLVED', () => {
+      // go-to-k/cdkd#1901: a `String` parameter's value replaces its token in
+      // `properties`, so no token survives to be learned from.
       const out = run(
-        { Version: '{{resolve:ssm:/public/version}}' },
+        { Version: 'release-2026-11' },
         { Version: 'release-2026-11', Extra: 'release-2026-11' }
       );
       expect(out?.['Extra']).toBe('release-2026-11');
+    });
+
+    it('a plain ssm token the writer proved public (go-to-k/cdkd#7160)', () => {
+      const properties = { Version: 'v={{resolve:ssm:/public/version}}' };
+      const readback = { Version: 'v=release-2026-11', Extra: 'release-2026-11' };
+      const input = { bag: readback, readback, properties, physicalId: 'p' };
+      expect(
+        maskOffTemplateEchoes({ ...input, provenPublic: (t) => t === '{{resolve:ssm:/public/version}}' }).bag['Extra']
+      ).toBe('release-2026-11');
+      // Control: without the proof the surviving token names a SecureString.
+      expect(maskOffTemplateEchoes(input).bag['Extra']).toBe('***');
     });
 
     it('a value equal to the region or the stack name', () => {
@@ -684,5 +725,53 @@ describe('a custom resource attribute KEY holding a secret (go-to-k/cdkd#7153)',
     const saved = (engine as unknown as { redactStateForPersist(s: StackState): StackState }).redactStateForPersist(state);
     expect(JSON.stringify(saved)).not.toContain(SECRET);
     expect(saved.resources['Cr']!.attributes).toEqual({ Plain: 'ok' });
+  });
+
+  describe('orphan and superseded records (go-to-k/cdkd#7161)', () => {
+    const persistDropped = (engine: DeployEngine, dropped: ResourceState): StackState => {
+      engine.noEchoRun.constructPathTemplate = template() as never;
+      const state: StackState = {
+        version: 18,
+        stackName: 'S',
+        region: 'us-east-1',
+        resources: {},
+        orphans: [{ logicalId: 'Cr', orphanedAt: 1, state: dropped }],
+        supersededResources: [{ logicalId: 'Cr', supersededAt: 1, state: dropped }],
+        outputs: {},
+        lastModified: 0,
+      };
+      return (engine as unknown as { redactStateForPersist(s: StackState): StackState }).redactStateForPersist(state);
+    };
+    const engine = (): DeployEngine =>
+      new DeployEngine({} as never, {} as never, {} as never, {} as never, {} as never, { dryRun: false }, 'us-east-1');
+
+    it("drops the key with this deploy's needles for the same resource", () => {
+      const e = engine();
+      e.secretsRun.perResourceSecrets.set('Cr', secrets);
+      e.secretsRun.perResourceResolvedType.set('Cr', 'Custom::Thing');
+      const saved = persistDropped(e, record({ [`Endpoint.${SECRET}`]: 'v', Plain: 'ok' }));
+      expect(JSON.stringify(saved)).not.toContain(SECRET);
+      expect(saved.orphans![0]!.state.attributes).toEqual({ Plain: 'ok' });
+      expect(saved.supersededResources![0]!.state.attributes).toEqual({ Plain: 'ok' });
+    });
+
+    it("drops the key a rollback-minted record's NoEcho attribute value names", () => {
+      const NOECHO = 'n0echo-value-7161';
+      const e = engine();
+      // The handler answered `NoEcho: true` in this run (its rollback minted the record).
+      e.noEchoRun.noEchoAttributeResources.set('Cr', true);
+      const saved = persistDropped(e, record({ Generated: NOECHO, [`By-${NOECHO}`]: 'x', Plain: 'ok' }));
+      expect(JSON.stringify(saved)).not.toContain(`By-${NOECHO}`);
+      expect(saved.orphans![0]!.state.attributes).toEqual({ Generated: '***', Plain: '***' });
+      expect(saved.supersededResources![0]!.state.attributes).toEqual({ Generated: '***', Plain: '***' });
+    });
+
+    it("a needle of another type's resource under the same logical id drops nothing", () => {
+      const e = engine();
+      e.secretsRun.perResourceSecrets.set('Cr', secrets);
+      e.secretsRun.perResourceResolvedType.set('Cr', 'AWS::SNS::Topic');
+      const saved = persistDropped(e, record({ [`Endpoint.${SECRET}`]: 'v' }));
+      expect(Object.keys(saved.orphans![0]!.state.attributes ?? {})).toEqual([`Endpoint.${SECRET}`]);
+    });
   });
 });

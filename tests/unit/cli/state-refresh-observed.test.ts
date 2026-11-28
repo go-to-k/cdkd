@@ -1214,6 +1214,18 @@ describe('cdkd state refresh-observed — secret redaction (issue #1926)', () =>
       expect(publicSsmProof.askedAbout).toEqual([properties]);
     });
 
+    it('a proven-public value echoed under a key the template lacks stays (go-to-k/cdkd#7160)', async () => {
+      const properties = { Environment: { Variables: { URL: MIXED } } };
+      const live = { Environment: { Variables: { URL: RESOLVED } }, HostEcho7160: 'db.public.internal' };
+      publicSsmProof.proven.set(PUBLIC, 'db.public.internal');
+      expect((await refreshWith(properties, live))?.['HostEcho7160']).toBe('db.public.internal');
+      // Control: unproven, the surviving token names a SecureString, and the
+      // value scan already takes the echo for it.
+      publicSsmProof.proven.clear();
+      mockSaveState.mockClear();
+      expect((await refreshWith(properties, live))?.['HostEcho7160']).toBe(PUBLIC);
+    });
+
     it('CONTROL: with no proof the same leaf still takes the expression', async () => {
       const observed = await refreshWith(
         { Environment: { Variables: { URL: MIXED } } },

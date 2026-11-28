@@ -11,6 +11,8 @@ import {
   printingCorpusOf,
   maskSecretsInText,
   withOffTemplateEchoesMasked,
+  withSecretAttributeKeysDropped,
+  templateGetAttNamesOf,
   type RecordedSecretValues,
 } from '../../../deployment/secret-redaction.js';
 import { keepHeldTokenProvenance } from '../../../deployment/reference-provenance-record.js';
@@ -308,6 +310,22 @@ export async function scrubStackRewritePass({
   };
 
   const noEchoPublicTokens: ReadonlySet<string> = new Set([region, stack.stackName]);
+  // go-to-k/cdkd#7161: a custom resource attribute whose KEY holds a secret
+  // this run resolved is dropped, as a deploy that runs the resource drops it.
+  // A deploy that leaves the resource UNCHANGED resolves nothing for it, so a
+  // key an older binary persisted is repaired here, where the needles are.
+  const withSecretKeysDropped = <R extends Parameters<typeof withSecretAttributeKeysDropped>[0]>(
+    record: R,
+    logicalId: string,
+    needles: RecordedSecretValues | undefined
+  ): R =>
+    withSecretAttributeKeysDropped(
+      record,
+      record,
+      needles,
+      templateGetAttNamesOf(stack.template, logicalId),
+      noEchoPublicTokens
+    );
 
   const totalSecrets =
     outputSecrets.size +
@@ -476,15 +494,19 @@ export async function scrubStackRewritePass({
     // the record no longer holds; a record this pass leaves alone keeps it.
     // go-to-k/cdkd#7158 / #7152: a secret the readback echoed under a key
     // the template lacks, learned from the record as it was stored.
-    const rewritten = keepHeldTokenProvenance(
-      withOffTemplateEchoesMasked(
-        applyScrubNoEcho(migrated, record, plan),
-        {
-          properties: record.properties,
-          ...(record.observedProperties !== undefined && { readback: record.observedProperties }),
-        },
-        noEchoPublicTokens
-      )
+    const rewritten = withSecretKeysDropped(
+      keepHeldTokenProvenance(
+        withOffTemplateEchoesMasked(
+          applyScrubNoEcho(migrated, record, plan),
+          {
+            properties: record.properties,
+            ...(record.observedProperties !== undefined && { readback: record.observedProperties }),
+          },
+          noEchoPublicTokens
+        )
+      ),
+      logicalId,
+      new Map([...ownSecrets, ...(migrationNeedles ?? [])])
     );
     const written =
       JSON.stringify(rewritten) === JSON.stringify(record)
@@ -520,11 +542,15 @@ export async function scrubStackRewritePass({
     const needles = new Map(allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets));
     for (const [plaintext, expression] of own ?? []) needles.set(plaintext, expression);
     if (needles.size === 0) return record;
-    const scrubbed = keepHeldTokenProvenance(
-      scrubResourceRecord(record.state, needles, undefined, 'state-cross-generation', {
-        properties: 'unproven',
-        observed: 'unproven',
-      })
+    const scrubbed = withSecretKeysDropped(
+      keepHeldTokenProvenance(
+        scrubResourceRecord(record.state, needles, undefined, 'state-cross-generation', {
+          properties: 'unproven',
+          observed: 'unproven',
+        })
+      ),
+      record.logicalId,
+      needles
     );
     if (JSON.stringify(scrubbed) === JSON.stringify(record.state)) return record;
     recordsChanged++;
@@ -540,11 +566,15 @@ export async function scrubStackRewritePass({
           allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets)
         );
         if (needles.size === 0) return entry;
-        const scrubbed = keepHeldTokenProvenance(
-          scrubResourceRecord(entry.state, needles, undefined, 'state-cross-generation', {
-            properties: 'unproven',
-            observed: 'unproven',
-          })
+        const scrubbed = withSecretKeysDropped(
+          keepHeldTokenProvenance(
+            scrubResourceRecord(entry.state, needles, undefined, 'state-cross-generation', {
+              properties: 'unproven',
+              observed: 'unproven',
+            })
+          ),
+          entry.logicalId,
+          needles
         );
         if (JSON.stringify(scrubbed) === JSON.stringify(entry.state)) return entry;
         recordsChanged++;
