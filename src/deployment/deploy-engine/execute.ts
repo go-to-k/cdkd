@@ -425,9 +425,8 @@ async function executeDeploymentBody(
 
     // Step 2: Process DELETE operations in reverse dependency order.
     if (deleteChanges.size > 0) {
-      // go-to-k/cdkd#6977: an old copy still using a removed resource goes first.
-      // go-to-k/cdkd#7204: one a consumer still names waits, and so do the
-      // removed resources it uses.
+      // go-to-k/cdkd#6977: an old copy still using a removed resource goes first
+      // (one a consumer names waits with what it uses, go-to-k/cdkd#7204).
       const heldForOldCopies = new Map(
         await deleteUsersOfRemovalsFirst(
           engine,
@@ -472,35 +471,18 @@ async function executeDeploymentBody(
               ? { ...currentState.resources[logicalId] }
               : undefined;
 
-            // go-to-k/cdkd#7204: a removed resource a held old copy uses.
-            const oldCopy = removalKept.heldOldCopyOf(logicalId);
-            if (oldCopy !== undefined) {
-              removalKept.keepHeld(
+            // A removed resource a held old copy uses (go-to-k/cdkd#7204), or
+            // one whose dependent's delete failed and was kept (go-to-k/cdkd#6969),
+            // stays, record and all.
+            if (
+              removalKept.keepUnsent(
                 engine,
-                logicalId,
-                change,
-                oldCopy,
-                previousState,
+                { logicalId, change, dependencies: node.dependencies, record: previousState },
                 stackName,
                 actualCounts,
                 progress
-              );
-              return;
-            }
-            // go-to-k/cdkd#6969: a resource whose dependent's delete failed
-            // and was kept stays, record and all.
-            const blocker = removalKept.blockerOf(node.dependencies);
-            if (blocker !== undefined) {
-              removalKept.keepBlocked(
-                engine,
-                logicalId,
-                change,
-                blocker,
-                previousState,
-                stackName,
-                actualCounts,
-                progress
-              );
+              )
+            ) {
               return;
             }
 

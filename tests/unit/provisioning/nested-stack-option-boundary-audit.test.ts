@@ -73,7 +73,8 @@ const AUDITED_MEMBERS = [
   'onDestructivePlan', // overwritten to undefined by the spread site: the top-level check covers children (#4705)
   'crossPrefixHolder', // inherited: called with the CHILD's own stack name by its automatic rollback; a child never settles (#4705 R6-2)
   'eventRecorder', // carries the top-level run's stack name, by design
-  'consumerCleanupQueue', // inherited but inert: read only by a ROOT engine (no `parentStackInfo`); a child queues at its root (#7012)
+  'consumerCleanupQueue', // inherited: its cleanup is read only by a ROOT engine (#7012); a child reads its PRESENCE before an early delete of an old copy (#7204)
+  'consumerStacks', // inherited: the TOP-LEVEL stack's in-run consumers, whose records a child's early delete asks about with the top-level name (#7204)
   'inRunStacks', // inherited: the RUN's stacks, which a child's in-use export refusal exempts as the parent's does (#6088)
   // --- names no resource ------------------------------------------------------
   'concurrency',
