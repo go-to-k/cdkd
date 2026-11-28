@@ -4,13 +4,9 @@
 
 - **A pushed branch with no PR is a live lane**, as is a worktree holding
   unpushed commits — the window only the claim covers (§2 owns the probes).
-- **A fresh issue is someone's deferral, not free backlog** (§3-0); §4 is its
-  other half: claim what you FILE.
 - **The filer may already have classified the issue**: a `Session-fit: next` body
   names the cycle it needs, so take it only if this run can pay, saying why in
   the claim (go-to-k/cdkd#1791).
-- **A cross-repo framing spends the deferral budget up front**: inside a
-  "do this across the repos in one session" scope, `next` is off the menu.
 - **Never merge a PR whose destroy path is unverified, and never bypass
   `/run-integ`** (§8-c owns what COUNTS as one).
 - **A Bash cwd silently drifts back to the main tree between calls**: prefix every
@@ -18,9 +14,8 @@
   (addressing rules: `references/launch-mode.md`).
   - **A KILLED or REFUSED call is a reset trigger that also lies about the
     filesystem**: a refusal aborts the WHOLE call, so the `mkdir` a later `cd`
-    needs never ran — run `pwd` and re-verify. A BACKGROUNDED call likewise
-    starts from the session cwd, and the drift runs FORWARD, so use absolute
-    paths for every EDIT.
+    needs never ran — run `pwd` and re-verify. A BACKGROUNDED call starts
+    from the session cwd too, and the drift runs FORWARD: EDIT by absolute path.
   - **Its worst form is a FALSE GREEN**: a check run from the main tree verifies
     unmodified `main` and passes, so an unexpectedly clean or short result (the
     tell is the test COUNT) calls for a `pwd`, not a pass.
@@ -35,6 +30,10 @@
   only by LEAVING the lane branch (§9's IN-PLACE arm).
 - **AWS credentials expiring mid-run stop the run**: ask the maintainer to run
   `aws-relogin` in their terminal; never run `aws login` or write credentials.
+  Expiry may refuse only Cloud Control and SSM instance associations, not
+  STS/EC2/S3: on a token or caller-credential refusal run `aws cloudcontrol
+  list-resources --type-name AWS::EC2::PlacementGroup --region us-east-1`
+  first, and relay or fix on no cause (a lane's or yours) unprobed (#7132 run).
 - **A usage-limit interruption need not end the run: leave a one-shot checkpoint
   at the reset time**, scheduled when the limit is ANNOUNCED.
 - **Qualify every published issue/PR reference as `owner/repo#N`** — a bare `#N`
@@ -46,7 +45,7 @@
   it, never re-dispatch**, and tell it its OWN reviewer subagents died too: only
   it can resume them. A HOST RESTART may kill it outright (`SendMessage` first,
   re-dispatch on its tree only if it cannot answer) and wipes the scratchpad:
-  rebuild any helper kept there (a relaunch exiting 127 is the symptom).
+  rebuild any helper kept there.
   **Read the TREE and the DIFF first** (an unpushed commit survives): the agent
   may already have committed, pushed and opened the PR, and **uncommitted changes
   there may be the round's real fix, not an abandoned probe**; §5-g covers one
