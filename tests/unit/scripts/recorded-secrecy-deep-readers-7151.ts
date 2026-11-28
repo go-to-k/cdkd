@@ -9,9 +9,13 @@
  * reason its verdict can never be less masked than the record's provenance
  * alone would make it (the value is not a record bag, a text hit masks or
  * refuses MORE, the reader reads the provenance field already, or it needs
- * the marker KIND, which `recordedSecrecyOf` merges). The provenance writer
- * persists the mask at every position it names (`applyNoEchoPersist`), so a
- * marked position holding plaintext is not a state cdkd writes. A new reader
+ * the marker KIND, which `recordedSecrecyOf` merges). Every writer of
+ * `noEchoLeaves` or `noEchoAttributeNames` (the deploy persist, scrub, import,
+ * the rollback replay, the drift revert) writes the mask at each position it
+ * names in the same step, and `maskedPropertyFingerprints` stamps only keys
+ * holding the mask. So a marked position holding a NoEcho plaintext is not a
+ * state cdkd writes; a stale-leaf heal may leave a fingerprint over a settled,
+ * no-longer-NoEcho value, which `recordedSecrecyOf` reads as MORE masked. A new reader
  * fails the fence until it is pinned here with its `why`, and so does an
  * entry that matches nothing.
  */
@@ -42,7 +46,7 @@ export const READS_RECORD_TEXT_DEEP: Readonly<Record<string, { count: number; wh
   },
   "src/analyzer/orphan-rewriter/recorded-attributes.ts#servableRecordedAttribute#carriesSecretMask(value)": {
     count: 1,
-    why: "BOTH: getAtt refuses a `noEchoAttributeNames` attribute (secretDerivedLiveAttribute) first; the text hit only adds a refusal",
+    why: "BOTH: getAtt refuses a `noEchoAttributeNames` attribute (secretDerivedLiveAttribute) before it uses this answer; the text hit only adds a refusal",
   },
   "src/analyzer/orphan-rewriter/recorded-attributes.ts#unsplicableCachedAttribute#carriesSecretMask(cached)": {
     count: 1,
@@ -154,7 +158,7 @@ export const READS_RECORD_TEXT_DEEP: Readonly<Record<string, { count: number; wh
   },
   "src/deployment/custom-resource-service-token.ts#uncomparableToken#mentionsMask(value)": {
     count: 1,
-    why: "an identity check: a hit makes the token unjudgeable and refuses; the recorded token is never printed, only the desired one through the caller's mask",
+    why: "an identity check: a hit makes the token unjudgeable (refused where the diff saw a token change); the recorded token is never printed, only the desired one through the caller's mask",
   },
   "src/deployment/deploy-engine/noecho/echo-fidelity.ts#reportedLeafAt#carriesSecretMask(leaf)": {
     count: 1,
@@ -358,6 +362,6 @@ export const READS_RECORD_TEXT_DEEP: Readonly<Record<string, { count: number; wh
   },
   "src/provisioning/redacted-delete-address.ts#isRedactedRecordedValue#holdsMaskLeaf(value)": {
     count: 1,
-    why: "a hit skips the delete and names fields only; a wider `masked` would skip deletes of a real address",
+    why: "a hit fails safe at every caller (skips the delete naming fields only, leaves an SG rule's identity unknown, skips a scale-to-0); a wider `masked` would skip work on a real address",
   },
 };
