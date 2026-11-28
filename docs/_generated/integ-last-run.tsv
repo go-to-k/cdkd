@@ -394,7 +394,7 @@ no-wait-cr-nat-egress	2026-11-24T20:15:56Z	PASS	872	verify.sh	rc ok, orph clean;
 no-wait-getatt-rds-endpoint	2026-11-24T20:15:56Z	PASS	474	verify.sh	rc ok, orph clean; GetAtt endpoint readiness wait
 nodejs-function	2026-11-04T05:36:33Z	PASS	79	verify.sh	batch 4; rc ok, 0 orph
 noecho-named-producer	2026-11-04T19:47:52Z	PASS	105	verify.sh	rc ok, orph clean
-noecho-parameter-masking	2026-11-22T02:46:37Z	PASS	1232	verify.sh	rc ok, orph clean, sha 3116c9288 (#6813 sub-read errors)
+noecho-parameter-masking	2026-11-28T00:34:15Z	PASS	1599	verify.sh	rc ok, orph clean; #7163 version assertion derived from record shape (17)
 noecho-restapi-body-mac	2026-11-13T16:57:39Z	PASS	117	verify.sh	rc ok, orph clean
 opensearch-domain-getatt	2026-11-20T16:10:37Z	PASS	1754	verify.sh	rc ok, orph clean (step 2b #6676)
 orphan-getatt-takeover	2026-11-07T11:44:37Z	PASS	211	verify.sh	rc ok, orph clean, PR #5991 subnet orphan live attrs

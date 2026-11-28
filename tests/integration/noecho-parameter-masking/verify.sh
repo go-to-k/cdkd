@@ -748,8 +748,17 @@ P1_STATE=$(mktemp)
 SCRATCH_FILES+=("${P1_STATE}")
 aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${P1_STATE}" --quiet
 P1_VERSION=$(jq -r '.version' "${P1_STATE}")
-if [ "${P1_VERSION}" != "${LOCAL_SCHEMA_VERSION}" ]; then
-  echo "FAIL: state.json is version ${P1_VERSION}, not the local binary's ${LOCAL_SCHEMA_VERSION} (issue #4043)" >&2
+# cdkd writes the lowest version a record needs (stateSchemaVersionFor in src/types/state.ts), not the
+# newest: 18 when any record (resources, orphans[].state, supersededResources[].state) carries a
+# referenceProvenance.versionsSent attestation, else 17 when one carries noEchoValueMacs, else 16 (#7163).
+P1_EXPECTED_VERSION=$(jq -r '
+  [(.resources // {} | to_entries[].value), ((.orphans // [])[] | .state), ((.supersededResources // [])[] | .state)]
+  | map(select(. != null and type == "object")) as $r
+  | if any($r[]; (.referenceProvenance // {}) | type == "object" and any(.[]; type == "object" and .versionsSent != null)) then 18
+    elif any($r[]; .noEchoValueMacs != null) then 17
+    else 16 end' "${P1_STATE}")
+if [ "${P1_VERSION}" != "${P1_EXPECTED_VERSION}" ]; then
+  echo "FAIL: state.json is version ${P1_VERSION}, not ${P1_EXPECTED_VERSION} (the version its records' shape needs: 18 versionsSent / 17 noEchoValueMacs / 16; issue #4043)" >&2
   exit 1
 fi
 P1_PERSISTED=$(jq -r '.resources.NoEchoConsumer.properties.Value // "<absent>"' "${P1_STATE}")
