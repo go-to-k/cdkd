@@ -97,6 +97,24 @@ describe('noEchoCoordinatesOf: embedded declared attributes (go-to-k/cdkd#7189)'
     expect(coordinates({ Hosts: ['postgres://u:s3cr3t-value@db'] })).toEqual([]);
   });
 
+  it('follows Fn::If (known and unknown verdict) and Fn::Select to the embedding leaf', () => {
+    const conditional: NoEchoPositionSources = { ...SOURCES, conditions: { On: true } };
+    const shapes = {
+      KnownIf: { 'Fn::If': ['On', join, 'plain'] },
+      KnownIfLiteral: { 'Fn::If': ['On', 'plain', join] },
+      UnknownIf: { 'Fn::If': ['Unknown', join, 'plain'] },
+      Select: { 'Fn::Select': [0, [join, 'plain']] },
+      SelectByRef: { 'Fn::Select': [{ Ref: 'Index' }, [join, 'plain']] },
+    };
+    const bag = Object.fromEntries(Object.keys(shapes).map((key) => [key, 'x']));
+    const masked = Object.fromEntries(Object.keys(shapes).map((key) => [key, SECRET_MASK]));
+    expect(
+      keys(
+        noEchoCoordinatesOf(shapes, bag, conditional, undefined, { maskedAt: masked, only: true })
+      )
+    ).toEqual(keys([['KnownIf'], ['UnknownIf'], ['Select'], ['SelectByRef']]));
+  });
+
   it('does not position an embedding leaf masked for a reason that reads no declared attribute', () => {
     expect(
       noEchoCoordinatesOf({ Other: { 'Fn::Join': ['', ['a', { 'Fn::GetAtt': ['Cr', 'Public'] }]] } }, {

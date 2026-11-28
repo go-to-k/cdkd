@@ -792,8 +792,8 @@ export const UNCOMPARED_REASONS: Record<
   noEchoParameter: {
     kind: 'unknown',
     phrase:
-      'only PARTIALLY compared: their state holds a NoEcho parameter value only as the ' +
-      'redaction mask, which no re-run can clear',
+      'only PARTIALLY compared: their state holds a NoEcho parameter value, or a custom ' +
+      "resource's NoEcho attribute value, only as the redaction mask, which no re-run can clear",
   },
   maskedEcho: {
     kind: 'unknown',

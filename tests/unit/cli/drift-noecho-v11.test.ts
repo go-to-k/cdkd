@@ -705,6 +705,18 @@ describe('cdkd drift — a NoEcho parameter position (schema v11, go-to-k/cdkd#4
       expect(exitSpy).not.toHaveBeenCalledWith(1);
     });
 
+    it('names the cause for a custom-resource attribute too, never a value, in the human report', async () => {
+      mockGetState.mockResolvedValueOnce(makeState({ Url: embedded() }));
+      readsBack({ Name: '/app/url', Type: 'String', Value: LIVE_EMBEDDED, Description: 'd' });
+
+      const { output } = await runDrift(['TestStack']);
+
+      const everything = [output, ...warnSpy.mock.calls.map((c) => String(c[0]))].join('\n');
+      expect(everything).not.toContain(LIVE_SECRET);
+      expect(output).toContain("a custom resource's attribute declared NoEcho");
+      expect(output).toContain('at Value');
+    });
+
     it('--revert of another drifted key sends the live value at Value, never the mask', async () => {
       const update = vi.fn().mockResolvedValue({ physicalId: '/app/url' });
       mockGetState.mockResolvedValueOnce(makeState({ Url: embedded() }));

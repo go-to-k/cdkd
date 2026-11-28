@@ -402,8 +402,9 @@ impossible and the comparison meaningless, whereas here the live value is
 genuinely readable and cdkd simply cannot say what belongs there. Silently
 hiding it would claim a clean bill of health it has no basis for.
 
-Such a deploy names the position, after which it is listed as not compared. Where `--revert` refused because AWS reports nothing at the position,
-force the custom resource to update — change one of its properties, a nonce
+Such a deploy names the position, after which it is listed as not compared.
+Where `--revert` refused because AWS reports nothing at the position, force
+the custom resource to update — change one of its properties, a nonce
 being the usual way — and re-deploy, so its handler runs again and supplies
 the value, which gives the next `--revert` a live value to keep. An ordinary
 re-deploy leaves the resource unchanged, so the handler does not run.

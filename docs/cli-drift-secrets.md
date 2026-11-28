@@ -117,8 +117,9 @@ second row: drift does not read it back and does not compare it.
 
 This applies to the second row. It also applies to a custom-resource value
 in a record that an older cdkd wrote, until a `cdkd deploy` that changes
-something in the stack saves the record again. State holds the mask and AWS holds the real value, so the two
-never match. The report prints `***` on both sides:
+something in the stack saves the record again. State holds the mask and AWS
+holds the real value, so the two never match. The report prints `***` on both
+sides:
 
 ```text
   ~ Handler (AWS::Lambda::Function)
@@ -156,9 +157,12 @@ cdkd matches list elements, and the remaining refusal cases, are in
 
 The first and third rows behave differently. State records where the mask
 sits, also when the value is part of a longer string such as a connection
-URL. The resource is listed as not compared,
-with the cause `noEchoParameter` and the path of the property. Every other
-property of the resource is compared, and the exit code is not affected.
+URL. The resource is listed as not compared, with the cause `noEchoParameter`
+and the path of the property. Every other property of the resource is
+compared, and the exit code is not affected. One case is not recorded: a list
+whose elements cdkd cannot pair with the template's (an element dropped by
+`AWS::NoValue`) and that is only partly masked. That property is reported as
+drift on every run, as in the previous section.
 
 ## A masked position cdkd could not certify
 
