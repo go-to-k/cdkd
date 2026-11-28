@@ -2,9 +2,8 @@
   "issue": 7132,
   "total": 173,
   "counts": {
-    "no-wait-by-design": 51,
-    "waits": 120,
-    "unmeasured": 2
+    "no-wait-by-design": 53,
+    "waits": 120
   },
   "rows": [
     {
@@ -518,8 +517,8 @@
         "src/provisioning/providers/codebuild-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "no-wait-by-design",
+        "reason": "settled when AWS answers: the response and the first BatchGetProjects read report webhook status ACTIVE (3 of 3, CodeConnections GitHub source) (#7132)"
       }
     },
     {
@@ -560,8 +559,8 @@
         "src/provisioning/providers/codebuild-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "no-wait-by-design",
+        "reason": "settled when AWS answers: the first BatchGetProjects read reports status ACTIVE with the new filter groups (3 of 3) (#7132)"
       }
     },
     {

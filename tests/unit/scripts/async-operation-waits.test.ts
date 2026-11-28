@@ -31,15 +31,12 @@ const population = buildPopulation();
 const FIREHOSE_ROOT_ONLY = 'src/provisioning/providers/firehose-provider.ts';
 
 /**
- * The `unmeasured` rows as of the #7132 audit. The set may only SHRINK: a row
- * leaves when its CloudFormation A/B lands (a wait, or a measured
- * `no-wait-by-design`). A NEW asynchronous operation must arrive classified
- * `waits` or `no-wait-by-design` with evidence; `unmeasured` would let it
- * pass forever.
+ * The `unmeasured` rows the #7132 audit left. #7132 measured them all, so the
+ * set is empty and may only stay so: a NEW asynchronous operation must arrive
+ * classified `waits` or `no-wait-by-design` with evidence; `unmeasured` would
+ * let it pass forever.
  */
 const FROZEN_UNMEASURED: ReadonlySet<string> = new Set([
-  'codebuild:CreateWebhook',
-  'codebuild:UpdateWebhook',
 ]);
 
 /**

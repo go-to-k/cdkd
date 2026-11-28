@@ -60,7 +60,8 @@
  * `<client>:<Operation>` (`appsync:StartSchemaCreation`): `waits` (the
  * helpers each sending provider unit calls, and the terminal failure statuses
  * it fails on), `no-wait-by-design` (the reason and its evidence) or
- * `unmeasured` (needs a CloudFormation A/B; #7132 tracks it).
+ * `unmeasured` (needs a CloudFormation A/B; #7132 measured every such row,
+ * none remains, and the test refuses a new one).
  *
  * `--check` (CI) FAILS on a population row with no classification, on a
  * classification naming an operation no provider sends any more (or one the

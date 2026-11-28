@@ -12,7 +12,7 @@ Every SDK command a provider sends whose operation the SDK model marks as asynch
 (issue [#7132](https://github.com/go-to-k/cdkd/issues/7132)), with its hand classification
 from `src/provisioning/async-operation-waits.ts`.
 
-Total: 173 (no-wait-by-design 51, unmeasured 2, waits 120).
+Total: 173 (no-wait-by-design 53, waits 120).
 
 | Operation | Signal | Verdict | Detail | Providers |
 | --- | --- | --- | --- | --- |
@@ -37,9 +37,9 @@ Total: 173 (no-wait-by-design 51, unmeasured 2, waits 120).
 | cloudfront:UpdateDistribution | Distribution.Status: string; Distribution.AliasICPRecordals.ICPRecordalStatus: ICPRecordalStatus (PENDING) | no-wait-by-design | `Deployed` changes only when edges serve; the default returns and --full-wait waits (#1282, docs/cli-deploy.md wait table); the disable before a delete always waits | cloudfront-distribution-provider.ts |
 | cloudtrail:StartLogging | StartLogging | no-wait-by-design | settled when AWS answers: GetTrailStatus read IsLogging true on the first read after the call (3 of 3, ~0.2 s); CloudFormation completes with it true (#7132) | cloudtrail-provider.ts |
 | codebuild:CreateProject | project.webhook.status: WebhookStatus (CREATING, DELETING) | no-wait-by-design | settled once AWS answers: the flagged `project.webhook.status` belongs to the separate CreateWebhook call, its own row | codebuild-provider.ts |
-| codebuild:CreateWebhook | webhook.status: WebhookStatus (CREATING, DELETING) | unmeasured | returns after the call; no code comment says why; needs a CloudFormation A/B | codebuild-provider.ts |
+| codebuild:CreateWebhook | webhook.status: WebhookStatus (CREATING, DELETING) | no-wait-by-design | settled when AWS answers: the response and the first BatchGetProjects read report webhook status ACTIVE (3 of 3, CodeConnections GitHub source) (#7132) | codebuild-provider.ts |
 | codebuild:UpdateProject | project.webhook.status: WebhookStatus (CREATING, DELETING) | no-wait-by-design | settled once AWS answers: the flagged `project.webhook.status` belongs to the separate CreateWebhook / UpdateWebhook calls, their own rows | codebuild-provider.ts |
-| codebuild:UpdateWebhook | webhook.status: WebhookStatus (CREATING, DELETING) | unmeasured | returns after the call; no code comment says why; needs a CloudFormation A/B | codebuild-provider.ts |
+| codebuild:UpdateWebhook | webhook.status: WebhookStatus (CREATING, DELETING) | no-wait-by-design | settled when AWS answers: the first BatchGetProjects read reports status ACTIVE with the new filter groups (3 of 3) (#7132) | codebuild-provider.ts |
 | docdb:CreateDBCluster | DBCluster.Status: string; DBCluster.DBClusterMembers.DBClusterParameterGroupStatus: string; DBCluster.VpcSecurityGroups.Status: string; DBCluster.AssociatedRoles.Status: string; DBCluster.MasterUserSecret.SecretStatus: string | waits | `waitForClusterAvailable`; fails on deleting, failed, stopped, storage-full, insufficient-capacity, restore-error, inaccessible-*, incompatible-*, *-failed; --no-wait defers it to deferReadiness (runs only if the deploy needs the resource) | docdb-provider.ts |
 | docdb:CreateDBInstance | DBInstance.DBInstanceStatus: string; DBInstance.VpcSecurityGroups.Status: string; DBInstance.DBSubnetGroup.SubnetGroupStatus: string; DBInstance.StatusInfos.Status: string | waits | `waitForInstanceAvailable`; fails on deleting, failed, stopped, storage-full, insufficient-capacity, restore-error, inaccessible-*, incompatible-*, *-failed; --no-wait defers it to deferReadiness (runs only if the deploy needs the resource) | docdb-provider.ts |
 | docdb:CreateDBSubnetGroup | DBSubnetGroup.SubnetGroupStatus: string; DBSubnetGroup.Subnets.SubnetStatus: string | no-wait-by-design | settled when AWS answers: the create response and the first DescribeDBSubnetGroups read SubnetGroupStatus Complete (3 of 3); there is no transitional state (#7132) | docdb-subnet-group-provider.ts |
