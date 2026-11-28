@@ -212,7 +212,7 @@ eventbridge-input-transformer	2026-11-07T00:18:06Z	PASS	70	verify.sh	#5937 event
 eventbridge-pipes	2026-11-06T22:52:11Z	PASS	235	verify.sh	#5925 pipes split head; rc ok, orph clean
 eventbridge-scheduler	2026-11-06T23:59:22Z	PASS	57	verify.sh	#5935 scheduler-schedule split head; rc ok, orph clean
 eventbus-policy	2026-11-26T03:14:44Z	PASS	205	verify.sh	PR7013 2de5a0442 us-east-1 rc ok, orph clean
-eventsourcemapping-race	2026-11-28T04:29:42Z	PASS	115	verify.sh	rc ok, orph clean (PR #7157; with the waits skipped it FAILED: ESM Creating after deploy)
+eventsourcemapping-race	2026-11-28T04:47:47Z	PASS	115	verify.sh	rc ok, orph clean (PR #7157, final head; with the waits skipped it FAILED: ESM Creating after deploy)
 export	2026-11-25T15:18:54Z	PASS	323	verify.sh	rc ok, orph clean
 export-nested-stack	2026-11-24T08:24:34Z	PASS	205	verify.sh	rc ok, orph clean; #6902 regression (flip-tag pre-flight)
 fallback-recreate-children	2026-11-26T19:33:34Z	PASS	166	verify.sh	PR7085 437b0d0af us-east-1 rc 0 ok, orph clean
