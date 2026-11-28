@@ -17,7 +17,12 @@ import { InterruptedWaitError } from '../../../src/provisioning/interrupt-watch.
 import { NestedCleanupQueue } from '../../../src/deployment/nested-cleanup-scope.js';
 import type { CompletedOperation } from '../../../src/deployment/rollback-executor.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
-import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
+import type {
+  ResourceChange,
+  ResourceState,
+  StackState,
+  SupersededResourceRecord,
+} from '../../../src/types/state.js';
 
 const printed = vi.hoisted(() => ({ info: [] as string[], warn: [] as string[] }));
 vi.mock('../../../src/utils/logger.js', async () => {
@@ -268,6 +273,8 @@ describe('an old copy using a removed resource is deleted before it (go-to-k/cdk
     recordDeps: Record<string, string[]>;
     templateDeps?: Record<string, string[]>;
     levels: string[][];
+    /** Old copies an earlier deploy kept (`supersededResources`). */
+    carried?: SupersededResourceRecord[];
   }): Promise<{ state: StackState; actualCounts: Record<string, number> }> {
     return deployOn(makeEngine(opts.templateDeps ?? {}), opts);
   }
@@ -296,6 +303,7 @@ describe('an old copy using a removed resource is deleted before it (go-to-k/cdk
       region: 'us-east-1',
       resources,
       outputs: {},
+      ...(opts.carried !== undefined && { supersededResources: opts.carried }),
       lastModified: 0,
     } as unknown as StackState;
     const changes = new Map<string, ResourceChange>([
@@ -568,6 +576,28 @@ describe('an old copy using a removed resource is deleted before it (go-to-k/cdk
 
       expect(at('delete Alias-old')).toBeLessThan(at('delete OldVersion-old'));
       expect(listStacksCalls).toBe(0);
+    });
+
+    it('keeps unsent the removal an old copy an earlier deploy kept for a consumer still uses', async () => {
+      usedBy.set('OldVersion-old', ['Alias-old']);
+      live.add('Alias-old');
+      const kept: SupersededResourceRecord = {
+        logicalId: 'Alias',
+        supersededAt: 1,
+        heldForConsumers: true,
+        state: record('Alias-old', ALIAS, ['OldVersion']),
+      };
+
+      const result = await deployOn(
+        makeEngine({}, { states: { Consumer: consumer('Alias-old') } }),
+        { replaced: [], removed: [['OldVersion', VERSION]], recordDeps: {}, levels: [], carried: [kept] }
+      );
+
+      expect(order).not.toContain('delete OldVersion-old');
+      expect(order).not.toContain('delete Alias-old');
+      expect(result.state.resources['OldVersion']?.physicalId).toBe('OldVersion-old');
+      expect(result.actualCounts['deleteSkipped']).toBe(1);
+      expect(printed.warn.join('\n')).toContain('but the old Alias still uses it and waits');
     });
   });
 });

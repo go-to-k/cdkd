@@ -653,7 +653,10 @@ consumer's records name that old resource, cannot be read, or the old resource
 has no superseded record: it then waits with the rest, and each removal it
 uses is kept, its delete not sent, for the next deploy. Only the records of
 the run's consumer stacks are read (issue
-[#7204](https://github.com/go-to-k/cdkd/issues/7204)).
+[#7204](https://github.com/go-to-k/cdkd/issues/7204)). An old resource an earlier deploy kept
+that uses a removed resource is handled the same way: under the hold, asked of
+the run's consumers; one held for consumers (below), of every stack importing
+the top-level stack; one nobody names is deleted before the removals.
 
 A top-level stack whose outputs another stack of the same `cdkd deploy` run
 imports holds its cleanup phase, with its children's queued passes, in the

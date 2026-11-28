@@ -313,6 +313,38 @@ describe('deploy holds a producer cleanup for its in-run consumers (#7012)', () 
     delete process.env['CDKD_NO_LIVE'];
   });
 
+  it("hands the producer each consumer's own region (go-to-k/cdkd#7204)", async () => {
+    synthStacks.value = [
+      producer(),
+      makeStack('Consumer', {
+        region: 'eu-west-1',
+        template: {
+          Resources: {
+            Fn: {
+              Type: 'AWS::Lambda::Function',
+              Properties: {
+                Environment: {
+                  QURL: {
+                    'Fn::GetStackOutput': {
+                      StackName: 'Producer',
+                      OutputName: 'QueueUrl',
+                      Region: 'us-east-1',
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      }),
+    ];
+    const { error } = await runDeploy(['--all', '--yes']);
+    expect(error).toBeUndefined();
+    expect(engineOptions.get('Producer')?.['consumerStacks']).toEqual([
+      { stackName: 'Consumer', region: 'eu-west-1' },
+    ]);
+  });
+
   it('runs the held pass only after the consumer deployed', async () => {
     synthStacks.value = [producer(), consumer('Consumer')];
     const { error, exitCode } = await runDeploy(['--all', '--yes']);

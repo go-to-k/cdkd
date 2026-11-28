@@ -130,14 +130,14 @@ describe('deleteCarriedUsersOfRemovalsFirst (#7076)', () => {
       expect(retry.fn).not.toHaveBeenCalled();
     });
 
-    it('without a hold, a held row no consumer names loses the mark and is deleted first', async () => {
+    it('without a hold, a held row no consumer names is deleted first, keeping its mark', async () => {
       const marked: SupersededResourceRecord = { ...row, heldForConsumers: true };
       const held = new Map<string, string>();
       state.supersededResources = [marked];
 
       await deleteCarriedUsersOfRemovalsFirst(runOf(), [marked], held);
       expect(held.size).toBe(0);
-      expect(marked.heldForConsumers).toBeUndefined();
+      expect(marked.heldForConsumers).toBe(true);
       expect(retry.fn.mock.calls[0]?.[2]).toEqual([marked]);
     });
 
@@ -145,6 +145,22 @@ describe('deleteCarriedUsersOfRemovalsFirst (#7076)', () => {
       await deleteCarriedUsersOfRemovalsFirst(runOf(), [row], new Map());
       await deleteCarriedUsersOfRemovalsFirst(runOf({ parentStackInfo: {} }), [row], new Map());
       expect(naming.fn).not.toHaveBeenCalled();
+    });
+
+    it('holds the removal a named row uses by type when its record names none', async () => {
+      const untyped: SupersededResourceRecord = {
+        logicalId: 'Group',
+        supersededAt: 1,
+        state: record('sg-old', 'AWS::EC2::SecurityGroup'),
+      };
+      namedBy(untyped);
+      const held = new Map<string, string>();
+      await deleteCarriedUsersOfRemovalsFirst(
+        runOf({ consumerCleanupQueue: {}, consumerStacks }),
+        [untyped],
+        held
+      );
+      expect([...held]).toEqual([['Vpc', 'Group']]);
     });
   });
 });

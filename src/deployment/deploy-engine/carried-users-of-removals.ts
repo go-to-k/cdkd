@@ -33,7 +33,9 @@ import { consumersNaming } from './consumer-held-superseded.js';
 export function carriedUsersOfRemovals(
   carried: readonly SupersededResourceRecord[],
   resources: Record<string, ResourceState>,
-  removedIds: ReadonlySet<string>
+  removedIds: ReadonlySet<string>,
+  /** Rows held for consumers that none names any more (go-to-k/cdkd#7204). */
+  released: ReadonlySet<SupersededResourceRecord> = new Set()
 ): SupersededResourceRecord[] {
   if (carried.length === 0 || removedIds.size === 0) return [];
   const recordOf = (id: string): ResourceState | undefined => {
@@ -51,7 +53,7 @@ export function carriedUsersOfRemovals(
     const record = recordOf(id);
     if (record !== undefined) removedTypes.add(record.resourceType);
   }
-  const candidates = carried.filter((row) => row.heldForConsumers !== true);
+  const candidates = carried.filter((row) => row.heldForConsumers !== true || released.has(row));
   const taken = new Set<SupersededResourceRecord>();
   for (const row of candidates) {
     const rowType = row.state.resourceType;
@@ -114,7 +116,7 @@ export function carriedUsersOfRemovals(
  * Asked only for rows that use a removed resource: under a consumer hold, of
  * the run's consumers (for a row held for consumers, of every stack, as its
  * cleanup check reads); otherwise only for rows held for consumers, and one
- * no consumer names any more is deleted first like the others.
+ * no consumer names any more is deleted first like the others, its mark kept.
  */
 export async function deleteCarriedUsersOfRemovalsFirst(
   run: Pick<DeployRun, 'engine' | 'currentState' | 'deleteChanges' | 'newResources'>,
@@ -124,9 +126,16 @@ export async function deleteCarriedUsersOfRemovalsFirst(
   const { engine, currentState, deleteChanges, newResources } = run;
   const waits = engine.options.consumerCleanupQueue !== undefined;
   if (engine.options.parentStackInfo !== undefined && !waits) return carried;
-  await holdRemovalsOfNamedRows(engine, currentState, carried, deleteChanges, newResources, held);
+  const released = await holdRemovalsOfNamedRows(
+    engine,
+    currentState,
+    carried,
+    deleteChanges,
+    newResources,
+    held
+  );
   if (waits) return carried;
-  const taken = carriedUsersOfRemovals(carried, currentState.resources, deleteChanges);
+  const taken = carriedUsersOfRemovals(carried, currentState.resources, deleteChanges, released);
   if (taken.length === 0) return carried;
   engine.logger.info(
     safeMsg`Deleting ${taken.length} old resource(s) an earlier deploy kept first: they use a resource removed from the template`
@@ -141,21 +150,36 @@ export async function deleteCarriedUsersOfRemovalsFirst(
   return supersededResourcesOf(currentState).filter((row) => owed.has(key(row)));
 }
 
-/** The removed ids `row`'s record depends on. */
-function removedDepsOf(row: SupersededResourceRecord, removedIds: ReadonlySet<string>): string[] {
+/**
+ * The removed ids `row` uses, as `carriedUsersOfRemovals` reads it: its
+ * record's `dependencies`, or, for a record naming none, each removed resource
+ * of a type that must be deleted after the row's type.
+ */
+function removedDepsOf(
+  row: SupersededResourceRecord,
+  removedIds: ReadonlySet<string>,
+  resources: Record<string, ResourceState>
+): string[] {
   const deps: unknown = row.state.dependencies;
-  return Array.isArray(deps)
-    ? deps.filter(
-        (dep): dep is string =>
-          typeof dep === 'string' && dep !== row.logicalId && removedIds.has(dep)
-      )
+  const named = Array.isArray(deps)
+    ? deps.filter((dep): dep is string => typeof dep === 'string' && dep !== row.logicalId)
     : [];
+  if (named.length > 0) return named.filter((dep) => removedIds.has(dep));
+  return [...removedIds].filter((id) => {
+    const record: unknown = hasOwnKey(resources, id) ? resources[id] : undefined;
+    const type =
+      typeof record === 'object' && record !== null
+        ? (record as ResourceState).resourceType
+        : undefined;
+    return type !== undefined && typesDeletedBefore(type).includes(row.state.resourceType);
+  });
 }
 
 /**
  * go-to-k/cdkd#7204: adds to `held` each removed resource a carried row a
- * consumer still names uses. Without a consumer hold, a row held for
- * consumers that none names any more loses the mark, so it is deleted first.
+ * consumer still names uses. Without a consumer hold, answers the rows held
+ * for consumers that none names any more, so they are deleted first; the
+ * mark stays, so a row whose delete fails is asked about again.
  */
 async function holdRemovalsOfNamedRows(
   engine: DeployRun['engine'],
@@ -164,12 +188,15 @@ async function holdRemovalsOfNamedRows(
   removedIds: ReadonlySet<string>,
   live: Record<string, ResourceState>,
   held: Map<string, string>
-): Promise<void> {
+): Promise<Set<SupersededResourceRecord>> {
+  const released = new Set<SupersededResourceRecord>();
   const waits = engine.options.consumerCleanupQueue !== undefined;
   const users = carried.filter(
-    (row) => (waits || row.heldForConsumers === true) && removedDepsOf(row, removedIds).length > 0
+    (row) =>
+      (waits || row.heldForConsumers === true) &&
+      removedDepsOf(row, removedIds, currentState.resources).length > 0
   );
-  if (users.length === 0) return;
+  if (users.length === 0) return released;
   // A child deploys as `<parent>~<logicalId>`; its values reach a consumer
   // through the top-level stack's outputs.
   const producer =
@@ -191,10 +218,11 @@ async function holdRemovalsOfNamedRows(
   await ask(unmarked, engine.options.consumerStacks);
   for (const row of users) {
     if (named.has(row)) {
-      for (const dep of removedDepsOf(row, removedIds))
+      for (const dep of removedDepsOf(row, removedIds, currentState.resources))
         if (!held.has(dep)) held.set(dep, row.logicalId);
-    } else if (!waits) {
-      delete row.heldForConsumers;
+    } else if (!waits && row.heldForConsumers === true) {
+      released.add(row);
     }
   }
+  return released;
 }
