@@ -886,6 +886,7 @@
           "l1"
         ],
         "appsync-schema-update-drift": [
+          "l1",
           "l2"
         ],
         "cc-to-sdk-reroute-common-types-8": [
@@ -920,11 +921,15 @@
       "resourceType": "AWS::AppSync::GraphQLSchema",
       "integs": [
         "appsync",
+        "appsync-schema-update-drift",
         "drift-revert-readback-placeholders",
         "import-migrate-appsync"
       ],
       "signals": {
         "appsync": [
+          "l1"
+        ],
+        "appsync-schema-update-drift": [
           "l1"
         ],
         "drift-revert-readback-placeholders": [

@@ -9,6 +9,7 @@ import {
   type UserPoolConfig,
 } from '@aws-sdk/client-appsync';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
+import { safeMsg } from '../../../utils/display-safe.js';
 import { normalizeAwsTagsToCfn } from '../../import-helpers.js';
 import { type ResourceNotFound, RESOURCE_NOT_FOUND } from '../../../types/resource.js';
 import { graphQLSchemaApiId } from './shared.js';
@@ -206,6 +207,90 @@ export async function readGraphQLSchema(
     ApiId: apiId,
     Definition: definitionToReturn,
   };
+}
+
+/**
+ * go-to-k/cdkd#7139: the `DefinitionS3Location` half of the pre-#7127 schema
+ * heal (`preFixBaselineUncomparedDriftKeys` covers an inline `Definition`).
+ * Before #7127 the observed baseline was read while AppSync still served the
+ * schema the deploy replaced, so drift reported `Definition` on an untouched
+ * schema and `drift --revert` pushed the previous one back, dropping the
+ * resolvers of the fields it lacked. A template sourcing the SDL from S3
+ * declares no SDL to compare with, so the declared object is read: when the
+ * live SDL is its body (both through {@link canonicalizeSdl}) the baseline
+ * takes the live `Definition`, and `drift --revert`, which passes its desired
+ * bag through this hook, sends the live schema rather than the stale one.
+ *
+ * One `GetObject`, and only when the comparison would otherwise report
+ * `Definition`: an observed baseline whose `Definition` is not the live one,
+ * on a template with no inline `Definition`. A clean schema, a template
+ * baseline (no `Definition` recorded) and an inline schema read nothing. A
+ * failed read heals nothing (the difference stays visible) and does not fail
+ * drift; its debug line names the error class only, since the AWS text is not
+ * masked here. A live SDL other than the declared body stays compared.
+ *
+ * "Declared" is the object's CURRENT body, and the rule applies to any
+ * observed baseline meeting the gate, not only a pre-#7127 one: state is not
+ * rewritten, so each drift run pays the read until the next capture or
+ * `cdkd state refresh-observed`. A CDK asset key is content-hashed, so its
+ * body is what was deployed; an object overwritten at a mutable key and then
+ * applied out of band reads as declared (CloudFormation does not see that
+ * either). A template declaring both `Definition` and `DefinitionS3Location`
+ * deploys the inline one, so it is left to the inline rule. A stale baseline
+ * beside an out-of-band change (recorded v1, declared v2, live v3) is not
+ * healed, since the live SDL is not the declared body: `drift --revert` then
+ * sends the recorded v1, as it does for any baseline it cannot tell from an
+ * accepted one.
+ */
+export async function canonicalizeDriftPair(
+  this: AppSyncProvider,
+  resourceType: string,
+  baseline: Record<string, unknown>,
+  aws: Record<string, unknown>,
+  properties?: Record<string, unknown>
+): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }> {
+  const unchanged = { baseline, aws };
+  if (resourceType !== 'AWS::AppSync::GraphQLSchema' || properties === undefined) {
+    return unchanged;
+  }
+  const location = properties['DefinitionS3Location'];
+  const recorded = baseline['Definition'];
+  const live = aws['Definition'];
+  if (
+    properties['Definition'] !== undefined ||
+    typeof location !== 'string' ||
+    location === '' ||
+    typeof recorded !== 'string' ||
+    typeof live !== 'string' ||
+    live === '' ||
+    recorded === live
+  ) {
+    return unchanged;
+  }
+  let body: string;
+  try {
+    body = await this.fetchS3LocationBody(
+      location,
+      resourceType,
+      // A label, not a logical id: it reaches the helper's fetch debug line
+      // and its error, which only feeds the class-only debug line below.
+      '(drift baseline heal)',
+      'DefinitionS3Location'
+    );
+  } catch (err) {
+    const cause = err instanceof Error && err.cause instanceof Error ? err.cause : err;
+    this.logger.debug(
+      safeMsg`Could not read the declared GraphQL schema object (${
+        cause instanceof Error ? cause.name : 'unknown error'
+      }); comparing Definition against the recorded baseline`
+    );
+    return unchanged;
+  }
+  const [declared, current] = await Promise.all([
+    this.canonicalizeSdl(body, 'state'),
+    this.canonicalizeSdl(live, 'aws'),
+  ]);
+  return declared === current ? { baseline: { ...baseline, Definition: live }, aws } : unchanged;
 }
 
 export async function readGraphQLApi(

@@ -292,9 +292,12 @@ An `AWS::AppSync::GraphQLSchema` changed by an older cdkd can hold the
 schema the change replaced in its recorded snapshot, because that cdkd read
 the schema before AppSync applied the new one. Drift does not report the
 `Definition` difference while the live schema is the template's inline
-`Definition`, so `--revert` never pushes the old schema back. A schema from
-`DefinitionS3Location` is compared as usual; the next deploy that changes the
-schema, or `cdkd state refresh-observed`, replaces the old snapshot.
+`Definition`, or, for a schema from `DefinitionS3Location`, the body of that
+S3 object (drift reads it once, only when the snapshot and the live schema
+differ), so `--revert` never pushes the old schema back. A live schema other
+than the declared one, or an S3 object drift cannot read, is reported as
+usual. The next deploy that changes the schema, or
+`cdkd state refresh-observed`, replaces the old snapshot.
 
 ## Reading the report
 

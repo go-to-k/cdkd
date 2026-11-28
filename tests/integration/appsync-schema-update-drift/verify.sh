@@ -47,6 +47,7 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 WORK=""
 API_ID=""
+S3_API_ID=""
 CLEANED_UP=0
 cleanup() {
   [ "${CLEANED_UP}" = 1 ] && return 0
@@ -72,10 +73,11 @@ if [ ! -d node_modules ]; then pnpm install --ignore-workspace --prefer-offline;
 state_json() {
   aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" --only-show-errors
 }
-# The one record of type $1, asserted unique (the stack declares one of each).
+# The one record of type $1 outside the S3-sourced API (`S3*` logical ids),
+# asserted unique (the L2 API declares one of each).
 record_id() { # <resourceType>
   local ids
-  ids=$(state_json | jq -r --arg t "$1" '[.resources | to_entries[] | select(.value.resourceType == $t) | .key]') || return 1
+  ids=$(state_json | jq -r --arg t "$1" '[.resources | to_entries[] | select(.value.resourceType == $t and (.key | startswith("S3") | not)) | .key]') || return 1
   [ "$(jq 'length' <<<"${ids}")" = 1 ] || { echo "FAIL: expected one $1 record, got ${ids}" >&2; exit 1; }
   jq -r '.[0]' <<<"${ids}"
 }
@@ -85,19 +87,23 @@ deploy_schema() { # <v1|v2|invalid> [extra deploy args...]
   CDKD_TEST_SCHEMA="${variant}" node "${LOCAL_DIST}" deploy "${STACK}" \
     --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes "$@"
 }
-# The live SDL, one line, whitespace squeezed.
-live_sdl() {
-  aws appsync get-introspection-schema --region "${REGION}" --api-id "${API_ID}" \
+# The live SDL of API $1 (default: the L2 API), one line, whitespace squeezed.
+live_sdl() { # [<api id>]
+  aws appsync get-introspection-schema --region "${REGION}" --api-id "${1:-${API_ID}}" \
     --format SDL "${WORK}/live.graphql" >/dev/null || return 1
   tr -s ' \n' ' ' <"${WORK}/live.graphql"
 }
 # The live SDL must declare field $2 on Query.
-check_live_field() { # has <field>
+check_live_field() { # has <field> [<api id>]
   local sdl
-  sdl=$(live_sdl) || { echo "FAIL: get-introspection-schema failed" >&2; exit 1; }
+  sdl=$(live_sdl "${3:-}") || { echo "FAIL: get-introspection-schema failed" >&2; exit 1; }
   grep -q 'type Query {' <<<"${sdl}" || { echo "FAIL: the live SDL has no Query type: ${sdl}" >&2; exit 1; }
   grep -qE "[{ ]$2: String" <<<"${sdl}" || { echo "FAIL: the live SDL lacks Query.$2: ${sdl}" >&2; exit 1; }
-  echo "    OK: the live SDL $1 Query.$2"
+  echo "    OK: the live SDL${3:+ of ${3}} $1 Query.$2"
+}
+# The S3-sourced schema's observed baseline Definition (go-to-k/cdkd#7139).
+s3_baseline() {
+  state_json | jq -r '.resources.S3Schema.observedProperties.Definition // "<none>"'
 }
 # The deploy's own capture must hold field $1 (and, with $2, lack field $2).
 check_baseline() { # <field it holds> [<field it lacks>]
@@ -138,13 +144,15 @@ check_drift() { # <phase label>
     ($reports | length) == 1 and
     ([$reports[0].clean[] | select(.logicalId == $id)] | length) == 1 and
     ([$reports[0].drifted[]] | length) == 0 and
-    ([$reports[0].notCompared[] | select(.logicalId == $id)] | length) == 0
+    ([$reports[0].notCompared[] | select(.logicalId == $id)] | length) == 0 and
+    ([$reports[0].clean[] | select(.logicalId == "S3Schema")] | length) == 1 and
+    ([$reports[0].notCompared[] | select(.logicalId == "S3Schema")] | length) == 0
   ' <<<"${report}" >/dev/null; then
     echo "FAIL: the stack was not drift-clean (schema fully compared) after $1" >&2
     printf '%s\n' "${report}" >&2
     exit 1
   fi
-  echo "    OK: the schema is fully compared and the stack drift-clean after $1"
+  echo "    OK: both schemas are fully compared and the stack drift-clean after $1"
 }
 
 cleanup
@@ -160,6 +168,15 @@ check_live_field has a
 # Before #7127 the create recorded no baseline at all: the capture read before
 # the schema existed.
 check_baseline a
+S3_API_ID=$(state_json | jq -r '.outputs.S3ApiId')
+[ -n "${S3_API_ID}" ] && [ "${S3_API_ID}" != null ] || { echo "FAIL: no S3ApiId output" >&2; exit 1; }
+check_live_field has a "${S3_API_ID}"
+# The v1 baseline of the S3-sourced schema, seeded back after v2 below.
+V1_S3_DEFINITION=$(s3_baseline) || exit 1
+grep -qE '(^|[{ ])a: String' <<<"${V1_S3_DEFINITION}" && ! grep -qE '(^|[{ ])b: ' <<<"${V1_S3_DEFINITION}" || {
+  echo "FAIL: the S3-sourced schema's v1 baseline is not v1: ${V1_S3_DEFINITION}" >&2
+  exit 1
+}
 check_drift "the v1 create"
 
 echo "==> Add Query.b and its resolver: the baseline must hold the new schema (#7127)"
@@ -171,7 +188,26 @@ export CDKD_TEST_SCHEMA=v2
 check_baseline b
 check_live_field has b
 check_resolver present b
+check_live_field has b "${S3_API_ID}"
+grep -qE '(^|[{ ])b: String' <<<"$(s3_baseline)" || { echo "FAIL: the S3-sourced schema's baseline lacks Query.b after v2" >&2; exit 1; }
 check_drift "the v2 update"
+
+echo "==> Seed a pre-#7127 baseline on the S3-sourced schema: drift must stay clean (#7139)"
+# What a cdkd before #7127 recorded after this change: the v1 schema AppSync
+# was still serving. Before #7139 drift reported Definition here and
+# --revert (next step) pushed v1 back onto the S3-sourced API.
+SEED_IN="${WORK}/state-in.json"
+SEED_OUT="${WORK}/state-out.json"
+state_json >"${SEED_IN}" || exit 1
+[ "$(jq -r '.resources.S3Schema.observedProperties | type' "${SEED_IN}")" = object ] || {
+  echo "FAIL: S3Schema has no observedProperties to seed — the drift assertion would be vacuous" >&2
+  exit 1
+}
+jq --arg d "${V1_S3_DEFINITION}" '.resources.S3Schema.observedProperties.Definition = $d' "${SEED_IN}" >"${SEED_OUT}"
+aws s3 cp "${SEED_OUT}" "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" --only-show-errors
+[ "$(s3_baseline)" = "${V1_S3_DEFINITION}" ] || { echo "FAIL: the seeded baseline did not land" >&2; exit 1; }
+echo "    OK: the S3-sourced schema's baseline is the stale v1 schema"
+check_drift "the seeded pre-#7127 S3 baseline"
 
 echo "==> drift --revert on the untouched stack changes nothing"
 API_LID=$(record_id AWS::AppSync::GraphQLApi) || exit 1
@@ -196,6 +232,7 @@ if grep -qE '\): reverted' "${WORK}/revert.log"; then
 fi
 check_live_field has b
 check_resolver present b
+check_live_field has b "${S3_API_ID}"
 check_drift "drift --revert"
 
 echo "==> Deploy a schema AppSync refuses: the deploy must fail and roll back to v2 (#7127)"
@@ -232,13 +269,22 @@ check_live_field has b
 check_resolver present b
 check_baseline b
 check_drift "the refused schema's rollback"
+# The S3-sourced schema stayed on v2 and kept its seeded baseline, so the clean
+# drift above is the heal's, not a re-capture's (#7139).
+check_live_field has b "${S3_API_ID}"
+[ "$(s3_baseline)" = "${V1_S3_DEFINITION}" ] || {
+  echo "FAIL: the S3-sourced schema's seeded baseline changed (re-captured?): $(s3_baseline)" >&2
+  exit 1
+}
+echo "    OK: the S3-sourced schema still holds the seeded v1 baseline"
 
 echo "==> Destroy and verify resources and state are gone"
 env -u CDKD_TEST_SCHEMA node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --force
 assert_gone "GraphQL API still exists" aws appsync get-graphql-api --region "${REGION}" --api-id "${API_ID}"
+assert_gone "S3-sourced GraphQL API still exists" aws appsync get-graphql-api --region "${REGION}" --api-id "${S3_API_ID}"
 assert_gone "state still exists" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 CLEANED_UP=1
 rm -rf "${WORK}"
 trap - EXIT INT TERM
-echo "[verify] PASS: an AppSync schema create, change and refused change were waited for: baseline = deployed schema, drift clean, --revert changed nothing, the refused schema failed the deploy and rolled back, clean destroy (#7127)"
+echo "[verify] PASS: an AppSync schema create, change and refused change were waited for: baseline = deployed schema, drift clean, --revert changed nothing (an S3-sourced schema's seeded pre-#7127 baseline included, #7139), the refused schema failed the deploy and rolled back, clean destroy (#7127)"
