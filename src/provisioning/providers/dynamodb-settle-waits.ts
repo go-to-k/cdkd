@@ -19,6 +19,8 @@ import type { SecretMasker } from '../../types/resource.js';
  * `AWS::DynamoDB::Table` and `AWS::DynamoDB::GlobalTable` both send
  * (go-to-k/cdkd#7132): `UpdateContributorInsights` answers `ENABLING` /
  * `DISABLING`, and `EnableKinesisStreamingDestination` answers `ENABLING`.
+ * The GlobalTable path's `UpdateKinesisStreamingDestination` waits here too
+ * ({@link waitForKinesisPrecisionSettled}).
  * CloudFormation's create and update complete only once the change has
  * landed (measured us-east-1: a table's `UPDATE_COMPLETE` 9 s after
  * Contributor Insights read `ENABLED`, its `CREATE_COMPLETE` 5 s after the
@@ -265,5 +267,63 @@ export async function waitForKinesisEnableActive(
       );
     },
     (dest) => dest?.DestinationStatus ?? 'absent'
+  );
+}
+
+/**
+ * After `UpdateKinesisStreamingDestination` (an
+ * `ApproximateCreationDateTimePrecision` change): wait until the destination
+ * for `streamArn` reads `ACTIVE` at `precision`. AWS holds it `UPDATING` for
+ * minutes and refuses another update meanwhile ("Updates are only allowed in
+ * ACTIVE state"); CloudFormation's update completes only once it is `ACTIVE`
+ * at the new precision (measured us-east-1: ~3 min `UPDATING`,
+ * `UPDATE_COMPLETE` after 137 s). `AWS::DynamoDB::Table` waits the same way
+ * in `waitForKinesisDestinationSettled`. An `ACTIVE` read at another
+ * precision is read as the state from before the call, and any other status
+ * (`ENABLE_FAILED`, `DISABLED`, absent) as a stale read, for
+ * {@link SETTLE_STALE_READ_GRACE_POLLS} polls first; then either fails, with
+ * AWS's `DestinationStatusDescription`.
+ */
+export async function waitForKinesisPrecisionSettled(
+  client: DynamoDBClient,
+  tableName: string,
+  streamArn: string,
+  precision: string,
+  target: string,
+  opts: DynamoDBSettleWaitOptions
+): Promise<void> {
+  await pollUntilSettled(
+    `Kinesis streaming destination ${streamArn} on ${target} to read ACTIVE at ` +
+      `ApproximateCreationDateTimePrecision ${precision}`,
+    opts,
+    { pollMs: KINESIS_ENABLE_SETTLE_POLL_MS, maxPolls: KINESIS_ENABLE_SETTLE_POLLS },
+    async () =>
+      currentDestination(
+        (
+          await client.send(
+            new DescribeKinesisStreamingDestinationCommand({ TableName: tableName })
+          )
+        ).KinesisDataStreamDestinations ?? [],
+        streamArn
+      ),
+    (dest, poll) => {
+      const status = dest?.DestinationStatus;
+      if (status === 'ACTIVE' && dest?.ApproximateCreationDateTimePrecision === precision) {
+        return 'settled';
+      }
+      if (status === 'ENABLING' || status === 'UPDATING') return 'pending';
+      if (poll <= SETTLE_STALE_READ_GRACE_POLLS) return 'pending';
+      return settledFailure(
+        `Kinesis streaming destination ${streamArn} on ${target} settled as ` +
+          `${status ?? 'absent'} with ApproximateCreationDateTimePrecision ` +
+          `${dest?.ApproximateCreationDateTimePrecision ?? 'unset'}, expected ACTIVE / ${precision}`,
+        { message: dest?.DestinationStatusDescription },
+        opts
+      );
+    },
+    (dest) =>
+      dest === undefined
+        ? 'absent'
+        : `${dest.DestinationStatus ?? 'unknown'} / ${dest.ApproximateCreationDateTimePrecision ?? 'unset'}`
   );
 }

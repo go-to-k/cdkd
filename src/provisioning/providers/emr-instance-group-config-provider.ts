@@ -49,6 +49,7 @@ import { safeMsg } from '../../utils/display-safe.js';
 import { removeScalingPolicyForDelete } from './emr-instance-group-config/remove-scaling-policy.js';
 import { readCurrentState as readGroupState } from './emr-instance-group-config/read-state.js';
 import { findGroupForPoll } from './emr-instance-group-config/find-group.js';
+import { waitForAutoScalingPolicySettled } from './emr-instance-group-config/scaling-policy-wait.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import {
@@ -419,6 +420,16 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
         false,
         context?.maskSecrets
       );
+      // go-to-k/cdkd#7132: a policy added with the group answers PENDING.
+      if (group.AutoScalingPolicy !== undefined) {
+        await this.waitForAutoScalingPolicySettled(
+          jobFlowId,
+          groupId,
+          logicalId,
+          resourceType,
+          context?.maskSecrets
+        );
+      }
 
       this.logger.debug(`Successfully added EMR instance group ${logicalId}: ${groupId}`);
       return { physicalId: groupId, attributes: { Id: groupId, InstanceGroupId: groupId } };
@@ -616,14 +627,26 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
           | undefined;
         context?.markUnsettled?.('AutoScalingPolicy');
         if (policy) {
-          await this.getClient().send(
+          const put = await this.getClient().send(
             new PutAutoScalingPolicyCommand({
               ClusterId: jobFlowId,
               InstanceGroupId: physicalId,
               AutoScalingPolicy: policy,
             })
           );
+          // go-to-k/cdkd#7132: the Put answers PENDING; CloudFormation
+          // completes only once the policy reads ATTACHED.
+          const answered = put.AutoScalingPolicy?.Status?.State;
+          await this.waitForAutoScalingPolicySettled(
+            jobFlowId,
+            physicalId,
+            logicalId,
+            resourceType,
+            context?.maskSecrets,
+            answered !== undefined ? { answeredState: answered } : {}
+          );
         } else {
+          // DETACHING -> DETACHED is not waited on (unmeasured, #7132).
           await this.getClient().send(
             new RemoveAutoScalingPolicyCommand({
               ClusterId: jobFlowId,
@@ -938,6 +961,13 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
     } catch {
       return new Set(['InstanceCount']);
     }
+  }
+
+  /** `emr-instance-group-config/scaling-policy-wait.ts`. */
+  waitForAutoScalingPolicySettled(
+    ...args: Parameters<typeof waitForAutoScalingPolicySettled>
+  ): ReturnType<typeof waitForAutoScalingPolicySettled> {
+    return waitForAutoScalingPolicySettled.call(this, ...args);
   }
 
   /** `emr-instance-group-config/find-group.ts`. */

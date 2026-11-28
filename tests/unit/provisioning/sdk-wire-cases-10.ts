@@ -437,24 +437,42 @@ const GROUP_ID = 'ig-1';
 /**
  * AddInstanceGroups answers the group id, and ListInstanceGroups answers that
  * group RUNNING with the count the last AddInstanceGroups /
- * ModifyInstanceGroups sent running, so the wait (`waitForGroupReady`)
- * settles on its first poll.
+ * ModifyInstanceGroups sent running and a sent policy ATTACHED, so the waits
+ * (`waitForGroupReady`, `waitForAutoScalingPolicySettled`) settle on their
+ * first poll.
  */
 function armGroup(): void {
   let running = 0;
+  let policy = false;
   const sent = (groups: unknown): Record<string, unknown> => {
     running = ((groups as { InstanceCount?: number }[] | undefined)?.[0]?.InstanceCount ?? 0);
     return {};
   };
   setOutputOverrides({
-    AddInstanceGroupsCommand: (input) => ({
-      ...sent(input['InstanceGroups']),
-      InstanceGroupIds: [GROUP_ID],
-    }),
+    AddInstanceGroupsCommand: (input) => {
+      policy =
+        (input['InstanceGroups'] as { AutoScalingPolicy?: unknown }[] | undefined)?.[0]
+          ?.AutoScalingPolicy !== undefined;
+      return { ...sent(input['InstanceGroups']), InstanceGroupIds: [GROUP_ID] };
+    },
     ModifyInstanceGroupsCommand: (input) => sent(input['InstanceGroups']),
+    PutAutoScalingPolicyCommand: () => {
+      policy = true;
+      return {};
+    },
+    RemoveAutoScalingPolicyCommand: () => {
+      policy = false;
+      return {};
+    },
     ListInstanceGroupsCommand: () => ({
       InstanceGroups: [
-        { Id: GROUP_ID, Status: { State: 'RUNNING' }, RunningInstanceCount: running },
+        {
+          Id: GROUP_ID,
+          Status: { State: 'RUNNING' },
+          RunningInstanceCount: running,
+          // The policy wait after a Put (go-to-k/cdkd#7132) settles at once.
+          ...(policy && { AutoScalingPolicy: { Status: { State: 'ATTACHED' } } }),
+        },
       ],
     }),
   });

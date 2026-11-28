@@ -316,7 +316,13 @@ describe('EMRInstanceGroupConfigProvider update', () => {
   });
 
   it('applies an added AutoScalingPolicy via PutAutoScalingPolicy', async () => {
-    routeSend({ PutAutoScalingPolicyCommand: {} });
+    routeSend({
+      PutAutoScalingPolicyCommand: {},
+      // go-to-k/cdkd#7132: the wait after the Put reads the policy ATTACHED.
+      ListInstanceGroupsCommand: {
+        InstanceGroups: [{ Id: GROUP_ID, AutoScalingPolicy: { Status: { State: 'ATTACHED' } } }],
+      },
+    });
     const policy = { Constraints: { MinCapacity: 1, MaxCapacity: 4 }, Rules: [] };
     const next = { ...BASE_PROPS, AutoScalingPolicy: policy };
     await newProvider().update('Grp', GROUP_ID, RESOURCE_TYPE, next, BASE_PROPS);

@@ -48,6 +48,7 @@ import type { DynamoDBGlobalTableProvider } from '../dynamodb-globaltable-provid
 import {
   waitForContributorInsightsSettled,
   waitForKinesisEnableActive,
+  waitForKinesisPrecisionSettled,
 } from '../dynamodb-settle-waits.js';
 
 /**
@@ -324,6 +325,15 @@ export async function sendReplicaSettingOp(
             },
           })
         )
+      );
+      // go-to-k/cdkd#7132: the destination stays UPDATING for minutes.
+      await waitForKinesisPrecisionSettled(
+        client,
+        tableName,
+        op.streamArn,
+        op.precision,
+        scope,
+        settleWait
       );
       break;
     case 'putTablePolicy':
