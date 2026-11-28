@@ -198,4 +198,54 @@ describe('cdkd export of a NoEcho-parameter-fed property (schema v11)', () => {
     );
     expect(result.blocked[0]!.reason).toMatch(/four ways a record comes to hold it/);
   });
+
+  // go-to-k/cdkd#7189: the deploy also names a leaf that EMBEDS a custom
+  // resource's NoEcho attribute; no parameter carries that value, so the
+  // record is blocked with the general reason, as before it was named.
+  it('keeps the general reason for a mask that embeds a NoEcho custom-resource attribute', async () => {
+    const embeddedTemplate = {
+      Resources: {
+        Cr: { Type: 'Custom::Thing', Properties: { ServiceToken: 'arn:aws:lambda:us-east-1:123456789012:function:h' } },
+        Param: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: {
+            Name: '/app/token',
+            Value: { 'Fn::Join': ['', ['postgres://u:', { 'Fn::GetAtt': ['Cr', 'Secret'] }, '@db']] },
+          },
+        },
+      },
+    };
+    const state = stateWith({ Name: '/app/token', Value: '***' }, [['Value']]);
+    state.resources['Cr'] = {
+      physicalId: 'cr-phys',
+      resourceType: 'Custom::Thing',
+      properties: { ServiceToken: 'arn:aws:lambda:us-east-1:123456789012:function:h' },
+      attributes: { Secret: '***' },
+      noEchoAttributeNames: ['Secret'],
+      dependencies: [],
+    } as never;
+
+    const result = await buildImportPlan(state, embeddedTemplate, cfnClientStub, 'Root');
+
+    const param = result.blocked.find((b) => b.logicalId === 'Param');
+    expect(param?.reason).toMatch(/four ways a record comes to hold it/);
+  });
+
+  it('still lets through a record whose embedded leaf reads a NoEcho PARAMETER', async () => {
+    const result = await buildImportPlan(
+      stateWith({ Name: '/app/token', Value: '***' }, [['Value']]),
+      {
+        ...template,
+        Resources: {
+          Param: {
+            Type: 'AWS::SSM::Parameter',
+            Properties: { Name: '/app/token', Value: { 'Fn::Join': ['', ['t-', { Ref: 'Token' }]] } },
+          },
+        },
+      },
+      cfnClientStub,
+      'Root'
+    );
+    expect(result.blocked).toEqual([]);
+  });
 });
