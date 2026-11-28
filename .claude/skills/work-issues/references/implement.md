@@ -47,7 +47,10 @@ git fetch origin && git switch -c <branch> origin/main   # unchained, a failed
 **A STACKED lane** (needing an unmerged lane's branch) branches off that branch;
 its claim names the base branch and sha. No PR until the base merges, then
 `git rebase --onto origin/main <recorded base sha>`: the squash-merge rewrote
-the base, and a plain rebase replays it.
+the base, and a plain rebase replays it. Take that sha from the claim (the
+merged base branch is auto-deleted, so `origin/<base>` is gone) and assert it
+first: `[ -n "$OLD" ] && git merge-base --is-ancestor "$OLD" HEAD` — an empty
+`$OLD` drops every commit of the branch.
 
 ### 5-b. Sweep the class, not the instance
 

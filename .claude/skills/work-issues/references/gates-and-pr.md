@@ -37,7 +37,7 @@ same PR.
 All green, then commit. The prefix that MATTERS is the PR TITLE's — squash
 merging makes it release-please's subject, and a `fix:` / `feat:` title with no
 `src/**` change is refused in CI (#2717). Push, open the PR with
-`Closes #<n>` and NO `--label` (the workflow copies the issue's; #6108,
+one `Closes #<n>` LINE per issue (`Closes #A, #B and #C` closes only #A) and NO `--label` (the workflow copies the issue's; #6108,
 #6255), then STOP: the CI wait (`ship.md`'s "Read the merge state" poll) is
 the parent's or a probe lane's.
 A `gh` verb `bughunt-clean-gate.sh` refuses over a PEER's sentinel is never

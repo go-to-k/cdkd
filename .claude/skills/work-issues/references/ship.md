@@ -14,7 +14,9 @@ to `AskUserQuestion`, never a reworded retry (#4059); only
 `/run-integ` step 9's one retry (marker set or ledger push) is exempt.
 Ship from a SECOND sibling on the PR's branch while that tree holds a follow-up
 (`git -C <MAIN_CHECKOUT> worktree add <MAIN_CHECKOUT>/.claude/worktrees/<name> <branch>`),
-running BOTH the integ and the merge there. A `src/**` fix
+running BOTH the integ and the merge there. No fix brief goes to a lane whose
+tree runs an integ: queue it until `verify.sh rc=` prints (a lane's `verify.sh`
+edit voided its final run). A `src/**` fix
 round DURING an integ edits a `--detach` sibling, never the integ's tree, not
 even commit-without-push (the marker hashes that tree's delta, not the sha its
 `dist/` ran, #6475), pushes
@@ -64,7 +66,8 @@ fixture in the brief (never the runner's own, #5657), take each
 verdict from that fixture's stdout file's `verify.sh rc=` line
 (#5519), wait on ONE command exiting with that PID and stop every
 background Monitor before the final report (#5413), bans attribution
-lines in the ledger commit (#5104), relaunches (stdout under a NEW name, `.run2.log`; never `rm` by glob)
+lines in the ledger commit (#5104), sets no env var beyond `AWS_REGION`,
+`STATE_BUCKET` and what the fixture's `verify.sh` header documents, relaunches (stdout under a NEW name, `.run2.log`; never `rm` by glob)
 only after `pgrep -f verify.sh`
 plus each PID's cwd (`lsof -a -p <pid> -d cwd`) shows no `tests/integration/<fixture>` (#5695), and STOPs on an unreadable state record (`/run-integ` step 7). A FAIL names the file EMITTING its message (`grep -rlF` a `${}`-free fragment over `src/`
 and the fixture): the PR is blamed when that file is in its diff — unless that file

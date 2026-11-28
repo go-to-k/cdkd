@@ -137,7 +137,9 @@ cdkd bump PR closes the issue (#6717); a body PROPOSING a mechanism has no symbo
 update, or a backfill wiring a shape (#5204), has a CFn premise:
 `aws cloudformation describe-type --type RESOURCE --type-name <T> --query
 Schema` (`required`, `createOnlyProperties`), else a throwaway change set
-(delete its stack, then its leftovers, e.g. FSx final backups, #5206),
+(set `SkipFinalBackup` / `FinalBackup: false` where the type allows; delete its
+stack, then its leftovers — FSx final backups carry no tags, so sweep them by
+the persisted fs id before reporting zero resources, #5206),
 BEFORE design (#3769): measure a removal ALONE and BESIDE another change, poll
 reads for minutes (lag reads as "CFn ignores it"), and measure an ORDER, never
 reason it (#5107). MEASURE an `Fn::GetAtt` value's shape and JSON type with a

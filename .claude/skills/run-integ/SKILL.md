@@ -256,7 +256,8 @@ verify, clean up.
    PR's own worktree on the PR branch, and if any success condition failed, do
    NOT set the marker. **The agent sets the marker, and commits and pushes step
    11's ledger row, itself** — the maintainer explicitly authorizes it. When the
-   auto-mode classifier refuses one, retry it ONCE stating that authorization;
+   auto-mode classifier refuses one, retry it ONCE stating that authorization (a
+parent retrying a lane's refused call IS that retry);
    only if that is refused too, ask the maintainer (`AskUserQuestion`) to TYPE
    the authorization in their own words (a picked option has not always cleared
    a refusal), then run it yourself. Never hand either command to the
