@@ -300,6 +300,44 @@ describe('cdkd scrub - a short NoEcho echo an older binary persisted (go-to-k/cd
     expect(saved).toBeUndefined();
   });
 
+  it('drops an attribute KEY equal to a short input a pre-v11 record still holds in plaintext', async () => {
+    const record = customRecord();
+    record.properties = { ServiceToken: 'arn', Pw: SHORT, Id: IN_ID, Sn: STACK };
+    delete record.noEchoLeaves;
+    record.attributes = { [SHORT]: 'x', Count: '3' };
+    const saved = await scrub(stateWith({ resources: { Cr: record } }));
+    expect(saved!.resources['Cr']!.attributes).toEqual({ Count: '3' });
+  });
+
+  it('repairs orphan and superseded records holding the plaintext the scrub resolves', async () => {
+    const info = stackInfo();
+    const template = info.template as unknown as {
+      Parameters: Record<string, unknown>;
+      Resources: Record<string, { Properties: Record<string, unknown> }>;
+    };
+    delete template.Parameters['InId'];
+    delete template.Parameters['Named'];
+    template.Resources['Cr']!.Properties = { ServiceToken: 'arn', Pw: { Ref: 'Short' } };
+    const plain = (): ResourceState => ({
+      ...customRecord(),
+      properties: { ServiceToken: 'arn', Pw: SHORT },
+      noEchoLeaves: [['Pw']],
+      attributes: { Out: SHORT, [SHORT]: 'x', Count: '3' },
+    });
+    const live = { ...plain(), properties: { ServiceToken: 'arn', Pw: '***' }, attributes: { Count: '3' } };
+    const saved = await scrub(
+      stateWith({
+        resources: { Cr: live },
+        orphans: [{ logicalId: 'Cr', orphanedAt: 1, state: plain() }],
+        supersededResources: [{ logicalId: 'Cr', supersededAt: 1, state: plain() }],
+      }),
+      info
+    );
+    for (const row of [saved!.orphans![0]!, saved!.supersededResources![0]!]) {
+      expect(row.state.attributes).toEqual({ Out: '***', Count: '3' });
+    }
+  });
+
   it('drops an attribute KEY equal to the short input', async () => {
     const record = customRecord();
     record.attributes = { [SHORT]: 'x', Count: '3' };

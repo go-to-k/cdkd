@@ -1,6 +1,5 @@
 import type { RecordedSecretValues } from './pairs.js';
 import { isPlainObject } from './rules.js';
-import { mentionsMask } from './recorded-secrecy.js';
 import { maskAtCoordinates, noEchoLeavesOf, valueAtCoordinate } from './noecho-leaves.js';
 import { withOffTemplateEchoesMasked, type OffTemplateEchoRecord } from './off-template-echo.js';
 import { templateGetAttNamesOf, withSecretAttributeKeysDropped } from './secret-attribute-keys.js';
@@ -23,12 +22,11 @@ export interface StoredRecordInput {
 }
 
 /**
- * `stored.resolved` reduced to what it teaches beyond the record as read: the
- * resolved bag with every `noEchoLeaves` position masked except those holding
- * a value the stored bag lacks there (the stored mask) and today's template
- * does not spell as a literal (a public value at a position the record still
- * marks). `undefined` when no position teaches, so a record the resolution
- * adds nothing to takes no extra pass.
+ * `stored.resolved` as a source of `NoEcho` inputs: the resolved bag with
+ * every `noEchoLeaves` position masked that holds no scalar, or one today's
+ * template spells as a literal (a public value at a position the record still
+ * marks). `undefined` when every position is masked, so a record the
+ * resolution adds nothing to takes no extra pass.
  */
 export function resolvedNoEchoTeacher(
   record: { noEchoLeaves?: unknown },
@@ -37,19 +35,23 @@ export function resolvedNoEchoTeacher(
   const resolved = stored.resolved;
   if (!isPlainObject(resolved)) return undefined;
   const coordinates = noEchoLeavesOf(record) ?? [];
-  const silent = coordinates.filter((coordinate) => {
+  const scalar = (value: unknown): value is string | number | boolean =>
+    typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
+  const silent: typeof coordinates = [];
+  for (const coordinate of coordinates) {
     const value = valueAtCoordinate(resolved, coordinate);
-    if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') {
-      return true;
+    const literal = valueAtCoordinate(stored.templateProps, coordinate);
+    if (
+      !scalar(value) ||
+      // (A value holding the mask teaches nothing downstream: each reader skips it.)
+      value === '' ||
+      // A number literal may resolve to its string spelling.
+      (scalar(literal) && String(literal) === String(value))
+    ) {
+      silent.push(coordinate);
     }
-    if (value === '' || (typeof value === 'string' && mentionsMask(value))) return true;
-    return (
-      valueAtCoordinate(stored.state.properties, coordinate) === value ||
-      valueAtCoordinate(stored.templateProps, coordinate) === value
-    );
-  });
-  if (silent.length === coordinates.length) return undefined;
-  return maskAtCoordinates(resolved, silent);
+  }
+  return silent.length === coordinates.length ? undefined : maskAtCoordinates(resolved, silent);
 }
 
 /**
@@ -117,7 +119,9 @@ export function storedRecordFinisher(
     );
     return withSecretAttributeKeysDropped(
       masked,
-      resolvedBag === undefined ? masked : { ...masked, properties: resolvedBag },
+      // Without a teaching position the record as read is the source: a
+      // pre-v11 one holds the plaintext there.
+      { ...masked, properties: resolvedBag ?? state.properties ?? {} },
       needles,
       templateGetAttNamesOf(template, logicalId),
       publicTokens
