@@ -42,7 +42,7 @@ import type { MaskedLogSinks } from '../../masked-retry-logger.js';
  * per-resource deadline (`--resource-timeout`), and is Ctrl-C-aware. Running
  * out of either throws: the registration is not confirmed, never reported as
  * applied. A throttled or 5xx read counts as one more pending poll; any other
- * read failure ends the wait through `wrapReadFailure`. Every failure the wait
+ * read failure ends the wait through `wrapReadError`. Every failure the wait
  * itself decides is non-retryable: a retry would register the targets again.
  */
 
@@ -112,7 +112,7 @@ export async function waitForProxyTargetsAvailable(
   registered: RegisteredProxyTargets,
   log: MaskedLogSinks,
   /** Turns a non-transient read failure into the error the wait throws. */
-  wrapReadFailure: (error: unknown) => Error,
+  wrapReadError: (error: unknown) => Error,
   opts: ProxyTargetsWaitOptions = {}
 ): Promise<void> {
   const what = `the targets of DB proxy target group ${logicalId} to read AVAILABLE`;
@@ -150,7 +150,7 @@ export async function waitForProxyTargetsAvailable(
         targets = await readTargets(client, dbProxyName, targetGroupName);
       } catch (error) {
         if (!(isThrottlingError(error) || isTransientServerError(error))) {
-          throw wrapReadFailure(error);
+          throw wrapReadError(error);
         }
         log.debug(
           `A read while waiting for ${what} was throttled or failed server-side; reading again`

@@ -712,9 +712,37 @@ const TARGET_GROUP_ARN = `arn:aws:rds:us-east-1:${ACCOUNT}:target-group:prx-tg-1
 
 /** DescribeDBProxyTargetGroups answers the default group's ARN, which create records. */
 function armTargetGroup(): void {
+  const registered = { clusters: new Set<string>(), instances: new Set<string>() };
   setOutputOverrides({
     DescribeDBProxyTargetGroupsCommand: () => ({
       TargetGroups: [{ TargetGroupArn: TARGET_GROUP_ARN, TargetGroupName: 'default' }],
+    }),
+    // go-to-k/cdkd#7132: each target RegisterDBProxyTargets named reads
+    // AVAILABLE, as it does once the proxy health-checks it (a cluster
+    // through its member instance rows).
+    RegisterDBProxyTargetsCommand: (input) => {
+      for (const id of (input['DBClusterIdentifiers'] as string[] | undefined) ?? []) {
+        registered.clusters.add(id);
+      }
+      for (const id of (input['DBInstanceIdentifiers'] as string[] | undefined) ?? []) {
+        registered.instances.add(id);
+      }
+      return {};
+    },
+    DescribeDBProxyTargetsCommand: () => ({
+      Targets: [
+        ...[...registered.clusters].map((id) => ({
+          Type: 'RDS_INSTANCE',
+          RdsResourceId: `${id}-member`,
+          TrackedClusterId: id,
+          TargetHealth: { State: 'AVAILABLE' },
+        })),
+        ...[...registered.instances].map((id) => ({
+          Type: 'RDS_INSTANCE',
+          RdsResourceId: id,
+          TargetHealth: { State: 'AVAILABLE' },
+        })),
+      ],
     }),
   });
 }
