@@ -222,8 +222,9 @@ const MAX_NEEDLE_CONDITIONS = 6;
  * The coordinates (JSON keys) a `NoEcho` source fills under EVERY verdict of
  * the `Fn::If` conditions in `properties`: a position some verdict fills from
  * a public value (a literal, a public parameter, an attribute) is no needle.
- * An `AWS::NoValue` branch takes the other branch, as that verdict leaves the
- * property absent and the record holds a value there.
+ * An `AWS::NoValue` branch of a whole value (not a list item) takes the other
+ * branch, as that verdict leaves the property absent and the record holds a
+ * value there.
  */
 function needleCoordinatesOf(
   properties: unknown,
@@ -259,8 +260,9 @@ function needleCoordinatesOf(
 
 /**
  * `node` with an `Fn::If` one of whose branches is `{ Ref: 'AWS::NoValue' }`
- * replaced by its other branch where it is a whole value (not a list item); every condition name an `Fn::If` reads is
- * added to `names`, and one that names none by a string is dropped (`null`).
+ * replaced by its other branch where it is a whole value (not a list item);
+ * every condition name an `Fn::If` reads is added to `names`, and one that
+ * names none by a string is dropped (`null`).
  */
 function collapseNoValueBranches(node: unknown, names: Set<string>, asValue = true): unknown {
   if (Array.isArray(node)) return node.map((item) => collapseNoValueBranches(item, names, false));
