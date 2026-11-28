@@ -159,6 +159,7 @@ cd "$(dirname "$0")"
 # so proving the CURRENT state.json is masked says nothing about the versions
 # behind it; the version scan below reads each one.
 . ../s3-versions.sh
+. ../state-schema-version.sh
 
 PARENT="CdkdCrNoEchoNestedExample"
 CHILD="${PARENT}~Child"
@@ -760,16 +761,9 @@ assert_paramvalue_arm() { # assert_paramvalue_arm <label>
     "$(ssm_value "${CONSUMER_PARAMVALUE_PARAM}")" "${PARAMVALUE_TOKEN}"
 
   echo "  -- ${label}: NoEcho-parameter arm, in cdkd state (non-disclosure)"
-  # Mirror stateSchemaVersionFor (src/types/state.ts): 18 when any record (resources, orphans[].state,
-  # supersededResources[].state) carries a referenceProvenance.versionsSent attestation, else 17 when
-  # one carries noEchoValueMacs, else 16 (#7147).
+  # The expected version is derived from the record shape (state-schema-version.sh, #7147, #7178).
   local expected_version
-  expected_version="$(printf '%s' "${stack}" | jq -r '
-    [(.resources // {} | to_entries[].value), ((.orphans // [])[] | .state), ((.supersededResources // [])[] | .state)]
-    | map(select(. != null and type == "object")) as $r
-    | if any($r[]; (.referenceProvenance // {}) | type == "object" and any(.[]; type == "object" and .versionsSent != null)) then 18
-      elif any($r[]; .noEchoValueMacs != null) then 17
-      else 16 end')"
+  expected_version="$(printf '%s' "${stack}" | expected_state_schema_version -)"
   assert_eq "paramvalue state.version (derived from the record shape: 18 versionsSent / 17 noEchoValueMacs / 16)" \
     "$(printf '%s' "${stack}" | jq -r '.version')" "${expected_version}"
   assert_eq "paramvalue SameStackValue properties.Value" \

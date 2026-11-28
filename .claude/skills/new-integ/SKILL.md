@@ -105,7 +105,8 @@ The user provides a kebab-case test name (e.g., `ses-email-identity`,
      `--fail-on=destructive` (#7155).
    - Assert a `state.json` version DERIVED from the record's shape (cdkd writes
      the lowest version the record needs, as #7148 does), never the binary's
-     newest schema version (#7147, #7163).
+     newest schema version (#7147, #7163). Source `. ../state-schema-version.sh` and call
+     `expected_state_schema_version <state.json | ->` instead of copying the jq (#7178).
    - Require `STATE_BUCKET` (fail fast if unset) and the built `dist/cli.js`.
    - Define a `cleanup()` and arm it on EXIT **and both signals**; run it once
      up-front as a pre-run cleanup:

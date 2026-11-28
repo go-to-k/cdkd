@@ -184,6 +184,7 @@ cd "$(dirname "$0")"
 # Shared S3 VERSION-sweep helpers (issue #2096): the bucket is versioned, and
 # state.json holds the value in a physical id named from it (Phases 3, 4a).
 . ../s3-versions.sh
+. ../state-schema-version.sh
 
 STACK="CdkdNoechoParameterMaskingExample"
 REGION="${AWS_REGION:-us-east-1}"
@@ -748,15 +749,8 @@ P1_STATE=$(mktemp)
 SCRATCH_FILES+=("${P1_STATE}")
 aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${P1_STATE}" --quiet
 P1_VERSION=$(jq -r '.version' "${P1_STATE}")
-# cdkd writes the lowest version a record needs (stateSchemaVersionFor in src/types/state.ts), not the
-# newest: 18 when any record (resources, orphans[].state, supersededResources[].state) carries a
-# referenceProvenance.versionsSent attestation, else 17 when one carries noEchoValueMacs, else 16 (#7163).
-P1_EXPECTED_VERSION=$(jq -r '
-  [(.resources // {} | to_entries[].value), ((.orphans // [])[] | .state), ((.supersededResources // [])[] | .state)]
-  | map(select(. != null and type == "object")) as $r
-  | if any($r[]; (.referenceProvenance // {}) | type == "object" and any(.[]; type == "object" and .versionsSent != null)) then 18
-    elif any($r[]; .noEchoValueMacs != null) then 17
-    else 16 end' "${P1_STATE}")
+# The expected version is derived from the record shape (state-schema-version.sh, #7163, #7178).
+P1_EXPECTED_VERSION=$(expected_state_schema_version "${P1_STATE}")
 if [ "${P1_VERSION}" != "${P1_EXPECTED_VERSION}" ]; then
   echo "FAIL: state.json is version ${P1_VERSION}, not ${P1_EXPECTED_VERSION} (the version its records' shape needs: 18 versionsSent / 17 noEchoValueMacs / 16; issue #4043)" >&2
   exit 1
