@@ -45,8 +45,9 @@ export function resolvedNoEchoTeacher(
       !scalar(value) ||
       // (A value holding the mask teaches nothing downstream: each reader skips it.)
       value === '' ||
-      // A number literal may resolve to its string spelling.
-      (scalar(literal) && String(literal) === String(value))
+      // (Only a string input teaches downstream, so a number literal needs no
+      // string-spelling match.)
+      literal === value
     ) {
       silent.push(coordinate);
     }
@@ -119,9 +120,7 @@ export function storedRecordFinisher(
     );
     return withSecretAttributeKeysDropped(
       masked,
-      // Without a teaching position the record as read is the source: a
-      // pre-v11 one holds the plaintext there.
-      { ...masked, properties: resolvedBag ?? state.properties ?? {} },
+      resolvedBag === undefined ? masked : { ...masked, properties: resolvedBag },
       needles,
       templateGetAttNamesOf(template, logicalId),
       publicTokens
