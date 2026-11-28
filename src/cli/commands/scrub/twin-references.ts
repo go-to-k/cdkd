@@ -4,6 +4,7 @@ import {
 } from '../../../deployment/secret-redaction/pairs.js';
 import { dynamicReferenceSpans } from '../../../deployment/secret-redaction/redact-path/reference-tokens.js';
 import type { ResourceState } from '../../../types/state.js';
+import { defineOwnKey, nullPrototypeRecord } from '../../../utils/own-keys.js';
 
 /**
  * The same pairing for the drift baseline (go-to-k/cdkd#7154): a `walked`
@@ -101,17 +102,9 @@ export function positionTwinReferences(
       const next = walk(s[key], p[key], t[key]);
       if (next !== p[key]) {
         // The bag's own prototype (a null one included, go-to-k/cdkd#1943),
-        // and a defined property, so a `__proto__` key stays a key.
-        out ??= Object.defineProperties(
-          Object.create(Object.getPrototypeOf(p) as object | null) as Record<string, unknown>,
-          Object.getOwnPropertyDescriptors(p)
-        );
-        Object.defineProperty(out, key, {
-          value: next,
-          writable: true,
-          enumerable: true,
-          configurable: true,
-        });
+        // and own keys defined, so a `__proto__` key stays a key.
+        out ??= copyOwnKeys(p);
+        defineOwnKey(out, key, next);
       }
     }
     return out ?? p;
@@ -167,6 +160,13 @@ function provenTemplateText(
   const tail = text.slice(cursor);
   if (plaintexts.some((p) => tail.includes(p))) return false;
   return resolved + tail === value;
+}
+
+function copyOwnKeys(bag: Record<string, unknown>): Record<string, unknown> {
+  const copy: Record<string, unknown> =
+    Object.getPrototypeOf(bag) === null ? nullPrototypeRecord() : {};
+  for (const key of Object.keys(bag)) defineOwnKey(copy, key, bag[key]);
+  return copy;
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {

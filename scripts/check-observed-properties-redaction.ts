@@ -263,6 +263,17 @@ export const EXEMPTIONS: readonly Exemption[] = [
       '`tests/unit/deployment/deploy-engine-cross-stack-read-writers.test.ts` fences that every ' +
       '`engine.stateBackend.saveState` wraps `withParentInfo`, the step that calls it)',
   },
+  {
+    file: 'src/cli/commands/scrub/twin-references.ts',
+    fn: 'withObservedTwinsPositioned',
+    count: 1,
+    reason:
+      'cdkd scrub (go-to-k/cdkd#7154) re-positions an observed leaf of the bag ' +
+      '`scrubResourceRecord` just redacted onto the expression text of `properties` as positioned, ' +
+      'only where substituting each token by the plaintext THIS pass resolved it to gives the stored ' +
+      'leaf exactly and the text outside the tokens holds no recorded plaintext ' +
+      '(`provenTemplateText`); every other leaf is the redacted one. The unit test reads that wiring',
+  },
 ];
 
 // ---------------------------------------------------------------- files
