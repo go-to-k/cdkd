@@ -195,7 +195,7 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
   'dynamodb:UpdateKinesisStreamingDestination': waits(
     ['waitForKinesisDestinationSettled', 'waitForKinesisPrecisionSettled'],
     ['ENABLE_FAILED / DISABLED / absent, or the old precision, after the stale-read grace'],
-    'AWS::DynamoDB::Table and GlobalTable; UPDATING for ~3 min; the GlobalTable wait --no-wait skips it (docs/cli-deploy.md), and its pre-send wait for ACTIVE (waitForKinesisUpdatable) runs in every mode; CloudFormation\'s update completed with the new precision ACTIVE (#7132)'
+    "AWS::DynamoDB::Table and GlobalTable; UPDATING for ~3 min; the GlobalTable wait --no-wait skips it (docs/cli-deploy.md), and its pre-send wait for ACTIVE (waitForKinesisUpdatable) runs in every mode; CloudFormation's update completed with the new precision ACTIVE (#7132)"
   ),
   'dynamodb:UpdateTable': waits(
     ['waitForTableActiveAfterUpdate', 'waitForTableAndIndexesActive', 'waitForGlobalTableSettled'],
@@ -205,7 +205,7 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
   'ec2:AssociateIamInstanceProfile': waits(
     ['isInstanceProfileAssociated', 'waitForInstanceProfileAssociationSettled'],
     ['the new association reads disassociated'],
-    'the create polls isInstanceProfileAssociated (warns on its cap); the update waits for associated, --no-wait skips it (docs/cli-deploy.md); CloudFormation\'s update step read the new profile associated (#7132)'
+    "the create polls isInstanceProfileAssociated (warns on its cap); the update waits for associated, --no-wait skips it (docs/cli-deploy.md); CloudFormation's update step read the new profile associated (#7132)"
   ),
   'ec2:AssociateNatGatewayAddress': byDesign(
     'CloudFormation waits, cdkd deliberately does not: the gateway keeps serving its other zones (ec2/nat-gateway.ts comment, measured on #2762)'
@@ -247,12 +247,12 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
   'ec2:ModifyInstanceMetadataOptions': waits(
     ['waitForInstanceMetadataOptionsSettled'],
     [],
-    'waits for State applied (pending ~0.8 s in 1 of 8 trials); --no-wait skips it (docs/cli-deploy.md); CloudFormation\'s update step read applied (#7132)'
+    "waits for State applied (pending ~0.8 s in 1 of 8 trials); --no-wait skips it (docs/cli-deploy.md); CloudFormation's update step read applied (#7132)"
   ),
   'ec2:ReplaceIamInstanceProfileAssociation': waits(
     ['waitForInstanceProfileAssociationSettled'],
     ['the new association reads disassociated'],
-    'the new association reads associating ~0.8 s; --no-wait skips it (docs/cli-deploy.md); CloudFormation\'s update step read it associated (#7132)'
+    "the new association reads associating ~0.8 s; --no-wait skips it (docs/cli-deploy.md); CloudFormation's update step read it associated (#7132)"
   ),
   'ec2:StartInstances': waits(
     ['waitForInstanceState'],
@@ -262,7 +262,7 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
   'ecs:CreateCluster': waits(
     ['waitForClusterSettled'],
     ['FAILED', 'UPDATE_FAILED', 'INACTIVE / DEPROVISIONING'],
-    'only a ServiceConnectDefaults create (PROVISIONING / attachments UPDATE_IN_PROGRESS ~20 s) or an in-progress answer; --no-wait skips it (docs/cli-deploy.md); CloudFormation\'s create completed ACTIVE / UPDATE_COMPLETE (#7132)'
+    "only a ServiceConnectDefaults create (PROVISIONING / attachments UPDATE_IN_PROGRESS ~20 s) or an in-progress answer; --no-wait skips it (docs/cli-deploy.md); CloudFormation's create completed ACTIVE / UPDATE_COMPLETE (#7132)"
   ),
   'ecs:CreateService': waits(
     ['settleService'],
@@ -297,14 +297,14 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
   'efs:CreateAccessPoint': waits(
     ['waitForAccessPointAvailable'],
     ['error', 'deleting', 'deleted'],
-    'creating ~1-2 s; --no-wait skips it (docs/cli-deploy.md); CloudFormation\'s create completed with the access point available (#7132)'
+    "creating ~1-2 s; --no-wait skips it (docs/cli-deploy.md); CloudFormation's create completed with the access point available (#7132)"
   ),
   'efs:CreateFileSystem': waits(['waitForFileSystemAvailable'], []),
   'efs:CreateMountTarget': waits(['waitForMountTargetAvailable'], []),
   'efs:PutBackupPolicy': waits(
     ['waitForBackupPolicySettled'],
     ['the opposite status after the stale-read grace'],
-    'ENABLING / DISABLING ~2 s, create and update; --no-wait skips it (docs/cli-deploy.md); CloudFormation\'s update read the new status right after (#7132)'
+    "ENABLING / DISABLING ~2 s, create and update; --no-wait skips it (docs/cli-deploy.md); CloudFormation's update read the new status right after (#7132)"
   ),
   'efs:UpdateFileSystem': waits(['waitForFileSystemAvailable'], []),
   'elasticache:CreateCacheCluster': waits(
@@ -556,7 +556,7 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
   'route-53:AssociateVPCWithHostedZone': waits(
     ['waitForRoute53ChangeInsync'],
     [],
-    '--full-wait only, by maintainer decision on #7132: the default and --no-wait return while PENDING, as for CloudFront Deployed (#1282) — drift reads the change at once, PENDING has no failure state, and dependent Route 53 calls are accepted meanwhile; a cap or deadline warns; PENDING ~80 s; CloudFormation\'s VPCs update waited ~103 s'
+    "--full-wait only, by maintainer decision on #7132: the default and --no-wait return while PENDING, as for CloudFront Deployed (#1282) — drift reads the change at once, PENDING has no failure state, and dependent Route 53 calls are accepted meanwhile; a cap or deadline warns; PENDING ~80 s; CloudFormation's VPCs update waited ~103 s"
   ),
   'route-53:ChangeResourceRecordSets': waits(
     ['waitForRoute53ChangeInsync', 'waitForCertificateIssued'],
@@ -618,7 +618,7 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
   'ec2:MonitorInstances': waits(
     ['waitForInstanceMonitoringSettled'],
     [],
-    'DescribeInstances read disabled right after the call (4 of 4), enabled ~0.8 s later; --no-wait skips it (docs/cli-deploy.md); CloudFormation\'s update step read enabled (#7132)'
+    "DescribeInstances read disabled right after the call (4 of 4), enabled ~0.8 s later; --no-wait skips it (docs/cli-deploy.md); CloudFormation's update step read enabled (#7132)"
   ),
   'ec2:RevokeSecurityGroupEgress': byDesign(
     "the flagged member is an unknown permission's peering PeeringStatus, not the rule's; the revoke is done once AWS answers"
@@ -655,7 +655,7 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
   'emr:PutAutoScalingPolicy': waits(
     ['waitForAutoScalingPolicySettled'],
     ['FAILED', 'DETACHING / DETACHED / no policy after the stale-read grace'],
-    'create and update; PENDING / ATTACHING for ~10-15 s; --no-wait skips it (docs/cli-deploy.md); CloudFormation\'s update completed with the policy ATTACHED (#7132)'
+    "create and update; PENDING / ATTACHING for ~10-15 s; --no-wait skips it (docs/cli-deploy.md); CloudFormation's update completed with the policy ATTACHED (#7132)"
   ),
   'rds:RegisterDBProxyTargets': unmeasured(`${NO_WAIT} (targets answer REGISTERING)`),
   'route-53:UpdateHostedZoneComment': byDesign(
