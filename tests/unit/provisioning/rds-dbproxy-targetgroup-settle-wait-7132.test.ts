@@ -273,15 +273,35 @@ describe('waitForProxyTargetsAvailable (#7132)', () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 
-  it('reads UNUSED, UNREACHABLE and PROMOTED as pending, never as settled or failed', async () => {
+  it('reads UNREACHABLE and PROMOTED as pending, never as settled or failed', async () => {
     send
-      .mockResolvedValueOnce(answer([instance('db1', { State: 'UNUSED' })]))
       .mockResolvedValueOnce(answer([instance('db1', { State: 'UNAVAILABLE', Reason: 'UNREACHABLE' })]))
       .mockResolvedValueOnce(answer([instance('db1', { State: 'UNAVAILABLE', Reason: 'UNREACHABLE' })]))
       .mockResolvedValueOnce(answer([instance('db1', { State: 'UNAVAILABLE', Reason: 'PROMOTED' })]))
       .mockResolvedValue(answer([instance('db1', { State: 'AVAILABLE' })]));
     await waitForProxyTargetsAvailable(client, 'Tg', PROXY, 'default', one, log, wrap, opts);
-    expect(send).toHaveBeenCalledTimes(5);
+    expect(send).toHaveBeenCalledTimes(4);
+  });
+
+  it('settles a cluster whose reader row reads UNUSED and writer AVAILABLE', async () => {
+    send.mockResolvedValue(
+      answer([
+        tracked('c1'),
+        member('w', 'c1', { State: 'AVAILABLE' }),
+        member('r', 'c1', { State: 'UNUSED' }),
+      ])
+    );
+    await waitForProxyTargetsAvailable(
+      client,
+      'Tg',
+      PROXY,
+      'default',
+      { clusters: ['c1'], instances: [] },
+      log,
+      wrap,
+      opts
+    );
+    expect(send).toHaveBeenCalledTimes(1);
   });
 
   it('requires every member row of a cluster, and ignores the TRACKED_CLUSTER row', async () => {

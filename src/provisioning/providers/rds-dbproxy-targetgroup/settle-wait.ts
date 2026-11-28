@@ -31,6 +31,12 @@ import type { MaskedLogSinks } from '../../masked-retry-logger.js';
  * confirmed" — CloudFormation also sat in `CREATE_IN_PROGRESS` there for 22+
  * minutes. No status tells that case from a cold proxy still starting.
  *
+ * UNMEASURED CHOICE: `UNUSED` counts as settled, like `AVAILABLE`, on any
+ * row. It is a state a target rests in (an Aurora reader the proxy's
+ * endpoint does not use), so waiting cannot change it, and holding it
+ * pending would run every such create to the cap. No probe has seen it; it
+ * was chosen so that a resting state never hangs the deploy.
+ *
  * `--no-wait` (`CDKD_NO_WAIT=true`) skips the wait and keeps the old early
  * return. The wait is bounded by its poll cap and by the enclosing
  * per-resource deadline (`--resource-timeout`), and is Ctrl-C-aware. Running
@@ -89,9 +95,10 @@ const healthOf = (t: DBProxyTarget): string =>
 
 /**
  * After `RegisterDBProxyTargets`: wait until every row of every target the
- * call registered reads `AVAILABLE`. `REGISTERING`, `UNAVAILABLE` with
- * `PENDING_PROXY_CAPACITY` or with no reason, a target not yet listed, and any
- * state or reason not named here (`UNUSED`, `UNREACHABLE`, `PROMOTED`) are
+ * call registered reads `AVAILABLE` (or the resting `UNUSED`). `REGISTERING`,
+ * `UNAVAILABLE` with `PENDING_PROXY_CAPACITY` or with no reason, a target not
+ * yet listed, and any state or reason not named here (`UNREACHABLE`,
+ * `PROMOTED`) are
  * pending, so only the cap ends them. `UNAVAILABLE` with `CONNECTION_FAILED`,
  * `AUTH_FAILURE` or `INVALID_REPLICATION_STATE` read on
  * {@link PROXY_TARGET_FAILURE_GRACE_POLLS} consecutive polls fails; AWS's
@@ -159,7 +166,8 @@ export async function waitForProxyTargetsAvailable(
             continue;
           }
           for (const row of rows) {
-            if (row.TargetHealth?.State === 'AVAILABLE') continue;
+            const state = row.TargetHealth?.State;
+            if (state === 'AVAILABLE' || state === 'UNUSED') continue;
             pending.push(`${log.value(row.RdsResourceId ?? id)} ${healthOf(row)}`);
             if (
               failure === undefined &&
