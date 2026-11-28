@@ -133,7 +133,8 @@ export function registerNoEchoAttributes(
  * back. One the template reads keeps resolving in the clear, undeclared. A
  * template that names an attribute through an expression may read any, so
  * nothing is declared on equality alone there. The stack name is public and
- * never declared (a region is never under the floor).
+ * never declared. A `NoEcho` input equal to the region is declared, as the
+ * `fresh` arm already declared it.
  *
  * The cost: an UNREAD public attribute that happens to equal such a value is
  * declared, so a reader a LATER template adds, while the custom resource does
