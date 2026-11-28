@@ -238,7 +238,7 @@ export function noEchoCoordinatesOf(
       const intrinsic = intrinsicKeyOf(record);
       if (intrinsic === undefined) {
         if (!isPlainObject(value)) {
-          pushIfReads(path, source, readsNoEchoSource(record, parametersOnly), masked);
+          if (readsNoEchoSource(record, parametersOnly)) push(path, source);
           return;
         }
         for (const [key, child] of Object.entries(record)) {
