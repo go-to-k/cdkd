@@ -289,10 +289,11 @@ export function undeclaredUncomparedDriftKeys(resourceType: string, properties: 
  * `AWS::AppSync::GraphQLSchema` `Definition` (go-to-k/cdkd#7127), same blind
  * spot: before #7127 the baseline was read while AppSync still served the
  * schema the deploy replaced, so `drift --revert` pushed the old schema back.
- * Skipped only while the live SDL is the declared inline `Definition`; a
- * schema sourced from `DefinitionS3Location` declares no SDL to compare with,
- * so its pre-fix baseline stays compared until the next update or
- * `cdkd state refresh-observed` rewrites it (go-to-k/cdkd#7139).
+ * Skipped only while the live SDL is the declared inline `Definition`. A
+ * schema sourced from `DefinitionS3Location` declares no SDL here, so the
+ * AppSync provider's `canonicalizeDriftPair` reads the declared object and
+ * heals that baseline instead (go-to-k/cdkd#7139): an S3 read this
+ * synchronous, call-free rule cannot make.
  */
 export function preFixBaselineUncomparedDriftKeys(
   resourceType: string,

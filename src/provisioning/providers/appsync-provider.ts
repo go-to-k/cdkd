@@ -114,6 +114,7 @@ import {
 import {
   readCurrentState,
   canonicalizeSdl,
+  canonicalizeDriftPair,
   readGraphQLSchema,
   readGraphQLApi,
   userPoolConfigToCfn,
@@ -815,6 +816,15 @@ export class AppSyncProvider implements ResourceProvider {
   }
   canonicalizeSdl(sdl: string, source: 'state' | 'aws'): Promise<string> {
     return canonicalizeSdl.call(this, sdl, source);
+  }
+  /** go-to-k/cdkd#7139: a pre-#7127 `DefinitionS3Location` schema baseline (see the helper). */
+  canonicalizeDriftPair(
+    resourceType: string,
+    baseline: Record<string, unknown>,
+    aws: Record<string, unknown>,
+    properties?: Record<string, unknown>
+  ): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }> {
+    return canonicalizeDriftPair.call(this, resourceType, baseline, aws, properties);
   }
   waitForSchemaCreation(
     apiId: string,

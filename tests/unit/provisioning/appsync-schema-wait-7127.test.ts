@@ -344,7 +344,7 @@ describe('drift heals a pre-#7127 schema baseline', () => {
     ).toEqual([]);
   });
 
-  it('keeps an S3-sourced schema compared (no declared SDL)', () => {
+  it('leaves an S3-sourced schema to the provider pair hook (no declared SDL here, #7139)', () => {
     const declared = { ApiId: 'api-1', DefinitionS3Location: 's3://b/k.graphql' };
     expect(
       preFixBaselineUncomparedDriftKeys(TYPE, STALE, declared, {

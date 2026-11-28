@@ -208,6 +208,76 @@ export async function readGraphQLSchema(
   };
 }
 
+/**
+ * go-to-k/cdkd#7139: the `DefinitionS3Location` half of the pre-#7127 schema
+ * heal (`preFixBaselineUncomparedDriftKeys` covers an inline `Definition`).
+ * Before #7127 the observed baseline was read while AppSync still served the
+ * schema the deploy replaced, so drift reported `Definition` on an untouched
+ * schema and `drift --revert` pushed the previous one back, dropping the
+ * resolvers of the fields it lacked. A template sourcing the SDL from S3
+ * declares no SDL to compare with, so the declared object is read: when the
+ * live SDL is its body (both through {@link canonicalizeSdl}) the baseline
+ * takes the live `Definition`, and `drift --revert`, which passes its desired
+ * bag through this hook, sends the live schema rather than the stale one.
+ *
+ * One `GetObject`, and only when the comparison would otherwise report
+ * `Definition`: an observed baseline whose `Definition` is not the live one,
+ * on a template with no inline `Definition`. A clean schema, a template
+ * baseline (no `Definition` recorded) and an inline schema read nothing. A
+ * failed read heals nothing (the difference stays visible) and does not fail
+ * drift; its debug line names the error class only, since the AWS text is not
+ * masked here. A live SDL other than the declared body stays compared.
+ */
+export async function canonicalizeDriftPair(
+  this: AppSyncProvider,
+  resourceType: string,
+  baseline: Record<string, unknown>,
+  aws: Record<string, unknown>,
+  properties?: Record<string, unknown>
+): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }> {
+  const unchanged = { baseline, aws };
+  if (resourceType !== 'AWS::AppSync::GraphQLSchema' || properties === undefined) {
+    return unchanged;
+  }
+  const location = properties['DefinitionS3Location'];
+  const recorded = baseline['Definition'];
+  const live = aws['Definition'];
+  if (
+    properties['Definition'] !== undefined ||
+    typeof location !== 'string' ||
+    location === '' ||
+    typeof recorded !== 'string' ||
+    typeof live !== 'string' ||
+    live === '' ||
+    recorded === live
+  ) {
+    return unchanged;
+  }
+  let body: string;
+  try {
+    body = await this.fetchS3LocationBody(
+      location,
+      resourceType,
+      // The error only feeds the class-only debug line below.
+      'GraphQLSchema',
+      'DefinitionS3Location'
+    );
+  } catch (err) {
+    const cause = err instanceof Error && err.cause instanceof Error ? err.cause : err;
+    this.logger.debug(
+      `Could not read the declared GraphQL schema object (${
+        cause instanceof Error ? cause.name : 'unknown error'
+      }); comparing Definition against the recorded baseline`
+    );
+    return unchanged;
+  }
+  const [declared, current] = await Promise.all([
+    this.canonicalizeSdl(body, 'state'),
+    this.canonicalizeSdl(live, 'aws'),
+  ]);
+  return declared === current ? { baseline: { ...baseline, Definition: live }, aws } : unchanged;
+}
+
 export async function readGraphQLApi(
   this: AppSyncProvider,
   physicalId: string
