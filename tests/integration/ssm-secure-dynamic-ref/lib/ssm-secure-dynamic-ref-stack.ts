@@ -68,6 +68,9 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
  * `Name` / `Key`. The target ARN is a LITERAL (the queue's fixed name), so each
  * element's non-secret leaves are plain text the scrub can match. `t1` is
  * declared last, so the value-keyed map's survivor is the `:1` spelling.
+ * A second rule (`-getatt`, go-to-k/cdkd#7180) carries the same two targets
+ * with the ARN as `Fn::GetAtt` on the queue, the shape a real CDK app writes:
+ * its elements pair only by that intrinsic's resolution against state.
  * CDKD_TEST_SCRUB_TWIN_SUFFIX makes the names unique per run.
  */
 export class SsmSecureDynamicRefStack extends cdk.Stack {
@@ -122,6 +125,15 @@ export class SsmSecureDynamicRefStack extends cdk.Stack {
         ],
       });
       rule.node.addDependency(queue);
+      new events.CfnRule(this, 'ScrubTwinGetAttRule', {
+        name: `cdkd-scrub-twin-${suffix}-getatt`,
+        state: 'DISABLED',
+        scheduleExpression: 'rate(1 day)',
+        targets: [
+          { id: 't0', arn: queue.queueArn, input: `{"pw":"{{resolve:ssm-secure:${paramName}}}"}` },
+          { id: 't1', arn: queue.queueArn, input: `{"pw":"{{resolve:ssm-secure:${paramName}:1}}"}` },
+        ],
+      });
     }
 
     new cdk.CfnOutput(this, 'FunctionName', { value: fn.functionName });

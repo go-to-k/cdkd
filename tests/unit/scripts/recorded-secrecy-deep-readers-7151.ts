@@ -156,6 +156,10 @@ export const READS_RECORD_TEXT_DEEP: Readonly<Record<string, { count: number; wh
     count: 1,
     why: "finds the reference tokens to resolve into needles: it needs the marker KIND, a hit adds needles, and a plaintext leaf has no token to resolve",
   },
+  "src/cli/commands/scrub/twin-references.ts#certainResolution#mentionsMask(r)": {
+    count: 1,
+    why: "fails safe (go-to-k/cdkd#7180): a hit makes a resolved intrinsic UNCERTAIN, so its list element pairs as before; the resolution is only compared, never written or printed",
+  },
   "src/deployment/custom-resource-service-token.ts#uncomparableToken#mentionsMask(value)": {
     count: 1,
     why: "an identity check: a hit makes the token unjudgeable (refused where the diff saw a token change); the recorded token is never printed, only the desired one through the caller's mask",

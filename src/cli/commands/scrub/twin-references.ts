@@ -2,9 +2,39 @@ import {
   resolvedPlaintextOf,
   type RecordedSecretValues,
 } from '../../../deployment/secret-redaction/pairs.js';
+import {
+  mentionsDynamicReference,
+  mentionsMask,
+} from '../../../deployment/secret-redaction/recorded-secrecy.js';
 import { dynamicReferenceSpans } from '../../../deployment/secret-redaction/redact-path/reference-tokens.js';
 import type { ResourceState } from '../../../types/state.js';
 import { defineOwnKey, nullPrototypeRecord } from '../../../utils/own-keys.js';
+import { effectiveIntrinsicKey } from './cross-stack-refusals.js';
+
+/**
+ * Record one resolve unit of a resource for {@link positionTwinReferences}
+ * (go-to-k/cdkd#7180): `propertyName` `''` is a bag resolved WHOLE. A key the
+ * resolver abandoned keeps its raw intrinsic there, which no stored value
+ * equals, so that element pairs as it did before.
+ * In memory only: the bag holds this pass's plaintexts and is never persisted.
+ */
+export function recordResolvedUnit(
+  resolvedProps: Map<string, unknown>,
+  logicalId: string,
+  propertyName: string,
+  value: unknown
+): void {
+  if (propertyName === '') {
+    resolvedProps.set(logicalId, value);
+    return;
+  }
+  let bag = resolvedProps.get(logicalId) as Record<string, unknown> | undefined;
+  if (bag === undefined) {
+    bag = nullPrototypeRecord();
+    resolvedProps.set(logicalId, bag);
+  }
+  defineOwnKey(bag, propertyName, value);
+}
 
 /**
  * The same pairing for the drift baseline (go-to-k/cdkd#7154): a `walked`
@@ -52,7 +82,9 @@ export function withObservedTwinsPositioned(
  * same length there, and an element only when the template element
  * CORROBORATES the stored one (the same keys and lengths, every literal leaf
  * equal: a reordered list, keyed by `Name` or not, never pairs a value with
- * another element's reference); an object by the keys all three hold. At a
+ * another element's reference; an intrinsic leaf, such as an
+ * `Fn::GetAtt` target ARN, equal by its CERTAIN resolution in `resolved`,
+ * go-to-k/cdkd#7180); an object by the keys all three hold. At a
  * string leaf it
  * writes the template's own text, and only when that is PROVEN to be what the
  * stored leaf is:
@@ -74,11 +106,19 @@ export function positionTwinReferences(
   stored: unknown,
   positioned: unknown,
   template: unknown,
-  secrets: RecordedSecretValues
+  secrets: RecordedSecretValues,
+  /**
+   * The template bag as this run's resolve pass resolved it against the
+   * stack's recorded state (go-to-k/cdkd#7180, {@link recordResolvedUnit}).
+   * Read only to corroborate an element whose template leaf is an intrinsic,
+   * never written. `undefined` at a position means no certain resolution:
+   * that leaf corroborates as it did before #7180, i.e. never.
+   */
+  resolved?: unknown
 ): unknown {
   if (secrets.size === 0) return positioned;
   const plaintexts = [...secrets.keys()].filter((p) => p !== '');
-  const walk = (s: unknown, p: unknown, t: unknown): unknown => {
+  const walk = (s: unknown, p: unknown, t: unknown, r: unknown): unknown => {
     if (typeof t === 'string') {
       if (typeof s !== 'string' || typeof p !== 'string' || p === t) return p;
       return provenTemplateText(s, t, secrets, plaintexts) ? t : p;
@@ -88,8 +128,9 @@ export function positionTwinReferences(
         return p;
       let changed = false;
       const out = p.map((item, i) => {
-        if (!corroborates(s[i], t[i])) return item;
-        const next = walk(s[i], item, t[i]);
+        const ri = elementOf(r, t, i);
+        if (!corroborates(s[i], t[i], ri, plaintexts)) return item;
+        const next = walk(s[i], item, t[i], ri);
         if (next !== item) changed = true;
         return next;
       });
@@ -99,7 +140,7 @@ export function positionTwinReferences(
     let out: Record<string, unknown> | undefined;
     for (const key of Object.keys(t)) {
       if (!Object.hasOwn(s, key) || !Object.hasOwn(p, key)) continue;
-      const next = walk(s[key], p[key], t[key]);
+      const next = walk(s[key], p[key], t[key], memberOf(r, t, key));
       if (next !== p[key]) {
         // The bag's own prototype (a null one included, go-to-k/cdkd#1943),
         // and own keys defined, so a `__proto__` key stays a key.
@@ -109,32 +150,113 @@ export function positionTwinReferences(
     }
     return out ?? p;
   };
-  return walk(stored, positioned, template);
+  return walk(stored, positioned, template, resolved);
 }
 
 /**
  * Does template element `t` describe stored element `s`: the same shape, every
  * string leaf without a token equal, every other leaf equal? A string leaf
  * holding a token stands for any stored string, which the leaf proof checks.
+ * An INTRINSIC leaf inside the element (go-to-k/cdkd#7180), such as a target
+ * `Arn`, stands for its resolved counterpart `r` too, when that is CERTAIN and
+ * equals the stored value. An element that is itself an intrinsic corroborates
+ * the same way but positions nothing: the walk never descends its arguments.
  */
-function corroborates(s: unknown, t: unknown): boolean {
+function corroborates(s: unknown, t: unknown, r: unknown, plaintexts: readonly string[]): boolean {
   if (typeof t === 'string') {
     return typeof s === 'string' && (dynamicReferenceSpans(t).length > 0 || s === t);
   }
   if (Array.isArray(t)) {
     return (
-      Array.isArray(s) && s.length === t.length && t.every((item, i) => corroborates(s[i], item))
+      Array.isArray(s) &&
+      s.length === t.length &&
+      t.every((item, i) => corroborates(s[i], item, elementOf(r, t, i), plaintexts))
     );
   }
   if (isPlainRecord(t)) {
+    // Otherwise (no certain resolution) the structural comparison below, as before #7180.
+    if (isIntrinsicNode(t) && certainResolution(r, plaintexts) && sameValue(s, r)) return true;
     if (!isPlainRecord(s)) return false;
     const keys = Object.keys(t);
     return (
       keys.length === Object.keys(s).length &&
-      keys.every((key) => Object.hasOwn(s, key) && corroborates(s[key], t[key]))
+      keys.every(
+        (key) =>
+          Object.hasOwn(s, key) && corroborates(s[key], t[key], memberOf(r, t, key), plaintexts)
+      )
     );
   }
   return Object.is(s, t);
+}
+
+/**
+ * The node the resolver dispatches as an intrinsic: by PRESENCE of a handled
+ * key, as `resolveValue` does, so a sibling key never shifts the alignment.
+ */
+function isIntrinsicNode(t: Record<string, unknown>): boolean {
+  return effectiveIntrinsicKey(t) !== undefined;
+}
+
+/**
+ * The resolved counterpart of template element `t[i]`: only while the
+ * resolved list mirrors the template list. An `Fn::If` dropping an element
+ * (`AWS::NoValue`) shifts every index, so a length mismatch has none.
+ */
+function elementOf(r: unknown, t: readonly unknown[], i: number): unknown {
+  return Array.isArray(r) && r.length === t.length ? r[i] : undefined;
+}
+
+/** The resolved counterpart of `t[key]`; none below an intrinsic, whose keys are its arguments. */
+function memberOf(r: unknown, t: Record<string, unknown>, key: string): unknown {
+  if (isIntrinsicNode(t) || !isPlainRecord(r) || !Object.hasOwn(r, key)) return undefined;
+  return r[key];
+}
+
+/**
+ * Is `r` a resolution to compare against? JSON data only (an `AWS::NoValue`
+ * symbol or an unresolved leaf is not), and nothing secret-shaped: no mask
+ * (an attribute recorded masked; a masked id segment's `****` holds it too),
+ * no `{{resolve:` token, no plaintext this pass recorded. Anything else is
+ * UNCERTAIN, and the element pairs as it did before go-to-k/cdkd#7180.
+ */
+function certainResolution(r: unknown, plaintexts: readonly string[]): boolean {
+  const leaves: string[] = [];
+  if (r === undefined || !jsonLeaves(r, leaves)) return false;
+  if (mentionsMask(r)) return false;
+  return leaves.every(
+    (leaf) => !mentionsDynamicReference(leaf) && !plaintexts.some((p) => leaf.includes(p))
+  );
+}
+
+/** Collect `value`'s string leaves; `false` on any leaf that is not JSON data. */
+function jsonLeaves(value: unknown, into: string[]): boolean {
+  if (typeof value === 'string') {
+    into.push(value);
+    return true;
+  }
+  if (value === null || typeof value === 'boolean') return true;
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every((item) => jsonLeaves(item, into));
+  if (isPlainRecord(value)) {
+    return Object.keys(value).every((key) => jsonLeaves(value[key], into));
+  }
+  return false;
+}
+
+/** Structural equality over JSON data: same keys, same lengths, `Object.is` leaves. */
+function sameValue(a: unknown, b: unknown): boolean {
+  if (Array.isArray(b)) {
+    return Array.isArray(a) && a.length === b.length && b.every((item, i) => sameValue(a[i], item));
+  }
+  if (isPlainRecord(b)) {
+    if (!isPlainRecord(a)) return false;
+    const keys = Object.keys(b);
+    return (
+      keys.length === Object.keys(a).length &&
+      keys.every((key) => Object.hasOwn(a, key) && sameValue(a[key], b[key]))
+    );
+  }
+  return Object.is(a, b);
 }
 
 /** Is `text` (a template leaf) proven to be the expression of the stored `value`? */
