@@ -260,7 +260,15 @@ export class Route53Stack extends cdk.Stack {
       name: `sep|pipe.cdkd-test-${this.account}.internal`,
       type: 'A',
       ttl: renameName ? '600' : '300',
-      resourceRecords: ['198.51.100.9'],
+      // go-to-k/cdkd#7132 (verify.sh Phases 2.7d-2.7e): `insync` changes the
+      // value under --full-wait, `insync2` again under the default wait.
+      resourceRecords: [
+        renameModes.includes('insync2')
+          ? '198.51.100.11'
+          : renameModes.includes('insync')
+            ? '198.51.100.10'
+            : '198.51.100.9',
+      ],
     });
 
     // Issue #6530: a RecordSetGroup is one ChangeResourceRecordSets batch per

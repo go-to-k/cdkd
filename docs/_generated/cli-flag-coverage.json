@@ -657,7 +657,8 @@
     {
       "flag": "--full-wait",
       "integs": [
-        "ecs-fargate"
+        "ecs-fargate",
+        "route53"
       ]
     },
     {

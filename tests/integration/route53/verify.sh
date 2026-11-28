@@ -44,6 +44,11 @@
 # `Ref` to the whole name, reads back clean through `cdkd drift`, updates in
 # place in Phase 2.7a, and is deleted before the zone in Phase 3.
 #
+# go-to-k/cdkd#7132: Phase 2.7d changes that record's value under --full-wait,
+# which must poll GetChange to INSYNC before returning; Phase 2.7e changes it
+# again under the default wait, which must send no GetChange (the SDK call log
+# counts both).
+#
 # Issue #6549: Phase 3a protects a record (CreateResourceRecordSetProtections,
 # through the SDK) and asserts destroy FAILS on it, naming the protection,
 # with the record still live and still in state; Phase 3b lifts it and
@@ -1346,6 +1351,76 @@ if [ "${SWAP_RECORD_ID}" != "${EXPECTED_SWAP_RECORD_ID}" ]; then
   exit 1
 fi
 echo "    OK: state tracks the renamed records (${A_RECORD_ID}, ${SWAP_RECORD_ID})"
+
+# --- Phases 2.7d-2.7e: --full-wait waits for INSYNC (go-to-k/cdkd#7132) -----
+# A ChangeResourceRecordSets answers PENDING; under --full-wait the deploy
+# polls GetChange until INSYNC (~25-37 s, measured), as CloudFormation does,
+# and the default deploy returns at once with no GetChange (maintainer
+# decision). cdkd logs nothing on a wait that reaches INSYNC, so the signal is
+# the SDK call log (CDKD_SDK_CALL_LOG: one JSON line of per-command counts per
+# cdkd process), with ChangeResourceRecordSets as the positive control that
+# the log sees the change each deploy sent.
+INSYNC_DIR="$(mktemp -d -t cdkd-route53-7132.XXXXXX)"
+sdk_calls() { # usage: sdk_calls <call log> <Client.Command>
+  jq -s --arg k "$2" '[.[].counts[$k] // 0] | add // 0' "$1"
+}
+insync_deploy() { # usage: insync_deploy <phase> <rename modes> <extra deploy flag or ""> <expected value>
+  local calls="${INSYNC_DIR}/$1-calls.jsonl" log="${INSYNC_DIR}/$1.log" rc changes gets records value
+  set +e
+  # shellcheck disable=SC2086 # $3 is one optional flag
+  CDKD_SDK_CALL_LOG="${calls}" CDKD_TEST_RENAME="$2" node "${LOCAL_DIST}" deploy "${STACK}" \
+    --state-bucket "${STATE_BUCKET}" \
+    --region "${REGION}" \
+    --yes $3 >"${log}" 2>&1
+  rc=$?
+  set -e
+  cat "${log}"
+  if [ "${rc}" -ne 0 ]; then
+    echo "FAIL [$1]: the deploy failed (rc=${rc}, log above)" >&2
+    exit 1
+  fi
+  if [ ! -s "${calls}" ]; then
+    echo "FAIL [$1]: the SDK call log ${calls} was not written; CDKD_SDK_CALL_LOG did not take effect" >&2
+    exit 1
+  fi
+  changes=$(sdk_calls "${calls}" Route53Client.ChangeResourceRecordSetsCommand)
+  gets=$(sdk_calls "${calls}" Route53Client.GetChangeCommand)
+  if [ "${changes}" -lt 1 ]; then
+    echo "FAIL [$1]: the call log records no ChangeResourceRecordSets, so the GetChange count proves nothing (the PipeRecord value change was not sent)" >&2
+    cat "${calls}" >&2
+    exit 1
+  fi
+  # Read right after the deploy returned.
+  records=$(aws route53 list-resource-record-sets --hosted-zone-id "${ZONE_ID}" --region "${REGION}" --output json) || return 1
+  value=$(printf '%s' "${records}" | jq -r --arg n "${PIPE_AWS_NAME}" '[.ResourceRecordSets[] | select(.Name == $n and .Type == "A") | .ResourceRecords[].Value] | join(",")')
+  if [ "${value}" != "$4" ]; then
+    echo "FAIL [$1]: PipeRecord reads '${value}' right after the deploy, expected '$4'" >&2
+    exit 1
+  fi
+  INSYNC_GETS="${gets}"
+  INSYNC_LOG="${log}"
+}
+echo "==> Phase 2.7d: PipeRecord value change under --full-wait waits for INSYNC (go-to-k/cdkd#7132)"
+insync_deploy 2.7d name,swap,insync --full-wait 198.51.100.10
+if [ "${INSYNC_GETS}" -lt 1 ]; then
+  echo "FAIL [2.7d]: the --full-wait deploy sent no GetChange; it returned before the change reached INSYNC" >&2
+  exit 1
+fi
+# The wait warns (and the deploy still succeeds) when it gives up: poll cap,
+# resource timeout or a failed read. None may have happened.
+if grep -E 'The Route 53 change for .*(INSYNC|could not be read)' "${INSYNC_LOG}" >&2; then
+  echo "FAIL [2.7d]: the --full-wait deploy gave up waiting for INSYNC (line above)" >&2
+  exit 1
+fi
+echo "    OK [2.7d]: --full-wait polled GetChange ${INSYNC_GETS} time(s) and returned with the change live"
+echo "==> Phase 2.7e: the same change under the default wait sends no GetChange (go-to-k/cdkd#7132)"
+insync_deploy 2.7e name,swap,insync,insync2 "" 198.51.100.11
+if [ "${INSYNC_GETS}" != "0" ]; then
+  echo "FAIL [2.7e]: the default deploy sent ${INSYNC_GETS} GetChange call(s); INSYNC is waited for under --full-wait only" >&2
+  exit 1
+fi
+echo "    OK [2.7e]: the default deploy returned with the change live and no GetChange"
+rm -rf "${INSYNC_DIR}"
 
 # --- Phase 3: destroy -------------------------------------------------
 # Issue #6549: protect the renamed A record first. Route 53 refuses its DELETE

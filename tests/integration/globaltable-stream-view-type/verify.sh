@@ -6,8 +6,12 @@
 #   1. deploy NEW_IMAGE with a Lambda consumer -> the mapping reads the stream
 #   2. NEW_AND_OLD_IMAGES                      -> a new stream arn, the
 #      mapping moved onto it (issue #6999), state records it, drift clean
-#   3. destroy                                 -> table, mapping, function
-#      and state gone
+#   2b. Kinesis precision MILLISECOND -> MICROSECOND (go-to-k/cdkd#7132) ->
+#      the destination reads ACTIVE with MICROSECOND right after the deploy
+#   2c. back to MILLISECOND at once            -> succeeds (DynamoDB refuses an
+#      update to a destination still UPDATING) and reads ACTIVE MILLISECOND
+#   3. destroy                                 -> table, mapping, function,
+#      Kinesis stream and state gone
 
 set -euo pipefail
 
@@ -47,6 +51,7 @@ cd "$(dirname "$0")"
 STACK="CdkdGlobalTableStreamViewType"
 TABLE="CdkdGlobalTableStreamViewType"
 CONSUMER="cdkd-gt-stream-view-type-consumer"
+KINESIS_STREAM="cdkd-gt-stream-view-type-7132"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
@@ -58,6 +63,7 @@ cleanup() {
   [ -x "${LOCAL_DIST}" ] && node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   aws dynamodb delete-table --table-name "${TABLE}" --region "${REGION}" >/dev/null 2>&1 || true
   aws lambda delete-function --function-name "${CONSUMER}" --region "${REGION}" >/dev/null 2>&1 || true
+  aws kinesis delete-stream --stream-name "${KINESIS_STREAM}" --enforce-consumer-deletion --region "${REGION}" >/dev/null 2>&1 || true
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -73,6 +79,7 @@ trap '(exit 143); cleanup; exit 143' TERM
 [ -d node_modules ] || npm install
 echo "==> Pre-run cleanup"; cleanup
 aws dynamodb wait table-not-exists --table-name "${TABLE}" --region "${REGION}"
+aws kinesis wait stream-not-exists --stream-name "${KINESIS_STREAM}" --region "${REGION}"
 
 view_type() {
   aws dynamodb describe-table --table-name "${TABLE}" --region "${REGION}" \
@@ -136,8 +143,36 @@ CDKD_TEST_UPDATE=viewtype node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "
 [ "${DRIFT_RC}" -eq 0 ] || { cat "${LOG_DIR}/drift.log" >&2; echo "FAIL: Phase 2: drift exited ${DRIFT_RC}, expected 0 (clean)" >&2; exit 1; }
 echo "    OK: drift clean"
 
+# --- Phases 2b-2c: Kinesis precision updates settle (go-to-k/cdkd#7132) -----
+# UpdateKinesisStreamingDestination leaves the destination UPDATING for
+# minutes (CloudFormation's update took ~137 s, measured), and DynamoDB
+# refuses another update until it is ACTIVE. The update now waits, so ONE
+# read right after each deploy returns must show ACTIVE with the new
+# precision, and 2c, sent the moment 2b returns, must succeed.
+kinesis_destination() { # -> "<status>|<precision>" of the one destination
+  local out
+  out=$(aws dynamodb describe-kinesis-streaming-destination --table-name "${TABLE}" --region "${REGION}" \
+    --query 'KinesisDataStreamDestinations[*].[DestinationStatus, ApproximateCreationDateTimePrecision]' \
+    --output text) || return 1
+  printf '%s' "${out}" | tr '\t' '|'
+}
+P2B_BEFORE="$(kinesis_destination)" || { echo "FAIL: Phase 2b: describe-kinesis-streaming-destination failed" >&2; exit 1; }
+[ "${P2B_BEFORE}" = "ACTIVE|MILLISECOND" ] || { echo "FAIL: Phase 2b premise: the destination reads '${P2B_BEFORE}', expected ACTIVE|MILLISECOND" >&2; exit 1; }
+echo "==> Phase 2b: Kinesis precision MILLISECOND -> MICROSECOND (go-to-k/cdkd#7132)"
+CDKD_TEST_UPDATE=viewtype,micro node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+P2B_AFTER="$(kinesis_destination)" || { echo "FAIL: Phase 2b: describe-kinesis-streaming-destination failed" >&2; exit 1; }
+[ "${P2B_AFTER}" = "ACTIVE|MICROSECOND" ] || { echo "FAIL: Phase 2b: right after the deploy returned the destination reads '${P2B_AFTER}', expected ACTIVE|MICROSECOND (the update returned before it settled)" >&2; exit 1; }
+echo "    OK: Phase 2b: the destination read ACTIVE|MICROSECOND right after the deploy"
+echo "==> Phase 2c: back to MILLISECOND at once (go-to-k/cdkd#7132)"
+CDKD_TEST_UPDATE=viewtype,micro,back node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+P2C_AFTER="$(kinesis_destination)" || { echo "FAIL: Phase 2c: describe-kinesis-streaming-destination failed" >&2; exit 1; }
+[ "${P2C_AFTER}" = "ACTIVE|MILLISECOND" ] || { echo "FAIL: Phase 2c: right after the deploy returned the destination reads '${P2C_AFTER}', expected ACTIVE|MILLISECOND" >&2; exit 1; }
+echo "    OK: Phase 2c: the immediate second update succeeded and read ACTIVE|MILLISECOND"
+
 echo "==> Phase 3: destroy"
-CDKD_TEST_UPDATE=viewtype node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
+CDKD_TEST_UPDATE=viewtype,micro,back node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 aws dynamodb wait table-not-exists --table-name "${TABLE}" --region "${REGION}"
 assert_gone "table ${TABLE} remains" aws dynamodb describe-table --table-name "${TABLE}" --region "${REGION}"
 assert_gone "function ${CONSUMER} remains" aws lambda get-function --function-name "${CONSUMER}" --region "${REGION}"
@@ -151,7 +186,14 @@ for _ in $(seq 1 24); do
 done
 [ -n "${MAPPING_GONE}" ] || { echo "FAIL: event source mapping ${ESM_UUID} still exists ~2 min after destroy" >&2; exit 1; }
 assert_gone "state remains" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
-echo "    OK: table, mapping, function and state gone"
+# Kinesis deletes asynchronously: DELETING right after the destroy is a delete
+# in progress, anything else a leak.
+if ! gone_probe aws kinesis describe-stream-summary --stream-name "${KINESIS_STREAM}" --region "${REGION}"; then
+  KINESIS_STATUS="$(aws kinesis describe-stream-summary --stream-name "${KINESIS_STREAM}" --region "${REGION}" \
+    --query 'StreamDescriptionSummary.StreamStatus' --output text 2>&1)" || KINESIS_STATUS="<describe failed: ${KINESIS_STATUS}>"
+  [ "${KINESIS_STATUS}" = "DELETING" ] || { echo "FAIL: Kinesis stream ${KINESIS_STREAM} is '${KINESIS_STATUS}' after destroy, expected gone or DELETING" >&2; exit 1; }
+fi
+echo "    OK: table, mapping, function, Kinesis stream and state gone"
 trap - EXIT INT TERM
 rm -rf "${LOG_DIR}"
 echo ""

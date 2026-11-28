@@ -144,6 +144,30 @@ export class Ec2InstanceStack extends cdk.Stack {
     // Resolve the Amazon Linux 2023 AMI for this stack's region.
     const ami = ec2.MachineImage.latestAmazonLinux2023().getImage(this).imageId;
 
+    // Issue #5630 (fifth slice): the SsmInstance5630 role and profile (see
+    // that instance below). Declared here because the go-to-k/cdkd#7132 arm
+    // gives the main instance this profile too.
+    const ssmRole = new iam.Role(this, 'SsmRole5630', {
+      assumedBy: new iam.ServicePrincipal('ec2.amazonaws.com'),
+      description: 'cdkd ec2-instance integ (issue #5630): the SsmAssociations instance role',
+    });
+    const ssmProfile = new iam.CfnInstanceProfile(this, 'SsmProfile5630', {
+      roles: [ssmRole.roleName],
+    });
+    // go-to-k/cdkd#7132 (verify.sh Phases 1p-1q): a second profile over the
+    // same role, always declared (created at Phase 0, long propagated before
+    // Phase 1q replaces the main instance's association with it).
+    const asyncProfile = new iam.CfnInstanceProfile(this, 'AsyncProfile7132', {
+      roles: [ssmRole.roleName],
+    });
+    // go-to-k/cdkd#7132: `on` (Phase 1p) turns Monitoring on, changes the hop
+    // limit 3 -> 4 and associates SsmProfile5630; `swap` (Phase 1q) turns
+    // Monitoring off, the hop limit 4 -> 5 and replaces the association with
+    // AsyncProfile7132. Each call answers a transitional state, which the
+    // update now waits out, so verify.sh reads the settled values right after
+    // the deploy returns.
+    const asyncMode = process.env.CDKD_TEST_ASYNC_7132;
+
     // Raw L1 instance — emit only cdkd-handled top-level props so the resource
     // stays on the SDK provider path (see class doc above).
     const instance = new ec2.CfnInstance(this, 'Instance', {
@@ -211,6 +235,18 @@ export class Ec2InstanceStack extends cdk.Stack {
             // T-family burstable CPU credit mode. `standard` is non-default
             // for t3 (whose default is `unlimited`), for the same reason.
             creditSpecification: { cpuCredits: 'standard' },
+          }),
+      // go-to-k/cdkd#7132 (after the removal spread, so it wins): see asyncMode.
+      ...(asyncMode === undefined
+        ? {}
+        : {
+            monitoring: asyncMode === 'on',
+            metadataOptions: {
+              httpTokens: 'required',
+              httpEndpoint: 'enabled',
+              httpPutResponseHopLimit: asyncMode === 'on' ? 4 : 5,
+            },
+            iamInstanceProfile: asyncMode === 'on' ? ssmProfile.ref : asyncProfile.ref,
           }),
       // Dedicated EBS throughput. go-to-k/cdkd#7023: Phase 1h turns it off in
       // place, sharing the InstanceType stop (CloudFormation stops and starts
@@ -491,13 +527,6 @@ export class Ec2InstanceStack extends cdk.Stack {
       throw new Error('CDKD_TEST_LICENSE_ARN is required (verify.sh sets it; issue #5630)');
     }
     const ssmMode = process.env.CDKD_TEST_SSM_5630;
-    const ssmRole = new iam.Role(this, 'SsmRole5630', {
-      assumedBy: new iam.ServicePrincipal('ec2.amazonaws.com'),
-      description: 'cdkd ec2-instance integ (issue #5630): the SsmAssociations instance role',
-    });
-    const ssmProfile = new iam.CfnInstanceProfile(this, 'SsmProfile5630', {
-      roles: [ssmRole.roleName],
-    });
     const ssmCommand =
       ssmMode === undefined
         ? 'echo cdkd-5630-a'
@@ -526,6 +555,14 @@ export class Ec2InstanceStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'SsmInstanceId', {
       value: ssmInstance.ref,
       description: 'The instance with LicenseSpecifications and SsmAssociations (issue #5630)',
+    });
+    new cdk.CfnOutput(this, 'SsmProfileArn', {
+      value: ssmProfile.attrArn,
+      description: 'The profile Phase 1p associates with the main instance (go-to-k/cdkd#7132)',
+    });
+    new cdk.CfnOutput(this, 'AsyncProfileArn', {
+      value: asyncProfile.attrArn,
+      description: 'The profile Phase 1q swaps the main instance to (go-to-k/cdkd#7132)',
     });
 
     // Issue #5630 (final slice): an instance with Nitro Enclaves enabled.
