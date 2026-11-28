@@ -155,12 +155,16 @@ For each such record, it replaces every string value in `properties`,
 `observedProperties` and `attributes` with `***`, at any depth, and records
 those positions as `NoEcho` positions. It does not change keys, numbers,
 booleans, empty strings, a whole `{{resolve:...}}` reference, the resource
-type, the physical id or the logical id. It touches no live record and no
+type, the physical id, the logical id, or the AWS-minted id attribute (such as
+an IAM role's `RoleId`) that cdkd checks before it deletes a resource by
+name. It touches no live record and no
 record scrub could position. It also masks an attempted item name the record
 built from one of those values. The cost: those values are gone from state,
-so a later adoption of the record compares and re-sends without them. A custom
-resource's `Delete` handler would receive `***`, so cdkd skips that delete
-with a warning and keeps the record. With `--dry-run`, it prints how many values it would mask in
+so a later adoption of the record compares and re-sends without them. A
+delete that reads its address or payload from the record's properties (a
+custom resource's `Delete` handler, a Route 53 record set, a Lambda
+permission, and others) is skipped with a warning, and the record is kept
+while the resource stays in AWS. With `--dry-run`, it prints how many values it would mask in
 each record, never a value or a key, and writes nothing.
 
 ### A leftover output key was kept

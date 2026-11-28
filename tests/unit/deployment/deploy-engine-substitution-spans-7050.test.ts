@@ -390,8 +390,7 @@ describe('a NoEcho leaf whose NoEcho is removed is decided by the readback (#705
             if (run === 1) {
               expect((plan?.propertyChanges ?? []).map((pc) => pc.path)).toEqual(['DBName']);
               expect(r.persisted?.properties['DBName']).toBe(`${USERNAME}_${SUFFIX.v}`);
-              // Unmarked: the empty marker of a positioned record (#7194).
-              expect(r.persisted?.noEchoLeaves).toEqual([]);
+              expect(r.persisted?.noEchoLeaves).toBeUndefined();
             } else {
               expect(plan?.changeType).toBe('NO_CHANGE');
             }

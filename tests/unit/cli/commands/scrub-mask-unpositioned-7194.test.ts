@@ -210,6 +210,21 @@ describe('cdkd scrub --mask-unpositioned (go-to-k/cdkd#7194)', () => {
     expect(JSON.stringify(stored())).not.toContain('q9-secret-7194');
   });
 
+  it('keeps the AWS-minted identity attribute a later delete checks', async () => {
+    const role: ResourceState = {
+      physicalId: 'gone-role-7194',
+      resourceType: 'AWS::IAM::Role',
+      properties: { RoleName: 'gone-role-7194', Description: 'q9-secret-7194' },
+      attributes: { RoleId: 'AROAEXAMPLE7194', Arn: 'arn:aws:iam::111122223333:role/x' },
+    };
+    seed({ orphans: [{ logicalId: 'GoneRole', orphanedAt: 1, state: role }] });
+    expect(await run({ maskUnpositioned: true, fail: true })).toBeUndefined();
+    const row = stored().orphans![0]!;
+    expect(row.state.attributes).toEqual({ RoleId: 'AROAEXAMPLE7194', Arn: '***' });
+    expect(row.state.noEchoAttributeNames).toEqual(['Arn']);
+    expect(row.state.properties).toEqual({ RoleName: '***', Description: '***' });
+  });
+
   it('--fail fails over such a record, and passes once --mask-unpositioned masked it', async () => {
     seed({
       superseded: [{ logicalId: 'GoneToo', supersededAt: 2, state: unpositioned() }],

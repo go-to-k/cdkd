@@ -1426,11 +1426,10 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       expect(callsFor(provider.delete, 'Topic')).toHaveLength(0);
       expect(provider.readCurrentState.mock.calls.some((c) => c[1] === 'Topic')).toBe(true);
       // Review round 8 m2: AWS confirmed the value, so the record is rewritten
-      // with it and unmarked (no phantom `***` vs value diff on every run):
-      // positioned with none, the empty marker (go-to-k/cdkd#7194).
+      // with it and unmarked (no phantom `***` vs value diff on every run).
       const topic = lastSaved().resources['Topic']!;
       expect(topic.properties['TopicName']).toBe(TOPIC);
-      expect(topic.noEchoLeaves).toEqual([]);
+      expect(topic.noEchoLeaves).toBeUndefined();
     });
 
     it('migrates a held producer echoing the value and its untouched same-stack reader (spec review)', async () => {

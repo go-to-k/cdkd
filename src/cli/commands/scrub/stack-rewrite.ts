@@ -60,7 +60,7 @@ import {
   noEchoFilledRowParameters,
 } from './noecho.js';
 import { planScrubStoredNoEcho, scrubStoredRecord, storedNoEchoRows } from './noecho-stored.js';
-import { planUnpositionedMasks } from './unpositioned.js';
+import { maskUnpositionedRecord, planUnpositionedMasks } from './unpositioned.js';
 
 /**
  * {@link scrubStack}'s rewrite pass, moved verbatim (go-to-k/cdkd#5835): from
@@ -598,20 +598,19 @@ export async function scrubStackRewritePass({
     for (const [plaintext, expression] of orphanSecrets.get(key) ?? []) {
       needles.set(plaintext, expression);
     }
-    const masked = unpositioned.masked.get(key);
-    if (masked !== undefined) {
-      recordsChanged++;
-      return { ...row, state: masked };
-    }
     // go-to-k/cdkd#7188: what today's template resolves for its logical id.
     const stored = storedInput(row.logicalId, row.state);
-    const scrubbed = scrubStoredRecord(
+    const finished = scrubStoredRecord(
       row.state,
       needles,
       storedNoEcho.byKey.get(key),
       noEchoPublicTokens,
       (record, bag) => finishStored(record, bag, stored)
     );
+    // go-to-k/cdkd#7194: `--mask-unpositioned`, over the record as scrubbed.
+    const scrubbed = unpositioned.masked.has(key)
+      ? maskUnpositionedRecord(finished).record
+      : finished;
     if (JSON.stringify(scrubbed) === JSON.stringify(row.state)) return row;
     recordsChanged++;
     return { ...row, state: withoutLapsedStaleShapeStamp(scrubbed) };

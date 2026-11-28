@@ -27,10 +27,25 @@ const deps = {
   perResourceResolvedType: () => new Map(),
 } as never;
 
-function persist(run: NoEchoRunState, logicalId: string, record: ResourceState): ResourceState {
-  return applyNoEchoPersist(run, deps, logicalId, record, record, undefined, {
-    [logicalId]: record,
-  });
+/** The live record's save (`markEmpty`), or a carried record's (`live: false`). */
+function persist(
+  run: NoEchoRunState,
+  logicalId: string,
+  record: ResourceState,
+  { live = true, templateProps }: { live?: boolean; templateProps?: Record<string, unknown> } = {}
+): ResourceState {
+  return applyNoEchoPersist(
+    run,
+    deps,
+    logicalId,
+    record,
+    record,
+    templateProps,
+    { [logicalId]: record },
+    undefined,
+    false,
+    live
+  );
 }
 
 describe('noEchoLeaves empty marker (go-to-k/cdkd#7194)', () => {
@@ -56,6 +71,23 @@ describe('noEchoLeaves empty marker (go-to-k/cdkd#7194)', () => {
     expect(out.noEchoLeaves).toEqual([['Password']]);
     expect(out.properties).toEqual({ Password: '***', Name: 'n' });
     expect(JSON.stringify(out)).not.toContain('pw-plain-7194');
+  });
+
+  it('a carried record gains no marker: its bag is of another template generation', () => {
+    const run = runWithTemplate();
+    const row: ResourceState = { physicalId: 'p5', resourceType: TYPE, properties: { Name: 'x' } };
+    expect(Object.hasOwn(persist(run, 'Plain', row, { live: false }), 'noEchoLeaves')).toBe(false);
+    // One it already had is kept.
+    const marked = { ...row, noEchoLeaves: [] };
+    expect(persist(run, 'Plain', marked, { live: false }).noEchoLeaves).toEqual([]);
+  });
+
+  it('a live record whose bag this deploy did not write (a failed update) gains no marker', () => {
+    const record: ResourceState = { physicalId: 'p6', resourceType: TYPE, properties: { Name: 'old' } };
+    const out = persist(runWithTemplate(), 'Plain', record, {
+      templateProps: { Name: 'public-name' },
+    });
+    expect(Object.hasOwn(out, 'noEchoLeaves')).toBe(false);
   });
 
   it('a record of a logical id the template no longer declares keeps what it had', () => {

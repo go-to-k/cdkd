@@ -755,8 +755,9 @@ assert_log_has "v11 migration deploy: the physical-id warning names the group" \
 # The negative control stays in the clear.
 assert_eq "v11 migration deploy: ${PLAIN_ID}.properties.Value (ordinary parameter)" \
   "$(state_field ".resources[\"${PLAIN_ID}\"].properties.Value")" "${PLAIN_VALUE}"
-assert_eq "v11 migration deploy: ${PLAIN_ID} has no noEchoLeaves" \
-  "$(state_field ".resources[\"${PLAIN_ID}\"].noEchoLeaves // \"absent\"")" "absent"
+# go-to-k/cdkd#7194: positioned with none, so the empty marker, not absent.
+assert_eq "v11 migration deploy: ${PLAIN_ID} names no noEchoLeaves position (the empty marker)" \
+  "$(jq -c ".resources[\"${PLAIN_ID}\"].noEchoLeaves" "${STATE_FILE}")" '[]'
 assert_eq "v11 migration deploy: ${PLAIN_ID}.attributes.Value (ordinary echo stays readable)" \
   "$(state_field ".resources[\"${PLAIN_ID}\"].attributes.Value // \"<absent>\"")" "${PLAIN_VALUE}"
 assert_eq "v11 migration deploy: ${PLAIN_ID} declares no noEchoAttributeNames" \

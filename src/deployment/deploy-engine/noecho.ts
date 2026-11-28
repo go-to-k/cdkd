@@ -536,8 +536,16 @@ export function withAttemptedItemsMasked<R extends ResourceState>(
  * - `observedProperties` at the same coordinates, through each list's
  *   identity field, or the whole list where none pairs them (review B4);
  * - `attributes` at every declared name, whatever the value's type or length;
- * - both fields are written; an empty `noEchoAttributeNames` is omitted, an
- *   empty `noEchoLeaves` written (go-to-k/cdkd#7194).
+ * - both fields are written, an empty set omitted, except an empty
+ *   `noEchoLeaves` (go-to-k/cdkd#7194): it is the marker that a writer
+ *   positioned THIS bag and found none, so it is written only under
+ *   `markEmpty` (the live record's save) for a bag of today's template
+ *   generation: one this deploy wrote from the template, or an unchanged one
+ *   (no template bag resolved for it, so its stored bag is what today's
+ *   template resolves). A carried orphan or superseded record, a journal's
+ *   previous record or a failed update's kept bag was written by another
+ *   template generation, so today's template proves nothing about it; it
+ *   keeps an empty field it already had, and gains none.
  */
 export function applyNoEchoPersist(
   run: NoEchoRunState,
@@ -548,7 +556,8 @@ export function applyNoEchoPersist(
   templateProps: Record<string, unknown> | undefined,
   resources: Record<string, ResourceState>,
   secrets?: RecordedSecretValues,
-  carried = false
+  carried = false,
+  markEmpty = false
 ): ResourceState {
   scrubbed = withNoEchoItemsMasked(run, deps, logicalId, scrubbed);
   const sources = noEchoPositionSources(run, resources);
@@ -577,10 +586,13 @@ export function applyNoEchoPersist(
         ),
       });
     }
-    // go-to-k/cdkd#7194: an empty set is WRITTEN, as the marker that a v11+
-    // writer evaluated this record and found no position, so `cdkd scrub` can
-    // tell it from a record written before v11 (no field).
-    next.noEchoLeaves = leaves;
+    // go-to-k/cdkd#7194: an empty set is the marker that a writer positioned
+    // this bag and found none, so `cdkd scrub` can tell it from a record
+    // written before v11 (no field); see the conditions above.
+    const sameGeneration =
+      isWrittenFromDeployedTemplate(record.properties) || templateProps === undefined;
+    if (leaves.length > 0 || (markEmpty && sameGeneration)) next.noEchoLeaves = leaves;
+    else if (noEchoLeavesOf(scrubbed)?.length !== 0) delete next.noEchoLeaves;
     // go-to-k/cdkd#4656: an echo-fidelity entry describes a coordinate the
     // record still marks, or nothing.
     const marked = new Set(leaves.map((coordinate) => JSON.stringify(coordinate)));

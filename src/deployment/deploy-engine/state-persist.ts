@@ -309,7 +309,10 @@ export function redactStateForPersist(this: DeployEngine, state: StackState): St
           withNoEchoExactEchoes(this.noEchoRun, logicalId, scrubbed),
           templateProps,
           state.resources,
-          secrets
+          secrets,
+          false,
+          // go-to-k/cdkd#7194: the live record may gain the empty marker.
+          true
         ),
         // go-to-k/cdkd#7158 / #7152: a secret the readback echoed under a key
         // the template lacks, learned from the readback before this save's

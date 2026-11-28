@@ -10,6 +10,7 @@ import {
   noEchoAttributeNamesOf,
   withAttemptedItemsMasked,
 } from '../../../deployment/deploy-engine/noecho.js';
+import { SURVIVOR_IDENTITY_ATTRIBUTES } from '../../../deployment/recorded-identity-attributes.js';
 import type { ResourceState } from '../../../types/state.js';
 import {
   unpositionedMaskDoneNote,
@@ -28,7 +29,8 @@ import {
  * `properties`, `observedProperties` and `attributes`, at any depth, and an
  * attempted item name built from one of the masked `properties` values, as
  * the deploy's `NoEcho` arm masks one. Keys, the type, the physical id and
- * every other field stay as they are.
+ * every other field stay as they are, and so does the AWS-minted identity
+ * attribute a later delete checks (`SURVIVOR_IDENTITY_ATTRIBUTES`).
  *
  * The masked `properties` positions become the record's `noEchoLeaves`, so
  * the record reads as positioned (`--fail` passes) and every reader treats
@@ -36,8 +38,9 @@ import {
  * them joins `observedMaskedLeaves`, and a masked top-level string attribute
  * joins `noEchoAttributeNames`. The cost: those values are gone from state, so
  * a later adoption of the record compares and re-sends without them, and a
- * delete that reads one of them from the record (a custom resource's `Delete`
- * payload) cannot use it.
+ * delete that reads its address or payload from the record's properties (a
+ * custom resource, a Route 53 record set, a Lambda permission, ...) skips
+ * and keeps the record.
  */
 
 /** A leaf the option masks: the same leaves the unverifiable finding counts. */
@@ -109,11 +112,25 @@ export function maskUnpositionedRecord(record: ResourceState): {
     ) as Record<string, unknown>;
   }
   if (record.attributes !== undefined) {
+    // The AWS-minted identity attribute a delete checks before acting by name
+    // (go-to-k/cdkd#6655) stays: it is never a `NoEcho` value, and masking it
+    // would turn that check off.
+    const identity = SURVIVOR_IDENTITY_ATTRIBUTES[record.resourceType];
+    const kept =
+      identity !== undefined && Object.hasOwn(record.attributes, identity)
+        ? record.attributes[identity]
+        : undefined;
     next.attributes = maskStringLeaves(
       record.attributes,
       [],
       attributeLeaves
     ) as typeof record.attributes;
+    if (identity !== undefined && kept !== undefined && next.attributes !== undefined) {
+      next.attributes[identity] = kept;
+      for (let i = attributeLeaves.length - 1; i >= 0; i--) {
+        if (attributeLeaves[i]![0] === identity) attributeLeaves.splice(i, 1);
+      }
+    }
   }
   next.noEchoLeaves = canonicalCoordinates(propertyLeaves).map((coordinate) => [...coordinate]);
   const marked = new Set(next.noEchoLeaves.map((coordinate) => JSON.stringify(coordinate)));
@@ -146,9 +163,12 @@ export function maskUnpositionedRecord(record: ResourceState): {
  * records `planScrubStoredNoEcho` reported as unverifiable:
  *
  * - without the option, each is warned about, naming the option, and counted;
- * - with it, each is masked (`masked`, by row key) and no longer counted,
- *   except under `dryRun`, where nothing is written: the counts are printed
- *   and the record still counts, since state still holds it unmasked.
+ * - with it, each row key joins `masked` (the rewrite masks that record AFTER
+ *   its ordinary stored-record scrub, so a secret attribute key that scrub
+ *   drops is dropped here too) and is no longer counted, except under
+ *   `dryRun`, where nothing is written: the counts are printed and the record
+ *   still counts, since state still holds it unmasked. The counts are read
+ *   off the record as stored.
  */
 export function planUnpositionedMasks(
   rows: readonly StoredNoEchoRow[],
@@ -156,8 +176,8 @@ export function planUnpositionedMasks(
   opts: { readonly dryRun: boolean; readonly maskUnpositioned?: boolean | undefined },
   logger: { warn(message: string): void; info(message: string): void },
   shownStack: string
-): { masked: Map<string, ResourceState>; unverifiable: number } {
-  const masked = new Map<string, ResourceState>();
+): { masked: Set<string>; unverifiable: number } {
+  const masked = new Set<string>();
   if (opts.maskUnpositioned !== true) {
     for (const record of unverifiable) {
       logger.warn(unverifiableNoEchoRecordWarning(shownStack, record));
@@ -169,7 +189,7 @@ export function planUnpositionedMasks(
     const row = byKey.get(record.key);
     if (row === undefined) continue;
     const plan = maskUnpositionedRecord(row.state);
-    masked.set(record.key, plan.record);
+    masked.add(record.key);
     if (opts.dryRun) logger.info(unpositionedMaskPlanNote(shownStack, record, plan.counts));
     else logger.info(unpositionedMaskDoneNote(shownStack, record, plan.counts));
   }
