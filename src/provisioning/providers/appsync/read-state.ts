@@ -236,7 +236,11 @@ export async function readGraphQLSchema(
  * body is what was deployed; an object overwritten at a mutable key and then
  * applied out of band reads as declared (CloudFormation does not see that
  * either). A template declaring both `Definition` and `DefinitionS3Location`
- * deploys the inline one, so it is left to the inline rule.
+ * deploys the inline one, so it is left to the inline rule. A stale baseline
+ * beside an out-of-band change (recorded v1, declared v2, live v3) is not
+ * healed, since the live SDL is not the declared body: `drift --revert` then
+ * sends the recorded v1, as it does for any baseline it cannot tell from an
+ * accepted one.
  */
 export async function canonicalizeDriftPair(
   this: AppSyncProvider,
