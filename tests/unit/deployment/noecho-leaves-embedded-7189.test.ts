@@ -86,6 +86,17 @@ describe('noEchoCoordinatesOf: embedded declared attributes (go-to-k/cdkd#7189)'
     ).toEqual([]);
   });
 
+  it('positions a whole list whose elements do not pair, when the bag holds it wholly as the mask', () => {
+    const list = { Hosts: [join, { Ref: 'AWS::NoValue' }] };
+    const coordinates = (maskedAt: unknown): unknown =>
+      noEchoCoordinatesOf(list, { Hosts: ['postgres://u:s3cr3t-value@db'] }, SOURCES, undefined, {
+        maskedAt,
+        only: true,
+      });
+    expect(coordinates({ Hosts: [SECRET_MASK] })).toEqual([['Hosts']]);
+    expect(coordinates({ Hosts: ['postgres://u:s3cr3t-value@db'] })).toEqual([]);
+  });
+
   it('does not position an embedding leaf masked for a reason that reads no declared attribute', () => {
     expect(
       noEchoCoordinatesOf({ Other: { 'Fn::Join': ['', ['a', { 'Fn::GetAtt': ['Cr', 'Public'] }]] } }, {

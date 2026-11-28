@@ -191,10 +191,7 @@ export function noEchoCoordinatesOf(
     getAttReadsNoEcho(node['Fn::GetAtt'], sources);
   // `masked` is the persisted bag's node at the same path, walked alongside.
   const embedsMasked = (node: unknown, masked: unknown): boolean =>
-    masked !== undefined &&
-    sources.attributeIsNoEcho !== undefined &&
-    isWhollyMask(masked) &&
-    readsNoEchoSource(node, sources);
+    masked !== undefined && isWhollyMask(masked) && readsNoEchoSource(node, sources);
   // A leaf a parameter or a bare declared `GetAtt` positions, else one the
   // containment rule masked (`embedsMasked`).
   const pushIfReads = (

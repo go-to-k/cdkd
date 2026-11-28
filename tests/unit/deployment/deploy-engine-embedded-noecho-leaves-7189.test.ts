@@ -347,6 +347,42 @@ describe('DeployEngine - a leaf EMBEDDING a NoEcho custom-resource value is posi
     expect(param.noEchoLeaves).toEqual([['Value']]);
   });
 
+  it('adds the coordinate to a record that already names others, on a deploy that does not touch it', async () => {
+    const prior = priorState({ noEchoLeaves: [['Pass']] });
+    prior.state.resources['Param']!.properties['Pass'] = SECRET_MASK;
+    mockStateBackend.getState.mockResolvedValue(prior);
+    mockDiffCalculator.calculateDiff.mockResolvedValue(
+      new Map<string, ResourceChange>([
+        [
+          'Cr',
+          {
+            logicalId: 'Cr',
+            changeType: 'NO_CHANGE',
+            resourceType: 'Custom::Thing',
+            desiredProperties: CR_PROPS,
+            currentProperties: CR_PROPS,
+          },
+        ],
+        [
+          'Param',
+          {
+            logicalId: 'Param',
+            changeType: 'NO_CHANGE',
+            resourceType: 'AWS::SSM::Parameter',
+            desiredProperties: PARAM_PROPS,
+            currentProperties: prior.state.resources['Param']!.properties,
+          },
+        ],
+      ])
+    );
+
+    await makeEngine().deploy(STACK, template);
+
+    const param = savedState().resources['Param']!;
+    expect(param.properties['Description']).toBe(PUBLIC_DESCRIPTION);
+    expect(param.noEchoLeaves).toEqual([['Pass'], ['Value']]);
+  });
+
   describe('a record carrying the coordinate, on a deploy where the handler re-ran', () => {
     function bothUpdate(): Map<string, ResourceChange> {
       return new Map<string, ResourceChange>([
