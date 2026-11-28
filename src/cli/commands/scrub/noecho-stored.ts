@@ -112,9 +112,12 @@ function holdsUnmaskedLeaf(value: unknown): boolean {
  * Fn::If is read on both branches (`sources` carries no condition verdicts):
  * the verdicts that wrote an old record are unknown, and masking the other
  * branch's position is the safe direction for state at rest. For the same
- * reason a coordinate positioned only through an `Fn::If` is no migration
- * needle: its value may be the other branch's public literal, and a needle
- * would mask that literal's copies elsewhere in the record by value.
+ * reason a TEMPLATE coordinate positioned only through an `Fn::If` is no
+ * migration needle when its value is a string literal of some `Fn::If`
+ * branch (the live record's positions, taken as they are, stay needles): the
+ * value may be the other branch's public literal, and a needle would mask
+ * that literal's copies elsewhere in the record by value. A value no branch
+ * spells out (both branches `NoEcho`, or one `AWS::NoValue`) stays a needle.
  */
 export function planScrubStoredNoEcho(
   state: Pick<StackState, 'resources'>,
@@ -149,7 +152,7 @@ export function planScrubStoredNoEcho(
     const liveLeaves =
       live?.resourceType === record.resourceType ? noEchoLeavesOf(live) : undefined;
     let leaves: NoEchoCoordinate[] | undefined;
-    let needles: Set<string> | undefined;
+    let needleAt: ((coordinate: NoEchoCoordinate, value: unknown) => boolean) | undefined;
     if (own !== undefined) {
       leaves = canonicalCoordinates(own);
     } else if (definition?.Type === record.resourceType) {
@@ -158,17 +161,22 @@ export function planScrubStoredNoEcho(
           maskedAt: record.properties,
         })
       );
-      needles = new Set(
-        canonicalCoordinates(
-          noEchoCoordinatesOf(
-            withoutFnIf(definition.Properties),
-            record.properties,
-            needleSources,
-            undefined,
-            { maskedAt: record.properties }
-          )
-        ).map((coordinate) => JSON.stringify(coordinate))
-      );
+      const keysFrom = (properties: unknown): Set<string> =>
+        new Set(
+          canonicalCoordinates(
+            noEchoCoordinatesOf(properties, record.properties, needleSources, undefined, {
+              maskedAt: record.properties,
+            })
+          ).map((coordinate) => JSON.stringify(coordinate))
+        );
+      const unconditional = keysFrom(withoutFnIf(definition.Properties));
+      const anyBranch = keysFrom(definition.Properties);
+      const literals = fnIfStringLiterals(definition.Properties);
+      needleAt = (coordinate, value) => {
+        const key = JSON.stringify(coordinate);
+        if (unconditional.has(key)) return true;
+        return anyBranch.has(key) && !(typeof value === 'string' && literals.has(value));
+      };
     } else if (liveLeaves !== undefined) {
       leaves = canonicalCoordinates(liveLeaves);
     }
@@ -202,7 +210,7 @@ export function planScrubStoredNoEcho(
       stored.push({
         coordinate,
         value,
-        needle: needles === undefined || needles.has(JSON.stringify(coordinate)),
+        needle: needleAt === undefined || needleAt(coordinate, value),
       });
     }
     byKey.set(row.key, { leaves, stored, attributeNames });
@@ -218,6 +226,24 @@ export function planScrubStoredNoEcho(
     }
   }
   return { byKey, changesAny, unverifiable };
+}
+
+/** Every string literal under an `Fn::If` branch in `node`. */
+function fnIfStringLiterals(node: unknown, out = new Set<string>(), under = false): Set<string> {
+  if (typeof node === 'string') {
+    if (under) out.add(node);
+  } else if (Array.isArray(node)) {
+    for (const item of node) fnIfStringLiterals(item, out, under);
+  } else if (node !== null && typeof node === 'object') {
+    for (const [key, inner] of Object.entries(node as Record<string, unknown>)) {
+      if (key === 'Fn::If' && Array.isArray(inner)) {
+        for (const branch of inner.slice(1)) fnIfStringLiterals(branch, out, true);
+      } else {
+        fnIfStringLiterals(inner, out, under);
+      }
+    }
+  }
+  return out;
 }
 
 /** The per-record warning for an {@link UnverifiableNoEchoRecord}. Names no value. */
