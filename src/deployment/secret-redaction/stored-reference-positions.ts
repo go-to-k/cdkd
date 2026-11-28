@@ -1,5 +1,5 @@
 import { isPlainObject } from './rules.js';
-import { isWhollyMask, maskAtCoordinates, replaceAtCoordinates } from './noecho-leaves.js';
+import { maskAtCoordinates, replaceAtCoordinates } from './noecho-leaves.js';
 import { mentionsMask } from './recorded-secrecy.js';
 import { dynamicReferenceTokens } from './redact-path/reference-tokens.js';
 import {
@@ -27,10 +27,12 @@ import {
  *
  * - an element exactly one readback element corroborates ({@link corroborates})
  *   is paired with it;
- * - otherwise every readback element that could hold the value (the
- *   corroborating ones, else all) is masked WHOLE, unless the readback list
- *   already holds the reference as often as the recorded list does (the record
- *   was redacted when it was written);
+ * - otherwise (an identity field that pairs nothing included) every readback
+ *   element that could hold the value (the corroborating ones, else all) is
+ *   entered along the rest of the coordinate and the leaf there is masked,
+ *   unless the readback list already holds the reference as often as the
+ *   recorded list does (the record was redacted when it was written). An
+ *   element lacking that leaf holds no copy and is kept;
  * - at a paired leaf, a readback string that lines up with the recorded text
  *   gets that text back; any other value that is neither the reference, the
  *   mask nor `null` is masked.
@@ -54,14 +56,15 @@ export function withStoredReferencePositionsMasked<R extends OffTemplateEchoReco
       live: unknown,
       recorded: unknown,
       depth: number,
-      path: (string | number)[]
+      path: (string | number)[],
+      ambiguous: boolean
     ): void => {
       if (live === undefined || live === null) return;
       if (depth === coordinate.length) {
         if (typeof live === 'string') {
           if (live === text || mentionsMask(live) || dynamicReferenceTokens(live).length > 0)
             return;
-          if (plaintextFor(text, live) !== undefined) {
+          if (!ambiguous && plaintextFor(text, live) !== undefined) {
             restore.push({ coordinate: path, value: text });
             return;
           }
@@ -72,36 +75,44 @@ export function withStoredReferencePositionsMasked<R extends OffTemplateEchoReco
       const segment = coordinate[depth]!;
       if (typeof segment === 'string') {
         if (!isPlainObject(live) || !Object.hasOwn(live, segment)) return;
-        walk(live[segment], isPlainObject(recorded) ? recorded[segment] : undefined, depth + 1, [
-          ...path,
-          segment,
-        ]);
+        walk(
+          live[segment],
+          isPlainObject(recorded) ? recorded[segment] : undefined,
+          depth + 1,
+          [...path, segment],
+          ambiguous
+        );
         return;
       }
       if (!Array.isArray(live) || !Array.isArray(recorded)) return;
       const element = recorded[segment];
       const pairing = listPairing(live, recorded, isSecretReference);
-      if (pairing !== undefined) {
-        const index = pairing(segment);
-        if (index !== undefined) walk(live[index], element, depth + 1, [...path, index]);
+      // An identity field that pairs no element (AWS normalised its value)
+      // falls through to the corroboration below, never to a kept plaintext.
+      const paired = pairing?.(segment);
+      if (paired !== undefined) {
+        walk(live[paired], element, depth + 1, [...path, paired], ambiguous);
         return;
       }
       const corroborating = live.flatMap((item, i) =>
         corroborates(item, element, isSecretReference) ? [i] : []
       );
       if (corroborating.length === 1) {
-        walk(live[corroborating[0]!], element, depth + 1, [...path, corroborating[0]!]);
+        const only = corroborating[0]!;
+        walk(live[only], element, depth + 1, [...path, only], ambiguous);
         return;
       }
       // Ambiguous: the readback list already holding the reference as often
       // as the recorded one does is a record redacted when it was written.
       if (holdingCount(live, tokens) >= holdingCount(recorded, tokens)) return;
+      // Each element that could hold the value is entered along the REST of
+      // the coordinate, and only the leaf there is masked: an element lacking
+      // that leaf (AWS omits a write-only secret from its readback) holds no
+      // copy, and masking it whole would replace a correct baseline.
       const pool = corroborating.length > 0 ? corroborating : live.map((_, i) => i);
-      for (const i of pool) {
-        if (holdingCount(live[i], tokens) === 0 && !isWhollyMask(live[i])) mask.push([...path, i]);
-      }
+      for (const i of pool) walk(live[i], element, depth + 1, [...path, i], true);
     };
-    walk(observed, properties, 0, []);
+    walk(observed, properties, 0, [], false);
   }
   if (restore.length === 0 && mask.length === 0) return record;
   return {

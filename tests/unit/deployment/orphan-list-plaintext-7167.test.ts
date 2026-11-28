@@ -137,11 +137,62 @@ describe('an orphan / superseded record holding list-positioned plaintext (go-to
     });
     const text = JSON.stringify(saved);
     expect(text).not.toContain(plain);
+    // Only the leaf at the reference's position, in each element that has one.
     expect(saved.orphans![0]!.state.observedProperties!['Users']).toEqual([
-      { Password: '***', Name: '***' },
+      { Password: '***', Name: 'b' },
       { Password: '***' },
       { Name: 'B' },
     ]);
+  });
+
+  const users = (properties: unknown[], observed: unknown[]): unknown =>
+    persist({
+      physicalId: 'o-7167',
+      resourceType: TYPE,
+      properties: { Users: properties },
+      observedProperties: { Users: observed },
+    }).orphans![0]!.state.observedProperties!['Users'];
+
+  it('keeps an element whose readback omits the write-only secret (nothing pairs)', () => {
+    const [ref] = REFS['ssm-secure'];
+    const observed = [
+      { Username: 'u2', ConsoleAccess: true },
+      { Username: 'u1', ConsoleAccess: false },
+    ];
+    expect(
+      users(
+        [
+          { Username: 'u1', Password: ref },
+          { Username: 'u2', Password: ref },
+        ],
+        observed
+      )
+    ).toEqual(observed);
+  });
+
+  it('an identity field AWS normalised still masks the plaintext', () => {
+    const [ref, plain] = REFS['ssm-secure'];
+    const out = users(
+      [{ Name: 'a', Password: ref }, { Name: 'b' }],
+      [{ Name: 'A', Password: plain }, { Name: 'b' }]
+    );
+    expect(JSON.stringify(out)).not.toContain(plain);
+    expect(out).toEqual([{ Name: 'A', Password: '***' }, { Name: 'b' }]);
+  });
+
+  it('masks a paired leaf whose readback does not line up with the recorded text', () => {
+    const [ref, plain] = REFS.secretsmanager;
+    const out = users([{ Url: `x-${ref}-y` }], [{ Url: `X-${plain}-Y` }]);
+    expect(out).toEqual([{ Url: '***' }]);
+  });
+
+  it('masks the one copy left when the reference is recorded twice and redacted once', () => {
+    const [ref, plain] = REFS['ssm-secure'];
+    const out = users(
+      [{ Password: ref }, { Password: ref }],
+      [{ Password: ref }, { Password: plain }, { Other: 'o' }]
+    );
+    expect(out).toEqual([{ Password: ref }, { Password: '***' }, { Other: 'o' }]);
   });
 
   it('a record redacted when it was written is kept as it is, reordered or not', () => {
