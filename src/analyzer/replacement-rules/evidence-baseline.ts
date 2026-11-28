@@ -1,18 +1,20 @@
 /**
- * The spec-replacement candidates nobody has measured yet (go-to-k/cdkd#7070):
+ * The spec-replacement candidates (go-to-k/cdkd#7070) with no single verdict:
  * `@aws-cdk/aws-service-spec` calls each a replacement while the registry
  * schema leaves it mutable, and neither a `REPLACEMENT_EVIDENCE` row nor a
  * hand rule decides it. Each keeps today's in-place update, which fails loudly
  * where AWS refuses the change and loses no data.
  *
- * The spec is not trusted on its own: on #7070, 12 of 14 probed rows updated
- * in place. To settle a row, measure it and move it into `REPLACEMENT_EVIDENCE`
- * as `replace` or `update`. `tests/unit/analyzer/replacement-evidence.test.ts`
- * fails on a candidate with no verdict and no line here, and on a line that is
- * no longer an unsettled candidate. Read by that test and the generator only.
+ * Every row here was measured on go-to-k/cdkd#7083, and its comment says why
+ * neither `replace` nor `update` describes the whole property. The spec is not
+ * trusted on its own: on #7070, 12 of 14 probed rows updated in place. A new
+ * candidate (after a spec update) is measured and recorded in
+ * `REPLACEMENT_EVIDENCE` as `replace` or `update`, or lands here with such a
+ * note. `tests/unit/analyzer/replacement-evidence.test.ts` fails on a
+ * candidate with no verdict and no line here, and on a line that is no longer
+ * an unsettled candidate. Read by that test and the generator only.
  */
 export const UNMEASURED_SPEC_REPLACEMENT_CANDIDATES: ReadonlySet<string> = new Set([
-  'AWS::Batch::ComputeEnvironment#EksConfiguration',
   // Measured on #7083 (Cloud Control): a member change applies in place
   // (SMB MountOptions Version AUTOMATIC -> SMB3), while DataSync refuses an
   // NFS -> SMB switch ("Cannot switch protocol from NFS to SMB"), and only
@@ -25,11 +27,6 @@ export const UNMEASURED_SPEC_REPLACEMENT_CANDIDATES: ReadonlySet<string> = new S
   // ElasticLoadBalancing toggle is left unapplied by CloudFormation too
   // (UPDATE_COMPLETE on the same cluster), and cdkd refuses it (#7099).
   'AWS::EKS::Cluster#KubernetesNetworkConfig',
-  'AWS::EMRServerless::Application#ImageConfiguration',
-  'AWS::EMRServerless::Application#ImageConfiguration.ImageUri',
-  'AWS::EMRServerless::Application#WorkerTypeSpecifications',
-  'AWS::EMRServerless::Application#WorkerTypeSpecifications.*.ImageConfiguration',
-  'AWS::EMRServerless::Application#WorkerTypeSpecifications.*.ImageConfiguration.ImageUri',
   // Members of NodeGroupConfiguration, whose own row is a CloudFormation-
   // measured `replace` (#7100): replacing on it already covers each of them,
   // and a member cannot be compared per element.
@@ -42,16 +39,6 @@ export const UNMEASURED_SPEC_REPLACEMENT_CANDIDATES: ReadonlySet<string> = new S
   // (#7130) and its Enabled member applies in place, so neither verdict
   // describes the whole property.
   'AWS::Elasticsearch::Domain#EncryptionAtRestOptions',
-  'AWS::FSx::FileSystem#WindowsConfiguration.ActiveDirectoryId',
-  'AWS::FSx::FileSystem#WindowsConfiguration.CopyTagsToBackups',
-  'AWS::FSx::FileSystem#WindowsConfiguration.DeploymentType',
-  'AWS::FSx::FileSystem#WindowsConfiguration.PreferredSubnetId',
-  'AWS::FSx::FileSystem#WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DomainName',
-  'AWS::FSx::FileSystem#WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.FileSystemAdministratorsGroup',
-  'AWS::FSx::FileSystem#WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.OrganizationalUnitDistinguishedName',
-  'AWS::KafkaConnect::Connector#ConnectorConfiguration',
-  'AWS::KafkaConnect::Connector#Plugins',
-  'AWS::KafkaConnect::Connector#WorkerConfiguration',
   // Measured on #7083: CloudFormation replaced the channel (new id); Cloud
   // Control refuses CREATE for the type, so cdkd cannot deploy it and no
   // fixture can carry a `replace` row. An element member cannot be compared

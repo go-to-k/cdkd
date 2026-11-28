@@ -14,6 +14,7 @@ export const SPEC_REPLACEMENT_PATHS: ReadonlyMap<
   ReadonlyArray<readonly string[]>
 > = new Map<string, ReadonlyArray<readonly string[]>>([
   ['AWS::AppConfig::ConfigurationProfile', [['Type']]],
+  ['AWS::Batch::ComputeEnvironment', [['EksConfiguration']]],
   ['AWS::ElastiCache::ReplicationGroup', [['NodeGroupConfiguration'], ['NumNodeGroups']]],
   [
     'AWS::Elasticsearch::Domain',
@@ -40,6 +41,21 @@ export const SPEC_REPLACEMENT_PATHS: ReadonlyMap<
       ['OpenZFSConfiguration', 'RootVolumeConfiguration', 'ReadOnly'],
       ['OpenZFSConfiguration', 'RootVolumeConfiguration', 'RecordSizeKiB'],
       ['OpenZFSConfiguration', 'RootVolumeConfiguration', 'UserAndGroupQuotas'],
+      ['WindowsConfiguration', 'ActiveDirectoryId'],
+      ['WindowsConfiguration', 'CopyTagsToBackups'],
+      ['WindowsConfiguration', 'DeploymentType'],
+      ['WindowsConfiguration', 'PreferredSubnetId'],
+      ['WindowsConfiguration', 'SelfManagedActiveDirectoryConfiguration', 'DomainName'],
+      [
+        'WindowsConfiguration',
+        'SelfManagedActiveDirectoryConfiguration',
+        'FileSystemAdministratorsGroup',
+      ],
+      [
+        'WindowsConfiguration',
+        'SelfManagedActiveDirectoryConfiguration',
+        'OrganizationalUnitDistinguishedName',
+      ],
     ],
   ],
   ['AWS::Route53Resolver::ResolverRule', [['DomainName']]],
@@ -48,6 +64,7 @@ export const SPEC_REPLACEMENT_PATHS: ReadonlyMap<
 
 /** `<Type>#<path>` of the rows above that a CloudFormation execution measured replacing (#7100). */
 export const SPEC_REPLACEMENT_CFN_MEASURED: ReadonlySet<string> = new Set([
+  'AWS::Batch::ComputeEnvironment#EksConfiguration',
   'AWS::ElastiCache::ReplicationGroup#NodeGroupConfiguration',
   'AWS::ElastiCache::ReplicationGroup#NumNodeGroups',
   'AWS::Elasticsearch::Domain#ElasticsearchVersion',
@@ -70,6 +87,13 @@ export const SPEC_REPLACEMENT_CFN_MEASURED: ReadonlySet<string> = new Set([
   'AWS::FSx::FileSystem#OpenZFSConfiguration.RootVolumeConfiguration.ReadOnly',
   'AWS::FSx::FileSystem#OpenZFSConfiguration.RootVolumeConfiguration.RecordSizeKiB',
   'AWS::FSx::FileSystem#OpenZFSConfiguration.RootVolumeConfiguration.UserAndGroupQuotas',
+  'AWS::FSx::FileSystem#WindowsConfiguration.ActiveDirectoryId',
+  'AWS::FSx::FileSystem#WindowsConfiguration.CopyTagsToBackups',
+  'AWS::FSx::FileSystem#WindowsConfiguration.DeploymentType',
+  'AWS::FSx::FileSystem#WindowsConfiguration.PreferredSubnetId',
+  'AWS::FSx::FileSystem#WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DomainName',
+  'AWS::FSx::FileSystem#WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.FileSystemAdministratorsGroup',
+  'AWS::FSx::FileSystem#WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.OrganizationalUnitDistinguishedName',
   'AWS::Route53Resolver::ResolverRule#DomainName',
 ]);
 

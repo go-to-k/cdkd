@@ -267,6 +267,20 @@ describe('replacement verdict evidence (go-to-k/cdkd#7024, #7038)', () => {
     ]);
     const long = [['A'.repeat(45)], ['B'.repeat(40)], ['C'.repeat(35)]];
     expect(renderRow('AWS::Batch::ComputeEnvironment', long)).toHaveLength(8);
+    // A path too long for its own line: one segment per line (#7083, FSx
+    // WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.*).
+    const deep = ['W'.repeat(30), 'S'.repeat(40), 'F'.repeat(30)];
+    expect(renderRow('AWS::A::B', [['X', 'Y'], deep])).toEqual([
+      '  [',
+      "    'AWS::A::B',",
+      '    [',
+      "      ['X', 'Y'],",
+      '      [',
+      ...deep.map((s) => `        '${s}',`),
+      '      ],',
+      '    ],',
+      '  ],',
+    ]);
   });
 
   // The skip set is pinned whole: a type dropping out of the snapshot (a

@@ -47,6 +47,10 @@
 #      removal + an Aliases swap (go-to-k/cdkd#5469: drop one, add one,
 #      re-case the kept one). Assert the FileSystemId is UNCHANGED and
 #      the aliases read back as declared.
+#   4b. CDKD_TEST_DEPLOYTYPE_CHANGE=true too (go-to-k/cdkd#7083):
+#       DeploymentType SINGLE_AZ_1 -> SINGLE_AZ_2 shows as a replacement in
+#       cdkd diff, and the deploy refuses it (stateful); the file system and
+#       its deployment type stay.
 #   5. Re-deploy with FSX_AD_ID unset -> the file system is no longer in
 #      the template, so cdkd DELETEs it while the VPC stands. Assert the
 #      file system is GONE (by id AND by the fixture's constant tag).
@@ -541,7 +545,7 @@ fs_aliases() {
 
 # --- Phase 1: deploy the VPC the directory needs ------------------------
 echo "==> Phase 1: deploy the VPC only (FSX_AD_ID unset)"
-env -u CDKD_TEST_UPDATE -u FSX_AD_ID node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_UPDATE -u CDKD_TEST_DEPLOYTYPE_CHANGE -u FSX_AD_ID node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 VPC_ID="$(output_value VpcId)"
@@ -638,7 +642,7 @@ echo "    directory is Active"
 
 # --- Phase 3: deploy the AD-joined Windows file system ------------------
 echo "==> Phase 3: deploy the Windows file system (this takes ~20-30 min)"
-env -u CDKD_TEST_UPDATE FSX_AD_ID="${DIRECTORY_ID}" node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_UPDATE -u CDKD_TEST_DEPLOYTYPE_CHANGE FSX_AD_ID="${DIRECTORY_ID}" node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 FS_ID_P3="$(output_value FileSystemId)"
@@ -759,7 +763,7 @@ echo "    file system routed via SDK provider (provisionedBy=sdk)"
 
 # --- Phase 4: in-place update (maintenance window + tags) ---------------
 echo "==> Phase 4: re-deploy with CDKD_TEST_UPDATE=true (WeeklyMaintenanceStartTime 1:05:00->2:06:00, tag change + removal)"
-CDKD_TEST_UPDATE=true FSX_AD_ID="${DIRECTORY_ID}" node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_DEPLOYTYPE_CHANGE CDKD_TEST_UPDATE=true FSX_AD_ID="${DIRECTORY_ID}" node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 FS_ID_P4="$(output_value FileSystemId)"
@@ -805,12 +809,66 @@ if [ -z "${ALIASES_P4}" ] || [ "${ALIASES_P4}" != "${ALIASES_EXPECTED_P4}" ]; th
 fi
 echo "    DNS aliases updated in place (${ALIASES_P4})"
 
+# --- Phase 4b: a replacing WindowsConfiguration change (#7083) -----------
+# CloudFormation replaced a Windows file system on a DeploymentType change
+# (measured on #7083), so the diff must plan the replacement and the deploy
+# must refuse it: the file system is stateful. Refusal only, never applied.
+# Before the fix the diff planned an update in place and the provider's
+# update() refused it after the fact.
+echo "==> Phase 4b: DeploymentType SINGLE_AZ_1 -> SINGLE_AZ_2 is a replacement, refused without --force-stateful-recreation (#7083)"
+P4B_DIFF_LOG="$(mktemp)"
+# `--fail-on=destructive` is what prints the `<type> <path> <id> will be
+# replaced` line (exit 1); a plain diff only marks the property
+# `[requires replacement]`.
+set +e
+CDKD_TEST_UPDATE=true CDKD_TEST_DEPLOYTYPE_CHANGE=true FSX_AD_ID="${DIRECTORY_ID}" node "${LOCAL_DIST}" diff "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --fail-on=destructive </dev/null >"${P4B_DIFF_LOG}" 2>&1
+P4B_DIFF_RC=$?
+set -e
+P4B_DIFF="$(sed 's/\x1b\[[0-9;]*m//g' "${P4B_DIFF_LOG}")"
+if [ "${P4B_DIFF_RC}" -ne 1 ] \
+  || ! grep -qE 'AWS::FSx::FileSystem .*Fs will be replaced' <<<"${P4B_DIFF}" \
+  || ! grep -qF 'WindowsConfiguration' <<<"${P4B_DIFF}" \
+  || ! grep -qF '[requires replacement]' <<<"${P4B_DIFF}"; then
+  echo "FAIL [phase 4b]: #7083: cdkd diff --fail-on=destructive (exit ${P4B_DIFF_RC}, expected 1) does not show the file system replaced on a DeploymentType change (CloudFormation replaces it). The diff output:" >&2
+  sed 's/^/    /' <<<"${P4B_DIFF}" >&2
+  exit 1
+fi
+P4B_LOG="$(mktemp)"
+set +e
+CDKD_TEST_UPDATE=true CDKD_TEST_DEPLOYTYPE_CHANGE=true FSX_AD_ID="${DIRECTORY_ID}" node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${P4B_LOG}"
+P4B_RC=${PIPESTATUS[0]}
+set -e
+P4B_PLAIN="$(sed 's/\x1b\[[0-9;]*m//g' "${P4B_LOG}")"
+if grep -qF 'UpdateFileSystem cannot change it after creation' <<<"${P4B_PLAIN}"; then
+  echo "FAIL [phase 4b]: #7083: the DeploymentType change was sent as an in-place update (the provider refused it) instead of a planned replacement" >&2
+  exit 1
+fi
+if [ "${P4B_RC}" -eq 0 ]; then
+  echo "FAIL [phase 4b]: #7083: the DeploymentType change deployed without --force-stateful-recreation (the stateful replacement gate did not refuse)" >&2
+  exit 1
+fi
+if ! grep -qF 'Fs (AWS::FSx::FileSystem) requires replacement (immutable property changed: WindowsConfiguration)' <<<"${P4B_PLAIN}" \
+  || ! grep -qF 'CloudFormation was measured replacing it on a WindowsConfiguration.DeploymentType change' <<<"${P4B_PLAIN}" \
+  || ! grep -qF -- '--force-stateful-recreation' <<<"${P4B_PLAIN}"; then
+  echo "FAIL [phase 4b]: #7083: the deploy exited ${P4B_RC} without the stateful refusal naming Fs, WindowsConfiguration, the measured DeploymentType change and --force-stateful-recreation" >&2
+  exit 1
+fi
+FS_ID_P4B="$(output_value FileSystemId)"
+DEPLOY_TYPE_P4B="$(fs_field "${FS_ID_P4}" 'WindowsConfiguration.DeploymentType')"
+if [ "${FS_ID_P4B}" != "${FS_ID_P4}" ] || [ "${DEPLOY_TYPE_P4B}" != "SINGLE_AZ_1" ]; then
+  echo "FAIL [phase 4b]: #7083: the refused deploy changed the file system (id ${FS_ID_P4} -> '${FS_ID_P4B}', DeploymentType '${DEPLOY_TYPE_P4B}')" >&2
+  exit 1
+fi
+echo "    diff shows the replacement; the deploy refused it; ${FS_ID_P4B} stays SINGLE_AZ_1"
+
 # --- Phase 5: delete the file system through cdkd -----------------------
 # Dropping FSX_AD_ID takes the file system out of the template, so cdkd
 # plans a DELETE for it while the VPC stays. This unjoins the domain
 # BEFORE the directory is deleted in phase 6.
 echo "==> Phase 5: re-deploy with FSX_AD_ID unset — cdkd deletes the file system (~10 min)"
-env -u CDKD_TEST_UPDATE -u FSX_AD_ID node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_UPDATE -u CDKD_TEST_DEPLOYTYPE_CHANGE -u FSX_AD_ID node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 # `set -e` would abort on a bare `fs_state` returning 1/2, making the

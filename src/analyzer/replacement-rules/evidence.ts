@@ -27,106 +27,22 @@
  * Read by that test only: nothing on the deploy path imports this module.
  */
 
-/** What kind of evidence a row records. */
-export type ReplacementEvidenceKind =
-  /** A CloudFormation A/B (change set + execution) recorded on `refs`. */
-  | 'cfn-measured'
-  /** Transcribed from CloudFormation's own resource handler, recorded on `refs`. */
-  | 'cfn-handler'
-  /** The CloudFormation template reference's "Update requires" line, quoted on `refs`. */
-  | 'cfn-docs'
-  /** The AWS API cannot apply the change in place (no update member, or it refuses). */
-  | 'aws-api'
-  /**
-   * A Cloud Control update of only this property, recorded on `refs`: it
-   * applied in place under the same identifier (`update`), or Cloud Control
-   * refused it (`replace`). Cloud Control runs the registry handler
-   * CloudFormation runs for the type.
-   */
-  | 'cc-measured'
-  /**
-   * Cloud Control refused a change of this array or map member, recorded on
-   * `refs` (go-to-k/cdkd#7083). A member cannot be compared per element, so
-   * the verdict stays `update`: the deploy fails loudly and loses no data.
-   */
-  | 'element-refused'
-  /**
-   * No Cloud Control probe can reach the change, for the reason in
-   * `unmeasurable` (go-to-k/cdkd#7083). The verdict stays today's `update`.
-   */
-  | 'cannot-probe'
-  /** A nested create-only path the committed fixture lists under the property. */
-  | 'schema-nested'
-  /** A deliberate, safer difference from CloudFormation, decided on `refs`. */
-  | 'deviation'
-  /** The property takes one valid value, so it cannot change. */
-  | 'single-value'
-  /**
-   * cdkd's `update()` refuses the change before any AWS call, naming the
-   * remedy, so the diff's "update" never applies a wrong result.
-   */
-  | 'refused'
-  /**
-   * A MEASURED difference from CloudFormation that the issue in `refs` fixes;
-   * the row changes with that fix.
-   */
-  | 'open-divergence';
+import { FSX_FILE_SYSTEM_EVIDENCE } from './evidence-fsx.ts';
+import {
+  type ReplacementEvidence,
+  cannotProbe,
+  conditional,
+  nested,
+  replace,
+  unmeasurable,
+  update,
+} from './evidence-rows.ts';
 
-/** The verdict a row vouches for: always replace, never, by a predicate, or by a nested create-only path. */
-export type ReplacementVerdict = 'replace' | 'update' | 'conditional' | 'nested';
-
-export interface ReplacementEvidence {
-  /**
-   * Why a `cfn-docs` or `cannot-probe` row was not measured
-   * (go-to-k/cdkd#7048, #7083). Only a `cfn-docs` row may rest on the
-   * CloudFormation reference; every other verdict cites an execution, the
-   * handler, the AWS API or the schema.
-   */
-  readonly unmeasurable?: string;
-  /**
-   * The verdict the evidence supports. The check compares it with cdkd's
-   * current verdict, so flipping a verdict (an entry moved between
-   * `replacementProperties` and `updateableProperties`) needs new evidence.
-   */
-  readonly verdict: ReplacementVerdict;
-  readonly kind: ReplacementEvidenceKind;
-  /** Issues / PRs holding the measurement, quote or decision. */
-  readonly refs: readonly number[];
-  /**
-   * A `cfn-measured` `replace` whose CloudFormation execution went to the
-   * create path and FAILED there on this name property, which the replacement
-   * keeps (go-to-k/cdkd#7126): CloudFormation replaces on the change only
-   * when the name changes too, and otherwise loses no data. The refusal says
-   * so instead of claiming the data is lost there as well.
-   */
-  readonly cfnKeepsName?: string;
-}
-
-const row =
-  (verdict: ReplacementVerdict) =>
-  (kind: ReplacementEvidenceKind, ...refs: number[]): ReplacementEvidence => ({
-    verdict,
-    kind,
-    refs,
-  });
-/** An `update` verdict resting on the reference because no A/B is possible here. */
-const unmeasurable = (why: string, ...refs: number[]): ReplacementEvidence => ({
-  verdict: 'update',
-  kind: 'cfn-docs',
-  refs: [...refs, 7048],
-  unmeasurable: why,
-});
-/** A candidate no probe can reach (go-to-k/cdkd#7083): today's update stays. */
-const cannotProbe = (why: string, ...refs: number[]): ReplacementEvidence => ({
-  verdict: 'update',
-  kind: 'cannot-probe',
-  refs: [...refs, 7083],
-  unmeasurable: why,
-});
-const replace = row('replace');
-const update = row('update');
-const conditional = row('conditional');
-const nested = row('nested');
+export type {
+  ReplacementEvidence,
+  ReplacementEvidenceKind,
+  ReplacementVerdict,
+} from './evidence-rows.ts';
 
 /** Account-level service roles a probe may not create (go-to-k/cdkd#7083). */
 const APPSTREAM_ROLE = cannotProbe(
@@ -864,73 +780,8 @@ export const REPLACEMENT_EVIDENCE: ReadonlyMap<string, ReplacementEvidence> = ne
       "A Cognito work team's pool is the private workforce's, one per account and Region, and UpdateWorkforce cannot change its Cognito pool: no second pool can be named"
     ),
   ],
-  // FSx file systems (no Cloud Control handlers): CloudFormation A/B chains in
-  // us-east-1 on #7083, one property per step, each replacement read as a
-  // new file system id. Lustre (CopyTagsToBackups, PerUnitStorageThroughput
-  // and DeploymentType on PERSISTENT_1; ImportPath, ExportPath and
-  // ImportedFileChunkSize on SCRATCH_2; DriveCacheType on HDD): every member
-  // below replaced the file system except PerUnitStorageThroughput (50 ->
-  // 100, same id). DeploymentType PERSISTENT_1 -> PERSISTENT_2 moved
-  // PerUnitStorageThroughput too (the step before showed it alone is in
-  // place). ImportPath was measured alone, with no ExportPath.
-  ['AWS::FSx::FileSystem#LustreConfiguration.CopyTagsToBackups', replace('cfn-measured', 7083)],
-  ['AWS::FSx::FileSystem#LustreConfiguration.DeploymentType', replace('cfn-measured', 7083)],
-  ['AWS::FSx::FileSystem#LustreConfiguration.DriveCacheType', replace('cfn-measured', 7083)],
-  ['AWS::FSx::FileSystem#LustreConfiguration.ExportPath', replace('cfn-measured', 7083)],
-  ['AWS::FSx::FileSystem#LustreConfiguration.ImportPath', replace('cfn-measured', 7083)],
-  ['AWS::FSx::FileSystem#LustreConfiguration.ImportedFileChunkSize', replace('cfn-measured', 7083)],
-  [
-    'AWS::FSx::FileSystem#LustreConfiguration.PerUnitStorageThroughput',
-    update('cfn-measured', 7083),
-  ],
-  // The whole block replaces only through those members (the measured
-  // replacement paths below), while the reference page reads "No
-  // interruption" for it.
-  ['AWS::FSx::FileSystem#LustreConfiguration', nested('cfn-measured', 7083)],
-  // OpenZFS SINGLE_AZ_1 and MULTI_AZ_1: each change replaced the file system.
-  // DeploymentType SINGLE_AZ_1 -> SINGLE_AZ_2 moved ThroughputCapacity too
-  // (64 -> 160: the two types share no value).
-  ['AWS::FSx::FileSystem#OpenZFSConfiguration.DeploymentType', replace('cfn-measured', 7083)],
-  [
-    'AWS::FSx::FileSystem#OpenZFSConfiguration.EndpointIpAddressRange',
-    replace('cfn-measured', 7083),
-  ],
-  ['AWS::FSx::FileSystem#OpenZFSConfiguration.PreferredSubnetId', replace('cfn-measured', 7083)],
-  [
-    'AWS::FSx::FileSystem#OpenZFSConfiguration.RootVolumeConfiguration.CopyTagsToSnapshots',
-    replace('cfn-measured', 7083),
-  ],
-  [
-    'AWS::FSx::FileSystem#OpenZFSConfiguration.RootVolumeConfiguration.DataCompressionType',
-    replace('cfn-measured', 7083),
-  ],
-  [
-    'AWS::FSx::FileSystem#OpenZFSConfiguration.RootVolumeConfiguration.NfsExports',
-    replace('cfn-measured', 7083),
-  ],
-  [
-    'AWS::FSx::FileSystem#OpenZFSConfiguration.RootVolumeConfiguration.ReadOnly',
-    replace('cfn-measured', 7083),
-  ],
-  [
-    'AWS::FSx::FileSystem#OpenZFSConfiguration.RootVolumeConfiguration.RecordSizeKiB',
-    replace('cfn-measured', 7083),
-  ],
-  [
-    'AWS::FSx::FileSystem#OpenZFSConfiguration.RootVolumeConfiguration.UserAndGroupQuotas',
-    replace('cfn-measured', 7083),
-  ],
-  ['AWS::FSx::FileSystem#OpenZFSConfiguration', nested('cfn-measured', 7083)],
-  // ONTAP MULTI_AZ_1: EndpointIpAddressRange replaced the file system; a
-  // PreferredSubnetId change went to the create path, whose new file system
-  // failed on the endpoint range the old one still held, and rolled back.
-  // DeploymentType SINGLE_AZ_1 -> SINGLE_AZ_2 (one subnet, HAPairs 1)
-  // replaced it too, with ThroughputCapacityPerHAPair 128 -> 1536 (SINGLE_AZ_2
-  // takes no lower value).
-  ['AWS::FSx::FileSystem#OntapConfiguration.DeploymentType', replace('cfn-measured', 7083)],
-  ['AWS::FSx::FileSystem#OntapConfiguration.EndpointIpAddressRange', replace('cfn-measured', 7083)],
-  ['AWS::FSx::FileSystem#OntapConfiguration.PreferredSubnetId', replace('cfn-measured', 7083)],
-  ['AWS::FSx::FileSystem#OntapConfiguration', nested('cfn-measured', 7083)],
+  // FSx file systems: `./evidence-fsx.ts`.
+  ...FSX_FILE_SYSTEM_EVIDENCE,
   // DataSync FSx locations: Cloud Control updates read back in place under the
   // same location ARN (the write-only Subdirectory and Password through an
   // `add` patch).
@@ -980,6 +831,37 @@ export const REPLACEMENT_EVIDENCE: ReadonlyMap<string, ReplacementEvidence> = ne
   ],
   ['AWS::AppStream::StackFleetAssociation#FleetName', APPSTREAM_ROLE],
   ['AWS::AppStream::StackFleetAssociation#StackName', APPSTREAM_ROLE],
+  // CloudFormation A/B (slice 5 of #7083), each image a private ECR image built
+  // on the EMR base under two tags: UPDATE_COMPLETE under the same application
+  // id, reading back the new ImageUri. EMR Serverless takes either the
+  // top-level ImageConfiguration or WorkerTypeSpecifications (with both Driver
+  // and Executor), never both, so each was measured alone; the
+  // WorkerTypeSpecifications row changed both workers' images.
+  ['AWS::EMRServerless::Application#ImageConfiguration', update('cfn-measured', 7083)],
+  ['AWS::EMRServerless::Application#ImageConfiguration.ImageUri', update('cfn-measured', 7083)],
+  ['AWS::EMRServerless::Application#WorkerTypeSpecifications', update('cfn-measured', 7083)],
+  [
+    'AWS::EMRServerless::Application#WorkerTypeSpecifications.*.ImageConfiguration',
+    update('cfn-measured', 7083),
+  ],
+  [
+    'AWS::EMRServerless::Application#WorkerTypeSpecifications.*.ImageConfiguration.ImageUri',
+    update('cfn-measured', 7083),
+  ],
+  // CloudFormation A/B on a connector to a provisioned MSK cluster: each
+  // change (a connector configuration value, another custom plugin, another
+  // worker configuration) UPDATE_COMPLETE under the same connector ARN, the
+  // connector RUNNING and reading back the new value.
+  ['AWS::KafkaConnect::Connector#ConnectorConfiguration', update('cfn-measured', 7083)],
+  ['AWS::KafkaConnect::Connector#Plugins', update('cfn-measured', 7083)],
+  ['AWS::KafkaConnect::Connector#WorkerConfiguration', update('cfn-measured', 7083)],
+  // CloudFormation A/B on an EKS compute environment: a KubernetesNamespace
+  // change and an EksClusterArn change (another cluster) each replaced it
+  // (a new compute environment ARN; with a ComputeEnvironmentName, the update
+  // failed "a custom-named resource requires replacing"). The schema's nested
+  // create-only members (EksClusterArn, KubernetesNamespace) already planned
+  // both changes as replacements; the row adds adding or dropping the block.
+  ['AWS::Batch::ComputeEnvironment#EksConfiguration', replace('cfn-measured', 7083)],
   // --- updateableProperties beyond the fixture or the spec
   ['AWS::Budgets::Budget#NotificationsWithSubscribers', update('deviation', 7038)],
   ['AWS::EC2::Subnet#Ipv6CidrBlock', update('cfn-measured', 5632)],

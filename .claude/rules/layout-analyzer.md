@@ -14,7 +14,8 @@ DAG builder, template parser. `drift-*` normalizers:
   [state-malformed-properties.md](state-malformed-properties.md).
 - **skipped-outputs.ts** — the `skippedOutputs` record; see its doc comment.
 - **replacement-rules/evidence.ts** — each hand-made or disputed replace/update
-  verdict's CloudFormation evidence (#7038).
+  verdict's CloudFormation evidence (#7038); its row shape and constructors
+  are in `evidence-rows.ts`, its FSx file system rows in `evidence-fsx.ts`.
 - **cross-stack-preview.ts** — diff's same-run producer exports (#6796).
 - **read-provenance-promotion.ts** — v12 #4852: [state-schema.md](state-schema.md).
 
