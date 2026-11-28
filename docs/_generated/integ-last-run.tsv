@@ -26,7 +26,7 @@ app-autoscaling-recreate	2026-11-19T14:40:15Z	PASS	122	verify.sh	#6626 HEAD 341a
 appconfig	2026-11-27T06:40:05Z	PASS	145	verify.sh	PR 7101 head 21ca26d1d; Type change refuses w/o --force-stateful-recreation then replaces (#7083); 0 errors, 0 orphans
 appconfig-environment-delete-protection	2026-11-10T07:11:19Z	PASS	91	verify.sh	3 consecutive PASS after #6074 settle wait (95/91/91s); APPLY control refused each run, 0 errors, 0 orphans
 appsync	2026-11-27T18:52:08Z	PASS	276	verify.sh	rc ok, orph clean (PR #7137)
-appsync-schema-update-drift	2026-11-27T21:34:47Z	PASS	190	verify.sh	rc ok, orph clean (PR #7137, #7127, final head after rebase onto #7136)
+appsync-schema-update-drift	2026-11-28T03:32:06Z	PASS	200	verify.sh	rc ok, orph clean (PR #7174, #7139; heal disabled FAILED at the seeded S3 baseline drift)
 asg-destroy-running-instances	2026-11-17T03:39:15Z	PASS	305	verify.sh	rc ok, orph clean (#6437 PR #6469)
 asg-rolling-signals	2026-11-21T05:04:54Z	PASS	1167	verify.sh	rc 0, 4 phases, metadata restored, orph clean (us-east-1)
 asg-update-policy	2026-11-17T09:08:06Z	PASS	782	verify.sh	rc ok, orph clean (#6437 PR #6483); us-west-2
