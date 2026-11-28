@@ -1231,7 +1231,15 @@ STACK_DRIFT_RC=0
 STACK_DRIFT=$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" --json) || STACK_DRIFT_RC=$?
 if [ "${STACK_DRIFT_RC}" -ne 0 ]; then
-  printf '%s' "${STACK_DRIFT}" | jq -r '[.[] | .drifted[]? | .logicalId + " (" + .resourceType + "): " + ([.changes[].path] | join(" "))] | .[]' >&2 || true
+  # go-to-k/cdkd#7198: exit 2 is a clean but INCOMPLETE run (a resource not
+  # compared or not supported), so name those rows and the warnings too: one
+  # run then says which resource and why. The JSON row spells the type `type`.
+  printf '%s' "${STACK_DRIFT}" | jq -r '.[] | (
+      (.drifted[]? | "drifted: " + .logicalId + " (" + .type + "): " + ([.changes[].path] | join(" "))),
+      (.notCompared[]? | "notCompared: " + .logicalId + " (" + .type + "): cause " + (.cause | tostring)),
+      (.notSupported[]? | "notSupported: " + .logicalId + " (" + .type + ")"),
+      (.warnings[]? | "warning: " + .)
+    )' >&2 || printf 'raw drift output: %s\n' "${STACK_DRIFT}" >&2
   echo "FAIL: #5723: cdkd drift on the freshly deployed stack exited ${STACK_DRIFT_RC}, want 0 (phantom drift; an AWS::RDS::DBProxy Auth row is #5723)" >&2
   exit 1
 fi

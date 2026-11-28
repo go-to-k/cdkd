@@ -458,6 +458,34 @@ fi
 # count is never diffed, so the deploy refuses before any call and the name
 # stays (go-to-k/cdkd#5487: the requested count used to read as settled, so
 # the retry sent nothing and cleared the name).
+#
+# The refusal fires only while the group READS in transition, and EMR answers
+# RUNNING for a moment after ModifyInstanceGroups (or the 20s deadline can fire
+# before the modify is sent): a retry that reads RUNNING legitimately re-sends
+# the resize and exits 0 (go-to-k/cdkd#7197). So wait (bounded) until the
+# group reads RESIZING first, and fail naming the state if it never does --
+# the arm's premise did not hold, which is not the refusal regressing.
+# (The SDK helper, not `aws emr list-instance-groups`: some installed CLI
+# models lack that verb.)
+P1C_STATE=""
+for _ in $(seq 1 30); do
+  if ! P1C_GROUPS="$(list_instance_groups_json "${CID_P1}")"; then
+    echo "FAIL: could not list the instance groups of ${CID_P1} while waiting for the TASK group to read RESIZING" >&2
+    exit 1
+  fi
+  P1C_STATE="$(printf '%s' "${P1C_GROUPS}" | jq -r --arg gid "${GID_P1}" \
+    '[.[] | select(.Id == $gid) | .Status.State] | first // "<group not listed>"')" || {
+    echo "FAIL: could not read the TASK group state from: ${P1C_GROUPS}" >&2
+    exit 1
+  }
+  [ "${P1C_STATE}" = "RESIZING" ] && break
+  sleep 2
+done
+if [ "${P1C_STATE}" != "RESIZING" ]; then
+  echo "FAIL: the TASK group ${GID_P1} read '${P1C_STATE}' (not RESIZING) for 60s after the cut-short resize, so the retry arm's premise (a group in transition) does not hold (go-to-k/cdkd#7197)" >&2
+  exit 1
+fi
+echo "    the TASK group reads RESIZING; retrying the same template"
 P1C_RETRY_LOG="$(mktemp)"
 set +e
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
