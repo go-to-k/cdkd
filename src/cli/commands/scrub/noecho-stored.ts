@@ -146,11 +146,15 @@ export function planScrubStoredNoEcho(
       leaves = canonicalCoordinates(own);
     } else if (definition?.Type === record.resourceType) {
       leaves = canonicalCoordinates(
-        noEchoCoordinatesOf(definition.Properties, record.properties, sources)
+        noEchoCoordinatesOf(definition.Properties, record.properties, sources, undefined, {
+          maskedAt: record.properties,
+        })
       );
       needles = new Set(
         canonicalCoordinates(
-          noEchoCoordinatesOf(definition.Properties, record.properties, needleSources)
+          noEchoCoordinatesOf(definition.Properties, record.properties, needleSources, undefined, {
+            maskedAt: record.properties,
+          })
         ).map((coordinate) => JSON.stringify(coordinate))
       );
     } else if (liveLeaves !== undefined) {
