@@ -90,18 +90,20 @@ describe('scrub twin references (go-to-k/cdkd#7154)', () => {
     expect(positionTwinReferences(stored, positioned, template, secrets)).toBe(positioned);
   });
 
-  it('cdkd scrub writes each twin its own expression, so the template and the record agree', async () => {
-    // The twin sits AFTER the list, so the resolver records it last and it holds the map slot.
-    const properties = {
-      ContainerDefinitions: [{ Name: 'c', Environment: [{ Name: 'P', Value: OWN }] }],
-      Family: TWIN,
-    };
+  // Either order: whichever reference the resolver records last holds the map slot.
+  it.each([
+    ['the twin first', true],
+    ['the twin last', false],
+  ])('cdkd scrub writes each twin its own expression, %s', async (_name, twinFirst) => {
+    // Elements with no identity field (`Name` / `Key`), which the walk could pair by.
+    const list = [{ Image: 'plain-7154' }, { RepositoryCredentials: { CredentialsParameter: OWN } }];
+    const properties = twinFirst ? { Family: TWIN, ContainerDefinitions: list } : { ContainerDefinitions: list, Family: TWIN };
     const template = {
       Resources: { Task: { Type: 'AWS::ECS::TaskDefinition', Properties: properties } },
       Outputs: {},
     } as unknown as CloudFormationTemplate;
     const stored = {
-      ContainerDefinitions: [{ Name: 'c', Environment: [{ Name: 'P', Value: PLAIN }] }],
+      ContainerDefinitions: [{ Image: 'plain-7154' }, { RepositoryCredentials: { CredentialsParameter: PLAIN } }],
       Family: PLAIN,
     };
     const state = {
