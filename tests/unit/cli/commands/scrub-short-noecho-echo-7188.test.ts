@@ -189,6 +189,24 @@ describe('cdkd scrub - a short NoEcho echo an older binary persisted (go-to-k/cd
     expect(echo.observedMaskedLeaves).toEqual([['Extra']]);
   });
 
+  it('repairs a stack whose only NoEcho input is too short for a needle', async () => {
+    const info = stackInfo();
+    const template = info.template as unknown as {
+      Parameters: Record<string, unknown>;
+      Resources: Record<string, { Properties: Record<string, unknown> }>;
+    };
+    delete template.Parameters['InId'];
+    delete template.Parameters['Named'];
+    template.Resources['Cr']!.Properties = { ServiceToken: 'arn', Pw: { Ref: 'Short' } };
+    const record = customRecord();
+    record.properties = { ServiceToken: 'arn', Pw: '***' };
+    record.noEchoLeaves = [['Pw']];
+    record.attributes = { Out: SHORT, Count: '3' };
+    const saved = await scrub(stateWith({ resources: { Cr: record } }), info);
+    expect(saved!.resources['Cr']!.attributes).toEqual({ Out: '***', Count: '3' });
+    expect(saved!.resources['Cr']!.noEchoAttributeNames).toEqual(['Out']);
+  });
+
   it('drops an attribute KEY equal to the short input', async () => {
     const record = customRecord();
     record.attributes = { [SHORT]: 'x', Count: '3' };
