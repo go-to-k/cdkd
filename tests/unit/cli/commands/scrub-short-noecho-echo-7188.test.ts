@@ -194,12 +194,21 @@ describe('cdkd scrub - a short NoEcho echo an older binary persisted (go-to-k/cd
     expect(cr.noEchoAttributeNames).toBeUndefined();
   });
 
+  it('keeps an attribute equal to the physical id', async () => {
+    const record = { ...customRecord(), physicalId: SHORT, attributes: { Ref: SHORT } };
+    const state = stateWith({ resources: { Cr: record } });
+    const saved = await scrub(state);
+    const cr = (saved ?? state).resources['Cr']!;
+    expect(cr.attributes).toEqual({ Ref: SHORT });
+  });
+
   it('declares nothing on a resource that is not a custom resource', async () => {
     const info = stackInfo();
     (info.template.Resources as Record<string, { Type: string }>)['Cr']!.Type = 'AWS::Test::Cr7188';
     const record = { ...customRecord(), resourceType: 'AWS::Test::Cr7188' };
-    const saved = await scrub(stateWith({ resources: { Cr: record } }), info);
-    const cr = (saved ?? stateWith()).resources['Cr']!;
+    const state = stateWith({ resources: { Cr: record } });
+    const saved = await scrub(state, info);
+    const cr = (saved ?? state).resources['Cr']!;
     expect(cr.attributes!['Out']).toBe(SHORT);
     expect(cr.noEchoAttributeNames).toBeUndefined();
   });
