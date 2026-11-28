@@ -242,7 +242,10 @@ export function scrubStoredRecord(
   // value too short for a needle only at `noEchoLeaves` (#7188), while the
   // plan's mask would hide that value from the attribute-key drop. The plan
   // then masks, keeping every attribute name the finish declared.
-  const positioned = plan.leaves.length > 0 ? { ...next, noEchoLeaves: plan.leaves } : next;
+  const positioned =
+    plan.leaves.length > 0
+      ? { ...next, noEchoLeaves: plan.leaves.map((coordinate) => [...coordinate]) }
+      : next;
   const finished = finish(positioned, new Map([...needles, ...(migrationNeedles ?? [])]));
   const attributeNames = [
     ...new Set([...plan.attributeNames, ...(noEchoAttributeNamesOf(finished) ?? [])]),
