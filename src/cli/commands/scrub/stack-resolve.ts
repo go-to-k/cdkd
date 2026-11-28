@@ -22,6 +22,7 @@ import { isReadableBag } from '../../../state/malformed-resources-bag.js';
 import { NESTED_STACK_TYPE } from './nested.js';
 import { knownExportNamesOf } from './outputs.js';
 import { pinCrossRegionSecrets } from './cross-region.js';
+import { recordResolvedUnit } from './twin-references.js';
 import { isOutputSuppressed, RESOLVER_DISPATCH_KEYS } from './cross-stack-refusals.js';
 import {
   isRegionAmbiguousRefusal,
@@ -55,6 +56,7 @@ export async function scrubStackResolvePass({
   orphanSecrets,
   state,
   perResourceTemplateProps,
+  perResourceResolvedProps,
   outputsTemplateSource,
   resolvers,
   resolver,
@@ -364,6 +366,9 @@ export async function scrubStackResolvePass({
             ...resourceContext,
             abandonedResolutions: abandoned,
           });
+          // go-to-k/cdkd#7180: a unit resolved CERTAINLY positions twin references.
+          if (abandoned.length === 0)
+            recordResolvedUnit(perResourceResolvedProps, logicalId, propertyName, resolvedUnit);
           if (isNestedRow && propertyName !== '') resolvedRowProps[propertyName] = resolvedUnit;
           if (isNestedRow && propertyName === 'Parameters') {
             nestedRowParameters.set(logicalId, {

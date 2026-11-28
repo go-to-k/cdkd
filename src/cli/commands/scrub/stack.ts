@@ -430,6 +430,8 @@ export async function scrubStack(
     // secret plaintext -> expression map (into the two maps hoisted above). The
     // resolved output is discarded; only the recorded secrets matter.
     const perResourceTemplateProps = new Map<string, Record<string, unknown>>();
+    // go-to-k/cdkd#7180: the same bags RESOLVED, in memory only (twin-references.ts).
+    const perResourceResolvedProps = new Map<string, unknown>();
     const outputsTemplateSource: Record<string, unknown> = {};
     // Issue #2109: the stack's own resolver plus one pinned sibling per FOREIGN
     // region a reference NAMES. `producerRegionsFromState` is the same
@@ -722,6 +724,7 @@ export async function scrubStack(
       orphanSecrets,
       state,
       perResourceTemplateProps,
+      perResourceResolvedProps,
       outputsTemplateSource,
       resolvers,
       resolver,
@@ -763,6 +766,7 @@ export async function scrubStack(
       malformedOrphans,
       malformedOrphanRows,
       perResourceTemplateProps,
+      perResourceResolvedProps,
       outputsTemplateSource,
       conditions,
       templateResources,
@@ -829,6 +833,7 @@ export interface ScrubStackResolveInput {
   orphanSecrets: Map<string, Map<string, string>>;
   state: StackState;
   perResourceTemplateProps: Map<string, Record<string, unknown>>;
+  perResourceResolvedProps: Map<string, unknown>;
   outputsTemplateSource: Record<string, unknown>;
   resolvers: ScrubResolvers;
   resolver: IntrinsicFunctionResolver;
@@ -885,6 +890,7 @@ export interface ScrubStackRewriteInput {
   malformedOrphans: true | undefined;
   malformedOrphanRows: true | undefined;
   perResourceTemplateProps: Map<string, Record<string, unknown>>;
+  perResourceResolvedProps: Map<string, unknown>;
   outputsTemplateSource: Record<string, unknown>;
   conditions: Record<string, boolean>;
   templateResources: Record<string, TemplateResource>;

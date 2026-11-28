@@ -89,6 +89,7 @@ export async function scrubStackRewritePass({
   malformedOrphans,
   malformedOrphanRows,
   perResourceTemplateProps,
+  perResourceResolvedProps,
   outputsTemplateSource,
   conditions,
   templateResources,
@@ -409,7 +410,8 @@ export async function scrubStackRewritePass({
               generation: 'unproven',
             }),
             templateProps,
-            ownSecrets
+            ownSecrets,
+            perResourceResolvedProps.get(logicalId)
           ) as typeof record.properties,
         }
       : record;
