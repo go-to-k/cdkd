@@ -553,20 +553,30 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
     DB_TERMINAL,
     'skipped under --no-wait unless a start follows'
   ),
-  'route-53:AssociateVPCWithHostedZone': unmeasured(
-    `${NO_WAIT} (the change answers PENDING; nothing reads GetChange)`
+  'route-53:AssociateVPCWithHostedZone': waits(
+    ['waitForRoute53ChangeInsync'],
+    [],
+    '--full-wait only, by maintainer decision on #7132: the default and --no-wait return while PENDING, as for CloudFront Deployed (#1282) — drift reads the change at once, PENDING has no failure state, and dependent Route 53 calls are accepted meanwhile; a cap or deadline warns; PENDING ~80 s; CloudFormation\'s VPCs update waited ~103 s'
   ),
-  'route-53:ChangeResourceRecordSets': unmeasured(
-    `${NO_WAIT} (the change answers PENDING; nothing reads GetChange)`
+  'route-53:ChangeResourceRecordSets': waits(
+    ['waitForRoute53ChangeInsync', 'waitForCertificateIssued'],
+    [],
+    '--full-wait only, by maintainer decision on #7132: the default and --no-wait return while PENDING, as for CloudFront Deployed (#1282) — drift reads the change at once, PENDING has no failure state, and dependent Route 53 calls are accepted meanwhile; a cap or deadline warns; PENDING ~25-37 s; CloudFormation waits for INSYNC (~32-43 s); an ACM DNS-validation record waits for ISSUED instead, which covers it'
   ),
-  'route-53:CreateHostedZone': unmeasured(
-    `${NO_WAIT} (the change answers PENDING; nothing reads GetChange)`
+  'route-53:CreateHostedZone': waits(
+    ['waitForRoute53ChangeInsync'],
+    [],
+    '--full-wait only, by maintainer decision on #7132: the default and --no-wait return while PENDING, as for CloudFront Deployed (#1282) — drift reads the change at once, PENDING has no failure state, and dependent Route 53 calls are accepted meanwhile; a cap or deadline warns; PENDING ~25-30 s; CloudFormation waits for INSYNC (~42 s)'
   ),
-  'route-53:DeleteHostedZone': unmeasured(
-    `${NO_WAIT} (the change answers PENDING; nothing reads GetChange)`
+  'route-53:DeleteHostedZone': waits(
+    ['waitForRoute53ChangeInsync'],
+    [],
+    '--full-wait only, by maintainer decision on #7132: the default and --no-wait return while PENDING, as for CloudFront Deployed (#1282) — drift reads the change at once, PENDING has no failure state, and dependent Route 53 calls are accepted meanwhile; a cap or deadline warns; CloudFormation waits for INSYNC (~42 s); the failed-create cleanup delete does not wait'
   ),
-  'route-53:DisassociateVPCFromHostedZone': unmeasured(
-    `${NO_WAIT} (the change answers PENDING; nothing reads GetChange)`
+  'route-53:DisassociateVPCFromHostedZone': waits(
+    ['waitForRoute53ChangeInsync'],
+    [],
+    '--full-wait only, by maintainer decision on #7132: the default and --no-wait return while PENDING, as for CloudFront Deployed (#1282) — drift reads the change at once, PENDING has no failure state, and dependent Route 53 calls are accepted meanwhile; a cap or deadline warns; PENDING ~80 s'
   ),
   's3tables:PutTableBucketReplication': byDesign(
     'settled when AWS answers: the call returns status success and GetTableBucketReplication reads the new configuration on the next call, with no status field (3 of 3) (#7132)'

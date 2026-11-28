@@ -3,8 +3,8 @@
   "total": 173,
   "counts": {
     "no-wait-by-design": 47,
-    "waits": 113,
-    "unmeasured": 13
+    "waits": 118,
+    "unmeasured": 8
   },
   "rows": [
     {
@@ -5720,8 +5720,12 @@
         "src/provisioning/providers/route53-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (the change answers PENDING; nothing reads GetChange)"
+        "verdict": "waits",
+        "helpers": [
+          "waitForRoute53ChangeInsync"
+        ],
+        "failureStatuses": [],
+        "note": "--full-wait only, by maintainer decision on #7132: the default and --no-wait return while PENDING, as for CloudFront Deployed (#1282) — drift reads the change at once, PENDING has no failure state, and dependent Route 53 calls are accepted meanwhile; a cap or deadline warns; PENDING ~80 s; CloudFormation's VPCs update waited ~103 s"
       }
     },
     {
@@ -5744,8 +5748,13 @@
         "src/provisioning/providers/route53-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (the change answers PENDING; nothing reads GetChange)"
+        "verdict": "waits",
+        "helpers": [
+          "waitForRoute53ChangeInsync",
+          "waitForCertificateIssued"
+        ],
+        "failureStatuses": [],
+        "note": "--full-wait only, by maintainer decision on #7132: the default and --no-wait return while PENDING, as for CloudFront Deployed (#1282) — drift reads the change at once, PENDING has no failure state, and dependent Route 53 calls are accepted meanwhile; a cap or deadline warns; PENDING ~25-37 s; CloudFormation waits for INSYNC (~32-43 s); an ACM DNS-validation record waits for ISSUED instead, which covers it"
       }
     },
     {
@@ -5773,8 +5782,12 @@
         "src/provisioning/providers/route53-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (the change answers PENDING; nothing reads GetChange)"
+        "verdict": "waits",
+        "helpers": [
+          "waitForRoute53ChangeInsync"
+        ],
+        "failureStatuses": [],
+        "note": "--full-wait only, by maintainer decision on #7132: the default and --no-wait return while PENDING, as for CloudFront Deployed (#1282) — drift reads the change at once, PENDING has no failure state, and dependent Route 53 calls are accepted meanwhile; a cap or deadline warns; PENDING ~25-30 s; CloudFormation waits for INSYNC (~42 s)"
       }
     },
     {
@@ -5795,8 +5808,12 @@
         "src/provisioning/providers/route53-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (the change answers PENDING; nothing reads GetChange)"
+        "verdict": "waits",
+        "helpers": [
+          "waitForRoute53ChangeInsync"
+        ],
+        "failureStatuses": [],
+        "note": "--full-wait only, by maintainer decision on #7132: the default and --no-wait return while PENDING, as for CloudFront Deployed (#1282) — drift reads the change at once, PENDING has no failure state, and dependent Route 53 calls are accepted meanwhile; a cap or deadline warns; CloudFormation waits for INSYNC (~42 s); the failed-create cleanup delete does not wait"
       }
     },
     {
@@ -5816,8 +5833,12 @@
         "src/provisioning/providers/route53-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (the change answers PENDING; nothing reads GetChange)"
+        "verdict": "waits",
+        "helpers": [
+          "waitForRoute53ChangeInsync"
+        ],
+        "failureStatuses": [],
+        "note": "--full-wait only, by maintainer decision on #7132: the default and --no-wait return while PENDING, as for CloudFront Deployed (#1282) — drift reads the change at once, PENDING has no failure state, and dependent Route 53 calls are accepted meanwhile; a cap or deadline warns; PENDING ~80 s"
       }
     },
     {
