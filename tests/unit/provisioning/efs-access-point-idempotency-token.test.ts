@@ -321,6 +321,10 @@ describe('EFSProvider CreateAccessPoint idempotency token (issue #2080)', () => 
   let aws: FakeEfs;
 
   beforeEach(() => {
+    // The token is this suite's subject: the access point's settle wait
+    // (go-to-k/cdkd#7132, `efs-settle-waits-7132.test.ts`) is skipped so the
+    // DescribeAccessPoints counts below are the adoption read-back's alone.
+    vi.stubEnv('CDKD_NO_WAIT', 'true');
     vi.useFakeTimers({ toFake: ['Date'] });
     resetIdempotencyTokensForTests();
     aws = new FakeEfs();
@@ -333,6 +337,7 @@ describe('EFSProvider CreateAccessPoint idempotency token (issue #2080)', () => 
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllEnvs();
   });
 
   const createAccessPoint = (

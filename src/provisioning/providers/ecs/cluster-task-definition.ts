@@ -42,9 +42,13 @@ import {
 import {
   capacityProvidersChanged,
   heldCapacityProviders,
+  clusterWriteNeedsSettle,
   sendWhenAttachmentsSettle,
+  waitForClusterSettled,
   waitForOwnCapacityProviderPut,
 } from './cluster-attachments.js';
+import { markCreatedBeforeFailure } from '../../auxiliary-failure.js';
+import { reportCreatedResource } from '../../created-resource-sink.js';
 
 // ─── AWS::ECS::Cluster ──────────────────────────────────────────
 
@@ -64,6 +68,9 @@ export async function createCluster(
     (properties['ClusterName'] as string | undefined) ||
     (this.generatedCreateName(resourceType, logicalId, properties) as string);
 
+  // Set once a create that must settle returned; the wait's failure leaves
+  // the cluster with no state record.
+  let createdName: string | undefined;
   try {
     const response = await client.send(
       new CreateClusterCommand({
@@ -99,20 +106,34 @@ export async function createCluster(
       throw new Error('CreateCluster did not return cluster ARN');
     }
 
+    const physicalId = cluster.clusterName ?? clusterName;
+    // go-to-k/cdkd#7132: a cluster created with ServiceConnectDefaults reads
+    // PROVISIONING (attachments UPDATE_IN_PROGRESS) for ~20 s, and
+    // CloudFormation completes only once it reads ACTIVE. Reported before the
+    // wait (go-to-k/cdkd#5511), so a failed or timed-out wait still journals
+    // the cluster for --revert-failed.
+    if (clusterWriteNeedsSettle(Boolean(properties['ServiceConnectDefaults']), cluster)) {
+      createdName = physicalId;
+      reportCreatedResource(logicalId, resourceType, physicalId);
+      await waitForClusterSettled(client, logicalId, physicalId, log, cluster, {
+        staleReadGracePolls: 0,
+      });
+    }
+
     log.debug(`Successfully created ECS cluster ${logicalId}: ${cluster.clusterArn}`);
 
     // The name AWS answers with, not the one requested: were ECS to fold a
     // spelling, a record of the requested one would name a cluster that
     // does not exist under it (go-to-k/cdkd#3937 review).
     return {
-      physicalId: cluster.clusterName ?? clusterName,
+      physicalId,
       attributes: {
         Arn: cluster.clusterArn,
       },
     };
   } catch (error) {
     const cause = error instanceof Error ? error : undefined;
-    throw this.wrapCaughtError(
+    const thrown = this.wrapCaughtError(
       log.mask,
       error,
       (text) =>
@@ -124,6 +145,11 @@ export async function createCluster(
           cause
         )
     );
+    // The cluster exists: name it for the failed-CREATE journal.
+    if (createdName !== undefined) {
+      markCreatedBeforeFailure(thrown, logicalId, resourceType, createdName);
+    }
+    throw thrown;
   }
 }
 
@@ -218,23 +244,35 @@ export async function updateCluster(
           : { namespace: '' }
         : undefined;
 
-      await sendWhenAttachmentsSettle(client, logicalId, physicalId, log, () =>
-        client.send(
-          new UpdateClusterCommand({
-            cluster: physicalId,
-            ...(settingsChanged && { settings: settingsInput }),
-            ...(configChanged && {
-              configuration: this.convertClusterConfiguration(
-                properties['Configuration'] as Record<string, unknown> | undefined
-              ),
-            }),
-            ...(svcConnectChanged && { serviceConnectDefaults: svcConnectInput }),
-          })
-        )
+      const updateResponse = await sendWhenAttachmentsSettle(
+        client,
+        logicalId,
+        physicalId,
+        log,
+        () =>
+          client.send(
+            new UpdateClusterCommand({
+              cluster: physicalId,
+              ...(settingsChanged && { settings: settingsInput }),
+              ...(configChanged && {
+                configuration: this.convertClusterConfiguration(
+                  properties['Configuration'] as Record<string, unknown> | undefined
+                ),
+              }),
+              ...(svcConnectChanged && { serviceConnectDefaults: svcConnectInput }),
+            })
+          )
       );
       log.debug(
         `Updated ECS cluster ${shownCluster} (settings=${settingsChanged}, config=${configChanged}, svcConnect=${svcConnectChanged})`
       );
+      // go-to-k/cdkd#7132: a ServiceConnectDefaults change leaves the
+      // attachments UPDATE_IN_PROGRESS for ~14 s after the call, and
+      // CloudFormation's update completes only once they settle. A
+      // settings-only update reads ACTIVE at once: no read is sent for it.
+      if (clusterWriteNeedsSettle(svcConnectChanged, updateResponse?.cluster)) {
+        await waitForClusterSettled(client, logicalId, physicalId, log, updateResponse?.cluster);
+      }
     }
 
     // Describe cluster to get current ARN

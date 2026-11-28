@@ -32,6 +32,9 @@ import {
 import type { ResourceCreateResult, ResourceUpdateResult } from '../../../types/resource.js';
 import { createMaskedLogSinks, type MaskedLogSinks } from '../../masked-retry-logger.js';
 import { withPasteableAwsProfile } from '../../../utils/pasteable-aws-profile.js';
+import { markCreatedBeforeFailure } from '../../auxiliary-failure.js';
+import { reportCreatedResource } from '../../created-resource-sink.js';
+import { waitForAccessPointAvailable } from './settle-waits.js';
 
 /**
  * Whether an access point's `PosixUser` is the one a `CreateAccessPoint`
@@ -269,6 +272,9 @@ export async function createAccessPoint(
     maxLength: 64,
   });
 
+  // Set once CreateAccessPoint returned (or adopted): a failed wait leaves
+  // the access point with no state record.
+  let createdAccessPointId: string | undefined;
   try {
     const response = await this.createOrAdoptAccessPoint(logicalId, resourceType, log, {
       ClientToken: clientToken.value,
@@ -297,6 +303,12 @@ export async function createAccessPoint(
 
     const accessPointId = response.AccessPointId!;
     const arn = response.AccessPointArn!;
+    // go-to-k/cdkd#7132: the access point reads `creating`; CloudFormation
+    // completes only once it reads `available`. Reported before the wait
+    // (go-to-k/cdkd#5511), so a failed or timed-out wait still journals it.
+    createdAccessPointId = accessPointId;
+    reportCreatedResource(logicalId, resourceType, accessPointId);
+    await waitForAccessPointAvailable(this.getClient(), logicalId, accessPointId, log);
 
     log.debug(`Successfully created EFS AccessPoint ${logicalId}: ${accessPointId}`);
 
@@ -319,7 +331,7 @@ export async function createAccessPoint(
     // `fsx-filesystem/create.ts`.
     if (error instanceof ProvisioningError) throw error;
     const cause = error instanceof Error ? error : undefined;
-    throw this.wrapMaskedError(
+    const thrown = this.wrapMaskedError(
       log,
       error,
       (text) =>
@@ -331,6 +343,10 @@ export async function createAccessPoint(
           cause
         )
     );
+    if (createdAccessPointId !== undefined) {
+      markCreatedBeforeFailure(thrown, logicalId, resourceType, createdAccessPointId);
+    }
+    throw thrown;
   }
 }
 
@@ -554,9 +570,9 @@ export async function createOrAdoptAccessPoint(
     // An access point already on its way out, or wedged, must not be
     // recorded as this stack's physical id: the next command would resolve
     // state to a resource AWS is deleting or one that can never become
-    // usable. `available`, `creating` and `updating` all pass -- this
-    // provider has no access-point waiter, and a `creating` access point is
-    // the normal answer to a replayed create.
+    // usable. `available`, `creating` and `updating` all pass -- a `creating`
+    // access point is the normal answer to a replayed create, and
+    // `createAccessPoint` waits for it to read `available` (#7132).
     if (
       existing.LifeCycleState === 'deleting' ||
       existing.LifeCycleState === 'deleted' ||
