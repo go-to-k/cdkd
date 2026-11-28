@@ -269,6 +269,37 @@ describe('cdkd scrub - a short NoEcho echo an older binary persisted (go-to-k/cd
     expect(saved!.resources['Cr']!.noEchoAttributeNames).toEqual(['Out']);
   });
 
+  it('reads no value at a position today\'s template spells as a public literal', async () => {
+    const info = stackInfo();
+    const template = info.template as unknown as {
+      Parameters: Record<string, unknown>;
+      Resources: Record<string, { Properties: Record<string, unknown> }>;
+    };
+    template.Parameters = {};
+    template.Resources['Cr']!.Properties = { ServiceToken: 'arn', Pw: '3' };
+    delete template.Resources['Echo'];
+    const record = customRecord();
+    record.properties = { ServiceToken: 'arn', Pw: '***' };
+    record.noEchoLeaves = [['Pw']];
+    record.attributes = { Count: '3' };
+    const saved = await scrub(stateWith({ resources: { Cr: record } }), info);
+    expect(saved).toBeUndefined();
+  });
+
+  it('leaves a stack the resolution teaches nothing untouched', async () => {
+    const info = stackInfo();
+    const template = info.template as unknown as { Parameters: Record<string, unknown> };
+    template.Parameters = {};
+    const topic: ResourceState = {
+      physicalId: 'echo-1',
+      resourceType: 'AWS::Test::Echo7188',
+      properties: { Pw: 'plain' },
+      observedMaskedLeaves: [['Gone']],
+    };
+    const saved = await scrub(stateWith({ resources: { Echo: topic } }), info);
+    expect(saved).toBeUndefined();
+  });
+
   it('drops an attribute KEY equal to the short input', async () => {
     const record = customRecord();
     record.attributes = { [SHORT]: 'x', Count: '3' };

@@ -1,5 +1,7 @@
 import type { RecordedSecretValues } from './pairs.js';
 import { isPlainObject } from './rules.js';
+import { mentionsMask } from './recorded-secrecy.js';
+import { maskAtCoordinates, noEchoLeavesOf, valueAtCoordinate } from './noecho-leaves.js';
 import { withOffTemplateEchoesMasked, type OffTemplateEchoRecord } from './off-template-echo.js';
 import { templateGetAttNamesOf, withSecretAttributeKeysDropped } from './secret-attribute-keys.js';
 import { withWholeNoEchoEchoesDeclared } from './whole-noecho-echo.js';
@@ -16,6 +18,38 @@ export interface StoredRecordInput {
   readonly logicalId: string;
   readonly state: StoredRecord;
   readonly resolved?: unknown;
+  /** Today's template properties of the logical id, unresolved. */
+  readonly templateProps?: unknown;
+}
+
+/**
+ * `stored.resolved` reduced to what it teaches beyond the record as read: the
+ * resolved bag with every `noEchoLeaves` position masked except those holding
+ * a value the stored bag lacks there (the stored mask) and today's template
+ * does not spell as a literal (a public value at a position the record still
+ * marks). `undefined` when no position teaches, so a record the resolution
+ * adds nothing to takes no extra pass.
+ */
+export function resolvedNoEchoTeacher(
+  record: { noEchoLeaves?: unknown },
+  stored: StoredRecordInput
+): Record<string, unknown> | undefined {
+  const resolved = stored.resolved;
+  if (!isPlainObject(resolved)) return undefined;
+  const coordinates = noEchoLeavesOf(record) ?? [];
+  const silent = coordinates.filter((coordinate) => {
+    const value = valueAtCoordinate(resolved, coordinate);
+    if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') {
+      return true;
+    }
+    if (value === '' || (typeof value === 'string' && mentionsMask(value))) return true;
+    return (
+      valueAtCoordinate(stored.state.properties, coordinate) === value ||
+      valueAtCoordinate(stored.templateProps, coordinate) === value
+    );
+  });
+  if (silent.length === coordinates.length) return undefined;
+  return maskAtCoordinates(resolved, silent);
 }
 
 /**
@@ -42,7 +76,8 @@ export interface StoredRecordInput {
  * from the resolution. A deploy that leaves a resource UNCHANGED resolves
  * nothing for it, so an echo an older binary persisted holding a value this
  * scrub resolved is repaired here. One holding a value the input no longer
- * has (a rotated one) is not: nothing resolves it.
+ * has (a rotated one) is not: nothing resolves it. Only the positions
+ * {@link resolvedNoEchoTeacher} keeps are read from the resolution.
  */
 export function storedRecordFinisher(
   template: object,
@@ -53,7 +88,8 @@ export function storedRecordFinisher(
   needles: RecordedSecretValues | undefined,
   stored: StoredRecordInput
 ) => R {
-  return (record, needles, { logicalId, state, resolved }) => {
+  return (record, needles, stored) => {
+    const { logicalId, state } = stored;
     const readback = state.observedProperties;
     let masked = withOffTemplateEchoesMasked(
       record,
@@ -63,7 +99,7 @@ export function storedRecordFinisher(
       },
       publicTokens
     );
-    const resolvedBag = isPlainObject(resolved) ? resolved : undefined;
+    const resolvedBag = resolvedNoEchoTeacher(masked, stored);
     if (resolvedBag !== undefined) {
       masked = withOffTemplateEchoesMasked(
         masked,

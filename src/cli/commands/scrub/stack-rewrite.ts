@@ -11,6 +11,7 @@ import {
   printingCorpusOf,
   maskSecretsInText,
   storedRecordFinisher,
+  resolvedNoEchoTeacher,
   type RecordedSecretValues,
 } from '../../../deployment/secret-redaction.js';
 import { keepHeldTokenProvenance } from '../../../deployment/reference-provenance-record.js';
@@ -310,30 +311,34 @@ export async function scrubStackRewritePass({
 
   const noEchoPublicTokens: ReadonlySet<string> = new Set([region, stack.stackName]);
   const finishStored = storedRecordFinisher(stack.template, noEchoPublicTokens, stack.stackName);
-  // go-to-k/cdkd#7188: what the finish repairs with no needle at all (an echo
-  // of a `NoEcho` value too short for one), asked only when nothing else would
-  // send the stack through the rewrite below.
+  // go-to-k/cdkd#7188: what this scrub resolved for a logical id, beside
+  // today's template bag (the finish reads only the positions that teach).
+  const storedInput = <S>(logicalId: string, state: S) => ({
+    logicalId,
+    state,
+    resolved: perResourceResolvedProps.get(logicalId),
+    templateProps: perResourceTemplateProps.get(logicalId),
+  });
+  // Whether the finish repairs, with no needle at all, an echo of a `NoEcho`
+  // value too short for one. Asked only when nothing else would send the stack
+  // through the rewrite below, and only of a record the resolution teaches.
   const finishRepairsAny = (): boolean =>
-    Object.entries(state.resources ?? {}).some(
-      ([logicalId, record]) =>
-        finishStored(record, undefined, {
-          logicalId,
-          state: record,
-          resolved: perResourceResolvedProps.get(logicalId),
-        }) !== record
-    ) ||
     [
+      ...Object.entries(state.resources ?? {}).map(([logicalId, record]) => ({
+        logicalId,
+        state: record,
+      })),
       ...(state.orphans ?? []),
       ...(Array.isArray(state.supersededResources)
         ? state.supersededResources.filter(isSupersededResourceRecord)
         : []),
-    ].some(
-      (row) =>
-        finishStored(row.state, undefined, {
-          ...row,
-          resolved: perResourceResolvedProps.get(row.logicalId),
-        }) !== row.state
-    );
+    ].some((row) => {
+      const stored = storedInput(row.logicalId, row.state);
+      return (
+        resolvedNoEchoTeacher(row.state, stored) !== undefined &&
+        finishStored(row.state, undefined, stored) !== row.state
+      );
+    });
 
   const totalSecrets =
     outputSecrets.size +
@@ -505,7 +510,7 @@ export async function scrubStackRewritePass({
     const rewritten = finishStored(
       keepHeldTokenProvenance(applyScrubNoEcho(migrated, record, plan)),
       new Map([...ownSecrets, ...(migrationNeedles ?? [])]),
-      { logicalId, state: record, resolved: perResourceResolvedProps.get(logicalId) }
+      storedInput(logicalId, record)
     );
     const written =
       JSON.stringify(rewritten) === JSON.stringify(record)
@@ -541,7 +546,7 @@ export async function scrubStackRewritePass({
     const needles = new Map(allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets));
     for (const [plaintext, expression] of own ?? []) needles.set(plaintext, expression);
     // go-to-k/cdkd#7188: what today's template resolves for its logical id.
-    const stored = { ...record, resolved: perResourceResolvedProps.get(record.logicalId) };
+    const stored = storedInput(record.logicalId, record.state);
     const scrubbed =
       needles.size === 0
         ? finishStored(record.state, needles, stored)
@@ -572,7 +577,7 @@ export async function scrubStackRewritePass({
           allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets)
         );
         for (const [plaintext, expression] of own ?? []) needles.set(plaintext, expression);
-        const stored = { ...entry, resolved: perResourceResolvedProps.get(entry.logicalId) };
+        const stored = storedInput(entry.logicalId, entry.state);
         const scrubbed =
           needles.size === 0
             ? finishStored(entry.state, needles, stored)

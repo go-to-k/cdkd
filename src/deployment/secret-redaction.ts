@@ -235,7 +235,10 @@ export {
   templateGetAttNamesOf,
 } from './secret-redaction/secret-attribute-keys.js';
 export { wholeNoEchoEchoTest } from './secret-redaction/whole-noecho-echo.js';
-export { storedRecordFinisher } from './secret-redaction/stored-record-finish.js';
+export {
+  storedRecordFinisher,
+  resolvedNoEchoTeacher,
+} from './secret-redaction/stored-record-finish.js';
 export {
   withStoredReferencePositionsMasked,
   storedReferenceLeavesPutBack,
