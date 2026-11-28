@@ -55,7 +55,7 @@ import { join, relative } from 'node:path';
 import { parseSync } from 'vite-plus';
 import { describe, expect, it } from 'vite-plus/test';
 import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
-import { READS_RECORD_TEXT_DEEP, UNTRIAGED_CAP } from './recorded-secrecy-deep-readers-7151.js';
+import { READS_RECORD_TEXT_DEEP } from './recorded-secrecy-deep-readers-7151.js';
 import {
   countDynamicReferenceOpenings,
   dynamicReferenceBody,
@@ -1348,9 +1348,9 @@ describe(
     // A floor the scan does not read: an empty table would pass a reach that follows nothing.
     expect(Object.keys(READS_RECORD_TEXT_DEEP).length).toBeGreaterThanOrEqual(80);
     expect(deepRecordTextProblems()).toEqual([]);
-    // The untriaged backlog (go-to-k/cdkd#7156) only shrinks: a new entry needs its `why`.
-    const untriaged = Object.values(READS_RECORD_TEXT_DEEP).filter((entry) => entry.why === undefined).length;
-    expect(untriaged).toBeLessThanOrEqual(UNTRIAGED_CAP);
+    // Every entry is triaged (go-to-k/cdkd#7156): a new one needs its `why`.
+    const untriaged = Object.entries(READS_RECORD_TEXT_DEEP).filter(([, entry]) => typeof entry.why !== 'string' || entry.why.trim() === '');
+    expect(untriaged.map(([key]) => key)).toEqual([]);
   });
 
   it.each([
