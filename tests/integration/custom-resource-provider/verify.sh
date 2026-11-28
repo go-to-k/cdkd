@@ -913,6 +913,33 @@ if grep -q 'Destroy skipped ' <<<"${DESTROY3_TXT}"; then
 fi
 echo "    OK: clean destroy, no skips"
 
+# Issue #7208: the destroy deletes the custom resource BEFORE the standalone
+# policy on its handler's role. Nothing references that policy, so without the
+# delete edge the event-driven destroy starts it at once, beside the custom
+# resource. Read from the destroy run's own events, in record order.
+EVENTS_JSON=$(node "${LOCAL_DIST}" events "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --stack-region "${REGION}" --format json) || { echo "FAIL: cdkd events failed" >&2; exit 1; }
+DESTROY_RUN=$(jq -r '[.runs[] | select(.command == "destroy")][0].runId // empty' <<<"${EVENTS_JSON}")
+if [ -z "${DESTROY_RUN}" ]; then
+  echo "FAIL: no destroy run in cdkd events" >&2
+  exit 1
+fi
+RUN_EVENTS=$(node "${LOCAL_DIST}" events "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --stack-region "${REGION}" --run "${DESTROY_RUN}" --format json) ||
+  { echo "FAIL: cdkd events --run failed" >&2; exit 1; }
+CR_DONE=$(jq '[to_entries[] | select(.value.eventType == "RESOURCE_SUCCEEDED" and .value.logicalId == "DeleteRefusalResource") | .key][0] // -1' <<<"${RUN_EVENTS}")
+POLICY_START=$(jq '[to_entries[] | select(.value.eventType == "RESOURCE_STARTED" and (.value.logicalId | startswith("DeleteRefusalHandlerExtraGrants"))) | .key][0] // -1' <<<"${RUN_EVENTS}")
+# Sentinel: the run must carry both rows, or the order below proves nothing.
+if [ "${CR_DONE}" -lt 0 ] || [ "${POLICY_START}" -lt 0 ]; then
+  echo "FAIL: the destroy run lacks the custom resource's success (${CR_DONE}) or the policy's start (${POLICY_START})" >&2
+  exit 1
+fi
+if [ "${POLICY_START}" -lt "${CR_DONE}" ]; then
+  echo "FAIL: the handler's policy started deleting (event ${POLICY_START}) before the custom resource finished (event ${CR_DONE})" >&2
+  exit 1
+fi
+echo "    OK: the custom resource was deleted before its handler's standalone policy (#7208)"
+
 assert_gone "SSM parameter ${PARAM} still exists after the clean destroy (orphan)" \
   aws ssm get-parameter --region "${REGION}" --name "${PARAM}"
 echo "    OK: the handler deleted its managed parameter"

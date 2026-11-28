@@ -165,6 +165,23 @@ def handler(event, context):
       })
     );
 
+    // Issue #7208: a STANDALONE policy on the handler's role that nothing
+    // references, so only cdkd's custom-resource-before-handler-policy delete
+    // edge orders it after the custom resource (the Lambda's `DependsOn`
+    // names only its DefaultPolicy). `verify.sh` Phase 7 reads the destroy's
+    // events for that order.
+    new iam.Policy(this, 'DeleteRefusalHandlerExtraGrants', {
+      roles: [refusalHandler.role!],
+      statements: [
+        new iam.PolicyStatement({
+          actions: ['ssm:DeleteParameter'],
+          resources: [
+            `arn:${cdk.Aws.PARTITION}:ssm:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:parameter${managedParameterName}`,
+          ],
+        }),
+      ],
+    });
+
     // A named `Custom::` type so `verify.sh` can find the state record by TYPE
     // rather than by a CDK-generated logical id.
     new cdk.CustomResource(this, 'DeleteRefusalResource', {
