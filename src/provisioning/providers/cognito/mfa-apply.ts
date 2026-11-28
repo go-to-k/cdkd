@@ -12,6 +12,7 @@ import {
   GetUserPoolMfaConfigCommand,
   DescribeUserPoolCommand,
   type GetUserPoolMfaConfigCommandOutput,
+  type WebAuthnConfigurationType,
 } from '@aws-sdk/client-cognito-identity-provider';
 import { safeStringify, describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { pasteableAwsCommand } from '../../replacement-protection-advice.js';
@@ -558,17 +559,99 @@ export async function turnOffRemovedMfa(
   physicalId: string,
   previousMfaConfiguration: string
 ): Promise<void> {
-  await this.retryOnTransientControlPlane(
-    () =>
-      this.getClient().send(
-        new SetUserPoolMfaConfigCommand({ UserPoolId: physicalId, MfaConfiguration: 'OFF' })
-      ),
-    `SetUserPoolMfaConfig(${physicalId})`
-  );
+  await this.resetMfaConfigOff(logicalId, physicalId, 'bare');
   this.logger.warn(
     safeMsg`Cognito User Pool ${logicalId} (${physicalId}): the template no longer declares ` +
       safeMsg`MfaConfiguration or an MFA factor, so cdkd turned MFA OFF (it was ` +
       safeMsg`${previousMfaConfiguration}), as CloudFormation does on the same edit. Declare ` +
       safeMsg`MfaConfiguration and EnabledMfas to keep MFA on.`
+  );
+}
+
+/**
+ * `SetUserPoolMfaConfig` with `MfaConfiguration: OFF` and no factor block,
+ * which resets every factor block (issue #1968, re-measured for #7128 at
+ * `clearsRemovedMfaConfig`), carrying the pool's LIVE `WebAuthnConfiguration`
+ * as read. Shared by the #1160 removal (`turnOffRemovedMfa`) and the #7128
+ * factor removal under a declared OFF, which needs no warning: the template
+ * asked for OFF.
+ *
+ * Why the carry, MEASURED us-east-1 2026-11-28 on throwaway pools: on a
+ * passkey pool (`AllowedFirstAuthFactors: [PASSWORD, WEB_AUTHN]`, OPTIONAL +
+ * software token + a relying party) the bare call read back
+ * `{MfaConfiguration: OFF}` -- the whole WebAuthn configuration gone while
+ * the sign-in policy still allowed WEB_AUTHN -- whereas CloudFormation's OFF
+ * update in #7128's A/B kept `WebAuthnConfiguration`. OFF beside a carried
+ * block is accepted and kept as sent, `MULTI_FACTOR_WITH_USER_VERIFICATION`
+ * included. An SMS pool's `SmsMfaConfiguration` and `SmsConfiguration`
+ * survived the bare call, so nothing else needs carrying.
+ *
+ * The read happens only on the removal deploy that sends this call. When it
+ * fails, `onReadFailure` decides: `'bare'` keeps the #1160 arm's pre-#7128
+ * request (MFA must still go OFF there), `'skip'` sends nothing and warns,
+ * since a #7128 reset is not worth dropping a passkey configuration for.
+ */
+export async function resetMfaConfigOff(
+  this: CognitoUserPoolProvider,
+  logicalId: string,
+  physicalId: string,
+  onReadFailure: 'bare' | 'skip'
+): Promise<void> {
+  let webAuthn: WebAuthnConfigurationType | undefined;
+  try {
+    const live = await this.retryOnTransientControlPlane(
+      () => this.getClient().send(new GetUserPoolMfaConfigCommand({ UserPoolId: physicalId })),
+      `GetUserPoolMfaConfig(${physicalId}) before the MFA reset`
+    );
+    webAuthn = live.WebAuthnConfiguration;
+  } catch (error) {
+    // Debug only: the raw AWS message can carry account / role / session text
+    // (see `readLiveMfaConfiguration`).
+    this.logger.debug(
+      safeMsg`GetUserPoolMfaConfig failed for UserPool ${physicalId} before the MFA reset ` +
+        safeMsg`(${error instanceof Error ? error.name : typeof error}): ` +
+        safeMsg`${describeAwsFailure(error).detail}`
+    );
+    const aws = pasteableAwsCommand();
+    const region = await this.regionArg(aws);
+    if (onReadFailure === 'bare') {
+      this.logger.warn(
+        safeMsg`Cognito User Pool ${logicalId} (${physicalId}): cdkd could not read the pool's ` +
+          safeMsg`MFA configuration, so turning MFA OFF could not carry a WebAuthn (passkey) ` +
+          safeMsg`configuration the pool may hold; check it with ${aws`aws cognito-idp get-user-pool-mfa-config --user-pool-id ${physicalId}${region}`.render()}.`
+      );
+    } else {
+      this.logger.warn(
+        safeMsg`Cognito User Pool ${logicalId} (${physicalId}): cdkd could not read the pool's ` +
+          safeMsg`MFA configuration, so it did not reset the removed MFA factors (the reset would ` +
+          safeMsg`also drop a WebAuthn configuration it could not see). A removed factor such as ` +
+          safeMsg`the software token may still be enabled; check it with ${aws`aws cognito-idp get-user-pool-mfa-config --user-pool-id ${physicalId}${region}`.render()}.`
+      );
+      return;
+    }
+  }
+  const carriedFields =
+    webAuthn === undefined
+      ? {}
+      : {
+          ...(webAuthn.RelyingPartyId !== undefined && { RelyingPartyId: webAuthn.RelyingPartyId }),
+          ...(webAuthn.UserVerification !== undefined && {
+            UserVerification: webAuthn.UserVerification,
+          }),
+          ...(webAuthn.FactorConfiguration !== undefined && {
+            FactorConfiguration: webAuthn.FactorConfiguration,
+          }),
+        };
+  await this.retryOnTransientControlPlane(
+    () =>
+      this.getClient().send(
+        new SetUserPoolMfaConfigCommand({
+          UserPoolId: physicalId,
+          MfaConfiguration: 'OFF',
+          // An empty block is never sent: `{}` on this API is unmeasured.
+          ...(Object.keys(carriedFields).length > 0 && { WebAuthnConfiguration: carriedFields }),
+        })
+      ),
+    `SetUserPoolMfaConfig(${physicalId})`
   );
 }

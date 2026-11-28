@@ -89,7 +89,7 @@ codebuild-webhook	2026-11-02T13:36:25Z	PASS	111	verify.sh	rc ok, destroy 0 error
 codecommit	2026-11-26T02:19:01Z	PASS	241	verify.sh	PR7008 bbf2a7a62 us-east-1 rc ok, orph clean, clone-URL reader follows rename (#7001)
 codedeploy-lambda-deployment-group	2026-11-17T09:08:06Z	PASS	1182	verify.sh	rc ok, orph clean (#6437 PR #6483)
 cognito	2026-11-22T05:45:00Z	PASS	249	verify.sh	PR6814 2ae78b7f6, us-east-1, rc ok, orph clean
-cognito-custom-attribute-add	2026-11-06T16:03:49Z	PASS	70	verify.sh	post-hoc on main after #5861 split; rc ok, orph clean
+cognito-custom-attribute-add	2026-11-28T02:33:22Z	PASS	120	verify.sh	rc ok, orph clean (PR #7135, #7128, final head; pre-fix probe FAILED at Phase 2d with OFF True)
 cognito-identity-pool	2026-11-04T18:06:18Z	PASS	45	verify.sh	rc 0 in us-east-1, destroy clean, orph clean
 cognito-lambda-triggers	2026-11-04T18:05:31Z	PASS	60	verify.sh	rc 0 in us-east-1, destroy clean, orph clean
 cognito-remove-protection-temp-password	2026-11-18T11:13:31Z	PASS	122	verify.sh	rc ok, orph clean (PR #6551)

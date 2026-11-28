@@ -23,6 +23,7 @@ import {
   readDeclaredMfaConfiguration,
   hasMfaConfigProps,
   classifyDeclaredMfaConfiguration,
+  clearsRemovedMfaConfig,
 } from './mfa-request.js';
 import {
   ProvisioningError,
@@ -171,7 +172,8 @@ export function warnOnKeptRemovedMembers(
   logicalId: string,
   physicalId: string,
   properties: Record<string, unknown>,
-  previousProperties: Record<string, unknown>
+  previousProperties: Record<string, unknown>,
+  previousIsLiveReadback = false
 ): void {
   for (const [member, unset] of Object.entries(KEPT_ON_REMOVAL_MEMBERS)) {
     if (!declaresMember(previousProperties[member], unset)) continue;
@@ -183,7 +185,30 @@ export function warnOnKeptRemovedMembers(
         safeMsg`no reset. To change it, declare ${member} with the value you want.`
     );
   }
+  // WebAuthn (issue #7128): with no MFA-routed property left, no full-replace
+  // `SetUserPoolMfaConfig` goes out, and the factor reset carries the live
+  // WebAuthn block (`resetMfaConfigOff`), so a removed WebAuthn property stays
+  // on the pool. CloudFormation's result for that removal is unmeasured.
+  // Not on `drift --revert`: its previous side is the live readback, which
+  // fills the WebAuthn keys from any live block, so it names no removal.
+  if (previousIsLiveReadback || hasMfaConfigProps(properties)) return;
+  const keptWebAuthn = WEB_AUTHN_PROPERTIES.filter((key) => !!previousProperties[key]);
+  if (keptWebAuthn.length === 0) return;
+  const kept = keptWebAuthn.join(', ');
+  this.logger.warn(
+    safeMsg`Cognito User Pool ${logicalId} (${physicalId}): the template no longer declares ` +
+      safeMsg`${kept}, and with no MFA property left cdkd sends no WebAuthn change, so the pool ` +
+      safeMsg`keeps its current WebAuthn configuration. To change it, declare the WebAuthn ` +
+      safeMsg`properties with the values you want.`
+  );
 }
+
+/** The `AWS::Cognito::UserPool` properties `WebAuthnConfiguration` is built from. */
+const WEB_AUTHN_PROPERTIES = [
+  'WebAuthnRelyingPartyID',
+  'WebAuthnUserVerification',
+  'WebAuthnFactorConfiguration',
+] as const;
 
 /**
  * The `DcrConfiguration` an `UpdateUserPool` carries, or `undefined` to send
@@ -440,7 +465,13 @@ export async function update(
   // announcement cannot be lost to an unrelated update failure, and so it is
   // adjacent to the other pre-call announcements above.
   this.warnOnUnremovablePoliciesSubKeys(physicalId, properties, previousProperties);
-  this.warnOnKeptRemovedMembers(logicalId, physicalId, properties, previousProperties);
+  this.warnOnKeptRemovedMembers(
+    logicalId,
+    physicalId,
+    properties,
+    previousProperties,
+    context?.desiredFromAwsReadback === true
+  );
 
   // A template that drops `MfaConfiguration` and every factor property sends
   // no MFA member, which leaves MFA on; CloudFormation turns it OFF (issue
@@ -450,6 +481,10 @@ export async function update(
     !hasMfaConfigProps(properties)
       ? previousMfaOn(previousProperties)
       : '';
+  // A template that drops every factor under OFF leaves the factor blocks on
+  // the pool (issue #7128). Both arms send the same reset; the `else if`
+  // below sends it once.
+  const clearRemovedMfa = clearsRemovedMfaConfig(properties, previousProperties, mfaConfiguration);
 
   // The call ORDER (issue #3562): `SetUserPoolMfaConfig` goes first only for
   // the one measured shape that needs it -- see
@@ -657,6 +692,8 @@ export async function update(
     // rather than leaving a recorded MFA the pool no longer has.
     if (removedMfa !== '') {
       await this.turnOffRemovedMfa(logicalId, physicalId, removedMfa);
+    } else if (clearRemovedMfa) {
+      await this.resetMfaConfigOff(logicalId, physicalId, 'skip');
     }
 
     this.logger.debug(`Successfully updated Cognito User Pool ${logicalId}`);

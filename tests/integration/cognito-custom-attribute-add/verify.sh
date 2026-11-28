@@ -25,6 +25,12 @@
 #      refuses it (issue #5358: the change used to deploy "successfully" and
 #      be dropped; UpdateUserPool cannot carry it, so the live value is not
 #      re-read here — the refusal is the whole assertion).
+#   2c. Re-deploy with CDKD_TEST_MFA=optional (OPTIONAL software-token MFA).
+#   2d. Re-deploy with CDKD_TEST_MFA=off (`mfa: OFF`: EnabledMfas removed,
+#      MfaConfiguration OFF declared). Assert MFA is OFF with the software
+#      token NOT enabled, as CloudFormation ends, and `cdkd drift` is clean
+#      (issue #7128: UpdateUserPool OFF kept the factor enabled). A WebAuthn
+#      relying party set out of band in 2c must survive the reset.
 #   3. Destroy + assert the pool is gone and the cdkd state file is removed.
 #
 # Required env vars:
@@ -272,6 +278,63 @@ if ! grep -qF "UsernameConfiguration cannot be changed on an existing user pool"
 fi
 echo "    deploy refused (rc=${P2B_RC}) naming UsernameConfiguration"
 rm -f "${P2B_LOG}"
+
+# --- Phase 2c/2d: drop the MFA factor under an explicit OFF (issue #7128) ---
+echo "==> Phase 2c: re-deploy with OPTIONAL software-token MFA"
+CDKD_TEST_UPDATE=true CDKD_TEST_MFA=optional node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+MFA_P2C="$(mfa_state "${PID}")"
+if [ "${MFA_P2C}" != "$(printf 'OPTIONAL\tTrue')" ]; then
+  echo "FAIL: Phase 2c baseline: expected OPTIONAL with the software token enabled, got '${MFA_P2C}'" >&2
+  exit 1
+fi
+echo "    MFA OPTIONAL with the software token (${MFA_P2C})"
+# A WebAuthn relying party set out of band (the template declares none): the
+# Phase 2d reset must carry it, since a bare SetUserPoolMfaConfig OFF drops
+# the whole WebAuthnConfiguration (measured for #7128) and CloudFormation
+# keeps it. The call re-sends the deployed TOTP + OPTIONAL so only WebAuthn
+# changes.
+aws cognito-idp set-user-pool-mfa-config --user-pool-id "${PID}" --region "${REGION}" \
+  --mfa-configuration OPTIONAL --software-token-mfa-configuration Enabled=true \
+  --web-authn-configuration RelyingPartyId=example.com,UserVerification=required >/dev/null
+
+echo "==> Phase 2d: re-deploy with mfa: OFF (EnabledMfas removed, MfaConfiguration OFF)"
+CDKD_TEST_UPDATE=true CDKD_TEST_MFA=off node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+# `None` for the absent SoftwareTokenMfaConfiguration CloudFormation leaves;
+# `OFF True` is the pre-fix result (UpdateUserPool OFF keeps the factor).
+MFA_P2D="$(mfa_state "${PID}")"
+if [ "$(echo "${MFA_P2D}" | awk '{print $1}')" != "OFF" ] || [ "$(echo "${MFA_P2D}" | awk '{print $2}')" = "True" ]; then
+  echo "FAIL: the software-token factor is still enabled after EnabledMfas was removed under OFF (issue #7128), got '${MFA_P2D}'" >&2
+  exit 1
+fi
+echo "    MFA OFF and the software token cleared (${MFA_P2D})"
+RP_P2D="$(aws cognito-idp get-user-pool-mfa-config --user-pool-id "${PID}" --region "${REGION}" \
+  --query 'WebAuthnConfiguration.RelyingPartyId' --output text)"
+if [ "${RP_P2D}" != "example.com" ]; then
+  echo "FAIL: the MFA reset dropped the pool's WebAuthn relying party (issue #7128), got '${RP_P2D}'" >&2
+  exit 1
+fi
+echo "    WebAuthn relying party kept through the reset"
+set +e
+DRIFT_OUT="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)"
+DRIFT_RC=$?
+set -e
+if [ "${DRIFT_RC}" -ne 0 ]; then
+  printf '%s\n' "${DRIFT_OUT}" >&2
+  echo "FAIL: cdkd drift after Phase 2d exited ${DRIFT_RC} (1 = drift, 2 = command error)" >&2
+  exit 1
+fi
+# Both phrases: an all-unsupported run also prints "no drift detected".
+case "${DRIFT_OUT}" in
+  *"no drift detected"*) ;;
+  *) printf '%s\n' "${DRIFT_OUT}" >&2; echo "FAIL: cdkd drift after Phase 2d did not report 'no drift detected'" >&2; exit 1 ;;
+esac
+case "${DRIFT_OUT}" in
+  *"checked, 0 unsupported)"*) ;;
+  *) printf '%s\n' "${DRIFT_OUT}" >&2; echo "FAIL: cdkd drift after Phase 2d left the pool unsupported (compared nothing)" >&2; exit 1 ;;
+esac
+echo "    cdkd drift clean"
 
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy"
