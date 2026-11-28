@@ -571,6 +571,17 @@ A `NoEcho` parameter's value is masked the way a `cdkd deploy` stores it (see
 - **Outputs.** A declared output the parameter serves holds `***`, and so do
   its own export alias and any key no other output publishes that holds the
   same stored value. The exports index entry is converged onto `***`.
+- **Orphan and superseded records.** A record a rollback left behind, or one
+  a replacement has not deleted yet, is masked by the same rules. Its
+  positions are the ones it names itself, else the ones today's template names
+  for its logical id when the template declares it as the same type, else the
+  ones the live record of that logical id and type names. An `Fn::If` is read
+  on both branches. A record none of these position is not masked by value: it
+  is reported
+  ([A leftover record has no known NoEcho positions](cli-scrub-findings.md#a-leftover-record-has-no-known-noecho-positions)).
+  An unchanged `cdkd deploy` also saves such a record while it still holds a
+  value at a position its own field or today's template names, so the save
+  masks it.
 - **Not found:** a value at a position a record that names no positions no
   longer reads. A `cdkd deploy` of the stack masks it.
 

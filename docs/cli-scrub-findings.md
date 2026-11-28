@@ -116,6 +116,28 @@ contains a secret's value from before the secret was rotated, which scrub
 cannot match. See
 [A name built around a secret that has since been rotated](cli-scrub-multi-stack.md#a-name-built-around-a-secret-that-has-since-been-rotated).
 
+### A leftover record has no known NoEcho positions
+
+The message contains this text:
+
+```text
+N orphan or superseded record(s) in <stack> name no NoEcho positions scrub can verify
+```
+
+State keeps a record of a resource a rollback left behind (an orphan) or a
+replacement has not deleted yet (a superseded record). Scrub masks a `NoEcho`
+value in such a record at the positions the record itself names, or that
+today's template names for its logical id, or that the live record of that id
+names. This record matches none of them: its logical id has left the template
+or has another type there, and it names no positions of its own. A cdkd older
+than state schema v11 wrote no positions, so a `NoEcho` value may sit in its
+properties in plaintext, and scrub does not guess which value it is. Scrub
+reports this only for a stack whose template declares a `NoEcho` parameter, or
+whose records name `NoEcho` positions or attributes.
+
+Check the record in the state file by hand. Running scrub again does not
+change the finding while the record is kept.
+
 ### A leftover output key was kept
 
 The message ends with `were LEFT as they are`.

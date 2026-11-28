@@ -52,7 +52,9 @@ template.
   configuration that cdkd keeps for `cdkd drift`.
 - `orphans`: records of resources that a rollback left in AWS because their
   `DeletionPolicy` is `Retain`. Scrub checks these even when you have since
-  removed the resource from the app.
+  removed the resource from the app. It masks a `NoEcho` value in them too,
+  and in a superseded record (one a replacement has not deleted yet), where
+  it can tell the position.
 - `outputs`: the stack's output values. See [Stack outputs](#stack-outputs).
 - The names of exports and outputs the stack read from other stacks. See
   [Names of values read from another stack](cli-scrub-multi-stack.md#names-of-values-read-from-another-stack).
