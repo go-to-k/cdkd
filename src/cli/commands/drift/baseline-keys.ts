@@ -39,6 +39,12 @@ import {
   declaredTagsReadback,
   tagsMatchDeclared,
 } from '../../../provisioning/tags-own-write-baseline.js';
+import {
+  efsBackupPolicyIsDeclared,
+  instanceMetadataOptionsIsDeclared,
+  instanceMonitoringIsDeclared,
+  instanceProfileIsDeclared,
+} from './transitional-read-heals.js';
 
 /**
  * Per resource type, the top-level keys drift never compares unless the
@@ -294,6 +300,30 @@ export function undeclaredUncomparedDriftKeys(resourceType: string, properties: 
  * AppSync provider's `canonicalizeDriftPair` reads the declared object and
  * heals that baseline instead (go-to-k/cdkd#7139): an S3 read this
  * synchronous, call-free rule cannot make.
+ *
+ * Fifth rule (go-to-k/cdkd#7132): a member whose post-update baseline was read
+ * while AWS still answered a transitional value — `AWS::EC2::Instance`
+ * `Monitoring` (right after `MonitorInstances` the read said `disabled`, after
+ * `UnmonitorInstances` `enabled`), `IamInstanceProfile` (the association still
+ * `associating`, so the old profile or none), `MetadataOptions` (State
+ * `pending`, old values), and `AWS::EFS::FileSystem` `BackupPolicy` (`Status`
+ * `ENABLING` / `DISABLING`, which `--revert` would send and AWS refuses). A
+ * no-change deploy never re-reads, so stacks deployed before #7132 keep that
+ * baseline. The key is not compared while the live member is the DECLARED one
+ * as the provider's read spells it: `Monitoring` through `coerceCfnBoolean`;
+ * `IamInstanceProfile` on an exact match or on a declared plain name equal to
+ * the last segment of the live `:instance-profile/` ARN (a path-qualified
+ * declared name keeps it compared); `MetadataOptions` on every declared member
+ * (scalars compared as text) AND every undeclared member reading as the
+ * baseline recorded it, so an out-of-band hop-limit change stays reported;
+ * `BackupPolicy` on the declared `Status`. A member the template leaves out
+ * never heals, and a live member that differs from the template is compared
+ * as before. As in the fourth rule the baseline is not consulted (a baseline
+ * equal to the template reports nothing either way). What the rule cannot
+ * tell apart: a baseline `drift --accept` wrote for an out-of-band change that
+ * was later undone outside cdkd, putting the member back to the template —
+ * not reported, which CloudFormation, comparing with the template, would not
+ * report either.
  */
 export function preFixBaselineUncomparedDriftKeys(
   resourceType: string,
@@ -332,7 +362,7 @@ function preFixBaselineKeys(
     const bag = properties as Record<string, unknown>;
     return [
       ...(staleTablePolicyBaseline(observed, bag, aws) ? ['ResourcePolicy'] : []),
-      ...(tagsHeal.liveIsDeclared(bag, aws) ? [tagsHeal.key] : []),
+      ...(tagsHeal.liveIsDeclared(bag, aws, observed) ? [tagsHeal.key] : []),
     ];
   }
   if (resourceType === 'AWS::SQS::QueuePolicy' || resourceType === 'AWS::SNS::TopicPolicy') {
@@ -353,7 +383,9 @@ function preFixBaselineKeys(
   const members = OWN_WRITE_MEMBERS.get(resourceType);
   if (members !== undefined) {
     return members
-      .filter((member) => member.liveIsDeclared(properties as Record<string, unknown>, aws))
+      .filter((member) =>
+        member.liveIsDeclared(properties as Record<string, unknown>, aws, observed)
+      )
       .map((member) => member.key);
   }
   if (resourceType !== 'AWS::Lambda::EventSourceMapping') return [];
@@ -374,7 +406,11 @@ function preFixBaselineKeys(
  */
 type OwnWriteHeal = {
   key: string;
-  liveIsDeclared: (properties: Record<string, unknown>, aws: Record<string, unknown>) => boolean;
+  liveIsDeclared: (
+    properties: Record<string, unknown>,
+    aws: Record<string, unknown>,
+    observed: Record<string, unknown>
+  ) => boolean;
 };
 
 /** A declared document member, matched as the settle matches it. */
@@ -488,6 +524,14 @@ const OWN_WRITE_MEMBERS: ReadonlyMap<string, readonly OwnWriteHeal[]> = new Map(
           return efsPolicyMatchesDeclared(aws['FileSystemPolicy'], declared);
         },
       },
+      // Fifth rule (go-to-k/cdkd#7132): a baseline read as `ENABLING` / `DISABLING`.
+      { key: 'BackupPolicy', liveIsDeclared: efsBackupPolicyIsDeclared },
+    ],
+    // Fifth rule (go-to-k/cdkd#7132): baselines read while the update was still settling.
+    'AWS::EC2::Instance': [
+      { key: 'Monitoring', liveIsDeclared: instanceMonitoringIsDeclared },
+      { key: 'IamInstanceProfile', liveIsDeclared: instanceProfileIsDeclared },
+      { key: 'MetadataOptions', liveIsDeclared: instanceMetadataOptionsIsDeclared },
     ],
     'AWS::S3::Bucket': [
       {
@@ -538,9 +582,9 @@ const OWN_WRITE_MEMBERS: ReadonlyMap<string, readonly OwnWriteHeal[]> = new Map(
     'AWS::IAM::Policy': [
       {
         key: 'PolicyDocument',
-        liveIsDeclared: (properties, aws) =>
+        liveIsDeclared: (properties, aws, observed) =>
           readHadAgreeingCopies(aws) &&
-          documentHeal('PolicyDocument').liveIsDeclared(properties, aws),
+          documentHeal('PolicyDocument').liveIsDeclared(properties, aws, observed),
       },
       {
         key: 'PolicyName',
