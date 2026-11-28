@@ -185,6 +185,7 @@ export async function recreateFailedReplacedDeleted(s: ReplacedDeletedScope): Pr
         ),
       },
       secrets,
+      new Set([ctx.region, s.stackName]),
       prevRecord.properties,
       prevRecord.attributes
     )

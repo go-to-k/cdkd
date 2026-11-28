@@ -411,10 +411,16 @@ export async function resolveLeafByRegion(
  *
  * When the op resolved no secret, only the go-to-k/cdkd#7153 attribute-key
  * drop runs (a `NoEcho` attribute value is a needle of its own).
+ *
+ * `publicTokens` is the stack's region and name, as the deploy engine's persist
+ * passes them: a `NoEcho` attribute value equal to either is not a needle, so a
+ * fresh public key that merely spells the stack name (`Arn-<stack>`) is kept.
+ * Required, so that no restore arm can forget it.
  */
 export function redactRollbackRecord(
   record: ResourceState,
   secrets: RecordedSecretValues,
+  publicTokens: ReadonlySet<string>,
   journaledProps?: Record<string, unknown>,
   journaledAttributes?: Record<string, unknown>
 ): ResourceState {
@@ -427,7 +433,13 @@ export function redactRollbackRecord(
   const persistedAttributeNames =
     journaledAttributes === undefined ? undefined : new Set(Object.keys(journaledAttributes));
   if (secrets.size === 0) {
-    return withSecretAttributeKeysDropped(record, record, secrets, persistedAttributeNames);
+    return withSecretAttributeKeysDropped(
+      record,
+      record,
+      secrets,
+      persistedAttributeNames,
+      publicTokens
+    );
   }
   // Deliberately NOT passed as `sourceProperties`: that parameter means "a
   // TEMPLATE bag", which suppresses the trust-any-expression relaxation a state
@@ -465,7 +477,8 @@ export function redactRollbackRecord(
     }),
     record,
     secrets,
-    persistedAttributeNames
+    persistedAttributeNames,
+    publicTokens
   );
 }
 

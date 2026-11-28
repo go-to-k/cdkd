@@ -134,6 +134,7 @@ describe('rollback replay pinning (go-to-k/cdkd#4852)', () => {
     const persisted = redactRollbackRecord(
       { ...record, properties: resolved! },
       secrets,
+      new Set<string>(),
       record.properties
     );
     expect(persisted.properties).toEqual(props);

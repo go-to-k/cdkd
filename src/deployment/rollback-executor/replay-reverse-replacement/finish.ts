@@ -269,6 +269,7 @@ export async function finishReverseReplacement(
         ),
       },
       secrets,
+      new Set([ctx.region, stackName]),
       prevRecord.properties,
       // Read only as evidence of what was persisted, never copied in: a new
       // attribute identical to a plaintext old one stays plaintext (#4801).

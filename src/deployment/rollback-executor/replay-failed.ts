@@ -831,6 +831,7 @@ export async function replayFailedOperationsUnbound(
                 op.nameGeneration
               ),
               secrets,
+              new Set([ctx.region, stackName]),
               prev.properties,
               prev.attributes
             ),

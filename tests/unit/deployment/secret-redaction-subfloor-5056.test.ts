@@ -257,6 +257,7 @@ describe('a sub-floor secret in a rollback-restored record (state-derived)', () 
         effectiveProperties: markSameGenerationBag({ ...restored }),
       }),
       secrets,
+      new Set<string>(),
       journaled,
       {}
     );
@@ -268,6 +269,7 @@ describe('a sub-floor secret in a rollback-restored record (state-derived)', () 
         effectiveProperties: { ...restored },
       }),
       secrets,
+      new Set<string>(),
       journaled,
       {}
     );
@@ -283,6 +285,7 @@ describe('a sub-floor secret in a rollback-restored record (state-derived)', () 
         effectiveProperties: { Url: 'pin=y8;host=prod' },
       }),
       secrets,
+      new Set<string>(),
       journaled,
       {}
     );

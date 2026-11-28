@@ -320,7 +320,7 @@ async function written(
         }
       );
       const out = maskRestoredNoEchoRecord(
-        redactRollbackRecord(refreshed, s.secrets, baseline.properties, baseline.attributes),
+        redactRollbackRecord(refreshed, s.secrets, new Set<string>(), baseline.properties, baseline.attributes),
         baseline
       );
       return { record: out, properties: out.properties };

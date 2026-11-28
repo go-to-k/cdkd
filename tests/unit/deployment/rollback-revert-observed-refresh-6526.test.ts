@@ -403,7 +403,7 @@ describe('withRefreshedObservedBaseline (go-to-k/cdkd#6526)', () => {
       attributes: { Token: token, [`Key.${token}`]: 1 },
       noEchoAttributeNames: ['Token'],
     };
-    const out = redactRollbackRecord(record, new Map(), {}, { Token: '***' });
+    const out = redactRollbackRecord(record, new Map(), new Set<string>(), {}, { Token: '***' });
     expect(Object.keys(out.attributes ?? {})).toEqual(['Token']);
     expect(out.noEchoAttributeNames).toEqual(['Token']);
   });
@@ -416,12 +416,39 @@ describe('withRefreshedObservedBaseline (go-to-k/cdkd#6526)', () => {
       properties: {},
       attributes: { [`New.${secret}`]: 'v', [`Kept.${secret}`]: 'w', Plain: 'ok' },
     };
-    const out = redactRollbackRecord(record, new Map([[secret, '{{resolve:ssm-secure:/k}}']]), {}, {
+    const out = redactRollbackRecord(record, new Map([[secret, '{{resolve:ssm-secure:/k}}']]), new Set<string>(), {}, {
       [`Kept.${secret}`]: 'w',
       Plain: 'ok',
     });
     expect(Object.keys(out.attributes ?? {})).toEqual([`Kept.${secret}`, 'Plain']);
   });
+
+  it.each([
+    ['resolved no secret', new Map<string, string>()],
+    ['resolved a secret', new Map([['unrelated-s3cret-7162', '{{resolve:ssm-secure:/k}}']])],
+  ])(
+    'a restore that %s keeps a fresh public key spelling the stack name a NoEcho attribute equals (go-to-k/cdkd#7162)',
+    (_arm, secrets) => {
+      // A `NoEcho` attribute whose value IS the stack name (or region) is no
+      // needle, as on the deploy engine's persist: the public key stays.
+      const stackName = 'Stack7158';
+      const record: ResourceState = {
+        physicalId: 'cr-1',
+        resourceType: 'Custom::X',
+        properties: {},
+        attributes: { Token: stackName, [`Arn-${stackName}`]: 'arn' },
+        noEchoAttributeNames: ['Token'],
+      };
+      const out = redactRollbackRecord(
+        record,
+        secrets,
+        new Set(['us-east-1', stackName]),
+        {},
+        { Token: '***' }
+      );
+      expect(Object.keys(out.attributes ?? {})).toEqual(['Token', `Arn-${stackName}`]);
+    }
+  );
 
   it('never aliases the object the provider returned', async () => {
     const live = { ...RESTORED_LIVE };

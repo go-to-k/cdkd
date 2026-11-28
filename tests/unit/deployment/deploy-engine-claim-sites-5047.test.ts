@@ -127,7 +127,8 @@ describe('engine writers state the mark as the claim, in both directions (#5047)
           properties: { Url: FRAMED_SOURCE },
           observedProperties: marked ? markSameGenerationBag(observed) : observed,
         } as never,
-        pass()
+        pass(),
+        new Set<string>()
       ).observedProperties;
     };
     expect(restore(true)).toEqual({ Url: FRAMED_PERSISTED });

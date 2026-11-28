@@ -721,6 +721,7 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
         publicTokens: new Set([ctx.region, stackName]),
       }),
       secrets,
+      new Set([ctx.region, stackName]),
       previousState.properties,
       previousState.attributes
     ),

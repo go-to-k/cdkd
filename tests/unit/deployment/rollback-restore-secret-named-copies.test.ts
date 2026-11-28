@@ -359,7 +359,7 @@ describe('redactRollbackRecord keeps only what the previous record persisted (#4
       },
       attributes: { Url: URL, Arn: ARN },
     };
-    const out = redactRollbackRecord(restored, secrets(), prev.properties, prev.attributes);
+    const out = redactRollbackRecord(restored, secrets(), new Set<string>(), prev.properties, prev.attributes);
     expect(out.properties).toEqual(prev.properties);
     expect(out.attributes).toEqual({ Url: URL, Arn: ARN_REF });
   });
@@ -372,7 +372,7 @@ describe('redactRollbackRecord keeps only what the previous record persisted (#4
       properties: { Queues: [echoed], PolicyDocument: prev.properties['PolicyDocument'] },
       attributes: { Url: `${URL}/new`, Arn: ARN, Tag: `tag-${NAME}` },
     };
-    const out = redactRollbackRecord(restored, secrets(), prev.properties, prev.attributes);
+    const out = redactRollbackRecord(restored, secrets(), new Set<string>(), prev.properties, prev.attributes);
     expect(out.properties['Queues']).toEqual([`${echoed.replace(NAME, REF)}`]);
     // `Url` holds the record's OWN physical id, stored in plaintext beside it,
     // so the scan keeps that copy (go-to-k/cdkd#4849); `Tag` differs from the
@@ -391,6 +391,7 @@ describe('redactRollbackRecord keeps only what the previous record persisted (#4
     const out = redactRollbackRecord(
       { ...prev, properties: { Name: NAME, Copy: URL } },
       secrets(),
+      new Set<string>(),
       prev.properties,
       prev.attributes
     );
@@ -403,7 +404,7 @@ describe('redactRollbackRecord keeps only what the previous record persisted (#4
     // the redaction's, whatever it held.
     const mixed = `${REF}-${NAME}`;
     const prev: ResourceState = { ...previous(), properties: { Mixed: mixed }, attributes: {} };
-    const out = redactRollbackRecord(prev, secrets(), prev.properties, prev.attributes);
+    const out = redactRollbackRecord(prev, secrets(), new Set<string>(), prev.properties, prev.attributes);
     expect(out.properties).toEqual({ Mixed: `${REF}-${REF}` });
   });
 
@@ -415,6 +416,7 @@ describe('redactRollbackRecord keeps only what the previous record persisted (#4
     const out = redactRollbackRecord(
       { ...prev, properties: { Data: masked } },
       map,
+      new Set<string>(),
       prev.properties,
       prev.attributes
     );
@@ -425,7 +427,7 @@ describe('redactRollbackRecord keeps only what the previous record persisted (#4
     const prev = previous();
     const before = structuredClone(prev);
     // The no-`effectiveProperties` arm: the record IS the previous one.
-    const out = redactRollbackRecord(prev, secrets(), prev.properties, prev.attributes);
+    const out = redactRollbackRecord(prev, secrets(), new Set<string>(), prev.properties, prev.attributes);
     expect(prev).toEqual(before);
     expect(out.properties).toEqual(before.properties);
     expect(out.attributes).toEqual(before.attributes);
@@ -440,6 +442,7 @@ describe('redactRollbackRecord keeps only what the previous record persisted (#4
     const out = redactRollbackRecord(
       { ...prev, properties: JSON.parse(JSON.stringify(prev.properties)) },
       secrets(),
+      new Set<string>(),
       prev.properties,
       prev.attributes
     );
