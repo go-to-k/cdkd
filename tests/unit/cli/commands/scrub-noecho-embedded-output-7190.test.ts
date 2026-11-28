@@ -103,7 +103,9 @@ describe('cdkd scrub - an output embedding a NoEcho value keeps its literal text
     const tpl = template({ Emb: { Value: JOIN } });
     const state = stateWith({ Emb: 'token=***;' });
     const saved = await scrub(state, tpl);
-    const outputs = (saved ?? state).outputs;
+    // Nothing to repair, so nothing is written.
+    expect(saved).toBeUndefined();
+    const outputs = state.outputs;
     expect(outputs['Emb']).toBe('token=***;');
     // The diff's own comparison, against what the template resolves to.
     const compare = noEchoOutputsComparison(
