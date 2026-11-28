@@ -190,6 +190,38 @@ describe('cdkd scrub - NoEcho plaintext in an orphan or superseded record (go-to
     expect(saved!.orphans![0]!.state.properties['Note']).toBe('***');
   });
 
+  it('takes no needle from a list item whose other branch is AWS::NoValue', async () => {
+    // The NoValue verdict drops the item, and the record holds the public rest.
+    const prefix = 'public-prefix-7191';
+    const info = stackInfo();
+    info.template.Conditions = { UseSecret: { 'Fn::Equals': ['a', 'a'] } };
+    info.template.Resources!['Db']!.Properties!['Password'] = {
+      'Fn::Join': ['', [prefix, { 'Fn::If': ['UseSecret', { Ref: 'Pw' }, { Ref: 'AWS::NoValue' }] }]],
+    };
+    const { saved } = await scrub(
+      stateWith({ orphans: [{ logicalId: 'Db', orphanedAt: 1, state: preV11(prefix) }] }),
+      info
+    );
+    expect(saved!.orphans![0]!.state.properties['Note']).toBe(`note-${prefix}`);
+  });
+
+  it('takes no needle from a bare list whose NoValue item the record dropped', async () => {
+    const literal = 'public-literal-7191';
+    const info = stackInfo();
+    info.template.Conditions = { UseSecret: { 'Fn::Equals': ['a', 'a'] } };
+    info.template.Resources!['Db']!.Properties!['Tags'] = [
+      { 'Fn::If': ['UseSecret', { Ref: 'Pw' }, { Ref: 'AWS::NoValue' }] },
+      literal,
+    ];
+    const record = preV11(SHORT);
+    record.properties = { Password: SHORT, Name: 'public', Note: `note-${literal}`, Tags: [literal] };
+    const { saved } = await scrub(
+      stateWith({ orphans: [{ logicalId: 'Db', orphanedAt: 1, state: record }] }),
+      info
+    );
+    expect(saved!.orphans![0]!.state.properties['Note']).toBe(`note-${literal}`);
+  });
+
   it('keeps an Fn::If position a needle when no branch spells its value out', async () => {
     const info = stackInfo();
     info.template.Parameters!['Pw2'] = { Type: 'String', NoEcho: true, Default: SHORT };

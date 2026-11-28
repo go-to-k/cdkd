@@ -254,16 +254,16 @@ function needleCoordinatesOf(
     const keys = keysUnder(collapsed, conditions);
     needles = needles === undefined ? keys : new Set([...needles].filter((key) => keys.has(key)));
   }
-  return needles ?? new Set();
+  return needles!;
 }
 
 /**
  * `node` with an `Fn::If` one of whose branches is `{ Ref: 'AWS::NoValue' }`
- * replaced by its other branch; every condition name an `Fn::If` reads is
+ * replaced by its other branch where it is a whole value (not a list item); every condition name an `Fn::If` reads is
  * added to `names`, and one that names none by a string is dropped (`null`).
  */
-function collapseNoValueBranches(node: unknown, names: Set<string>): unknown {
-  if (Array.isArray(node)) return node.map((item) => collapseNoValueBranches(item, names));
+function collapseNoValueBranches(node: unknown, names: Set<string>, asValue = true): unknown {
+  if (Array.isArray(node)) return node.map((item) => collapseNoValueBranches(item, names, false));
   if (node === null || typeof node !== 'object') return node;
   const record = node as Record<string, unknown>;
   const branches = record['Fn::If'];
@@ -274,20 +274,23 @@ function collapseNoValueBranches(node: unknown, names: Set<string>): unknown {
       branch !== null &&
       typeof branch === 'object' &&
       (branch as Record<string, unknown>)['Ref'] === 'AWS::NoValue';
-    if (noValue(whenFalse)) return collapseNoValueBranches(whenTrue, names);
-    if (noValue(whenTrue)) return collapseNoValueBranches(whenFalse, names);
+    // Only a whole value: in a list the NoValue verdict drops the element and
+    // the record holds the rest, so the branch stays to be enumerated.
+    if (asValue && noValue(whenFalse)) return collapseNoValueBranches(whenTrue, names);
+    if (asValue && noValue(whenTrue)) return collapseNoValueBranches(whenFalse, names);
     names.add(condition);
     return {
       'Fn::If': [
         condition,
-        collapseNoValueBranches(whenTrue, names),
-        collapseNoValueBranches(whenFalse, names),
+        collapseNoValueBranches(whenTrue, names, asValue),
+        collapseNoValueBranches(whenFalse, names, asValue),
       ],
     };
   }
   const out: Record<string, unknown> = nullPrototypeRecord();
-  for (const [key, inner] of Object.entries(record))
+  for (const [key, inner] of Object.entries(record)) {
     out[key] = collapseNoValueBranches(inner, names);
+  }
   return out;
 }
 
