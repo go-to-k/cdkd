@@ -12,6 +12,7 @@ import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import { enclosingDeadlineRemainingMs } from '../../../deployment/resource-deadline.js';
 import type { SecretMasker } from '../../../types/resource.js';
 import type { DynamoDBTableProvider } from '../dynamodb-table-provider.js';
+import { waitForKinesisEnableActive } from '../dynamodb-settle-waits.js';
 import {
   KINESIS_DESTINATION_PRE_UPDATE_POLLS,
   KINESIS_DESTINATION_SETTLE_POLLS,
@@ -127,6 +128,15 @@ export async function applyKinesisStreamingDestination(
     );
     this.logger.debug(
       maskSecrets(`Enabled Kinesis streaming destination ${newArn} on DynamoDB table ${tableName}`)
+    );
+    // go-to-k/cdkd#7132: the enable answers ENABLING, and CloudFormation
+    // completes only once the destination reads ACTIVE.
+    await waitForKinesisEnableActive(
+      this.dynamoDBClient,
+      tableName,
+      newArn,
+      `DynamoDB table ${tableName}`,
+      { maskSecrets, debug: (message) => this.logger.debug(message) }
     );
   }
 }

@@ -118,7 +118,9 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
   'cloudfront:UpdateDistribution': byDesign(
     '`Deployed` changes only when edges serve; the default returns and --full-wait waits (#1282, docs/cli-deploy.md wait table); the disable before a delete always waits'
   ),
-  'cloudtrail:StartLogging': unmeasured(NO_WAIT),
+  'cloudtrail:StartLogging': byDesign(
+    'settled when AWS answers: GetTrailStatus read IsLogging true on the first read after the call (3 of 3, ~0.2 s); CloudFormation completes with it true (#7132)'
+  ),
   'codebuild:CreateWebhook': unmeasured(NO_WAIT),
   'codebuild:UpdateWebhook': unmeasured(NO_WAIT),
   'docdb:CreateDBCluster': waits(['waitForClusterAvailable'], DB_TERMINAL, DEFERRED),
@@ -162,11 +164,15 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
     [],
     'best effort: warns on its cap'
   ),
-  'dynamodb:EnableKinesisStreamingDestination': unmeasured(
-    `${NO_WAIT} (the destination answers ENABLING)`
+  'dynamodb:EnableKinesisStreamingDestination': waits(
+    ['waitForKinesisEnableActive'],
+    ['ENABLE_FAILED', 'DISABLED / absent after the stale-read grace'],
+    '--no-wait skips it (docs/cli-deploy.md); CloudFormation completes only once the destination reads ACTIVE (#7132)'
   ),
-  'dynamodb:UpdateContributorInsights': unmeasured(
-    `${NO_WAIT}; the answer is ENABLING / DISABLING. #6778 fixed the drift baseline, not the wait`
+  'dynamodb:UpdateContributorInsights': waits(
+    ['waitForContributorInsightsSettled'],
+    ['FAILED', 'the opposite status after the stale-read grace'],
+    'table and index; --no-wait skips it (docs/cli-deploy.md); CloudFormation completes only once it reads ENABLED / DISABLED (#7132)'
   ),
   'dynamodb:UpdateKinesisStreamingDestination': unmeasured(
     'AWS::DynamoDB::Table waits (waitForKinesisDestinationSettled); AWS::DynamoDB::GlobalTable does not'
@@ -284,8 +290,12 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
     'STORAGE_OPTIMIZATION is not waited for'
   ),
   'glue:CreateConnection': unmeasured(NO_WAIT),
-  'glue:StartCrawlerSchedule': unmeasured(NO_WAIT),
-  'glue:StartTrigger': unmeasured(NO_WAIT),
+  'glue:StartCrawlerSchedule': byDesign(
+    'sent by no create / update / delete (only the exported startSchedule()); settled when AWS answers: GetCrawler read SCHEDULED on the first read after the call (3 of 3) (#7132)'
+  ),
+  'glue:StartTrigger': byDesign(
+    'settled when AWS answers: GetTrigger read ACTIVATED on the first read after the call (3 of 3, ~0.2 s); CloudFormation completes an update with the trigger ACTIVATED (#7132)'
+  ),
   'glue:UpdateTrigger': unmeasured(`${NO_WAIT} (it waits only for the deactivation before)`),
   'kinesis:RegisterStreamConsumer': waits(
     ['waitForConsumerActive'],
@@ -323,8 +333,10 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
   'lambda-web:CreateWebFunctionEndpoint': waits(['waitForSettled'], ['Failed'], 'every mode'),
   'lambda-web:CreateWebFunctionRevision': waits(['waitForActive'], ['Failed'], 'every mode'),
   'lambda-web:UpdateWebFunctionEndpoint': waits(['waitForSettled'], ['Failed']),
-  'lambda:CreateEventSourceMapping': unmeasured(
-    'returns while the mapping is Creating; #5737 fixed the drift baseline, not the wait'
+  'lambda:CreateEventSourceMapping': waits(
+    ['waitForMappingSettled'],
+    ['Deleting / an unknown state'],
+    '--no-wait skips it (docs/cli-deploy.md); CloudFormation completes only once the mapping leaves Creating (#7132); Disabled where Enabled was asked: warns, unmeasured'
   ),
   'lambda:CreateFunction': byDesign(
     'Pending is accepted by every dependent except a synchronous invoke and a Lambda target group, which wait themselves; waiting for Active doubled benchmark deploys (lambda-function/create.ts comment, #5002); a capacity-provider or RuntimeManagementConfig create waits'
@@ -334,7 +346,11 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
   ),
   'lambda:PublishVersion': waits(['waitForLatestPublishedSettled'], ['Failed']),
   'lambda:PutFunctionScalingConfig': waits(['waitForLatestPublishedSettled'], ['Failed']),
-  'lambda:UpdateEventSourceMapping': unmeasured(NO_WAIT),
+  'lambda:UpdateEventSourceMapping': waits(
+    ['waitForMappingSettled'],
+    ['Deleting / an unknown state'],
+    '--no-wait skips it (docs/cli-deploy.md); CloudFormation completes only once the mapping leaves Updating (#7132); the opposite of a sent Enabled: warns, unmeasured'
+  ),
   'lambda:UpdateFunctionCode': waits(['waitForFunctionUpdated'], ['Failed']),
   'lambda:UpdateFunctionConfiguration': waits(
     ['waitForFunctionUpdated', 'waitForBackingFunctionUpdated'],

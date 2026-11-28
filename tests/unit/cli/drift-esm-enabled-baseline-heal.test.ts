@@ -110,8 +110,13 @@ const QUEUE_ARN = 'arn:aws:sqs:us-east-1:123456789012:jobs.fifo';
 const ESM_ARN = `arn:aws:lambda:us-east-1:123456789012:event-source-mapping:${UUID}`;
 
 /** The live mapping: `State` plus a `BatchSize` a case can drift. */
-function stubLambda(state: string, batchSize = 10): void {
-  mockLambdaSend.mockImplementation(async (command: { constructor: { name: string } }) => {
+function stubLambda(initialState: string, batchSize = 10): void {
+  // An update that sends `Enabled` moves the mapping to that settled state, as
+  // the wait after the update expects to read it, after one `Updating` read
+  // (the update answers `Updating`, so the wait needs to see it settle).
+  let state = initialState;
+  let updating = false;
+  mockLambdaSend.mockImplementation(async (command: { constructor: { name: string }; input?: { Enabled?: boolean } }) => {
     switch (command.constructor.name) {
       case 'GetEventSourceMappingCommand':
         return {
@@ -120,11 +125,13 @@ function stubLambda(state: string, batchSize = 10): void {
           EventSourceArn: QUEUE_ARN,
           EventSourceMappingArn: ESM_ARN,
           BatchSize: batchSize,
-          State: state,
+          State: updating ? ((updating = false), 'Updating') : state,
         };
       case 'ListTagsCommand':
         return { Tags: {} };
       case 'UpdateEventSourceMappingCommand':
+        if (command.input?.Enabled !== undefined) state = command.input.Enabled ? 'Enabled' : 'Disabled';
+        updating = true;
         return { UUID, EventSourceMappingArn: ESM_ARN, State: 'Updating' };
       default:
         return {};

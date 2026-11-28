@@ -344,7 +344,15 @@ describe('DynamoDBTableProvider backfill (#609)', () => {
       mockSend
         .mockResolvedValueOnce({}) // CreateTable
         .mockResolvedValueOnce(activeTable()) // waitForTableActive
-        .mockResolvedValueOnce({}); // EnableKinesisStreamingDestination
+        .mockResolvedValueOnce({}) // EnableKinesisStreamingDestination
+        .mockResolvedValueOnce({
+          KinesisDataStreamDestinations: [
+            {
+              StreamArn: 'arn:aws:kinesis:us-east-1:123456789012:stream/s1',
+              DestinationStatus: 'ACTIVE',
+            },
+          ],
+        }); // DescribeKinesisStreamingDestination (the wait after the enable)
 
       await provider.create('MyTable', 'AWS::DynamoDB::Table', {
         ...baseCreateProps,
@@ -372,7 +380,11 @@ describe('DynamoDBTableProvider backfill (#609)', () => {
       mockSend
         .mockResolvedValueOnce(activeTable()) // DescribeTable
         .mockResolvedValueOnce({}) // Disable
-        .mockResolvedValueOnce({}); // Enable
+        .mockResolvedValueOnce({}) // Describe (the wait for the disable)
+        .mockResolvedValueOnce({}) // Enable
+        .mockResolvedValueOnce({
+          KinesisDataStreamDestinations: [{ StreamArn: 'arn:new', DestinationStatus: 'ACTIVE' }],
+        }); // Describe (the wait after the enable)
 
       await provider.update(
         'MyTable',
@@ -793,12 +805,13 @@ describe('DynamoDBTableProvider backfill (#609)', () => {
       it('waits before enabling the new stream when the ARN changes', async () => {
         vi.useFakeTimers();
         try {
-          route([read([OLD, 'ACTIVE']), read()]);
+          route([read([OLD, 'ACTIVE']), read(), read([NEW, 'ACTIVE'])]);
           const done = runUpdate(OLD, NEW);
           await vi.advanceTimersByTimeAsync(10_000);
           await done;
 
-          expect(order).toEqual(['disable', 'describe', 'describe', 'enable']);
+          // The last read is the wait after the enable (#7132).
+          expect(order).toEqual(['disable', 'describe', 'describe', 'enable', 'describe']);
         } finally {
           vi.useRealTimers();
         }
@@ -891,13 +904,14 @@ describe('DynamoDBTableProvider backfill (#609)', () => {
       });
 
       it('reads nothing when nothing was disabled', async () => {
-        route([read([OLD, 'ACTIVE'])]);
+        route([read([NEW, 'ACTIVE'])]);
 
         await runUpdate(undefined, NEW);
         await runUpdate(NEW, NEW);
 
-        expect(order).toEqual(['enable']);
-        expect(commandSent(DescribeKinesisStreamingDestinationCommand)).toBe(false);
+        // Only the wait after the enable (#7132) reads; nothing waits on a disable.
+        expect(order).toEqual(['enable', 'describe']);
+        expect(countOfCommand(DescribeKinesisStreamingDestinationCommand)).toBe(1);
       });
     });
   });
@@ -1241,7 +1255,8 @@ describe('DynamoDBTableProvider backfill (#609)', () => {
       mockSend
         .mockResolvedValueOnce({}) // CreateTable
         .mockResolvedValueOnce(activeTable()) // waitForTableActive
-        .mockResolvedValueOnce({}); // UpdateContributorInsights
+        .mockResolvedValueOnce({}) // UpdateContributorInsights
+        .mockResolvedValueOnce({ ContributorInsightsStatus: 'ENABLED' }); // the wait after it
 
       await provider.create('MyTable', 'AWS::DynamoDB::Table', {
         ...baseCreateProps,
@@ -1257,7 +1272,11 @@ describe('DynamoDBTableProvider backfill (#609)', () => {
     });
 
     it('omits Mode and sends DISABLE when Enabled is false', async () => {
-      mockSend.mockResolvedValueOnce({}).mockResolvedValueOnce(activeTable()).mockResolvedValueOnce({});
+      mockSend
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce(activeTable())
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({ ContributorInsightsStatus: 'DISABLED' }); // the wait after the write
 
       await provider.create('MyTable', 'AWS::DynamoDB::Table', {
         ...baseCreateProps,
@@ -1273,7 +1292,10 @@ describe('DynamoDBTableProvider backfill (#609)', () => {
     });
 
     it('disables insights on update when the spec is removed', async () => {
-      mockSend.mockResolvedValueOnce(activeTable()).mockResolvedValueOnce({});
+      mockSend
+        .mockResolvedValueOnce(activeTable())
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({ ContributorInsightsStatus: 'DISABLED' }); // the wait after the write
 
       await provider.update(
         'MyTable',

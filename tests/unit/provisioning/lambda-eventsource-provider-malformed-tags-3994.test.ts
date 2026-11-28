@@ -3,6 +3,7 @@ import {
   CreateEventSourceMappingCommand,
   TagResourceCommand,
   UntagResourceCommand,
+  GetEventSourceMappingCommand,
   UpdateEventSourceMappingCommand,
 } from '@aws-sdk/client-lambda';
 
@@ -102,7 +103,9 @@ describe('LambdaEventSourceMappingProvider Tags (go-to-k/cdkd#3994)', () => {
       cmd instanceof UpdateEventSourceMappingCommand ||
       cmd instanceof CreateEventSourceMappingCommand
         ? { UUID: NAME, EventSourceMappingArn: ARN }
-        : {}
+        : cmd instanceof GetEventSourceMappingCommand
+          ? { State: 'Enabled' }
+          : {}
     );
     provider = new LambdaEventSourceMappingProvider();
   });

@@ -203,10 +203,29 @@ const CONSUMER_GROUP_KEPT =
 const DOCUMENTDB_UNCHANGEABLE = (member: string): string =>
   `UpdateEventSourceMapping refuses DocumentDBEventSourceConfig.${member} even unchanged, and CloudFormation sends FullDocument alone, leaving it as it is (CloudFormation A/B, #1160, lambda-eventsource/shared.ts, documentDbConfigForUpdate); update() sends the same and warns (lambda-eventsource/update.ts, applyUpdate)`;
 
+/**
+ * The settle wait after a create / update reads the mapping until it holds the
+ * state the call asked for (go-to-k/cdkd#7132): the fake answers `Disabled`
+ * once a call sent `Enabled: false`, else `Enabled`.
+ */
+function armSettledMapping(): void {
+  let enabled: boolean | undefined;
+  const noteEnabled = (input: Record<string, unknown>): Record<string, unknown> => {
+    if (typeof input['Enabled'] === 'boolean') enabled = input['Enabled'];
+    return {};
+  };
+  setOutputOverrides({
+    CreateEventSourceMappingCommand: noteEnabled,
+    UpdateEventSourceMappingCommand: noteEnabled,
+    GetEventSourceMappingCommand: () => ({ State: enabled === false ? 'Disabled' : 'Enabled' }),
+  });
+}
+
 const ESM_CASE: TypeCase = {
   resourceType: 'AWS::Lambda::EventSourceMapping',
   provider: () => new LambdaEventSourceMappingProvider(),
   physicalId: UUID,
+  arm: armSettledMapping,
   createOnly: new Set([...createOnlyOf('AWS::Lambda::EventSourceMapping'), ...UPDATE_REFUSED]),
   exempt: {},
   nestedExempt: {

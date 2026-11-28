@@ -225,22 +225,14 @@ echo "    resolved queue:    ${QUEUE_URL}"
 echo "    resolved ESM UUID: ${ESM_UUID}"
 
 # --- Assertion: the ESM exists + is Enabled on AWS ---------------------
-# list-event-source-mappings (filtered by the queue ARN) must return our
-# UUID. SQS ESMs report State 'Enabled' (or briefly 'Creating') once
-# active; poll until it reaches Enabled.
-echo "==> Asserting ESM exists + reaches Enabled"
-ESM_STATE=""
-for _ in $(seq 1 24); do
-  ESM_JSON=$(aws lambda get-event-source-mapping --uuid "${ESM_UUID}" --region "${REGION}")
-  ESM_STATE=$(echo "${ESM_JSON}" | jq -r '.State // ""')
-  if [ "${ESM_STATE}" = "Enabled" ]; then
-    break
-  fi
-  sleep 5
-done
+# go-to-k/cdkd#7132: the deploy waits for the mapping to leave `Creating`, as
+# CloudFormation does, so ONE read right after it must already say Enabled.
+echo "==> Asserting ESM exists + reads Enabled right after the deploy"
+ESM_JSON=$(aws lambda get-event-source-mapping --uuid "${ESM_UUID}" --region "${REGION}")
+ESM_STATE=$(echo "${ESM_JSON}" | jq -r '.State // ""')
 if [ "${ESM_STATE}" != "Enabled" ]; then
-  echo "FAIL: ESM ${ESM_UUID} never reached State=Enabled (last state: '${ESM_STATE}')" >&2
-  aws lambda get-event-source-mapping --uuid "${ESM_UUID}" --region "${REGION}" 2>/dev/null | jq . >&2 || true
+  echo "FAIL (issue go-to-k/cdkd#7132): ESM ${ESM_UUID} reads State='${ESM_STATE}' right after the deploy, expected Enabled" >&2
+  echo "${ESM_JSON}" | jq . >&2 || true
   exit 1
 fi
 echo "    OK: ESM is Enabled on AWS"

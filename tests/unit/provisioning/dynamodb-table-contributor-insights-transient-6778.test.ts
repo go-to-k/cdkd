@@ -182,6 +182,8 @@ describe('DynamoDB table Contributor Insights captured while ENABLING (go-to-k/c
       expect(newProperties[KEY]).toEqual({ Enabled: true });
 
       mockSend.mockClear();
+      // The wait after the enable reads the table until Contributor Insights is ENABLED.
+      prime(ENABLED);
       await provider.update('T', TABLE_NAME, TYPE, newProperties, aws);
       const sent = mockSend.mock.calls
         .map((c) => c[0] as unknown)

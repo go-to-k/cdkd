@@ -32,8 +32,9 @@ function isInUse(error: unknown): boolean {
 
 /**
  * `DeleteEventSourceMapping`, waiting out a mapping that is still settling
- * (go-to-k/cdkd#7011). `create()` returns while the mapping is `Creating`, so a
- * rollback reversing a replacement seconds later is refused with
+ * (go-to-k/cdkd#7011). A mapping a create left settling (one whose settle wait
+ * was cut short, #7132, or made by an older cdkd) refuses a rollback reversing a
+ * replacement seconds later with
  * `ResourceInUseException`, and the rollback's readopt arm calls `delete()`
  * with no retry around it. The wait runs only after that refusal and only
  * while AWS reports the mapping in a transitional state, so an ordinary delete

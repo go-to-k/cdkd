@@ -21,6 +21,7 @@ import {
 import { type StreamMemberOp, planStreamMemberOps } from '../../dynamodb-stream-members.js';
 import type { SecretMasker } from '../../../types/resource.js';
 import type { DynamoDBTableProvider } from '../dynamodb-table-provider.js';
+import { waitForContributorInsightsSettled } from '../dynamodb-settle-waits.js';
 
 /**
  * Apply `StreamSpecification.ResourcePolicy` / `.Tags` (issue
@@ -276,7 +277,7 @@ export async function sendContributorInsightsOp(
     op.indexName === undefined
       ? `DynamoDB table ${tableName}`
       : this.indexScopeAt(op.indexName, tableName, maskSecrets);
-  await this.retryOnTransientControlPlane(
+  const answered = await this.retryOnTransientControlPlane(
     () =>
       this.dynamoDBClient.send(
         new UpdateContributorInsightsCommand({
@@ -294,5 +295,21 @@ export async function sendContributorInsightsOp(
     `Set ContributorInsightsAction=${op.action}${
       op.mode !== undefined ? ` Mode=${op.mode}` : ''
     } on ${target}`
+  );
+  // go-to-k/cdkd#7132: the call answers ENABLING / DISABLING, and
+  // CloudFormation completes only once it reads ENABLED / DISABLED.
+  await waitForContributorInsightsSettled(
+    this.dynamoDBClient,
+    tableName,
+    op.indexName,
+    op.action,
+    target,
+    {
+      maskSecrets,
+      debug,
+      ...(answered?.ContributorInsightsStatus !== undefined && {
+        answeredStatus: answered.ContributorInsightsStatus,
+      }),
+    }
   );
 }

@@ -42,6 +42,7 @@ describe('LambdaEventSourceMappingProvider read-update round-trip', () => {
     // the mock generic so the tag-diff branch in update() is satisfied.
     mockSend.mockResolvedValue({
       EventSourceMappingArn: `arn:aws:lambda:us-east-1:123:event-source-mapping:${UUID}`,
+      State: 'Enabled',
     });
   });
 

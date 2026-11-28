@@ -33,6 +33,8 @@ import {
   KINDS_WITH_STREAM_NUMERICS,
   KINDS_WITH_ZERO_BATCHING_WINDOW_DEFAULT,
 } from './shared.js';
+import { coerceCfnBoolean } from '../../config-shape.js';
+import { waitForMappingSettled } from './settle-wait.js';
 
 /**
  * Update a Lambda Event Source Mapping
@@ -515,6 +517,18 @@ export async function applyUpdate(
 
   const updateResp = await this.lambdaClient.send(
     new UpdateEventSourceMappingCommand(updateParams)
+  );
+  // go-to-k/cdkd#7132: the mapping is `Updating`; CloudFormation completes
+  // only once it settles. An update that sent no `Enabled` accepts either
+  // settled state (one disabled out of band stays so, as before).
+  await waitForMappingSettled(
+    this.lambdaClient,
+    logicalId,
+    physicalId,
+    coerceCfnBoolean(updateParams.Enabled),
+    log,
+    // `Updating`: a first read of the old settled state is not the result.
+    { ...(updateResp.State !== undefined && { answeredState: updateResp.State }) }
   );
 
   // Apply tag diff. UpdateEventSourceMapping does not accept Tags; use
