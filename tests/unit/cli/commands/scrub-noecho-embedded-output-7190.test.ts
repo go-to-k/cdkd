@@ -187,6 +187,19 @@ describe('cdkd scrub - an output embedding a NoEcho value keeps its literal text
     expect(Date.now() - started).toBeLessThan(2000);
   });
 
+  it('masks whole a stored value lacking the leading literal', async () => {
+    const saved = await scrub(stateWith({ Emb: `xoken=${SHORT};` }), template({ Emb: { Value: JOIN } }));
+    expect(saved!.outputs['Emb']).toBe('***');
+  });
+
+  it('masks whole a stored value lacking a middle literal', async () => {
+    const saved = await scrub(
+      stateWith({ Emb: SHORT }),
+      template({ Emb: { Value: { 'Fn::Sub': '${Short}-${Short}' } } })
+    );
+    expect(saved!.outputs['Emb']).toBe('***');
+  });
+
   it('masks whole a stored value the template text does not match', async () => {
     const saved = await scrub(stateWith({ Emb: `x${SHORT}` }), template({ Emb: { Value: JOIN } }));
     expect(saved!.outputs['Emb']).toBe('***');
