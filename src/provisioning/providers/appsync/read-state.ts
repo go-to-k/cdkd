@@ -227,6 +227,15 @@ export async function readGraphQLSchema(
  * failed read heals nothing (the difference stays visible) and does not fail
  * drift; its debug line names the error class only, since the AWS text is not
  * masked here. A live SDL other than the declared body stays compared.
+ *
+ * "Declared" is the object's CURRENT body, and the rule applies to any
+ * observed baseline meeting the gate, not only a pre-#7127 one: state is not
+ * rewritten, so each drift run pays the read until the next capture or
+ * `cdkd state refresh-observed`. A CDK asset key is content-hashed, so its
+ * body is what was deployed; an object overwritten at a mutable key and then
+ * applied out of band reads as declared (CloudFormation does not see that
+ * either). A template declaring both `Definition` and `DefinitionS3Location`
+ * deploys the inline one, so it is left to the inline rule.
  */
 export async function canonicalizeDriftPair(
   this: AppSyncProvider,
@@ -258,8 +267,9 @@ export async function canonicalizeDriftPair(
     body = await this.fetchS3LocationBody(
       location,
       resourceType,
-      // The error only feeds the class-only debug line below.
-      'GraphQLSchema',
+      // A label, not a logical id: it reaches the helper's fetch debug line
+      // and its error, which only feeds the class-only debug line below.
+      '(drift baseline heal)',
       'DefinitionS3Location'
     );
   } catch (err) {

@@ -269,6 +269,14 @@ check_live_field has b
 check_resolver present b
 check_baseline b
 check_drift "the refused schema's rollback"
+# The S3-sourced schema stayed on v2 and kept its seeded baseline, so the clean
+# drift above is the heal's, not a re-capture's (#7139).
+check_live_field has b "${S3_API_ID}"
+[ "$(s3_baseline)" = "${V1_S3_DEFINITION}" ] || {
+  echo "FAIL: the S3-sourced schema's seeded baseline changed (re-captured?): $(s3_baseline)" >&2
+  exit 1
+}
+echo "    OK: the S3-sourced schema still holds the seeded v1 baseline"
 
 echo "==> Destroy and verify resources and state are gone"
 env -u CDKD_TEST_SCHEMA node "${LOCAL_DIST}" destroy "${STACK}" \

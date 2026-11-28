@@ -185,6 +185,14 @@ describe('drift heals a pre-#7127 DefinitionS3Location schema baseline (#7139)',
     expect(getObjectCalls()).toBe(0);
   });
 
+  it('reads no object, and reports Definition, when the template declares both (inline wins)', async () => {
+    serveLive(LIVE_V2);
+    serveBody(DECLARED_BODY);
+    const both = { ...S3_PROPS, Definition: 'type Query { z: String }' };
+    expect(await driftPaths(both, STALE)).toEqual(['Definition']);
+    expect(getObjectCalls()).toBe(0);
+  });
+
   it("drift --revert's desired bag takes the live schema, never the stale one", async () => {
     serveBody(DECLARED_BODY);
     const live = { ApiId: 'api-1', Definition: LIVE_V2_CANONICAL };
