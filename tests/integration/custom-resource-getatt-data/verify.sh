@@ -76,6 +76,8 @@ ECHO_SECRET="offtpl-echo-secret-7182"
 NAMED_SECRET="offtpl-named-secret-7182"
 SHORT_SECRET="q~7"
 SECRET_ECHO_TYPE="Custom::CdkdSecretEcho"
+# The phase-3 capture; may hold a secret-echo value on a failed run.
+SECRET_ECHO_LOG=""
 
 # Expected values the CR handler returns (see lib/cr-getatt-data-stack.ts).
 # Seed is the literal "integ"; Region is the deploy region.
@@ -134,6 +136,7 @@ cleanup() {
   if [ -n "${STATE_BUCKET:-}" ]; then
     s3_purge_prefix_versions "${STATE_BUCKET}" "${PREFIX}" noncurrent || true
   fi
+  [ -z "${SECRET_ECHO_LOG}" ] || rm -f "${SECRET_ECHO_LOG}"
   set -eu
 }
 
@@ -398,7 +401,7 @@ SECRET_ECHO_LOG="$(mktemp)"
 # never discloses the values it is about.
 show_redacted() { # show_redacted <file>
   sed -e "s/${ECHO_SECRET}/<echo-secret>/g" -e "s/${NAMED_SECRET}/<named-secret>/g" \
-    -e "s/\"${SHORT_SECRET}\"/\"<short-secret>\"/g" "$1" >&2
+    -e "s/${SHORT_SECRET}/<short-secret>/g" "$1" >&2
 }
 secret_echo_fail() { # secret_echo_fail <message> [log]
   echo "FAIL: $1" >&2
@@ -408,9 +411,16 @@ secret_echo_fail() { # secret_echo_fail <message> [log]
   fi
   exit 1
 }
-# True when <file> carries a secret-echo value that must never persist.
+# True when the state object <file> carries a secret-echo value that must never
+# persist. The short secret is matched as a whole JSON string: the control key
+# `Xq~7x` legitimately contains it.
 carries_secret() { # carries_secret <file>
   grep -qF "${ECHO_SECRET}" "$1" || grep -qF "\"${SHORT_SECRET}\"" "$1"
+}
+# The same for a command's log, where a value need not be quoted. No log line
+# names the control key, so a bare match is a finding.
+log_carries_secret() { # log_carries_secret <file>
+  grep -qF "${ECHO_SECRET}" "$1" || grep -qF "${SHORT_SECRET}" "$1"
 }
 # Read EVERY object version under this stack's prefix (state.json, lock.json,
 # deployments/*.jsonl, ...) and fail if one carries a secret. A zero-row
@@ -460,7 +470,7 @@ CDKD_TEST_NOECHO_SEED="${ROTATED_SEED}" CDKD_TEST_SECRET_ECHO=true node "${LOCAL
 rc=$?
 set -e
 [ "${rc}" -eq 0 ] || secret_echo_fail "the secret-echo deploy exited ${rc}" "${SECRET_ECHO_LOG}"
-carries_secret "${SECRET_ECHO_LOG}" && secret_echo_fail "the secret-echo deploy log carries a secret-echo value (value withheld)"
+log_carries_secret "${SECRET_ECHO_LOG}" && secret_echo_fail "the secret-echo deploy log carries a secret-echo value (value withheld)"
 grep -qF "SecretEchoResource" "${SECRET_ECHO_LOG}" \
   || secret_echo_fail "the secret-echo deploy log never names SecretEchoResource: the arm did not deploy" "${SECRET_ECHO_LOG}"
 
@@ -475,13 +485,17 @@ esac
 ATTR_KEYS="$(jq -c '.attributes | keys' <<<"${ECHO_RECORD}")"
 EXPECTED_KEYS="$(jq -cn --arg n "Named-${NAMED_SECRET}" --arg s "X${SHORT_SECRET}x" '[$n, $s, "Echo", "Public"] | sort')"
 if [ "${ATTR_KEYS}" != "${EXPECTED_KEYS}" ]; then
-  # Neither list can hold the echo or the short secret except as a failure,
-  # and the scan below withholds those.
-  carries_secret <(printf '%s' "${ATTR_KEYS}") \
-    && secret_echo_fail "the record's attribute keys still hold a secret-echo value: a secret-named key was persisted (go-to-k/cdkd#7153 / #7181)"
-  secret_echo_fail "the record's attribute keys are ${ATTR_KEYS//${NAMED_SECRET}/<named-secret>}, expected the GetAtt-spelled key, the containing key, Echo and Public"
+  # A file, not a process substitution: `carries_secret` reads it twice.
+  printf '%s\n' "${ATTR_KEYS}" > "${SECRET_ECHO_LOG}"
+  carries_secret "${SECRET_ECHO_LOG}" \
+    && secret_echo_fail "the record's attribute keys still hold a secret-echo value: a secret-named key was persisted (go-to-k/cdkd#7153 / #7181)" "${SECRET_ECHO_LOG}"
+  secret_echo_fail "the record's attribute keys differ from the GetAtt-spelled key, the containing key, Echo and Public" "${SECRET_ECHO_LOG}"
 fi
 echo "    OK: the secret-named keys are dropped; the GetAtt-spelled key and the key that only contains the short secret are kept"
+for prop in Echo Named Short; do
+  [ "$(jq -r --arg p "${prop}" '.properties[$p]' <<<"${ECHO_RECORD}")" = "${SECRET_MASK}" ] \
+    || secret_echo_fail "properties.${prop} is not '${SECRET_MASK}' (value withheld): a NoEcho input persisted at its position"
+done
 [ "$(jq -r '.attributes.Echo' <<<"${ECHO_RECORD}")" = "${SECRET_MASK}" ] \
   || secret_echo_fail "attributes.Echo is not '${SECRET_MASK}' (value withheld): a NoEcho value under a template-absent key persisted (go-to-k/cdkd#7158)"
 [ "$(jq -r '.attributes.Public' <<<"${ECHO_RECORD}")" = "public-secret-echo-value" ] \
@@ -508,7 +522,7 @@ for drift_args in "" "--revert --yes"; do
   rc=$?
   set -e
   [ "${rc}" -eq 0 ] || secret_echo_fail "cdkd drift ${drift_args} exited ${rc}, expected 0" "${SECRET_ECHO_LOG}"
-  carries_secret "${SECRET_ECHO_LOG}" && secret_echo_fail "cdkd drift ${drift_args} printed a secret-echo value (value withheld)"
+  log_carries_secret "${SECRET_ECHO_LOG}" && secret_echo_fail "cdkd drift ${drift_args} printed a secret-echo value (value withheld)"
   echo "    OK: cdkd drift ${drift_args:-(report)} exits 0 and prints no secret-echo value"
 done
 STATE_AFTER_DRIFT=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
@@ -522,6 +536,7 @@ set +e
 CDKD_TEST_NOECHO_SEED="${ROTATED_SEED}" CDKD_TEST_SECRET_ECHO=true node "${LOCAL_DIST}" diff "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" > "${SECRET_ECHO_LOG}" 2>&1
 set -e
+log_carries_secret "${SECRET_ECHO_LOG}" && secret_echo_fail "cdkd diff printed a secret-echo value (value withheld)"
 grep -q "No changes detected" "${SECRET_ECHO_LOG}" \
   || secret_echo_fail "the diff after the secret-echo deploy is not clean" "${SECRET_ECHO_LOG}"
 set +e
@@ -532,12 +547,14 @@ CDKD_TEST_NOECHO_SEED="${ROTATED_SEED}" CDKD_TEST_SECRET_ECHO=true node "${LOCAL
 rc=$?
 set -e
 [ "${rc}" -eq 0 ] || secret_echo_fail "the secret-echo redeploy exited ${rc}" "${SECRET_ECHO_LOG}"
+log_carries_secret "${SECRET_ECHO_LOG}" && secret_echo_fail "the secret-echo redeploy log carries a secret-echo value (value withheld)"
 STATE_REDEPLOY=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
 [ "$(secret_echo_record "${STATE_REDEPLOY}")" = "${ECHO_RECORD}" ] \
   || secret_echo_fail "the NO_CHANGE redeploy rewrote the secret-echo record" "${SECRET_ECHO_LOG}"
 echo "    OK: the diff is clean and the redeploy leaves the secret-echo record as it was"
 assert_no_secret_in_versions "after the secret-echo redeploy"
 rm -f "${SECRET_ECHO_LOG}"
+SECRET_ECHO_LOG=""
 
 # --- Phase 4: destroy -------------------------------------------------
 echo "==> Phase 4: destroy"
@@ -564,7 +581,9 @@ fi
 
 # The state bucket is versioned: the destroy left every earlier state version
 # readable, the GetAtt-spelled secret key among them. Nothing needs the state
-# now, so every version and delete marker goes.
+# now, so every version and delete marker goes. The traps are disarmed first:
+# `cleanup` on EXIT would otherwise write fresh delete markers after the sweep.
+trap - EXIT INT TERM
 s3_purge_prefix_versions "${STATE_BUCKET}" "${PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${PREFIX}" "stack state teardown"
 
