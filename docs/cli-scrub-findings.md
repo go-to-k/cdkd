@@ -133,7 +133,10 @@ or has another type there, and it names no positions of its own. A cdkd older
 than state schema v11 wrote no positions, so a `NoEcho` value may sit in its
 properties in plaintext, and scrub does not guess which value it is. Scrub
 reports this only for a stack whose template declares a `NoEcho` parameter, or
-whose records name `NoEcho` positions or attributes.
+whose records name `NoEcho` positions or attributes. A record whose logical id
+today's template still declares as the same type, but no longer fills from a
+`NoEcho` source, is read by that definition: a value an older definition
+filled from one is neither masked nor reported.
 
 A cdkd of state schema v11 or later also writes no positions for a record
 that has none, so the record may well be clean. That is why this finding

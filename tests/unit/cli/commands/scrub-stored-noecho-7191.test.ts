@@ -265,6 +265,34 @@ describe('cdkd scrub - NoEcho plaintext in an orphan or superseded record (go-to
     expect(unverifiable).toBe(0);
   });
 
+  it('repairs a short echo in a pre-v11 record positioned only by the template', async () => {
+    const info = {
+      stackName: STACK,
+      template: {
+        Parameters: { Pw: { Type: 'String', NoEcho: true, Default: SHORT } },
+        Resources: {
+          Cr: { Type: 'Custom::Thing7191', Properties: { ServiceToken: 'arn', Pw: { Ref: 'Pw' } } },
+        },
+      } as unknown as CloudFormationTemplate,
+    };
+    const orphan: ResourceState = {
+      physicalId: 'cr-old',
+      resourceType: 'Custom::Thing7191',
+      properties: { ServiceToken: 'arn', Pw: SHORT },
+      observedProperties: { ServiceToken: 'arn', Pw: SHORT, Echo: SHORT },
+      attributes: { Pw: SHORT, Out: SHORT, Count: '3' },
+    };
+    const { saved } = await scrub(
+      stateWith({ resources: {}, orphans: [{ logicalId: 'Cr', orphanedAt: 1, state: orphan }] }),
+      info
+    );
+    const state = saved!.orphans![0]!.state;
+    expect(state.properties['Pw']).toBe('***');
+    expect(state.attributes).toEqual({ Pw: '***', Out: '***', Count: '3' });
+    expect(state.noEchoAttributeNames).toEqual(['Out', 'Pw']);
+    expect(state.observedProperties?.['Echo']).toBe('***');
+  });
+
   it('a second scrub over the repaired state changes nothing', async () => {
     const { saved } = await scrub(
       stateWith({

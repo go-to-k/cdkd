@@ -237,10 +237,13 @@ export function scrubStoredRecord(
   if (plan === undefined) {
     return finish(needles.size > 0 ? keepHeldTokenProvenance(next) : next, needles);
   }
-  // The finish FIRST: it reads a value too short for a needle off the record's
-  // `noEchoLeaves` positions (#7188), which the plan then masks. The plan keeps
-  // every attribute name the finish declared.
-  const finished = finish(next, new Map([...needles, ...(migrationNeedles ?? [])]));
+  // The finish FIRST, over the record as read (its values) and handed the
+  // plan's positions: a pre-v11 record names none, and the finish learns a
+  // value too short for a needle only at `noEchoLeaves` (#7188), while the
+  // plan's mask would hide that value from the attribute-key drop. The plan
+  // then masks, keeping every attribute name the finish declared.
+  const positioned = plan.leaves.length > 0 ? { ...next, noEchoLeaves: plan.leaves } : next;
+  const finished = finish(positioned, new Map([...needles, ...(migrationNeedles ?? [])]));
   const attributeNames = [
     ...new Set([...plan.attributeNames, ...(noEchoAttributeNamesOf(finished) ?? [])]),
   ].sort();
