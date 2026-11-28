@@ -29,7 +29,8 @@
 #   5  the RELEASED binary refuses the v17 record (`state show` and `deploy`),
 #      state.json VersionId unchanged by the attempts.
 #   6  a NEWER cdkd's record (issue #6440): the v17 record hand-planted as
-#      `version: 18, minReaderVersion: 17`. The LOCAL binary reads it
+#      `version: <newest schema the local binary reads> + 1,
+#      minReaderVersion: 17`. The LOCAL binary reads it
 #      read-only: `cdkd diff` exits 3 with the deploy-refusal reason, `state
 #      show` / `state resources` succeed, and `cdkd deploy` / `cdkd destroy`
 #      refuse at the load with "written by a newer cdkd ... Upgrade cdkd",
@@ -141,6 +142,9 @@ if [ "${LOCAL_SCHEMA_VERSION}" -lt 17 ]; then
   echo "FAIL: the local binary reads up to schema ${LOCAL_SCHEMA_VERSION}; this fixture needs a v17+ local binary" >&2
   exit 1
 fi
+# The plant in Phase 6 must be NEWER than every schema this binary reads: a
+# literal goes stale on the next bump (it was 18, which the v18 binary reads; #7201).
+NEWER_SCHEMA_VERSION=$((LOCAL_SCHEMA_VERSION + 1))
 
 ASSERTIONS_RUN=0
 STATE_FILE=""
@@ -172,7 +176,7 @@ heal_stranded_plant() (
   [ -n "${STATE_BUCKET:-}" ] || exit 0
   t="$(mktemp)" || exit 1
   if aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${t}" >/dev/null 2>&1 \
-    && jq -e '.version == 18 and .minReaderVersion == 17' "${t}" >/dev/null 2>&1; then
+    && jq -e --argjson v "${NEWER_SCHEMA_VERSION:-0}" '.version == $v and .minReaderVersion == 17' "${t}" >/dev/null 2>&1; then
     echo "==> restoring a planted state.json left by a killed run"
     jq 'del(.minReaderVersion) | .version = 17' "${t}" >"${t}.healed" \
       && aws s3 cp "${t}.healed" "s3://${STATE_BUCKET}/${STATE_KEY}" \
@@ -476,23 +480,23 @@ state_etag() {
 
 # The read-only refusal a writer prints at its load. Sentinel: the
 # number-independent `Upgrade cdkd to a version that supports schema` present
-# WITHOUT the parsed `written by a newer cdkd (state schema version 18)` means
+# WITHOUT the parsed `written by a newer cdkd (state schema version N)` means
 # the wording or the version drifted — a loud failure, not a zero match.
 assert_newer_refusal() { # <label>
   if grep -qF "Upgrade cdkd to a version that supports schema" "${DEPLOY_LOG}" \
-    && ! grep -qF "written by a newer cdkd (state schema version 18)" "${DEPLOY_LOG}"; then
+    && ! grep -qF "written by a newer cdkd (state schema version ${NEWER_SCHEMA_VERSION})" "${DEPLOY_LOG}"; then
     tail -40 "${DEPLOY_LOG}" >&2
-    fail "$1: the output says 'Upgrade cdkd', but not for a newer schema 18 (sentinel: wording or version drifted)"
+    fail "$1: the output says 'Upgrade cdkd', but not for a newer schema ${NEWER_SCHEMA_VERSION} (sentinel: wording or version drifted)"
   fi
-  if ! grep -qF "written by a newer cdkd (state schema version 18)" "${DEPLOY_LOG}"; then
+  if ! grep -qF "written by a newer cdkd (state schema version ${NEWER_SCHEMA_VERSION})" "${DEPLOY_LOG}"; then
     tail -40 "${DEPLOY_LOG}" >&2
-    fail "$1: output lacks 'written by a newer cdkd (state schema version 18)'"
+    fail "$1: output lacks 'written by a newer cdkd (state schema version ${NEWER_SCHEMA_VERSION})'"
   fi
-  if ! grep -qF "Upgrade cdkd to a version that supports schema 18" "${DEPLOY_LOG}"; then
+  if ! grep -qF "Upgrade cdkd to a version that supports schema ${NEWER_SCHEMA_VERSION}" "${DEPLOY_LOG}"; then
     tail -40 "${DEPLOY_LOG}" >&2
-    fail "$1: output lacks 'Upgrade cdkd to a version that supports schema 18'"
+    fail "$1: output lacks 'Upgrade cdkd to a version that supports schema ${NEWER_SCHEMA_VERSION}'"
   fi
-  pass "$1: output refuses the newer schema 18 record and says 'Upgrade cdkd'"
+  pass "$1: output refuses the newer schema ${NEWER_SCHEMA_VERSION} record and says 'Upgrade cdkd'"
 }
 
 # Nothing changed: the planted object, the parameter, the REST API, no lock.
@@ -515,7 +519,7 @@ API_ID="$(jq -r '.resources.Api.physicalId' "${STATE_FILE}")"
 # plant the same record as a newer writer's, every other field kept.
 assert_eq "premise: the saved record is the current object" "$(state_version_id)" "${VID_V17}"
 cp "${STATE_FILE}" "${ORIGINAL_STATE_FILE}"
-jq '.version = 18 | .minReaderVersion = 17' "${ORIGINAL_STATE_FILE}" >"${PLANTED_STATE_FILE}"
+jq --argjson v "${NEWER_SCHEMA_VERSION}" '.version = $v | .minReaderVersion = 17' "${ORIGINAL_STATE_FILE}" >"${PLANTED_STATE_FILE}"
 assert_eq "plant: only version and minReaderVersion differ" \
   "$(jq -S 'del(.version, .minReaderVersion)' "${PLANTED_STATE_FILE}" | shasum -a 256)" \
   "$(jq -S 'del(.version, .minReaderVersion)' "${ORIGINAL_STATE_FILE}" | shasum -a 256)"
@@ -523,7 +527,7 @@ STATE_PLANTED=1
 aws s3 cp "${PLANTED_STATE_FILE}" "s3://${STATE_BUCKET}/${STATE_KEY}" \
   --content-type application/json >/dev/null
 fetch_state "plant"
-assert_version "plant" "18"
+assert_version "plant" "${NEWER_SCHEMA_VERSION}"
 assert_eq "plant: state.minReaderVersion" "$(state_field '.minReaderVersion')" "17"
 VID_PLANTED="$(state_version_id)"
 ETAG_PLANTED="$(state_etag)"
@@ -539,42 +543,42 @@ DIFF_RC=$?
 set -e
 if [ "${DIFF_RC}" -ne 3 ]; then
   tail -40 "${DEPLOY_LOG}" >&2
-  fail "local diff over v18: exited ${DIFF_RC}, expected 3 (a deploy refusal)"
+  fail "local diff over v${NEWER_SCHEMA_VERSION}: exited ${DIFF_RC}, expected 3 (a deploy refusal)"
 fi
-pass "local diff over v18: exited 3"
+pass "local diff over v${NEWER_SCHEMA_VERSION}: exited 3"
 # Sentinel: the `Blocking (cdkd deploy will refuse):` header with no newer-
 # record reason under it means the reason's wording drifted.
 grep -qF "Blocking (cdkd deploy will refuse):" "${DEPLOY_LOG}" \
-  || { tail -40 "${DEPLOY_LOG}" >&2; fail "local diff over v18: no 'Blocking (cdkd deploy will refuse):' section"; }
-grep -qF "The state record was written by a newer cdkd (state schema version 18)." "${DEPLOY_LOG}" \
-  || { tail -40 "${DEPLOY_LOG}" >&2; fail "local diff over v18: the Blocking section lacks the newer-record reason (sentinel: wording drifted)"; }
+  || { tail -40 "${DEPLOY_LOG}" >&2; fail "local diff over v${NEWER_SCHEMA_VERSION}: no 'Blocking (cdkd deploy will refuse):' section"; }
+grep -qF "The state record was written by a newer cdkd (state schema version ${NEWER_SCHEMA_VERSION})." "${DEPLOY_LOG}" \
+  || { tail -40 "${DEPLOY_LOG}" >&2; fail "local diff over v${NEWER_SCHEMA_VERSION}: the Blocking section lacks the newer-record reason (sentinel: wording drifted)"; }
 grep -qF "'cdkd deploy' with this cdkd binary refuses to write it." "${DEPLOY_LOG}" \
-  || { tail -40 "${DEPLOY_LOG}" >&2; fail "local diff over v18: the reason does not say the deploy refuses"; }
-pass "local diff over v18: the Blocking section names the newer record and the deploy's refusal"
+  || { tail -40 "${DEPLOY_LOG}" >&2; fail "local diff over v${NEWER_SCHEMA_VERSION}: the reason does not say the deploy refuses"; }
+pass "local diff over v${NEWER_SCHEMA_VERSION}: the Blocking section names the newer record and the deploy's refusal"
 
-run_cdkd_json "local state show over v18" "${LOCAL_DIST}" state show "${STACK}" \
+run_cdkd_json "local state show over v${NEWER_SCHEMA_VERSION}" "${LOCAL_DIST}" state show "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --json
-assert_eq "local state show over v18: the record is version 18" "$(jq -r '.state.version' "${JSON_OUT}")" "18"
-assert_eq "local state show over v18: the Api's physical id" \
+assert_eq "local state show over v${NEWER_SCHEMA_VERSION}: the record is version ${NEWER_SCHEMA_VERSION}" "$(jq -r '.state.version' "${JSON_OUT}")" "${NEWER_SCHEMA_VERSION}"
+assert_eq "local state show over v${NEWER_SCHEMA_VERSION}: the Api's physical id" \
   "$(jq -r '.state.resources.Api.physicalId' "${JSON_OUT}")" "${API_ID}"
 
-run_cdkd_json "local state resources over v18" "${LOCAL_DIST}" state resources "${STACK}" \
+run_cdkd_json "local state resources over v${NEWER_SCHEMA_VERSION}" "${LOCAL_DIST}" state resources "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --json
-assert_eq "local state resources over v18: the logical ids" \
+assert_eq "local state resources over v${NEWER_SCHEMA_VERSION}: the logical ids" \
   "$(jq -r '[.[].logicalId] | sort | join(",")' "${JSON_OUT}")" "Api,Param"
-assert_eq "local state resources over v18: the parameter's physical id" \
+assert_eq "local state resources over v${NEWER_SCHEMA_VERSION}: the parameter's physical id" \
   "$(jq -r '.[] | select(.logicalId == "Param") | .physicalId' "${JSON_OUT}")" "${PARAM_NAME}"
-assert_nothing_changed "local reads over v18"
+assert_nothing_changed "local reads over v${NEWER_SCHEMA_VERSION}"
 
-run_cdkd fail "local deploy over v18" "${LOCAL_DIST}" deploy "${STACK}" \
+run_cdkd fail "local deploy over v${NEWER_SCHEMA_VERSION}" "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
-assert_newer_refusal "local deploy over v18"
-assert_nothing_changed "local deploy over v18"
+assert_newer_refusal "local deploy over v${NEWER_SCHEMA_VERSION}"
+assert_nothing_changed "local deploy over v${NEWER_SCHEMA_VERSION}"
 
-run_cdkd fail "local destroy over v18" "${LOCAL_DIST}" destroy "${STACK}" \
+run_cdkd fail "local destroy over v${NEWER_SCHEMA_VERSION}" "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
-assert_newer_refusal "local destroy over v18"
-assert_nothing_changed "local destroy over v18"
+assert_newer_refusal "local destroy over v${NEWER_SCHEMA_VERSION}"
+assert_nothing_changed "local destroy over v${NEWER_SCHEMA_VERSION}"
 
 export CDKD_TEST_PARAM_VALUE=two
 restore_planted_state || fail "could not restore the original state.json"
@@ -618,4 +622,4 @@ if [ "${ASSERTIONS_RUN:-0}" -ne "${EXPECTED_ASSERTIONS}" ]; then
 fi
 
 echo ""
-echo "==> schema-v16-to-v17-migration test passed (a v16 record is read unchanged, a write with no MAC stays 16, the write recording a MAC persists 17, the released binary refuses the v17 record without a write, a newer schema 18 record is read read-only and never written, and the destroy leaves nothing); ${ASSERTIONS_RUN} assertions executed"
+echo "==> schema-v16-to-v17-migration test passed (a v16 record is read unchanged, a write with no MAC stays 16, the write recording a MAC persists 17, the released binary refuses the v17 record without a write, a newer schema ${NEWER_SCHEMA_VERSION} record is read read-only and never written, and the destroy leaves nothing); ${ASSERTIONS_RUN} assertions executed"

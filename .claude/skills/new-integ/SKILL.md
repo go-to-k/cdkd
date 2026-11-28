@@ -107,6 +107,10 @@ The user provides a kebab-case test name (e.g., `ses-email-identity`,
      the lowest version the record needs, as #7148 does), never the binary's
      newest schema version (#7147, #7163). Source `. ../state-schema-version.sh` and call
      `expected_state_schema_version <state.json | ->` instead of copying the jq (#7178).
+     This covers a `schema-v*-to-v*-migration` fixture's NEW-binary leg too: only
+     its OLD-binary leg (and a read-only leg that must leave vN) pins a literal.
+     A hand-planted "newer than this binary" record is the newest readable
+     version + 1, never a literal (third recurrence, #7201).
    - Require `STATE_BUCKET` (fail fast if unset) and the built `dist/cli.js`.
    - Define a `cleanup()` and arm it on EXIT **and both signals**; run it once
      up-front as a pre-run cleanup:

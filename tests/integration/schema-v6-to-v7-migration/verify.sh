@@ -55,6 +55,9 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 # ---------------------------------------------------------------------------
 
 cd "$(dirname "$0")"
+# The NEW binary writes the LOWEST schema version a record's shape needs, not
+# its newest one (state-schema-version.sh, #7178, #7201).
+. ../state-schema-version.sh
 
 STACK="CdkdSchemaV6ToV7Migration"
 REGION="${AWS_REGION:-us-east-1}"
@@ -186,17 +189,17 @@ CDKD_TEST_SCHEMA_PHASE=v7 node "${LOCAL_DIST}" deploy "${STACK}" \
 
 V7_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
 V7_VERSION=$(echo "${V7_STATE}" | jq -r '.version')
-# The local binary always writes the CURRENT schema version, which advances
-# over time (v7 -> v8 -> ...). Read it from source rather than hardcoding so
-# this round-trip keeps asserting "a v6 state auto-migrates to whatever the
-# current binary writes" instead of going stale on every schema bump.
-EXPECTED_VERSION=$(grep -oE 'STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = [0-9]+' ../../../src/types/state.ts | grep -oE '[0-9]+$')
+# The local binary writes the LOWEST schema version the record's shape needs
+# (16 / 17 / 18, stateSchemaVersionFor), not its newest one, so derive the
+# expectation from the re-deployed record instead of hardcoding it or reading
+# the newest version from source (#7178, #7201).
+EXPECTED_VERSION=$(printf '%s\n' "${V7_STATE}" | expected_state_schema_version -)
 if [ -z "${EXPECTED_VERSION}" ]; then
-  echo "FAIL: could not read STATE_SCHEMA_VERSION_CURRENT from ../../../src/types/state.ts" >&2
+  echo "FAIL: could not derive the expected schema version from the re-deployed state.json" >&2
   exit 1
 fi
 if [ "${V7_VERSION}" != "${EXPECTED_VERSION}" ]; then
-  echo "FAIL: state.version after re-deploy is ${V7_VERSION}, expected current schema ${EXPECTED_VERSION} (v6 -> current transparent auto-migration)" >&2
+  echo "FAIL: state.version after re-deploy is ${V7_VERSION}, expected ${EXPECTED_VERSION} (the version its records' shape needs: 18 versionsSent / 17 noEchoValueMacs / 16; v6 -> current transparent auto-migration)" >&2
   echo "${V7_STATE}" | jq .
   exit 1
 fi

@@ -491,18 +491,18 @@ sagemaker-domain-vpc	2026-11-27T19:25:29Z	PASS	616	verify.sh	rc ok, orph clean; 
 schedule-group-rename-rollback	2026-11-16T15:41:55Z	PASS	228	verify.sh	rc ok, orph clean; phase 2b red on pre-fix build (#6423)
 scheduled-task	2026-11-04T05:01:38Z	PASS	44	standard	deploy+destroy 0 errors, orph clean
 scheduler-custom-group	2026-11-06T23:58:18Z	PASS	119	verify.sh	#5935 scheduler-schedule split head; rc ok, orph clean
-schema-v10-to-v11-migration	2026-11-28T12:03:36Z	FAIL	175	verify.sh	v11 migration deploy: state.version is 16, expected 18; 42af0d727 (#7200); orph clean
-schema-v11-to-v12-migration	2026-11-04T19:21:11Z	PASS	125	verify.sh	rc ok, orph clean
-schema-v12-to-v13-migration	2026-11-05T10:28:51Z	PASS	135	verify.sh	rc 0, destroy 0 errors, orph clean (sweep N4, own bucket)
-schema-v14-to-v15-migration	2026-10-29T20:43:22Z	PASS	1664	verify.sh	PR #5535 dd4c69bb9; rc 0, destroy 0 errors, orph clean
-schema-v15-to-v16-migration	2026-11-13T04:44:16Z	PASS	81	verify.sh	released @cdkd/cli@0.346.0 v15 -> local v16, 29 assertions, rc ok, orph clean
-schema-v16-to-v17-migration	2026-11-16T19:45:59Z	PASS	170	verify.sh	rc 0, destroy 0 errors, 0 orphans, own state bucket; run from sibling worktree at same sha d21b99b5f
+schema-v10-to-v11-migration	2026-11-28T12:22:54Z	PASS	594	verify.sh	#7201 shape-derived version (16), 165 assertions, rc ok, destroy 0 err, orph clean, 0 versions
+schema-v11-to-v12-migration	2026-11-28T12:36:27Z	PASS	192	verify.sh	#7201 shape-derived version; 1st run FAILed on the debounced event-stream PutObject count (4 vs 3), fixed; 53 assertions, rc ok, orph clean, 0 versions
+schema-v12-to-v13-migration	2026-11-28T12:40:52Z	PASS	212	verify.sh	#7201 shape-derived version, rc ok, orph clean, 0 versions
+schema-v14-to-v15-migration	2026-11-28T13:01:27Z	PASS	1185	verify.sh	#7201 shape-derived version, rc ok, orph clean, 0 versions
+schema-v15-to-v16-migration	2026-11-28T13:04:46Z	PASS	153	verify.sh	#7201 shape-derived version, rc ok, orph clean, 0 versions
+schema-v16-to-v17-migration	2026-11-28T13:08:57Z	PASS	203	verify.sh	#7201 newer-record plant = newest readable + 1 (19), rc ok, orph clean, 0 versions
 schema-v17-to-v18-migration	2026-11-22T17:58:19Z	PASS	245	verify.sh	rc ok, orph clean, 42 assertions; released 0.366.0 -> local v18
-schema-v5-to-v6-migration	2026-11-04T05:36:33Z	PASS	52	verify.sh	batch 4; transparent auto-upgrade verified, own state bucket, 0 err 0 orph
-schema-v6-to-v7-migration	2026-11-04T05:36:33Z	PASS	59	verify.sh	batch 4; transparent auto-upgrade verified, own state bucket, 0 err 0 orph
-schema-v7-to-v8-migration	2026-11-04T05:01:38Z	PASS	135	verify.sh	rc ok, orph clean; current-binary phase asserts derived version 15 (#5733)
-schema-v8-to-v9-migration	2026-11-04T05:01:38Z	PASS	165	verify.sh	rc ok, orph clean; derived-version assert (#5733); own state bucket
-schema-v9-to-v10-migration	2026-11-04T19:35:08Z	PASS	140	verify.sh	rc ok, orph clean
+schema-v5-to-v6-migration	2026-11-28T13:11:14Z	PASS	92	verify.sh	#7201 shape-derived version (16), rc ok, orph clean, 0 versions
+schema-v6-to-v7-migration	2026-11-28T13:30:37Z	PASS	92	verify.sh	#7201 shape-derived version (16), re-run after rebase, rc ok, orph clean, 0 versions
+schema-v7-to-v8-migration	2026-11-28T13:17:14Z	PASS	173	verify.sh	#7201 shape-derived version (16), rc ok, orph clean, 0 versions
+schema-v8-to-v9-migration	2026-11-28T13:23:49Z	PASS	297	verify.sh	#7201 shape-derived version (16), rc ok, orph clean, 0 versions
+schema-v9-to-v10-migration	2026-11-28T13:27:50Z	PASS	198	verify.sh	#7201 shape-derived version, 54 assertions, rc ok, orph clean, 0 versions
 scrub-nested-child	2026-11-28T04:07:01Z	PASS	256	verify.sh	rc 0, 0 orphans, 0 versions; #7167 @65fe4a6ae
 sdk-ccapi-crossref	2026-11-18T22:09:14Z	PASS	136	verify.sh	rc ok, destroy 0 errors, orph clean; Discoverer as the CC type; at f07e65185 (#6579)
 sdk-to-cc-autoroute	2026-11-07T08:40:09Z	PASS	235	verify.sh	PR #5946 f7e8b6577 rc ok, orph clean

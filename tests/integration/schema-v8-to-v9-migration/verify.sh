@@ -66,6 +66,9 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 # ---------------------------------------------------------------------------
 
 cd "$(dirname "$0")"
+# The NEW binary writes the LOWEST schema version a record's shape needs, not
+# its newest one (state-schema-version.sh, #7178, #7201).
+. ../state-schema-version.sh
 
 PRODUCER_STACK="CdkdSchemaV8ToV9MigrationProducer"
 DECOY_STACK="CdkdSchemaV8ToV9MigrationDecoy"
@@ -187,6 +190,19 @@ assert_version() { # usage: assert_version <label> <state-key> <expected>
   fi
   echo "    OK: $1 state.version == $3"
 }
+
+# The version the NEW binary writes is derived from the record's shape
+# (16 / 17 / 18, stateSchemaVersionFor), never the binary's newest (#7201).
+assert_version_by_shape() { # usage: assert_version_by_shape <label> <state-key>
+  local expected
+  expected=$(state_json "$2" | expected_state_schema_version -)
+  if [ -z "${expected}" ]; then
+    echo "FAIL: $1 could not derive the expected schema version from state.json" >&2
+    exit 1
+  fi
+  assert_version "$1 (the version its records' shape needs: 18 versionsSent / 17 noEchoValueMacs / 16)" "$2" "${expected}"
+}
+
 param_value() { # usage: param_value <name>
   aws ssm get-parameter --name "$1" --region "${REGION}" --query 'Parameter.Value' --output text 2>/dev/null
 }
@@ -260,7 +276,7 @@ echo "==> Phase 3a: re-deploy Producer with v9 binary -> version: 9, exportNames
 PRODUCER_V9_LOG=$(mktemp)
 CDKD_TEST_SCHEMA_PHASE=v9 node "${LOCAL_DIST}" deploy "${PRODUCER_STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${PRODUCER_V9_LOG}"
-assert_version "producer (v9 deploy)" "${PRODUCER_STATE_KEY}" "${LOCAL_SCHEMA_VERSION}"
+assert_version_by_shape "producer (v9 deploy)" "${PRODUCER_STATE_KEY}"
 PRODUCER_EXPORTS=$(state_json "${PRODUCER_STATE_KEY}" | jq -c '.exportNames')
 if [ "${PRODUCER_EXPORTS}" != "[\"${SHARED_NAME}\"]" ]; then
   echo "FAIL: producer state.exportNames is ${PRODUCER_EXPORTS}, expected [\"${SHARED_NAME}\"]" >&2
@@ -288,7 +304,7 @@ echo "    OK: producer v9 deploy warned about the decoy's stale entry (transitio
 echo "==> Phase 3b: re-deploy Decoy with v9 binary -> version: 9, exportNames: [] (written, not omitted)"
 CDKD_TEST_SCHEMA_PHASE=v9 node "${LOCAL_DIST}" deploy "${DECOY_STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
-assert_version "decoy (v9 deploy)" "${DECOY_STATE_KEY}" "${LOCAL_SCHEMA_VERSION}"
+assert_version_by_shape "decoy (v9 deploy)" "${DECOY_STATE_KEY}"
 DECOY_STATE=$(state_json "${DECOY_STATE_KEY}")
 if [ "$(echo "${DECOY_STATE}" | jq -r 'has("exportNames")')" != "true" ] || [ "$(echo "${DECOY_STATE}" | jq -c '.exportNames')" != "[]" ]; then
   echo "FAIL: decoy state.exportNames must be an EMPTY ARRAY (written), got: $(echo "${DECOY_STATE}" | jq -c '.exportNames // "absent"')" >&2
@@ -306,7 +322,7 @@ echo "    OK: decoy state.exportNames == [] and its plain output is still in sta
 echo "==> Phase 3c: re-deploy Consumer with v9 binary -> rebinds to the PRODUCER's export"
 CDKD_TEST_SCHEMA_PHASE=v9 node "${LOCAL_DIST}" deploy "${CONSUMER_STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
-assert_version "consumer (v9 deploy)" "${CONSUMER_STATE_KEY}" "${LOCAL_SCHEMA_VERSION}"
+assert_version_by_shape "consumer (v9 deploy)" "${CONSUMER_STATE_KEY}"
 
 # The fix, on real AWS: same template, same three stacks, and the consumer now
 # holds the PRODUCER's ARN.

@@ -121,6 +121,9 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 
 . ../s3-versions.sh
 . ../cr-log-groups.sh
+# The NEW binary writes the LOWEST schema version a record's shape needs, not
+# its newest one (state-schema-version.sh, #7178, #7201).
+. ../state-schema-version.sh
 
 STACK="CdkdSchemaV10ToV11Migration"
 REGION="${AWS_REGION:-us-east-1}"
@@ -355,6 +358,19 @@ assert_version() { # <label> <expected>
     fail "$1: state.version is ${v}, expected $2"
   fi
   pass "$1: state.version == $2"
+}
+
+# The version the NEW binary writes is derived from the record's shape
+# (16 / 17 / 18, stateSchemaVersionFor), never the binary's newest: a migration
+# deploy of a record with no NoEcho MAC and no attestation stays 16 (#7201).
+assert_version_by_shape() { # <label>
+  local expected
+  expected="$(expected_state_schema_version "${STATE_FILE}")"
+  if [ -z "${expected}" ]; then
+    echo "FAIL: $1: could not derive the expected schema version from state.json" >&2
+    exit 1
+  fi
+  assert_version "$1 (the version its records' shape needs: 18 versionsSent / 17 noEchoValueMacs / 16)" "${expected}"
 }
 
 state_field() { # <jq path expression>
@@ -708,7 +724,7 @@ run_cdkd ok "v11 migration deploy" "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 assert_log_has_no_tokens "v11 migration deploy"
 fetch_state "v11 migration deploy"
-assert_version "v11 migration deploy" "${LOCAL_SCHEMA_VERSION}"
+assert_version_by_shape "v11 migration deploy"
 assert_no_tokens_in_state "v11 migration deploy"
 for id in "${TOKEN_ID}" "${SHORT_ID}"; do
   assert_eq "v11 migration deploy: ${id}.properties.Value" \

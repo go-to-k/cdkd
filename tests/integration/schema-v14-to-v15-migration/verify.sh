@@ -89,6 +89,9 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 # ---------------------------------------------------------------------------
 
 . ../s3-versions.sh
+# The NEW binary writes the LOWEST schema version a record's shape needs, not
+# its newest one (state-schema-version.sh, #7178, #7201).
+. ../state-schema-version.sh
 
 STACK="CdkdSchemaV14ToV15Migration"
 REGION="${AWS_REGION:-us-east-1}"
@@ -237,6 +240,19 @@ assert_eq() { # <label> <actual> <expected>
 
 assert_version() { # <label> <expected>
   assert_eq "$1: state.version" "$(state_field '.version')" "$2"
+}
+
+# The version the NEW binary writes is derived from the record's shape
+# (16 / 17 / 18, stateSchemaVersionFor), never the binary's newest: a migration
+# deploy of a record with no NoEcho MAC and no attestation stays 16 (#7201).
+assert_version_by_shape() { # <label>
+  local expected
+  expected="$(expected_state_schema_version "${STATE_FILE}")"
+  if [ -z "${expected}" ]; then
+    echo "FAIL: $1: could not derive the expected schema version from state.json" >&2
+    exit 1
+  fi
+  assert_version "$1 (the version its records' shape needs: 18 versionsSent / 17 noEchoValueMacs / 16)" "${expected}"
 }
 
 # Run a cdkd command, its output into DEPLOY_LOG and its SDK calls into CALLS
@@ -444,7 +460,7 @@ echo "==> Phase 5: the MIGRATION deploy of the base template"
 run_cdkd ok "local migration deploy" "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 fetch_state "local migration deploy"
-assert_version "local migration deploy" "${LOCAL_SCHEMA_VERSION}"
+assert_version_by_shape "local migration deploy"
 assert_eq "local migration deploy: gsioob is KEPT (v14 recorded no attempted items)" \
   "$(index_status gsioob)" "ACTIVE"
 assert_log_has "local migration deploy" "GSI gsioob on DynamoDB table ${TABLE_NAME} is live, but neither"
@@ -481,7 +497,7 @@ run_cdkd fail "local cut-short gsi2 add" "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --no-rollback \
   --resource-warn-after AWS::DynamoDB::Table=5s --resource-timeout AWS::DynamoDB::Table=10s
 fetch_state "local cut-short gsi2 add"
-assert_version "local cut-short gsi2 add" "${LOCAL_SCHEMA_VERSION}"
+assert_version_by_shape "local cut-short gsi2 add"
 assert_eq "local cut-short gsi2 add: the record names GlobalSecondaryIndexes unsettled" \
   "$(state_field '(.resources.Table.unsettledProperties // []) | join(",")')" "GlobalSecondaryIndexes"
 assert_eq "local cut-short gsi2 add: the record names gsi2 as the accepted Create" \
@@ -530,7 +546,7 @@ if grep -qF "GSI gsi2 on DynamoDB table ${TABLE_NAME} is live, but neither" "${D
 fi
 pass "local converging deploy: no undeclared-index warning for gsi2"
 fetch_state "local converging deploy"
-assert_version "local converging deploy" "${LOCAL_SCHEMA_VERSION}"
+assert_version_by_shape "local converging deploy"
 assert_eq "local converging deploy: the names and items are cleared" \
   "$(state_field '.resources.Table | (has("unsettledProperties") or has("unsettledItems"))')" "false"
 
