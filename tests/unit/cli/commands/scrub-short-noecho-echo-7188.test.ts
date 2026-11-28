@@ -182,6 +182,28 @@ describe('cdkd scrub - a short NoEcho echo an older binary persisted (go-to-k/cd
     expect(cr.noEchoAttributeNames).toEqual(['Whole']);
   });
 
+  it('declares nothing on equality where a Fn::GetAtt names the attribute by an expression', async () => {
+    const info = stackInfo();
+    (info.template.Resources as Record<string, unknown>)['Reader'] = {
+      Type: 'AWS::SNS::Topic',
+      Properties: { DisplayName: { 'Fn::GetAtt': ['Cr', { Ref: 'AWS::Region' }] } },
+    };
+    const saved = await scrub(stateWith(), info);
+    const cr = (saved ?? stateWith()).resources['Cr']!;
+    expect(cr.attributes!['Out']).toBe(SHORT);
+    expect(cr.noEchoAttributeNames).toBeUndefined();
+  });
+
+  it('declares nothing on a resource that is not a custom resource', async () => {
+    const info = stackInfo();
+    (info.template.Resources as Record<string, { Type: string }>)['Cr']!.Type = 'AWS::Test::Cr7188';
+    const record = { ...customRecord(), resourceType: 'AWS::Test::Cr7188' };
+    const saved = await scrub(stateWith({ resources: { Cr: record } }), info);
+    const cr = (saved ?? stateWith()).resources['Cr']!;
+    expect(cr.attributes!['Out']).toBe(SHORT);
+    expect(cr.noEchoAttributeNames).toBeUndefined();
+  });
+
   it('masks an off-template readback leaf EQUAL to the short input, not one containing it', async () => {
     const saved = await scrub(stateWith());
     const echo = saved!.resources['Echo']!;
