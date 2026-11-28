@@ -836,6 +836,16 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
         expect(lastSaved().resources['Cr']!.noEchoAttributeNames).toBeUndefined();
       });
 
+      it('declares nothing for a resource that is not a custom resource (its attributes are AWS text)', async () => {
+        provider.create.mockImplementation((logicalId: string) =>
+          Promise.resolve(logicalId === 'Thing' ? { physicalId: 'thing-1', attributes: { Other: 'abc' } } : { physicalId: `${logicalId}-phys`, attributes: {} })
+        );
+        await makeEngine().deploy(STACK, template(TOKEN, { Thing: { Type: 'AWS::SNS::Topic', Properties: { DisplayName: { Ref: 'Short' } } } }));
+        const thing = lastSaved().resources['Thing']!;
+        expect(thing.attributes).toEqual({ Other: 'abc' });
+        expect(thing.noEchoAttributeNames).toBeUndefined();
+      });
+
       it('never declares one equal to the stack name, which is public', async () => {
         crReturns({ Other: 'abc' });
         await makeEngine().deploy('abc', template(TOKEN, { Cr: CR }));
