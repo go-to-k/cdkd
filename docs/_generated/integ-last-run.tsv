@@ -119,7 +119,7 @@ custom-resource-noecho-nested	2026-11-28T00:05:30Z	PASS	1432	verify.sh	rc ok, or
 custom-resource-payload-types	2026-11-14T19:25:11Z	PASS	150	verify.sh	rc ok, orph clean
 custom-resource-physid-replace	2026-11-16T23:47:53Z	PASS	456	verify.sh	rc ok, orph clean (#6466 PR #6467)
 custom-resource-provider	2026-11-25T07:06:26Z	PASS	295	verify.sh	rc ok, orph clean, PR #6968 f350f555: 2 settle INFO lines per deploy, 0 transient-authz
-custom-resource-resolved-secret	2026-11-27T05:36:36Z	PASS	456	verify.sh	PR7060 73afba08d us-east-1 rc ok, orph clean
+custom-resource-resolved-secret	2026-11-28T01:35:39Z	PASS	471	verify.sh	PR7168 49bc28993 us-east-1 rc ok, orph clean, 0 surviving versions
 custom-resource-service-token-change	2026-11-06T16:04:59Z	PASS	135	verify.sh	post-hoc on main after #5879 split; rc ok, orph clean
 data-analytics	2026-11-06T17:24:03Z	PASS	128	verify.sh	#5896 firehose split head; rc ok, orph clean
 data-pipeline	2026-11-04T05:45:58Z	PASS	65	standard	1104 sweep b5; 7 del 0 err, 0 orph
@@ -454,7 +454,7 @@ replacement-immutable-name	2026-11-16T08:22:27Z	PASS	140	verify.sh	rc ok, orph c
 replacement-rename-onto-holder	2026-11-16T08:22:27Z	PASS	636	verify.sh	rc ok, orph clean (#6374 sweep)
 require-approval-broadening	2026-11-04T17:48:59Z	PASS	81	verify.sh	rc ok, destroy 0 errors, orph clean (state keys + IAM/Lambda/log groups), own state bucket; main-based re-run on wrasse
 retain-orphan-redeploy	2026-11-20T19:04:37Z	PASS	201	verify.sh	rc ok, orph clean, own state bucket, head 870be8d13 (#6702)
-retain-orphan-secret	2026-11-27T19:17:25Z	PASS	130	verify.sh	rc ok, orph clean, 0 state versions survive (#7142 6d7b0277c)
+retain-orphan-secret	2026-11-28T01:38:10Z	PASS	130	verify.sh	PR7168 49bc28993 us-east-1 rc ok, orph clean, 0 surviving versions
 rollback-attribute-only-revert	2026-11-18T05:18:35Z	PASS	90	verify.sh	rc ok, orph clean (PR #6531)
 rollback-command	2026-11-24T14:31:41Z	PASS	890	verify.sh	rc ok, orph clean (#6933 sweep)
 rollback-cross-region-secret	2026-11-20T11:50:48Z	PASS	298	verify.sh	PR6652 be63cc056, us-west-2+us-east-1; own state bucket (deleted); rc 0, kept identity x2, orph clean
@@ -503,7 +503,7 @@ schema-v6-to-v7-migration	2026-11-04T05:36:33Z	PASS	59	verify.sh	batch 4; transp
 schema-v7-to-v8-migration	2026-11-04T05:01:38Z	PASS	135	verify.sh	rc ok, orph clean; current-binary phase asserts derived version 15 (#5733)
 schema-v8-to-v9-migration	2026-11-04T05:01:38Z	PASS	165	verify.sh	rc ok, orph clean; derived-version assert (#5733); own state bucket
 schema-v9-to-v10-migration	2026-11-04T19:35:08Z	PASS	140	verify.sh	rc ok, orph clean
-scrub-nested-child	2026-11-04T20:29:26Z	PASS	150	verify.sh	rc 0, destroy 0 errors, 0 surviving state versions; us-east-1; own temp state bucket
+scrub-nested-child	2026-11-28T01:42:49Z	PASS	246	verify.sh	PR7168 49bc28993 us-east-1 rc ok, orph clean, 0 surviving versions
 sdk-ccapi-crossref	2026-11-18T22:09:14Z	PASS	136	verify.sh	rc ok, destroy 0 errors, orph clean; Discoverer as the CC type; at f07e65185 (#6579)
 sdk-to-cc-autoroute	2026-11-07T08:40:09Z	PASS	235	verify.sh	PR #5946 f7e8b6577 rc ok, orph clean
 sdk-to-cc-identifier	2026-11-25T06:59:42Z	PASS	70	verify.sh	rc ok, orph clean; rerun at dc81f732f (#6976)
@@ -511,7 +511,7 @@ sdk-unmodelled-nested-route	2026-11-24T14:17:10Z	PASS	513	verify.sh	rc ok, orph 
 secret-derived-immutable-names	2026-11-27T16:03:08Z	PASS	1093	verify.sh	rc ok at 664ad6cd7 (#7123), destroy 0 errors, 0 orphans, 0 surviving state versions
 secret-substring-literal	2026-11-14T17:45:48Z	PASS	100	verify.sh	rc ok, orph clean, versions swept
 secrets-array-nested	2026-11-20T11:22:10Z	PASS	300	verify.sh	PR6652 be63cc056, us-east-1, revert-identity kept, orph clean
-secrets-dynamic-ref	2026-11-20T11:22:10Z	PASS	721	verify.sh	PR6652 be63cc056, us-east-1, revert-identity kept, orph clean
+secrets-dynamic-ref	2026-11-28T02:02:44Z	PASS	1173	verify.sh	PR7168 49bc28993 us-east-1 rc ok, orph clean, 0 surviving versions
 secrets-rotation-schedule	2026-11-04T22:20:19Z	PASS	60	verify.sh	own state bucket, rc ok, orph clean
 secretsmanager-replica-rekey	2026-11-10T16:00:58Z	PASS	110	verify.sh	rc ok, orph clean
 secretsmanager-update-value-source	2026-11-20T15:08:45Z	PASS	146	verify.sh	rc ok, orph clean; #6669 7a7f2b93b, revert-identity wired
@@ -539,6 +539,7 @@ sqs-fifo-unnamed	2026-11-11T08:49:53Z	PASS	70	verify.sh	rc ok, orph clean; pre-f
 ssm-document-replace	2026-11-18T18:02:14Z	PASS	206	verify.sh	rc ok, orph clean
 ssm-generated-name-grant	2026-11-14T08:27:58Z	PASS	154	verify.sh	rc ok, orph clean, e394ec742
 ssm-secure-dynamic-ref	2026-11-28T01:46:30Z	PASS	225	verify.sh	rc ok, orph clean, Phase 1e (#7154 scrub twin) ran+passed @8f5f75af5
+ssm-secure-dynamic-ref	2026-11-28T01:27:18Z	PASS	195	verify.sh	PR7168 49bc28993 us-east-1 rc ok, orph clean, 0 surviving versions
 ssm-typed-parameter-not-found	2026-11-16T04:54:02Z	PASS	60	verify.sh	rc ok, orph clean
 stack-copy-create-tokens	2026-11-10T16:05:59Z	PASS	1940	verify.sh	rc ok, orph clean
 stack-id-uuid	2026-11-13T03:29:59Z	PASS	88	verify.sh	rc ok, orph clean
