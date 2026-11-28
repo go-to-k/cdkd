@@ -136,7 +136,11 @@ describe('GlobalTable kinesisPrecision op waits (#7132)', () => {
     );
 
   it('sends the update, then polls the destination until ACTIVE at the new precision', async () => {
-    const describes = [dest('UPDATING', 'MICROSECOND'), dest('ACTIVE', 'MILLISECOND')];
+    const describes = [
+      dest('ACTIVE', 'MICROSECOND'),
+      dest('UPDATING', 'MICROSECOND'),
+      dest('ACTIVE', 'MILLISECOND'),
+    ];
     send.mockImplementation((cmd: unknown) =>
       Promise.resolve(
         cmd instanceof UpdateKinesisStreamingDestinationCommand
@@ -154,10 +158,67 @@ describe('GlobalTable kinesisPrecision op waits (#7132)', () => {
     }
     const names = send.mock.calls.map((c) => (c[0] as object).constructor.name);
     expect(names).toEqual([
+      'DescribeKinesisStreamingDestinationCommand',
       'UpdateKinesisStreamingDestinationCommand',
       'DescribeKinesisStreamingDestinationCommand',
       'DescribeKinesisStreamingDestinationCommand',
     ]);
+  });
+
+  it('waits out a destination left UPDATING before sending, even under --no-wait', async () => {
+    process.env['CDKD_NO_WAIT'] = 'true';
+    const describes = [dest('UPDATING', 'NANOSECOND'), dest('ACTIVE', 'MICROSECOND')];
+    send.mockImplementation((cmd: unknown) => {
+      if (cmd instanceof UpdateKinesisStreamingDestinationCommand) {
+        // AWS refuses the update while the destination is not ACTIVE.
+        return describes.length > 0
+          ? Promise.reject(
+              Object.assign(new Error('Updates are only allowed in ACTIVE state'), {
+                name: 'ValidationException',
+              })
+            )
+          : Promise.resolve({});
+      }
+      return Promise.resolve({ KinesisDataStreamDestinations: [describes.shift()!] });
+    });
+    vi.useFakeTimers();
+    try {
+      const p = run();
+      await vi.runAllTimersAsync();
+      await p;
+    } finally {
+      vi.useRealTimers();
+    }
+    const names = send.mock.calls.map((c) => (c[0] as object).constructor.name);
+    // Two pre-send reads, the update; the post-update wait is skipped under --no-wait.
+    expect(names).toEqual([
+      'DescribeKinesisStreamingDestinationCommand',
+      'DescribeKinesisStreamingDestinationCommand',
+      'UpdateKinesisStreamingDestinationCommand',
+    ]);
+  });
+
+  it('treats "already set to the desired value" as success, then confirms the precision', async () => {
+    send.mockImplementation((cmd: unknown) =>
+      cmd instanceof UpdateKinesisStreamingDestinationCommand
+        ? Promise.reject(
+            Object.assign(new Error('Precision is already set to the desired value'), {
+              name: 'ValidationException',
+            })
+          )
+        : Promise.resolve({ KinesisDataStreamDestinations: [dest('ACTIVE', 'MILLISECOND')] })
+    );
+    await run();
+    expect(send).toHaveBeenCalledTimes(3);
+  });
+
+  it('still fails on any other ValidationException', async () => {
+    send.mockImplementation((cmd: unknown) =>
+      cmd instanceof UpdateKinesisStreamingDestinationCommand
+        ? Promise.reject(Object.assign(new Error('bad precision'), { name: 'ValidationException' }))
+        : Promise.resolve({ KinesisDataStreamDestinations: [dest('ACTIVE', 'MICROSECOND')] })
+    );
+    await expect(run()).rejects.toThrow('bad precision');
   });
 
   it('fails the op when the destination never reaches the new precision', async () => {

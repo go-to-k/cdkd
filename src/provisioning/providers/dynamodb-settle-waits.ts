@@ -82,7 +82,7 @@ export const SETTLE_STALE_READ_GRACE_POLLS = 5;
 async function pollUntilSettled<T>(
   what: string,
   opts: DynamoDBSettleWaitOptions,
-  defaults: { pollMs: number; maxPolls: number },
+  defaults: { pollMs: number; maxPolls: number; runsUnderNoWait?: boolean },
   read: () => Promise<T>,
   /** `'settled'`, `'pending'`, or a failure message to throw. */
   judge: (value: T, poll: number) => 'settled' | 'pending' | Error,
@@ -91,7 +91,7 @@ async function pollUntilSettled<T>(
   const { maskSecrets } = opts;
   const pollMs = opts.pollMs ?? defaults.pollMs;
   const maxPolls = opts.maxPolls ?? defaults.maxPolls;
-  if (process.env['CDKD_NO_WAIT'] === 'true') {
+  if (process.env['CDKD_NO_WAIT'] === 'true' && defaults.runsUnderNoWait !== true) {
     opts.debug(maskSecrets(`Skipping the wait for ${what} (CDKD_NO_WAIT=true)`));
     return;
   }
@@ -325,5 +325,49 @@ export async function waitForKinesisPrecisionSettled(
       dest === undefined
         ? 'absent'
         : `${dest.DestinationStatus ?? 'unknown'} / ${dest.ApproximateCreationDateTimePrecision ?? 'unset'}`
+  );
+}
+
+/** The pre-update wait re-reads every 2 s, for up to 5 minutes, as the Table side does. */
+export const KINESIS_PRE_UPDATE_POLLS = 150;
+
+/**
+ * Before `UpdateKinesisStreamingDestination` on the GlobalTable path: wait
+ * while the destination for `streamArn` reads `UPDATING` / `ENABLING`. AWS
+ * refuses the update until it is `ACTIVE` ("Updates are only allowed in
+ * ACTIVE state"), and a `--no-wait` deploy can leave it `UPDATING`, so this
+ * wait runs under `--no-wait` too, as the Table side's pre-update wait in
+ * `waitForKinesisDestinationSettled` does. Any other status ends the wait:
+ * the update itself decides.
+ */
+export async function waitForKinesisUpdatable(
+  client: DynamoDBClient,
+  tableName: string,
+  streamArn: string,
+  target: string,
+  opts: DynamoDBSettleWaitOptions
+): Promise<void> {
+  await pollUntilSettled(
+    `Kinesis streaming destination ${streamArn} on ${target} to accept an update`,
+    opts,
+    {
+      pollMs: KINESIS_ENABLE_SETTLE_POLL_MS,
+      maxPolls: KINESIS_PRE_UPDATE_POLLS,
+      runsUnderNoWait: true,
+    },
+    async () =>
+      currentDestination(
+        (
+          await client.send(
+            new DescribeKinesisStreamingDestinationCommand({ TableName: tableName })
+          )
+        ).KinesisDataStreamDestinations ?? [],
+        streamArn
+      ),
+    (dest) =>
+      dest?.DestinationStatus === 'UPDATING' || dest?.DestinationStatus === 'ENABLING'
+        ? 'pending'
+        : 'settled',
+    (dest) => dest?.DestinationStatus ?? 'absent'
   );
 }
