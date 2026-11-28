@@ -266,7 +266,7 @@ export function guardStackRegionOptions(cmd: Command): void {
  */
 export const noWaitOption = new Option(
   '--no-wait',
-  'Skip waiting for async resources to stabilize (RDS, ElastiCache, NAT Gateway, EC2 Instance, ELBv2 LoadBalancer, Lambda MicroVM Image, Bedrock AgentCore Runtime, EventBridge Archive, Connect Instance, VPC Endpoint, ECS Service steady state, Auto Scaling instance refresh under --update-policy, Lambda event source mapping, DynamoDB Kinesis streaming destination and Contributor Insights; an AutoScalingReplacingUpdate still waits for its new instances, and a Lambda alias CodeDeploy deployment for its traffic shift; a Fn::GetAtt of a value that exists only once a resource is ready, or that an RDS instance update changed and has not applied yet (a port, a CA certificate, a Multi-AZ standby zone), or a custom resource invoked after one, still waits for it)'
+  'Skip waiting for async resources to stabilize (RDS, ElastiCache, NAT Gateway, EC2 Instance, ELBv2 LoadBalancer, Lambda MicroVM Image, Bedrock AgentCore Runtime, EventBridge Archive, Connect Instance, VPC Endpoint, ECS Service steady state, Auto Scaling instance refresh under --update-policy, Lambda event source mapping, DynamoDB Kinesis streaming destination and Contributor Insights, ECS cluster Service Connect attachments, EFS access point and backup policy, EMR automatic scaling policy, EC2 instance monitoring, metadata options and IAM instance profile changes; an AutoScalingReplacingUpdate still waits for its new instances, and a Lambda alias CodeDeploy deployment for its traffic shift; a Fn::GetAtt of a value that exists only once a resource is ready, or that an RDS instance update changed and has not applied yet (a port, a CA certificate, a Multi-AZ standby zone), or a custom resource invoked after one, still waits for it)'
 );
 
 /**
@@ -278,7 +278,11 @@ export const noWaitOption = new Option(
  * clause, issue #1282), and a Multi-AZ RDS DB cluster leaving
  * `storage-optimization` after an instance class or storage change (the
  * cluster already serves on the new class and storage; go-to-k/cdkd#5639;
- * a long optimization needs `--resource-timeout AWS::RDS::DBCluster=<n>h`).
+ * a long optimization needs `--resource-timeout AWS::RDS::DBCluster=<n>h`),
+ * and a Route 53 change (hosted zone create / delete, record set and record
+ * set group changes, VPC association) reaching `INSYNC`: the change is
+ * readable at once and `PENDING` has no failure state, so only DNS
+ * propagation waits (go-to-k/cdkd#7132; a cap or deadline warns).
  * ECS Service steady state is NOT in this list: its
  * outcome is still open when `CreateService` / `UpdateService` returns, so
  * the default waits for it (go-to-k/cdkd#5571).
@@ -310,7 +314,7 @@ export const noWaitOption = new Option(
  */
 export const fullWaitOption = new Option(
   '--full-wait',
-  'Also wait for stabilizations cdkd skips by default, matching CloudFormation (CloudFront Distribution Deployed, RDS Multi-AZ DB cluster storage optimization; raise --resource-timeout AWS::RDS::DBCluster for a long one)'
+  'Also wait for stabilizations cdkd skips by default, matching CloudFormation (CloudFront Distribution Deployed, Route 53 hosted zone, record and VPC association changes reaching INSYNC, RDS Multi-AZ DB cluster storage optimization; raise --resource-timeout AWS::RDS::DBCluster for a long one)'
 );
 
 /**

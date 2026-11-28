@@ -51,10 +51,11 @@ Take a stack with a NAT gateway and a CloudFront distribution:
 - With `--full-wait`, the deploy also waits until the distribution is
   `Deployed`, as CloudFormation does.
 
-The default skips two waits: a CloudFront distribution propagating to the
-edge, which takes 3 to 15 minutes, and a Multi-AZ RDS DB cluster optimizing its
+The default skips three waits: a CloudFront distribution propagating to the
+edge, which takes 3 to 15 minutes, a Multi-AZ RDS DB cluster optimizing its
 storage after an instance class or storage change, which can take hours while
-the cluster already serves on its new class and storage. With `--full-wait`,
+the cluster already serves on its new class and storage, and a Route 53 change
+propagating to every DNS server, which takes 30 to 80 seconds. With `--full-wait`,
 raise that cluster's limit for a long optimization, such as
 `--resource-timeout AWS::RDS::DBCluster=6h`: the wait otherwise ends at the
 90-minute limit and fails the update. Every other wait stays in the

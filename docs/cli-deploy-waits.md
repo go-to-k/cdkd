@@ -430,9 +430,10 @@ waits for a service whose `DeploymentController` is `CODE_DEPLOY` or
 
 ## What `--full-wait` adds
 
-`--full-wait` adds two waits that CloudFormation performs and cdkd skips by
-default: a CloudFront distribution reaching `Deployed`, and a Multi-AZ RDS DB
-cluster reaching `available` after an instance class or storage change.
+`--full-wait` adds three waits that CloudFormation performs and cdkd skips by
+default: a CloudFront distribution reaching `Deployed`, a Multi-AZ RDS DB
+cluster reaching `available` after an instance class or storage change, and a
+Route 53 change reaching `INSYNC`.
 
 ```bash
 cdkd deploy MyStack --full-wait
@@ -493,6 +494,28 @@ cdkd deploy MyStack --full-wait \
 ```
 
 A wait that runs out fails the update.
+
+### Route 53: `INSYNC`
+
+Every hosted zone create and delete, record set and record set group change,
+and private-zone VPC association or disassociation returns a change that is
+`PENDING` until every Route 53 DNS server has it. By default cdkd returns while
+it is `PENDING`:
+
+| What | Usable at once | Time to `INSYNC` |
+| --- | --- | --- |
+| Hosted zone create or delete | Yes: records can be added at once, and the zone is gone at once | 25-45 s |
+| Record change | Yes: drift and later calls read it at once | 25-40 s |
+| VPC association or disassociation | Yes | About 80 s |
+
+Route 53 has no failure state for a `PENDING` change, so the wait changes only
+when DNS resolvers see the change. Use `--full-wait` when a step right after
+the deploy resolves the name. Under `--full-wait`, a wait that runs out warns
+and the deploy continues, with the command to wait manually:
+
+```text
+aws route53 wait resource-record-sets-changed --id <change-id>
+```
 
 ## Destroy always waits
 
