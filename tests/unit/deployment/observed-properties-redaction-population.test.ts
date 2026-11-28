@@ -210,6 +210,13 @@ const EXPECTED: Readonly<Record<string, { readonly sites: number; readonly why: 
       'a bag `scrubResourceRecord` already redacted, as the deploy\'s ' +
       '`applyNoEchoPersist` does.',
   },
+  'src/cli/commands/scrub/twin-references.ts': {
+    sites: 1,
+    why:
+      'A `:`-form WRITE over the bag `scrubResourceRecord` just redacted: ' +
+      '`withObservedTwinsPositioned` puts an observed leaf on its own expression only where ' +
+      'this pass\'s resolution of that text is the stored leaf exactly (go-to-k/cdkd#7154).',
+  },
   'src/cli/commands/scrub/stack-rewrite.ts': {
     sites: 1,
     why:
@@ -364,9 +371,10 @@ describe('observedProperties write population (issue #2828)', () => {
     // go-to-k/cdkd#6610's table-driven sibling prune added one: 21 across 14.
     // go-to-k/cdkd#6958's failed-op re-create strip added one: 22 across 15.
     // go-to-k/cdkd#7158's off-template echo mask added one: 23 across 16.
+    // go-to-k/cdkd#7154's observed twin positioning added one: 24 across 17.
     const actual = scanPopulation();
-    expect(Object.values(actual).reduce((a, b) => a + b, 0)).toBe(23);
-    expect(Object.keys(EXPECTED)).toHaveLength(16);
+    expect(Object.values(actual).reduce((a, b) => a + b, 0)).toBe(24);
+    expect(Object.keys(EXPECTED)).toHaveLength(17);
   });
 
   it('every ASSIGNMENT-form site redacts at the call site, or is allow-listed', () => {

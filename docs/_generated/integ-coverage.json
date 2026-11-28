@@ -6714,7 +6714,8 @@
         "perf-cross-backend-check",
         "rename-refactor",
         "replacement-immutable-name",
-        "scheduled-task"
+        "scheduled-task",
+        "ssm-secure-dynamic-ref"
       ],
       "signals": {
         "ecs-schedule-targets": [
@@ -6765,6 +6766,9 @@
         ],
         "scheduled-task": [
           "l2"
+        ],
+        "ssm-secure-dynamic-ref": [
+          "l1"
         ]
       }
     },
@@ -10970,6 +10974,7 @@
         "sns-subscription-update",
         "sqs-esm-max-concurrency",
         "sqs-fifo-unnamed",
+        "ssm-secure-dynamic-ref",
         "tags-propagation",
         "update-deleted-outside",
         "wide-independent"
@@ -11334,6 +11339,9 @@
           "l1",
           "l2",
           "literal"
+        ],
+        "ssm-secure-dynamic-ref": [
+          "l2"
         ],
         "tags-propagation": [
           "l2"

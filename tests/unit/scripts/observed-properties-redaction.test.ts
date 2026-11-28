@@ -90,12 +90,21 @@ describe('check-observed-properties-redaction (go-to-k/cdkd#6765)', () => {
   it('the drain exemption: the deploy engine still saves through the persist choke point', () => {
     expect(EXEMPTIONS.map((e) => `${e.file}#${e.fn}`)).toEqual([
       'src/deployment/deploy-engine/observed-capture.ts#drainObservedCaptures',
+      'src/cli/commands/scrub/twin-references.ts#withObservedTwinsPositioned',
     ]);
     const engine = readFileSync(join(REPO_ROOT, 'src/deployment/deploy-engine.ts'), 'utf8');
     expect(engine).toContain('return redactStateForPersist.call(this, state);');
     const persist = readFileSync(join(REPO_ROOT, 'src/deployment/deploy-engine/state-persist.ts'), 'utf8');
     expect(persist).toContain('this.redactStateForPersist(state)');
     expect(persist).toContain('scrubResourceRecord(');
+  });
+
+  it('the scrub twin exemption: it runs over the redacted bag, and writes only a proven leaf', () => {
+    const rewrite = readFileSync(join(REPO_ROOT, 'src/cli/commands/scrub/stack-rewrite.ts'), 'utf8');
+    expect(rewrite.replace(/\s+/g, ' ')).toContain('withObservedTwinsPositioned( scrubResourceRecord(positioned,');
+    const twins = readFileSync(join(REPO_ROOT, 'src/cli/commands/scrub/twin-references.ts'), 'utf8');
+    expect(twins).toContain('return provenTemplateText(s, t, secrets, plaintexts) ? t : p;');
+    expect(twins).toContain('if (!corroborates(s[i], t[i])) return item;');
   });
 
   describe('roots', () => {

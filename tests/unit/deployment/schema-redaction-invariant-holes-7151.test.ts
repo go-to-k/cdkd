@@ -30,9 +30,8 @@
  * `observedProperties`, echoed as an attribute, and by the readback under a
  * key the template lacks. Asserted: no plaintext reaches the record, and an
  * unchanged redeploy plans no change. A known gap is listed in {@link GAPS}
- * with its filed issue. Each holds only with that readback echo, except
- * #7154 on a list path, and every writer is asserted clean without it (the
- * attribute echo kept).
+ * with its filed issue. Each holds only with that readback echo, and every
+ * writer is asserted clean without it (the attribute echo kept).
  *
  * NOT claimed (a design limit, not a case): a value under the needle floor
  * (one to three characters) echoed WHOLE at a position the template does not
@@ -65,6 +64,7 @@ import { redactRollbackRecord } from '../../../src/deployment/rollback-executor/
 import { maskRestoredNoEchoRecord } from '../../../src/deployment/rollback-executor/replay-noecho.js';
 import { withRefreshedObservedBaseline } from '../../../src/deployment/rollback-executor/replay-observed-refresh.js';
 import { applyScrubNoEcho, planScrubNoEcho, scrubMigrationNeedles } from '../../../src/cli/commands/scrub/noecho.js';
+import { positionTwinReferences, withObservedTwinsPositioned } from '../../../src/cli/commands/scrub/twin-references.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
@@ -218,7 +218,9 @@ const WRITERS: readonly Writer[] = ['deploy-persist', 'unchanged-persist', 'scru
  *   secrets), with a fresh readback (`kickOffAutoRefreshObservedProperties`);
  * - `scrub`: `cdkd scrub` over a record an older binary wrote in plaintext,
  *   the redaction steps of `src/cli/commands/scrub/stack-rewrite.ts` (position
- *   against the template, `scrubResourceRecord` under `state-cross-generation`
+ *   against the template, twin references put back on their own expression
+ *   by `positionTwinReferences` (#7154), `scrubResourceRecord` and the same
+ *   pairing for the observed bag (`withObservedTwinsPositioned`) under `state-cross-generation`
  *   with `propertiesPositioned`, the `NoEcho` migration needles,
  *   `applyScrubNoEcho`); left out: `keepTemplateLiteralLeaves` and
  *   `keepHeldTokenProvenance`, which only KEEP leaves, and the public tokens
@@ -264,18 +266,28 @@ async function written(
       ).byLogicalId.get(TYPE_ID);
       const positioned = {
         ...memory,
-        properties: redactForState(memory.properties, {
-          provenance: 'template-sourced',
-          secrets: s.secrets,
-          source: s.source,
-          generation: 'unproven',
-        }) as Record<string, unknown>,
+        properties: positionTwinReferences(
+          memory.properties,
+          redactForState(memory.properties, {
+            provenance: 'template-sourced',
+            secrets: s.secrets,
+            source: s.source,
+            generation: 'unproven',
+          }),
+          s.source,
+          s.secrets
+        ) as Record<string, unknown>,
       };
-      const walked = scrubResourceRecord(positioned, s.secrets, undefined, 'state-cross-generation', {
-        properties: 'unproven',
-        observed: 'unproven',
-        propertiesPositioned: true,
-      });
+      const walked = withObservedTwinsPositioned(
+        scrubResourceRecord(positioned, s.secrets, undefined, 'state-cross-generation', {
+          properties: 'unproven',
+          observed: 'unproven',
+          propertiesPositioned: true,
+        }),
+        memory,
+        positioned.properties,
+        s.secrets
+      );
       const needles = scrubMigrationNeedles(plan, new Set());
       const migrated =
         needles === undefined
@@ -341,14 +353,10 @@ const PATH_SHAPES: Readonly<Record<GapShape, (path: readonly string[]) => boolea
  * such a path is absorbed, and a gap that no longer fails is itself a failure.
  * A plaintext gap absorbs only a plaintext found SOLELY under the readback's
  * echo key ({@link problemsOf}); without that echo every writer and form is
- * asserted clean, except #7154, which needs no echo (list paths only). The
- * #7152 / #7158 rows are gone: those writers and forms are asserted clean
- * with the echo too.
+ * asserted clean. The #7152 / #7158 / #7154 rows are gone: those writers and
+ * forms are asserted clean with the echo too.
  */
-const GAPS: Readonly<Record<string, { readonly issue: string; readonly shape: GapShape }>> = {
-  // go-to-k/cdkd#7154: no plaintext; one spurious update after the scrub. Needs no echo.
-  'scrub twin an unchanged redeploy plans a change': { issue: 'go-to-k/cdkd#7154 (two references, one plaintext, inside a list)', shape: 'list' },
-};
+const GAPS: Readonly<Record<string, { readonly issue: string; readonly shape: GapShape }>> = {};
 
 interface Failure {
   readonly gap: string;
@@ -356,9 +364,9 @@ interface Failure {
   readonly detail: string;
 }
 
-/** Does a gap absorb `f`: its key, on a path of its shape? */
-function absorbed(f: Failure): boolean {
-  const gap = Object.hasOwn(GAPS, f.gap) ? GAPS[f.gap] : undefined;
+/** Does a gap of `gaps` absorb `f`: its key, on a path of its shape? */
+function absorbed(f: Failure, gaps: typeof GAPS = GAPS): boolean {
+  const gap = Object.hasOwn(gaps, f.gap) ? gaps[f.gap] : undefined;
   return gap !== undefined && PATH_SHAPES[gap.shape](f.path);
 }
 
@@ -403,17 +411,19 @@ describe('schema redaction invariant: the #7061 holes (go-to-k/cdkd#7151)', { ti
 
   it.each(WRITERS)('%s: without the readback echo under a key the template lacks, every case holds', async (writer) => {
     const failures = await failuresOf(writer, cases, false);
-    // #7154 needs no echo: it is the scrub's list positioning, absorbed on a list path only.
-    const needsNoEcho = (f: Failure): boolean => f.gap === 'scrub twin an unchanged redeploy plans a change' && absorbed(f);
-    expect(failures.filter((f) => !needsNoEcho(f)).map((f) => f.detail).slice(0, 20)).toEqual([]);
+    expect(failures.map((f) => f.detail).slice(0, 20)).toEqual([]);
   });
 
   it('probe: a gap absorbs only its key, on a path of its shape, and a plaintext only under the echo key', () => {
+    // A probe table: the #7154 row, as it stood before its fix.
     const listGap = 'scrub twin an unchanged redeploy plans a change';
-    expect(absorbed({ gap: listGap, path: ['Users', '*', 'Password'], detail: '' })).toBe(true);
+    const probeGaps: typeof GAPS = { [listGap]: { issue: 'probe', shape: 'list' } };
+    expect(absorbed({ gap: listGap, path: ['Users', '*', 'Password'], detail: '' }, probeGaps)).toBe(true);
     // The same key on a plain path or a map value is a leak outside the gap.
-    expect(absorbed({ gap: listGap, path: ['Password'], detail: '' })).toBe(false);
-    expect(absorbed({ gap: listGap, path: ['Env', MAP_KEY], detail: '' })).toBe(false);
+    expect(absorbed({ gap: listGap, path: ['Password'], detail: '' }, probeGaps)).toBe(false);
+    expect(absorbed({ gap: listGap, path: ['Env', MAP_KEY], detail: '' }, probeGaps)).toBe(false);
+    // The live table absorbs nothing of that key any more (go-to-k/cdkd#7154).
+    expect(absorbed({ gap: listGap, path: ['Users', '*', 'Password'], detail: '' })).toBe(false);
     // A plaintext anywhere but the echo key is another problem, which no gap names.
     const s = { plaintext: 'pl-7151' } as Seeded;
     expect(problemsOf({ observedProperties: { [ECHO_KEY]: 'pl-7151' } }, s)).toEqual(['plaintext persisted only in the readback echo']);
