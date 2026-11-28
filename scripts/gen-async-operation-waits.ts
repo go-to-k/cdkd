@@ -571,8 +571,6 @@ const FLIP_SITE =
 export const SEND_SITE_EXEMPTIONS: Readonly<Record<string, string>> = {
   [`bedrock-agentcore-control:DeleteAgentRuntime ${P}agentcore-runtime/wait.ts retireFailedRuntimeCreate`]:
     FAILED_CREATE,
-  [`docdb:ModifyDBCluster ${P}docdb/cluster-create.ts sendRestoreFollowUp`]:
-    'the restore follow-up waits through waitForClusterAvailable, a helper the row does not list',
   [`docdb:ModifyDBCluster ${P}docdb/cluster-delete.ts deleteDBCluster`]: FLIP_SITE,
   [`docdb:ModifyDBCluster ${P}docdb/cluster-delete.ts deleteDBClusterOnce`]: FLIP_SITE,
   [`dynamodb:DeleteTable ${P}dynamodb-globaltable/create-commit.ts createPhaseCommit`]: FAILED_CREATE,
@@ -586,8 +584,6 @@ export const SEND_SITE_EXEMPTIONS: Readonly<Record<string, string>> = {
   [`ecs:UpdateService ${P}ecs/service-delete.ts deleteService`]:
     'the scale-down before a delete does not wait; the delete waits for INACTIVE (the row note)',
   [`fsx:DeleteFileSystem ${P}fsx-filesystem/create.ts create`]: FAILED_CREATE,
-  [`lambda:UpdateFunctionConfiguration ${P}lambda-function/delete.ts deleteImpl`]:
-    'the VPC detach before a delete waits through waitForLambdaUpdateCompleted, a helper the row does not list',
   [`neptune:ModifyDBCluster ${P}neptune/cluster-delete.ts deleteDBCluster`]: FLIP_SITE,
   [`neptune:ModifyDBCluster ${P}neptune/cluster-delete.ts deleteDBClusterOnce`]: FLIP_SITE,
   [`neptune:ModifyDBInstance ${P}neptune/instance.ts deleteDBInstance`]: FLIP_SITE,

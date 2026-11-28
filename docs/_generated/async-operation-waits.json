@@ -802,7 +802,8 @@
         "helpers": [
           "waitForClusterPortApplied",
           "waitForSecurityGroupsApplied",
-          "waitForApplied"
+          "waitForApplied",
+          "waitForClusterAvailable"
         ],
         "failureStatuses": [
           "deleting",
@@ -815,7 +816,7 @@
           "incompatible-*",
           "*-failed"
         ],
-        "note": "only for a changed port, security groups or read-back setting, skipped under --no-wait; a DeletionProtection flip or re-enable around a delete does not wait after the call"
+        "note": "a restore follow-up waits for available; otherwise only for a changed port, security groups or read-back setting, skipped under --no-wait; a DeletionProtection flip or re-enable around a delete does not wait after the call"
       }
     },
     {
@@ -3664,7 +3665,8 @@
         "verdict": "waits",
         "helpers": [
           "waitForFunctionUpdated",
-          "waitForBackingFunctionUpdated"
+          "waitForBackingFunctionUpdated",
+          "waitForLambdaUpdateCompleted"
         ],
         "failureStatuses": [
           "Failed"

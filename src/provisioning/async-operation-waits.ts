@@ -6,8 +6,10 @@
  * suffix and the operation name) that `scripts/gen-async-operation-waits.ts`
  * finds a provider sending and the SDK model marks asynchronous. The generator
  * and `tests/unit/scripts/async-operation-waits.test.ts` fail CI on an
- * operation with no row, on a row no provider sends any more, and on a `waits`
- * row whose helper a sending provider unit no longer calls. The rendered
+ * operation with no row, on a row no provider sends any more, on a `waits`
+ * row whose helper a sending provider unit no longer calls, and on a send SITE
+ * of a `waits` operation whose function reaches none of the row's helpers and
+ * is not a reasoned `SEND_SITE_EXEMPTIONS` entry (one site per entry). The rendered
  * table is `docs/_generated/async-operation-waits.md`.
  *
  * - `waits`: the provider waits after the operation on its create / update /
@@ -153,9 +155,14 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
   'docdb:DeleteDBCluster': waits(['waitForClusterDeleted'], []),
   'docdb:DeleteDBInstance': waits(['waitForInstanceDeleted'], []),
   'docdb:ModifyDBCluster': waits(
-    ['waitForClusterPortApplied', 'waitForSecurityGroupsApplied', 'waitForApplied'],
+    [
+      'waitForClusterPortApplied',
+      'waitForSecurityGroupsApplied',
+      'waitForApplied',
+      'waitForClusterAvailable',
+    ],
     DB_TERMINAL,
-    `only for a changed port, security groups or read-back setting, skipped under --no-wait; ${FLIP}`
+    `a restore follow-up waits for available; otherwise only for a changed port, security groups or read-back setting, skipped under --no-wait; ${FLIP}`
   ),
   'docdb:ModifyDBInstance': waits(
     ['waitForApplied'],
@@ -423,7 +430,7 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
   ),
   'lambda:UpdateFunctionCode': waits(['waitForFunctionUpdated'], ['Failed']),
   'lambda:UpdateFunctionConfiguration': waits(
-    ['waitForFunctionUpdated', 'waitForBackingFunctionUpdated'],
+    ['waitForFunctionUpdated', 'waitForBackingFunctionUpdated', 'waitForLambdaUpdateCompleted'],
     ['Failed'],
     'every mode; the custom-resource recycle only logs a wait failure, and the VPC detach before a delete warns on its cap'
   ),
