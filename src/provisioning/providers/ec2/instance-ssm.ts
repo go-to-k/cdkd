@@ -36,6 +36,16 @@ import type { EC2Provider } from '../ec2-provider.js';
 
 /** What Systems Manager answers while it does not yet see the instance's IAM role. */
 const IAM_ROLE_NOT_YET_SEEN = 'must associate an IAM role';
+/**
+ * A second spelling of the same refusal (go-to-k/cdkd#7132's ec2-instance run,
+ * us-east-1): `NotAuthorizedException` "An unknown error occurred" from a
+ * `CreateAssociation` sent seconds after the instance's role and profile were
+ * created. Retried within the same cap: a lasting permission problem still
+ * fails, only later.
+ */
+const isRoleNotYetSeen = (error: unknown, detail: string): boolean =>
+  detail.includes(IAM_ROLE_NOT_YET_SEEN) ||
+  (error as { name?: string } | undefined)?.name === 'NotAuthorizedException';
 
 /** DeleteAssociation's answer for an association that is already gone. */
 const ASSOCIATION_GONE_NAMES: ReadonlySet<string> = new Set(['AssociationDoesNotExist']);
@@ -50,7 +60,8 @@ export interface ListedSsmAssociation {
 
 /**
  * Create `entry` on `instanceId` and return its association id. The "must
- * associate an IAM role" refusal is retried: the profile cdkd just associated
+ * associate an IAM role" refusal (and its `NotAuthorizedException` spelling)
+ * is retried: the profile cdkd just associated
  * can take a moment to reach Systems Manager. The retry ends at whichever
  * comes first, the resource deadline or {@link SSM_ASSOCIATION_ROLE_WAIT_CAP_MS},
  * and on Ctrl-C with an `InterruptedWaitError`; any other failure is thrown
@@ -78,7 +89,7 @@ export async function createInstanceSsmAssociation(
         return resp.AssociationDescription?.AssociationId;
       } catch (error) {
         const detail = describeAwsFailure(error).detail;
-        if (!detail.includes(IAM_ROLE_NOT_YET_SEEN)) throw error;
+        if (!isRoleNotYetSeen(error, detail)) throw error;
         const remaining = Math.min(enclosingDeadlineRemainingMs(), capAt - Date.now());
         if (remaining <= 0) throw error;
         if (watch.isInterrupted()) throw watch.onInterrupted();

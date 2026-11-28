@@ -454,6 +454,13 @@ describe('AWS::EC2::Instance SsmAssociations create (#5630)', () => {
     expect(ec2Sent(TerminateInstancesCommand)).toHaveLength(0);
   });
 
+  it('retries the NotAuthorizedException spelling of the same refusal (go-to-k/cdkd#7132)', async () => {
+    createFailures = [awsError('NotAuthorizedException', 'An unknown error occurred')];
+    await new EC2Provider().create('Inst', TYPE, { ...BASE, SsmAssociations: [SHELL] });
+    expect(ssmSent(CreateAssociationCommand)).toHaveLength(2);
+    expect(ec2Sent(TerminateInstancesCommand)).toHaveLength(0);
+  });
+
   it('gives up at the resource deadline, fails the create and terminates the instance', async () => {
     createAlwaysFails = roleNotSeen();
     let reads = 0;
