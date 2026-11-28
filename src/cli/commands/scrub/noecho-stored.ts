@@ -18,7 +18,12 @@ import {
   type RecordedSecretValues,
 } from '../../../deployment/secret-redaction.js';
 import { keepHeldTokenProvenance } from '../../../deployment/reference-provenance-record.js';
-import { applyScrubNoEcho, scrubMigrationNeedles, type ScrubNoEchoPlan } from './noecho.js';
+import {
+  applyScrubNoEcho,
+  scrubMigrationNeedles,
+  withoutFnIf,
+  type ScrubNoEchoPlan,
+} from './noecho.js';
 
 /** A record `state.resources` does not hold: a rollback orphan or a superseded one. */
 export interface StoredNoEchoRow {
@@ -106,7 +111,10 @@ function holdsUnmaskedLeaf(value: unknown): boolean {
  *
  * Fn::If is read on both branches (`sources` carries no condition verdicts):
  * the verdicts that wrote an old record are unknown, and masking the other
- * branch's position is the safe direction for state at rest.
+ * branch's position is the safe direction for state at rest. For the same
+ * reason a coordinate positioned only through an `Fn::If` is no migration
+ * needle: its value may be the other branch's public literal, and a needle
+ * would mask that literal's copies elsewhere in the record by value.
  */
 export function planScrubStoredNoEcho(
   state: Pick<StackState, 'resources'>,
@@ -152,9 +160,13 @@ export function planScrubStoredNoEcho(
       );
       needles = new Set(
         canonicalCoordinates(
-          noEchoCoordinatesOf(definition.Properties, record.properties, needleSources, undefined, {
-            maskedAt: record.properties,
-          })
+          noEchoCoordinatesOf(
+            withoutFnIf(definition.Properties),
+            record.properties,
+            needleSources,
+            undefined,
+            { maskedAt: record.properties }
+          )
         ).map((coordinate) => JSON.stringify(coordinate))
       );
     } else if (liveLeaves !== undefined) {

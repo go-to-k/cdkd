@@ -170,13 +170,17 @@ export async function reportScrubOutcome({
     );
   }
 
-  if (
+  // Every counter but the go-to-k/cdkd#7191 warning: an orphan or superseded
+  // record no evidence positions gates the clean line below, but is NOT a
+  // `--fail` finding (a current cdkd writes the same shape for a record with
+  // no position, so no run could clear the exit), and the `--dry-run --fail`
+  // arm below throws only when one of THESE pushed the run past the clean line.
+  const failingFindingsAbsent =
     totalStacksScrubbed === 0 &&
     totalStacksWithUnscrubbableKeys === 0 &&
     totalStacksWithUnverifiableReads === 0 &&
     totalStacksWithUnverifiableLeaves === 0 &&
     totalStacksWithUnrepairedReadNames === 0 &&
-    totalStacksWithUnverifiableNoEchoRecords === 0 &&
     totalStacksWithReadOutputKeys === 0 &&
     totalIndexEntriesAbsentWithSecret === 0 &&
     droppedReadersUnverifiedStacks.length === 0 &&
@@ -195,14 +199,14 @@ export async function reportScrubOutcome({
     malformedOutputRecords.length === 0 &&
     // The `orphans` half of the same (go-to-k/cdkd#3379): the repaired list is
     // empty, so no orphan row is reported and every counter stays zero.
-    malformedOrphanRecords.length === 0
-  ) {
+    malformedOrphanRecords.length === 0;
+  if (failingFindingsAbsent && totalStacksWithUnverifiableNoEchoRecords === 0) {
     // `totalIndexEntriesAbsent` and `totalIndexEntriesUnexamined` are
     // deliberately NOT in this condition (issue #2667). Past it, the `--dry-run
-    // --fail` arm below throws on `options.fail` alone, so adding either would
-    // redden the documented CI gate on a coverage report no run can clear —
-    // the outcome the locked direction refuses. Both were already logged per
-    // entry above.
+    // --fail` arm below throws on any counter in `failingFindingsAbsent`, so
+    // adding either there would redden the documented CI gate on a coverage
+    // report no run can clear — the outcome the locked direction refuses. Both
+    // were already logged per entry above.
     // "in any target stack state" would be a claim about stacks this run never
     // got through, which is the same false-success the refusal exists to
     // prevent — so the sentence narrows to the stacks it actually reached.
@@ -377,7 +381,7 @@ export async function reportScrubOutcome({
     if (droppedReadersUnverifiedStacks.length > 0) {
       throw droppedOutputReadersUnverifiedError(droppedReadersUnverifiedStacks);
     }
-    if (options.fail) throw new ScrubNeededError();
+    if (options.fail && !failingFindingsAbsent) throw new ScrubNeededError();
     return;
   }
 

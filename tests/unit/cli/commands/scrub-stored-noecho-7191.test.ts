@@ -135,6 +135,29 @@ describe('cdkd scrub - NoEcho plaintext in an orphan or superseded record (go-to
     expect(unverifiable).toBe(0);
   });
 
+  it('masks a coordinate an Fn::If positions, but takes no needle from it', async () => {
+    // One branch the NoEcho parameter, the other a public literal: an old
+    // record's verdict is unknown, so the position is masked, but its value
+    // may be the literal, whose copies elsewhere in the record stay.
+    const literal = 'public-literal-7191';
+    const info = stackInfo();
+    info.template.Conditions = { UseSecret: { 'Fn::Equals': ['a', 'a'] } };
+    info.template.Resources!['Db']!.Properties!['Password'] = {
+      'Fn::If': ['UseSecret', { Ref: 'Pw' }, literal],
+    };
+    const { saved } = await scrub(
+      stateWith({ orphans: [{ logicalId: 'Db', orphanedAt: 1, state: preV11(literal) }] }),
+      info
+    );
+    const orphan = saved!.orphans![0]!.state;
+    expect(orphan.properties).toEqual({
+      Password: '***',
+      Name: 'public',
+      Note: `note-${literal}`,
+    });
+    expect(orphan.noEchoLeaves).toEqual([['Password']]);
+  });
+
   it('masks a pre-v11 superseded record holding a value under the needle floor', async () => {
     const { saved } = await scrub(
       stateWith({ supersededResources: [{ logicalId: 'Db', supersededAt: 1, state: preV11(SHORT) }] })

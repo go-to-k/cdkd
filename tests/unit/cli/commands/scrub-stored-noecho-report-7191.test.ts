@@ -2,8 +2,9 @@
  * go-to-k/cdkd#7191: through `scrubCommand`, a rollback orphan whose logical
  * id has left the template, written before state schema v11 (no
  * `noEchoLeaves`), in a stack with a `NoEcho` parameter, is reported: the
- * stack is not reported clean. It does not fail `--fail`: a current cdkd
- * writes the same shape for a record with no `NoEcho` position.
+ * stack is not reported clean. It does not fail `--fail`, with or without
+ * `--dry-run`: a current cdkd writes the same shape for a record with no
+ * `NoEcho` position.
  * The same stack with no such orphan is reported clean.
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
@@ -77,6 +78,7 @@ vi.mock('../../../../src/state/export-index-store.js', () => ({
 
 import { resetAwsClients } from '../../../../src/utils/aws-clients.js';
 import { scrubCommand } from '../../../../src/cli/commands/scrub.js';
+import { ScrubNeededError } from '../../../../src/cli/commands/scrub/errors.js';
 import type { ResourceState, StackState } from '../../../../src/types/state.js';
 
 const REGION = 'us-east-1';
@@ -159,6 +161,37 @@ describe('cdkd scrub reports an orphan it cannot position (go-to-k/cdkd#7191)', 
     expect(text).not.toContain('No plaintext secrets found');
     expect(text).toContain('orphan record Gone');
     expect(text).toContain('orphan or superseded record(s)');
+  });
+
+  // The integ fixture's gate, `scrub --dry-run --fail`: the dry-run plan arm
+  // threw on `--fail` alone, whatever brought the run past the clean line.
+  it('--dry-run --fail: not reported clean, and does not exit over it', async () => {
+    seed([
+      {
+        logicalId: 'Gone',
+        orphanedAt: 1,
+        state: { physicalId: 'db-old', resourceType: TYPE, properties: { Password: 'x9' } },
+      },
+    ]);
+    const err = await run({ dryRun: true, fail: true });
+    expect(err).toBeUndefined();
+    const text = logLines.join('\n');
+    expect(text).not.toContain('No plaintext secrets found');
+    expect(text).toContain('orphan record Gone');
+    expect(text).toContain('Plan: no state record can be rewritten.');
+    expect(stateBackend.saveState).not.toHaveBeenCalled();
+  });
+
+  it('--dry-run --fail still exits over a record it can position and mask', async () => {
+    seed([
+      {
+        logicalId: 'Db',
+        orphanedAt: 1,
+        state: { physicalId: 'db-old', resourceType: TYPE, properties: { Password: 'x9' } },
+      },
+    ]);
+    const err = await run({ dryRun: true, fail: true });
+    expect(err).toBeInstanceOf(ScrubNeededError);
   });
 
   it('control: the same stack without that orphan is reported clean', async () => {

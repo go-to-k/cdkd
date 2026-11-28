@@ -365,7 +365,7 @@ export function applyScrubNoEcho(
 }
 
 /** `value` with every `Fn::If` node replaced by `null`. */
-function withoutFnIf(value: unknown): unknown {
+export function withoutFnIf(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(withoutFnIf);
   if (value === null || typeof value !== 'object') return value;
   if (Object.hasOwn(value, 'Fn::If')) return null;
