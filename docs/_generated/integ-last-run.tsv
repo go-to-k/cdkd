@@ -499,7 +499,7 @@ schema-v15-to-v16-migration	2026-11-28T13:04:46Z	PASS	153	verify.sh	#7201 shape-
 schema-v16-to-v17-migration	2026-11-28T13:08:57Z	PASS	203	verify.sh	#7201 newer-record plant = newest readable + 1 (19), rc ok, orph clean, 0 versions
 schema-v17-to-v18-migration	2026-11-22T17:58:19Z	PASS	245	verify.sh	rc ok, orph clean, 42 assertions; released 0.366.0 -> local v18
 schema-v5-to-v6-migration	2026-11-28T13:11:14Z	PASS	92	verify.sh	#7201 shape-derived version (16), rc ok, orph clean, 0 versions
-schema-v6-to-v7-migration	2026-11-28T13:13:26Z	PASS	87	verify.sh	#7201 shape-derived version (16), rc ok, orph clean, 0 versions
+schema-v6-to-v7-migration	2026-11-28T13:30:37Z	PASS	92	verify.sh	#7201 shape-derived version (16), re-run after rebase, rc ok, orph clean, 0 versions
 schema-v7-to-v8-migration	2026-11-28T13:17:14Z	PASS	173	verify.sh	#7201 shape-derived version (16), rc ok, orph clean, 0 versions
 schema-v8-to-v9-migration	2026-11-28T13:23:49Z	PASS	297	verify.sh	#7201 shape-derived version (16), rc ok, orph clean, 0 versions
 schema-v9-to-v10-migration	2026-11-28T13:27:50Z	PASS	198	verify.sh	#7201 shape-derived version, 54 assertions, rc ok, orph clean, 0 versions
