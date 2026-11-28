@@ -30,6 +30,7 @@ import {
 import { isReadableBag } from '../../../state/malformed-resources-bag.js';
 import { renderStateKeyForLine } from './errors.js';
 import { saveScrubbedState } from './save-state.js';
+import { positionTwinReferences } from './twin-references.js';
 import {
   NESTED_STACK_TYPE,
   type NestedChildScrubInput,
@@ -391,16 +392,24 @@ export async function scrubStackRewritePass({
     // own expression and the next deploy would see NO_CHANGE. See the
     // generation table on `PathSourceRules`.
     const ownSecrets = secrets ?? new Map<string, string>();
+    // go-to-k/cdkd#7154: a leaf those rules leave to the value scan (a list
+    // item) is put back on its own template expression where it is proven,
+    // rather than on a twin reference sharing its plaintext.
     const positioned = templateProps
       ? {
           ...record,
-          properties: redactForState(record.properties, {
-            provenance: 'template-sourced',
-            secrets: ownSecrets,
-            source: templateProps,
-            // A record read from `state.json`: this run resolved none of it.
-            generation: 'unproven',
-          }),
+          properties: positionTwinReferences(
+            record.properties,
+            redactForState(record.properties, {
+              provenance: 'template-sourced',
+              secrets: ownSecrets,
+              source: templateProps,
+              // A record read from `state.json`: this run resolved none of it.
+              generation: 'unproven',
+            }),
+            templateProps,
+            ownSecrets
+          ) as typeof record.properties,
         }
       : record;
     // STATE_SOURCED_CROSS_GENERATION rules for the observed walk (issue #1917
