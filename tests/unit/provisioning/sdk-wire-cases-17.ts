@@ -38,14 +38,27 @@ const TAGS = [
 
 /**
  * The reads every EFS wait polls, answered settled so the first poll returns
- * (`waitForFileSystemAvailable`, `waitForMountTargetAvailable`).
+ * (`waitForFileSystemAvailable`, `waitForMountTargetAvailable`, and the
+ * go-to-k/cdkd#7132 `waitForAccessPointAvailable` / `waitForBackupPolicySettled`:
+ * an access point reads `available`, and a backup policy reads the status the
+ * last `PutBackupPolicy` sent, which that call answers as already reached).
  * `CreateFileSystem` answers a `CreationTime` of now: `sendCreateFileSystem`
  * refuses a file system created before its first send as one it did not make,
  * and the schema-generated answer is the epoch.
  */
-const armEfs = (): void =>
+const armEfs = (): void => {
+  let backupStatus: unknown;
+  const putBackupPolicy = (input: Record<string, unknown>): Record<string, unknown> => {
+    backupStatus = (input['BackupPolicy'] as { Status?: unknown } | undefined)?.Status;
+    return { BackupPolicy: { Status: backupStatus } };
+  };
   setOutputOverrides({
     CreateFileSystemCommand: () => ({ CreationTime: new Date() }),
+    PutBackupPolicyCommand: putBackupPolicy,
+    DescribeBackupPolicyCommand: () => ({ BackupPolicy: { Status: backupStatus } }),
+    DescribeAccessPointsCommand: (input) => ({
+      AccessPoints: [{ AccessPointId: input['AccessPointId'], LifeCycleState: 'available' }],
+    }),
     DescribeFileSystemsCommand: (input) => ({
       FileSystems: [{ FileSystemId: input['FileSystemId'], LifeCycleState: 'available' }],
     }),
@@ -53,6 +66,7 @@ const armEfs = (): void =>
       MountTargets: [{ MountTargetId: input['MountTargetId'], LifeCycleState: 'available' }],
     }),
   });
+};
 
 /**
  * A Key- or Value-less desired tag entry is refused on update before any call

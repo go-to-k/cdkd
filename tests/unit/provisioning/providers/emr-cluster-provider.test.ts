@@ -121,6 +121,7 @@ function routeSend(routes: Record<string, unknown>): void {
       return Promise.reject(new Error(`Unexpected command: ${name}`));
     }
     let value = routes[name];
+    if (typeof value === 'function') value = (value as () => unknown)();
     if (Array.isArray(value)) {
       if (!queues.has(name)) queues.set(name, [...(value as unknown[])]);
       const queue = queues.get(name)!;
@@ -1228,10 +1229,26 @@ describe('EMRClusterProvider update', () => {
     });
 
     it('puts and removes a core group AutoScalingPolicy', async () => {
+      // A Put policy reads ATTACHED, as EMR settles it, so the delegated
+      // policy wait (go-to-k/cdkd#7132) ends on its first poll.
+      let attached = false;
       routeSend({
-        ListInstanceGroupsCommand: { InstanceGroups: [coreGroup(1)] },
-        PutAutoScalingPolicyCommand: {},
-        RemoveAutoScalingPolicyCommand: {},
+        ListInstanceGroupsCommand: () => ({
+          InstanceGroups: [
+            {
+              ...coreGroup(1),
+              ...(attached && { AutoScalingPolicy: { Status: { State: 'ATTACHED' } } }),
+            },
+          ],
+        }),
+        PutAutoScalingPolicyCommand: () => {
+          attached = true;
+          return {};
+        },
+        RemoveAutoScalingPolicyCommand: () => {
+          attached = false;
+          return {};
+        },
         DescribeClusterCommand: clusterOf('WAITING'),
       });
       await newProvider().update(

@@ -872,6 +872,14 @@ const NOT_A_MESSAGE_FACTORY: ReadonlyMap<string, string> = new Map([
     "ec2-provider's markNonRetryable + markRefusedBeforeApplying (#5446); its argument is an EXISTING error, never a message",
   ],
   [
+    'markRedactedCause',
+    "stamps an EXISTING error object as carrying a redacted cause (#2302; the EMR scaling-policy wait, #7132); its argument is that error, never a message",
+  ],
+  [
+    'markCreatedBeforeFailure',
+    'stamps an EXISTING error object with the resource created before the failure (Route 53 record sets, #7132); its argument is that error, never a message',
+  ],
+  [
     'onInterrupted',
     "the interrupt watch's own error builder; it takes no caller-supplied message",
   ],

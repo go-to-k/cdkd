@@ -386,6 +386,70 @@ const STOPPED_MEMBER_REMOVALS: Record<string, Throw> = Object.fromEntries(
   ])
 );
 
+/** The query parameters of the last request on the wire whose Action is in `actions`. */
+function lastWrite(actions: readonly string[]): URLSearchParams | undefined {
+  return wire
+    .map((line) => {
+      const [, , , , , body] = JSON.parse(line) as unknown[];
+      return new URLSearchParams(typeof body === 'string' ? body : '');
+    })
+    .filter((p) => actions.includes(p.get('Action') ?? ''))
+    .at(-1);
+}
+
+/**
+ * The ARN of the profile the last associate / replace on the wire named
+ * (go-to-k/cdkd#7132: the wait after it matches the association by it), else
+ * the bags' `profile`.
+ */
+function profileArn(): string {
+  const last = lastWrite([
+    'AssociateIamInstanceProfile',
+    'ReplaceIamInstanceProfileAssociation',
+  ]);
+  return (
+    last?.get('IamInstanceProfile.Arn') ??
+    `arn:aws:iam::${ACCOUNT}:instance-profile/${last?.get('IamInstanceProfile.Name') ?? 'profile'}`
+  );
+}
+
+/**
+ * go-to-k/cdkd#7132: what DescribeInstances reads once the instance's last
+ * MonitorInstances / UnmonitorInstances and ModifyInstanceMetadataOptions
+ * settled: the monitoring state that call asked for, and the metadata options
+ * it sent, `applied`. Nothing for a member no call on the wire wrote.
+ */
+function instanceSettledReads(): Record<string, unknown> {
+  const monitoring = lastWrite(['MonitorInstances', 'UnmonitorInstances']);
+  const metadata = lastWrite(['ModifyInstanceMetadataOptions']);
+  const sentMetadata = (keys: readonly string[]): Record<string, string> =>
+    Object.fromEntries(
+      keys.flatMap((k) => {
+        const v = metadata?.get(k);
+        return v === null || v === undefined ? [] : [[k, v]];
+      })
+    );
+  return {
+    ...(monitoring && {
+      Monitoring: {
+        State: monitoring.get('Action') === 'MonitorInstances' ? 'enabled' : 'disabled',
+      },
+    }),
+    ...(metadata && {
+      MetadataOptions: {
+        State: 'applied',
+        ...sentMetadata([
+          'HttpEndpoint',
+          'HttpProtocolIpv6',
+          'HttpPutResponseHopLimit',
+          'HttpTokens',
+          'InstanceMetadataTags',
+        ]),
+      },
+    }),
+  };
+}
+
 const INSTANCE_CASE: TypeCase = tc(
     'AWS::EC2::Instance',
     'i-1',
@@ -625,6 +689,25 @@ const INSTANCE_CASE: TypeCase = tc(
           }),
           // The VPC's default group, which a removed SecurityGroupIds puts in place.
           DescribeSecurityGroupsCommand: () => ({ SecurityGroups: [{ GroupId: 'sg-default' }] }),
+          // go-to-k/cdkd#7132: an associate / replace answers the association
+          // `associating` under the id the list reads, as EC2 does, so the
+          // wait after it finds it there.
+          AssociateIamInstanceProfileCommand: () => ({
+            IamInstanceProfileAssociation: {
+              AssociationId: 'iip-assoc-1',
+              InstanceId: 'i-1',
+              State: 'associating',
+              IamInstanceProfile: { Arn: profileArn() },
+            },
+          }),
+          ReplaceIamInstanceProfileAssociationCommand: () => ({
+            IamInstanceProfileAssociation: {
+              AssociationId: 'iip-assoc-1',
+              InstanceId: 'i-1',
+              State: 'associating',
+              IamInstanceProfile: { Arn: profileArn() },
+            },
+          }),
           // The profile association: present once the instance has a profile,
           // until a disassociate is the last write.
           DescribeIamInstanceProfileAssociationsCommand: () => ({
@@ -636,7 +719,7 @@ const INSTANCE_CASE: TypeCase = tc(
                       AssociationId: 'iip-assoc-1',
                       InstanceId: 'i-1',
                       State: 'associated',
-                      IamInstanceProfile: { Arn: `arn:aws:iam::${ACCOUNT}:instance-profile/profile` },
+                      IamInstanceProfile: { Arn: profileArn() },
                     },
                   ]
                 : [],
@@ -654,6 +737,10 @@ const INSTANCE_CASE: TypeCase = tc(
                       : { Name: 'running', Code: 16 },
                     InstanceType: bag['InstanceType'] ?? 't3.micro',
                     VpcId: 'vpc-1',
+                    // go-to-k/cdkd#7132: monitoring and the metadata options
+                    // read as their last write set them, as EC2 settles them,
+                    // so the waits after those writes end on their first poll.
+                    ...instanceSettledReads(),
                   },
                 ],
               },
