@@ -383,13 +383,7 @@ describe('CognitoUserPoolProvider.canonicalizeDriftPair (#7134)', () => {
     expect(out.baseline['EnabledMfas']).toEqual([]);
   });
 
-  it('leaves a list holding SMS_MFA beside the token as recorded (its revert is refused under OFF)', async () => {
-    const baseline = { MfaConfiguration: 'OFF', EnabledMfas: ['SMS_MFA', TOTP] };
-    const out = await provider.canonicalizeDriftPair(RESOURCE_TYPE, baseline, live, {
-      MfaConfiguration: 'OFF',
-    });
-    expect(out.baseline).toBe(baseline);
-  });
+  // SMS_MFA beside the token (go-to-k/cdkd#7172): drift-cognito-mfa-sms-leftover-7172.test.ts.
 
   it('leaves an empty list by identity', async () => {
     const baseline = { MfaConfiguration: 'OFF', EnabledMfas: [] };

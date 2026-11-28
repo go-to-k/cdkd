@@ -38,6 +38,17 @@
 #      Assert `cdkd drift` reports EnabledMfas (issue #7134: it compared
 #      the factor against itself, clean), `drift --revert` clears the factor
 #      and keeps the WebAuthn relying party, and drift is clean afterwards.
+#   2f. Re-deploy with CDKD_TEST_MFA=off-sms (`enableSmsRole: true` under OFF:
+#      an SmsConfiguration, so the pool reads `EnabledMfas: [SMS_MFA]` back).
+#      Flip a declared member (AllowAdminCreateUserOnly) out of band and
+#      assert `drift --revert` reverts it and drift is clean after (issue
+#      #7175: the revert sent SMS_MFA under OFF and the MFA pre-flight refused
+#      every revert of such a pool). Then seed the pre-#7128 leftover beside
+#      SMS (OPTIONAL + SMS + token, then UpdateUserPool OFF) and its baseline
+#      `[SMS_MFA, SOFTWARE_TOKEN_MFA]`; assert drift reports EnabledMfas (issue
+#      #7172: the token was only stripped from a token-only baseline), the
+#      revert clears the token and keeps SMS and the WebAuthn relying party,
+#      and drift is clean afterwards.
 #   3. Destroy + assert the pool is gone and the cdkd state file is removed.
 #
 # Required env vars:
@@ -433,6 +444,161 @@ set -e
 if [ "${DRIFT_RC}" -ne 0 ]; then
   printf '%s\n' "${DRIFT_OUT}" >&2
   echo "FAIL: cdkd drift after the Phase 2e revert exited ${DRIFT_RC}, expected 0" >&2
+  exit 1
+fi
+echo "    cdkd drift clean after the revert"
+
+# --- Phase 2f: an SMS-configured pool under OFF (issues #7175 / #7172) ------
+echo "==> Phase 2f: re-deploy with mfa: OFF and an SMS caller role"
+CDKD_TEST_UPDATE=true CDKD_TEST_MFA=off-sms node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+# `SmsMfaConfiguration.SmsConfiguration.SnsCallerArn` is present on a pool
+# with an SmsConfiguration even under OFF (measured for #7175).
+SMS_P2F="$(aws cognito-idp get-user-pool-mfa-config --user-pool-id "${PID}" --region "${REGION}" \
+  --query 'SmsMfaConfiguration.SmsConfiguration.SnsCallerArn' --output text)"
+case "${SMS_P2F}" in
+  arn:aws*:iam::*:role/*) ;;
+  *) echo "FAIL: Phase 2f: expected the pool to read an SmsMfaConfiguration back under OFF, got '${SMS_P2F}'" >&2; exit 1 ;;
+esac
+echo "    SMS configuration in place under OFF (${SMS_P2F})"
+# The out-of-band change re-sends the pool in full, as 2e does (an omitted
+# member resets to its default).
+# A non-MFA drift on a member the template DECLARES. (A tag would not do: the
+# template declares none, and an undeclared key captured empty is not
+# compared.) CDK's `selfSignUpEnabled: true` declares
+# AdminCreateUserConfig.AllowAdminCreateUserOnly false; flip it out of band.
+P2F_OOB="$(aws cognito-idp describe-user-pool --user-pool-id "${PID}" --region "${REGION}" --output json \
+  | jq -c --arg id "${PID}" '.UserPool
+      | {Policies, DeletionProtection, LambdaConfig, AutoVerifiedAttributes, SmsVerificationMessage,
+         EmailVerificationMessage, EmailVerificationSubject, VerificationMessageTemplate,
+         SmsAuthenticationMessage, UserAttributeUpdateSettings, DeviceConfiguration,
+         EmailConfiguration, SmsConfiguration, UserPoolTags, AdminCreateUserConfig,
+         UserPoolAddOns, AccountRecoverySetting, UserPoolTier, MfaConfiguration, PoolName: .Name}
+      | del(.AdminCreateUserConfig.UnusedAccountValidityDays)
+      | (if .UserPoolTags then .UserPoolTags |= with_entries(select(.key | startswith("aws:") | not)) else . end)
+      | with_entries(select(.value != null))
+      | . + {UserPoolId: $id}
+      | .AdminCreateUserConfig.AllowAdminCreateUserOnly = true')"
+[ -n "${P2F_OOB}" ] || { echo "FAIL: Phase 2f: could not build the out-of-band UpdateUserPool input" >&2; exit 1; }
+aws cognito-idp update-user-pool --region "${REGION}" --cli-input-json "${P2F_OOB}" >/dev/null
+ADMIN_ONLY_P2F="$(aws cognito-idp describe-user-pool --user-pool-id "${PID}" --region "${REGION}" \
+  --query 'UserPool.AdminCreateUserConfig.AllowAdminCreateUserOnly' --output text)"
+if [ "${ADMIN_ONLY_P2F}" != "True" ]; then
+  echo "FAIL: Phase 2f could not seed the out-of-band change (AllowAdminCreateUserOnly), got '${ADMIN_ONLY_P2F}'" >&2
+  exit 1
+fi
+set +e
+DRIFT_OUT="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)"
+DRIFT_RC=$?
+set -e
+if [ "${DRIFT_RC}" -ne 1 ]; then
+  printf '%s\n' "${DRIFT_OUT}" >&2
+  echo "FAIL: cdkd drift on the out-of-band AllowAdminCreateUserOnly exited ${DRIFT_RC}, expected 1 (drift)" >&2
+  exit 1
+fi
+case "${DRIFT_OUT}" in
+  *"AllowAdminCreateUserOnly"*) ;;
+  *) printf '%s\n' "${DRIFT_OUT}" >&2; echo "FAIL: cdkd drift did not name AdminCreateUserConfig.AllowAdminCreateUserOnly" >&2; exit 1 ;;
+esac
+case "${DRIFT_OUT}" in
+  *"EnabledMfas"*) printf '%s\n' "${DRIFT_OUT}" >&2; echo "FAIL: cdkd drift reported EnabledMfas on the SMS pool before any MFA change" >&2; exit 1 ;;
+esac
+# Pre-fix: refused by the MFA pre-flight ("MfaConfiguration is OFF while an
+# MFA factor is configured ... SmsMfaConfiguration"), exit non-zero.
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes
+ADMIN_ONLY_P2F_AFTER="$(aws cognito-idp describe-user-pool --user-pool-id "${PID}" --region "${REGION}" \
+  --query 'UserPool.AdminCreateUserConfig.AllowAdminCreateUserOnly' --output text)"
+if [ "${ADMIN_ONLY_P2F_AFTER}" != "False" ]; then
+  echo "FAIL: drift --revert left AllowAdminCreateUserOnly out of band (issue #7175), got '${ADMIN_ONLY_P2F_AFTER}'" >&2
+  exit 1
+fi
+SMS_P2F_AFTER="$(aws cognito-idp get-user-pool-mfa-config --user-pool-id "${PID}" --region "${REGION}" \
+  --query 'SmsMfaConfiguration.SmsConfiguration.SnsCallerArn' --output text)"
+if [ "${SMS_P2F_AFTER}" != "${SMS_P2F}" ]; then
+  echo "FAIL: drift --revert changed the pool's SMS configuration (issue #7175), got '${SMS_P2F_AFTER}'" >&2
+  exit 1
+fi
+echo "    out-of-band AllowAdminCreateUserOnly reverted, SMS configuration kept"
+set +e
+DRIFT_OUT="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)"
+DRIFT_RC=$?
+set -e
+if [ "${DRIFT_RC}" -ne 0 ]; then
+  printf '%s\n' "${DRIFT_OUT}" >&2
+  echo "FAIL: cdkd drift after the Phase 2f (#7175) revert exited ${DRIFT_RC}, expected 0" >&2
+  exit 1
+fi
+echo "    cdkd drift clean after the revert"
+
+echo "==> Phase 2f: seed the pre-#7128 leftover beside SMS and its baseline"
+SMS_EXT_P2F="$(aws cognito-idp describe-user-pool --user-pool-id "${PID}" --region "${REGION}" \
+  --query 'UserPool.SmsConfiguration.ExternalId' --output text)"
+aws cognito-idp set-user-pool-mfa-config --user-pool-id "${PID}" --region "${REGION}" \
+  --mfa-configuration OPTIONAL \
+  --sms-mfa-configuration "SmsConfiguration={SnsCallerArn=${SMS_P2F},ExternalId=${SMS_EXT_P2F}}" \
+  --software-token-mfa-configuration Enabled=true \
+  --web-authn-configuration RelyingPartyId=example.com,UserVerification=required >/dev/null
+# The same full re-send as 2e (it now carries the SmsConfiguration too).
+P2F_INPUT="$(aws cognito-idp describe-user-pool --user-pool-id "${PID}" --region "${REGION}" --output json \
+  | jq -c --arg id "${PID}" '.UserPool
+      | {Policies, DeletionProtection, LambdaConfig, AutoVerifiedAttributes, SmsVerificationMessage,
+         EmailVerificationMessage, EmailVerificationSubject, VerificationMessageTemplate,
+         SmsAuthenticationMessage, UserAttributeUpdateSettings, DeviceConfiguration,
+         EmailConfiguration, SmsConfiguration, UserPoolTags, AdminCreateUserConfig,
+         UserPoolAddOns, AccountRecoverySetting, UserPoolTier, PoolName: .Name}
+      | del(.AdminCreateUserConfig.UnusedAccountValidityDays)
+      | (if .UserPoolTags then .UserPoolTags |= with_entries(select(.key | startswith("aws:") | not)) else . end)
+      | with_entries(select(.value != null))
+      | . + {UserPoolId: $id, MfaConfiguration: "OFF"}')"
+aws cognito-idp update-user-pool --region "${REGION}" --cli-input-json "${P2F_INPUT}" >/dev/null
+MFA_P2F="$(aws cognito-idp get-user-pool-mfa-config --user-pool-id "${PID}" --region "${REGION}" \
+  --query '[MfaConfiguration, SoftwareTokenMfaConfiguration.Enabled, SmsMfaConfiguration.SmsConfiguration.SnsCallerArn]' --output text)"
+if [ "${MFA_P2F}" != "$(printf 'OFF\tTrue\t%s' "${SMS_P2F}")" ]; then
+  echo "FAIL: Phase 2f could not seed the leftover (expected OFF with SMS and the software token), got '${MFA_P2F}'" >&2
+  exit 1
+fi
+echo "    leftover seeded (OFF, SMS + software token)"
+P2F_STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
+P2F_SEEDED="$(printf '%s' "${P2F_STATE}" | jq '(.resources[] | select(.resourceType == "AWS::Cognito::UserPool") | .observedProperties.EnabledMfas) = ["SMS_MFA", "SOFTWARE_TOKEN_MFA"]')"
+[ -n "${P2F_SEEDED}" ] || { echo "FAIL: Phase 2f: the seeded state is empty -- not uploading it" >&2; exit 1; }
+printf '%s\n' "${P2F_SEEDED}" | aws s3 cp - "s3://${STATE_BUCKET}/${STATE_KEY}" --content-type application/json >/dev/null
+P2F_BASELINE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
+  | jq -c '[.resources[] | select(.resourceType == "AWS::Cognito::UserPool") | .observedProperties.EnabledMfas][0]')"
+if [ "${P2F_BASELINE}" != '["SMS_MFA","SOFTWARE_TOKEN_MFA"]' ]; then
+  echo "FAIL: Phase 2f baseline: expected observedProperties.EnabledMfas [SMS_MFA,SOFTWARE_TOKEN_MFA], got '${P2F_BASELINE}'" >&2
+  exit 1
+fi
+
+echo "==> Phase 2f: cdkd drift reports the leftover beside SMS; --revert clears it"
+set +e
+DRIFT_OUT="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)"
+DRIFT_RC=$?
+set -e
+if [ "${DRIFT_RC}" -ne 1 ]; then
+  printf '%s\n' "${DRIFT_OUT}" >&2
+  echo "FAIL: cdkd drift on the leftover beside SMS exited ${DRIFT_RC}, expected 1 (drift): the software token went unreported (issue #7172)" >&2
+  exit 1
+fi
+case "${DRIFT_OUT}" in
+  *"EnabledMfas"*) ;;
+  *) printf '%s\n' "${DRIFT_OUT}" >&2; echo "FAIL: cdkd drift on the leftover beside SMS did not name EnabledMfas (issue #7172)" >&2; exit 1 ;;
+esac
+echo "    drift reported on EnabledMfas"
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes
+MFA_P2F_AFTER="$(aws cognito-idp get-user-pool-mfa-config --user-pool-id "${PID}" --region "${REGION}" \
+  --query '[MfaConfiguration, SoftwareTokenMfaConfiguration.Enabled, SmsMfaConfiguration.SmsConfiguration.SnsCallerArn, WebAuthnConfiguration.RelyingPartyId]' --output text)"
+if [ "${MFA_P2F_AFTER}" != "$(printf 'OFF\tNone\t%s\texample.com' "${SMS_P2F}")" ]; then
+  echo "FAIL: drift --revert did not end at OFF with SMS and the relying party kept and no software token (issue #7172), got '${MFA_P2F_AFTER}'" >&2
+  exit 1
+fi
+echo "    software token cleared, SMS and WebAuthn relying party kept"
+set +e
+DRIFT_OUT="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)"
+DRIFT_RC=$?
+set -e
+if [ "${DRIFT_RC}" -ne 0 ]; then
+  printf '%s\n' "${DRIFT_OUT}" >&2
+  echo "FAIL: cdkd drift after the Phase 2f revert exited ${DRIFT_RC}, expected 0" >&2
   exit 1
 fi
 echo "    cdkd drift clean after the revert"

@@ -184,6 +184,33 @@ export function hasMfaConfigProps(properties: Record<string, unknown>): boolean 
 }
 
 /**
+ * `properties` without `SMS_MFA` in `EnabledMfas` when `MfaConfiguration` is
+ * `OFF` (go-to-k/cdkd#7172), for a bag derived from the AWS readback
+ * (`cdkd drift --revert`'s desired bag and its previous side).
+ *
+ * Under OFF that member is an echo, not a factor anyone sent: the readback
+ * reports `SMS_MFA` from `SmsMfaConfiguration`, which a pool with an
+ * `SmsConfiguration` always holds. MEASURED us-east-1 2026-11-28 on a throwaway
+ * pool: one created with only an `SmsConfiguration` and MFA OFF read
+ * `SmsMfaConfiguration` back, and so did one after a bare
+ * `SetUserPoolMfaConfig` OFF, which dropped the software token. Sent back, it
+ * builds an `SmsMfaConfiguration` block beside OFF, which the pre-flight
+ * refuses (`describeUnsupportedMfaCombination`; AWS refuses it too), so every
+ * `drift --revert` of such a pool failed, whatever had drifted. Left out, the
+ * revert sends no SMS block, and the pool keeps the one it has. The
+ * template path never needs this: a template that declares `SMS_MFA` under
+ * OFF is the user's to fix, and the pre-flight says so.
+ *
+ * Copy-on-write: returned by identity when nothing is dropped.
+ */
+export function withoutOffSmsEcho(properties: Record<string, unknown>): Record<string, unknown> {
+  if (properties['MfaConfiguration'] !== 'OFF') return properties;
+  const enabled = properties['EnabledMfas'];
+  if (!Array.isArray(enabled) || !enabled.includes(MFA_FACTOR_SMS)) return properties;
+  return { ...properties, EnabledMfas: enabled.filter((factor) => factor !== MFA_FACTOR_SMS) };
+}
+
+/**
  * True when an update must reset the pool's MFA factor blocks itself (issue
  * #7128): the previous bag declared an MFA factor or the email-OTP
  * message / subject, the desired bag declares no MFA-config-routed property,
