@@ -326,11 +326,19 @@ export const READS_RECORD_TEXT_DEEP: Readonly<Record<string, { count: number; wh
   },
   "src/deployment/secret-redaction/off-template-echo.ts#corroborates#mentionsMask(recorded)": {
     count: 1,
-    why: "a recorded leaf holding the mask is a secret position, so it corroborates any readback leaf there; reached through `storedReferenceLeavesPutBack` (go-to-k/cdkd#7167), whose candidates it widens: a wider `masked` pairs or masks MORE, never less",
+    why: "a recorded leaf holding the mask is a secret position, so it corroborates any readback leaf there; `storedReferenceLeavesPutBack` (go-to-k/cdkd#7167) reaches it and never pairs by one corroborator of an element holding the mask (`holdsMaskText`), so a wider `masked` adds candidates and masks MORE",
+  },
+  "src/deployment/secret-redaction/stored-reference-positions.ts#settled#mentionsMask(leaf)": {
+    count: 1,
+    why: "a leaf counts as redacted only as the mask WHOLE or with every recorded reference and NO mask (go-to-k/cdkd#7167): a leaf the mask covers in part is masked, so a wider `masked` masks MORE",
   },
   "src/deployment/secret-redaction/stored-reference-positions.ts#walk#mentionsMask(live)": {
-    count: 2,
-    why: "a stored readback leaf already holding the mask is left as it is (go-to-k/cdkd#7167); any other leaf at a recorded reference position is put back on the reference or masked: a wider `masked` keeps a leaf already masked, never a plaintext",
+    count: 1,
+    why: "a leaf mentioning the mask is never put back on the reference text (go-to-k/cdkd#7167): it is masked instead, so a wider `masked` masks MORE",
+  },
+  "src/deployment/secret-redaction/stored-reference-positions.ts#holdsMaskText#mentionsMask(node)": {
+    count: 1,
+    why: "a recorded element holding the mask anywhere keeps every unclaimed readback element a candidate (go-to-k/cdkd#7167): a wider `masked` masks MORE",
   },
   "src/deployment/secret-redaction/redact-path/definition.ts#definitionSourceCarriesSecret#carriesSecretMask(source[k])": {
     count: 1,

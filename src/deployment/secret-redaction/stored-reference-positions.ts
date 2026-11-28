@@ -1,5 +1,5 @@
 import { isPlainObject } from './rules.js';
-import { maskAtCoordinates, replaceAtCoordinates } from './noecho-leaves.js';
+import { isWhollyMask, maskAtCoordinates, replaceAtCoordinates } from './noecho-leaves.js';
 import { mentionsMask } from './recorded-secrecy.js';
 import { dynamicReferenceTokens } from './redact-path/reference-tokens.js';
 import {
@@ -65,6 +65,14 @@ export function storedReferenceLeavesPutBack(
   const restore: Array<{ coordinate: (string | number)[]; value: unknown }> = [];
   const mask: (string | number)[][] = [];
   for (const { coordinate, text } of secretReferenceLeaves(properties, isSecretReference)) {
+    const tokens = dynamicReferenceTokens(text).filter((token) => isSecretReference(token));
+    // A leaf already redacted: the recorded text, the mask whole, or every
+    // recorded reference with no mask beside it. A leaf a mask only PART of
+    // (an older binary that knew one of two values) can hold the other.
+    const settled = (leaf: string): boolean =>
+      leaf === text ||
+      isWhollyMask(leaf) ||
+      (!mentionsMask(leaf) && tokens.every((token) => leaf.includes(token)));
     const walk = (
       live: unknown,
       recorded: unknown,
@@ -75,9 +83,13 @@ export function storedReferenceLeavesPutBack(
       if (live === undefined || live === null) return;
       if (depth === coordinate.length) {
         if (typeof live === 'string') {
-          if (live === text || mentionsMask(live) || dynamicReferenceTokens(live).length > 0)
-            return;
-          if (!ambiguous && plaintextFor(text, live) !== undefined) {
+          if (settled(live)) return;
+          if (
+            !ambiguous &&
+            !mentionsMask(live) &&
+            dynamicReferenceTokens(live).length === 0 &&
+            plaintextFor(text, live) !== undefined
+          ) {
             restore.push({ coordinate: path, value: text });
             return;
           }
@@ -89,12 +101,8 @@ export function storedReferenceLeavesPutBack(
       if (typeof segment === 'string') {
         // A string standing where the record holds an object can be the
         // value itself; an object lacking the key holds no copy.
-        if (
-          typeof live === 'string' &&
-          !mentionsMask(live) &&
-          dynamicReferenceTokens(live).length === 0
-        ) {
-          mask.push(path);
+        if (typeof live === 'string') {
+          if (!settled(live)) mask.push(path);
           return;
         }
         if (!isPlainObject(live) || !Object.hasOwn(live, segment)) return;
@@ -130,7 +138,11 @@ export function storedReferenceLeavesPutBack(
       const corroborating = live.flatMap((item, i) =>
         !claimed.has(i) && corroborates(item, element, isSecretReference) ? [i] : []
       );
-      if (corroborating.length === 1) {
+      // A recorded element holding the mask corroborates any readback leaf at
+      // that position, so its one corroborator proves no pairing: every
+      // unclaimed element stays a candidate.
+      const maskedElement = holdsMaskText(element);
+      if (corroborating.length === 1 && !maskedElement) {
         const only = corroborating[0]!;
         walk(live[only], element, depth + 1, [...path, only], ambiguous);
         return;
@@ -140,7 +152,7 @@ export function storedReferenceLeavesPutBack(
       // that leaf (AWS omits a write-only secret from its readback) holds no
       // copy, and masking it whole would replace a correct baseline.
       const pool =
-        corroborating.length > 0
+        corroborating.length > 0 && !maskedElement
           ? corroborating
           : live.flatMap((_, i) => (claimed.has(i) ? [] : [i]));
       for (const i of pool) walk(live[i], element, depth + 1, [...path, i], true);
@@ -149,4 +161,12 @@ export function storedReferenceLeavesPutBack(
   }
   if (restore.length === 0 && mask.length === 0) return observed;
   return maskAtCoordinates(replaceAtCoordinates(observed, restore), mask);
+}
+
+/** Does any string leaf of a recorded `node` mention the mask? */
+function holdsMaskText(node: unknown): boolean {
+  if (typeof node === 'string') return mentionsMask(node);
+  if (Array.isArray(node)) return node.some(holdsMaskText);
+  if (isPlainObject(node)) return Object.values(node).some(holdsMaskText);
+  return false;
 }

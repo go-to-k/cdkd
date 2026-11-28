@@ -215,6 +215,21 @@ describe('an orphan / superseded record holding list-positioned plaintext (go-to
     ).toEqual(observed);
   });
 
+  it('masks a leaf the mask covers only in part (an older binary knew one of two values)', () => {
+    const [ssm, ssmPlain] = REFS['ssm-secure'];
+    const [sm, smPlain] = REFS.secretsmanager;
+    const out = users([{ Pair: `${ssm}:${sm}` }], [{ Pair: `***:${smPlain}` }]);
+    expect(JSON.stringify(out)).not.toContain(smPlain);
+    expect(JSON.stringify(out)).not.toContain(ssmPlain);
+    expect(out).toEqual([{ Pair: '***' }]);
+  });
+
+  it('a recorded element holding the mask pairs with no single corroborator', () => {
+    const [ref, plain] = REFS['ssm-secure'];
+    const out = users([{ Pat: 'a***', P: ref }], [{ Pat: 'zz', P: 'pub' }, { P: plain }]);
+    expect(JSON.stringify(out)).not.toContain(plain);
+  });
+
   it('masks a string standing where the record holds an object', () => {
     const [ref, plain] = REFS['ssm-secure'];
     expect(users([{ Password: ref }], [plain])).toEqual(['***']);
