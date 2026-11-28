@@ -406,7 +406,8 @@ assert_service_token_addressable "${STATE_ROTATED}"
 # template reads (go-to-k/cdkd#7183): masked and declared NoEcho.
 # `cdkd drift` skips custom resources (src/cli/commands/drift/detect.ts): a
 # custom resource has no readback, so the `maskedEcho` half of #7181 is unit
-# tested only; here drift and `drift --revert` must exit 0 and send nothing.
+# tested only; here drift and `drift --revert` must add nothing for it and
+# send it nothing (the stack's report is asserted whole below).
 echo "==> Phase 3: the secret-echo arm"
 # Premise: the arm is not deployed yet, so this phase's deploy is the one that
 # creates it and every assertion below reads what that deploy wrote.
@@ -542,23 +543,62 @@ done
 echo "    OK: attributes.Echo is masked, the public values stay in the clear, and the GetAtt-spelled key resolves"
 assert_no_secret_in_versions "after the secret-echo deploy"
 
-# Drift: a custom resource is not compared, so drift must exit 0 and its
-# revert must change nothing.
-for drift_args in "" "--revert --yes"; do
-  set +e
-  # shellcheck disable=SC2086 # drift_args is a fixed flag list
-  node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" ${drift_args} \
-    > "${SECRET_ECHO_LOG}" 2>&1
-  rc=$?
-  set -e
-  [ "${rc}" -eq 0 ] || secret_echo_fail "cdkd drift ${drift_args} exited ${rc}, expected 0" "${SECRET_ECHO_LOG}"
-  log_carries_secret "${SECRET_ECHO_LOG}" && secret_echo_fail "cdkd drift ${drift_args} printed a secret-echo value (value withheld)"
-  echo "    OK: cdkd drift ${drift_args:-(report)} exits 0 and prints no secret-echo value"
-done
+# Drift: a custom resource is not compared, so the secret-echo arm adds
+# nothing to the report and its revert must change nothing. The report is
+# asserted WHOLE, because the stack is not drift-clean by design: the
+# embedded-NoEcho parameter's Value is masked whole by containment with no
+# `noEchoLeaves` coordinate, so it reads drifted at Value with both sides
+# masked (the #2274 disposition, pinned in tests/unit/cli/drift-noecho-v11),
+# and `--revert` re-sends its live value (go-to-k/cdkd#7189 tracks making it
+# not compared, which flips this to exit 0). The equal-NoEcho parameter's marked
+# Value is not compared. Nothing else may appear.
+EMBEDDED_ID="$(jq -r --arg n "${PARAM_NOECHO_EMBEDDED}" '[.resources | to_entries[] | select(.value.properties.Name == $n) | .key] | if length == 1 then .[0] else "<\(length) matches>" end' <<<"${STATE_ECHO}")"
+NOECHO_ID="$(jq -r --arg n "${PARAM_NOECHO}" '[.resources | to_entries[] | select(.value.properties.Name == $n) | .key] | if length == 1 then .[0] else "<\(length) matches>" end' <<<"${STATE_ECHO}")"
+case "${EMBEDDED_ID}${NOECHO_ID}" in
+  *"<"*) secret_echo_fail "premise: the NoEcho parameter records are not one each (embedded: ${EMBEDDED_ID}, equal: ${NOECHO_ID})" ;;
+esac
+drift_carries_secret() { # drift_carries_secret <file>: a secret-echo value or the NoEcho token
+  log_carries_secret "$1" || grep -qF "${EXPECTED_NOECHO_ROTATED}" "$1"
+}
+DRIFT_JSON="$(mktemp)"
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json \
+  > "${DRIFT_JSON}" 2> "${SECRET_ECHO_LOG}"
+rc=$?
+set -e
+drift_carries_secret "${DRIFT_JSON}" && secret_echo_fail "cdkd drift --json printed a secret value (value withheld)"
+drift_carries_secret "${SECRET_ECHO_LOG}" && secret_echo_fail "cdkd drift --json logged a secret value (value withheld)"
+[ "${rc}" -eq 1 ] || secret_echo_fail "cdkd drift exited ${rc}, expected 1 (the embedded-NoEcho Value only)" "${DRIFT_JSON}"
+want_drifted="$(jq -cn --arg id "${EMBEDDED_ID}" --arg m "${SECRET_MASK}" '[{logicalId: $id, changes: [{path: "Value", stateValue: $m, awsValue: $m}]}]')"
+got_drifted="$(jq -c '[.[0].drifted[] | {logicalId, changes}]' "${DRIFT_JSON}")"
+[ "${got_drifted}" = "${want_drifted}" ] \
+  || secret_echo_fail "drift reported '${got_drifted}', expected '${want_drifted}'" "${DRIFT_JSON}"
+want_not_compared="$(jq -cn --arg id "${NOECHO_ID}" '[{logicalId: $id, cause: "noEchoParameter"}]')"
+got_not_compared="$(jq -c '[.[0].notCompared[] | {logicalId, cause}]' "${DRIFT_JSON}")"
+[ "${got_not_compared}" = "${want_not_compared}" ] \
+  || secret_echo_fail "drift notCompared is '${got_not_compared}', expected '${want_not_compared}'" "${DRIFT_JSON}"
+[ "$(jq -c '[.[0].deleted[]]' "${DRIFT_JSON}")" = "[]" ] \
+  || secret_echo_fail "drift reported a deleted resource" "${DRIFT_JSON}"
+echo "    OK: cdkd drift exits 1 on the embedded-NoEcho Value alone (masked both sides), the equal-NoEcho Value is not compared, and no secret is printed"
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes \
+  > "${SECRET_ECHO_LOG}" 2>&1
+rc=$?
+set -e
+drift_carries_secret "${SECRET_ECHO_LOG}" && secret_echo_fail "cdkd drift --revert printed a secret value (value withheld)"
+[ "${rc}" -eq 0 ] || secret_echo_fail "cdkd drift --revert --yes exited ${rc}, expected 0" "${SECRET_ECHO_LOG}"
+echo "    OK: cdkd drift --revert --yes exits 0 and prints no secret value"
+# The revert re-sent the live value, never the mask.
+assert_param "${PARAM_NOECHO_EMBEDDED}" "$(embedded_value "${EXPECTED_NOECHO_ROTATED}")" "embedded NoEcho Token after drift --revert"
 STATE_AFTER_DRIFT=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
 [ "$(secret_echo_record "${STATE_AFTER_DRIFT}")" = "${ECHO_RECORD}" ] \
   || secret_echo_fail "drift --revert rewrote the secret-echo record"
 echo "    OK: drift --revert left the secret-echo record as it was"
+[ "$(jq -r --arg id "${EMBEDDED_ID}" '.resources[$id].properties.Value' <<<"${STATE_AFTER_DRIFT}")" = "${SECRET_MASK}" ] \
+  || secret_echo_fail "drift --revert unmasked the embedded-NoEcho Value in state (value withheld)"
+grep -qF "${EXPECTED_NOECHO_ROTATED}" <<<"${STATE_AFTER_DRIFT}" \
+  && secret_echo_fail "the NoEcho token is in the state blob after drift --revert (value withheld)"
+echo "    OK: after drift --revert the embedded-NoEcho Value is still masked and the token is not in state"
 
 # A redeploy of the same template is NO_CHANGE: the masked attribute and the
 # dropped keys must not read as a difference.
