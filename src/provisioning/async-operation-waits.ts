@@ -192,16 +192,20 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
     ['FAILED', 'the opposite status after the stale-read grace'],
     'table and index; --no-wait skips it (docs/cli-deploy.md); CloudFormation completes only once it reads ENABLED / DISABLED (#7132)'
   ),
-  'dynamodb:UpdateKinesisStreamingDestination': unmeasured(
-    'AWS::DynamoDB::Table waits (waitForKinesisDestinationSettled); AWS::DynamoDB::GlobalTable does not'
+  'dynamodb:UpdateKinesisStreamingDestination': waits(
+    ['waitForKinesisDestinationSettled', 'waitForKinesisPrecisionSettled'],
+    ['ENABLE_FAILED / DISABLED / absent, or the old precision, after the stale-read grace'],
+    'AWS::DynamoDB::Table and GlobalTable; UPDATING for ~3 min; the GlobalTable wait --no-wait skips it (docs/cli-deploy.md), and its pre-send wait for ACTIVE (waitForKinesisUpdatable) runs in every mode; CloudFormation\'s update completed with the new precision ACTIVE (#7132)'
   ),
   'dynamodb:UpdateTable': waits(
     ['waitForTableActiveAfterUpdate', 'waitForTableAndIndexesActive', 'waitForGlobalTableSettled'],
     [],
     `waits for ACTIVE; ${FLIP}`
   ),
-  'ec2:AssociateIamInstanceProfile': unmeasured(
-    'the create waits (isInstanceProfileAssociated, warns on its cap); the update does not'
+  'ec2:AssociateIamInstanceProfile': waits(
+    ['isInstanceProfileAssociated', 'waitForInstanceProfileAssociationSettled'],
+    ['the new association reads disassociated'],
+    'the create polls isInstanceProfileAssociated (warns on its cap); the update waits for associated, --no-wait skips it (docs/cli-deploy.md); CloudFormation\'s update step read the new profile associated (#7132)'
   ),
   'ec2:AssociateNatGatewayAddress': byDesign(
     'CloudFormation waits, cdkd deliberately does not: the gateway keeps serving its other zones (ec2/nat-gateway.ts comment, measured on #2762)'
@@ -232,12 +236,24 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
     DEFERRED
   ),
   'ec2:DetachVolume': waits(['waitForVolumeAttachment'], []),
-  'ec2:DisassociateIamInstanceProfile': unmeasured(NO_WAIT),
+  'ec2:DisassociateIamInstanceProfile': waits(
+    ['waitForInstanceProfileAssociationSettled'],
+    [],
+    'waits until the association is gone (~0.8 s); --no-wait skips it (docs/cli-deploy.md) (#7132)'
+  ),
   'ec2:DisassociateNatGatewayAddress': byDesign(
     'CloudFormation waits, cdkd deliberately does not: the gateway keeps serving its other zones (ec2/nat-gateway.ts comment, measured on #2762)'
   ),
-  'ec2:ModifyInstanceMetadataOptions': unmeasured(NO_WAIT),
-  'ec2:ReplaceIamInstanceProfileAssociation': unmeasured(NO_WAIT),
+  'ec2:ModifyInstanceMetadataOptions': waits(
+    ['waitForInstanceMetadataOptionsSettled'],
+    [],
+    'waits for State applied (pending ~0.8 s in 1 of 8 trials); --no-wait skips it (docs/cli-deploy.md); CloudFormation\'s update step read applied (#7132)'
+  ),
+  'ec2:ReplaceIamInstanceProfileAssociation': waits(
+    ['waitForInstanceProfileAssociationSettled'],
+    ['the new association reads disassociated'],
+    'the new association reads associating ~0.8 s; --no-wait skips it (docs/cli-deploy.md); CloudFormation\'s update step read it associated (#7132)'
+  ),
   'ec2:StartInstances': waits(
     ['waitForInstanceState'],
     ['terminated', 'shutting-down'],
@@ -573,7 +589,11 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
     ['failed', 'failing'],
     'every mode (docs/cli-deploy.md edge cases)'
   ),
-  'ec2:MonitorInstances': unmeasured(`${NO_WAIT} (monitoring answers pending)`),
+  'ec2:MonitorInstances': waits(
+    ['waitForInstanceMonitoringSettled'],
+    [],
+    'DescribeInstances read disabled right after the call (4 of 4), enabled ~0.8 s later; --no-wait skips it (docs/cli-deploy.md); CloudFormation\'s update step read enabled (#7132)'
+  ),
   'ec2:RevokeSecurityGroupEgress': byDesign(
     "the flagged member is an unknown permission's peering PeeringStatus, not the rule's; the revoke is done once AWS answers"
   ),
@@ -591,7 +611,11 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
     [],
     'the delete waits; a failed-launch cleanup waits only when an attached volume must be freed'
   ),
-  'ec2:UnmonitorInstances': unmeasured(`${NO_WAIT} (monitoring answers disabling)`),
+  'ec2:UnmonitorInstances': waits(
+    ['waitForInstanceMonitoringSettled'],
+    [],
+    'DescribeInstances read enabled right after the call (3 of 4), disabled ~0.8 s later; --no-wait skips it (docs/cli-deploy.md) (#7132)'
+  ),
   'elastic-load-balancing-v2:CreateLoadBalancer': waits(
     ['waitUntilLoadBalancerAvailable'],
     [],
@@ -602,7 +626,11 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
     ['failed'],
     'skipped under --no-wait'
   ),
-  'emr:PutAutoScalingPolicy': unmeasured(`${NO_WAIT} (the policy answers PENDING / ATTACHING)`),
+  'emr:PutAutoScalingPolicy': waits(
+    ['waitForAutoScalingPolicySettled'],
+    ['FAILED', 'DETACHING / DETACHED / no policy after the stale-read grace'],
+    'create and update; PENDING / ATTACHING for ~10-15 s; --no-wait skips it (docs/cli-deploy.md); CloudFormation\'s update completed with the policy ATTACHED (#7132)'
+  ),
   'rds:RegisterDBProxyTargets': unmeasured(`${NO_WAIT} (targets answer REGISTERING)`),
   'route-53:UpdateHostedZoneComment': byDesign(
     'the call changes only the comment; the flagged feature statuses belong to UpdateHostedZoneFeatures'
