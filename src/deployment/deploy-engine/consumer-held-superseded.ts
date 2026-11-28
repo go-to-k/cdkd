@@ -82,7 +82,9 @@ export async function oldCopiesHeldByConsumers(
   stackName: string,
   entries: ReadonlyArray<SupersededResourceRecord | undefined>,
   /** This stack's live records: a value one of them still carries is no needle. */
-  live: Record<string, ResourceState>
+  live: Record<string, ResourceState>,
+  /** The run's consumers of this stack (`consumerStacks`); absent, every stack. */
+  only?: ReadonlyArray<{ stackName: string; region: string }>
 ): Promise<boolean> {
   const recorded = entries.filter((entry) => entry !== undefined);
   if (recorded.length < entries.length) {
@@ -91,7 +93,7 @@ export async function oldCopiesHeldByConsumers(
     );
     return true;
   }
-  const holders = await consumersNaming(engine, stackName, recorded, live);
+  const holders = await consumersNaming(engine, stackName, recorded, live, only);
   const names = [...new Set([...holders.values()].flat())];
   if (names.length === 0) return false;
   withPrintingSecrets(orphanRecordsPrintingBag(recorded), () =>
@@ -111,7 +113,9 @@ export async function consumersNaming(
   engine: DeployEngine,
   stackName: string,
   entries: readonly SupersededResourceRecord[],
-  live: Record<string, ResourceState>
+  live: Record<string, ResourceState>,
+  /** The stacks to read; absent, every stack in the bucket (go-to-k/cdkd#7204). */
+  only?: ReadonlyArray<{ stackName: string; region: string }>
 ): Promise<Map<SupersededResourceRecord, string[]>> {
   const region = canonicalizeRegion(engine.stackRegion);
   const holders = new Map<SupersededResourceRecord, string[]>();
@@ -121,7 +125,7 @@ export async function consumersNaming(
   };
   let refs: Awaited<ReturnType<DeployEngine['stateBackend']['listStacks']>>;
   try {
-    refs = await engine.stateBackend.listStacks();
+    refs = only !== undefined ? [...only] : await engine.stateBackend.listStacks();
   } catch {
     return holdAll('a stack cdkd could not list');
   }

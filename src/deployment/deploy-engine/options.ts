@@ -177,6 +177,12 @@ export interface DeployEngineOptions {
    */
   consumerCleanupQueue?: NestedCleanupQueue;
   /**
+   * go-to-k/cdkd#7204: the stacks of the run importing this stack's outputs,
+   * set with `consumerCleanupQueue`. An early delete of an old copy reads only
+   * their records; a nested child inherits both.
+   */
+  consumerStacks?: ReadonlyArray<{ stackName: string; region: string }>;
+  /**
    * When set, every state save during this deploy stamps the supplied
    * parent-stack identity onto `StackState.parentStack` /
    * `parentLogicalId` / `parentRegion` (schema v6+). The

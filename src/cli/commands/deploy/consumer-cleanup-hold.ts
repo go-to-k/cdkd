@@ -74,6 +74,11 @@ export class ConsumerCleanupHold<K> {
     return this.consumers.has(producer);
   }
 
+  /** The stacks of the run importing `producer`'s outputs (go-to-k/cdkd#7204). */
+  consumersOf(producer: K): K[] {
+    return [...(this.consumers.get(producer) ?? [])];
+  }
+
   /** The queue a producer's engine holds its cleanup in; `undefined` for any other stack. */
   queueFor(producer: K): NestedCleanupQueue | undefined {
     return this.hasConsumers(producer) ? new NestedCleanupQueue() : undefined;

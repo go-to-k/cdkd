@@ -324,6 +324,11 @@ describe('deploy holds a producer cleanup for its in-run consumers (#7012)', () 
       NestedCleanupQueue
     );
     expect(engineOptions.get('Consumer')?.['consumerCleanupQueue']).toBeUndefined();
+    // go-to-k/cdkd#7204: and the run's consumers whose records it may read.
+    expect(engineOptions.get('Producer')?.['consumerStacks']).toEqual([
+      { stackName: 'Consumer', region: expect.any(String) },
+    ]);
+    expect(engineOptions.get('Consumer')?.['consumerStacks']).toBeUndefined();
   });
 
   it('keeps the old copies when the consumer fails, says so once, and exits 1', async () => {
@@ -478,6 +483,8 @@ describe('ConsumerCleanupHold (#7012)', () => {
     expect(hold.hasConsumers(b)).toBe(false);
     expect(hold.hasConsumers(out)).toBe(false);
     expect(hold.queueFor(p)).toBeInstanceOf(NestedCleanupQueue);
+    expect(hold.consumersOf(p)).toEqual([a, b]);
+    expect(hold.consumersOf(b)).toEqual([]);
     expect(hold.queueFor(a)).toBeUndefined();
   });
 

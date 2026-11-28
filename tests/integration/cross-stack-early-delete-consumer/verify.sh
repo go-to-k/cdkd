@@ -16,12 +16,14 @@
 #   1. deploy both (phase 1): ALIAS_ARN is v1's alias.
 #   2. deploy both, phase 2 + failure: exit non-zero. The producer did NOT
 #      delete the old alias before the removed old version (#6977's early
-#      delete), because the consumer's records name it, and says so; the old
+#      delete), because the consumer's records name it, and says so; the
+#      removed old version is kept without its delete being sent; the old
 #      alias and version are alive, and the rolled-back consumer's ALIAS_ARN
 #      names that live alias.
-#   3. deploy both, phase 2 without failure: exit 0 or 2 (the removed old
-#      version may be kept once more while the old alias waits for the
-#      consumer); ALIAS_ARN is v2's alias, and the old alias is gone.
+#   3. deploy both, phase 2 without failure: exit 2 (the consumer's records
+#      still name the old alias until it deploys, so the removed old version
+#      is kept, unsent, once more); ALIAS_ARN is v2's alias, and the old alias
+#      is gone.
 #   4. deploy both again: exit 0; nothing of v1 is left, in AWS or state.
 #   5. destroy both; every resource and state record is gone.
 #
@@ -173,6 +175,11 @@ if grep -q "replaced resource(s) first: they use a resource removed from the tem
   echo "FAIL: the producer still announced the early delete" >&2
   exit 1
 fi
+# ...and the removed old version it uses is kept without its delete being sent.
+if ! grep -q "was removed from the template, but the old Live.* still uses it and waits for the stacks importing this stack's outputs" <<<"${OUT}"; then
+  echo "FAIL: no line says the removed old version is kept while the old alias waits" >&2
+  exit 1
+fi
 if gone_probe aws lambda get-function --function-name "${FN1}" --qualifier "${V1}" --region "${AWS_REGION}"; then
   echo "FAIL: the old version ${V1} the old alias points at is gone" >&2
   exit 1
@@ -187,13 +194,16 @@ expect_eq "the rolled-back ALIAS_ARN resolves" "$(alias_arn "${FN1}")" "${A1}"
 
 echo "==> Step 3: deploy both, phase 2 without the failure"
 RC=0
-env -u CDKD_TEST_FAIL CDKD_TEST_UPDATE=true ${CDKD} deploy --all --region "${AWS_REGION}" \
-  --state-bucket "${STATE_BUCKET}" || RC=$?
-if [ "${RC}" != "0" ] && [ "${RC}" != "2" ]; then
-  echo "FAIL: step 3 exited ${RC}, expected 0 or 2" >&2
+OUT=$(env -u CDKD_TEST_FAIL CDKD_TEST_UPDATE=true ${CDKD} deploy --all --region "${AWS_REGION}" \
+  --state-bucket "${STATE_BUCKET}" 2>&1) || RC=$?
+echo "${OUT}"
+# The consumer's records still name the old alias until it deploys, so the
+# removed old version is kept, unsent, once more (exit 2).
+expect_eq "step 3 exit code" "${RC}" "2"
+if ! grep -q "still uses it and waits for the stacks importing this stack's outputs" <<<"${OUT}"; then
+  echo "FAIL: step 3 does not say the removed old version waits for the old alias" >&2
   exit 1
 fi
-echo "    step 3 exited ${RC}"
 expect_eq "ALIAS_ARN after phase 2" "$(cons_alias_arn)" "$(alias_arn "${FN2}")"
 assert_gone "the old alias survived the deploy that moved its consumer off it" \
   aws lambda get-alias --function-name "${FN1}" --name live --region "${AWS_REGION}"

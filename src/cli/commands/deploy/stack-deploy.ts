@@ -83,6 +83,8 @@ export interface DeployStackContext {
   inRunStacks: ReadonlySet<string>;
   /** go-to-k/cdkd#7012: producers' cleanups held for their in-run consumers. */
   consumerHold?: ConsumerCleanupHold<StackInfo>;
+  /** The region a stack of this run deploys to. */
+  stackRegionOf: (stack: StackInfo) => string;
 }
 
 /**
@@ -171,6 +173,15 @@ export async function deployStackInScope(
   // go-to-k/cdkd#7012: where this stack's engine holds its cleanup phase
   // while a stack of the run importing its outputs has yet to deploy.
   const consumerCleanupQueue = ctx.consumerHold?.queueFor(stackInfo);
+  // go-to-k/cdkd#7204: the stacks whose records an early delete of an old
+  // copy asks about.
+  const consumerStacks =
+    consumerCleanupQueue === undefined
+      ? undefined
+      : ctx.consumerHold!.consumersOf(stackInfo).map((consumer) => ({
+          stackName: consumer.stackName,
+          region: ctx.stackRegionOf(consumer),
+        }));
 
   try {
     // Pre-flight migration check for --prefix-user-supplied-names.
@@ -450,6 +461,7 @@ export async function deployStackInScope(
       ...(stackTags !== undefined && { stackTags }),
       inRunStacks: ctx.inRunStacks,
       ...(consumerCleanupQueue !== undefined && { consumerCleanupQueue }),
+      ...(consumerStacks !== undefined && { consumerStacks }),
     };
 
     const stackDeployEngine = new DeployEngine(

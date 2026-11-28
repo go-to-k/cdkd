@@ -5,6 +5,7 @@ import { hasOwnKey } from '../../utils/own-keys.js';
 import { supersededResourcesOf } from '../superseded-resources.js';
 import type { DeployRun } from './execute/run.js';
 import { retryCarriedSupersededResources } from './superseded-retry.js';
+import { consumersNaming } from './consumer-held-superseded.js';
 
 /**
  * go-to-k/cdkd#7076: the old copies an EARLIER deploy kept
@@ -105,18 +106,26 @@ export function carriedUsersOfRemovals(
  * go-to-k/cdkd#6398; a producer for the stacks of the run that import it,
  * go-to-k/cdkd#7012): what still uses an old copy there is outside this
  * stack, so its kept rows keep their place in that cleanup.
+ *
+ * go-to-k/cdkd#7204: a kept row a consumer still names stays past the
+ * removal deletes, so each removed resource it uses is added to `held` (to
+ * the row's logical id) and kept without its delete being sent: AWS would
+ * refuse it, or the row a rolled-back consumer returns to would lose it.
+ * Asked only for rows that use a removed resource: under a consumer hold, of
+ * the run's consumers (for a row held for consumers, of every stack, as its
+ * cleanup check reads); otherwise only for rows held for consumers, and one
+ * no consumer names any more is deleted first like the others.
  */
 export async function deleteCarriedUsersOfRemovalsFirst(
   run: Pick<DeployRun, 'engine' | 'currentState' | 'deleteChanges' | 'newResources'>,
-  carried: SupersededResourceRecord[]
+  carried: SupersededResourceRecord[],
+  held: Map<string, string> = new Map()
 ): Promise<SupersededResourceRecord[]> {
   const { engine, currentState, deleteChanges, newResources } = run;
-  if (
-    engine.options.parentStackInfo !== undefined ||
-    engine.options.consumerCleanupQueue !== undefined
-  ) {
-    return carried;
-  }
+  const waits = engine.options.consumerCleanupQueue !== undefined;
+  if (engine.options.parentStackInfo !== undefined && !waits) return carried;
+  await holdRemovalsOfNamedRows(engine, currentState, carried, deleteChanges, newResources, held);
+  if (waits) return carried;
   const taken = carriedUsersOfRemovals(carried, currentState.resources, deleteChanges);
   if (taken.length === 0) return carried;
   engine.logger.info(
@@ -130,4 +139,62 @@ export async function deleteCarriedUsersOfRemovalsFirst(
     JSON.stringify([row.logicalId, row.state.resourceType, row.state.physicalId]);
   const owed = new Set(carried.map(key));
   return supersededResourcesOf(currentState).filter((row) => owed.has(key(row)));
+}
+
+/** The removed ids `row`'s record depends on. */
+function removedDepsOf(row: SupersededResourceRecord, removedIds: ReadonlySet<string>): string[] {
+  const deps: unknown = row.state.dependencies;
+  return Array.isArray(deps)
+    ? deps.filter(
+        (dep): dep is string =>
+          typeof dep === 'string' && dep !== row.logicalId && removedIds.has(dep)
+      )
+    : [];
+}
+
+/**
+ * go-to-k/cdkd#7204: adds to `held` each removed resource a carried row a
+ * consumer still names uses. Without a consumer hold, a row held for
+ * consumers that none names any more loses the mark, so it is deleted first.
+ */
+async function holdRemovalsOfNamedRows(
+  engine: DeployRun['engine'],
+  currentState: DeployRun['currentState'],
+  carried: readonly SupersededResourceRecord[],
+  removedIds: ReadonlySet<string>,
+  live: Record<string, ResourceState>,
+  held: Map<string, string>
+): Promise<void> {
+  const waits = engine.options.consumerCleanupQueue !== undefined;
+  const users = carried.filter(
+    (row) => (waits || row.heldForConsumers === true) && removedDepsOf(row, removedIds).length > 0
+  );
+  if (users.length === 0) return;
+  // A child deploys as `<parent>~<logicalId>`; its values reach a consumer
+  // through the top-level stack's outputs.
+  const producer =
+    engine.options.parentStackInfo === undefined
+      ? currentState.stackName
+      : currentState.stackName.split('~')[0]!;
+  const marked = users.filter((row) => row.heldForConsumers === true);
+  const unmarked = users.filter((row) => row.heldForConsumers !== true);
+  const named = new Set<SupersededResourceRecord>();
+  const ask = async (
+    rows: SupersededResourceRecord[],
+    only: ReadonlyArray<{ stackName: string; region: string }> | undefined
+  ): Promise<void> => {
+    if (rows.length === 0) return;
+    const holders = await consumersNaming(engine, producer, rows, live, only);
+    for (const row of rows) if ((holders.get(row)?.length ?? 0) > 0) named.add(row);
+  };
+  await ask(marked, undefined);
+  await ask(unmarked, engine.options.consumerStacks);
+  for (const row of users) {
+    if (named.has(row)) {
+      for (const dep of removedDepsOf(row, removedIds))
+        if (!held.has(dep)) held.set(dep, row.logicalId);
+    } else if (!waits) {
+      delete row.heldForConsumers;
+    }
+  }
 }

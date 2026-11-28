@@ -426,24 +426,32 @@ async function executeDeploymentBody(
     // Step 2: Process DELETE operations in reverse dependency order.
     if (deleteChanges.size > 0) {
       // go-to-k/cdkd#6977: an old copy still using a removed resource goes first.
-      await deleteUsersOfRemovalsFirst(
-        engine,
-        stackName,
-        actualCounts,
-        deleteChanges,
-        currentState,
-        completedOperations,
-        newResources
+      // go-to-k/cdkd#7204: one a consumer still names waits, and so do the
+      // removed resources it uses.
+      const heldForOldCopies = new Map(
+        await deleteUsersOfRemovalsFirst(
+          engine,
+          stackName,
+          actualCounts,
+          deleteChanges,
+          currentState,
+          completedOperations,
+          newResources
+        )
       );
       // go-to-k/cdkd#7076: so does one an earlier deploy kept.
-      carriedSuperseded = await deleteCarriedUsersOfRemovalsFirst(run, carriedSuperseded);
+      carriedSuperseded = await deleteCarriedUsersOfRemovalsFirst(
+        run,
+        carriedSuperseded,
+        heldForOldCopies
+      );
 
       engine.logger.info(safeMsg`${red('Deleting')} ${red(deleteChanges.size)} resource(s)`);
 
       const deleteDeps = buildDeletionDependencies(deleteChanges, currentState, engine.logger);
       const deletes = new DagExecutor<ResourceChange>(phaseScope);
       deleteExecutor = deletes;
-      const removalKept = new RemovalDeletesKept();
+      const removalKept = new RemovalDeletesKept(heldForOldCopies);
       for (const id of deleteChanges) {
         deletes.add({
           id,
@@ -464,6 +472,21 @@ async function executeDeploymentBody(
               ? { ...currentState.resources[logicalId] }
               : undefined;
 
+            // go-to-k/cdkd#7204: a removed resource a held old copy uses.
+            const oldCopy = removalKept.heldOldCopyOf(logicalId);
+            if (oldCopy !== undefined) {
+              removalKept.keepHeld(
+                engine,
+                logicalId,
+                change,
+                oldCopy,
+                previousState,
+                stackName,
+                actualCounts,
+                progress
+              );
+              return;
+            }
             // go-to-k/cdkd#6969: a resource whose dependent's delete failed
             // and was kept stays, record and all.
             const blocker = removalKept.blockerOf(node.dependencies);

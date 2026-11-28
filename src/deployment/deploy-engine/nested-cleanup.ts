@@ -85,12 +85,12 @@ export async function runCleanupPhase(
  * re-adopt it on the journaled `'deferred'` verdict.
  *
  * go-to-k/cdkd#7204: a producer whose cleanup waits for the run's consumers
- * (go-to-k/cdkd#7012) takes none while one of them still names an old copy;
- * a removal AWS then refuses to delete while that old copy uses it is kept
- * (go-to-k/cdkd#6969). So does a nested
- * child of such a producer (it inherits the queue): a consumer reads the
- * child's values through the top-level stack's outputs, so the consumers
- * asked are the top-level stack's.
+ * (go-to-k/cdkd#7012) takes none while one of them still names an old copy,
+ * reading only those consumers' records (`consumerStacks`). So does a nested
+ * child of such a producer (it inherits both): a consumer reads the child's
+ * values through the top-level stack's outputs, so the consumers asked are
+ * the top-level stack's. Answers each removed resource a held old copy uses,
+ * to that old copy: its delete is kept without being sent (go-to-k/cdkd#6969).
  */
 export async function deleteUsersOfRemovalsFirst(
   engine: DeployEngine,
@@ -100,12 +100,12 @@ export async function deleteUsersOfRemovalsFirst(
   currentState: StackState,
   completedOperations: CompletedOperation[],
   live: Record<string, ResourceState>
-): Promise<void> {
+): Promise<ReadonlyMap<string, string>> {
   const held = engine.options.consumerCleanupQueue !== undefined;
   // A child deploys as `<parent>~<logicalId>`.
   const producer = stackName.split('~')[0]!;
   try {
-    await deleteDeferredUsersOfRemovals(
+    return await deleteDeferredUsersOfRemovals(
       engine.replacementRun,
       engine.replacementDeps(),
       stackName,
@@ -118,7 +118,8 @@ export async function deleteUsersOfRemovalsFirst(
               engine,
               producer,
               [...taken].map((id) => engine.replacementRun.supersededEntries.get(id)),
-              live
+              live,
+              engine.options.consumerStacks
             )
         : undefined
     );

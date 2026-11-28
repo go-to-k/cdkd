@@ -650,8 +650,9 @@ deploy, and a rollback re-creates it (issue
 [#6977](https://github.com/go-to-k/cdkd/issues/6977)). Not when the
 top-level stack holds its cleanup for consumers in the same run (below) and a
 consumer's records name that old resource, cannot be read, or the old resource
-has no superseded record: it then waits with the rest, and the removal it uses
-is kept for the next deploy (issue
+has no superseded record: it then waits with the rest, and each removal it
+uses is kept, its delete not sent, for the next deploy. Only the records of
+the run's consumer stacks are read (issue
 [#7204](https://github.com/go-to-k/cdkd/issues/7204)).
 
 A top-level stack whose outputs another stack of the same `cdkd deploy` run
