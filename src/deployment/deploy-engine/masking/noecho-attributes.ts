@@ -4,7 +4,6 @@ import { cdkdRemedy } from '../../../utils/pasteable-command.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { keyOrderFreeJson } from '../../deploy-value-equality.js';
 import {
-  MIN_NEEDLE_LENGTH,
   SECRET_MASK,
   freshNoEchoValuesOf,
   isMaskOnlyPlaintext as isMaskOnlyPlaintextOf,
@@ -164,12 +163,13 @@ function echoedNoEchoAttributes(
   // attributes too often to declare them on equality alone. A number may come
   // back as its string spelling.
   const positioned = new Map<string, Set<string>>();
-  // go-to-k/cdkd#7183: the string inputs no needle covers, matched whole.
+  // go-to-k/cdkd#7183: the string inputs, matched whole (the short ones are
+  // what no needle covers).
   const wholeOnly = new Set<string>();
   const noteWholeOnly = (value: unknown): void => {
     if (typeof value !== 'string' || value === '' || value.includes(SECRET_MASK)) return;
-    if (value === stackName) return;
-    if (value.length < MIN_NEEDLE_LENGTH) wholeOnly.add(value);
+    // No floor here: a value of needle length is a `fresh` needle already.
+    if (value !== stackName) wholeOnly.add(value);
   };
   if (templateProps !== undefined && ownProperties !== undefined && sources !== undefined) {
     for (const coordinate of noEchoCoordinatesOf(templateProps, ownProperties, {
