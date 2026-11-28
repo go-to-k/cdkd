@@ -171,6 +171,13 @@ const EXPECTED: Readonly<Record<string, { readonly sites: number; readonly why: 
       'already redacted by its caller, with more leaves masked: it adds no leaf, only removes ' +
       'secrets echoed under keys the template lacks.',
   },
+  'src/deployment/secret-redaction/stored-reference-positions.ts': {
+    sites: 1,
+    why:
+      '`withStoredReferencePositionsMasked` (go-to-k/cdkd#7167) — writes back an orphan or ' +
+      'superseded record\'s own stored bag with each leaf at a position its `properties` hold a ' +
+      'secret reference at put back on that reference text or masked: it adds no other value.',
+  },
   'src/deployment/secret-redaction/redact-state/scrub-record.ts': {
     sites: 1,
     why:
@@ -372,9 +379,10 @@ describe('observedProperties write population (issue #2828)', () => {
     // go-to-k/cdkd#6958's failed-op re-create strip added one: 22 across 15.
     // go-to-k/cdkd#7158's off-template echo mask added one: 23 across 16.
     // go-to-k/cdkd#7154's observed twin positioning added one: 24 across 17.
+    // go-to-k/cdkd#7167's stored reference put-back added one: 25 across 18.
     const actual = scanPopulation();
-    expect(Object.values(actual).reduce((a, b) => a + b, 0)).toBe(24);
-    expect(Object.keys(EXPECTED)).toHaveLength(17);
+    expect(Object.values(actual).reduce((a, b) => a + b, 0)).toBe(25);
+    expect(Object.keys(EXPECTED)).toHaveLength(18);
   });
 
   it('every ASSIGNMENT-form site redacts at the call site, or is allow-listed', () => {

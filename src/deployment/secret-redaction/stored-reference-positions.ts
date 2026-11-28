@@ -47,6 +47,20 @@ export function withStoredReferencePositionsMasked<R extends OffTemplateEchoReco
   const observed = record.observedProperties;
   const properties = record.properties;
   if (observed === undefined || properties === undefined) return record;
+  const next = storedReferenceLeavesPutBack(observed, properties);
+  return next === observed ? record : { ...record, observedProperties: next };
+}
+
+/**
+ * {@link withStoredReferencePositionsMasked}'s bag: `observed` with each leaf
+ * at a position `properties` holds a secret reference at put back on that
+ * reference text or masked. Adds nothing but `properties`' own reference text
+ * and the mask. Returns `observed` by identity when nothing changed.
+ */
+export function storedReferenceLeavesPutBack(
+  observed: Record<string, unknown>,
+  properties: Record<string, unknown>
+): Record<string, unknown> {
   const isSecretReference = secretReferenceTest();
   const restore: Array<{ coordinate: (string | number)[]; value: unknown }> = [];
   const mask: (string | number)[][] = [];
@@ -133,9 +147,6 @@ export function withStoredReferencePositionsMasked<R extends OffTemplateEchoReco
     };
     walk(observed, properties, 0, [], false);
   }
-  if (restore.length === 0 && mask.length === 0) return record;
-  return {
-    ...record,
-    observedProperties: maskAtCoordinates(replaceAtCoordinates(observed, restore), mask),
-  };
+  if (restore.length === 0 && mask.length === 0) return observed;
+  return maskAtCoordinates(replaceAtCoordinates(observed, restore), mask);
 }

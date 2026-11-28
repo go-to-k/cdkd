@@ -324,6 +324,14 @@ export const READS_RECORD_TEXT_DEEP: Readonly<Record<string, { count: number; wh
     count: 1,
     why: 'a leaf the redaction left as its reference (no mask in it) keeps the reference, drift resolves it; one holding the mask is masked and named (go-to-k/cdkd#7158): a wider `masked` masks MORE, never less',
   },
+  "src/deployment/secret-redaction/off-template-echo.ts#corroborates#mentionsMask(recorded)": {
+    count: 1,
+    why: "a recorded leaf holding the mask is a secret position, so it corroborates any readback leaf there; reached through `storedReferenceLeavesPutBack` (go-to-k/cdkd#7167), whose candidates it widens: a wider `masked` pairs or masks MORE, never less",
+  },
+  "src/deployment/secret-redaction/stored-reference-positions.ts#walk#mentionsMask(live)": {
+    count: 2,
+    why: "a stored readback leaf already holding the mask is left as it is (go-to-k/cdkd#7167); any other leaf at a recorded reference position is put back on the reference or masked: a wider `masked` keeps a leaf already masked, never a plaintext",
+  },
   "src/deployment/secret-redaction/redact-path/definition.ts#definitionSourceCarriesSecret#carriesSecretMask(source[k])": {
     count: 1,
     why: "every caller masks MORE on a hit (the fail-closed definition mask, the named definition secrets)",

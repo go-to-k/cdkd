@@ -21,6 +21,7 @@ import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.ts';
 import {
   carryRedactionMarks,
   keepTemplateLiteralLeaves,
+  storedReferenceLeavesPutBack,
   markSameGenerationBag,
   maskReadbackAtCoordinates,
   redactForState,
@@ -573,6 +574,8 @@ declare function read(): unknown;`)
       keepTemplateLiteralLeaves: () =>
         // The template spells the reference: the readback's plaintext stays out.
         keepTemplateLiteralLeaves({ Auth: EXPR }, { Auth: PLAIN }, { Auth: EXPR }, secrets()),
+      // The record holds the reference: the stored plaintext is put back on it.
+      storedReferenceLeavesPutBack: () => storedReferenceLeavesPutBack({ Auth: PLAIN }, { Auth: EXPR }),
     };
 
     it('covers every CARRIERS entry', () => {

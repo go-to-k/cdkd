@@ -235,7 +235,10 @@ export {
   templateGetAttNamesOf,
 } from './secret-redaction/secret-attribute-keys.js';
 export { storedRecordFinisher } from './secret-redaction/stored-record-finish.js';
-export { withStoredReferencePositionsMasked } from './secret-redaction/stored-reference-positions.js';
+export {
+  withStoredReferencePositionsMasked,
+  storedReferenceLeavesPutBack,
+} from './secret-redaction/stored-reference-positions.js';
 export {
   maskSecretsInText,
   maskRecordedSecretsInText,
