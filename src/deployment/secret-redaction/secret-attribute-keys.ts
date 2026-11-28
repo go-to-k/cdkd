@@ -162,3 +162,29 @@ export function withSecretAttributeKeysDropped<
   }
   return next;
 }
+
+/**
+ * {@link withSecretAttributeKeysDropped} for records read from `state.json`
+ * (go-to-k/cdkd#7161), each record its own `raw` (its `NoEcho` attribute
+ * values are the mask, so the needles alone teach). `cdkd scrub` runs it with
+ * the needles it resolved: a deploy that leaves a custom resource UNCHANGED
+ * resolves nothing for it, so a key an older binary persisted is repaired
+ * there.
+ */
+export function storedSecretAttributeKeysDropper(
+  template: object,
+  publicTokens: ReadonlySet<string>
+): <R extends Parameters<typeof withSecretAttributeKeysDropped>[0]>(
+  record: R,
+  needles: RecordedSecretValues | undefined,
+  logicalId: string
+) => R {
+  return (record, needles, logicalId) =>
+    withSecretAttributeKeysDropped(
+      record,
+      record,
+      needles,
+      templateGetAttNamesOf(template, logicalId),
+      publicTokens
+    );
+}

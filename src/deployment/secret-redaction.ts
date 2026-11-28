@@ -232,6 +232,7 @@ export {
 } from './secret-redaction/off-template-echo.js';
 export {
   withSecretAttributeKeysDropped,
+  storedSecretAttributeKeysDropper,
   templateGetAttNamesOf,
 } from './secret-redaction/secret-attribute-keys.js';
 export {
