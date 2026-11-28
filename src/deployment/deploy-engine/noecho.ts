@@ -11,6 +11,7 @@ import {
   maskAtCoordinates,
   maskReadbackAtCoordinates,
   maskWholeValue,
+  maskedLeafCoordinatesOf,
   noEchoCoordinatesOf,
   noEchoLeavesOf,
   noEchoParameterPlaintextsOf,
@@ -301,13 +302,34 @@ export function noEchoLeavesFor(
     // holds the mask (#7189).
     const confirmed = run.witnessConfirmedLeaves.get(logicalId) ?? [];
     const template = templatePropertiesFor(run, logicalId, record.resourceType);
-    // The walk reads the saved bag beside the template, so a leaf that is
-    // not wholly the mask stops it there; a bag holding no mask at all (most
-    // carried records) is not walked.
-    const embedded =
-      template === undefined || persisted === undefined || !holdsMaskLeaf(persisted)
+    // Walked only over the top-level keys holding a mask no recorded
+    // coordinate covers: a carried record already healed, or masked only at
+    // its own coordinates, walks nothing (it is saved once per resource op).
+    const uncovered =
+      template === undefined || persisted === undefined
         ? []
-        : positionsOf(template, true);
+        : maskedLeafCoordinatesOf(persisted).filter(
+            (leaf) =>
+              !existing.some(
+                (marked) =>
+                  marked.length <= leaf.length &&
+                  marked.every((segment, i) => String(segment) === String(leaf[i]))
+              )
+          );
+    const keys = new Set(
+      uncovered.map((leaf) => leaf[0]).filter((key): key is string => typeof key === 'string')
+    );
+    const embedded =
+      keys.size === 0
+        ? []
+        : positionsOf(
+            Object.fromEntries(
+              [...keys]
+                .filter((key) => Object.hasOwn(template!, key))
+                .map((key) => [key, template![key]])
+            ),
+            true
+          );
     return canonicalCoordinates([...existing, ...confirmed, ...embedded]);
   }
   // The bag THIS deploy resolved describes the record only when it was

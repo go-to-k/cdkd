@@ -1097,10 +1097,6 @@ const READS_RECORD_TEXT: Readonly<Record<string, { count: number; why: string }>
     why: 'a journaled request bag, not a record: no provenance field is in hand',
   },
   'src/deployment/deploy-engine/noecho.ts#noEchoAttributeNamesFor#holdsMaskLeaf(attributes[name])': { count: 1, why: BOTH },
-  'src/deployment/deploy-engine/noecho.ts#noEchoLeavesFor#holdsMaskLeaf(persisted)': {
-    count: 1,
-    why: 'a cost gate only (go-to-k/cdkd#7189): a carried record whose saved bag holds no mask can position no embedded leaf, so the template walk is skipped; the walk itself decides each position by isWhollyMask',
-  },
   'src/deployment/deploy-engine/noecho.ts#noEchoAttributeOverridesFor#holdsMaskLeaf(record.attributes?.[attribute])': {
     count: 1,
     why: BOTH,
