@@ -110,6 +110,7 @@ export async function runScrubTargets({
   // finding no scrub re-run clears, so neither the summary nor `--fail` may
   // read as clean over it.
   let totalStacksWithUnrepairedReadNames = 0;
+  let totalStacksWithUnverifiableNoEchoRecords = 0;
   // Output keys the template no longer declares (go-to-k/cdkd#4120): those
   // dropped, the stacks where another stack still reads one (kept, a finding),
   // and the stacks where the other records could not be read (nothing dropped,
@@ -631,6 +632,7 @@ export async function runScrubTargets({
       scrubbed.unverifiableReads === 0 &&
       scrubbed.unverifiableLeaves === 0 &&
       scrubbed.unrepairedReadNames === 0 &&
+      (scrubbed.unverifiableNoEchoRecords ?? 0) === 0 &&
       (scrubbed.keptReadOutputKeys ?? 0) === 0 &&
       (scrubbed.keptAliasOutputKeys ?? 0) === 0 &&
       !scrubbed.droppedOutputReadersUnverified &&
@@ -719,6 +721,14 @@ export async function runScrubTargets({
           `reported clean.`
       );
     }
+    if ((scrubbed.unverifiableNoEchoRecords ?? 0) > 0) {
+      totalStacksWithUnverifiableNoEchoRecords++;
+      logger.warn(
+        safeMsg`${scrubbed.unverifiableNoEchoRecords} orphan or superseded record(s) in ${shownStack} ` +
+          `name no NoEcho positions scrub can verify (see the warnings above) — so this stack is ` +
+          `not reported clean.`
+      );
+    }
     totalOutputKeysDropped += scrubbed.droppedOutputKeys ?? 0;
     if ((scrubbed.keptReadOutputKeys ?? 0) > 0 || (scrubbed.keptAliasOutputKeys ?? 0) > 0) {
       totalStacksWithReadOutputKeys++;
@@ -750,6 +760,7 @@ export async function runScrubTargets({
     totalStacksWithUnverifiableReads,
     totalStacksWithUnverifiableLeaves,
     totalStacksWithUnrepairedReadNames,
+    totalStacksWithUnverifiableNoEchoRecords,
     totalOutputKeysDropped,
     totalStacksWithReadOutputKeys,
     droppedReadersUnverifiedStacks,
