@@ -99,8 +99,9 @@ runs on a laptop or in CI does not matter.
   preview environment, or a CI job where you pay for every minute. Resources
   may still be coming up when the command exits.
 - **Use the default** for ordinary work. Everything is ready except that a
-  CloudFront distribution may not be serving yet, and a Multi-AZ RDS DB
-  cluster may still be optimizing its storage.
+  CloudFront distribution may not be serving yet, a Multi-AZ RDS DB
+  cluster may still be optimizing its storage, and a Route 53 change may
+  not have reached `INSYNC` yet.
 - **Use `--full-wait`** when a smoke test, a DNS cutover or a follow-on job
   starts as soon as the deploy returns. The deploy takes the extra minutes
   CloudFormation would also take.
@@ -140,6 +141,13 @@ the background. Until then, you may see these:
   new group's instances to be in service before it deletes the old group.
   A Lambda alias's CodeDeploy deployment is waited for too, since the
   deploy can delete the version the alias serves until the shift ends.
+- An RDS DB proxy target can still be registering, and a target that ends
+  `UNAVAILABLE` with `CONNECTION_FAILED` or `AUTH_FAILURE` does not fail the
+  deploy.
+- An EMR automatic scaling policy can still be `PENDING`, and a policy that
+  ends `FAILED` does not fail the deploy.
+- An ECS cluster's Service Connect attachments can still be in progress, and
+  attachments that end `UPDATE_FAILED` do not fail the deploy.
 
 The deploy still waits for such a resource where it needs one. A
 `Fn::GetAtt` of a value that exists only once the resource is ready, such as an

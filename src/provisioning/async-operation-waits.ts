@@ -213,7 +213,7 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
   'ec2:AssociateIamInstanceProfile': waits(
     ['isInstanceProfileAssociated', 'waitForInstanceProfileAssociationSettled'],
     ['the new association reads disassociated'],
-    "the create polls isInstanceProfileAssociated (warns on its cap); the update waits for associated, --no-wait skips it (docs/cli-deploy.md); CloudFormation's update step read the new profile associated (#7132)"
+    "the create polls isInstanceProfileAssociated and fails non-retryably (not confirmed) on its cap or the deadline; the update waits for associated, --no-wait skips it (docs/cli-deploy.md); CloudFormation's update step read the new profile associated (#7132)"
   ),
   'ec2:AssociateNatGatewayAddress': byDesign(
     'CloudFormation waits, cdkd deliberately does not: the gateway keeps serving its other zones (ec2/nat-gateway.ts comment, measured on #2762)'
@@ -247,7 +247,7 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
   'ec2:DisassociateIamInstanceProfile': waits(
     ['waitForInstanceProfileAssociationSettled'],
     [],
-    'waits until the association is gone (~0.8 s); --no-wait skips it (docs/cli-deploy.md) (#7132)'
+    "waits until the association is gone (~0.8 s); --no-wait skips it (docs/cli-deploy.md); CloudFormation's one instance update changing IamInstanceProfile + Monitoring + MetadataOptions took ~4 s and read the new, settled values right after UPDATE_COMPLETE (#7132)"
   ),
   'ec2:DisassociateNatGatewayAddress': byDesign(
     'CloudFormation waits, cdkd deliberately does not: the gateway keeps serving its other zones (ec2/nat-gateway.ts comment, measured on #2762)'
@@ -566,27 +566,27 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
   'route-53:AssociateVPCWithHostedZone': waits(
     ['waitForRoute53ChangeInsync'],
     [],
-    "--full-wait only, by maintainer decision on #7132: the default and --no-wait return while PENDING, as for CloudFront Deployed (#1282) — drift reads the change at once, PENDING has no failure state, and dependent Route 53 calls are accepted meanwhile; a cap or deadline warns; PENDING ~80 s; CloudFormation's VPCs update waited ~103 s"
+    "--full-wait only, by maintainer decision on #7132: the default and --no-wait return while PENDING, as for CloudFront Deployed (#1282) — drift reads the change at once, PENDING has no failure state, and dependent Route 53 calls are accepted meanwhile; a cap or deadline warns; PENDING ~78-81 s; CloudFormation's VPCs update waited ~103 s"
   ),
   'route-53:ChangeResourceRecordSets': waits(
     ['waitForRoute53ChangeInsync', 'waitForCertificateIssued'],
     [],
-    '--full-wait only, by maintainer decision on #7132: the default and --no-wait return while PENDING, as for CloudFront Deployed (#1282) — drift reads the change at once, PENDING has no failure state, and dependent Route 53 calls are accepted meanwhile; a cap or deadline warns; PENDING ~25-37 s; CloudFormation waits for INSYNC (~32-43 s); an ACM DNS-validation record waits for ISSUED instead, which covers it'
+    '--full-wait only, by maintainer decision on #7132: the default and --no-wait return while PENDING, as for CloudFront Deployed (#1282) — drift reads the change at once, PENDING has no failure state, and dependent Route 53 calls are accepted meanwhile; a cap or deadline warns; PENDING ~26-37 s for a change (CloudFormation ~32-43 s) and ~26 s for a delete (CloudFormation ~32 s); an ACM DNS-validation record waits for ISSUED instead, which covers it'
   ),
   'route-53:CreateHostedZone': waits(
     ['waitForRoute53ChangeInsync'],
     [],
-    '--full-wait only, by maintainer decision on #7132: the default and --no-wait return while PENDING, as for CloudFront Deployed (#1282) — drift reads the change at once, PENDING has no failure state, and dependent Route 53 calls are accepted meanwhile; a cap or deadline warns; PENDING ~25-30 s; CloudFormation waits for INSYNC (~42 s)'
+    '--full-wait only, by maintainer decision on #7132: the default and --no-wait return while PENDING, as for CloudFront Deployed (#1282) — drift reads the change at once, PENDING has no failure state, and dependent Route 53 calls are accepted meanwhile; a cap or deadline warns; PENDING ~24-30 s; CloudFormation waits for INSYNC (~42-51 s)'
   ),
   'route-53:DeleteHostedZone': waits(
     ['waitForRoute53ChangeInsync'],
     [],
-    '--full-wait only, by maintainer decision on #7132: the default and --no-wait return while PENDING, as for CloudFront Deployed (#1282) — drift reads the change at once, PENDING has no failure state, and dependent Route 53 calls are accepted meanwhile; a cap or deadline warns; CloudFormation waits for INSYNC (~42 s); the failed-create cleanup delete does not wait'
+    '--full-wait only, by maintainer decision on #7132: the default and --no-wait return while PENDING, as for CloudFront Deployed (#1282) — drift reads the change at once, PENDING has no failure state, and dependent Route 53 calls are accepted meanwhile; a cap or deadline warns; PENDING ~24-28 s; CloudFormation waits for INSYNC (~42 s, measured on stack cdkd-7132-b2-rt-1); the failed-create cleanup delete does not wait'
   ),
   'route-53:DisassociateVPCFromHostedZone': waits(
     ['waitForRoute53ChangeInsync'],
     [],
-    '--full-wait only, by maintainer decision on #7132: the default and --no-wait return while PENDING, as for CloudFront Deployed (#1282) — drift reads the change at once, PENDING has no failure state, and dependent Route 53 calls are accepted meanwhile; a cap or deadline warns; PENDING ~80 s'
+    "--full-wait only, by maintainer decision on #7132: the default and --no-wait return while PENDING, as for CloudFront Deployed (#1282) — drift reads the change at once, PENDING has no failure state, and dependent Route 53 calls are accepted meanwhile; a cap or deadline warns; PENDING ~78-81 s; CloudFormation's VPCs update waited ~103 s"
   ),
   's3tables:PutTableBucketReplication': byDesign(
     'settled when AWS answers: the call returns status success and GetTableBucketReplication reads the new configuration on the next call, with no status field (3 of 3) (#7132)'
@@ -650,7 +650,7 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
   'ec2:UnmonitorInstances': waits(
     ['waitForInstanceMonitoringSettled'],
     [],
-    'DescribeInstances read enabled right after the call (3 of 4), disabled ~0.8 s later; --no-wait skips it (docs/cli-deploy.md) (#7132)'
+    "DescribeInstances read enabled right after the call (3 of 4), disabled ~0.8 s later; --no-wait skips it (docs/cli-deploy.md); CloudFormation's one instance update changing IamInstanceProfile + Monitoring + MetadataOptions took ~4 s and read the new, settled values right after UPDATE_COMPLETE (#7132)"
   ),
   'elastic-load-balancing-v2:CreateLoadBalancer': waits(
     ['waitUntilLoadBalancerAvailable'],

@@ -227,7 +227,8 @@ three waits:
   hours;
 - a Route 53 change reaching `INSYNC`. The new zone, record or VPC association
   is readable and usable by later calls at once; only its propagation to every
-  Route 53 DNS server takes 30-80 seconds.
+  Route 53 DNS server takes 24-37 seconds (78-81 seconds for a VPC
+  association).
 [Choose a Wait Mode](wait-modes.md#why-the-default-waits-for-ecs-but-not-cloudfront)
 explains the rule.
 
@@ -273,7 +274,7 @@ per AWS call, whether cdkd waits for it at all.
 | `AWS::DynamoDB::Table` / `GlobalTable` with `KinesisStreamSpecification` or `ContributorInsightsSpecification` | Return while the Kinesis destination reads `ENABLING` / `UPDATING` and Contributor Insights `ENABLING` / `DISABLING` | Wait for the destination to read `ACTIVE` (15-20 s; a GlobalTable precision change about 3 min) and Contributor Insights `ENABLED` / `DISABLED` (1-2 s); `ENABLE_FAILED` or `FAILED` fails the deploy | same as default | Waits | Waits (separate `aws_dynamodb_kinesis_streaming_destination` / `aws_dynamodb_contributor_insights` resources) |
 | `AWS::Connect::Instance` | Return while `CREATION_IN_PROGRESS`, once the instance accepts dependent calls (about 20 s after `CreateInstance`) and once the declared `Attributes` are written; only a `false` for a member the instance turns on by itself (`ContactLens`, `EarlyMedia` and six others) waits until those defaults land (about 40 s), since an earlier write would be overwritten; a `Fn::GetAtt` of `ServiceRole` still waits for `ACTIVE`, since the role exists only then | Wait for `ACTIVE` (about 55-85 s), then write again any declared attribute a late default overwrote; a `CREATION_FAILED` instance fails the deploy | same as default | Waits | Waits |
 | `AWS::Lambda::Alias` with `--update-policy` and `CodeDeployLambdaAliasUpdate` | Waits, as the default does | Wait for the CodeDeploy deployment that shifts the alias to the new version to succeed; a failed or stopped deployment fails the deploy | same as default | Waits | n/a |
-| `AWS::Route53::HostedZone` / `RecordSet` / `RecordSetGroup` | same as default | Return while the change is `PENDING` | Wait for `INSYNC` (30-40 s per zone or record change, about 80 s per VPC association); a wait that runs out warns | Waits | Waits |
+| `AWS::Route53::HostedZone` / `RecordSet` / `RecordSetGroup` | same as default | Return while the change is `PENDING` | Wait for `INSYNC` (24-37 s per zone or record change, 78-81 s per VPC association); a wait that runs out warns | Waits | Waits |
 | `AWS::EC2::Instance` monitoring, metadata options or IAM instance profile change | Return after the call | Wait for the change to read back (about 1 s) | same as default | Waits | Waits |
 | `AWS::ECS::Cluster` with `ServiceConnectDefaults` | Return while `PROVISIONING` | Wait for `ACTIVE` with its attachments `UPDATE_COMPLETE` (about 20 s); a failed attachment fails the deploy | same as default | Waits | Waits |
 | `AWS::EFS::AccessPoint` / `FileSystem` `BackupPolicy` | Return while `creating` / `ENABLING` / `DISABLING` | Wait for `available` / the requested status (1-2 s) | same as default | Waits | Waits |

@@ -1328,7 +1328,7 @@
         "failureStatuses": [
           "the new association reads disassociated"
         ],
-        "note": "the create polls isInstanceProfileAssociated (warns on its cap); the update waits for associated, --no-wait skips it (docs/cli-deploy.md); CloudFormation's update step read the new profile associated (#7132)"
+        "note": "the create polls isInstanceProfileAssociated and fails non-retryably (not confirmed) on its cap or the deadline; the update waits for associated, --no-wait skips it (docs/cli-deploy.md); CloudFormation's update step read the new profile associated (#7132)"
       }
     },
     {
@@ -1687,7 +1687,7 @@
           "waitForInstanceProfileAssociationSettled"
         ],
         "failureStatuses": [],
-        "note": "waits until the association is gone (~0.8 s); --no-wait skips it (docs/cli-deploy.md) (#7132)"
+        "note": "waits until the association is gone (~0.8 s); --no-wait skips it (docs/cli-deploy.md); CloudFormation's one instance update changing IamInstanceProfile + Monitoring + MetadataOptions took ~4 s and read the new, settled values right after UPDATE_COMPLETE (#7132)"
       }
     },
     {
@@ -2027,7 +2027,7 @@
           "waitForInstanceMonitoringSettled"
         ],
         "failureStatuses": [],
-        "note": "DescribeInstances read enabled right after the call (3 of 4), disabled ~0.8 s later; --no-wait skips it (docs/cli-deploy.md) (#7132)"
+        "note": "DescribeInstances read enabled right after the call (3 of 4), disabled ~0.8 s later; --no-wait skips it (docs/cli-deploy.md); CloudFormation's one instance update changing IamInstanceProfile + Monitoring + MetadataOptions took ~4 s and read the new, settled values right after UPDATE_COMPLETE (#7132)"
       }
     },
     {
@@ -5735,7 +5735,7 @@
           "waitForRoute53ChangeInsync"
         ],
         "failureStatuses": [],
-        "note": "--full-wait only, by maintainer decision on #7132: the default and --no-wait return while PENDING, as for CloudFront Deployed (#1282) — drift reads the change at once, PENDING has no failure state, and dependent Route 53 calls are accepted meanwhile; a cap or deadline warns; PENDING ~80 s; CloudFormation's VPCs update waited ~103 s"
+        "note": "--full-wait only, by maintainer decision on #7132: the default and --no-wait return while PENDING, as for CloudFront Deployed (#1282) — drift reads the change at once, PENDING has no failure state, and dependent Route 53 calls are accepted meanwhile; a cap or deadline warns; PENDING ~78-81 s; CloudFormation's VPCs update waited ~103 s"
       }
     },
     {
@@ -5764,7 +5764,7 @@
           "waitForCertificateIssued"
         ],
         "failureStatuses": [],
-        "note": "--full-wait only, by maintainer decision on #7132: the default and --no-wait return while PENDING, as for CloudFront Deployed (#1282) — drift reads the change at once, PENDING has no failure state, and dependent Route 53 calls are accepted meanwhile; a cap or deadline warns; PENDING ~25-37 s; CloudFormation waits for INSYNC (~32-43 s); an ACM DNS-validation record waits for ISSUED instead, which covers it"
+        "note": "--full-wait only, by maintainer decision on #7132: the default and --no-wait return while PENDING, as for CloudFront Deployed (#1282) — drift reads the change at once, PENDING has no failure state, and dependent Route 53 calls are accepted meanwhile; a cap or deadline warns; PENDING ~26-37 s for a change (CloudFormation ~32-43 s) and ~26 s for a delete (CloudFormation ~32 s); an ACM DNS-validation record waits for ISSUED instead, which covers it"
       }
     },
     {
@@ -5797,7 +5797,7 @@
           "waitForRoute53ChangeInsync"
         ],
         "failureStatuses": [],
-        "note": "--full-wait only, by maintainer decision on #7132: the default and --no-wait return while PENDING, as for CloudFront Deployed (#1282) — drift reads the change at once, PENDING has no failure state, and dependent Route 53 calls are accepted meanwhile; a cap or deadline warns; PENDING ~25-30 s; CloudFormation waits for INSYNC (~42 s)"
+        "note": "--full-wait only, by maintainer decision on #7132: the default and --no-wait return while PENDING, as for CloudFront Deployed (#1282) — drift reads the change at once, PENDING has no failure state, and dependent Route 53 calls are accepted meanwhile; a cap or deadline warns; PENDING ~24-30 s; CloudFormation waits for INSYNC (~42-51 s)"
       }
     },
     {
@@ -5823,7 +5823,7 @@
           "waitForRoute53ChangeInsync"
         ],
         "failureStatuses": [],
-        "note": "--full-wait only, by maintainer decision on #7132: the default and --no-wait return while PENDING, as for CloudFront Deployed (#1282) — drift reads the change at once, PENDING has no failure state, and dependent Route 53 calls are accepted meanwhile; a cap or deadline warns; CloudFormation waits for INSYNC (~42 s); the failed-create cleanup delete does not wait"
+        "note": "--full-wait only, by maintainer decision on #7132: the default and --no-wait return while PENDING, as for CloudFront Deployed (#1282) — drift reads the change at once, PENDING has no failure state, and dependent Route 53 calls are accepted meanwhile; a cap or deadline warns; PENDING ~24-28 s; CloudFormation waits for INSYNC (~42 s, measured on stack cdkd-7132-b2-rt-1); the failed-create cleanup delete does not wait"
       }
     },
     {
@@ -5848,7 +5848,7 @@
           "waitForRoute53ChangeInsync"
         ],
         "failureStatuses": [],
-        "note": "--full-wait only, by maintainer decision on #7132: the default and --no-wait return while PENDING, as for CloudFront Deployed (#1282) — drift reads the change at once, PENDING has no failure state, and dependent Route 53 calls are accepted meanwhile; a cap or deadline warns; PENDING ~80 s"
+        "note": "--full-wait only, by maintainer decision on #7132: the default and --no-wait return while PENDING, as for CloudFront Deployed (#1282) — drift reads the change at once, PENDING has no failure state, and dependent Route 53 calls are accepted meanwhile; a cap or deadline warns; PENDING ~78-81 s; CloudFormation's VPCs update waited ~103 s"
       }
     },
     {

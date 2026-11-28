@@ -1,6 +1,6 @@
 ---
 title: "cdkd deploy: wait mode details"
-description: "What cdkd deploy --no-wait leaves unfinished for each resource type, how the default waits for an ECS service, what --full-wait adds for CloudFront and RDS Multi-AZ DB clusters, and the waits a destroy always performs."
+description: "What cdkd deploy --no-wait leaves unfinished for each resource type, how the default waits for an ECS service, what --full-wait adds for CloudFront, RDS Multi-AZ DB clusters and Route 53 changes, and the waits a destroy always performs."
 ---
 
 # cdkd deploy: wait mode details
@@ -495,6 +495,17 @@ cdkd deploy MyStack --full-wait \
 
 A wait that runs out fails the update.
 
+An `AWS::DynamoDB::GlobalTable` update that changes a Kinesis streaming
+destination's `ApproximateCreationDateTimePrecision` first waits, in every
+mode, while that destination reads `UPDATING` or `ENABLING`: a `--no-wait`
+deploy can leave it so, and AWS refuses the update until it is `ACTIVE`
+(`Updates are only allowed in ACTIVE state`). A wait that runs out fails the
+update without sending it, and the deploy may retry it.
+
+The waits after a delete, such as a Bedrock AgentCore runtime's, are listed
+under [Destroy always waits](#destroy-always-waits); a deploy that deletes or
+replaces a resource runs them too.
+
 ### Route 53: `INSYNC`
 
 Every hosted zone create and delete, record set and record set group change,
@@ -504,9 +515,11 @@ it is `PENDING`:
 
 | What | Usable at once | Time to `INSYNC` |
 | --- | --- | --- |
-| Hosted zone create or delete | Yes: records can be added at once, and the zone is gone at once | 25-45 s |
-| Record change | Yes: drift and later calls read it at once | 25-40 s |
-| VPC association or disassociation | Yes | About 80 s |
+| Hosted zone create | Yes: records can be added at once | 24-30 s (CloudFormation 42-51 s) |
+| Hosted zone delete | Yes: the zone is gone at once | 24-28 s (CloudFormation about 42 s) |
+| Record change | Yes: drift and later calls read it at once | 26-37 s (CloudFormation 32-43 s) |
+| Record delete | Yes | About 26 s (CloudFormation about 32 s) |
+| VPC association or disassociation | Yes | 78-81 s (CloudFormation's update about 103 s) |
 
 Route 53 has no failure state for a `PENDING` change, so the wait changes only
 when DNS resolvers see the change. Use `--full-wait` when a step right after

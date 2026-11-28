@@ -224,9 +224,14 @@ export function guardStackRegionOptions(cmd: Command): void {
  * NAT Gateway, EC2 Instance, ELBv2 LoadBalancer, Lambda MicroVM Image,
  * Bedrock AgentCore Runtime `READY` (go-to-k/cdkd#6490; a runtime endpoint created or updated on it still waits, go-to-k/cdkd#6962), EventBridge Archive leaving `CREATING` / `UPDATING`, Connect Instance `ACTIVE` after it accepts dependent calls (go-to-k/cdkd#6912; a `Fn::GetAtt` of its `ServiceRole` still waits), VPC Endpoint `available` (go-to-k/cdkd#6939; a `Fn::GetAtt` of its `DnsEntries` / `NetworkInterfaceIds` after a modify still waits), ECS Service steady state, the Auto Scaling instance refresh an
  * `--update-policy` rolling update starts, go-to-k/cdkd#6437; a Lambda event
- * source mapping leaving `Creating` / `Updating`, and a DynamoDB Table /
+ * source mapping leaving `Creating` / `Updating`, a DynamoDB Table /
  * GlobalTable Kinesis streaming destination or Contributor Insights toggle
- * settling, go-to-k/cdkd#7132) on deploy.
+ * settling, an ECS cluster's Service Connect attachments settling, an EFS
+ * access point reading `available` and a FileSystem backup policy its
+ * requested status, an EMR automatic scaling policy reading `ATTACHED`, RDS
+ * DB proxy targets reading `AVAILABLE`, and an EC2 instance's monitoring,
+ * metadata options and IAM instance profile association settling,
+ * go-to-k/cdkd#7132) on deploy.
  * NOT the wait of an `AutoScalingReplacingUpdate` for its new group's
  * instances, which runs whatever the flag says: deleting the old group
  * before the new one serves would drop the group's capacity. Nor the wait of
