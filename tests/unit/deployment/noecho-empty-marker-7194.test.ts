@@ -6,6 +6,7 @@
  */
 import { describe, it, expect } from 'vite-plus/test';
 import { applyNoEchoPersist, NoEchoRunState } from '../../../src/deployment/deploy-engine/noecho.js';
+import { markWrittenFromDeployedTemplate } from '../../../src/deployment/masked-property-fingerprints.js';
 import type { ResourceState } from '../../../src/types/state.js';
 
 const TYPE = 'AWS::Test::Thing7194';
@@ -49,15 +50,26 @@ function persist(
 }
 
 describe('noEchoLeaves empty marker (go-to-k/cdkd#7194)', () => {
-  it('a positioned record with no NoEcho position is saved with noEchoLeaves: []', () => {
+  it('a record this deploy wrote, with no NoEcho position, is saved with noEchoLeaves: []', () => {
     const record: ResourceState = {
       physicalId: 'p1',
       resourceType: TYPE,
-      properties: { Name: 'public-name' },
+      properties: markWrittenFromDeployedTemplate({ Name: 'public-name' }),
     };
-    const out = persist(runWithTemplate(), 'Plain', record);
+    const out = persist(runWithTemplate(), 'Plain', record, {
+      templateProps: { Name: 'public-name' },
+    });
     expect(out.noEchoLeaves).toEqual([]);
     expect(out.properties).toEqual({ Name: 'public-name' });
+  });
+
+  it('a live record this deploy did not write (unchanged, or never reached) gains no marker', () => {
+    const record: ResourceState = {
+      physicalId: 'p1b',
+      resourceType: TYPE,
+      properties: { Name: 'public-name' },
+    };
+    expect(Object.hasOwn(persist(runWithTemplate(), 'Plain', record), 'noEchoLeaves')).toBe(false);
   });
 
   it('an empty field is positioned by today template again, as an absent one is', () => {

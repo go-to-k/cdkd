@@ -539,13 +539,13 @@ export function withAttemptedItemsMasked<R extends ResourceState>(
  * - both fields are written, an empty set omitted, except an empty
  *   `noEchoLeaves` (go-to-k/cdkd#7194): it is the marker that a writer
  *   positioned THIS bag and found none, so it is written only under
- *   `markEmpty` (the live record's save) for a bag of today's template
- *   generation: one this deploy wrote from the template, or an unchanged one
- *   (no template bag resolved for it, so its stored bag is what today's
- *   template resolves). A carried orphan or superseded record, a journal's
- *   previous record or a failed update's kept bag was written by another
- *   template generation, so today's template proves nothing about it; it
- *   keeps an empty field it already had, and gains none.
+ *   `markEmpty` (the live record's save) for a bag this deploy WROTE from
+ *   today's template. Any other bag may be of another template generation:
+ *   a carried orphan or superseded record, a journal's previous record, a
+ *   failed update's kept bag, or a record this deploy never reached (no
+ *   template bag either way, so "unchanged" cannot be told from "not
+ *   reached" here). Today's template proves nothing about it, so it keeps an
+ *   empty field it already had, and gains none.
  */
 export function applyNoEchoPersist(
   run: NoEchoRunState,
@@ -589,8 +589,7 @@ export function applyNoEchoPersist(
     // go-to-k/cdkd#7194: an empty set is the marker that a writer positioned
     // this bag and found none, so `cdkd scrub` can tell it from a record
     // written before v11 (no field); see the conditions above.
-    const sameGeneration =
-      isWrittenFromDeployedTemplate(record.properties) || templateProps === undefined;
+    const sameGeneration = isWrittenFromDeployedTemplate(record.properties);
     if (leaves.length > 0 || (markEmpty && sameGeneration)) next.noEchoLeaves = leaves;
     else if (noEchoLeavesOf(scrubbed)?.length !== 0) delete next.noEchoLeaves;
     // go-to-k/cdkd#4656: an echo-fidelity entry describes a coordinate the
