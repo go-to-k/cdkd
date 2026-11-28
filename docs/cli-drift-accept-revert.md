@@ -77,6 +77,12 @@ One value is left out instead. On a Cognito user pool under
 with an `SmsConfiguration` reports that factor even with MFA off, and AWS
 refuses an SMS factor beside `OFF`. The pool keeps its SMS configuration.
 
+An email-OTP factor left on such a pool is different. A pool moved from
+email-OTP MFA to `OFF` by an older cdkd release still holds its
+`EmailMfaConfiguration`, so drift reports `EMAIL_OTP` in `EnabledMfas`. The
+revert sends no email block beside `OFF`, which AWS refuses, and clears the
+factor with `SetUserPoolMfaConfig` `OFF` instead.
+
 cdkd reverts several resources at once. `--concurrency <n>` sets how many, and
 the default is `4`. A failure on one resource does not stop the others.
 

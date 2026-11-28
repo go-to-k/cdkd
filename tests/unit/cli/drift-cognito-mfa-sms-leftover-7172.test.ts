@@ -119,7 +119,7 @@ vi.mock('../../../src/provisioning/provider-registry.js', () => ({
 import { createDriftCommand } from '../../../src/cli/commands/drift.js';
 import { stillReportedAfterAccept } from '../../../src/cli/commands/drift/accept.js';
 import { CognitoUserPoolProvider } from '../../../src/provisioning/providers/cognito-provider.js';
-import { withoutOffSmsEcho } from '../../../src/provisioning/providers/cognito/mfa-request.js';
+import { withoutOffFactorEchoes } from '../../../src/provisioning/providers/cognito/mfa-request.js';
 
 const POOL_ID = 'us-east-1_abc123';
 const POOL_ARN = `arn:aws:cognito-idp:us-east-1:123456789012:userpool/${POOL_ID}`;
@@ -515,8 +515,6 @@ describe('CognitoUserPoolProvider.canonicalizeDriftPair, SMS beside the token (#
 
   it.each([
     ['SMS alone (no token to drop)', [SMS]],
-    ['email OTP beside the token (its leftover is unmeasured)', [TOTP, 'EMAIL_OTP']],
-    ['all three factors', [SMS, TOTP, 'EMAIL_OTP']],
     ['an empty list', []],
   ])('leaves %s as recorded, both bags by identity', async (_label, factors) => {
     const baseline = { MfaConfiguration: 'OFF', EnabledMfas: factors };
@@ -537,10 +535,10 @@ describe('CognitoUserPoolProvider.canonicalizeDriftPair, SMS beside the token (#
   });
 });
 
-describe('withoutOffSmsEcho (#7172)', () => {
+describe('withoutOffFactorEchoes (#7172)', () => {
   it('drops SMS_MFA under OFF, copy-on-write', () => {
     const bag = { MfaConfiguration: 'OFF', EnabledMfas: [SMS, TOTP] };
-    expect(withoutOffSmsEcho(bag)).toEqual({ MfaConfiguration: 'OFF', EnabledMfas: [TOTP] });
+    expect(withoutOffFactorEchoes(bag)).toEqual({ MfaConfiguration: 'OFF', EnabledMfas: [TOTP] });
     expect(bag.EnabledMfas).toEqual([SMS, TOTP]);
   });
 
@@ -551,7 +549,7 @@ describe('withoutOffSmsEcho (#7172)', () => {
     ['OFF without SMS', { MfaConfiguration: 'OFF', EnabledMfas: [TOTP] }],
     ['OFF without a list', { MfaConfiguration: 'OFF' }],
   ])('returns the bag by identity under %s', (_label, bag) => {
-    expect(withoutOffSmsEcho(bag)).toBe(bag);
+    expect(withoutOffFactorEchoes(bag)).toBe(bag);
   });
 });
 

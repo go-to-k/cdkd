@@ -183,12 +183,17 @@ export function hasMfaConfigProps(properties: Record<string, unknown>): boolean 
   );
 }
 
+/** The email-OTP keys `buildMfaConfigRequest` sends in `EmailMfaConfiguration`. */
+const EMAIL_OTP_MESSAGE_KEYS = ['EmailAuthenticationMessage', 'EmailAuthenticationSubject'];
+
 /**
- * `properties` without `SMS_MFA` in `EnabledMfas` when `MfaConfiguration` is
- * `OFF` (go-to-k/cdkd#7172), for a bag derived from the AWS readback
- * (`cdkd drift --revert`'s desired bag and its previous side).
+ * `properties` without the factor echoes a readback reports under
+ * `MfaConfiguration: OFF`, for a bag derived from the AWS readback
+ * (`cdkd drift --revert`'s desired bag and its previous side): `SMS_MFA`
+ * (go-to-k/cdkd#7172) and `EMAIL_OTP` with the email-OTP message and subject
+ * (go-to-k/cdkd#7177) leave `EnabledMfas` and the bag.
  *
- * Under OFF that member is an echo, not a factor anyone sent: the readback
+ * Under OFF `SMS_MFA` is an echo, not a factor anyone sent: the readback
  * reports `SMS_MFA` from `SmsMfaConfiguration`, which a pool with an
  * `SmsConfiguration` always holds. MEASURED us-east-1 2026-11-28 on a throwaway
  * pool: one created with only an `SmsConfiguration` and MFA OFF read
@@ -201,13 +206,66 @@ export function hasMfaConfigProps(properties: Record<string, unknown>): boolean 
  * template path never needs this: a template that declares `SMS_MFA` under
  * OFF is the user's to fix, and the pre-flight says so.
  *
+ * `EMAIL_OTP` reads back, with the message and subject, from an
+ * `EmailMfaConfiguration` that `UpdateUserPool` OFF leaves in place
+ * (MEASURED us-east-1 2026-11-28, see `canonicalizeDriftPair` in
+ * `read-state.ts`). Sent back under OFF it builds that block beside OFF,
+ * which the pre-flight refuses and AWS rejects (re-measured the same day:
+ * `can't turn off MFA and configure an MFA together`). Left out of the
+ * desired bag, the revert sends no email block. `keepEmailOtp` keeps it on
+ * the PREVIOUS side: unlike the SMS echo, a bare `SetUserPoolMfaConfig` OFF
+ * does clear this block (measured), so the previous bag must still declare
+ * it for `clearsRemovedMfaConfig` to send that reset.
+ *
  * Copy-on-write: returned by identity when nothing is dropped.
  */
-export function withoutOffSmsEcho(properties: Record<string, unknown>): Record<string, unknown> {
+export function withoutOffFactorEchoes(
+  properties: Record<string, unknown>,
+  { keepEmailOtp = false }: { keepEmailOtp?: boolean } = {}
+): Record<string, unknown> {
   if (properties['MfaConfiguration'] !== 'OFF') return properties;
   const enabled = properties['EnabledMfas'];
-  if (!Array.isArray(enabled) || !enabled.includes(MFA_FACTOR_SMS)) return properties;
-  return { ...properties, EnabledMfas: enabled.filter((factor) => factor !== MFA_FACTOR_SMS) };
+  const isEcho = (factor: unknown): boolean =>
+    factor === MFA_FACTOR_SMS || (!keepEmailOtp && factor === MFA_FACTOR_EMAIL_OTP);
+  const dropsFactor = Array.isArray(enabled) && enabled.some(isEcho);
+  const dropsMessage = !keepEmailOtp && EMAIL_OTP_MESSAGE_KEYS.some((key) => !!properties[key]);
+  if (!dropsFactor && !dropsMessage) return properties;
+  const kept = Object.fromEntries(
+    Object.entries(properties).filter(
+      ([key]) => keepEmailOtp || !EMAIL_OTP_MESSAGE_KEYS.includes(key)
+    )
+  );
+  if (dropsFactor) kept['EnabledMfas'] = (enabled as unknown[]).filter((f) => !isEcho(f));
+  return kept;
+}
+
+/**
+ * The RECORD side of {@link withoutOffFactorEchoes}'s email-OTP drop
+ * (go-to-k/cdkd#7177): `properties` with `EMAIL_OTP` out of `EnabledMfas` and
+ * the message and subject read `''` (the readback's value without the block)
+ * under `MfaConfiguration: OFF`. A readback-derived update that drops the echo
+ * ends with no email block on the pool: the previous side kept the factor, so
+ * the bare OFF reset that follows clears it (measured, #7177), as does a
+ * full-replace call carrying a WebAuthn block (inferred from the API's
+ * full-replace semantics, not measured for email). The record must not keep
+ * describing it. `update()` keeps the received record when the reset is
+ * skipped on a failed MFA read.
+ *
+ * Copy-on-write: returned by identity when nothing changes.
+ */
+export function withOffEmailOtpCleared(
+  properties: Record<string, unknown>
+): Record<string, unknown> {
+  if (properties['MfaConfiguration'] !== 'OFF') return properties;
+  const enabled = properties['EnabledMfas'];
+  const listsEmail = Array.isArray(enabled) && enabled.includes(MFA_FACTOR_EMAIL_OTP);
+  if (!listsEmail && !EMAIL_OTP_MESSAGE_KEYS.some((key) => !!properties[key])) return properties;
+  const cleared: Record<string, unknown> = { ...properties };
+  if (listsEmail) {
+    cleared['EnabledMfas'] = (enabled as unknown[]).filter((f) => f !== MFA_FACTOR_EMAIL_OTP);
+  }
+  for (const key of EMAIL_OTP_MESSAGE_KEYS) if (key in cleared) cleared[key] = '';
+  return cleared;
 }
 
 /**

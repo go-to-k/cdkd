@@ -590,13 +590,14 @@ export async function turnOffRemovedMfa(
  * fails, `onReadFailure` decides: `'bare'` keeps the #1160 arm's pre-#7128
  * request (MFA must still go OFF there), `'skip'` sends nothing and warns,
  * since a #7128 reset is not worth dropping a passkey configuration for.
+ * Returns whether the reset was sent (false only on that `'skip'` arm).
  */
 export async function resetMfaConfigOff(
   this: CognitoUserPoolProvider,
   logicalId: string,
   physicalId: string,
   onReadFailure: 'bare' | 'skip'
-): Promise<void> {
+): Promise<boolean> {
   let webAuthn: WebAuthnConfigurationType | undefined;
   try {
     const live = await this.retryOnTransientControlPlane(
@@ -627,7 +628,7 @@ export async function resetMfaConfigOff(
           safeMsg`also drop a WebAuthn configuration it could not see). A removed factor such as ` +
           safeMsg`the software token may still be enabled; check it with ${aws`aws cognito-idp get-user-pool-mfa-config --user-pool-id ${physicalId}${region}`.render()}.`
       );
-      return;
+      return false;
     }
   }
   const carriedFields =
@@ -654,4 +655,5 @@ export async function resetMfaConfigOff(
       ),
     `SetUserPoolMfaConfig(${physicalId})`
   );
+  return true;
 }
