@@ -85,7 +85,12 @@ export async function oldCopiesHeldByConsumers(
   live: Record<string, ResourceState>
 ): Promise<boolean> {
   const recorded = entries.filter((entry) => entry !== undefined);
-  if (recorded.length < entries.length) return true;
+  if (recorded.length < entries.length) {
+    engine.logger.info(
+      safeMsg`  An old copy of a replaced resource is not recorded in state, so cdkd cannot tell whether a stack importing this stack's outputs still uses it: it is deleted after those stacks deploy, not before the removed resources it uses`
+    );
+    return true;
+  }
   const holders = await consumersNaming(engine, stackName, recorded, live);
   const names = [...new Set([...holders.values()].flat())];
   if (names.length === 0) return false;

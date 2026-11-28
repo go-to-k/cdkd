@@ -86,7 +86,10 @@ export async function runCleanupPhase(
  *
  * go-to-k/cdkd#7204: a producer whose cleanup waits for the run's consumers
  * (go-to-k/cdkd#7012) takes none while one of them still names an old copy;
- * the removal it uses is then kept (go-to-k/cdkd#6969).
+ * the removal it uses is then kept (go-to-k/cdkd#6969). So does a nested
+ * child of such a producer (it inherits the queue): a consumer reads the
+ * child's values through the top-level stack's outputs, so the consumers
+ * asked are the top-level stack's.
  */
 export async function deleteUsersOfRemovalsFirst(
   engine: DeployEngine,
@@ -97,9 +100,9 @@ export async function deleteUsersOfRemovalsFirst(
   completedOperations: CompletedOperation[],
   live: Record<string, ResourceState>
 ): Promise<void> {
-  const held =
-    engine.options.parentStackInfo === undefined &&
-    engine.options.consumerCleanupQueue !== undefined;
+  const held = engine.options.consumerCleanupQueue !== undefined;
+  // A child deploys as `<parent>~<logicalId>`.
+  const producer = stackName.split('~')[0]!;
   try {
     await deleteDeferredUsersOfRemovals(
       engine.replacementRun,
@@ -112,7 +115,7 @@ export async function deleteUsersOfRemovalsFirst(
         ? (taken) =>
             oldCopiesHeldByConsumers(
               engine,
-              stackName,
+              producer,
               [...taken].map((id) => engine.replacementRun.supersededEntries.get(id)),
               live
             )

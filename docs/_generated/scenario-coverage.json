@@ -953,6 +953,11 @@
       ]
     },
     {
+      "name": "cross-stack-early-delete-consumer",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "cross-stack-export-in-use",
       "annotated": false,
       "scenarios": []
@@ -4435,6 +4440,7 @@
     "cross-backend-same-stack",
     "cross-backend-same-stack-migration",
     "cross-region-concurrent-stacks",
+    "cross-stack-early-delete-consumer",
     "cross-stack-export-in-use",
     "cross-stack-replace-consumer-rollback",
     "custom-resource-noecho-nested",

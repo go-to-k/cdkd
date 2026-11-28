@@ -136,8 +136,16 @@ describe('an old copy using a removed resource is deleted before it (go-to-k/cdk
   /** physical id -> the error its delete throws. */
   let failDelete: Map<string, () => Error>;
   let journaled: CompletedOperation[][];
+  /** The deployed stack's name; a nested child's is `<parent>~<logicalId>`. */
+  let stackName: string;
+  /** String attributes recorded on each replaced old copy, and returned by every create. */
+  let oldAttributes: Record<string, string>;
+  let createAttributes: Record<string, string>;
 
   beforeEach(() => {
+    stackName = 'MyStack';
+    oldAttributes = {};
+    createAttributes = {};
     vi.clearAllMocks();
     printed.info.length = 0;
     printed.warn.length = 0;
@@ -152,7 +160,7 @@ describe('an old copy using a removed resource is deleted before it (go-to-k/cdk
         const physicalId = `${logicalId}-new`;
         live.add(physicalId);
         order.push(`create ${physicalId}`);
-        return { physicalId, attributes: {} };
+        return { physicalId, attributes: { ...createAttributes } };
       }),
       update: vi.fn(async (_logicalId: string, physicalId: string) => ({
         physicalId,
@@ -187,7 +195,7 @@ describe('an old copy using a removed resource is deleted before it (go-to-k/cdk
    */
   function makeEngine(
     templateDeps: Record<string, string[]>,
-    consumers?: { states: Record<string, StackState | 'unreadable'> }
+    consumers?: { states: Record<string, StackState | 'unreadable'>; nested?: true }
   ): DeployEngine {
     const registry = {
       getProvider: vi.fn().mockReturnValue(provider),
@@ -228,6 +236,9 @@ describe('an old copy using a removed resource is deleted before it (go-to-k/cdk
         concurrency: 4,
         noRollback: true,
         ...(consumers !== undefined && { consumerCleanupQueue: new NestedCleanupQueue() }),
+        ...(consumers?.nested === true && {
+          parentStackInfo: { parentStack: 'MyStack', parentLogicalId: 'Child', parentRegion: 'us-east-1' },
+        }),
       } as never,
       'us-east-1'
     );
@@ -253,7 +264,7 @@ describe('an old copy using a removed resource is deleted before it (go-to-k/cdk
   ): Promise<{ state: StackState; actualCounts: Record<string, number> }> {
     const resources: Record<string, ResourceState> = {};
     for (const id of opts.replaced) {
-      resources[id] = record(`${id}-old`, ALIAS, opts.recordDeps[id]);
+      resources[id] = { ...record(`${id}-old`, ALIAS, opts.recordDeps[id]), attributes: { ...oldAttributes } };
       live.add(`${id}-old`);
     }
     for (const [id, type] of opts.removed) {
@@ -267,7 +278,7 @@ describe('an old copy using a removed resource is deleted before it (go-to-k/cdk
     } as unknown as CloudFormationTemplate;
     const currentState = {
       version: 12,
-      stackName: 'MyStack',
+      stackName,
       region: 'us-east-1',
       resources,
       outputs: {},
@@ -284,7 +295,7 @@ describe('an old copy using a removed resource is deleted before it (go-to-k/cdk
       changes,
       {} as never,
       opts.levels,
-      'MyStack',
+      stackName,
       template,
       undefined,
       undefined,
@@ -451,10 +462,47 @@ describe('an old copy using a removed resource is deleted before it (go-to-k/cdk
     it('takes nothing first when a consumer record cannot be read', async () => {
       usedBy.set('OldVersion-old', ['Alias-old']);
 
-      await deployOn(makeEngine({}, { states: { Consumer: 'unreadable' } }), shape);
+      const result = await deployOn(
+        makeEngine({}, { states: { Consumer: 'unreadable' } }),
+        shape
+      );
 
       expect(order).not.toContain('delete Alias-old');
-      expect(printed.info.join('\n')).not.toContain('replaced resource(s) first');
+      expect(result.state.resources['OldVersion']?.physicalId).toBe('OldVersion-old');
+      const info = printed.info.join('\n');
+      expect(info).not.toContain('replaced resource(s) first');
+      expect(info).toContain('Consumer (its state could not be read)');
+    });
+
+    it('a nested child of such a producer asks the consumers of its top-level stack', async () => {
+      usedBy.set('OldVersion-old', ['Alias-old']);
+      stackName = 'MyStack~Child';
+
+      const result = await deployOn(
+        makeEngine({}, { states: { Consumer: consumer('Alias-old') }, nested: true }),
+        shape
+      );
+
+      // Not first: with no root engine on this test's stack, the child runs
+      // its own cleanup pass, after the removal.
+      expect(at('delete OldVersion-old')).toBeLessThan(at('delete Alias-old'));
+      expect(result.state.resources['OldVersion']?.physicalId).toBe('OldVersion-old');
+      expect(printed.info.join('\n')).toContain(
+        "Consumer (importing this stack's outputs) still uses an old copy of a replaced resource"
+      );
+    });
+
+    it('a value the new copy shares with the old one names no old copy', async () => {
+      usedBy.set('OldVersion-old', ['Alias-old']);
+      oldAttributes = { VpcId: 'vpc-0123456789' };
+      createAttributes = { VpcId: 'vpc-0123456789' };
+
+      await deployOn(
+        makeEngine({}, { states: { Consumer: consumer('vpc-0123456789') } }),
+        shape
+      );
+
+      expect(at('delete Alias-old')).toBeLessThan(at('delete OldVersion-old'));
     });
 
     it('still deletes first when no consumer names the old copy', async () => {
