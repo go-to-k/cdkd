@@ -138,11 +138,29 @@ today's template still declares as the same type, but no longer fills from a
 `NoEcho` source, is read by that definition: a value an older definition
 filled from one is neither masked nor reported.
 
-A cdkd of state schema v11 or later also writes no positions for a record
-that has none, so the record may well be clean. That is why this finding
-alone does not make `--fail` exit `1`: it is a warning, and the stack is not
-reported clean. Check the record in the state file by hand. Running scrub
-again does not change the warning while the record is kept.
+A current cdkd records an empty `noEchoLeaves` on a record it positioned and
+found no `NoEcho` value in, so a record with no `noEchoLeaves` at all is one
+no such writer positioned. This finding makes `--fail` exit `1`, and the stack
+is not reported clean. A cdkd release before that change also wrote no
+positions for a record that has none, so such a record may well be clean, but
+nothing in state says which.
+
+To clear it, run scrub with `--mask-unpositioned`:
+
+```sh
+cdkd scrub MyStack --mask-unpositioned
+```
+
+For each such record, it replaces every string value in `properties`,
+`observedProperties` and `attributes` with `***`, at any depth, and records
+those positions as `NoEcho` positions. It does not change keys, numbers,
+booleans, empty strings, a whole `{{resolve:...}}` reference, the resource
+type, the physical id or the logical id. It touches no live record and no
+record scrub could position. The cost: those values are gone from state, so a
+later adoption of the record compares and re-sends without them, and a custom
+resource's `Delete` handler would receive `***`, so cdkd skips that delete
+with a warning. With `--dry-run`, it prints how many values it would mask in
+each record, never a value or a key, and writes nothing.
 
 ### A leftover output key was kept
 

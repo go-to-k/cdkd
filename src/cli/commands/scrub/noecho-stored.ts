@@ -25,6 +25,7 @@ import {
   withoutFnIf,
   type ScrubNoEchoPlan,
 } from './noecho.js';
+import type { UnpositionedMaskCounts } from './unpositioned.js';
 
 /** A record `state.resources` does not hold: a rollback orphan or a superseded one. */
 export interface StoredNoEchoRow {
@@ -319,24 +320,24 @@ export function unverifiableNoEchoRecordWarning(
  * the option, what it does and what it costs.
  */
 export const UNPOSITIONED_REMEDY =
-  'Re-run scrub with --mask-unpositioned to mask every string value in that record (its properties, observedProperties and attributes) and record those positions as NoEcho, which clears this finding. The cost: those values are lost from state, so a later adoption of the record compares and re-sends without them.';
+  'Re-run scrub with --mask-unpositioned to mask every string value in that record (its properties, observed properties and attributes) and record those positions as NoEcho, which clears this finding. The cost: those values are lost from state, so a later adoption of the record compares and re-sends without them.';
 
 /** The `--dry-run --mask-unpositioned` line for one such record. Counts only, never a value or a key. */
 export function unpositionedMaskPlanNote(
   shownStack: string,
   record: UnverifiableNoEchoRecord,
-  counts: { properties: number; observedProperties: number; attributes: number }
+  counts: UnpositionedMaskCounts
 ): string {
-  return safeMsg`--mask-unpositioned would mask, in the ${record.kind} ${record.logicalId} (${record.resourceType}) in ${shownStack}, ${String(counts.properties)} string value(s) in properties, ${String(counts.observedProperties)} in observedProperties and ${String(counts.attributes)} in attributes (--dry-run, nothing written).`;
+  return safeMsg`--mask-unpositioned would mask, in the ${record.kind} ${record.logicalId} (${record.resourceType}) in ${shownStack}, ${String(counts.properties)} string value(s) in properties, ${String(counts.observed)} in the readback (observed properties) and ${String(counts.attributes)} in attributes (--dry-run, nothing written).`;
 }
 
 /** The `--mask-unpositioned` line for one record it masked. Counts only, never a value or a key. */
 export function unpositionedMaskDoneNote(
   shownStack: string,
   record: UnverifiableNoEchoRecord,
-  counts: { properties: number; observedProperties: number; attributes: number }
+  counts: UnpositionedMaskCounts
 ): string {
-  return safeMsg`--mask-unpositioned: masked, in the ${record.kind} ${record.logicalId} (${record.resourceType}) in ${shownStack}, ${String(counts.properties)} string value(s) in properties, ${String(counts.observedProperties)} in observedProperties and ${String(counts.attributes)} in attributes, and recorded those positions as NoEcho.`;
+  return safeMsg`--mask-unpositioned: masked, in the ${record.kind} ${record.logicalId} (${record.resourceType}) in ${shownStack}, ${String(counts.properties)} string value(s) in properties, ${String(counts.observed)} in the readback (observed properties) and ${String(counts.attributes)} in attributes, and recorded those positions as NoEcho.`;
 }
 
 /**

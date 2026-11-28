@@ -65,7 +65,8 @@ function maskStringLeaves(value: unknown, at: NoEchoCoordinate, out: NoEchoCoord
 /** How many leaves {@link maskUnpositionedRecord} masks in each field. Counts only, never a value or a key. */
 export interface UnpositionedMaskCounts {
   readonly properties: number;
-  readonly observedProperties: number;
+  /** In the readback bag (`observedProperties`). */
+  readonly observed: number;
   readonly attributes: number;
 }
 
@@ -77,19 +78,19 @@ export function maskUnpositionedRecord(record: ResourceState): {
   const propertyLeaves: NoEchoCoordinate[] = [];
   const observedLeaves: NoEchoCoordinate[] = [];
   const attributeLeaves: NoEchoCoordinate[] = [];
-  const next: ResourceState = { ...record };
+  const readback = record.observedProperties;
+  const next: ResourceState = {
+    ...record,
+    // Every string leaf of the readback bag is masked: no value of it is kept.
+    ...(readback !== undefined && {
+      observedProperties: maskStringLeaves(readback, [], observedLeaves) as typeof readback,
+    }),
+  };
   if (record.properties !== undefined) {
     next.properties = maskStringLeaves(record.properties, [], propertyLeaves) as Record<
       string,
       unknown
     >;
-  }
-  if (record.observedProperties !== undefined) {
-    next.observedProperties = maskStringLeaves(
-      record.observedProperties,
-      [],
-      observedLeaves
-    ) as typeof record.observedProperties;
   }
   if (record.attributes !== undefined) {
     next.attributes = maskStringLeaves(
@@ -118,7 +119,7 @@ export function maskUnpositionedRecord(record: ResourceState): {
     record: next,
     counts: {
       properties: propertyLeaves.length,
-      observedProperties: observedLeaves.length,
+      observed: observedLeaves.length,
       attributes: attributeLeaves.length,
     },
   };
@@ -153,11 +154,8 @@ export function planUnpositionedMasks(
     if (row === undefined) continue;
     const plan = maskUnpositionedRecord(row.state);
     masked.set(record.key, plan.record);
-    logger.info(
-      opts.dryRun
-        ? unpositionedMaskPlanNote(shownStack, record, plan.counts)
-        : unpositionedMaskDoneNote(shownStack, record, plan.counts)
-    );
+    if (opts.dryRun) logger.info(unpositionedMaskPlanNote(shownStack, record, plan.counts));
+    else logger.info(unpositionedMaskDoneNote(shownStack, record, plan.counts));
   }
   return {
     masked,

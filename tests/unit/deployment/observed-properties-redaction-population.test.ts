@@ -217,6 +217,13 @@ const EXPECTED: Readonly<Record<string, { readonly sites: number; readonly why: 
       'a bag `scrubResourceRecord` already redacted, as the deploy\'s ' +
       '`applyNoEchoPersist` does.',
   },
+  'src/cli/commands/scrub/unpositioned.ts': {
+    sites: 1,
+    why:
+      'A `:`-form WRITE that keeps no value at all: `--mask-unpositioned` ' +
+      '(go-to-k/cdkd#7194) replaces EVERY string leaf of an orphan or superseded ' +
+      "record's readback with the mask, over a record scrub cannot position.",
+  },
   'src/cli/commands/scrub/twin-references.ts': {
     sites: 1,
     why:
@@ -381,8 +388,8 @@ describe('observedProperties write population (issue #2828)', () => {
     // go-to-k/cdkd#7154's observed twin positioning added one: 24 across 17.
     // go-to-k/cdkd#7167's stored reference put-back added one: 25 across 18.
     const actual = scanPopulation();
-    expect(Object.values(actual).reduce((a, b) => a + b, 0)).toBe(25);
-    expect(Object.keys(EXPECTED)).toHaveLength(18);
+    expect(Object.values(actual).reduce((a, b) => a + b, 0)).toBe(26);
+    expect(Object.keys(EXPECTED)).toHaveLength(19);
   });
 
   it('every ASSIGNMENT-form site redacts at the call site, or is allow-listed', () => {

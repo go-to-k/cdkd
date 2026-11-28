@@ -247,8 +247,9 @@ describe('DeployEngine - NoEcho persists as the mask (go-to-k/cdkd#4043, schema 
     // The dynamic reference beside them keeps its expression, as before.
     expect(masked).toContain('{{resolve:ssm-secure:/app/pw}}');
     expect(masked).not.toContain('dynref-secret-value');
-    // No coordinate is recorded for a template that declares no NoEcho.
-    expect(without[without.length - 1]!.resources['R']!.noEchoLeaves).toBeUndefined();
+    // No coordinate is recorded for a template that declares no NoEcho: only
+    // the empty marker that the record was positioned (go-to-k/cdkd#7194).
+    expect(without[without.length - 1]!.resources['R']!.noEchoLeaves).toEqual([]);
   });
 });
 

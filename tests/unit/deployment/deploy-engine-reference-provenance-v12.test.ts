@@ -624,9 +624,16 @@ describe('the one-time migration capture (v11 -> v12)', () => {
     });
     // The reader's id does not: region only, and readVersions NEVER.
     expect(provenance(run, 'Reader')).toEqual({ [REF]: { region: 'us-east-1' } });
-    // Nothing else of either record changed.
+    // Nothing else of either record changed, but the empty `noEchoLeaves`
+    // marker every save writes on a record with no NoEcho position (#7194).
     for (const id of ['SecretQueue', 'Reader']) {
-      const { referenceProvenance: _f, constructPath: _c, ...rest } = run.last!.resources[id]!;
+      const {
+        referenceProvenance: _f,
+        constructPath: _c,
+        noEchoLeaves,
+        ...rest
+      } = run.last!.resources[id]!;
+      expect(noEchoLeaves).toEqual([]);
       expect(rest).toEqual(before.resources[id]);
     }
     expect(log.warn.filter((m) => m.includes('state schema v12 migration'))).toEqual([]);

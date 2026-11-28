@@ -180,6 +180,7 @@ earlier S3 versions of that file; see
 | `--dry-run` | off | Report what would change. Write nothing. |
 | `--fail` | off | Exit `1` when a finding remains. See [`--fail`](#fail). |
 | `--purge-history` | off | Also delete earlier S3 versions of state files the run examined but did not rewrite. Not allowed with `--dry-run`. |
+| `--mask-unpositioned` | off | Mask every string value of an orphan or superseded record whose `NoEcho` positions scrub cannot tell, and record those positions as `NoEcho`. Its values are lost from state. See [A leftover record has no known NoEcho positions](cli-scrub-findings.md#a-leftover-record-has-no-known-noecho-positions). |
 | `--stack <name>` | — | One stack name, as an alternative to the positional argument. |
 | `-a`, `--app <command>` | `cdk.json` / `CDKD_APP` | CDK app command, or a synthesized cloud assembly directory. |
 | `--output <path>` | `cdk.out` | Synthesis output directory. |

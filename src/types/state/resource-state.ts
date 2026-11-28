@@ -323,9 +323,17 @@ export interface ResourceState {
    * a reader then treats a `***` as before (the custom-resource class), and a
    * deploy reads a non-mask leaf at a position the template names as the
    * MIGRATION WITNESS, the exact value last sent. Every writer that rebuilds
-   * `properties` from a template recomputes it (and omits the field when the
-   * record has none); every writer that carries a record forward keeps it.
-   * Read through `noEchoLeavesOf` (malformed reads as absent).
+   * `properties` from a template recomputes it; every writer that carries a
+   * record forward keeps it. Read through `noEchoLeavesOf` (malformed reads as
+   * absent).
+   *
+   * EMPTY (go-to-k/cdkd#7194, no bump) means a writer positioned the record
+   * and found none: the deploy's save and `cdkd import` write `[]` rather
+   * than omitting the field, so `cdkd scrub` can tell such a record from a
+   * pre-v11 one. Every other reader treats `[]` as absent (an older binary
+   * never wrote it): a save positions the record by today's template again.
+   * `cdkd scrub --mask-unpositioned` writes the positions it masked into an
+   * orphan or superseded record nothing else could position.
    */
   noEchoLeaves?: (string | number)[][] | undefined;
 

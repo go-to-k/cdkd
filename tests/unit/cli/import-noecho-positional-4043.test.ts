@@ -173,12 +173,12 @@ describe('cdkd import positions a NoEcho parameter (go-to-k/cdkd#4043 Phase C)',
     expect(record.observedMaskedLeaves).toBeUndefined();
   });
 
-  it('writes no noEchoLeaves where no NoEcho source serves a leaf', async () => {
+  it('writes an empty noEchoLeaves where no NoEcho source serves a leaf (go-to-k/cdkd#7194)', async () => {
     const tpl = template('x');
     (tpl.Resources['Param']!.Properties as Record<string, unknown>)['Value'] = 'literal';
     const state = stateFrom(tpl, {});
     await resolveImportedProperties(state, tpl, 'us-east-1', {} as never, getLogger());
-    expect(state.resources['Param']!.noEchoLeaves).toBeUndefined();
+    expect(state.resources['Param']!.noEchoLeaves).toEqual([]);
     expect(state.resources['Param']!.properties['Value']).toBe('literal');
   });
 

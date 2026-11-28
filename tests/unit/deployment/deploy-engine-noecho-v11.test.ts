@@ -696,6 +696,38 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       expect(JSON.stringify(saved.resources['Topic']!.properties)).not.toContain(TOPIC);
     });
 
+    it.each([
+      ['an unchanged value', TOKEN, TOPIC],
+      ['a changed value', TOKEN2, TOPIC],
+    ])(
+      'reads an EMPTY noEchoLeaves exactly as an absent one, over %s (go-to-k/cdkd#7194)',
+      async (_case, paramValue, topicName) => {
+        // A v11+ save positioned these records with none (the parameter was
+        // not NoEcho then); the parameter is NoEcho now.
+        const runWith = async (empty: boolean): Promise<string> => {
+          for (const fn of Object.values(provider)) fn.mockClear();
+          stateBackend.saveState.mockClear();
+          const state = v10State(paramValue, topicName);
+          if (empty) {
+            state.resources['Param']!.noEchoLeaves = [];
+            state.resources['Topic']!.noEchoLeaves = [];
+          }
+          stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+          await makeEngine().deploy(STACK, template());
+          return JSON.stringify({
+            calls: Object.fromEntries(
+              Object.entries(provider).map(([name, fn]) => [name, fn.mock.calls])
+            ),
+            saved: lastSaved().resources,
+          });
+        };
+        const absent = await runWith(false);
+        const empty = await runWith(true);
+        expect(JSON.parse(empty)).toEqual(JSON.parse(absent));
+        expect(allSaved()).not.toContain(TOKEN);
+      }
+    );
+
     it('UPDATES when the stored plaintext differs from the value this deploy binds', async () => {
       stateBackend.getState.mockResolvedValue({ state: v10State(TOKEN2), etag: 'etag-old' });
       await makeEngine().deploy(STACK, template());
@@ -1394,10 +1426,11 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       expect(callsFor(provider.delete, 'Topic')).toHaveLength(0);
       expect(provider.readCurrentState.mock.calls.some((c) => c[1] === 'Topic')).toBe(true);
       // Review round 8 m2: AWS confirmed the value, so the record is rewritten
-      // with it and unmarked (no phantom `***` vs value diff on every run).
+      // with it and unmarked (no phantom `***` vs value diff on every run):
+      // positioned with none, the empty marker (go-to-k/cdkd#7194).
       const topic = lastSaved().resources['Topic']!;
       expect(topic.properties['TopicName']).toBe(TOPIC);
-      expect(topic.noEchoLeaves).toBeUndefined();
+      expect(topic.noEchoLeaves).toEqual([]);
     });
 
     it('migrates a held producer echoing the value and its untouched same-stack reader (spec review)', async () => {

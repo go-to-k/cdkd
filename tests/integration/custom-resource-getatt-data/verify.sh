@@ -771,9 +771,9 @@ grep -qF "orphan record Gone7191" "${SECRET_ECHO_LOG}" \
 echo "    OK: cdkd scrub masked the pre-v11 orphan and superseded plaintext and reported the gone-id orphan"
 assert_no_secret_in_versions "after the phase 3c scrub"
 # A second scrub finds nothing left to rewrite but the gone-id orphan, which
-# it must still not call clean. It is a warning, not a `--fail` finding (a
-# current cdkd writes the same shape for a record with no NoEcho position),
-# so `--fail` exits 0.
+# it must still not call clean, and (go-to-k/cdkd#7194: a current cdkd records
+# an empty `noEchoLeaves` for a record with no NoEcho position) `--fail` exits 1
+# over it, naming `--mask-unpositioned`.
 set +e
 CDKD_TEST_NOECHO_SEED="${ROTATED_SEED}" CDKD_TEST_SECRET_ECHO=true node "${LOCAL_DIST}" scrub "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --dry-run --fail > "${SECRET_ECHO_LOG}" 2>&1
@@ -784,8 +784,45 @@ grep -qF "No plaintext secrets found in" "${SECRET_ECHO_LOG}" \
   && secret_echo_fail "the second cdkd scrub called the stack clean over a record it cannot position (go-to-k/cdkd#7191)" "${SECRET_ECHO_LOG}"
 grep -qF "orphan record Gone7191" "${SECRET_ECHO_LOG}" \
   || secret_echo_fail "the second cdkd scrub did not report the gone-logical-id orphan (go-to-k/cdkd#7191)" "${SECRET_ECHO_LOG}"
-[ "${rc}" -eq 0 ] || secret_echo_fail "the second cdkd scrub --fail exited ${rc}, expected 0: the unverifiable orphan is a warning (go-to-k/cdkd#7191)" "${SECRET_ECHO_LOG}"
-echo "    OK: a second cdkd scrub --fail reports the gone-id orphan without calling the stack clean"
+[ "${rc}" -eq 1 ] || secret_echo_fail "the second cdkd scrub --fail exited ${rc}, expected 1 over the unverifiable orphan (go-to-k/cdkd#7194)" "${SECRET_ECHO_LOG}"
+grep -qF -- "--mask-unpositioned" "${SECRET_ECHO_LOG}" \
+  || secret_echo_fail "the second cdkd scrub did not name --mask-unpositioned as the remedy (go-to-k/cdkd#7194)" "${SECRET_ECHO_LOG}"
+echo "    OK: a second cdkd scrub --fail reports the gone-id orphan, exits 1 and names --mask-unpositioned"
+# go-to-k/cdkd#7194: `--mask-unpositioned` masks every string value of that
+# orphan and records the positions, so `--fail` passes after it.
+GONE_PHYSICAL_ID="$(jq -r '.orphans[1].state.physicalId' <<<"${STATE_SCRUBBED}")"
+set +e
+CDKD_TEST_NOECHO_SEED="${ROTATED_SEED}" CDKD_TEST_SECRET_ECHO=true node "${LOCAL_DIST}" scrub "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --mask-unpositioned > "${SECRET_ECHO_LOG}" 2>&1
+rc=$?
+set -e
+log_carries_secret "${SECRET_ECHO_LOG}" && secret_echo_fail "cdkd scrub --mask-unpositioned printed a secret-echo value (value withheld)"
+grep -qF "${GONE_PLACEHOLDER}" "${SECRET_ECHO_LOG}" \
+  && secret_echo_fail "cdkd scrub --mask-unpositioned printed the gone-id orphan's value" "${SECRET_ECHO_LOG}"
+[ "${rc}" -eq 0 ] || secret_echo_fail "cdkd scrub --mask-unpositioned exited ${rc}" "${SECRET_ECHO_LOG}"
+STATE_SCRUBBED=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+[ -n "${STATE_SCRUBBED}" ] || secret_echo_fail "could not read the state file after cdkd scrub --mask-unpositioned"
+# Every string leaf of its properties, observedProperties and attributes is the
+# mask (an empty string or a whole {{resolve:...}} token is no value to mask).
+[ "$(jq -r --arg m "${SECRET_MASK}" '.orphans[1].state | [(.properties, .observedProperties, .attributes) // {} | .. | strings | select(. != "" and . != $m and (test("^\\{\\{resolve:[^}]*\\}\\}$") | not))] | length' <<<"${STATE_SCRUBBED}")" = "0" ] \
+  || secret_echo_fail "after --mask-unpositioned the gone-id orphan still holds an unmasked string value (value withheld, go-to-k/cdkd#7194)" "${SECRET_ECHO_LOG}"
+[ "$(jq -r '.orphans[1].state.properties.Short' <<<"${STATE_SCRUBBED}")" = "${SECRET_MASK}" ] \
+  || secret_echo_fail "after --mask-unpositioned the gone-id orphan's properties.Short is not '${SECRET_MASK}' (go-to-k/cdkd#7194)" "${SECRET_ECHO_LOG}"
+jq -e '.orphans[1].state.noEchoLeaves | any(.[]; . == ["Short"])' <<<"${STATE_SCRUBBED}" >/dev/null \
+  || secret_echo_fail "after --mask-unpositioned the gone-id orphan's noEchoLeaves does not name Short (go-to-k/cdkd#7194)" "${SECRET_ECHO_LOG}"
+[ "$(jq -r '[.orphans[1].logicalId, .orphans[1].state.physicalId] | join(" ")' <<<"${STATE_SCRUBBED}")" = "Gone7191 ${GONE_PHYSICAL_ID}" ] \
+  || secret_echo_fail "--mask-unpositioned changed the gone-id orphan's logical or physical id (go-to-k/cdkd#7194)" "${SECRET_ECHO_LOG}"
+assert_no_secret_in_versions "after cdkd scrub --mask-unpositioned"
+set +e
+CDKD_TEST_NOECHO_SEED="${ROTATED_SEED}" CDKD_TEST_SECRET_ECHO=true node "${LOCAL_DIST}" scrub "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --dry-run --fail > "${SECRET_ECHO_LOG}" 2>&1
+rc=$?
+set -e
+log_carries_secret "${SECRET_ECHO_LOG}" && secret_echo_fail "the scrub after --mask-unpositioned printed a secret-echo value (value withheld)"
+[ "${rc}" -eq 0 ] || secret_echo_fail "cdkd scrub --dry-run --fail exited ${rc} after --mask-unpositioned, expected 0 (go-to-k/cdkd#7194)" "${SECRET_ECHO_LOG}"
+grep -qF "orphan record Gone7191" "${SECRET_ECHO_LOG}" \
+  && secret_echo_fail "the scrub after --mask-unpositioned still reports the gone-id orphan (go-to-k/cdkd#7194)" "${SECRET_ECHO_LOG}"
+echo "    OK: --mask-unpositioned masked the gone-id orphan, and cdkd scrub --dry-run --fail exits 0 after it"
 # The records were only plants: drop them, as phase 3b does.
 jq 'del(.orphans) | del(.supersededResources)' <<<"${STATE_SCRUBBED}" > "${SECRET_ECHO_LOG}"
 aws s3 cp "${SECRET_ECHO_LOG}" "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" --quiet
