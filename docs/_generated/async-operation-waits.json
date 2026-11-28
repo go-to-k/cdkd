@@ -2,9 +2,9 @@
   "issue": 7132,
   "total": 173,
   "counts": {
-    "no-wait-by-design": 47,
-    "waits": 118,
-    "unmeasured": 8
+    "no-wait-by-design": 51,
+    "waits": 119,
+    "unmeasured": 3
   },
   "rows": [
     {
@@ -282,8 +282,8 @@
         "src/provisioning/providers/agentcore-evaluator-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "no-wait-by-design",
+        "reason": "settled when AWS answers: the response carries status ACTIVE and GetEvaluator reads ACTIVE on the first read (3 of 3) (#7132)"
       }
     },
     {
@@ -304,8 +304,12 @@
         "src/provisioning/providers/agentcore-runtime-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (it waits only before the delete)"
+        "verdict": "waits",
+        "helpers": [
+          "waitForRuntimeGoneAfterDelete"
+        ],
+        "failureStatuses": [],
+        "note": "every mode; the runtime reads DELETING ~3 min and a same-name create is refused meanwhile; CloudFormation's delete completed once it read not found; a cap, Ctrl-C or unreadable status warns (delete-gone-wait.ts); the failed-create cleanup delete does not wait (#7132)"
       }
     },
     {
@@ -325,8 +329,8 @@
         "src/provisioning/providers/agentcore-evaluator-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "no-wait-by-design",
+        "reason": "settled when AWS answers: GetEvaluator answers not found on the first read and a same-name re-create succeeds at once (3 of 3) (#7132)"
       }
     },
     {
@@ -374,8 +378,8 @@
         "src/provisioning/providers/agentcore-evaluator-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "no-wait-by-design",
+        "reason": "settled when AWS answers: the response carries status ACTIVE and GetEvaluator reads ACTIVE on the first read (3 of 3) (#7132)"
       }
     },
     {
@@ -5015,8 +5019,8 @@
         "src/provisioning/providers/rds-dbproxy-targetgroup-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "no-wait-by-design",
+        "reason": "settled when AWS answers: DescribeDBProxyTargetGroups reads Status available with the new ConnectionPoolConfig on the first read (1 trial) (#7132)"
       }
     },
     {
@@ -5249,7 +5253,7 @@
       ],
       "classification": {
         "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (targets answer REGISTERING)"
+        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B; targets answer UNAVAILABLE / PENDING_PROXY_CAPACITY, and a #7132 A/B target never reached AVAILABLE in 22 min (CloudFormation still in progress), so the terminal time is unknown"
       }
     },
     {

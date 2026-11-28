@@ -112,17 +112,25 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
     ['CREATE_FAILED', 'UPDATE_FAILED'],
     DEFERRED
   ),
-  'bedrock-agentcore-control:CreateEvaluator': unmeasured(NO_WAIT),
-  'bedrock-agentcore-control:DeleteAgentRuntime': unmeasured(
-    `${NO_WAIT} (it waits only before the delete)`
+  'bedrock-agentcore-control:CreateEvaluator': byDesign(
+    'settled when AWS answers: the response carries status ACTIVE and GetEvaluator reads ACTIVE on the first read (3 of 3) (#7132)'
   ),
-  'bedrock-agentcore-control:DeleteEvaluator': unmeasured(NO_WAIT),
+  'bedrock-agentcore-control:DeleteAgentRuntime': waits(
+    ['waitForRuntimeGoneAfterDelete'],
+    [],
+    "every mode; the runtime reads DELETING ~3 min and a same-name create is refused meanwhile; CloudFormation's delete completed once it read not found; a cap, Ctrl-C or unreadable status warns (delete-gone-wait.ts); the failed-create cleanup delete does not wait (#7132)"
+  ),
+  'bedrock-agentcore-control:DeleteEvaluator': byDesign(
+    'settled when AWS answers: GetEvaluator answers not found on the first read and a same-name re-create succeeds at once (3 of 3) (#7132)'
+  ),
   'bedrock-agentcore-control:UpdateAgentRuntime': waits(
     ['waitForRuntimeReady'],
     ['CREATE_FAILED', 'UPDATE_FAILED'],
     DEFERRED
   ),
-  'bedrock-agentcore-control:UpdateEvaluator': unmeasured(NO_WAIT),
+  'bedrock-agentcore-control:UpdateEvaluator': byDesign(
+    'settled when AWS answers: the response carries status ACTIVE and GetEvaluator reads ACTIVE on the first read (3 of 3) (#7132)'
+  ),
   'cloudfront:CreateDistribution': byDesign(
     '`Deployed` changes only when edges serve; the default returns and --full-wait waits (#1282, docs/cli-deploy.md wait table)'
   ),
@@ -520,7 +528,9 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
     ['incompatible-network', 'insufficient-resource-limits'],
     'every mode'
   ),
-  'rds:ModifyDBProxyTargetGroup': unmeasured(NO_WAIT),
+  'rds:ModifyDBProxyTargetGroup': byDesign(
+    'settled when AWS answers: DescribeDBProxyTargetGroups reads Status available with the new ConnectionPoolConfig on the first read (1 trial) (#7132)'
+  ),
   'rds:ModifyDBSubnetGroup': byDesign(
     'settled when AWS answers: the response and the first DescribeDBSubnetGroups read SubnetGroupStatus Complete with the new subnets (3 of 3) (#7132)'
   ),
@@ -657,7 +667,9 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
     ['FAILED', 'DETACHING / DETACHED / no policy after the stale-read grace'],
     "create and update; PENDING / ATTACHING for ~10-15 s; --no-wait skips it (docs/cli-deploy.md); CloudFormation's update completed with the policy ATTACHED (#7132)"
   ),
-  'rds:RegisterDBProxyTargets': unmeasured(`${NO_WAIT} (targets answer REGISTERING)`),
+  'rds:RegisterDBProxyTargets': unmeasured(
+    `${NO_WAIT}; targets answer UNAVAILABLE / PENDING_PROXY_CAPACITY, and a #7132 A/B target never reached AVAILABLE in 22 min (CloudFormation still in progress), so the terminal time is unknown`
+  ),
   'route-53:UpdateHostedZoneComment': byDesign(
     'the call changes only the comment; the flagged feature statuses belong to UpdateHostedZoneFeatures'
   ),

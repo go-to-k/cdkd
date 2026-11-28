@@ -536,12 +536,17 @@ aws route53 wait resource-record-sets-changed --id <change-id>
 | Subnet whose CIDR came from an IPAM pool | Until the pool releases the subnet's allocation (about 19 minutes for an IPv4 block, about 25 for an IPv6 one) |
 | IPAM pool CIDR refused while deleted resources' allocations remain | Until the pool releases them, then delete again |
 | Bedrock AgentCore runtime still `CREATING` or `UPDATING` | Until it leaves that status, then delete (up to 30 minutes) |
+| Bedrock AgentCore runtime after its delete | Until it is gone (about 3 minutes) |
 
 Each wait is there for a reason:
 
 - A Bedrock AgentCore runtime that a `--no-wait` or interrupted deploy left
   `CREATING` or `UPDATING` is waited out before the delete. If the wait runs
   out, or the runtime cannot be read, cdkd sends the delete anyway.
+- A Bedrock AgentCore runtime stays `DELETING` for about 3 minutes and keeps
+  its name, so a deploy right after the destroy, or a replacement, would fail
+  with `ConflictException`. cdkd waits until it is gone, as CloudFormation
+  does, for up to 10 minutes. If this wait runs out, cdkd warns and moves on.
 - A NAT gateway that is still `deleting` blocks the deletes of its subnet,
   internet gateway and VPC with `DependencyViolation`.
 - A VPC endpoint that is still `deleting` keeps its network interfaces, which

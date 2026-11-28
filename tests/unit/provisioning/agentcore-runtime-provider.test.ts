@@ -322,6 +322,10 @@ describe('AgentCoreRuntimeProvider', () => {
         agentRuntimeId: 'runtime-12345',
         status: 'DELETING',
       });
+      // go-to-k/cdkd#7132: the delete waits until the runtime is gone.
+      mockSend.mockRejectedValueOnce(
+        new ResourceNotFoundException({ $metadata: {}, message: 'not found' })
+      );
 
       await provider.delete(
         'MyRuntime',
@@ -329,12 +333,13 @@ describe('AgentCoreRuntimeProvider', () => {
         'AWS::BedrockAgentCore::Runtime'
       );
 
-      expect(mockSend).toHaveBeenCalledTimes(2);
+      expect(mockSend).toHaveBeenCalledTimes(3);
       expect(mockSend.mock.calls[0][0].constructor.name).toBe('GetAgentRuntimeCommand');
 
       const deleteCall = mockSend.mock.calls[1][0];
       expect(deleteCall.constructor.name).toBe('DeleteAgentRuntimeCommand');
       expect(deleteCall.input.agentRuntimeId).toBe('runtime-12345');
+      expect(mockSend.mock.calls[2][0].constructor.name).toBe('GetAgentRuntimeCommand');
     });
 
     it('should skip deletion when runtime does not exist (ResourceNotFoundException)', async () => {

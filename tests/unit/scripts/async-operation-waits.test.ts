@@ -36,13 +36,8 @@ const FIREHOSE_ROOT_ONLY = 'src/provisioning/providers/firehose-provider.ts';
  * pass forever.
  */
 const FROZEN_UNMEASURED: ReadonlySet<string> = new Set([
-  'bedrock-agentcore-control:CreateEvaluator',
-  'bedrock-agentcore-control:DeleteAgentRuntime',
-  'bedrock-agentcore-control:DeleteEvaluator',
-  'bedrock-agentcore-control:UpdateEvaluator',
   'codebuild:CreateWebhook',
   'codebuild:UpdateWebhook',
-  'rds:ModifyDBProxyTargetGroup',
   'rds:RegisterDBProxyTargets',
 ]);
 

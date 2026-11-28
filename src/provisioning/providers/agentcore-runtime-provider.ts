@@ -73,6 +73,7 @@ import {
   keptIdempotentRuntimeNote,
   retireFailedRuntimeCreate,
   waitForRuntimeReady,
+  waitForRuntimeGoneAfterDelete,
   waitForRuntimeSettledBeforeDelete,
   type RuntimeWaitDeps,
 } from './agentcore-runtime/wait.js';
@@ -820,8 +821,6 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
           agentRuntimeId: physicalId,
         })
       );
-
-      this.logger.debug(`Successfully deleted BedrockAgentCore Runtime ${logicalId}`);
     } catch (error) {
       if (error instanceof ResourceNotFoundException) {
         const clientRegion = await this.client.config.region();
@@ -855,6 +854,14 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
         ? markNotGone(thrown)
         : thrown;
     }
+
+    // go-to-k/cdkd#7132: the runtime holds its name while DELETING (~3 min).
+    await waitForRuntimeGoneAfterDelete(
+      { ...this.waitDeps(), logger: this.logger },
+      physicalId,
+      resourceType
+    );
+    this.logger.debug(`Successfully deleted BedrockAgentCore Runtime ${logicalId}`);
   }
 
   /**
