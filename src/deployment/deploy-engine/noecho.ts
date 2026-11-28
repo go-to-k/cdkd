@@ -11,7 +11,6 @@ import {
   maskAtCoordinates,
   maskReadbackAtCoordinates,
   maskWholeValue,
-  maskedLeafCoordinatesOf,
   noEchoCoordinatesOf,
   noEchoLeavesOf,
   noEchoParameterPlaintextsOf,
@@ -305,20 +304,10 @@ export function noEchoLeavesFor(
     // Walked only over the top-level keys holding a mask no recorded
     // coordinate covers: a carried record already healed, or masked only at
     // its own coordinates, walks nothing (it is saved once per resource op).
-    const uncovered =
+    const keys =
       template === undefined || persisted === undefined
-        ? []
-        : maskedLeafCoordinatesOf(persisted).filter(
-            (leaf) =>
-              !existing.some(
-                (marked) =>
-                  marked.length <= leaf.length &&
-                  marked.every((segment, i) => String(segment) === String(leaf[i]))
-              )
-          );
-    const keys = new Set(
-      uncovered.map((leaf) => leaf[0]).filter((key): key is string => typeof key === 'string')
-    );
+        ? new Set<string>()
+        : uncoveredMaskKeysOf(persisted, existing);
     const embedded =
       keys.size === 0
         ? []
@@ -340,6 +329,49 @@ export function noEchoLeavesFor(
     templatePropertiesFor(run, logicalId, record.resourceType);
   if (source === undefined) return undefined;
   return canonicalCoordinates(positionsOf(source));
+}
+
+/**
+ * go-to-k/cdkd#7189: the top-level keys of `bag` holding a whole-leaf mask that
+ * no coordinate in `covered` covers (at or above it). One allocation-free walk:
+ * the path is copied only at a mask, which is rare.
+ */
+function uncoveredMaskKeysOf(bag: unknown, covered: readonly NoEchoCoordinate[]): Set<string> {
+  const keys = new Set<string>();
+  if (bag === null || typeof bag !== 'object' || Array.isArray(bag)) return keys;
+  const path: (string | number)[] = [];
+  const seen = new Set<object>();
+  const isCovered = (): boolean =>
+    covered.some(
+      (marked) =>
+        marked.length <= path.length &&
+        marked.every((segment, i) => String(segment) === String(path[i]))
+    );
+  const walk = (node: unknown): boolean => {
+    if (isMaskLeaf(node)) return !isCovered();
+    if (node === null || typeof node !== 'object' || seen.has(node)) return false;
+    seen.add(node);
+    const step = (segment: string | number, child: unknown): boolean => {
+      path.push(segment);
+      const found = walk(child);
+      path.pop();
+      return found;
+    };
+    if (Array.isArray(node)) {
+      for (let index = 0; index < node.length; index++) if (step(index, node[index])) return true;
+      return false;
+    }
+    for (const key of Object.keys(node)) {
+      if (step(key, (node as Record<string, unknown>)[key])) return true;
+    }
+    return false;
+  };
+  for (const [key, value] of Object.entries(bag)) {
+    path.push(key);
+    if (walk(value)) keys.add(key);
+    path.pop();
+  }
+  return keys;
 }
 
 function templatePropertiesFor(
