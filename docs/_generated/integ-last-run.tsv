@@ -454,7 +454,7 @@ replacement-immutable-name	2026-11-16T08:22:27Z	PASS	140	verify.sh	rc ok, orph c
 replacement-rename-onto-holder	2026-11-16T08:22:27Z	PASS	636	verify.sh	rc ok, orph clean (#6374 sweep)
 require-approval-broadening	2026-11-04T17:48:59Z	PASS	81	verify.sh	rc ok, destroy 0 errors, orph clean (state keys + IAM/Lambda/log groups), own state bucket; main-based re-run on wrasse
 retain-orphan-redeploy	2026-11-20T19:04:37Z	PASS	201	verify.sh	rc ok, orph clean, own state bucket, head 870be8d13 (#6702)
-retain-orphan-secret	2026-11-28T01:38:10Z	PASS	130	verify.sh	PR7168 49bc28993 us-east-1 rc ok, orph clean, 0 surviving versions
+retain-orphan-secret	2026-11-28T04:02:07Z	PASS	130	verify.sh	rc 0, 0 orphans, 0 versions; #7167 @65fe4a6ae
 rollback-attribute-only-revert	2026-11-18T05:18:35Z	PASS	90	verify.sh	rc ok, orph clean (PR #6531)
 rollback-command	2026-11-24T14:31:41Z	PASS	890	verify.sh	rc ok, orph clean (#6933 sweep)
 rollback-cross-region-secret	2026-11-20T11:50:48Z	PASS	298	verify.sh	PR6652 be63cc056, us-west-2+us-east-1; own state bucket (deleted); rc 0, kept identity x2, orph clean
@@ -503,7 +503,7 @@ schema-v6-to-v7-migration	2026-11-04T05:36:33Z	PASS	59	verify.sh	batch 4; transp
 schema-v7-to-v8-migration	2026-11-04T05:01:38Z	PASS	135	verify.sh	rc ok, orph clean; current-binary phase asserts derived version 15 (#5733)
 schema-v8-to-v9-migration	2026-11-04T05:01:38Z	PASS	165	verify.sh	rc ok, orph clean; derived-version assert (#5733); own state bucket
 schema-v9-to-v10-migration	2026-11-04T19:35:08Z	PASS	140	verify.sh	rc ok, orph clean
-scrub-nested-child	2026-11-28T01:42:49Z	PASS	246	verify.sh	PR7168 49bc28993 us-east-1 rc ok, orph clean, 0 surviving versions
+scrub-nested-child	2026-11-28T04:07:01Z	PASS	256	verify.sh	rc 0, 0 orphans, 0 versions; #7167 @65fe4a6ae
 sdk-ccapi-crossref	2026-11-18T22:09:14Z	PASS	136	verify.sh	rc ok, destroy 0 errors, orph clean; Discoverer as the CC type; at f07e65185 (#6579)
 sdk-to-cc-autoroute	2026-11-07T08:40:09Z	PASS	235	verify.sh	PR #5946 f7e8b6577 rc ok, orph clean
 sdk-to-cc-identifier	2026-11-25T06:59:42Z	PASS	70	verify.sh	rc ok, orph clean; rerun at dc81f732f (#6976)
