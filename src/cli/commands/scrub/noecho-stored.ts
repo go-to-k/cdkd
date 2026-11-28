@@ -11,6 +11,7 @@ import {
 import { noEchoAttributeNamesOf } from '../../../deployment/deploy-engine/noecho.js';
 import { isSupersededResourceRecord } from '../../../deployment/superseded-resources.js';
 import { safeMsg } from '../../../utils/display-safe.js';
+import { nullPrototypeRecord } from '../../../utils/own-keys.js';
 import type { ResourceState, StackState } from '../../../types/state.js';
 import type { CloudFormationTemplate } from '../../../types/resource.js';
 import {
@@ -112,12 +113,12 @@ function holdsUnmaskedLeaf(value: unknown): boolean {
  * Fn::If is read on both branches (`sources` carries no condition verdicts):
  * the verdicts that wrote an old record are unknown, and masking the other
  * branch's position is the safe direction for state at rest. For the same
- * reason a TEMPLATE coordinate positioned only through an `Fn::If` is no
- * migration needle when its value is a string literal of some `Fn::If`
- * branch (the live record's positions, taken as they are, stay needles): the
- * value may be the other branch's public literal, and a needle would mask
- * that literal's copies elsewhere in the record by value. A value no branch
- * spells out (both branches `NoEcho`, or one `AWS::NoValue`) stays a needle.
+ * reason a TEMPLATE coordinate is a migration needle only when a `NoEcho`
+ * source fills it under EVERY verdict of its `Fn::If` conditions (an
+ * `AWS::NoValue` branch counting as the other branch); the live record's
+ * positions, taken as they are, stay needles. Under a verdict that fills it
+ * from a public value, the stored value may be that value, and a needle would
+ * mask its copies elsewhere in the record by value.
  */
 export function planScrubStoredNoEcho(
   state: Pick<StackState, 'resources'>,
@@ -152,7 +153,7 @@ export function planScrubStoredNoEcho(
     const liveLeaves =
       live?.resourceType === record.resourceType ? noEchoLeavesOf(live) : undefined;
     let leaves: NoEchoCoordinate[] | undefined;
-    let needleAt: ((coordinate: NoEchoCoordinate, value: unknown) => boolean) | undefined;
+    let needleAt: ((coordinate: NoEchoCoordinate) => boolean) | undefined;
     if (own !== undefined) {
       leaves = canonicalCoordinates(own);
     } else if (definition?.Type === record.resourceType) {
@@ -161,22 +162,8 @@ export function planScrubStoredNoEcho(
           maskedAt: record.properties,
         })
       );
-      const keysFrom = (properties: unknown): Set<string> =>
-        new Set(
-          canonicalCoordinates(
-            noEchoCoordinatesOf(properties, record.properties, needleSources, undefined, {
-              maskedAt: record.properties,
-            })
-          ).map((coordinate) => JSON.stringify(coordinate))
-        );
-      const unconditional = keysFrom(withoutFnIf(definition.Properties));
-      const anyBranch = keysFrom(definition.Properties);
-      const literals = fnIfStringLiterals(definition.Properties);
-      needleAt = (coordinate, value) => {
-        const key = JSON.stringify(coordinate);
-        if (unconditional.has(key)) return true;
-        return anyBranch.has(key) && !(typeof value === 'string' && literals.has(value));
-      };
+      const needles = needleCoordinatesOf(definition.Properties, record.properties, needleSources);
+      needleAt = (coordinate) => needles.has(JSON.stringify(coordinate));
     } else if (liveLeaves !== undefined) {
       leaves = canonicalCoordinates(liveLeaves);
     }
@@ -210,7 +197,7 @@ export function planScrubStoredNoEcho(
       stored.push({
         coordinate,
         value,
-        needle: needleAt === undefined || needleAt(coordinate, value),
+        needle: needleAt === undefined || needleAt(coordinate),
       });
     }
     byKey.set(row.key, { leaves, stored, attributeNames });
@@ -228,21 +215,79 @@ export function planScrubStoredNoEcho(
   return { byKey, changesAny, unverifiable };
 }
 
-/** Every string literal under an `Fn::If` branch in `node`. */
-function fnIfStringLiterals(node: unknown, out = new Set<string>(), under = false): Set<string> {
-  if (typeof node === 'string') {
-    if (under) out.add(node);
-  } else if (Array.isArray(node)) {
-    for (const item of node) fnIfStringLiterals(item, out, under);
-  } else if (node !== null && typeof node === 'object') {
-    for (const [key, inner] of Object.entries(node as Record<string, unknown>)) {
-      if (key === 'Fn::If' && Array.isArray(inner)) {
-        for (const branch of inner.slice(1)) fnIfStringLiterals(branch, out, true);
-      } else {
-        fnIfStringLiterals(inner, out, under);
-      }
-    }
+/** Past this many `Fn::If` condition names, no position reached through one is a needle. */
+const MAX_NEEDLE_CONDITIONS = 6;
+
+/**
+ * The coordinates (JSON keys) a `NoEcho` source fills under EVERY verdict of
+ * the `Fn::If` conditions in `properties`: a position some verdict fills from
+ * a public value (a literal, a public parameter, an attribute) is no needle.
+ * An `AWS::NoValue` branch takes the other branch, as that verdict leaves the
+ * property absent and the record holds a value there.
+ */
+function needleCoordinatesOf(
+  properties: unknown,
+  stored: unknown,
+  sources: NoEchoPositionSources
+): Set<string> {
+  const names = new Set<string>();
+  const collapsed = collapseNoValueBranches(properties, names);
+  const keysUnder = (template: unknown, conditions?: Record<string, boolean>): Set<string> =>
+    new Set(
+      canonicalCoordinates(
+        noEchoCoordinatesOf(
+          template,
+          stored,
+          conditions === undefined ? sources : { ...sources, conditions },
+          undefined,
+          { maskedAt: stored }
+        )
+      ).map((coordinate) => JSON.stringify(coordinate))
+    );
+  if (names.size > MAX_NEEDLE_CONDITIONS) return keysUnder(withoutFnIf(collapsed));
+  const list = [...names];
+  let needles: Set<string> | undefined;
+  for (let verdicts = 0; verdicts < 2 ** list.length; verdicts++) {
+    const conditions = Object.fromEntries(
+      list.map((name, i) => [name, (verdicts & (1 << i)) !== 0])
+    );
+    const keys = keysUnder(collapsed, conditions);
+    needles = needles === undefined ? keys : new Set([...needles].filter((key) => keys.has(key)));
   }
+  return needles ?? new Set();
+}
+
+/**
+ * `node` with an `Fn::If` one of whose branches is `{ Ref: 'AWS::NoValue' }`
+ * replaced by its other branch; every condition name an `Fn::If` reads is
+ * added to `names`, and one that names none by a string is dropped (`null`).
+ */
+function collapseNoValueBranches(node: unknown, names: Set<string>): unknown {
+  if (Array.isArray(node)) return node.map((item) => collapseNoValueBranches(item, names));
+  if (node === null || typeof node !== 'object') return node;
+  const record = node as Record<string, unknown>;
+  const branches = record['Fn::If'];
+  if (Object.keys(record).length === 1 && Array.isArray(branches)) {
+    const [condition, whenTrue, whenFalse] = branches as unknown[];
+    if (typeof condition !== 'string' || branches.length !== 3) return null;
+    const noValue = (branch: unknown): boolean =>
+      branch !== null &&
+      typeof branch === 'object' &&
+      (branch as Record<string, unknown>)['Ref'] === 'AWS::NoValue';
+    if (noValue(whenFalse)) return collapseNoValueBranches(whenTrue, names);
+    if (noValue(whenTrue)) return collapseNoValueBranches(whenFalse, names);
+    names.add(condition);
+    return {
+      'Fn::If': [
+        condition,
+        collapseNoValueBranches(whenTrue, names),
+        collapseNoValueBranches(whenFalse, names),
+      ],
+    };
+  }
+  const out: Record<string, unknown> = nullPrototypeRecord();
+  for (const [key, inner] of Object.entries(record))
+    out[key] = collapseNoValueBranches(inner, names);
   return out;
 }
 

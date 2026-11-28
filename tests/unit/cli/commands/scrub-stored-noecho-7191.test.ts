@@ -158,6 +158,38 @@ describe('cdkd scrub - NoEcho plaintext in an orphan or superseded record (go-to
     expect(orphan.noEchoLeaves).toEqual([['Password']]);
   });
 
+  it('takes no needle from an Fn::If position whose other branch is a public parameter', async () => {
+    const pub = 'public-param-7191';
+    const info = stackInfo();
+    info.template.Parameters!['Pub'] = { Type: 'String', Default: pub };
+    info.template.Conditions = { UseSecret: { 'Fn::Equals': ['a', 'a'] } };
+    info.template.Resources!['Db']!.Properties!['Password'] = {
+      'Fn::If': ['UseSecret', { Ref: 'Pw' }, { Ref: 'Pub' }],
+    };
+    const { saved } = await scrub(
+      stateWith({ orphans: [{ logicalId: 'Db', orphanedAt: 1, state: preV11(pub) }] }),
+      info
+    );
+    expect(saved!.orphans![0]!.state.properties).toEqual({
+      Password: '***',
+      Name: 'public',
+      Note: `note-${pub}`,
+    });
+  });
+
+  it('keeps an Fn::If position a needle when its other branch is AWS::NoValue', async () => {
+    const info = stackInfo();
+    info.template.Conditions = { UseSecret: { 'Fn::Equals': ['a', 'a'] } };
+    info.template.Resources!['Db']!.Properties!['Password'] = {
+      'Fn::If': ['UseSecret', { Ref: 'Pw' }, { Ref: 'AWS::NoValue' }],
+    };
+    const { saved } = await scrub(
+      stateWith({ orphans: [{ logicalId: 'Db', orphanedAt: 1, state: preV11(LONG) }] }),
+      info
+    );
+    expect(saved!.orphans![0]!.state.properties['Note']).toBe('***');
+  });
+
   it('keeps an Fn::If position a needle when no branch spells its value out', async () => {
     const info = stackInfo();
     info.template.Parameters!['Pw2'] = { Type: 'String', NoEcho: true, Default: SHORT };

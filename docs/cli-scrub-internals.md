@@ -576,10 +576,11 @@ A `NoEcho` parameter's value is masked the way a `cdkd deploy` stores it (see
   positions are the ones it names itself, else the ones today's template names
   for its logical id when the template declares it as the same type, else the
   ones the live record of that logical id and type names. An `Fn::If` is read
-  on both branches. A template position reached only through one is masked,
-  but its value is no needle for the rest of the record when it equals a
-  string literal of an `Fn::If` branch (it may be the other branch's public
-  literal). A record none of these position is not masked by value: it
+  on both branches. A template position is a needle for the rest of the
+  record only when a `NoEcho` source fills it under every verdict of its
+  `Fn::If` conditions (an `AWS::NoValue` branch counts as the other branch):
+  under a verdict that fills it from a public value, the stored value may be
+  that value. A record none of these position is not masked by value: it
   is reported, with or without `--dry-run`, without failing `--fail`
   ([A leftover record has no known NoEcho positions](cli-scrub-findings.md#a-leftover-record-has-no-known-noecho-positions)).
   An unchanged `cdkd deploy` also saves a positioned orphan or superseded
