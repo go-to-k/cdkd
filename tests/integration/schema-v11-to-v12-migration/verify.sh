@@ -517,8 +517,14 @@ if [ "${REDEPLOY_LOOKUPS_1}" -ge "${MIGRATION_LOOKUPS}" ]; then
   fail "v12 redeploy 1: ${REDEPLOY_LOOKUPS_1} GetSecretValue call(s), not fewer than the migration's ${MIGRATION_LOOKUPS} — the capture ran again"
 fi
 pass "v12 redeploy 1: ${REDEPLOY_LOOKUPS_1} GetSecretValue call(s), fewer than the migration's ${MIGRATION_LOOKUPS}"
-assert_eq "v12 redeploys: the steady state's call logs are identical" \
-  "$(call_counts "${CALLS_DIR}/redeploy-1.json")" "$(call_counts "${CALLS_DIR}/redeploy-2.json")"
+# S3 PutObject is left out: the deployment-event stream is re-PUT once per
+# DEBOUNCED flush, so its count follows the run's timing (one redeploy made 4,
+# the next 3; #7201). A state.json write is caught by the version count above.
+steady_call_counts() { # <calls file>
+  call_counts "$1" | jq -cS 'del(."S3Client.PutObjectCommand")'
+}
+assert_eq "v12 redeploys: the steady state's call logs (S3 PutObject aside) are identical" \
+  "$(steady_call_counts "${CALLS_DIR}/redeploy-1.json")" "$(steady_call_counts "${CALLS_DIR}/redeploy-2.json")"
 fetch_state "v12 redeploy"
 assert_eq "v12 redeploy: Queue's provenance is unchanged" \
   "$(jq -cS --arg t "${QUEUE_TOKEN}" '.resources.Queue.referenceProvenance[$t] // "absent"' "${STATE_FILE}")" \
