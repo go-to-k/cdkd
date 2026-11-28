@@ -72,6 +72,9 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 # ---------------------------------------------------------------------------
 
 . ../s3-versions.sh
+# The NEW binary writes the LOWEST schema version a record's shape needs, not
+# its newest one (state-schema-version.sh, #7178, #7201).
+. ../state-schema-version.sh
 
 STACK="CdkdSchemaV15ToV16Migration"
 REGION="${AWS_REGION:-us-east-1}"
@@ -241,6 +244,19 @@ assert_version() { # <label> <expected>
   assert_eq "$1: state.version" "$(state_field '.version')" "$2"
 }
 
+# The version the NEW binary writes is derived from the record's shape
+# (16 / 17 / 18, stateSchemaVersionFor), never the binary's newest: a migration
+# deploy of a record with no NoEcho MAC and no attestation stays 16 (#7201).
+assert_version_by_shape() { # <label>
+  local expected
+  expected="$(expected_state_schema_version "${STATE_FILE}")"
+  if [ -z "${expected}" ]; then
+    echo "FAIL: $1: could not derive the expected schema version from state.json" >&2
+    exit 1
+  fi
+  assert_version "$1 (the version its records' shape needs: 18 versionsSent / 17 noEchoValueMacs / 16)" "${expected}"
+}
+
 # The VersionId of the CURRENT state.json object — strict (a write moves it).
 state_version_id() {
   local out
@@ -375,7 +391,7 @@ export CDKD_TEST_UPDATE=true
 run_cdkd ok "local migration deploy" "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 fetch_state "local migration deploy"
-assert_version "local migration deploy" "${LOCAL_SCHEMA_VERSION}"
+assert_version_by_shape "local migration deploy"
 assert_eq "local migration deploy: stackIdFromInstance is ABSENT (the existing record keeps its tail)" \
   "$(state_field 'has("stackIdFromInstance")')" "false"
 STACK_ID_V16="$(state_field '.outputs.StackIdOut')"

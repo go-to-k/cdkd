@@ -59,6 +59,9 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 # ---------------------------------------------------------------------------
 
 cd "$(dirname "$0")"
+# The NEW binary writes the LOWEST schema version a record's shape needs, not
+# its newest one (state-schema-version.sh, #7178, #7201).
+. ../state-schema-version.sh
 
 PRODUCER_STACK="CdkdSchemaV7ToV8MigrationProducer"
 CONSUMER_STACK="CdkdSchemaV7ToV8MigrationConsumer"
@@ -236,12 +239,18 @@ CDKD_TEST_SCHEMA_PHASE=v8 node "${LOCAL_DIST}" deploy "${CONSUMER_STACK}" \
 
 CONSUMER_V8_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${CONSUMER_STATE_KEY}" - 2>/dev/null)
 CONSUMER_V8_VERSION=$(echo "${CONSUMER_V8_STATE}" | jq -r '.version')
-if [ "${CONSUMER_V8_VERSION}" != "${LOCAL_SCHEMA_VERSION}" ]; then
-  echo "FAIL: consumer state.version after v8 deploy is ${CONSUMER_V8_VERSION}, expected ${LOCAL_SCHEMA_VERSION}" >&2
+# The local binary writes the version the record's shape needs, not its newest (#7201).
+CONSUMER_V8_EXPECTED=$(printf '%s\n' "${CONSUMER_V8_STATE}" | expected_state_schema_version -)
+if [ -z "${CONSUMER_V8_EXPECTED}" ]; then
+  echo "FAIL: could not derive the expected schema version from the consumer's state.json" >&2
+  exit 1
+fi
+if [ "${CONSUMER_V8_VERSION}" != "${CONSUMER_V8_EXPECTED}" ]; then
+  echo "FAIL: consumer state.version after v8 deploy is ${CONSUMER_V8_VERSION}, expected ${CONSUMER_V8_EXPECTED} (the version its records' shape needs: 18 versionsSent / 17 noEchoValueMacs / 16)" >&2
   echo "${CONSUMER_V8_STATE}" | jq .
   exit 1
 fi
-echo "    OK: consumer state.version == ${LOCAL_SCHEMA_VERSION} after v8 deploy (transparent upgrade)"
+echo "    OK: consumer state.version == ${CONSUMER_V8_EXPECTED} after v8 deploy (transparent upgrade, the version its records' shape needs)"
 
 # The v8 binary must have populated outputReads with one entry that
 # names the producer + region + output. This is the load-bearing
