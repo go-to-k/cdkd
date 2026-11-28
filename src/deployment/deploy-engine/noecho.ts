@@ -268,6 +268,11 @@ export function noEchoPositionSources(
  *   for the same logical id and type: the migration of a record this deploy
  *   did not reach. Over-masking a leaf that no longer reads one only costs
  *   the next deploy a re-send; leaving one unmasked would keep the plaintext.
+ *
+ * `persisted` (the bag as saved, go-to-k/cdkd#7189) also positions a leaf
+ * that EMBEDS a declared `NoEcho` attribute where the containment rule
+ * masked it whole; every branch reads it, so a record an older binary wrote
+ * gains the coordinate on its next save.
  */
 export function noEchoLeavesFor(
   run: NoEchoRunState,
@@ -275,16 +280,30 @@ export function noEchoLeavesFor(
   logicalId: string,
   record: ResourceState,
   templateProps: Record<string, unknown> | undefined,
-  sources: NoEchoPositionSources
+  sources: NoEchoPositionSources,
+  persisted?: unknown
 ): (string | number)[][] | undefined {
+  const positionsOf = (template: unknown, only = false): NoEchoCoordinate[] =>
+    noEchoCoordinatesOf(
+      template,
+      record.properties,
+      sources,
+      undefined,
+      persisted === undefined ? undefined : { maskedAt: persisted, only }
+    );
   if (templateProps !== undefined && isWrittenFromDeployedTemplate(record.properties)) {
-    return canonicalCoordinates(noEchoCoordinatesOf(templateProps, record.properties, sources));
+    return canonicalCoordinates(positionsOf(templateProps));
   }
   const existing = noEchoLeavesOf(record);
   if (existing !== undefined) {
-    // Plus every leaf the migration witness confirmed this deploy (#4831).
+    // Plus every leaf the migration witness confirmed this deploy (#4831),
+    // and every embedded leaf today's template positions where the record
+    // holds the mask (#7189).
     const confirmed = run.witnessConfirmedLeaves.get(logicalId) ?? [];
-    return canonicalCoordinates([...existing, ...confirmed]);
+    const template = templatePropertiesFor(run, logicalId, record.resourceType);
+    const embedded =
+      template === undefined || persisted === undefined ? [] : positionsOf(template, true);
+    return canonicalCoordinates([...existing, ...confirmed, ...embedded]);
   }
   // The bag THIS deploy resolved describes the record only when it was
   // resolved as the record's own type (a failed Type change did not write it).
@@ -293,7 +312,7 @@ export function noEchoLeavesFor(
     (templateProps !== undefined && resolvedAsSame ? templateProps : undefined) ??
     templatePropertiesFor(run, logicalId, record.resourceType);
   if (source === undefined) return undefined;
-  return canonicalCoordinates(noEchoCoordinatesOf(source, record.properties, sources));
+  return canonicalCoordinates(positionsOf(source));
 }
 
 function templatePropertiesFor(
@@ -471,7 +490,15 @@ export function applyNoEchoPersist(
   scrubbed = withNoEchoItemsMasked(run, deps, logicalId, scrubbed);
   const sources = noEchoPositionSources(run, resources);
   if (sources === undefined) return scrubbed;
-  const leaves = noEchoLeavesFor(run, deps, logicalId, record, templateProps, sources);
+  const leaves = noEchoLeavesFor(
+    run,
+    deps,
+    logicalId,
+    record,
+    templateProps,
+    sources,
+    scrubbed.properties
+  );
   const names = noEchoAttributeNamesFor(run, logicalId, record, carried, leaves);
   if (leaves === undefined && names === undefined) return scrubbed;
   const next: ResourceState = { ...scrubbed };

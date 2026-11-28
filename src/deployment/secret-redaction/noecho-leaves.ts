@@ -159,15 +159,23 @@ function literalIndex(index: unknown): number | undefined {
  *
  * `onCoordinate` also hands each coordinate's TEMPLATE node to a caller that
  * re-resolves it (go-to-k/cdkd#4682); the returned list is unchanged by it.
+ *
+ * `embedded.maskedAt` (go-to-k/cdkd#7189), the bag as PERSISTED: a leaf that
+ * EMBEDS a declared `NoEcho` attribute is positioned too, but only where that
+ * bag already holds it wholly as the mask (the value arm's containment rule
+ * masked it). A leaf it spared stays unpositioned, so nothing new is masked.
+ * `embedded.only` returns those coordinates alone.
  */
 export function noEchoCoordinatesOf(
   template: unknown,
   resolved: unknown,
   sources: NoEchoPositionSources,
-  onCoordinate?: (coordinate: NoEchoCoordinate, templateNode: unknown) => void
+  onCoordinate?: (coordinate: NoEchoCoordinate, templateNode: unknown) => void,
+  embedded?: { readonly maskedAt: unknown; readonly only?: boolean }
 ): NoEchoCoordinate[] {
   const coordinates: NoEchoCoordinate[] = [];
-  const push = (path: NoEchoCoordinate, node: unknown): void => {
+  const push = (path: NoEchoCoordinate, node: unknown, isEmbedded = false): void => {
+    if (embedded?.only === true && !isEmbedded) return;
     coordinates.push(path);
     onCoordinate?.(path, node);
   };
@@ -180,7 +188,18 @@ export function noEchoCoordinatesOf(
     isPlainObject(node) &&
     intrinsicKeyOf(node) === 'Fn::GetAtt' &&
     getAttReadsNoEcho(node['Fn::GetAtt'], sources);
-  const walk = (source: unknown, value: unknown, path: (string | number)[]): void => {
+  const embedsMasked = (node: unknown, path: NoEchoCoordinate): boolean =>
+    embedded !== undefined &&
+    sources.attributeIsNoEcho !== undefined &&
+    isWhollyMask(valueAtCoordinate(embedded.maskedAt, path)) &&
+    readsNoEchoSource(node, sources);
+  // A leaf a parameter or a bare declared `GetAtt` positions, else one the
+  // containment rule masked (`embedsMasked`).
+  const pushIfReads = (path: NoEchoCoordinate, node: unknown, positioned: boolean): void => {
+    if (positioned) push(path, node);
+    else if (embedsMasked(node, path)) push(path, node, true);
+  };
+  const walk =(source: unknown, value: unknown, path: (string | number)[]): void => {
     if (value === undefined) return;
     if (source === null || typeof source !== 'object') return;
     if (ancestors.has(source)) return;
@@ -190,8 +209,12 @@ export function noEchoCoordinatesOf(
         if (!readsNoEchoSource(source, sources)) return;
         if (Array.isArray(value) && value.length === source.length) {
           source.forEach((item, index) => walk(item, value[index], [...path, index]));
-        } else if (readsNoEchoSource(source, parametersOnly) || source.some(isBareDeclaredGetAtt)) {
-          push(path, source);
+        } else {
+          pushIfReads(
+            path,
+            source,
+            readsNoEchoSource(source, parametersOnly) || source.some(isBareDeclaredGetAtt)
+          );
         }
         return;
       }
@@ -199,7 +222,7 @@ export function noEchoCoordinatesOf(
       const intrinsic = intrinsicKeyOf(record);
       if (intrinsic === undefined) {
         if (!isPlainObject(value)) {
-          if (readsNoEchoSource(record, parametersOnly)) push(path, source);
+          pushIfReads(path, source, readsNoEchoSource(record, parametersOnly));
           return;
         }
         for (const [key, child] of Object.entries(record)) {
@@ -239,12 +262,13 @@ export function noEchoCoordinatesOf(
       // position adds the values it cannot key (a `Number`, one under the
       // needle floor). A leaf that embeds one (`Fn::Join`, `Fn::Sub`) is left
       // to the value arm's containment rule, which spares an echoed PUBLIC
-      // value (the region, the stack name) that position cannot tell apart.
+      // value (the region, the stack name) that position cannot tell apart;
+      // `maskedAt` positions it where that rule DID mask it (#7189).
       if (intrinsic === 'Fn::GetAtt') {
         if (getAttReadsNoEcho(record['Fn::GetAtt'], sources)) push(path, source);
         return;
       }
-      if (readsNoEchoSource(record, parametersOnly)) push(path, source);
+      pushIfReads(path, source, readsNoEchoSource(record, parametersOnly));
     } finally {
       ancestors.delete(source);
     }

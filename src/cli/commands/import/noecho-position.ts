@@ -72,8 +72,17 @@ export function positionImportedNoEcho(
       let leaves = failed.get(id);
       if (leaves === undefined) {
         try {
+          // go-to-k/cdkd#7189: plus a leaf embedding a declared attribute
+          // that the record already holds wholly as the mask.
+          const held = Object.hasOwn(resources, id) ? resources[id]!.properties : undefined;
           leaves = canonicalCoordinates(
-            noEchoCoordinatesOf(input.template, input.resolved, sources)
+            noEchoCoordinatesOf(
+              input.template,
+              input.resolved,
+              sources,
+              undefined,
+              held === undefined ? undefined : { maskedAt: held }
+            )
           );
         } catch (err) {
           logger.debug(

@@ -356,8 +356,24 @@ export async function resolveUpdateInputs(
   // parameter, or the reference replaced by an equal literal). The mask
   // proves nothing about the value, so the leaf is read back like a
   // parameter's, never replaced on the mask's word.
-  const staleCoordinates = (noEchoLeavesOf(currentResource) ?? []).filter((coordinate) => {
-    if (noEchoCoordinates.some((known) => keyOrderFreeJson(known) === keyOrderFreeJson(coordinate)))
+  // go-to-k/cdkd#7189: a leaf that EMBEDS a declared `NoEcho` attribute, held
+  // as the mask, is still served by its source: never stale, or the skip
+  // below would settle it to today's plaintext. It joins this set only, not
+  // the comparison's: the value arm masks it there, as before.
+  const recordedLeaves = noEchoLeavesOf(currentResource) ?? [];
+  const embeddedCoordinates =
+    recordedLeaves.length === 0 || noEchoSources?.attributeIsNoEcho === undefined
+      ? []
+      : noEchoCoordinatesOf(
+          desiredProps,
+          resolvedProps,
+          { parameters: new Set(), attributeIsNoEcho: noEchoSources.attributeIsNoEcho },
+          undefined,
+          { maskedAt: currentProps, only: true }
+        );
+  const knownSources = [...noEchoCoordinates, ...embeddedCoordinates];
+  const staleCoordinates = recordedLeaves.filter((coordinate) => {
+    if (knownSources.some((known) => keyOrderFreeJson(known) === keyOrderFreeJson(coordinate)))
       return false;
     return isStaleNoEchoLeaf(currentProps, resolvedProps, coordinate);
   });
