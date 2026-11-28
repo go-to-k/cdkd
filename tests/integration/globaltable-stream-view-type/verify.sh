@@ -6,10 +6,13 @@
 #   1. deploy NEW_IMAGE with a Lambda consumer -> the mapping reads the stream
 #   2. NEW_AND_OLD_IMAGES                      -> a new stream arn, the
 #      mapping moved onto it (issue #6999), state records it, drift clean
-#   2b. Kinesis precision MILLISECOND -> MICROSECOND (go-to-k/cdkd#7132) ->
-#      the destination reads ACTIVE with MICROSECOND right after the deploy
-#   2c. back to MILLISECOND at once            -> succeeds (DynamoDB refuses an
-#      update to a destination still UPDATING) and reads ACTIVE MILLISECOND
+#   2b. Kinesis precision MILLISECOND -> MICROSECOND under --no-wait
+#      (go-to-k/cdkd#7132) -> the deploy returns with the destination
+#      UPDATING (ACTIVE is accepted and recorded: then 2c cannot reach the
+#      pre-send wait)
+#   2c. back to MILLISECOND at once, default wait -> succeeds (DynamoDB
+#      refuses an update to a destination still UPDATING, so the update waits
+#      for ACTIVE before it sends) and reads ACTIVE MILLISECOND
 #   3. destroy                                 -> table, mapping, function,
 #      Kinesis stream and state gone
 
@@ -146,9 +149,12 @@ echo "    OK: drift clean"
 # --- Phases 2b-2c: Kinesis precision updates settle (go-to-k/cdkd#7132) -----
 # UpdateKinesisStreamingDestination leaves the destination UPDATING for
 # minutes (CloudFormation's update took ~137 s, measured), and DynamoDB
-# refuses another update until it is ACTIVE. The update now waits, so ONE
-# read right after each deploy returns must show ACTIVE with the new
-# precision, and 2c, sent the moment 2b returns, must succeed.
+# refuses another update until it is ACTIVE. 2b deploys under --no-wait, which
+# skips the post-update wait, so it returns with the destination UPDATING;
+# 2c, sent the moment 2b returns under the default wait, must then wait for
+# ACTIVE BEFORE it sends (waitForKinesisUpdatable runs under --no-wait too),
+# succeed, and read ACTIVE with its precision right after it returns (the
+# post-update wait).
 kinesis_destination() { # -> "<status>|<precision>" of the one destination
   local out
   out=$(aws dynamodb describe-kinesis-streaming-destination --table-name "${TABLE}" --region "${REGION}" \
@@ -158,13 +164,20 @@ kinesis_destination() { # -> "<status>|<precision>" of the one destination
 }
 P2B_BEFORE="$(kinesis_destination)" || { echo "FAIL: Phase 2b: describe-kinesis-streaming-destination failed" >&2; exit 1; }
 [ "${P2B_BEFORE}" = "ACTIVE|MILLISECOND" ] || { echo "FAIL: Phase 2b premise: the destination reads '${P2B_BEFORE}', expected ACTIVE|MILLISECOND" >&2; exit 1; }
-echo "==> Phase 2b: Kinesis precision MILLISECOND -> MICROSECOND (go-to-k/cdkd#7132)"
+echo "==> Phase 2b: Kinesis precision MILLISECOND -> MICROSECOND under --no-wait (go-to-k/cdkd#7132)"
 CDKD_TEST_UPDATE=viewtype,micro node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --no-wait --yes
 P2B_AFTER="$(kinesis_destination)" || { echo "FAIL: Phase 2b: describe-kinesis-streaming-destination failed" >&2; exit 1; }
-[ "${P2B_AFTER}" = "ACTIVE|MICROSECOND" ] || { echo "FAIL: Phase 2b: right after the deploy returned the destination reads '${P2B_AFTER}', expected ACTIVE|MICROSECOND (the update returned before it settled)" >&2; exit 1; }
-echo "    OK: Phase 2b: the destination read ACTIVE|MICROSECOND right after the deploy"
-echo "==> Phase 2c: back to MILLISECOND at once (go-to-k/cdkd#7132)"
+case "${P2B_AFTER}" in
+  UPDATING\|*)
+    echo "    OK: Phase 2b: the --no-wait deploy returned with the destination '${P2B_AFTER}'; 2c is sent while it is UPDATING" ;;
+  "ACTIVE|MICROSECOND")
+    echo "    NOTE: Phase 2b: the destination already read ACTIVE|MICROSECOND right after the --no-wait deploy; 2c does NOT exercise the pre-send wait this run" ;;
+  *)
+    echo "FAIL: Phase 2b: right after the --no-wait deploy the destination reads '${P2B_AFTER}', expected UPDATING|<any> or ACTIVE|MICROSECOND" >&2
+    exit 1 ;;
+esac
+echo "==> Phase 2c: back to MILLISECOND at once, default wait (go-to-k/cdkd#7132)"
 CDKD_TEST_UPDATE=viewtype,micro,back node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 P2C_AFTER="$(kinesis_destination)" || { echo "FAIL: Phase 2c: describe-kinesis-streaming-destination failed" >&2; exit 1; }

@@ -147,6 +147,11 @@ cleanup() {
   rm -f "${IMPORT_MAP:-}" "${IMPORT_STDERR:-}" "${IMPORT_STDOUT:-}" 2>/dev/null || true
   rm -f "${PIPE_DRIFT_JSON:-}" 2>/dev/null || true
   rm -f "${DESTROY_LOG:-}" 2>/dev/null || true
+  # Phases 2.7d-2.7e's call-log directory: its `rm -rf` on the normal path
+  # never runs on a FAIL exit or a signal. Only the mktemp-shaped name.
+  case "${INSYNC_DIR:-}" in
+    */cdkd-route53-7132.?*) rm -rf "${INSYNC_DIR}" 2>/dev/null || true ;;
+  esac
   # `set +eu` so an early-exit (e.g. STATE_BUCKET unset) does not abort
   # cleanup on the first `"${STATE_BUCKET}"` expansion — best-effort
   # cleanup should run as much as it can with the env it has.

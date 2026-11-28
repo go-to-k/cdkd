@@ -577,6 +577,8 @@ export const SEND_SITE_EXEMPTIONS: Readonly<Record<string, string>> = {
   [`dynamodb:DeleteTable ${P}dynamodb-globaltable/create-support.ts rollBackCreatedVectorTable`]:
     FAILED_CREATE,
   [`dynamodb:DeleteTable ${P}dynamodb-table/create.ts rollBackCreatedTable`]: FAILED_CREATE,
+  [`dynamodb:UpdateTable ${P}dynamodb-globaltable/replica-protection.ts writeReplicaDeletionProtection`]:
+    'a replica protection write waits for the table to settle BEFORE the call (waitForGlobalTableSettled in its callers); after it, setReplicaDeletionProtection waits on waitForReplicaProtectionSettled and the flip or re-enable around a delete does not wait (the row note)',
   [`ec2:TerminateInstances ${P}ec2/instance-create.ts createInstance`]:
     'the failed-launch cleanup waits (waitForFailedLaunchTerminated) only when a volume attach was issued (#5630; the row note)',
   [`ecs:DeleteService ${P}ecs/service-create-ambiguous.ts settle`]: FAILED_CREATE,
@@ -621,42 +623,53 @@ const functionName = (n: ts.Node): string | undefined => {
 interface UnitFunction {
   readonly name: string;
   readonly node: ts.Node;
+  /** The repo-relative file declaring it. */
+  readonly file: string;
   /** Not nested in another named function: a class member or a module-level function. */
   readonly outer: boolean;
   /** Every callee name in the body, as {@link unitCallsInFile} reads one, plus `new:<X>`. */
   readonly calls: ReadonlySet<string>;
   /** Callees this analysis resolves to a unit function: `f(`, `this.f(`, `f.call(` / `.apply(`. */
   readonly refs: ReadonlySet<string>;
+  /**
+   * Every entry of {@link calls} in the body, with the END offset of its call
+   * (`wait(send())` ends after `send()` does), and whether it is a {@link refs} one.
+   */
+  readonly sites: readonly { readonly name: string; readonly end: number; readonly ref: boolean }[];
 }
 
-function unitFunctions(sf: ts.SourceFile): UnitFunction[] {
+function unitFunctions(sf: ts.SourceFile, file: string): UnitFunction[] {
   const out: UnitFunction[] = [];
-  const bodyCalls = (body: ts.Node): { calls: Set<string>; refs: Set<string> } => {
+  type Bodies = Pick<UnitFunction, 'calls' | 'refs' | 'sites'>;
+  const bodyCalls = (body: ts.Node): Bodies => {
     const calls = new Set<string>();
     const refs = new Set<string>();
+    const sites: { name: string; end: number; ref: boolean }[] = [];
+    const add = (name: string, n: ts.Node, ref: boolean): void => {
+      calls.add(name);
+      if (ref) refs.add(name);
+      sites.push({ name, end: n.getEnd(), ref });
+    };
     const visit = (n: ts.Node): void => {
-      if (ts.isNewExpression(n) && ts.isIdentifier(n.expression)) calls.add(`new:${n.expression.text}`);
+      if (ts.isNewExpression(n) && ts.isIdentifier(n.expression)) add(`new:${n.expression.text}`, n, false);
       if (ts.isCallExpression(n)) {
         let e = n.expression;
         if (ts.isPropertyAccessExpression(e) && (e.name.text === 'call' || e.name.text === 'apply')) {
           e = e.expression;
         }
-        if (ts.isIdentifier(e)) {
-          calls.add(e.text);
-          refs.add(e.text);
-        } else if (ts.isPropertyAccessExpression(e)) {
-          calls.add(e.name.text);
-          if (e.expression.kind === ts.SyntaxKind.ThisKeyword) refs.add(e.name.text);
+        if (ts.isIdentifier(e)) add(e.text, n, true);
+        else if (ts.isPropertyAccessExpression(e)) {
+          add(e.name.text, n, e.expression.kind === ts.SyntaxKind.ThisKeyword);
         }
       }
       ts.forEachChild(n, visit);
     };
     visit(body);
-    return { calls, refs };
+    return { calls, refs, sites };
   };
   const walk = (n: ts.Node, nested: boolean): void => {
     const name = functionName(n);
-    if (name !== undefined) out.push({ name, node: n, outer: !nested, ...bodyCalls(n) });
+    if (name !== undefined) out.push({ name, node: n, file, outer: !nested, ...bodyCalls(n) });
     ts.forEachChild(n, (c) => walk(c, nested || name !== undefined));
   };
   walk(sf, false);
@@ -679,7 +692,10 @@ export interface SendSiteFindings {
  *   - calls a helper, directly or through ONE unit function it calls
  *     (`create` -> `this.settledStatus` -> `waitForRuntimeReady`); or
  * when a unit function calling the outermost one (a `send*` wrapper's caller)
- * is a helper or calls one, directly or through one unit function. Deeper
+ * is a helper, or calls one AFTER that call ends (source order: a wait the
+ * caller makes before the send does not cover it), directly or through one
+ * unit function. A callee name resolves to the caller's own file's function
+ * of that name when its file declares one, else to every unit file's. Deeper
  * reach was measured to cover failed-create cleanup deletes that do not wait
  * (#7132), so it stops there. A helper named `<X>Command` counts as the
  * function constructing `new <X>(`.
@@ -697,7 +713,7 @@ export function checkSendSites(
     let u = unitCache.get(unit);
     if (!u) {
       const sfs = new Map(unitFiles(resolve(repoRoot, unit)).map((f) => [rel(f), parse(f)] as const));
-      u = { sfs, fns: [...sfs.values()].flatMap(unitFunctions) };
+      u = { sfs, fns: [...sfs].flatMap(([file, sf]) => unitFunctions(sf, file)) };
       unitCache.set(unit, u);
     }
     return u;
@@ -716,11 +732,26 @@ export function checkSendSites(
       for (const f of fns) {
         if (f.outer) outerByName.set(f.name, [...(outerByName.get(f.name) ?? []), f]);
       }
+      // A name resolves within the caller's own file when that file declares
+      // it; only otherwise to every unit file declaring it (an import).
+      const resolveFrom = (name: string, file: string): UnitFunction[] => {
+        const all = outerByName.get(name) ?? [];
+        const local = all.filter((g) => g.file === file);
+        return local.length > 0 ? local : all;
+      };
+      const waitsVia = (r: string, f: UnitFunction, skip: ReadonlySet<UnitFunction>): boolean =>
+        resolveFrom(r, f.file).some((g) => !skip.has(g) && [...g.calls].some(isHelper));
       const reaches = (f: UnitFunction, skip: ReadonlySet<UnitFunction>): boolean =>
-        [...f.calls].some(isHelper) ||
-        [...f.refs].some((r) =>
-          (outerByName.get(r) ?? []).some((g) => !skip.has(g) && [...g.calls].some(isHelper))
+        [...f.calls].some(isHelper) || [...f.refs].some((r) => waitsVia(r, f, skip));
+      // The caller arm: `c` calls `outer` and THEN reaches a helper, so a wait
+      // `c` makes before the send does not cover it.
+      const reachesAfterCall = (c: UnitFunction, outer: UnitFunction, skip: ReadonlySet<UnitFunction>): boolean => {
+        if (!resolveFrom(outer.name, c.file).includes(outer)) return false;
+        const call = Math.min(...c.sites.filter((x) => x.ref && x.name === outer.name).map((x) => x.end));
+        return c.sites.some(
+          (x) => x.end > call && (isHelper(x.name) || (x.ref && waitsVia(x.name, c, skip)))
         );
+      };
       for (const [file, sf] of sfs) {
         if (!row.files.includes(file)) continue;
         for (const site of sendNodes(sf)) {
@@ -736,7 +767,10 @@ export function checkSendSites(
             chain.some((f) => isHelper(f.name) || reaches(f, skip)) ||
             (outer !== undefined &&
               fns.some(
-                (c) => !skip.has(c) && c.refs.has(outer.name) && (isHelper(c.name) || reaches(c, skip))
+                (c) =>
+                  !skip.has(c) &&
+                  c.refs.has(outer.name) &&
+                  (isHelper(c.name) ? resolveFrom(outer.name, c.file).includes(outer) : reachesAfterCall(c, outer, skip))
               ));
           if (covered) continue;
           const label = `${row.key} ${file} ${outer?.name ?? '<module>'}`;

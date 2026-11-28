@@ -228,6 +228,33 @@ describe('AWS::EC2::Instance update waits for its asynchronous changes (#7132)',
     expect(lines.filter((l) => l.includes('instance profile') && l.includes(ID))).toEqual([]);
   });
 
+  it('the profile wait failure masks through the update context masker', async () => {
+    // A thrown message, unlike the debug line above, has no masking sink of
+    // its own. Called directly: update() masks its error on the way out, which
+    // would hide a wait site handed an identity masker.
+    world.associations = [
+      [{ AssociationId: 'iip-old', State: 'associated' }],
+      [{ AssociationId: 'iip-new', State: 'disassociated' }],
+    ];
+    const provider = new EC2Provider() as unknown as {
+      applyInstanceProfileChange(
+        logicalId: string,
+        physicalId: string,
+        change: { kind: 'set'; name: string },
+        maskSecrets: (t: string) => string
+      ): Promise<void>;
+    };
+    const err = await provider
+      .applyInstanceProfileChange('Web', ID, { kind: 'set', name: 'profile-2' }, (t) =>
+        t.replaceAll(ID, '***')
+      )
+      .catch((e: unknown) => e);
+    expect(String(err)).toContain(
+      'The IAM instance profile association of EC2 Instance Web (***) settled as disassociated, expected associated'
+    );
+    expect(String(err)).not.toContain(ID);
+  });
+
   it('DisassociateIamInstanceProfile: waits until the association is gone', async () => {
     const old = { AssociationId: 'iip-old', State: 'associated' };
     world.associations = [[old], [{ ...old, State: 'disassociating' }], []];

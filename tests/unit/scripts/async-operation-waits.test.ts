@@ -366,4 +366,18 @@ describe('the per-site check (#7132)', () => {
     expect(rows).toHaveLength(3);
     expect(checkSendSites(rows, ASYNC_OPERATION_CLASSIFICATION, {}).uncovered).toEqual([]);
   });
+
+  it("does not count a caller's wait made BEFORE it calls the send wrapper", () => {
+    // Both callers of writeReplicaDeletionProtection run waitForGlobalTableSettled
+    // (a row helper) and only then call it, so the write itself reaches no helper.
+    const label =
+      'dynamodb:UpdateTable src/provisioning/providers/dynamodb-globaltable/replica-protection.ts writeReplicaDeletionProtection';
+    expect(SEND_SITE_EXEMPTIONS[label]).toBeDefined();
+    const updateTable = population.filter((r) => r.key === 'dynamodb:UpdateTable');
+    const { uncovered } = checkSendSites(updateTable, ASYNC_OPERATION_CLASSIFICATION, {});
+    expect(uncovered).toHaveLength(1);
+    expect(uncovered[0]).toMatch(
+      /^dynamodb:UpdateTable: src\/provisioning\/providers\/dynamodb-globaltable\/replica-protection\.ts:\d+ \(writeReplicaDeletionProtection\) reaches none of /
+    );
+  });
 });
