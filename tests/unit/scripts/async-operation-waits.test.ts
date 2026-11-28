@@ -6,7 +6,9 @@ import {
   OUT_MD,
   asyncEvidence,
   buildPopulation,
+  SEND_SITE_EXEMPTIONS,
   checkClassification,
+  checkSendSites,
   collectOutOfScopeAsyncSends,
   repoRoot,
   isTransitionalValue,
@@ -79,6 +81,7 @@ describe('the committed classification (#7132)', () => {
       unclassified: [],
       stale: [],
       missingHelper: [],
+      uncoveredSites: [],
     });
   });
 
@@ -254,10 +257,17 @@ describe('the critic', () => {
 
   it('fails an unclassified operation and a row no provider sends', () => {
     expect(
-      checkClassification([row('x:StartThing', unit)], {
-        'x:Gone': { verdict: 'unmeasured', reason: 'r' },
-      })
-    ).toEqual({ unclassified: ['x:StartThing'], stale: ['x:Gone'], missingHelper: [] });
+      checkClassification(
+        [row('x:StartThing', unit)],
+        { 'x:Gone': { verdict: 'unmeasured', reason: 'r' } },
+        {}
+      )
+    ).toEqual({
+      unclassified: ['x:StartThing'],
+      stale: ['x:Gone'],
+      missingHelper: [],
+      uncoveredSites: [],
+    });
   });
 
   it('fails a waits row whose helper the provider unit no longer calls', () => {
@@ -308,5 +318,52 @@ describe('the critic', () => {
       },
     });
     expect(findings.missingHelper).toEqual([]);
+  });
+});
+
+describe('the per-site check (#7132)', () => {
+  it('reads every send site of a waits operation, each reaching a helper or exempted', () => {
+    const sites = checkSendSites(population);
+    // Measured at the per-site check: a drop means sites stopped being read.
+    expect(sites.checked).toBeGreaterThanOrEqual(212);
+    expect(sites.uncovered).toEqual([]);
+    expect(sites.staleExemptions).toEqual([]);
+  });
+
+  it('fails a send that waits nowhere, though another send of it in the same unit waits', () => {
+    // The EC2 delete waits for `terminated`; the failed-launch cleanup in
+    // createInstance does not (exempted). The unit-level check passes both.
+    const terminate = population.filter((r) => r.key === 'ec2:TerminateInstances');
+    expect(checkClassification(terminate).missingHelper).toEqual([]);
+    const { uncovered } = checkSendSites(terminate, ASYNC_OPERATION_CLASSIFICATION, {});
+    expect(uncovered).toHaveLength(1);
+    expect(uncovered[0]).toMatch(
+      /^ec2:TerminateInstances: src\/provisioning\/providers\/ec2\/instance-create\.ts:\d+ \(createInstance\) reaches none of waitUntilInstanceTerminated$/
+    );
+  });
+
+  it('fails an exemption that names no uncovered site', () => {
+    const terminate = population.filter((r) => r.key === 'ec2:TerminateInstances');
+    const label = 'ec2:TerminateInstances src/provisioning/providers/ec2/instance-create.ts createInstance';
+    expect(SEND_SITE_EXEMPTIONS[label]).toBeDefined();
+    const { uncovered, staleExemptions } = checkSendSites(terminate, ASYNC_OPERATION_CLASSIFICATION, {
+      [label]: 'r',
+      'ec2:TerminateInstances src/provisioning/providers/ec2/instance-delete.ts deleteInstance': 'r',
+    });
+    expect(uncovered).toEqual([]);
+    expect(staleExemptions).toEqual([
+      'ec2:TerminateInstances src/provisioning/providers/ec2/instance-delete.ts deleteInstance: exempts 0 uncovered sites, not 1',
+    ]);
+  });
+
+  it('follows a send wrapper to its caller, and a send inside a helper is the helper own', () => {
+    const keys = new Set([
+      'efs:CreateFileSystem', // sendCreateFileSystem <- createFileSystem waits
+      'route-53:ChangeResourceRecordSets', // writeValidationRecords <- waitForCertificateIssued
+      'docdb:RemoveFromGlobalCluster', // sent inside detachFromGlobalCluster
+    ]);
+    const rows = population.filter((r) => keys.has(r.key));
+    expect(rows).toHaveLength(3);
+    expect(checkSendSites(rows, ASYNC_OPERATION_CLASSIFICATION, {}).uncovered).toEqual([]);
   });
 });

@@ -48,10 +48,11 @@
  * rules. A waiter-only signal (the service ships `waitUntil*` for the
  * resource) is not used: it names a DESCRIBE operation, not the write.
  *
- * BOUND: the helper check ({@link unitCalls}) holds that the provider unit
- * still CALLS a helper, not that the call runs after THIS operation. A generic
- * name another operation of the same unit also calls (`waitForSettled`) keeps
- * passing if this operation's wait is deleted.
+ * BOUND: the per-site check ({@link checkSendSites}) holds that the FUNCTION
+ * holding each send (or one function it calls, or a direct caller) calls a
+ * helper, not that the call runs after THIS send on every path. A generic
+ * name another operation of the same function also calls (`waitForSettled`)
+ * keeps passing if this operation's wait is deleted.
  *
  * CLASSIFICATION
  * --------------
@@ -64,7 +65,10 @@
  * `--check` (CI) FAILS on a population row with no classification, on a
  * classification naming an operation no provider sends any more (or one the
  * rules no longer flag), on a `waits` row whose helpers a sending provider unit
- * no longer calls, and on stale generated files. A provider UNIT is the
+ * no longer calls, on a SEND SITE of a `waits` operation that reaches none of
+ * the row's helpers and is not in {@link SEND_SITE_EXEMPTIONS} (a second send
+ * of an operation the unit already waits for elsewhere, added without a wait),
+ * and on stale generated files. A provider UNIT is the
  * `<name>-provider.ts` file plus its `<name>/` companion directory.
  *
  *   node --experimental-strip-types scripts/gen-async-operation-waits.ts          # regenerate
@@ -208,7 +212,16 @@ const parse = (file: string): ts.SourceFile =>
 
 /** Every `new <X>Command(` in one file whose class comes from an SDK client. */
 export function collectSendSites(file: string): SendSite[] {
-  const sf = parse(file);
+  return sendNodes(parse(file)).map(({ client, operation }) => ({
+    client,
+    operation,
+    file: rel(file),
+    unit: rel(unitOf(file)),
+  }));
+}
+
+/** {@link collectSendSites}, keeping each `new` expression. */
+function sendNodes(sf: ts.SourceFile): { client: string; operation: string; node: ts.Node }[] {
   const imported = new Map<string, { client: string; name: string }>();
   for (const stmt of sf.statements) {
     if (!ts.isImportDeclaration(stmt) || !ts.isStringLiteral(stmt.moduleSpecifier)) continue;
@@ -220,17 +233,12 @@ export function collectSendSites(file: string): SendSite[] {
       if (name.endsWith('Command')) imported.set(el.name.text, { client: m[1]!, name });
     }
   }
-  const sites: SendSite[] = [];
+  const sites: { client: string; operation: string; node: ts.Node }[] = [];
   const visit = (node: ts.Node): void => {
     if (ts.isNewExpression(node) && ts.isIdentifier(node.expression)) {
       const hit = imported.get(node.expression.text);
       if (hit) {
-        sites.push({
-          client: hit.client,
-          operation: hit.name.slice(0, -'Command'.length),
-          file: rel(file),
-          unit: rel(unitOf(file)),
-        });
+        sites.push({ client: hit.client, operation: hit.name.slice(0, -'Command'.length), node });
       }
     }
     ts.forEachChild(node, visit);
@@ -547,15 +555,223 @@ export function unitCallsInFile(file: string, helper: string): boolean {
   }
 }
 
+const P = 'src/provisioning/providers/';
+const FAILED_CREATE = 'the failed-create cleanup delete does not wait (the row note)';
+const FLIP_SITE =
+  'a DeletionProtection flip around a delete does not wait after the call (the row note)';
+
+/**
+ * Send sites of a `waits` operation that reach none of the row's helpers
+ * ({@link checkSendSites}), as `<client>:<Operation> <file> <function>` (the
+ * outermost named function holding the send) -> why the site does not wait
+ * there. Each names exactly ONE site: a second send in the same function, or an
+ * exempted site that now reaches a helper, fails the check. Measured on the
+ * tree at the #7132 per-site check; keep it minimal.
+ */
+export const SEND_SITE_EXEMPTIONS: Readonly<Record<string, string>> = {
+  [`bedrock-agentcore-control:DeleteAgentRuntime ${P}agentcore-runtime/wait.ts retireFailedRuntimeCreate`]:
+    FAILED_CREATE,
+  [`docdb:ModifyDBCluster ${P}docdb/cluster-create.ts sendRestoreFollowUp`]:
+    'the restore follow-up waits through waitForClusterAvailable, a helper the row does not list',
+  [`docdb:ModifyDBCluster ${P}docdb/cluster-delete.ts deleteDBCluster`]: FLIP_SITE,
+  [`docdb:ModifyDBCluster ${P}docdb/cluster-delete.ts deleteDBClusterOnce`]: FLIP_SITE,
+  [`dynamodb:DeleteTable ${P}dynamodb-globaltable/create-commit.ts createPhaseCommit`]: FAILED_CREATE,
+  [`dynamodb:DeleteTable ${P}dynamodb-globaltable/create-support.ts rollBackCreatedVectorTable`]:
+    FAILED_CREATE,
+  [`dynamodb:DeleteTable ${P}dynamodb-table/create.ts rollBackCreatedTable`]: FAILED_CREATE,
+  [`ec2:TerminateInstances ${P}ec2/instance-create.ts createInstance`]:
+    'the failed-launch cleanup waits (waitForFailedLaunchTerminated) only when a volume attach was issued (#5630; the row note)',
+  [`ecs:DeleteService ${P}ecs/service-create-ambiguous.ts settle`]: FAILED_CREATE,
+  [`ecs:DeleteService ${P}ecs/service-create.ts createService`]: FAILED_CREATE,
+  [`ecs:UpdateService ${P}ecs/service-delete.ts deleteService`]:
+    'the scale-down before a delete does not wait; the delete waits for INACTIVE (the row note)',
+  [`fsx:DeleteFileSystem ${P}fsx-filesystem/create.ts create`]: FAILED_CREATE,
+  [`lambda:UpdateFunctionConfiguration ${P}lambda-function/delete.ts deleteImpl`]:
+    'the VPC detach before a delete waits through waitForLambdaUpdateCompleted, a helper the row does not list',
+  [`neptune:ModifyDBCluster ${P}neptune/cluster-delete.ts deleteDBCluster`]: FLIP_SITE,
+  [`neptune:ModifyDBCluster ${P}neptune/cluster-delete.ts deleteDBClusterOnce`]: FLIP_SITE,
+  [`neptune:ModifyDBInstance ${P}neptune/instance.ts deleteDBInstance`]: FLIP_SITE,
+  [`neptune:ModifyDBInstance ${P}neptune/instance.ts deleteDBInstanceOnce`]: FLIP_SITE,
+  [`rds:DeleteDBCluster ${P}rds/cluster-create.ts createDBCluster`]: FAILED_CREATE,
+  [`rds:DeleteDBInstance ${P}rds/cluster-create.ts createDBCluster`]:
+    "the failed-create cleanup of the express-configuration writer does not wait (the row note)",
+  [`rds:DeleteDBInstance ${P}rds/express-writer.ts deleteExpressWriter`]:
+    'an express-configuration writer delete does not wait (the row note)',
+  [`rds:ModifyDBCluster ${P}rds/cluster-delete.ts deleteDBCluster`]: FLIP_SITE,
+  [`rds:ModifyDBCluster ${P}rds/cluster-delete.ts deleteDBClusterOnce`]: FLIP_SITE,
+  [`rds:ModifyDBInstance ${P}rds/instance-delete.ts deleteDBInstance`]: FLIP_SITE,
+  [`rds:ModifyDBInstance ${P}rds/instance-delete.ts deleteDBInstanceOnce`]: FLIP_SITE,
+};
+
+const isFunctionValue = (e: ts.Expression | undefined): boolean =>
+  e !== undefined && (ts.isArrowFunction(e) || ts.isFunctionExpression(e));
+
+/** The name of a named function: a declaration, a method, or a function-valued field or variable. */
+const functionName = (n: ts.Node): string | undefined => {
+  if ((ts.isMethodDeclaration(n) || ts.isFunctionDeclaration(n)) && n.name && ts.isIdentifier(n.name)) {
+    return n.name.text;
+  }
+  if (
+    (ts.isPropertyDeclaration(n) || ts.isVariableDeclaration(n)) &&
+    ts.isIdentifier(n.name) &&
+    isFunctionValue(n.initializer)
+  ) {
+    return n.name.text;
+  }
+  return undefined;
+};
+
+/** One named function of a provider unit. */
+interface UnitFunction {
+  readonly name: string;
+  readonly node: ts.Node;
+  /** Not nested in another named function: a class member or a module-level function. */
+  readonly outer: boolean;
+  /** Every callee name in the body, as {@link unitCallsInFile} reads one, plus `new:<X>`. */
+  readonly calls: ReadonlySet<string>;
+  /** Callees this analysis resolves to a unit function: `f(`, `this.f(`, `f.call(` / `.apply(`. */
+  readonly refs: ReadonlySet<string>;
+}
+
+function unitFunctions(sf: ts.SourceFile): UnitFunction[] {
+  const out: UnitFunction[] = [];
+  const bodyCalls = (body: ts.Node): { calls: Set<string>; refs: Set<string> } => {
+    const calls = new Set<string>();
+    const refs = new Set<string>();
+    const visit = (n: ts.Node): void => {
+      if (ts.isNewExpression(n) && ts.isIdentifier(n.expression)) calls.add(`new:${n.expression.text}`);
+      if (ts.isCallExpression(n)) {
+        let e = n.expression;
+        if (ts.isPropertyAccessExpression(e) && (e.name.text === 'call' || e.name.text === 'apply')) {
+          e = e.expression;
+        }
+        if (ts.isIdentifier(e)) {
+          calls.add(e.text);
+          refs.add(e.text);
+        } else if (ts.isPropertyAccessExpression(e)) {
+          calls.add(e.name.text);
+          if (e.expression.kind === ts.SyntaxKind.ThisKeyword) refs.add(e.name.text);
+        }
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(body);
+    return { calls, refs };
+  };
+  const walk = (n: ts.Node, nested: boolean): void => {
+    const name = functionName(n);
+    if (name !== undefined) out.push({ name, node: n, outer: !nested, ...bodyCalls(n) });
+    ts.forEachChild(n, (c) => walk(c, nested || name !== undefined));
+  };
+  walk(sf, false);
+  return out;
+}
+
+export interface SendSiteFindings {
+  /** Send sites of a `waits` operation the check read. */
+  readonly checked: number;
+  /** Sites reaching none of the row's helpers, with no exemption. */
+  readonly uncovered: readonly string[];
+  /** Exemptions naming no uncovered site, or more than one. */
+  readonly staleExemptions: readonly string[];
+}
+
+/**
+ * Per SEND SITE of a `waits` operation: does the send reach one of the row's
+ * helpers? A site is covered when a named function holding it
+ *   - is itself one of the helpers (the send is the helper's own), or
+ *   - calls a helper, directly or through ONE unit function it calls
+ *     (`create` -> `this.settledStatus` -> `waitForRuntimeReady`); or
+ * when a unit function calling the outermost one (a `send*` wrapper's caller)
+ * is a helper or calls one, directly or through one unit function. Deeper
+ * reach was measured to cover failed-create cleanup deletes that do not wait
+ * (#7132), so it stops there. A helper named `<X>Command` counts as the
+ * function constructing `new <X>(`.
+ *
+ * BOUND: coverage is per FUNCTION, not per path: a function that waits after
+ * one send covers a second send of the same operation in it.
+ */
+export function checkSendSites(
+  population: readonly PopulationRow[],
+  classification: Readonly<Record<string, AsyncOperationVerdict>> = ASYNC_OPERATION_CLASSIFICATION,
+  exemptions: Readonly<Record<string, string>> = SEND_SITE_EXEMPTIONS
+): SendSiteFindings {
+  const unitCache = new Map<string, { sfs: Map<string, ts.SourceFile>; fns: UnitFunction[] }>();
+  const unitOfRow = (unit: string): { sfs: Map<string, ts.SourceFile>; fns: UnitFunction[] } => {
+    let u = unitCache.get(unit);
+    if (!u) {
+      const sfs = new Map(unitFiles(resolve(repoRoot, unit)).map((f) => [rel(f), parse(f)] as const));
+      u = { sfs, fns: [...sfs.values()].flatMap(unitFunctions) };
+      unitCache.set(unit, u);
+    }
+    return u;
+  };
+  let checked = 0;
+  const unexempted: string[] = [];
+  const hits = new Map<string, number>();
+  for (const row of population) {
+    const verdict = classification[row.key];
+    if (verdict?.verdict !== 'waits') continue;
+    const isHelper = (c: string): boolean =>
+      verdict.helpers.some((h) => (h.endsWith('Command') ? c === `new:${h}` : c === h));
+    for (const unit of row.units) {
+      const { sfs, fns } = unitOfRow(unit);
+      const outerByName = new Map<string, UnitFunction[]>();
+      for (const f of fns) {
+        if (f.outer) outerByName.set(f.name, [...(outerByName.get(f.name) ?? []), f]);
+      }
+      const reaches = (f: UnitFunction, skip: ReadonlySet<UnitFunction>): boolean =>
+        [...f.calls].some(isHelper) ||
+        [...f.refs].some((r) =>
+          (outerByName.get(r) ?? []).some((g) => !skip.has(g) && [...g.calls].some(isHelper))
+        );
+      for (const [file, sf] of sfs) {
+        if (!row.files.includes(file)) continue;
+        for (const site of sendNodes(sf)) {
+          if (`${site.client}:${site.operation}` !== row.key) continue;
+          checked++;
+          const chain = fns.filter((f) => {
+            for (let p = site.node.parent; p; p = p.parent) if (p === f.node) return true;
+            return false;
+          });
+          const outer = chain.find((f) => f.outer);
+          const skip = new Set(chain);
+          const covered =
+            chain.some((f) => isHelper(f.name) || reaches(f, skip)) ||
+            (outer !== undefined &&
+              fns.some(
+                (c) => !skip.has(c) && c.refs.has(outer.name) && (isHelper(c.name) || reaches(c, skip))
+              ));
+          if (covered) continue;
+          const label = `${row.key} ${file} ${outer?.name ?? '<module>'}`;
+          if (label in exemptions) hits.set(label, (hits.get(label) ?? 0) + 1);
+          else {
+            const line = sf.getLineAndCharacterOfPosition(site.node.getStart()).line + 1;
+            unexempted.push(`${row.key}: ${file}:${line} (${outer?.name ?? '<module>'}) reaches none of ${verdict.helpers.join(', ')}`);
+          }
+        }
+      }
+    }
+  }
+  const staleExemptions = Object.keys(exemptions)
+    .filter((k) => hits.get(k) !== 1)
+    .map((k) => `${k}: exempts ${hits.get(k) ?? 0} uncovered sites, not 1`)
+    .sort();
+  return { checked, uncovered: unexempted.sort(), staleExemptions };
+}
+
 export interface Findings {
   readonly unclassified: readonly string[];
   readonly stale: readonly string[];
   readonly missingHelper: readonly string[];
+  /** Send sites reaching no helper of their `waits` row, and exemptions that name no such site. */
+  readonly uncoveredSites: readonly string[];
 }
 
 export function checkClassification(
   population: readonly PopulationRow[],
-  classification: Readonly<Record<string, AsyncOperationVerdict>> = ASYNC_OPERATION_CLASSIFICATION
+  classification: Readonly<Record<string, AsyncOperationVerdict>> = ASYNC_OPERATION_CLASSIFICATION,
+  exemptions: Readonly<Record<string, string>> = SEND_SITE_EXEMPTIONS
 ): Findings {
   const keys = new Set(population.map((r) => r.key));
   const unclassified = population.filter((r) => !(r.key in classification)).map((r) => r.key);
@@ -582,7 +798,8 @@ export function checkClassification(
       if (!named.has(h)) missingHelper.push(`${row.key}: no sending provider calls ${h}`);
     }
   }
-  return { unclassified, stale, missingHelper };
+  const sites = checkSendSites(population, classification, exemptions);
+  return { unclassified, stale, missingHelper, uncoveredSites: [...sites.uncovered, ...sites.staleExemptions] };
 }
 
 export function renderJson(
@@ -678,6 +895,10 @@ function main(): void {
   );
   section('Rows for an operation no provider sends (or no rule flags) any more — delete them:', findings.stale);
   section('`waits` rows whose helper a sending provider no longer calls:', findings.missingHelper);
+  section(
+    'Send sites of a `waits` operation that reach none of its helpers — wait there, or exempt the site in SEND_SITE_EXEMPTIONS with its reason:',
+    findings.uncoveredSites
+  );
   if (check) {
     const stale =
       !existsSync(OUT_JSON) ||
