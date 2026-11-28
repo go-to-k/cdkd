@@ -9,7 +9,16 @@ import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { AwsClients } from '../../../utils/aws-clients.js';
 import { NESTED_STACK_RESOURCE_TYPE } from '../retire-cfn-stack.js';
 import { type ResourceState, type StackState } from '../../../types/state.js';
-import { noEchoLeavesOf } from '../../../deployment/secret-redaction.js';
+import { type CloudFormationTemplate } from '../../../types/resource.js';
+import {
+  noEchoCoordinatesOf,
+  noEchoLeavesOf,
+  type NoEchoCoordinate,
+} from '../../../deployment/secret-redaction.js';
+import {
+  noEchoAttributeNamesOf,
+  noEchoParameterNamesOf,
+} from '../../../deployment/deploy-engine/noecho.js';
 import {
   type BlockedResource,
   IMPORT_UNSUPPORTED_RECREATABLE_TYPES,
@@ -218,7 +227,16 @@ export async function buildImportPlan(
     // C, design section 4.8) as long as nothing below reads a marked
     // position: the IAM policy pre-delete's principals and name, and the
     // import identifier (checked where it is resolved).
-    const noEchoLeaves = noEchoLeavesOf(stateEntry);
+    // go-to-k/cdkd#7189: a coordinate the deploy recorded only because the
+    // leaf EMBEDS a custom resource's `NoEcho` attribute names no parameter
+    // CloudFormation could receive, so it does not admit the record.
+    const noEchoLeaves = withoutEmbeddedAttributeLeaves(
+      noEchoLeavesOf(stateEntry),
+      stateEntry,
+      raw,
+      template,
+      state
+    );
     const masksOnlyAtNoEchoLeaves =
       noEchoLeaves !== undefined &&
       noEchoLeaves.length > 0 &&
@@ -803,4 +821,51 @@ function replaceAtCoordinate(
     return { ...record, [head]: replaceAtCoordinate(record[head], rest, replacement) };
   }
   return node;
+}
+
+/**
+ * go-to-k/cdkd#7189: `leaves` without the coordinates positioned only because
+ * the record holds, wholly as the mask, a leaf that EMBEDS a custom
+ * resource's declared `NoEcho` attribute (`Fn::Join` / `Fn::Sub` around its
+ * `Fn::GetAtt`). The exported template has no parameter for such a value.
+ */
+function withoutEmbeddedAttributeLeaves(
+  leaves: NoEchoCoordinate[] | undefined,
+  record: ResourceState,
+  raw: unknown,
+  template: Record<string, unknown>,
+  state: StackState
+): NoEchoCoordinate[] | undefined {
+  if (leaves === undefined || leaves.length === 0) return leaves;
+  const properties =
+    raw !== null && typeof raw === 'object'
+      ? (raw as Record<string, unknown>)['Properties']
+      : undefined;
+  if (properties === null || typeof properties !== 'object') return leaves;
+  const embedded = noEchoCoordinatesOf(
+    properties,
+    record.properties,
+    {
+      parameters: noEchoParameterNamesOf(
+        isPlainRecord(template['Parameters'])
+          ? {
+              Parameters: template['Parameters'] as NonNullable<
+                CloudFormationTemplate['Parameters']
+              >,
+            }
+          : undefined
+      ),
+      attributeIsNoEcho: (id, attribute) =>
+        Object.hasOwn(state.resources, id) &&
+        noEchoAttributeNamesOf(state.resources[id])?.includes(attribute) === true,
+    },
+    undefined,
+    { maskedAt: record.properties, only: true }
+  ).map((coordinate) => JSON.stringify(coordinate));
+  if (embedded.length === 0) return leaves;
+  return leaves.filter((coordinate) => !embedded.includes(JSON.stringify(coordinate)));
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }

@@ -309,7 +309,9 @@ export interface ResourceState {
   /**
    * v11+ (go-to-k/cdkd#4043): the coordinates, within `properties`, persisted
    * as `***` because a `NoEcho: true` template PARAMETER served them, or an
-   * `Fn::GetAtt` of an attribute its producer declared `NoEcho`. Each entry is
+   * `Fn::GetAtt` of an attribute its producer declared `NoEcho`, or a leaf that
+   * embeds such an attribute and was stored as `***` whole (go-to-k/cdkd#7189;
+   * no bump: an older binary reads it as an attribute coordinate). Each entry is
    * a SEGMENT ARRAY (keys and array indexes), never a dotted string, since a
    * dotted key is legal in a property bag. `observedProperties` holds the mask
    * at the same coordinates, found through an array's identity field.

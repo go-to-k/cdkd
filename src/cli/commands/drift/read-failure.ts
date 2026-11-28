@@ -49,9 +49,8 @@ export function notComparedReason(cause: NotComparedCause, record?: ResourceStat
         ? ' (deploy a change to this resource to restore one)'
         : `. ${refusedRemedy}`),
     noEchoParameter:
-      `its state holds a NoEcho parameter's value only as the redaction mask${noEchoPathsClause(record)}, ` +
-      'so that value was not compared — every other property was (permanent by design; a ' +
-      'deploy compares it with AWS)',
+      `its state holds the value of a NoEcho parameter, or of a custom resource's attribute declared NoEcho, only as the redaction mask${noEchoPathsClause(record)}, ` +
+      'so that value was not compared — every other property was (permanent by design)',
     maskedEcho:
       `AWS echoes a secret into a property the template does not set${maskedEchoPathsClause(record)}, ` +
       'which its state holds only as the redaction mask, so that value was not compared — ' +

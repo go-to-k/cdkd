@@ -159,15 +159,24 @@ function literalIndex(index: unknown): number | undefined {
  *
  * `onCoordinate` also hands each coordinate's TEMPLATE node to a caller that
  * re-resolves it (go-to-k/cdkd#4682); the returned list is unchanged by it.
+ *
+ * `embedded.maskedAt` (go-to-k/cdkd#7189), the bag as PERSISTED: a leaf that
+ * EMBEDS a declared `NoEcho` attribute is positioned too, but only where that
+ * bag already holds it wholly as the mask (the value arm's containment rule
+ * masked it). A leaf it spared stays unpositioned, so nothing new is masked.
+ * `embedded.only` returns those coordinates alone.
  */
 export function noEchoCoordinatesOf(
   template: unknown,
   resolved: unknown,
   sources: NoEchoPositionSources,
-  onCoordinate?: (coordinate: NoEchoCoordinate, templateNode: unknown) => void
+  onCoordinate?: (coordinate: NoEchoCoordinate, templateNode: unknown) => void,
+  embedded?: { readonly maskedAt: unknown; readonly only?: boolean }
 ): NoEchoCoordinate[] {
+  if (embedded?.only === true && sources.attributeIsNoEcho === undefined) return [];
   const coordinates: NoEchoCoordinate[] = [];
-  const push = (path: NoEchoCoordinate, node: unknown): void => {
+  const push = (path: NoEchoCoordinate, node: unknown, isEmbedded = false): void => {
+    if (embedded?.only === true && !isEmbedded) return;
     coordinates.push(path);
     onCoordinate?.(path, node);
   };
@@ -180,7 +189,30 @@ export function noEchoCoordinatesOf(
     isPlainObject(node) &&
     intrinsicKeyOf(node) === 'Fn::GetAtt' &&
     getAttReadsNoEcho(node['Fn::GetAtt'], sources);
-  const walk = (source: unknown, value: unknown, path: (string | number)[]): void => {
+  // `masked` is the persisted bag's node at the same path, walked alongside.
+  const embedsMasked = (node: unknown, masked: unknown): boolean =>
+    masked !== undefined && isWhollyMask(masked) && readsNoEchoSource(node, sources);
+  // A leaf a parameter or a bare declared `GetAtt` positions, else one the
+  // containment rule masked (`embedsMasked`).
+  const pushIfReads = (
+    path: NoEchoCoordinate,
+    node: unknown,
+    positioned: boolean,
+    masked: unknown
+  ): void => {
+    if (positioned) push(path, node);
+    else if (embedsMasked(node, masked)) push(path, node, true);
+  };
+  const childOf = (masked: unknown, key: string | number): unknown =>
+    masked !== null && typeof masked === 'object' && Object.hasOwn(masked, key)
+      ? (masked as Record<string | number, unknown>)[key]
+      : undefined;
+  const walk = (
+    source: unknown,
+    value: unknown,
+    path: (string | number)[],
+    masked: unknown
+  ): void => {
     if (value === undefined) return;
     if (source === null || typeof source !== 'object') return;
     if (ancestors.has(source)) return;
@@ -189,9 +221,16 @@ export function noEchoCoordinatesOf(
       if (Array.isArray(source)) {
         if (!readsNoEchoSource(source, sources)) return;
         if (Array.isArray(value) && value.length === source.length) {
-          source.forEach((item, index) => walk(item, value[index], [...path, index]));
-        } else if (readsNoEchoSource(source, parametersOnly) || source.some(isBareDeclaredGetAtt)) {
-          push(path, source);
+          source.forEach((item, index) =>
+            walk(item, value[index], [...path, index], childOf(masked, index))
+          );
+        } else {
+          pushIfReads(
+            path,
+            source,
+            readsNoEchoSource(source, parametersOnly) || source.some(isBareDeclaredGetAtt),
+            masked
+          );
         }
         return;
       }
@@ -203,7 +242,9 @@ export function noEchoCoordinatesOf(
           return;
         }
         for (const [key, child] of Object.entries(record)) {
-          if (Object.hasOwn(value, key)) walk(child, value[key], [...path, key]);
+          if (Object.hasOwn(value, key)) {
+            walk(child, value[key], [...path, key], childOf(masked, key));
+          }
         }
         return;
       }
@@ -212,7 +253,7 @@ export function noEchoCoordinatesOf(
         if (Array.isArray(argument) && argument.length === 3) {
           const verdict = conditionVerdict(sources, argument[0]);
           if (verdict !== undefined) {
-            walk(verdict ? argument[1] : argument[2], value, path);
+            walk(verdict ? argument[1] : argument[2], value, path, masked);
             return;
           }
           // Unknown verdict: either branch being a bare declared GetAtt
@@ -229,7 +270,7 @@ export function noEchoCoordinatesOf(
           const index = literalIndex(argument[0]);
           const list = argument[1] as unknown[];
           if (index !== undefined && index < list.length) {
-            walk(list[index], value, path);
+            walk(list[index], value, path, masked);
             return;
           }
         }
@@ -239,17 +280,18 @@ export function noEchoCoordinatesOf(
       // position adds the values it cannot key (a `Number`, one under the
       // needle floor). A leaf that embeds one (`Fn::Join`, `Fn::Sub`) is left
       // to the value arm's containment rule, which spares an echoed PUBLIC
-      // value (the region, the stack name) that position cannot tell apart.
+      // value (the region, the stack name) that position cannot tell apart;
+      // `maskedAt` positions it where that rule DID mask it (#7189).
       if (intrinsic === 'Fn::GetAtt') {
         if (getAttReadsNoEcho(record['Fn::GetAtt'], sources)) push(path, source);
         return;
       }
-      if (readsNoEchoSource(record, parametersOnly)) push(path, source);
+      pushIfReads(path, source, readsNoEchoSource(record, parametersOnly), masked);
     } finally {
       ancestors.delete(source);
     }
   };
-  walk(template, resolved, []);
+  walk(template, resolved, [], embedded?.maskedAt);
   return coordinates;
 }
 
@@ -698,7 +740,7 @@ export function witnessNormalize(
   return { current, confirmed, differing };
 }
 
-function containsMask(value: unknown): boolean {
+export function containsMask(value: unknown): boolean {
   if (value === SECRET_MASK) return true;
   if (Array.isArray(value)) return value.some(containsMask);
   if (isPlainObject(value)) return Object.values(value).some(containsMask);
@@ -857,59 +899,6 @@ function maskAtCoordinatesWith<T>(
     node[coordinate[coordinate.length - 1]!] = replacement;
   }
   return root as T;
-}
-
-/**
- * The OUTPUTS twin of {@link noEchoComparison} (go-to-k/cdkd#4043): `cdkd diff`
- * compares an output a `NoEcho` source serves as the persisted `***` on both
- * sides. `templateValues` maps each output name to its template `Value`; an
- * export alias key (not in `templateValues`) is masked when its value is the
- * value of an output masked here. A stored pre-v11 plaintext is the migration
- * witness: equal reads as unchanged, different shows
- * {@link PREVIOUS_NOECHO_VALUE}, never the old value.
- */
-export function noEchoOutputsComparison(
-  templateValues: Readonly<Record<string, unknown>>,
-  sources: NoEchoPositionSources
-): (
-  current: Record<string, unknown> | undefined,
-  desired: Record<string, unknown>
-) => {
-  current: Record<string, unknown> | undefined;
-  desired: Record<string, unknown>;
-  masked: string[];
-} {
-  return (current, desired) => {
-    const coordinates = noEchoCoordinatesOf(templateValues, desired, sources);
-    const maskedKeys = new Set(
-      coordinates
-        .map((coordinate) => coordinate[0])
-        .filter((key): key is string => typeof key === 'string')
-    );
-    const maskedValues = new Set([...maskedKeys].map((key) => canonicalJson(desired[key])));
-    for (const key of Object.keys(desired)) {
-      if (!Object.hasOwn(templateValues, key) && maskedValues.has(canonicalJson(desired[key]))) {
-        maskedKeys.add(key);
-      }
-    }
-    if (maskedKeys.size === 0) return { current, desired, masked: [] };
-    const maskedDesired: Record<string, unknown> = { ...desired };
-    for (const key of maskedKeys) maskedDesired[key] = maskWholeValue(desired[key]);
-    let normalized = current;
-    if (current !== undefined && current !== null && typeof current === 'object') {
-      for (const key of maskedKeys) {
-        if (!Object.hasOwn(current, key)) continue;
-        const stored = current[key];
-        if (containsMask(stored)) continue;
-        normalized = { ...(normalized ?? {}) };
-        normalized[key] =
-          canonicalJson(stored) === canonicalJson(desired[key])
-            ? maskedDesired[key]
-            : PREVIOUS_NOECHO_VALUE;
-      }
-    }
-    return { current: normalized, desired: maskedDesired, masked: [...maskedKeys] };
-  };
 }
 
 /**

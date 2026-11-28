@@ -195,6 +195,7 @@ export {
   type RedactionProvenance,
   redactForState,
 } from './secret-redaction/context.js';
+export { noEchoOutputsComparison } from './secret-redaction/noecho-outputs-comparison.js';
 export {
   type NoEchoCoordinate,
   type NoEchoPositionSources,
@@ -219,7 +220,6 @@ export {
   isMarkedCoordinate,
   witnessNormalize,
   noEchoComparison,
-  noEchoOutputsComparison,
   PREVIOUS_NOECHO_VALUE,
 } from './secret-redaction/noecho-leaves.js';
 export {

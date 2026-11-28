@@ -617,13 +617,12 @@ describe('cdkd drift — a NoEcho parameter position (schema v11, go-to-k/cdkd#4
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
-  // The record a deploy writes for a leaf that EMBEDS a NoEcho custom-resource
-  // attribute (`Fn::Join` around the `Fn::GetAtt`, go-to-k/cdkd#2453): masked
-  // whole by the value arm's containment rule, with NO `noEchoLeaves`
-  // coordinate (`noEchoCoordinatesOf` positions only a bare `Fn::GetAtt` of a
-  // declared attribute). That is the #2274 disposition above, so it reads
-  // drifted at `Value` alone, both sides masked, and `--revert` re-sends the
-  // live value. The custom-resource-getatt-data integ asserts exactly this.
+  // The record an OLDER binary wrote for a leaf that EMBEDS a NoEcho
+  // custom-resource attribute (`Fn::Join` around the `Fn::GetAtt`,
+  // go-to-k/cdkd#2453): masked whole by the value arm's containment rule, with
+  // NO `noEchoLeaves` coordinate. Until a deploy re-saves it (which positions
+  // it, go-to-k/cdkd#7189) it keeps the #2274 disposition above: drifted at
+  // `Value` alone, both sides masked, and `--revert` re-sends the live value.
   describe('a leaf EMBEDDING a NoEcho custom-resource value (unmarked)', () => {
     const LIVE_EMBEDDED = `postgres://integ-user:${LIVE_SECRET}@db.example.invalid/app`;
     const embedded = (): ResourceState =>
@@ -670,6 +669,76 @@ describe('cdkd drift — a NoEcho parameter position (schema v11, go-to-k/cdkd#4
       const written = mockSaveState.mock.calls.map((c) => JSON.stringify(c[2])).join('');
       expect(written).not.toContain(LIVE_SECRET);
       expect(exitSpy).not.toHaveBeenCalledWith(1);
+      expect(exitSpy).not.toHaveBeenCalledWith(2);
+    });
+  });
+
+  // go-to-k/cdkd#7189: the record THIS binary writes for that leaf names its
+  // coordinate, so drift reports it as not compared, as a bare GetAtt's.
+  describe('a leaf EMBEDDING a NoEcho custom-resource value (marked)', () => {
+    const LIVE_EMBEDDED = `postgres://integ-user:${LIVE_SECRET}@db.example.invalid/app`;
+    const embedded = (): ResourceState =>
+      param({
+        physicalId: '/app/url',
+        properties: { Name: '/app/url', Type: 'String', Value: SECRET_MASK, Description: 'd' },
+        observedProperties: {
+          Name: '/app/url',
+          Type: 'String',
+          Value: SECRET_MASK,
+          Description: 'd',
+        },
+        noEchoLeaves: [['Value']],
+      });
+
+    it('reports Value as not compared (noEchoParameter), exit 0', async () => {
+      mockGetState.mockResolvedValueOnce(makeState({ Url: embedded() }));
+      readsBack({ Name: '/app/url', Type: 'String', Value: LIVE_EMBEDDED, Description: 'd' });
+
+      const { output } = await runDrift(['TestStack', '--json']);
+
+      expect(output).not.toContain(LIVE_SECRET);
+      const payload = JSON.parse(output) as DriftJson[];
+      expect(payload[0]!.drifted).toEqual([]);
+      expect(payload[0]!.notCompared).toEqual([
+        expect.objectContaining({ logicalId: 'Url', cause: 'noEchoParameter' }),
+      ]);
+      expect(exitSpy).not.toHaveBeenCalledWith(1);
+    });
+
+    it('names the cause for a custom-resource attribute too, never a value, in the human report', async () => {
+      mockGetState.mockResolvedValueOnce(makeState({ Url: embedded() }));
+      readsBack({ Name: '/app/url', Type: 'String', Value: LIVE_EMBEDDED, Description: 'd' });
+
+      const { output } = await runDrift(['TestStack']);
+
+      const everything = [output, ...warnSpy.mock.calls.map((c) => String(c[0]))].join('\n');
+      expect(everything).not.toContain(LIVE_SECRET);
+      expect(output).toContain("a custom resource's attribute declared NoEcho");
+      expect(output).toContain('at Value');
+    });
+
+    it('--revert of another drifted key sends the live value at Value, never the mask', async () => {
+      const update = vi.fn().mockResolvedValue({ physicalId: '/app/url' });
+      mockGetState.mockResolvedValueOnce(makeState({ Url: embedded() }));
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => ({
+          Name: '/app/url',
+          Type: 'String',
+          Value: LIVE_EMBEDDED,
+          Description: 'edited',
+        }),
+        update,
+      });
+
+      await runDrift(['TestStack', '--revert', '--yes']);
+
+      expect(update).toHaveBeenCalledTimes(1);
+      const sent = update.mock.calls[0]![3] as Record<string, unknown>;
+      expect(sent['Description']).toBe('d');
+      expect(sent['Value']).toBe(LIVE_EMBEDDED);
+      expect(JSON.stringify(sent)).not.toContain(SECRET_MASK);
+      const written = mockSaveState.mock.calls.map((c) => JSON.stringify(c[2])).join('');
+      expect(written).not.toContain(LIVE_SECRET);
       expect(exitSpy).not.toHaveBeenCalledWith(2);
     });
   });

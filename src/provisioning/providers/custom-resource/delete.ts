@@ -174,8 +174,9 @@ export async function deleteImpl(
     return { outcome: 'skipped', reason: CR_NOECHO_PROPERTIES_SKIP_REASON };
   }
   // go-to-k/cdkd#4682 (the issue's second decision): a mask NO coordinate
-  // names (one embedded through `Fn::Join`, a pre-v11 record, an import or
-  // scrub record) is not re-resolvable either, and sending it is the same
+  // names (one embedded through `Fn::Join` in a record an older binary wrote,
+  // a pre-v11 record, an import or scrub record; a current deploy names the
+  // embedded one, go-to-k/cdkd#7189) is not re-resolvable either, and sending it is the same
   // hazard: a tolerant handler answers SUCCESS on `***` and the record is
   // dropped over whatever it manages.
   if (holdsMaskLeaf(payload)) {

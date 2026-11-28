@@ -384,26 +384,30 @@ it (state schema `version: 11`), so the report lists it under
 and `--accept` / `--revert` leave it alone as above. The baseline either one
 rebuilds holds `***` at every such position, whatever it accepted or
 re-recorded around it, so neither writes the live value there. `--revert` keeps AWS's value
-there and never sends `***`. What follows applies to a custom-resource value.
+there and never sends `***`. A position filled by a custom-resource
+attribute its handler declared `NoEcho` is named the same way: a property that
+IS the `Fn::GetAtt`, and one that embeds it in a longer string (`Fn::Join`,
+`Fn::Sub`) where cdkd stored that string as `***` whole. CloudFormation keeps
+the resolved value and compares it; cdkd keeps only the mask, so it lists the
+position as not compared. What follows applies to a custom-resource value in a
+record an older cdkd wrote, until a `cdkd deploy` that changes something in
+the stack saves the record again.
 
 **Such a position drifts on every run, and that is expected.** cdkd's side is
 the mask and AWS's side is the real value, so the two never converge: the
 resource is reported as drifted, the report renders `***` on both sides, and
-detection-only mode exits `1` indefinitely. cdkd does NOT drop the comparison
+detection-only mode exits `1` until then. cdkd does NOT drop the comparison
 the way it drops an absent write-only credential — there the read is
 impossible and the comparison meaningless, whereas here the live value is
 genuinely readable and cdkd simply cannot say what belongs there. Silently
 hiding it would claim a clean bill of health it has no basis for.
 
-No deploy clears it: a fresh `NoEcho` value is masked again on its way into
-state. Where `--revert` refused because AWS reports nothing at the position,
-force the custom resource to update — change one of its properties, a nonce
+Such a deploy names the position, after which it is listed as not compared.
+Where `--revert` refused because AWS reports nothing at the position, force
+the custom resource to update — change one of its properties, a nonce
 being the usual way — and re-deploy, so its handler runs again and supplies
 the value, which gives the next `--revert` a live value to keep. An ordinary
-re-deploy leaves the resource unchanged, so the handler does not run. If a
-stack in this state must gate CI on drift, either stop marking that response
-`NoEcho`, so the value round-trips normally, or gate on `--json` and filter
-the known position out.
+re-deploy leaves the resource unchanged, so the handler does not run.
 
 The same mask stands for the **`Fn::Base64` encoding of a secret value**, such
 as a `UserData` script built around a `{{resolve:...}}` reference: the
