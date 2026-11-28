@@ -539,7 +539,6 @@ sqs-fifo-unnamed	2026-11-11T08:49:53Z	PASS	70	verify.sh	rc ok, orph clean; pre-f
 ssm-document-replace	2026-11-18T18:02:14Z	PASS	206	verify.sh	rc ok, orph clean
 ssm-generated-name-grant	2026-11-14T08:27:58Z	PASS	154	verify.sh	rc ok, orph clean, e394ec742
 ssm-secure-dynamic-ref	2026-11-28T01:46:30Z	PASS	225	verify.sh	rc ok, orph clean, Phase 1e (#7154 scrub twin) ran+passed @8f5f75af5
-ssm-secure-dynamic-ref	2026-11-28T01:27:18Z	PASS	195	verify.sh	PR7168 49bc28993 us-east-1 rc ok, orph clean, 0 surviving versions
 ssm-typed-parameter-not-found	2026-11-16T04:54:02Z	PASS	60	verify.sh	rc ok, orph clean
 stack-copy-create-tokens	2026-11-10T16:05:59Z	PASS	1940	verify.sh	rc ok, orph clean
 stack-id-uuid	2026-11-13T03:29:59Z	PASS	88	verify.sh	rc ok, orph clean
