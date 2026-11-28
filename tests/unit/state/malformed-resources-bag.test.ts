@@ -3485,7 +3485,7 @@ describe('the user-facing text', () => {
       branch.indexOf('malformedRecords.length > 0'),
       'the finding is raised BELOW `options.fail`, so ScrubNeededError (exit 1, silent) fires ' +
         'first and reports "scrub found a leak" for a record scrub could not read.'
-    ).toBeLessThan(branch.indexOf('if (options.fail)'));
+    ).toBeLessThan(branch.indexOf('if (options.fail'));
 
     // The `outputs` half gets BOTH assertions too (review of
     // go-to-k/cdkd#3206). Its first cut asserted only that the identifier
@@ -3509,12 +3509,12 @@ describe('the user-facing text', () => {
     expect(
       branch.indexOf('malformedOrphanRecords.length > 0'),
       'the orphans finding is raised BELOW `options.fail`, so ScrubNeededError fires first.'
-    ).toBeLessThan(branch.indexOf('if (options.fail)'));
+    ).toBeLessThan(branch.indexOf('if (options.fail'));
     expect(
       branch.indexOf('malformedOutputRecords.length > 0'),
       'the outputs finding is raised BELOW `options.fail`, so ScrubNeededError (exit 1, silent) ' +
         'fires first and reports "scrub found a leak" for outputs scrub could not read.'
-    ).toBeLessThan(branch.indexOf('if (options.fail)'));
+    ).toBeLessThan(branch.indexOf('if (options.fail'));
   });
 });
 
