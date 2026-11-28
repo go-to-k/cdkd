@@ -48,7 +48,7 @@ import {
   readConsumerRecords,
   findDroppedOutputReaders,
 } from './outputs.js';
-import { findUnrepairedCrossStackReadNames } from './cross-stack-findings.js';
+import { repairCrossStackReadNames } from './cross-stack-read-names.js';
 import { type ScrubStackResult, exportNameDisplayOver } from './stack-result.js';
 import type { ScrubStackRewriteInput } from './stack.js';
 import {
@@ -530,14 +530,18 @@ export async function scrubStackRewritePass({
     return { ...record, state: withoutLapsedStaleShapeStamp(scrubbed) };
   });
   // go-to-k/cdkd#5111: a superseded resource's record moved out of
-  // `resources` verbatim, so it gets the same pass an orphan does, with this
-  // run's needles (it has no logical-id slot of its own to resolve).
+  // `resources` verbatim, so it gets the same pass an orphan does: this run's
+  // needles, and its own (go-to-k/cdkd#7167: the resolve pass resolves its
+  // references under `superseded:<index>`), folded back as the orphan arm
+  // does, since the union drops a value under the needle floor.
   const newSuperseded = Array.isArray(state.supersededResources)
-    ? state.supersededResources.map((entry) => {
+    ? state.supersededResources.map((entry, supersededIndex) => {
         if (!isSupersededResourceRecord(entry)) return entry;
+        const own = orphanSecrets.get(`superseded:${supersededIndex}`);
         const needles = new Map(
           allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets)
         );
+        for (const [plaintext, expression] of own ?? []) needles.set(plaintext, expression);
         if (needles.size === 0) return entry;
         const scrubbed = finishStored(
           keepHeldTokenProvenance(
@@ -554,111 +558,17 @@ export async function scrubStackRewritePass({
         return { ...entry, state: withoutLapsedStaleShapeStamp(scrubbed) };
       })
     : undefined;
-  // --- CROSS-STACK READ NAMES (go-to-k/cdkd#3337) -------------------------
-  //
-  // go-to-k/cdkd#3289 closed the WRITE side: `imports[].exportName`,
-  // `outputReads[].sourceStack` and `outputReads[].outputName` are redacted at
-  // the persist choke point, so a name an `Fn::Sub` assembled around a
-  // resolved `{{resolve:...}}` no longer reaches `state.json` in plaintext. It
-  // did NOT close the repair side — both lists rode this function's
-  // `...carriedState` spread untouched, so a record an older binary already
-  // wrote kept its plaintext and `cdkd scrub --fail` reported it clean.
-  //
-  // WHICH FIELDS, and why it is not all six: the per-field provenance is in
-  // `docs/design/3289-cross-stack-read-name-redaction.md`. Three names come
-  // from the TEMPLATE and are redactable; `sourceRegion` is an AWS region and
-  // `imports[].sourceStack` is stored verbatim forever because
-  // `scanActiveConsumers` matches destroy-time refusals on it. Redacting that
-  // one would drop a destroy-blocking record, which is why the write side
-  // leaves it alone too — the two sides must agree on the field set or a
-  // scrub would undo a deploy's deliberate decision.
-  //
-  // SCOPE IS **NEVER-AGAIN** ONLY, and the issue body was corrected before
-  // this landed rather than after. Of the four across-deploy cases,
-  // SAME-VALUE self-repairs and DUPLICATE is closed by the union normalizer;
-  // this walk closes NEVER-AGAIN, where the reference is never re-resolved so
-  // no later deploy rewrites it. **ROTATED is NOT repaired**: scrub derives
-  // its needles by re-resolving the live template, so it holds the CURRENT
-  // secret value, and the stale plaintext on disk is a value nothing in this
-  // run knows. It is REPORTED instead (go-to-k/cdkd#3382) — see
-  // `findUnrepairedCrossStackReadNames` below.
-  //
-  // The needle set is `allRecordedSecrets` — the union — for the same reason
-  // `redactUnaccountedOutputs` uses it: a cross-stack NAME is not positioned
-  // against any one resource's bag, so the per-resource scoping that protects
-  // `state.resources` has nothing to scope here.
-  //
-  // NO FLOOR IS APPLIED HERE, and an earlier revision applied one and said it
-  // matched `redactUnaccountedOutputs`. Both halves were wrong: that call site
-  // applies none either, and `allRecordedSecrets` has ALREADY dropped every
-  // sub-`MIN_NEEDLE_LENGTH` key before returning. A second copy of a
-  // security-relevant predicate is the hazard this repo documents most — the
-  // next reader sees callers filtering, removes the floor inside
-  // `allRecordedSecrets`, and silently un-floors the OTHER callers while this
-  // one stays safe. One floor, one place.
-  //
-  // A DELIBERATE DIVERGENCE FROM THE WRITE SIDE, so a later lane does not
-  // "fix" it in the fabrication direction: `DeployEngine.redactCrossStackReads`
-  // uses its own UNFILTERED union, so a sub-floor whole-value name is redacted
-  // on write and is NOT repaired here. That is the safe direction — scrub
-  // rewrites a record no deploy is re-deriving, so it must be the more
-  // conservative of the two.
-  //
-  // Scrub's union also includes `orphanSecrets`, which the write side's does
-  // not. A plaintext recorded ONLY by an orphan record therefore repairs here
-  // and would not be redacted by the next deploy's key normalizer, so that
-  // entry can re-take go-to-k/cdkd#3289's DUPLICATE shape. It needs a
-  // coincidental substring match to happen at all, and DUPLICATE is a doubled
-  // row rather than a disclosure, so it is recorded rather than designed
-  // around.
-  const crossStackNeedles = allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets);
-  // No empty-map short-circuit: `redactSecretsForState` already returns its
-  // input unchanged for an empty bag with no source, and the deploy-side twin
-  // deleted exactly this arm because a branch no probe can red is worse than
-  // no branch (go-to-k/cdkd#3289).
-  const redactCrossStackName = (name: string): string =>
-    redactForState(name, { provenance: 'value-scan', secrets: crossStackNeedles });
-  const newImports = state.imports?.map((entry) => {
-    const exportName = redactCrossStackName(entry.exportName);
-    if (exportName === entry.exportName) return entry;
-    recordsChanged++;
-    return { ...entry, exportName };
+  // --- CROSS-STACK READ NAMES (go-to-k/cdkd#3337): see `repairCrossStackReadNames`.
+  const { newImports, newOutputReads, unrepairedReadNames, changed } = repairCrossStackReadNames({
+    state,
+    outputSecrets,
+    perResourceSecrets,
+    orphanSecrets,
+    prePassFindings,
+    logger,
+    shownStack,
   });
-  const newOutputReads = state.outputReads?.map((entry) => {
-    const sourceStack = redactCrossStackName(entry.sourceStack);
-    const outputName = redactCrossStackName(entry.outputName);
-    if (sourceStack === entry.sourceStack && outputName === entry.outputName) return entry;
-    recordsChanged++;
-    return { ...entry, sourceStack, outputName };
-  });
-  // The entries the walk above could NOT repair although today's template
-  // still reads a secret-bearing name of their shape (go-to-k/cdkd#3382).
-  // Counted into the verdict so `--fail` does not exit 0 over them. Nothing
-  // is written for them: their plaintext is a value this run never learned.
-  const unrepairedReadNames = findUnrepairedCrossStackReadNames(
-    { imports: newImports, outputReads: newOutputReads },
-    prePassFindings.performedReads,
-    redactCrossStackName
-  );
-  for (const { list, index, entry } of unrepairedReadNames) {
-    // The stored NAME is never printed: it holds a secret's earlier value,
-    // which no needle this run holds can mask. `imports[].sourceStack` is a
-    // producer record's own stack name, equal to a read this run performed,
-    // and is masked anyway; `outputReads[].sourceStack` is template-derived
-    // and may be the very field holding the old value, so it is omitted.
-    const producer =
-      list === 'imports'
-        ? `producer ${displayStackName(maskSecretsInText(entry.sourceStack, crossStackNeedles))}, `
-        : '';
-    logger.warn(
-      safeMsg`Scrub of ${shownStack}: state.${list}[${index}] (${producer}${displayIdent(String(entry.sourceRegion))}) ` +
-        `holds a cross-stack read name in plaintext that has the shape of a secret-bearing ` +
-        `read in today's template but not the secret's current value — most likely a value ` +
-        `from before the secret was ROTATED. Scrub cannot repair it (it matches only the ` +
-        `current value) and does not print it; treat that earlier value as exposed. A deploy ` +
-        safeMsg`that updates ${shownStack} rewrites this list from the reads it performs.`
-    );
-  }
+  recordsChanged += changed;
 
   // `TEMPLATE_SOURCED_RULES`, converging this call with its deploy-side twin
   // `redactOutputs` in `deployment/deploy-engine/masking.ts` (issues

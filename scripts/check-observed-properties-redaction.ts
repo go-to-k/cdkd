@@ -154,6 +154,10 @@ export const CARRIERS: Readonly<Record<string, { arg: number; why: string }>> = 
     arg: 0,
     why: "returns its first argument, a leaf put back only where it equals the TEMPLATE's own plain literal",
   },
+  storedReferenceLeavesPutBack: {
+    arg: 0,
+    why: "returns its first argument, a leaf put back on the second argument's own reference text or masked (go-to-k/cdkd#7167)",
+  },
 };
 
 /** Write argument `value` into argument `target`. */

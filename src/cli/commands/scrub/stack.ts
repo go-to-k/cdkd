@@ -219,6 +219,10 @@ export async function scrubStack(
    * plaintext through different expressions the wrong expression was written. The
    * index is the only identity the collecting loop and the rewrite can agree on,
    * since both walk `state.orphans` in order and neither reorders it.
+   *
+   * A superseded record's needles join under `superseded:<index>`
+   * (go-to-k/cdkd#7167), a key no orphan index takes: its rewrite reads only
+   * the union.
    */
   const orphanSecrets = new Map<string, Map<string, string>>();
   // Filled by the cross-stack pre-pass; read by the return sites below. Hoisted

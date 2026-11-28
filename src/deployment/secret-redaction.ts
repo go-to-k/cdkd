@@ -236,6 +236,10 @@ export {
 } from './secret-redaction/secret-attribute-keys.js';
 export { storedRecordFinisher } from './secret-redaction/stored-record-finish.js';
 export {
+  withStoredReferencePositionsMasked,
+  storedReferenceLeavesPutBack,
+} from './secret-redaction/stored-reference-positions.js';
+export {
   maskSecretsInText,
   maskRecordedSecretsInText,
   ERROR_CAUSE_MASK_MAX_DEPTH,

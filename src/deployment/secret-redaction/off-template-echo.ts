@@ -43,7 +43,7 @@ export interface OffTemplateEchoRecord {
 }
 
 /** Does a token the record's `properties` hold stand for a secret? */
-type SecretReferenceTest = (token: string) => boolean;
+export type SecretReferenceTest = (token: string) => boolean;
 
 /**
  * The secret references of a record's persisted `properties`: every
@@ -69,7 +69,7 @@ type SecretReferenceTest = (token: string) => boolean;
  * for secure parameter"); cdkd resolves it (#1901), so its plaintext reaches
  * the readback.
  */
-function secretReferenceTest(provenPublic?: ProvenPublicValue): SecretReferenceTest {
+export function secretReferenceTest(provenPublic?: ProvenPublicValue): SecretReferenceTest {
   return (token) =>
     opensDynamicReferenceTo(token, 'ssm-secure') ||
     opensDynamicReferenceTo(token, 'secretsmanager') ||
@@ -77,7 +77,7 @@ function secretReferenceTest(provenPublic?: ProvenPublicValue): SecretReferenceT
 }
 
 /** The value a plain `ssm` token was PROVEN public at, else `undefined`. */
-type ProvenPublicValue = (token: string) => string | undefined;
+export type ProvenPublicValue = (token: string) => string | undefined;
 
 /**
  * Read a persisted `observedMaskedLeaves` field, tolerating a malformed one as
@@ -113,7 +113,7 @@ export function withoutObservedMaskedLeaves(
  * embeds). `undefined` when the readback does not line up with the template
  * text, or holds nothing but that text.
  */
-function plaintextFor(recorded: string, readback: unknown): string | undefined {
+export function plaintextFor(recorded: string, readback: unknown): string | undefined {
   if (typeof readback !== 'string' || readback === recorded || mentionsMask(readback)) {
     return undefined;
   }
@@ -135,7 +135,7 @@ function plaintextFor(recorded: string, readback: unknown): string | undefined {
 }
 
 /** Each coordinate of a string leaf of `bag` that holds a SECRET reference, with the leaf. */
-function secretReferenceLeaves(
+export function secretReferenceLeaves(
   bag: unknown,
   isSecretReference: SecretReferenceTest
 ): Array<{ coordinate: (string | number)[]; text: string }> {
@@ -165,7 +165,7 @@ function secretReferenceLeaves(
  * value carrying it, a secret reference): those are the positions being
  * learned. A key the readback lacks, or a shape that differs, refuses.
  */
-function corroborates(
+export function corroborates(
   live: unknown,
   recorded: unknown,
   isSecretReference: SecretReferenceTest
@@ -204,7 +204,7 @@ function corroborates(
  * differs from, so it refuses). `undefined` when neither holds: a reordered
  * list would otherwise hand over another item's public value.
  */
-function listPairing(
+export function listPairing(
   live: readonly unknown[],
   recorded: readonly unknown[],
   isSecretReference: SecretReferenceTest

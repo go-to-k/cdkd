@@ -34,6 +34,7 @@ import {
   foldAbandonedUnitVerdict,
 } from './abandoned-scan.js';
 import { SharedEntriesSecrets } from './shared-entries-secrets.js';
+import { isSupersededResourceRecord } from '../../../deployment/superseded-resources.js';
 import type { ScrubStackResolveInput, ScrubStackResolveOutput } from './stack.js';
 
 /**
@@ -486,7 +487,23 @@ export async function scrubStackResolvePass({
     // wrong rewrite, and the union in the rewrite pass is the backstop.
     // `entries()` for the INDEX, which is the key `orphanSecrets` is declared
     // with — its doc comment carries why an id key lost a row's needles.
-    for (const [orphanIndex, record] of (state.orphans ?? []).entries()) {
+    // go-to-k/cdkd#7167: a superseded record's own references too, under a key
+    // no orphan index takes. Its rewrite reads only the stack-wide union,
+    // which held none of them, so a plaintext only that record knew was kept.
+    const droppedRecords = [
+      ...(state.orphans ?? []).map((record, index) => ({
+        key: String(index),
+        kind: 'orphan record',
+        record,
+      })),
+      ...(Array.isArray(state.supersededResources) ? state.supersededResources : []).flatMap(
+        (record, index) =>
+          isSupersededResourceRecord(record)
+            ? [{ key: `superseded:${index}`, kind: 'superseded record', record }]
+            : []
+      ),
+    ];
+    for (const { key, kind, record } of droppedRecords) {
       const recordedSecretValues = newBag();
       // Registered before the pin for the same reason the resource loop
       // registers early: `pinCrossRegionSecrets` can throw AFTER recording a
@@ -494,7 +511,7 @@ export async function scrubStackResolvePass({
       // function masks against `allRecordedSecrets(..., orphanSecrets)` —
       // which reads this map. Registering after the pin would leave that
       // throw with no needle for what it had already recorded.
-      orphanSecrets.set(String(orphanIndex), recordedSecretValues);
+      orphanSecrets.set(key, recordedSecretValues);
       const resolveInput = await pinCrossRegionSecrets(
         {
           properties: record.state.properties,
@@ -511,7 +528,7 @@ export async function scrubStackResolvePass({
           producerRegions,
           resolvers,
           recordedSecretValues,
-          origin: `orphan record ${maskedIdent(record.logicalId, recordedSecretValues)}`,
+          origin: `${kind} ${maskedIdent(record.logicalId, recordedSecretValues)}`,
           recordedRegions: recordedReferenceRegions(record.state),
         }
       );
@@ -538,9 +555,9 @@ export async function scrubStackResolvePass({
           });
           reportAbandonedBag(
             abandoned,
-            `orphan record ${maskedIdent(record.logicalId, recordedSecretValues)} ${bagName}`,
+            `${kind} ${maskedIdent(record.logicalId, recordedSecretValues)} ${bagName}`,
             recordedSecretValues,
-            `orphan record ${maskedIdent(record.logicalId, recordedSecretValues)} ${bagName}`
+            `${kind} ${maskedIdent(record.logicalId, recordedSecretValues)} ${bagName}`
           );
         } catch (err) {
           // A region-AMBIGUOUS refusal is not best-effort -- see
@@ -553,7 +570,7 @@ export async function scrubStackResolvePass({
             logger.warn(
               maskSecretsInText(
                 abandonedScanWarning(
-                  `orphan record ${maskedIdent(record.logicalId, recordedSecretValues)} ${bagName}`,
+                  `${kind} ${maskedIdent(record.logicalId, recordedSecretValues)} ${bagName}`,
                   leafVerdict
                 ),
                 recordedSecretValues
@@ -562,7 +579,7 @@ export async function scrubStackResolvePass({
           }
           logger.debug(
             maskSecretsInText(
-              `Resolution of orphan record ${maskedIdent(record.logicalId, recordedSecretValues)} ${bagName} during ` +
+              `Resolution of ${kind} ${maskedIdent(record.logicalId, recordedSecretValues)} ${bagName} during ` +
                 `scrub was partial: ${describeAwsFailure(err).detail}`,
               recordedSecretValues
             )

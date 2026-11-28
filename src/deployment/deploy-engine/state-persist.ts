@@ -6,6 +6,7 @@ import {
   scrubResourceRecord,
   withOffTemplateEchoesMasked,
   withSecretAttributeKeysDropped,
+  withStoredReferencePositionsMasked,
   templateGetAttNamesOf,
   isSameGenerationBag,
   redactionClaimOf,
@@ -429,12 +430,16 @@ export function redactStateForPersist(this: DeployEngine, state: StackState): St
               this.noEchoDeps(),
               entry.logicalId,
               entry.state,
-              scrubResourceRecord(
-                entry.state,
-                orphanSecrets ?? new Map<string, string>(),
-                orphanTemplateProps,
-                undefined,
-                sameGenerationClaimsOf(entry.state)
+              // go-to-k/cdkd#7167: a plaintext an older binary left at a list
+              // position the record's own `properties` hold a reference at.
+              withStoredReferencePositionsMasked(
+                scrubResourceRecord(
+                  entry.state,
+                  orphanSecrets ?? new Map<string, string>(),
+                  orphanTemplateProps,
+                  undefined,
+                  sameGenerationClaimsOf(entry.state)
+                )
               ),
               orphanTemplateProps,
               state.resources
