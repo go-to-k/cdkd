@@ -582,9 +582,11 @@ A `NoEcho` parameter's value is masked the way a `cdkd deploy` stores it (see
   the other branch; past six condition names, only a position outside every
   `Fn::If` is one): under a verdict that fills it from a public value, the
   stored value may be that value. A record none of these position is not
-  masked by value: it is reported, with or without `--dry-run`, without
-  failing `--fail`
+  masked by value: it is reported, and fails `--fail` with or without
+  `--dry-run`, until `--mask-unpositioned` masks every string value of it
   ([A leftover record has no known NoEcho positions](cli-scrub-findings.md#a-leftover-record-has-no-known-noecho-positions)).
+  A record whose own `noEchoLeaves` is empty was positioned by a current cdkd
+  and holds none.
   An unchanged `cdkd deploy` also saves a positioned orphan or superseded
   record while it still holds a value at a position its own field or today's
   template names, so the save masks it.
