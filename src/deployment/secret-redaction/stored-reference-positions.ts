@@ -29,10 +29,10 @@ import {
  *   is paired with it;
  * - otherwise (an identity field that pairs nothing included) every readback
  *   element that could hold the value (the corroborating ones, else all) is
- *   entered along the rest of the coordinate and the leaf there is masked,
- *   unless the readback list already holds the reference as often as the
- *   recorded list does (the record was redacted when it was written). An
- *   element lacking that leaf holds no copy and is kept;
+ *   entered along the rest of the coordinate and the leaf there is masked
+ *   unless it already holds the reference or the mask. An element lacking
+ *   that leaf holds no copy and is kept, and no element is kept because
+ *   ANOTHER one holds the reference (an AWS-added element can hold the copy);
  * - at a paired leaf, a readback string that lines up with the recorded text
  *   gets that text back; any other value that is neither the reference, the
  *   mask nor `null` is masked.
@@ -51,7 +51,6 @@ export function withStoredReferencePositionsMasked<R extends OffTemplateEchoReco
   const restore: Array<{ coordinate: (string | number)[]; value: unknown }> = [];
   const mask: (string | number)[][] = [];
   for (const { coordinate, text } of secretReferenceLeaves(properties, isSecretReference)) {
-    const tokens = dynamicReferenceTokens(text).filter((token) => isSecretReference(token));
     const walk = (
       live: unknown,
       recorded: unknown,
@@ -102,9 +101,6 @@ export function withStoredReferencePositionsMasked<R extends OffTemplateEchoReco
         walk(live[only], element, depth + 1, [...path, only], ambiguous);
         return;
       }
-      // Ambiguous: the readback list already holding the reference as often
-      // as the recorded one does is a record redacted when it was written.
-      if (holdingCount(live, tokens) >= holdingCount(recorded, tokens)) return;
       // Each element that could hold the value is entered along the REST of
       // the coordinate, and only the leaf there is masked: an element lacking
       // that leaf (AWS omits a write-only secret from its readback) holds no
@@ -119,15 +115,4 @@ export function withStoredReferencePositionsMasked<R extends OffTemplateEchoReco
     ...record,
     observedProperties: maskAtCoordinates(replaceAtCoordinates(observed, restore), mask),
   };
-}
-
-/** How many string leaves of `node` hold one of `tokens`. */
-function holdingCount(node: unknown, tokens: readonly string[]): number {
-  if (typeof node === 'string') return tokens.some((token) => node.includes(token)) ? 1 : 0;
-  if (Array.isArray(node))
-    return node.reduce<number>((n, item) => n + holdingCount(item, tokens), 0);
-  if (isPlainObject(node)) {
-    return Object.values(node).reduce<number>((n, item) => n + holdingCount(item, tokens), 0);
-  }
-  return 0;
 }

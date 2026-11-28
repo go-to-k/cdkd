@@ -195,13 +195,34 @@ describe('an orphan / superseded record holding list-positioned plaintext (go-to
     expect(out).toEqual([{ Password: ref }, { Password: '***' }, { Other: 'o' }]);
   });
 
+  it('a copy in an AWS-added element is masked although another element holds the reference', () => {
+    const [ref, plain] = REFS['ssm-secure'];
+    const out = users([{ Password: ref }], [{ Password: ref }, { Password: plain }]);
+    expect(out).toEqual([{ Password: ref }, { Password: '***' }]);
+  });
+
+  it('a renamed identity-keyed element holding the plaintext is masked', () => {
+    const [ref, plain] = REFS['ssm-secure'];
+    const out = users(
+      [
+        { Name: 'a', Password: ref },
+        { Name: 'b', Password: ref },
+      ],
+      [
+        { Name: 'a', Password: ref },
+        { Name: 'c', Password: plain },
+      ]
+    );
+    expect(JSON.stringify(out)).not.toContain(plain);
+  });
+
   it('a record redacted when it was written is kept as it is, reordered or not', () => {
     const [ref] = REFS['ssm-secure'];
     for (const observed of [
       [{ Name: 'a' }, { Password: ref }],
       [{ Password: ref, Name: 'x' }, { Name: 'A' }],
-      // Ambiguous (two elements corroborate), yet the reference is already there.
-      [{ Name: 'A', Password: 'public-7167' }, { Password: ref }],
+      // Ambiguous (no element pairs), every candidate leaf already the reference.
+      [{ Name: 'A', Password: ref }, { Password: ref }],
     ]) {
       const record: ResourceState = {
         physicalId: 'o-7167',
