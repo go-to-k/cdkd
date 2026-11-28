@@ -16,7 +16,9 @@ import * as cognito from 'aws-cdk-lib/aws-cognito';
 //   software-token MFA back. Phase 2d (CDKD_TEST_MFA=off): set `mfa: OFF`
 //   explicitly, which drops EnabledMfas while MfaConfiguration stays declared.
 //   CloudFormation clears the software-token factor; cdkd used to leave it
-//   enabled under OFF (issue #7128).
+//   enabled under OFF (issue #7128). Phase 2f (CDKD_TEST_MFA=off-sms): the
+//   same OFF pool with `enableSmsRole: true`, so CDK adds an SMS caller role
+//   and an SmsConfiguration (issues #7172 / #7175).
 //
 // AWS supports adding a custom attribute in place (AddCustomAttributes), but
 // cdkd's cognito-provider.update() previously ignored Schema entirely, so the
@@ -54,7 +56,9 @@ export class CognitoCustomAttributeAddStack extends cdk.Stack {
           ? { mfa: cognito.Mfa.OPTIONAL, mfaSecondFactor: { sms: false, otp: true } }
           : mfaStep === 'off'
             ? { mfa: cognito.Mfa.OFF }
-            : {}
+            : mfaStep === 'off-sms'
+              ? { mfa: cognito.Mfa.OFF, enableSmsRole: true }
+              : {}
         : {
             mfa: cognito.Mfa.OPTIONAL,
             mfaSecondFactor: { sms: false, otp: true },

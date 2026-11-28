@@ -72,6 +72,11 @@ return to the values cdkd recorded. Properties that did not drift are sent
 with the values AWS already has, so the update leaves them alone. State is
 normally not modified.
 
+One value is left out instead. On a Cognito user pool under
+`MfaConfiguration: OFF`, `SMS_MFA` in `EnabledMfas` is not sent back. A pool
+with an `SmsConfiguration` reports that factor even with MFA off, and AWS
+refuses an SMS factor beside `OFF`. The pool keeps its SMS configuration.
+
 cdkd reverts several resources at once. `--concurrency <n>` sets how many, and
 the default is `4`. A failure on one resource does not stop the others.
 

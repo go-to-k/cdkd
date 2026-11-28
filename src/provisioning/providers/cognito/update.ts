@@ -24,6 +24,7 @@ import {
   hasMfaConfigProps,
   classifyDeclaredMfaConfiguration,
   clearsRemovedMfaConfig,
+  withoutOffSmsEcho,
 } from './mfa-request.js';
 import {
   ProvisioningError,
@@ -267,8 +268,9 @@ export function dcrConfigurationUpdate(
  * of the desired bag (`replayingState` / `desiredFromAwsReadback`), which
  * decides whether the `MfaConfiguration` shape guard below refuses (a
  * template-path update) or warns (a rollback revert or `cdkd drift
- * --revert`) — issue #3728. It reads `desiredFromAwsReadback` for that
- * origin question ONLY: this provider has no empty-collection-means-delete
+ * --revert`) — issue #3728. `desiredFromAwsReadback` also drops the
+ * `SMS_MFA` echo under OFF from both bags (`withoutOffSmsEcho`,
+ * go-to-k/cdkd#7172). This provider has no empty-collection-means-delete
  * shape, so nothing here treats a readback value as a removal.
  */
 export async function update(
@@ -281,6 +283,14 @@ export async function update(
   context?: UpdateContext
 ): Promise<ResourceUpdateResult> {
   this.logger.debug(`Updating Cognito User Pool ${logicalId}: ${physicalId}`);
+  // The bag as received: the record `effectiveProperties` describes. The SMS
+  // echo dropped below is left out of what is SENT only, so a narrowed record
+  // keeps the `SMS_MFA` the pool still reads back.
+  const receivedProperties = properties;
+  if (context?.desiredFromAwsReadback === true) {
+    properties = withoutOffSmsEcho(properties);
+    previousProperties = withoutOffSmsEcho(previousProperties);
+  }
 
   // The update-path twin of `create()`'s guard (issue #1925 item 2), split
   // on the ORIGIN of the desired bag (issue #3728). The value is read off the
@@ -711,7 +721,7 @@ export async function update(
     // without it a `--revert` re-issued the same substitution forever while
     // the record kept describing a value AWS does not hold.
     const narrowed = withPreviousCreateTimeOnly(
-      narrowMfaConfiguration(properties),
+      narrowMfaConfiguration(receivedProperties),
       previousProperties,
       keptCreateTimeOnly
     );
@@ -727,7 +737,7 @@ export async function update(
         ProviderURL: providerUrl,
         UserPoolId: physicalId,
       },
-      ...(effectiveProperties !== properties ? { effectiveProperties } : {}),
+      ...(effectiveProperties !== receivedProperties ? { effectiveProperties } : {}),
     };
   } catch (error) {
     // Let the typed immutable-update rejection propagate so the deploy

@@ -46,14 +46,14 @@ export function canonicalizeDesiredProperties(
 
 /**
  * The drift PAIR rule for a pool a pre-#7128 release left holding the
- * software-token factor (go-to-k/cdkd#7134).
+ * software-token factor (go-to-k/cdkd#7134, #7172).
  *
  * Before #7135, an update that removed every MFA factor under
  * `MfaConfiguration: OFF` sent `UpdateUserPool` OFF only, which keeps
  * `SoftwareTokenMfaConfiguration` enabled (measured, see
  * `clearsRemovedMfaConfig`). The readback captured right after that update
  * became the `observedProperties` baseline, so it records
- * `EnabledMfas: [SOFTWARE_TOKEN_MFA]` while `properties` declare no factor,
+ * `SOFTWARE_TOKEN_MFA` in `EnabledMfas` while `properties` declare no factor,
  * and drift compared the leftover against itself: clean.
  *
  * When the recorded `properties` declare no MFA-config-routed property and
@@ -69,15 +69,16 @@ export function canonicalizeDesiredProperties(
  * WebAuthn block (so the readback-derived desired bag declares it), with the
  * full-replace `SetUserPoolMfaConfig` carrying that block and no factor.
  *
- * Only a baseline whose factors are that member alone. `SMS_MFA` reads back
- * from an `SmsMfaConfiguration` the reset leaves in place (measured for
- * #7135), so dropping it would be phantom drift `--revert` cannot clear, and
- * a list holding it beside the software token is left as recorded (see
- * below; go-to-k/cdkd#7172); `EMAIL_OTP`'s leftover is unmeasured. The
- * WebAuthn keys are left alone: the reset carries the live WebAuthn block on
- * purpose (`resetMfaConfigOff`).
+ * Only a baseline whose other factors are `SMS_MFA` (#7172: a pool that went
+ * from OPTIONAL + SMS + token to OFF). `SMS_MFA` reads back from an
+ * `SmsMfaConfiguration` no OFF call removes, so it stays in the baseline,
+ * matching the readback after the reset, and `update()` leaves it out of the
+ * revert's request (`withoutOffSmsEcho`). `EMAIL_OTP`'s leftover is
+ * unmeasured, so a list holding it is left as recorded. The WebAuthn keys are
+ * left alone: the reset carries the live WebAuthn block on purpose
+ * (`resetMfaConfigOff`).
  *
- * A pool the fixed release updated reads `EnabledMfas: []` on both sides, so
+ * A pool the fixed release updated reads the same list on both sides, so
  * nothing changes. An `--accept`ed leftover is indistinguishable from the
  * pre-fix capture (both record the live list), so it keeps reporting: the
  * template cannot declare that state (OFF beside a factor block is refused,
@@ -98,18 +99,24 @@ export function canonicalizeDriftPair(
   if (hasMfaConfigProps(properties)) return unchanged;
   if (baseline['MfaConfiguration'] !== 'OFF') return unchanged;
   const recorded = baseline['EnabledMfas'];
-  // The software token ALONE: beside another factor the revert would send
-  // that factor under OFF, which the pre-flight refuses
+  // The software token, alone or beside SMS: beside `EMAIL_OTP` the revert
+  // would send that factor under OFF, which the pre-flight refuses
   // (`describeUnsupportedMfaCombination`), so the rule would advertise a
   // revert that cannot succeed.
   if (
     !Array.isArray(recorded) ||
-    recorded.length === 0 ||
-    recorded.some((factor) => factor !== MFA_FACTOR_SOFTWARE_TOKEN)
+    !recorded.includes(MFA_FACTOR_SOFTWARE_TOKEN) ||
+    recorded.some((factor) => factor !== MFA_FACTOR_SOFTWARE_TOKEN && factor !== MFA_FACTOR_SMS)
   ) {
     return unchanged;
   }
-  return Promise.resolve({ baseline: { ...baseline, EnabledMfas: [] }, aws });
+  return Promise.resolve({
+    baseline: {
+      ...baseline,
+      EnabledMfas: recorded.filter((factor) => factor !== MFA_FACTOR_SOFTWARE_TOKEN),
+    },
+    aws,
+  });
 }
 
 /**
