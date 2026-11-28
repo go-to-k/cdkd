@@ -13,7 +13,12 @@ import { isSupersededResourceRecord } from '../../../deployment/superseded-resou
 import { safeMsg } from '../../../utils/display-safe.js';
 import type { ResourceState, StackState } from '../../../types/state.js';
 import type { CloudFormationTemplate } from '../../../types/resource.js';
-import type { ScrubNoEchoPlan } from './noecho.js';
+import {
+  scrubResourceRecord,
+  type RecordedSecretValues,
+} from '../../../deployment/secret-redaction.js';
+import { keepHeldTokenProvenance } from '../../../deployment/reference-provenance-record.js';
+import { applyScrubNoEcho, scrubMigrationNeedles, type ScrubNoEchoPlan } from './noecho.js';
 
 /** A record `state.resources` does not hold: a rollback orphan or a superseded one. */
 export interface StoredNoEchoRow {
@@ -204,4 +209,39 @@ export function unverifiableNoEchoRecordWarning(
   record: UnverifiableNoEchoRecord
 ): string {
   return safeMsg`The ${record.kind} ${record.logicalId} (${record.resourceType}) in ${shownStack} names no NoEcho positions, and today's template no longer declares its logical id as that type: if a cdkd older than state schema v11 wrote it, a NoEcho value may sit in its properties in plaintext, and scrub cannot tell which leaf, so this stack is not reported clean. Check that record in the state file by hand.`;
+}
+
+/**
+ * One orphan or superseded record's rewrite (go-to-k/cdkd#2943 / #5111 /
+ * #7191): this run's `needles` by value, then its `NoEcho` plan, the plaintext
+ * found at a position a needle of a second pass over this record alone (the
+ * live arm's migration rule). `finish` is the stored-record finisher bound to
+ * the record as read.
+ */
+export function scrubStoredRecord(
+  state: ResourceState,
+  needles: RecordedSecretValues,
+  plan: ScrubNoEchoPlan | undefined,
+  publicTokens: ReadonlySet<string>,
+  finish: (record: ResourceState, needles: RecordedSecretValues) => ResourceState
+): ResourceState {
+  const migrationNeedles = scrubMigrationNeedles(plan, publicTokens);
+  const walk = (bag: RecordedSecretValues, from: ResourceState): ResourceState =>
+    scrubResourceRecord(from, bag, undefined, 'state-cross-generation', {
+      properties: 'unproven',
+      observed: 'unproven',
+    });
+  let next = needles.size === 0 ? state : walk(needles, state);
+  if (migrationNeedles !== undefined) next = walk(migrationNeedles, next);
+  if (plan === undefined) {
+    return finish(needles.size > 0 ? keepHeldTokenProvenance(next) : next, needles);
+  }
+  // The finish FIRST: it reads a value too short for a needle off the record's
+  // `noEchoLeaves` positions (#7188), which the plan then masks. The plan keeps
+  // every attribute name the finish declared.
+  const finished = finish(next, new Map([...needles, ...(migrationNeedles ?? [])]));
+  const attributeNames = [
+    ...new Set([...plan.attributeNames, ...(noEchoAttributeNamesOf(finished) ?? [])]),
+  ].sort();
+  return keepHeldTokenProvenance(applyScrubNoEcho(finished, state, { ...plan, attributeNames }));
 }

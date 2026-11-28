@@ -61,10 +61,10 @@ import {
 } from './noecho.js';
 import {
   planScrubStoredNoEcho,
+  scrubStoredRecord,
   storedNoEchoRows,
   unverifiableNoEchoRecordWarning,
 } from './noecho-stored.js';
-import { noEchoAttributeNamesOf } from '../../../deployment/deploy-engine/noecho.js';
 
 /**
  * {@link scrubStack}'s rewrite pass, moved verbatim (go-to-k/cdkd#5835): from
@@ -594,37 +594,15 @@ export async function scrubStackRewritePass({
     for (const [plaintext, expression] of orphanSecrets.get(key) ?? []) {
       needles.set(plaintext, expression);
     }
-    const plan = storedNoEcho.byKey.get(key);
-    const migrationNeedles = scrubMigrationNeedles(plan, noEchoPublicTokens);
-    const walk = (bag: RecordedSecretValues, from: typeof row.state): typeof row.state =>
-      scrubResourceRecord(from, bag, undefined, 'state-cross-generation', {
-        properties: 'unproven',
-        observed: 'unproven',
-      });
     // go-to-k/cdkd#7188: what today's template resolves for its logical id.
     const stored = storedInput(row.logicalId, row.state);
-    let next = needles.size === 0 ? row.state : walk(needles, row.state);
-    if (migrationNeedles !== undefined) next = walk(migrationNeedles, next);
-    let scrubbed: typeof row.state;
-    if (plan === undefined) {
-      if (needles.size > 0) next = keepHeldTokenProvenance(next);
-      scrubbed = finishStored(next, needles, stored);
-    } else {
-      // The finish FIRST: it reads a value too short for a needle off the
-      // record's `noEchoLeaves` positions (#7188), which the plan then masks.
-      // The plan keeps every attribute name the finish declared.
-      const finished = finishStored(
-        next,
-        new Map([...needles, ...(migrationNeedles ?? [])]),
-        stored
-      );
-      const attributeNames = [
-        ...new Set([...plan.attributeNames, ...(noEchoAttributeNamesOf(finished) ?? [])]),
-      ].sort();
-      scrubbed = keepHeldTokenProvenance(
-        applyScrubNoEcho(finished, row.state, { ...plan, attributeNames })
-      );
-    }
+    const scrubbed = scrubStoredRecord(
+      row.state,
+      needles,
+      storedNoEcho.byKey.get(key),
+      noEchoPublicTokens,
+      (record, bag) => finishStored(record, bag, stored)
+    );
     if (JSON.stringify(scrubbed) === JSON.stringify(row.state)) return row;
     recordsChanged++;
     return { ...row, state: withoutLapsedStaleShapeStamp(scrubbed) };
