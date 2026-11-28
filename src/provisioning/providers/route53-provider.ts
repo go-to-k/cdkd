@@ -56,8 +56,8 @@ import {
   updateRecordSetGroup,
   deleteRecordSetGroup,
   readRecordSetGroup,
-  importRecordSetGroup,
 } from './route53/record-set-group.js';
+import { importRecordSetGroup } from './route53/record-set-group-import.js';
 import {
   applyHostedZoneTags,
   readHostedZoneTags,
@@ -233,7 +233,9 @@ export class Route53Provider implements ResourceProvider {
   createOrAdoptHostedZone(
     input: CreateHostedZoneCommandInput,
     mask?: (text: string) => string
-  ): Promise<Partial<Pick<CreateHostedZoneCommandOutput, 'HostedZone' | 'DelegationSet'>>> {
+  ): Promise<
+    Partial<Pick<CreateHostedZoneCommandOutput, 'HostedZone' | 'DelegationSet' | 'ChangeInfo'>>
+  > {
     return createOrAdoptHostedZone.call(this, input, mask);
   }
 

@@ -14,6 +14,8 @@ import { ProvisioningError } from '../../../utils/error-handler.js';
 import { isRefusedByName, type DeleteProgress } from '../../delete-started.js';
 import type { UpdateContext } from '../../../types/resource.js';
 import { declaredVpcIds, sentence } from './shared.js';
+import { createMaskedLogSinks } from '../../masked-retry-logger.js';
+import { changeIdOf, waitForRoute53ChangeInsync } from './change-wait.js';
 
 // ─── HostedZone Helpers ───────────────────────────────────────────
 
@@ -430,6 +432,8 @@ export async function syncVPCAssociations(
 
     const currentVpcIds = new Set(currentVpcs.map((v) => v.VPCId));
     const desiredVpcIds = new Set(desiredVpcs.map((v) => v['VPCId'] as string));
+    // go-to-k/cdkd#7132: the changes `--full-wait` waits on for INSYNC.
+    const changeIds: Array<string | undefined> = [];
 
     // Associate new VPCs
     for (const vpc of desiredVpcs) {
@@ -437,7 +441,7 @@ export async function syncVPCAssociations(
       if (!currentVpcIds.has(vpcId)) {
         this.logger.debug(`Associating VPC ${vpcId} with hosted zone ${zoneId}`);
         marks?.markUnsettled?.('VPCs');
-        await this.getClient().send(
+        const associated = await this.getClient().send(
           new AssociateVPCWithHostedZoneCommand({
             HostedZoneId: zoneId,
             VPC: {
@@ -448,6 +452,7 @@ export async function syncVPCAssociations(
         );
         marks?.markAttempted?.('VPCs', [vpcId]);
         currentVpcIds.add(vpcId);
+        changeIds.push(changeIdOf(associated));
       }
     }
 
@@ -459,7 +464,7 @@ export async function syncVPCAssociations(
       if (vpc.VPCId && previousVpcIds.has(vpc.VPCId) && !desiredVpcIds.has(vpc.VPCId)) {
         this.logger.debug(`Disassociating VPC ${vpc.VPCId} from hosted zone ${zoneId}`);
         marks?.markUnsettled?.('VPCs');
-        await this.getClient().send(
+        const disassociated = await this.getClient().send(
           new DisassociateVPCFromHostedZoneCommand({
             HostedZoneId: zoneId,
             VPC: {
@@ -467,6 +472,21 @@ export async function syncVPCAssociations(
               VPCRegion: vpc.VPCRegion,
             },
           })
+        );
+        changeIds.push(changeIdOf(disassociated));
+      }
+    }
+
+    // Under --full-wait, as CloudFormation's VPCs update does (~103 s
+    // measured); the changes propagate in parallel.
+    if (process.env['CDKD_FULL_WAIT'] === 'true') {
+      const log = createMaskedLogSinks(this.logger, mask);
+      for (const changeId of changeIds) {
+        await waitForRoute53ChangeInsync(
+          this.getClient(),
+          changeId,
+          `hosted zone ${logicalId} VPC association`,
+          log
         );
       }
     }

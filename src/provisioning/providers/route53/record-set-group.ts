@@ -10,8 +10,6 @@ import { assertRegionMatch, type DeleteContext } from '../../region-check.js';
 import type {
   ResourceCreateResult,
   ResourceDeleteResult,
-  ResourceImportInput,
-  ResourceImportResult,
   ResourceNotFound,
   ResourceUpdateResult,
   UpdateContext,
@@ -22,6 +20,9 @@ import {
   markRefusedBeforeApplying,
 } from '../../../deployment/prior-attempt-scope.js';
 import { safeMsg } from '../../../utils/display-safe.js';
+import { createMaskedLogSinks } from '../../masked-retry-logger.js';
+import { markCreatedBeforeFailure } from '../../auxiliary-failure.js';
+import { changeIdOf, waitForRoute53ChangeInsync } from './change-wait.js';
 import {
   redactedDeleteAddressFields,
   redactedDeleteAddressSkip,
@@ -36,7 +37,6 @@ import {
   recordedZoneForSwitch,
   refuseCfnUnresolvableZoneName,
   withTemplateAliasConflicts,
-  isMatchableSetIdentifier,
 } from './shared.js';
 import {
   RECORD_SET_GROUP_TYPE,
@@ -55,6 +55,7 @@ import {
   updateBatchClient,
   isUnambiguousClientRefusal,
   isRecordNotFoundRefusal,
+  groupSubject,
 } from './record-set-group-shape.js';
 
 // ─── AWS::Route53::RecordSetGroup ──────────────────────────────────
@@ -173,11 +174,6 @@ function desiredGroup(
   return { records: parsed.records, zone: zone.zone };
 }
 
-const groupSubject = {
-  noun: 'record set group',
-  remedy: 'set HostedZoneId explicitly',
-};
-
 export async function createRecordSetGroup(
   this: Route53Provider,
   logicalId: string,
@@ -217,9 +213,10 @@ export async function createRecordSetGroup(
     return { physicalId: compositeId, attributes: {} };
   }
 
+  let changeId: string | undefined;
   try {
     const comment = properties['Comment'];
-    await this.getClient().send(
+    const created = await this.getClient().send(
       new ChangeResourceRecordSetsCommand({
         HostedZoneId: hostedZoneId,
         ChangeBatch: {
@@ -233,8 +230,8 @@ export async function createRecordSetGroup(
         },
       })
     );
+    changeId = changeIdOf(created);
     this.logger.debug(safeMsg`Successfully created record set group ${logicalId}: ${compositeId}`);
-    return { physicalId: compositeId, attributes: {} };
   } catch (error) {
     if (error instanceof ProvisioningError) throw error;
     const cause = error instanceof Error ? error : undefined;
@@ -254,6 +251,20 @@ export async function createRecordSetGroup(
     );
     throw cnameConflict ? markNameCollision(wrapped) : wrapped;
   }
+
+  // go-to-k/cdkd#7132: under --full-wait, as CloudFormation does. Only a
+  // Ctrl-C throws here, and the records are live by then.
+  try {
+    await waitForRoute53ChangeInsync(
+      this.getClient(),
+      changeId,
+      `record set group ${logicalId}`,
+      createMaskedLogSinks(this.logger, mask)
+    );
+  } catch (error) {
+    throw markCreatedBeforeFailure(error, logicalId, resourceType, compositeId);
+  }
+  return { physicalId: compositeId, attributes: {} };
 }
 
 /**
@@ -432,6 +443,7 @@ async function applyRecordSetGroupUpdate(
     );
   }
 
+  let changeId: string | undefined;
   try {
     const desiredKeys = new Set<string>();
     const changes: Change[] = [];
@@ -490,7 +502,7 @@ async function applyRecordSetGroupUpdate(
     if (changes.length > 0) {
       const comment = properties['Comment'];
       progress.sent = true;
-      await updateBatchClient(this).send(
+      const updated = await updateBatchClient(this).send(
         new ChangeResourceRecordSetsCommand({
           HostedZoneId: hostedZoneId,
           ChangeBatch: {
@@ -505,10 +517,10 @@ async function applyRecordSetGroupUpdate(
           },
         })
       );
+      changeId = changeIdOf(updated);
     }
 
     this.logger.debug(safeMsg`Successfully updated record set group ${logicalId}`);
-    return { physicalId: compositeId, wasReplaced: false, attributes: {} };
   } catch (error) {
     if (error instanceof ProvisioningError) throw error;
     // A send failure Route 53 did not author as a client refusal may follow a
@@ -535,6 +547,16 @@ async function applyRecordSetGroupUpdate(
         )
     );
   }
+
+  // go-to-k/cdkd#7132: under --full-wait, as CloudFormation does; nothing to
+  // wait on when the update sent no batch.
+  await waitForRoute53ChangeInsync(
+    this.getClient(),
+    changeId,
+    `record set group ${logicalId}`,
+    createMaskedLogSinks(this.logger, context?.maskSecrets)
+  );
+  return { physicalId: compositeId, wasReplaced: false, attributes: {} };
 }
 
 /**
@@ -671,6 +693,7 @@ export async function deleteRecordSetGroup(
 
   if (records.length === 0) return;
 
+  const changeIds: Array<string | undefined> = [];
   try {
     // Each DELETE carries the LIVE record when the bounded lookup finds it
     // (the recorded values can lag an out-of-band edit), else the recorded
@@ -704,7 +727,7 @@ export async function deleteRecordSetGroup(
       );
     const sendSettled = async (sets: ResourceRecordSet[]) => {
       try {
-        await send(sets);
+        changeIds.push(changeIdOf(await send(sets)));
       } catch (error) {
         // While the zone's AcceleratedRecoveryStatus is transitioning, Route
         // 53 refuses every mutation (issue #1467); wait it out, then retry
@@ -715,7 +738,7 @@ export async function deleteRecordSetGroup(
           safeMsg`Hosted zone ${hostedZoneId} is mid AcceleratedRecovery transition (marked disabled for mutation); waiting for it to settle before retrying delete of record set group ${logicalId}`
         );
         await this.waitForAcceleratedRecoveryMutable(hostedZoneId, logicalId, resourceType);
-        await send(sets);
+        changeIds.push(changeIdOf(await send(sets)));
       }
     };
 
@@ -760,6 +783,18 @@ export async function deleteRecordSetGroup(
           physicalId,
           cause
         )
+    );
+  }
+
+  // go-to-k/cdkd#7132: under --full-wait, as CloudFormation's delete does;
+  // a record-by-record delete's changes propagate in parallel.
+  const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
+  for (const changeId of changeIds) {
+    await waitForRoute53ChangeInsync(
+      this.getClient(),
+      changeId,
+      `record set group ${logicalId} deletion`,
+      log
     );
   }
 }
@@ -845,148 +880,4 @@ export async function readRecordSetGroup(
     if (properties?.[key] !== undefined) groupZone[key] = properties[key];
   }
   return { ...groupZone, RecordSets: observed };
-}
-
-/**
- * Auto-mode adoption of a group (go-to-k/cdkd#6662). A group is no AWS
- * object, only its records, which the template names exactly: the zone
- * resolves from the template (the import loop substitutes a `Ref` to a zone
- * adopted earlier in the run), and the group is adopted only when EVERY
- * record is live, named by its logical id. Anything less
- * declines (`null`), a failed zone lookup included; a failed record read
- * propagates.
- */
-async function importRecordSetGroupFromTemplate(
-  this: Route53Provider,
-  input: ResourceImportInput
-): Promise<ResourceImportResult | null> {
-  const parsed = groupRecordSets(input.properties);
-  if ('refusal' in parsed || parsed.records.length === 0) return null;
-  const zoneProps = groupZoneProperties(input.properties, parsed.records);
-  if ('refusal' in zoneProps) return null;
-  // An unresolved SetIdentifier cannot pick one record among its siblings.
-  if (
-    parsed.records.some(
-      (r) => r['SetIdentifier'] !== undefined && !isMatchableSetIdentifier(r['SetIdentifier'])
-    )
-  ) {
-    return null;
-  }
-  let hostedZoneId: string;
-  try {
-    hostedZoneId = await this.resolveHostedZoneId(
-      zoneProps.zone,
-      input.logicalId,
-      input.resourceType,
-      input.logicalId,
-      { requireUnambiguousZoneName: true, subject: groupSubject }
-    );
-  } catch {
-    return null;
-  }
-  // The logical id names the group: a deploy's generated name needs the
-  // stack's name generations, which an import has not read, and every reader
-  // accepts the logical id (`namesThisGroup`).
-  const physicalId = recordSetGroupCompositeId(hostedZoneId, input.logicalId);
-  const observed = await readRecordSetGroup.call(
-    this,
-    physicalId,
-    input.logicalId,
-    input.properties
-  );
-  if (
-    !observed ||
-    observed === RESOURCE_NOT_FOUND ||
-    !Array.isArray(observed['RecordSets']) ||
-    observed['RecordSets'].length !== parsed.records.length
-  ) {
-    return null;
-  }
-  return { physicalId, attributes: {} };
-}
-
-/**
- * Adopt an existing group (`cdkd import --resource <id>=<physicalId>`). The
- * supplied id is CloudFormation's group name (or a cdkd id); the zone and the
- * records come from the template, every record is verified live, and the
- * recorded id is cdkd's composite. Anything cdkd cannot verify keeps the
- * supplied id verbatim, which delete and drift resolve through the recorded
- * properties. With no id, {@link importRecordSetGroupFromTemplate}.
- */
-export async function importRecordSetGroup(
-  this: Route53Provider,
-  input: ResourceImportInput
-): Promise<ResourceImportResult | null> {
-  const known = input.knownPhysicalId;
-  if (!known) return importRecordSetGroupFromTemplate.call(this, input);
-
-  const adoptVerbatim = (reason: string): ResourceImportResult => {
-    this.logger.warn(
-      safeMsg`Record set group ${input.logicalId}: could not verify physical id '${known}' (${reason}). Adopting it as-is.`
-    );
-    return { physicalId: known, attributes: {} };
-  };
-
-  // A cdkd id's zone segment is what delete addresses, so an unverified one is
-  // never adopted: a wrong zone answers `NoSuchHostedZone`, which delete reads
-  // as already gone while the real records stay live.
-  const knownComposite = parseRecordSetGroupCompositeId(known, input.logicalId);
-  const decline = (reason: string): null => {
-    this.logger.warn(
-      safeMsg`Record set group ${input.logicalId}: could not verify physical id '${known}' (${reason}). Not importing it.`
-    );
-    return null;
-  };
-  const unverified = (reason: string) => (knownComposite ? decline(reason) : adoptVerbatim(reason));
-
-  const parsed = groupRecordSets(input.properties);
-  if ('refusal' in parsed) return unverified(parsed.refusal);
-  const zoneProps = groupZoneProperties(input.properties, parsed.records);
-  if ('refusal' in zoneProps) return unverified(zoneProps.refusal);
-
-  let hostedZoneId: string;
-  if (knownComposite) {
-    hostedZoneId = knownComposite.hostedZoneId;
-  } else {
-    try {
-      hostedZoneId = await this.resolveHostedZoneId(
-        zoneProps.zone,
-        input.logicalId,
-        input.resourceType,
-        known,
-        { requireUnambiguousZoneName: true, subject: groupSubject }
-      );
-    } catch {
-      return adoptVerbatim('the template does not unambiguously resolve to a hosted zone');
-    }
-  }
-
-  let observed: Record<string, unknown> | ResourceNotFound | undefined;
-  try {
-    observed = await readRecordSetGroup.call(
-      this,
-      recordSetGroupCompositeId(hostedZoneId, existingGroupName(known, input.logicalId)),
-      input.logicalId,
-      input.properties
-    );
-  } catch (err) {
-    const head = `Record set group ${input.logicalId}: verification of '${known}' failed: `;
-    const reason = `verification failed: ${this.warnFailureText(head, err, undefined).replace(/\.$/, '')}`;
-    return unverified(reason);
-  }
-  // A read leaves out a member proven gone (go-to-k/cdkd#6660), so a short
-  // list is a group missing a record, which adoption must not vouch for.
-  if (
-    !observed ||
-    observed === RESOURCE_NOT_FOUND ||
-    !Array.isArray(observed['RecordSets']) ||
-    observed['RecordSets'].length !== parsed.records.length
-  ) {
-    const reason = 'not every record was found under the resolved hosted zone';
-    return unverified(reason);
-  }
-  return {
-    physicalId: recordSetGroupCompositeId(hostedZoneId, existingGroupName(known, input.logicalId)),
-    attributes: {},
-  };
 }

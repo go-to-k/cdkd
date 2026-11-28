@@ -38,6 +38,9 @@ import {
   revertedRecordMode,
 } from './shared.js';
 import { isRecordValuesMismatchRefusal } from './record-set-group-shape.js';
+import { createMaskedLogSinks } from '../../masked-retry-logger.js';
+import { markCreatedBeforeFailure } from '../../auxiliary-failure.js';
+import { changeIdOf, waitForRoute53ChangeInsync } from './change-wait.js';
 
 // ─── AWS::Route53::RecordSet ───────────────────────────────────────
 export async function createRecordSet(
@@ -81,6 +84,7 @@ export async function createRecordSet(
   // recorded `Name` / `Type` (`parseRecordSetCompositeId`).
   const compositeId = recordSetCompositeId(hostedZoneId, recordName, recordType);
 
+  let changeId: string | undefined;
   try {
     const resourceRecordSet = replayingState
       ? this.buildResourceRecordSet(properties)
@@ -88,7 +92,7 @@ export async function createRecordSet(
 
     const comment = properties['Comment'] as string | undefined;
 
-    await this.getClient().send(
+    const created = await this.getClient().send(
       new ChangeResourceRecordSetsCommand({
         HostedZoneId: hostedZoneId,
         ChangeBatch: {
@@ -102,13 +106,9 @@ export async function createRecordSet(
         },
       })
     );
+    changeId = changeIdOf(created);
 
     this.logger.debug(`Successfully created record set ${logicalId}: ${compositeId}`);
-
-    return {
-      physicalId: compositeId,
-      attributes: {},
-    };
   } catch (error) {
     if (error instanceof ProvisioningError) throw error;
     const cause = error instanceof Error ? error : undefined;
@@ -128,6 +128,24 @@ export async function createRecordSet(
     );
     throw cnameConflict ? markNameCollision(wrapped) : wrapped;
   }
+
+  // go-to-k/cdkd#7132: under --full-wait, as CloudFormation does. Only a
+  // Ctrl-C throws here, and the record is live by then.
+  try {
+    await waitForRoute53ChangeInsync(
+      this.getClient(),
+      changeId,
+      `record set ${logicalId}`,
+      createMaskedLogSinks(this.logger, mask)
+    );
+  } catch (error) {
+    throw markCreatedBeforeFailure(error, logicalId, resourceType, compositeId);
+  }
+
+  return {
+    physicalId: compositeId,
+    attributes: {},
+  };
 }
 
 export async function updateRecordSet(
@@ -254,7 +272,7 @@ export async function updateRecordSet(
         ]
       : [{ Action: 'UPSERT', ResourceRecordSet: resourceRecordSet }];
 
-    await this.getClient().send(
+    const updated = await this.getClient().send(
       new ChangeResourceRecordSetsCommand({
         HostedZoneId: hostedZoneId,
         ChangeBatch: {
@@ -262,6 +280,14 @@ export async function updateRecordSet(
           Changes: changes,
         },
       })
+    );
+
+    // go-to-k/cdkd#7132: under --full-wait, as CloudFormation does.
+    await waitForRoute53ChangeInsync(
+      this.getClient(),
+      changeIdOf(updated),
+      `record set ${logicalId}`,
+      createMaskedLogSinks(this.logger, context?.maskSecrets)
     );
 
     this.logger.debug(`Successfully updated record set ${logicalId}`);
@@ -453,6 +479,7 @@ export async function deleteRecordSet(
     }
   }
 
+  let changeId: string | undefined;
   try {
     const resourceRecordSet = this.buildResourceRecordSet(properties);
 
@@ -472,7 +499,7 @@ export async function deleteRecordSet(
       );
     const deleteRecord = async (recordSet: ResourceRecordSet): Promise<void> => {
       try {
-        await sendDelete(recordSet);
+        changeId = changeIdOf(await sendDelete(recordSet));
       } catch (error) {
         // While the zone's AcceleratedRecoveryStatus is transitioning
         // (ENABLING / DISABLING / *_HOSTED_ZONE_LOCKED), Route 53 refuses
@@ -489,7 +516,7 @@ export async function deleteRecordSet(
           `Hosted zone ${hostedZoneId} is mid AcceleratedRecovery transition (marked disabled for mutation); waiting for it to settle before retrying delete of record set ${logicalId}`
         );
         await this.waitForAcceleratedRecoveryMutable(hostedZoneId, logicalId, resourceType);
-        await sendDelete(recordSet);
+        changeId = changeIdOf(await sendDelete(recordSet));
       }
     };
 
@@ -551,6 +578,15 @@ export async function deleteRecordSet(
         )
     );
   }
+
+  // go-to-k/cdkd#7132: under --full-wait, as CloudFormation's delete does
+  // (~32 s measured for a TXT record, us-east-1).
+  await waitForRoute53ChangeInsync(
+    this.getClient(),
+    changeId,
+    `record set ${logicalId} deletion`,
+    createMaskedLogSinks(this.logger, context?.maskSecrets)
+  );
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────
