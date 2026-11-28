@@ -10,29 +10,37 @@ import { isPlainObject } from '../../../deployment/secret-redaction/rules.js';
 const MAX_HOLES = 4;
 const MAX_STORED_LENGTH = 4096;
 
-type Segment = { literal: string } | { hole: 'secret' | 'public' };
+type Segment = { literal: string } | { hole: 'secret' };
 
 /**
  * The parts of an output's template `Value` in order: its literal text, and a
- * hole per intrinsic, `public` only for a pseudo parameter (`AWS::Region`).
+ * hole per other intrinsic. A pseudo parameter in `pseudo` is its literal value.
  * Only an `Fn::Join` with a literal delimiter, or an `Fn::Sub` string, is
  * taken apart; `undefined` for any other shape.
  */
-function segmentsOf(value: unknown, sources: NoEchoPositionSources): Segment[] | undefined {
+function segmentsOf(
+  value: unknown,
+  sources: NoEchoPositionSources,
+  pseudo: ReadonlyMap<string, string>
+): Segment[] | undefined {
   if (!isPlainObject(value) || Object.keys(value).length !== 1) return undefined;
-  // Only a pseudo parameter is kept in the clear: any other part may carry a
-  // secret no needle covers (a short dynamic reference's plaintext), which
-  // masking the output whole used to hide too.
-  const hole = (node: unknown): Segment => ({
-    hole:
+  // Only a pseudo parameter whose value is known (the region, the stack name)
+  // is kept, as its literal text: any other part may carry a secret no needle
+  // covers (a short dynamic reference's plaintext), which masking the output
+  // whole used to hide too, and matching a known value exactly cannot hand a
+  // secret's text to it.
+  const hole = (node: unknown): Segment => {
+    if (
       !readsNoEchoSource(node, sources) &&
       isPlainObject(node) &&
       Object.keys(node).length === 1 &&
       typeof node['Ref'] === 'string' &&
-      node['Ref'].startsWith('AWS::')
-        ? 'public'
-        : 'secret',
-  });
+      pseudo.has(node['Ref'])
+    ) {
+      return { literal: pseudo.get(node['Ref'])! };
+    }
+    return { hole: 'secret' };
+  };
   if (Object.hasOwn(value, 'Fn::Join')) {
     const args = value['Fn::Join'];
     if (!Array.isArray(args) || typeof args[0] !== 'string' || !Array.isArray(args[1])) {
@@ -73,49 +81,33 @@ function segmentsOf(value: unknown, sources: NoEchoPositionSources): Segment[] |
  * The persisted form of a stored output that reads a `NoEcho` source
  * (go-to-k/cdkd#7190): the template's own literal text kept and each part
  * reading a `NoEcho` source replaced by the mask, as a deploy's value scan
- * writes an embedding output (`token=***;`). Every part other than a pseudo
- * parameter is masked, whatever it reads. Any shape this cannot match
- * EXACTLY is masked whole, the safe side.
- *
- * A secret hole is matched greedily and a public one lazily, so an ambiguous
- * split hands text to the mask, never to a part kept in the clear. Two holes
- * with no literal between them cannot be split at all, so they mask whole.
+ * writes an embedding output (`token=***;`). Every part other than a known
+ * pseudo parameter is masked, whatever it reads. Any shape this cannot match
+ * EXACTLY is masked whole, the safe side. Only template text (and the known
+ * pseudo values) is ever kept, so no stored text survives outside a mask; two
+ * holes with no literal between them mask whole.
  */
 export function exactNoEchoOutputMask(
   stored: unknown,
   templateValue: unknown,
-  sources: NoEchoPositionSources
+  sources: NoEchoPositionSources,
+  pseudo: ReadonlyMap<string, string>
 ): unknown {
   const whole = maskWholeValue(stored);
   if (typeof stored !== 'string' || stored.length > MAX_STORED_LENGTH) return whole;
-  const segments = segmentsOf(templateValue, sources)?.filter(
+  const segments = segmentsOf(templateValue, sources, pseudo)?.filter(
     (segment) => !('literal' in segment) || segment.literal !== ''
   );
   if (segments === undefined) return whole;
   const holes = segments.filter((segment) => 'hole' in segment);
   if (holes.length === 0 || holes.length > MAX_HOLES) return whole;
-  if (!holes.some((segment) => 'hole' in segment && segment.hole === 'secret')) return whole;
   for (let i = 1; i < segments.length; i++) {
     if ('hole' in segments[i]! && 'hole' in segments[i - 1]!) return whole;
   }
   const escape = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const pattern = segments
-    .map((segment) =>
-      'literal' in segment
-        ? escape(segment.literal)
-        : segment.hole === 'secret'
-          ? '([\\s\\S]*)'
-          : '([\\s\\S]*?)'
-    )
+    .map((segment) => ('literal' in segment ? escape(segment.literal) : '[\\s\\S]*'))
     .join('');
-  const match = new RegExp(`^${pattern}$`).exec(stored);
-  if (match === null) return whole;
-  let group = 0;
-  return segments
-    .map((segment) => {
-      if ('literal' in segment) return segment.literal;
-      group++;
-      return segment.hole === 'secret' ? SECRET_MASK : match[group]!;
-    })
-    .join('');
+  if (!new RegExp(`^${pattern}$`).test(stored)) return whole;
+  return segments.map((segment) => ('literal' in segment ? segment.literal : SECRET_MASK)).join('');
 }

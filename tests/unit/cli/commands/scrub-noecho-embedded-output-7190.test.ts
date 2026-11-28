@@ -119,6 +119,15 @@ describe('cdkd scrub - an output embedding a NoEcho value keeps its literal text
     expect(current!['Emb']).toEqual(desired['Emb']);
   });
 
+  it('an output already in the exact form sends no stack through the rewrite', async () => {
+    // A stored key the template lacks would be dropped by any rewrite.
+    const saved = await scrub(
+      stateWith({ Emb: 'token=***;', Gone: 'stale' }),
+      template({ Emb: { Value: JOIN } })
+    );
+    expect(saved).toBeUndefined();
+  });
+
   it('masks an older plaintext embedding a short NoEcho attribute as token=***;', async () => {
     const saved = await scrub(stateWith({ Emb: `token=${SHORT};` }), template({ Emb: { Value: JOIN } }));
     expect(saved!.outputs['Emb']).toBe('token=***;');
@@ -138,6 +147,34 @@ describe('cdkd scrub - an output embedding a NoEcho value keeps its literal text
       template({ Emb: { Value: { 'Fn::Sub': '${AWS::Region}/${Short}' } } })
     );
     expect(saved!.outputs['Emb']).toBe('us-east-1/***');
+  });
+
+  it('keeps the region whole where the literal beside it also occurs in it', async () => {
+    const saved = await scrub(
+      stateWith({ Emb: `${SHORT}-us-east-1` }),
+      template({
+        Emb: { Value: { 'Fn::Join': ['', [{ 'Fn::GetAtt': ['Tok', 'Token'] }, '-', { Ref: 'AWS::Region' }]] } },
+      })
+    );
+    expect(saved!.outputs['Emb']).toBe('***-us-east-1');
+  });
+
+  it('masks a pseudo parameter whose value scrub does not know', async () => {
+    const saved = await scrub(
+      stateWith({ Emb: `123456789012/${SHORT}` }),
+      template({ Emb: { Value: { 'Fn::Sub': '${AWS::AccountId}/${Short}' } } })
+    );
+    expect(saved!.outputs['Emb']).toBe('***/***');
+  });
+
+  it('keeps no fragment of a secret when a delimiter recurs inside it', async () => {
+    const saved = await scrub(
+      stateWith({ Emb: 'bkt-us-east-1-SECA-SECB' }),
+      template({
+        Emb: { Value: { 'Fn::Sub': ['${Other}-${AWS::Region}-${Short}', { Other: { Ref: 'Short' } }] } },
+      })
+    );
+    expect(saved!.outputs['Emb']).toBe('***-us-east-1-***');
   });
 
   it('masks whole a stored value the template text does not match', async () => {

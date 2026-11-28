@@ -148,13 +148,20 @@ export async function scrubStackRewritePass({
   // there (a stack deployed before v11, or under an older `Default`), that
   // stored value becomes a value-arm needle of a second scrub of that record
   // alone, so its other copies in the record are masked too.
+  // go-to-k/cdkd#7190: the pseudo parameters an output's literal text may
+  // spell, kept around the mask.
+  const pseudoValues: ReadonlyMap<string, string> = new Map([
+    ['AWS::Region', region],
+    ['AWS::StackName', stack.stackName],
+  ]);
   const noEchoPlans = planScrubNoEcho(
     state,
     stack.template,
     perResourceTemplateProps,
     conditions,
     nestedInput?.noEchoParameters ?? [],
-    nestedInput?.noEchoConditionalParameters ?? []
+    nestedInput?.noEchoConditionalParameters ?? [],
+    pseudoValues
   );
 
   // The nested children this stack deploys (go-to-k/cdkd#2252): every
@@ -695,7 +702,11 @@ export async function scrubStackRewritePass({
     new Set(Object.keys(stack.template.Outputs ?? {})),
     declaredAliasOf,
     // go-to-k/cdkd#7190: an output EMBEDDING such a value keeps its literal text.
-    { templateOutputs: stack.template.Outputs ?? {}, sources: noEchoPlans.sources }
+    {
+      templateOutputs: stack.template.Outputs ?? {},
+      sources: noEchoPlans.sources,
+      pseudo: pseudoValues,
+    }
   );
   emitAbandonedScanNotes();
   // THE DROP (go-to-k/cdkd#4120): a stored key today's template cannot name

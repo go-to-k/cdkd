@@ -68,7 +68,8 @@ export function planScrubNoEcho(
   templateProps: ReadonlyMap<string, Record<string, unknown>>,
   conditions: Record<string, boolean>,
   passedParameters: readonly string[] = [],
-  conditionalParameters: readonly string[] = []
+  conditionalParameters: readonly string[] = [],
+  pseudo: ReadonlyMap<string, string> = new Map()
 ): {
   byLogicalId: Map<string, ScrubNoEchoPlan>;
   outputKeys: string[];
@@ -200,7 +201,7 @@ export function planScrubNoEcho(
       const outputValue = (output as { Value?: unknown } | undefined)?.Value;
       if (!readsNoEchoSource(outputValue, outputSources)) continue;
       // go-to-k/cdkd#7190: already in the deploy's exact form (`token=***;`).
-      const exact = exactNoEchoOutputMask(value, outputValue, outputSources);
+      const exact = exactNoEchoOutputMask(value, outputValue, outputSources, pseudo);
       if (JSON.stringify(exact) === JSON.stringify(value)) continue;
       outputKeys.push(key);
     }
@@ -251,7 +252,11 @@ export function maskScrubNoEchoOutputs(
   keys: readonly string[],
   declared: ReadonlySet<string>,
   aliasOf: ReadonlyMap<string, string>,
-  exact?: { templateOutputs: Record<string, unknown>; sources: NoEchoPositionSources }
+  exact?: {
+    templateOutputs: Record<string, unknown>;
+    sources: NoEchoPositionSources;
+    pseudo: ReadonlyMap<string, string>;
+  }
 ): Record<string, unknown> | undefined {
   if (outputs === undefined || keys.length === 0) return outputs;
   const ownAliases = new Set(keys.flatMap((key) => (aliasOf.has(key) ? [aliasOf.get(key)!] : [])));
@@ -259,25 +264,37 @@ export function maskScrubNoEchoOutputs(
     [...aliasOf].filter(([key]) => !keys.includes(key)).map(([, alias]) => alias)
   );
   // go-to-k/cdkd#7190: each key's persisted form, the template's literal text
-  // kept around the mask where it matches exactly; an alias holding the same
-  // stored value takes the same form.
-  const formOf = new Map<string, unknown>();
+  // kept around the mask where it matches exactly. An alias holding the same
+  // stored value takes that form, unless two keys spelled alike take different
+  // forms (then it is masked whole). An own alias (its export name, resolved
+  // by this run) has no template Value of its own, so it is masked whole.
+  const formOfKey = new Map<string, unknown>();
+  const formOfSpelling = new Map<string, unknown>();
   for (const key of keys) {
     if (!Object.hasOwn(outputs, key)) continue;
     const templateValue = (exact?.templateOutputs[key] as { Value?: unknown } | undefined)?.Value;
-    formOf.set(
-      JSON.stringify(outputs[key]),
+    const form =
       exact === undefined
         ? maskWholeValue(outputs[key])
-        : exactNoEchoOutputMask(outputs[key], templateValue, exact.sources)
+        : exactNoEchoOutputMask(outputs[key], templateValue, exact.sources, exact.pseudo);
+    formOfKey.set(key, form);
+    const spelling = JSON.stringify(outputs[key]);
+    const seen = formOfSpelling.get(spelling);
+    formOfSpelling.set(
+      spelling,
+      formOfSpelling.has(spelling) && JSON.stringify(seen) !== JSON.stringify(form)
+        ? maskWholeValue(outputs[key])
+        : form
     );
   }
   const masked: Record<string, unknown> = nullPrototypeRecord();
   for (const [key, value] of Object.entries(outputs)) {
     const spelling = JSON.stringify(value);
-    const byValue = !declared.has(key) && !otherAliases.has(key) && formOf.has(spelling);
-    if (keys.includes(key) || byValue) masked[key] = formOf.get(spelling) ?? maskWholeValue(value);
+    const byValue = !declared.has(key) && !otherAliases.has(key) && formOfSpelling.has(spelling);
+    if (formOfKey.has(key)) masked[key] = formOfKey.get(key);
+    else if (keys.includes(key)) masked[key] = maskWholeValue(value);
     else if (ownAliases.has(key)) masked[key] = maskWholeValue(value);
+    else if (byValue) masked[key] = formOfSpelling.get(spelling);
     else masked[key] = value;
   }
   return masked;
