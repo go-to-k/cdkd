@@ -27,6 +27,87 @@ export class RemovalDeletesKept {
   private readonly keptBy = new Map<string, string>();
 
   /**
+   * @param heldForOldCopies go-to-k/cdkd#7204: each removed resource an old
+   *   copy uses that waits for the run's consumers, to that old copy. Its
+   *   delete is not sent: AWS would refuse it while the old copy uses it.
+   */
+  constructor(heldForOldCopies: ReadonlyMap<string, string> = new Map()) {
+    this.heldForOldCopies = heldForOldCopies;
+  }
+
+  private readonly heldForOldCopies: ReadonlyMap<string, string>;
+
+  /**
+   * Keeps a removed resource before its delete is sent, when a held old copy
+   * uses it (`keepHeld`) or a resource whose delete had to come first was kept
+   * (`keepBlocked`). Answers whether it was kept.
+   */
+  keepUnsent(
+    engine: DeployEngine,
+    node: {
+      logicalId: string;
+      change: ResourceChange;
+      dependencies: Iterable<string>;
+      record: ResourceState | undefined;
+    },
+    stackName: string,
+    counts: ProvisionCounts,
+    progress: { current: number; total: number } | undefined
+  ): boolean {
+    const { logicalId, change, record } = node;
+    const oldCopy = this.heldOldCopyOf(logicalId);
+    if (oldCopy !== undefined) {
+      this.keepHeld(engine, logicalId, change, oldCopy, record, stackName, counts, progress);
+      return true;
+    }
+    const blocker = this.blockerOf(node.dependencies);
+    if (blocker === undefined) return false;
+    this.keepBlocked(engine, logicalId, change, blocker, record, stackName, counts, progress);
+    return true;
+  }
+
+  /** The held old copy that uses this removed resource, if any. */
+  heldOldCopyOf(logicalId: string): string | undefined {
+    return this.heldForOldCopies.get(logicalId);
+  }
+
+  /**
+   * Keep `logicalId`, a removed resource `oldCopy` uses, without sending its
+   * delete: the old copy waits for the stacks importing this stack's outputs
+   * (go-to-k/cdkd#7204). Counted and warned like a failed delete, so what it
+   * uses is kept with it.
+   */
+  keepHeld(
+    engine: DeployEngine,
+    logicalId: string,
+    change: ResourceChange,
+    oldCopy: string,
+    record: ResourceState | undefined,
+    stackName: string,
+    counts: ProvisionCounts,
+    progress: { current: number; total: number } | undefined
+  ): void {
+    this.keptBy.set(logicalId, logicalId);
+    if (progress) progress.current++;
+    counts.deleteSkipped++;
+    const reason = `the old ${oldCopy} still uses it and waits for the stacks importing this stack's outputs`;
+    getLiveRenderer().removeTask(logicalId);
+    engine.logger.warn(
+      safeMsg`${logicalId} (${change.resourceType}) was removed from the template, but ${reason}, so it stays in AWS and its cdkd state record was KEPT: the next 'cdkd deploy' deletes it.`
+    );
+    engine.recordEvent({
+      eventType: 'RESOURCE_SKIPPED',
+      stackName,
+      operation: 'DELETE',
+      logicalId,
+      resourceType: change.resourceType,
+      ...(record?.provisionedBy && { provisionedBy: record.provisionedBy }),
+      ...(record?.physicalId && { physicalId: record.physicalId }),
+      reason,
+    });
+  }
+
+  /**
    * Whether `error`, the failure of `logicalId`'s template-removal delete, is
    * kept. `provisionResource` already printed it and recorded
    * `RESOURCE_FAILED`; this adds the warning and the count. The state record

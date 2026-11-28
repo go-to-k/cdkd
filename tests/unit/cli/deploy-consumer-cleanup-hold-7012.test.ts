@@ -313,6 +313,38 @@ describe('deploy holds a producer cleanup for its in-run consumers (#7012)', () 
     delete process.env['CDKD_NO_LIVE'];
   });
 
+  it("hands the producer each consumer's own region (go-to-k/cdkd#7204)", async () => {
+    synthStacks.value = [
+      producer(),
+      makeStack('Consumer', {
+        region: 'eu-west-1',
+        template: {
+          Resources: {
+            Fn: {
+              Type: 'AWS::Lambda::Function',
+              Properties: {
+                Environment: {
+                  QURL: {
+                    'Fn::GetStackOutput': {
+                      StackName: 'Producer',
+                      OutputName: 'QueueUrl',
+                      Region: 'us-east-1',
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      }),
+    ];
+    const { error } = await runDeploy(['--all', '--yes']);
+    expect(error).toBeUndefined();
+    expect(engineOptions.get('Producer')?.['consumerStacks']).toEqual([
+      { stackName: 'Consumer', region: 'eu-west-1' },
+    ]);
+  });
+
   it('runs the held pass only after the consumer deployed', async () => {
     synthStacks.value = [producer(), consumer('Consumer')];
     const { error, exitCode } = await runDeploy(['--all', '--yes']);
@@ -324,6 +356,11 @@ describe('deploy holds a producer cleanup for its in-run consumers (#7012)', () 
       NestedCleanupQueue
     );
     expect(engineOptions.get('Consumer')?.['consumerCleanupQueue']).toBeUndefined();
+    // go-to-k/cdkd#7204: and the run's consumers whose records it may read.
+    expect(engineOptions.get('Producer')?.['consumerStacks']).toEqual([
+      { stackName: 'Consumer', region: expect.any(String) },
+    ]);
+    expect(engineOptions.get('Consumer')?.['consumerStacks']).toBeUndefined();
   });
 
   it('keeps the old copies when the consumer fails, says so once, and exits 1', async () => {
@@ -478,6 +515,8 @@ describe('ConsumerCleanupHold (#7012)', () => {
     expect(hold.hasConsumers(b)).toBe(false);
     expect(hold.hasConsumers(out)).toBe(false);
     expect(hold.queueFor(p)).toBeInstanceOf(NestedCleanupQueue);
+    expect(hold.consumersOf(p)).toEqual([a, b]);
+    expect(hold.consumersOf(b)).toEqual([]);
     expect(hold.queueFor(a)).toBeUndefined();
   });
 

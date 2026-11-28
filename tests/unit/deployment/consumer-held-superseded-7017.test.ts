@@ -7,6 +7,7 @@ import { describe, it, expect, vi } from 'vite-plus/test';
 import {
   carriedNotHeldByConsumers,
   markHeldForConsumers,
+  oldCopiesHeldByConsumers,
 } from '../../../src/deployment/deploy-engine/consumer-held-superseded.js';
 import type { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import type { StackState, SupersededResourceRecord } from '../../../src/types/state.js';
@@ -214,5 +215,24 @@ describe('consumer-held superseded entries (go-to-k/cdkd#7017)', () => {
     expect(host.supersededResources[0]).toBe(first);
     expect(first.heldForConsumers).toBe(true);
     expect(markHeldForConsumers(host)).toBe(false);
+  });
+});
+
+describe('the early delete before removals asks the consumers (go-to-k/cdkd#7204)', () => {
+  it('holds an old copy with no superseded record without reading any state, and says why', async () => {
+    const { engine, info, listStacks } = engineOver({});
+    expect(await oldCopiesHeldByConsumers(engine, 'Producer', [entry(false), undefined], {})).toBe(
+      true
+    );
+    expect(listStacks).not.toHaveBeenCalled();
+    expect(String(info.mock.calls[0]?.[0])).toContain('is not recorded in state');
+  });
+
+  it('holds when a consumer names an old copy, and answers false when none does', async () => {
+    const naming = engineOver({ Consumer: consumerState({ Env: Q1_URL }) });
+    expect(await oldCopiesHeldByConsumers(naming.engine, 'Producer', [entry(false)], {})).toBe(true);
+    const other = engineOver({ Consumer: consumerState({ Env: 'unrelated-value' }) });
+    expect(await oldCopiesHeldByConsumers(other.engine, 'Producer', [entry(false)], {})).toBe(false);
+    expect(other.info).not.toHaveBeenCalled();
   });
 });

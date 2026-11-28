@@ -69,12 +69,53 @@ export async function carriedNotHeldByConsumers(
   return carried.filter((entry) => !kept.has(entry));
 }
 
-/** Entry to the display names of the consumer stacks whose records name it. */
-async function consumersNaming(
+/**
+ * go-to-k/cdkd#7204: whether a producer whose cleanup waits for the run's
+ * consumers (go-to-k/cdkd#7012) must leave these old copies to that cleanup
+ * rather than delete them before its removals (go-to-k/cdkd#6977). A consumer
+ * that fails rolls back to the records read here, so one naming an old copy
+ * would be left on a deleted resource. A copy with no superseded record
+ * cannot be checked and holds. One line names the stacks.
+ */
+export async function oldCopiesHeldByConsumers(
+  engine: DeployEngine,
+  stackName: string,
+  entries: ReadonlyArray<SupersededResourceRecord | undefined>,
+  /** This stack's live records: a value one of them still carries is no needle. */
+  live: Record<string, ResourceState>,
+  /** The run's consumers of this stack (`consumerStacks`); absent, every stack. */
+  only?: ReadonlyArray<{ stackName: string; region: string }>
+): Promise<boolean> {
+  const recorded = entries.filter((entry) => entry !== undefined);
+  if (recorded.length < entries.length) {
+    engine.logger.info(
+      safeMsg`  An old copy of a replaced resource is not recorded in state, so cdkd cannot tell whether a stack importing this stack's outputs still uses it: it is deleted after those stacks deploy, not before the removed resources it uses`
+    );
+    return true;
+  }
+  const holders = await consumersNaming(engine, stackName, recorded, live, only);
+  const names = [...new Set([...holders.values()].flat())];
+  if (names.length === 0) return false;
+  withPrintingSecrets(orphanRecordsPrintingBag(recorded), () =>
+    engine.logger.info(
+      safeMsg`  ${names.join(', ')} (importing this stack's outputs) still uses an old copy of a replaced resource, so it is deleted after those stacks deploy, not before the removed resources it uses`
+    )
+  );
+  return true;
+}
+
+/**
+ * Entry to the display names of the consumer stacks whose records name it.
+ * Also asked before a producer's early delete of an old copy
+ * (go-to-k/cdkd#7204).
+ */
+export async function consumersNaming(
   engine: DeployEngine,
   stackName: string,
   entries: readonly SupersededResourceRecord[],
-  live: Record<string, ResourceState>
+  live: Record<string, ResourceState>,
+  /** The stacks to read; absent, every stack in the bucket (go-to-k/cdkd#7204). */
+  only?: ReadonlyArray<{ stackName: string; region: string }>
 ): Promise<Map<SupersededResourceRecord, string[]>> {
   const region = canonicalizeRegion(engine.stackRegion);
   const holders = new Map<SupersededResourceRecord, string[]>();
@@ -84,7 +125,7 @@ async function consumersNaming(
   };
   let refs: Awaited<ReturnType<DeployEngine['stateBackend']['listStacks']>>;
   try {
-    refs = await engine.stateBackend.listStacks();
+    refs = only !== undefined ? [...only] : await engine.stateBackend.listStacks();
   } catch {
     return holdAll('a stack cdkd could not list');
   }

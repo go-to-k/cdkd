@@ -25,7 +25,15 @@ One old resource is deleted earlier: one that still uses a resource the deploy
 removes from the template, such as an old Lambda alias pointing at the removed
 old version. It goes right before the removal deletes, after every create and
 update. When the deploy fails after that, the rollback finds it gone and
-creates it again.
+creates it again. It is not deleted early when a stack of the same
+`cdkd deploy` run imports this stack's outputs and that stack's records name
+the old resource (or cannot be read, or cdkd holds no state record of the old
+resource to check): a failing consumer would roll back onto it. It then waits for the consumers, and so does each removed resource it
+uses (an alias still pointing at a removed version): cdkd sends no delete for
+it, it stays in AWS and in state, the deploy exits 2, and the next deploy
+deletes it. The same holds for an old resource an earlier deploy kept: one a
+stack of this run names, or, kept for a consumer that failed earlier, one any
+stack importing this stack's outputs still names.
 
 The same wait applies to a record holding a NoEcho value and to a resource
 under `UpdateReplacePolicy: Snapshot`, whose final snapshot is taken when the

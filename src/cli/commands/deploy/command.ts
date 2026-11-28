@@ -814,6 +814,7 @@ export async function deployCommand(
       // (the inferred `Fn::ImportValue` / `Fn::GetStackOutput` edges; a
       // manifest-only dependency imports no value). None under --dry-run.
       ...(consumerHold !== undefined && { consumerHold }),
+      stackRegionOf: (s) => stackRegions.get(s) ?? deployStackRegion(s, baseRegion),
     };
 
     checkPinCcApiOptions(options, targetStacks, logger);

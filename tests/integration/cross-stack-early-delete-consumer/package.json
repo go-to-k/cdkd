@@ -1,0 +1,19 @@
+{
+  "name": "cdkd-integ-cross-stack-early-delete-consumer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A producer does not delete an old copy early while a same-run consumer that may roll back still names it (go-to-k/cdkd#7204)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

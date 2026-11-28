@@ -98,6 +98,11 @@ export async function retryDeferredReplacedDeletes(
  * removed resource uses one of the old copies taken here, no order deletes
  * both correctly in two passes, so nothing is taken and the cleanup phase
  * deletes them as before.
+ *
+ * `heldElsewhere` answers whether something outside this stack still needs
+ * one of the old copies taken (go-to-k/cdkd#7204); `true` takes nothing and
+ * answers each removed resource those old copies use, to the old copy using
+ * it, so its delete is not sent while the old copy waits. Otherwise empty.
  */
 export async function deleteDeferredUsersOfRemovals(
   run: ReplacementRunState,
@@ -105,17 +110,19 @@ export async function deleteDeferredUsersOfRemovals(
   stackName: string,
   counts: { updated: number; updatePartial: number },
   removedIds: ReadonlySet<string>,
-  removedDependencies: (logicalId: string) => readonly string[]
-): Promise<void> {
+  removedDependencies: (logicalId: string) => readonly string[],
+  heldElsewhere?: (taken: ReadonlySet<string>) => Promise<boolean>
+): Promise<ReadonlyMap<string, string>> {
+  const none = new Map<string, string>();
   const deferred = run.deferredReplacedDeletes;
-  if (deferred === undefined || deferred.size === 0 || removedIds.size === 0) return;
+  if (deferred === undefined || deferred.size === 0 || removedIds.size === 0) return none;
   const users = (entry: DeferredReplacedDelete, ids: { has(id: string): boolean }): boolean =>
     (entry.dependencies ?? []).some((dep) => ids.has(dep));
   const taken = new Map<string, DeferredReplacedDelete>();
   for (const [logicalId, entry] of deferred) {
     if (!removedIds.has(logicalId) && users(entry, removedIds)) taken.set(logicalId, entry);
   }
-  if (taken.size === 0) return;
+  if (taken.size === 0) return none;
   // The old copies using a taken one go before it, as in the cleanup phase.
   for (let grew = true; grew;) {
     grew = false;
@@ -126,7 +133,17 @@ export async function deleteDeferredUsersOfRemovals(
     }
   }
   for (const removed of removedIds) {
-    if (removedDependencies(removed).some((dep) => dep !== removed && taken.has(dep))) return;
+    if (removedDependencies(removed).some((dep) => dep !== removed && taken.has(dep))) return none;
+  }
+  if (heldElsewhere !== undefined && (await heldElsewhere(new Set(taken.keys())))) {
+    // Each removed resource a held old copy uses, to the old copy using it.
+    const held = new Map<string, string>();
+    for (const [logicalId, entry] of taken) {
+      for (const dep of entry.dependencies ?? []) {
+        if (removedIds.has(dep) && !held.has(dep)) held.set(dep, logicalId);
+      }
+    }
+    return held;
   }
   for (const logicalId of taken.keys()) deferred.delete(logicalId);
   deps.logger.info(
@@ -136,6 +153,7 @@ export async function deleteDeferredUsersOfRemovals(
   // Interrupted between waves: what is left goes back to the cleanup pass,
   // whose interrupted and failed arms report it.
   for (const [logicalId, entry] of taken) deferred.set(logicalId, entry);
+  return none;
 }
 
 /**

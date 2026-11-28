@@ -8380,6 +8380,7 @@
         "cognito-lambda-triggers",
         "composite-stack",
         "connect-instance",
+        "cross-stack-early-delete-consumer",
         "cross-stack-export-in-use",
         "cross-stack-replace-consumer-rollback",
         "custom-resource-getatt-data",
@@ -8580,6 +8581,10 @@
         ],
         "connect-instance": [
           "l2"
+        ],
+        "cross-stack-early-delete-consumer": [
+          "l2",
+          "literal"
         ],
         "cross-stack-export-in-use": [
           "l2"
@@ -10896,6 +10901,7 @@
         "cross-backend-same-stack",
         "cross-backend-same-stack-migration",
         "cross-region-concurrent-stacks",
+        "cross-stack-early-delete-consumer",
         "cross-stack-export-in-use",
         "cross-stack-replace-consumer-rollback",
         "cross-stack-secret-import",
@@ -11051,6 +11057,9 @@
         "cross-region-concurrent-stacks": [
           "l2",
           "literal"
+        ],
+        "cross-stack-early-delete-consumer": [
+          "l1"
         ],
         "cross-stack-export-in-use": [
           "l2"

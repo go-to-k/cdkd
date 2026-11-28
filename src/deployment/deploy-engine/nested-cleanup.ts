@@ -25,7 +25,11 @@ import {
 } from './replacement.js';
 import { recordedDependencies } from './dependencies.js';
 import { retryCarriedSupersededResources } from './superseded-retry.js';
-import { carriedNotHeldByConsumers, markHeldForConsumers } from './consumer-held-superseded.js';
+import {
+  carriedNotHeldByConsumers,
+  markHeldForConsumers,
+  oldCopiesHeldByConsumers,
+} from './consumer-held-superseded.js';
 import { isConditionFailure } from '../../state/s3-state-backend/shared.js';
 import { carryReadOutputs } from './state-persist.js';
 
@@ -79,6 +83,14 @@ export async function runCleanupPhase(
  * (`deleteDeferredUsersOfRemovals`). Their ops are re-stamped at once: a
  * later failure's rollback must re-create an old copy deleted here, never
  * re-adopt it on the journaled `'deferred'` verdict.
+ *
+ * go-to-k/cdkd#7204: a producer whose cleanup waits for the run's consumers
+ * (go-to-k/cdkd#7012) takes none while one of them still names an old copy,
+ * reading only those consumers' records (`consumerStacks`). So does a nested
+ * child of such a producer (it inherits both): a consumer reads the child's
+ * values through the top-level stack's outputs, so the consumers asked are
+ * the top-level stack's. Answers each removed resource a held old copy uses,
+ * to that old copy: its delete is kept without being sent (go-to-k/cdkd#6969).
  */
 export async function deleteUsersOfRemovalsFirst(
   engine: DeployEngine,
@@ -86,16 +98,30 @@ export async function deleteUsersOfRemovalsFirst(
   counts: { updated: number; updatePartial: number },
   removedIds: ReadonlySet<string>,
   currentState: StackState,
-  completedOperations: CompletedOperation[]
-): Promise<void> {
+  completedOperations: CompletedOperation[],
+  live: Record<string, ResourceState>
+): Promise<ReadonlyMap<string, string>> {
+  const held = engine.options.consumerCleanupQueue !== undefined;
+  // A child deploys as `<parent>~<logicalId>`.
+  const producer = stackName.split('~')[0]!;
   try {
-    await deleteDeferredUsersOfRemovals(
+    return await deleteDeferredUsersOfRemovals(
       engine.replacementRun,
       engine.replacementDeps(),
       stackName,
       counts,
       removedIds,
-      recordedDependencies(currentState.resources)
+      recordedDependencies(currentState.resources),
+      held
+        ? (taken) =>
+            oldCopiesHeldByConsumers(
+              engine,
+              producer,
+              [...taken].map((id) => engine.replacementRun.supersededEntries.get(id)),
+              live,
+              engine.options.consumerStacks
+            )
+        : undefined
     );
   } finally {
     restampReplacedVerdicts(engine, completedOperations);
