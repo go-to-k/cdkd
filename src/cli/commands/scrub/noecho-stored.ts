@@ -76,13 +76,14 @@ export function storedNoEchoRows(
 const persisted = (value: unknown): boolean =>
   holdsMaskLeaf(value) || (typeof value === 'string' && isSingleDynamicReferenceToken(value));
 
-/** Whether a bag holds a leaf that is neither absent nor already the mask or a token. */
+/** Whether a bag holds a string leaf that is neither empty nor already the mask or a token. */
 function holdsUnmaskedLeaf(value: unknown): boolean {
   if (Array.isArray(value)) return value.some(holdsUnmaskedLeaf);
   if (value !== null && typeof value === 'object') {
     return Object.values(value as Record<string, unknown>).some(holdsUnmaskedLeaf);
   }
-  return value !== undefined && value !== null && value !== '' && !persisted(value);
+  // A string only: a `NoEcho` parameter serves a string (or a list of them).
+  return typeof value === 'string' && value !== '' && !persisted(value);
 }
 
 /**

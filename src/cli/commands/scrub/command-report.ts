@@ -453,7 +453,6 @@ export async function reportScrubOutcome({
     (totalStacksWithUnscrubbableKeys > 0 ||
       totalStacksWithUnverifiableReads > 0 ||
       totalStacksWithUnrepairedReadNames > 0 ||
-      totalStacksWithUnverifiableNoEchoRecords > 0 ||
       totalStacksWithReadOutputKeys > 0 ||
       totalIndexEntriesAbsentWithSecret > 0 ||
       totalParentAttributesUnmatched > 0 ||

@@ -1,9 +1,9 @@
 /**
  * go-to-k/cdkd#7191: through `scrubCommand`, a rollback orphan whose logical
  * id has left the template, written before state schema v11 (no
- * `noEchoLeaves`), in a stack with a `NoEcho` parameter, is a FINDING: the
- * stack is not reported clean, and a real run's `--fail` exits through
- * `ScrubNeededError` with nothing left to rewrite.
+ * `noEchoLeaves`), in a stack with a `NoEcho` parameter, is reported: the
+ * stack is not reported clean. It does not fail `--fail`: a current cdkd
+ * writes the same shape for a record with no `NoEcho` position.
  * The same stack with no such orphan is reported clean.
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
@@ -76,7 +76,7 @@ vi.mock('../../../../src/state/export-index-store.js', () => ({
 }));
 
 import { resetAwsClients } from '../../../../src/utils/aws-clients.js';
-import { scrubCommand, ScrubNeededError } from '../../../../src/cli/commands/scrub.js';
+import { scrubCommand } from '../../../../src/cli/commands/scrub.js';
 import type { ResourceState, StackState } from '../../../../src/types/state.js';
 
 const REGION = 'us-east-1';
@@ -145,7 +145,7 @@ describe('cdkd scrub reports an orphan it cannot position (go-to-k/cdkd#7191)', 
     stateBackend.listStacks.mockReset().mockResolvedValue([]);
   });
 
-  it('is not reported clean, and --fail exits', async () => {
+  it('is not reported clean, and --fail does not exit over it', async () => {
     seed([
       {
         logicalId: 'Gone',
@@ -154,7 +154,7 @@ describe('cdkd scrub reports an orphan it cannot position (go-to-k/cdkd#7191)', 
       },
     ]);
     const err = await run({ fail: true });
-    expect(err).toBeInstanceOf(ScrubNeededError);
+    expect(err).toBeUndefined();
     const text = logLines.join('\n');
     expect(text).not.toContain('No plaintext secrets found');
     expect(text).toContain('orphan record Gone');

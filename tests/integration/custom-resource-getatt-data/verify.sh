@@ -771,7 +771,9 @@ grep -qF "orphan record Gone7191" "${SECRET_ECHO_LOG}" \
 echo "    OK: cdkd scrub masked the pre-v11 orphan and superseded plaintext and reported the gone-id orphan"
 assert_no_secret_in_versions "after the phase 3c scrub"
 # A second scrub finds nothing left to rewrite but the gone-id orphan, which
-# it must still not call clean: `--fail` exits 1 over it.
+# it must still not call clean. It is a warning, not a `--fail` finding (a
+# current cdkd writes the same shape for a record with no NoEcho position),
+# so `--fail` exits 0.
 set +e
 CDKD_TEST_NOECHO_SEED="${ROTATED_SEED}" CDKD_TEST_SECRET_ECHO=true node "${LOCAL_DIST}" scrub "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --dry-run --fail > "${SECRET_ECHO_LOG}" 2>&1
@@ -782,8 +784,8 @@ grep -qF "No plaintext secrets found in" "${SECRET_ECHO_LOG}" \
   && secret_echo_fail "the second cdkd scrub called the stack clean over a record it cannot position (go-to-k/cdkd#7191)" "${SECRET_ECHO_LOG}"
 grep -qF "orphan record Gone7191" "${SECRET_ECHO_LOG}" \
   || secret_echo_fail "the second cdkd scrub did not report the gone-logical-id orphan (go-to-k/cdkd#7191)" "${SECRET_ECHO_LOG}"
-[ "${rc}" -eq 1 ] || secret_echo_fail "the second cdkd scrub --fail exited ${rc}, expected 1 over the unverifiable orphan (go-to-k/cdkd#7191)" "${SECRET_ECHO_LOG}"
-echo "    OK: a second cdkd scrub --fail reports the gone-id orphan and exits 1"
+[ "${rc}" -eq 0 ] || secret_echo_fail "the second cdkd scrub --fail exited ${rc}, expected 0: the unverifiable orphan is a warning (go-to-k/cdkd#7191)" "${SECRET_ECHO_LOG}"
+echo "    OK: a second cdkd scrub --fail reports the gone-id orphan without calling the stack clean"
 # The records were only plants: drop them, as phase 3b does.
 jq 'del(.orphans) | del(.supersededResources)' <<<"${STATE_SCRUBBED}" > "${SECRET_ECHO_LOG}"
 aws s3 cp "${SECRET_ECHO_LOG}" "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" --quiet

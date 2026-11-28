@@ -577,7 +577,7 @@ A `NoEcho` parameter's value is masked the way a `cdkd deploy` stores it (see
   for its logical id when the template declares it as the same type, else the
   ones the live record of that logical id and type names. An `Fn::If` is read
   on both branches. A record none of these position is not masked by value: it
-  is reported
+  is reported, without failing `--fail`
   ([A leftover record has no known NoEcho positions](cli-scrub-findings.md#a-leftover-record-has-no-known-noecho-positions)).
   An unchanged `cdkd deploy` also saves such a record while it still holds a
   value at a position its own field or today's template names, so the save

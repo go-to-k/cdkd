@@ -135,8 +135,11 @@ properties in plaintext, and scrub does not guess which value it is. Scrub
 reports this only for a stack whose template declares a `NoEcho` parameter, or
 whose records name `NoEcho` positions or attributes.
 
-Check the record in the state file by hand. Running scrub again does not
-change the finding while the record is kept.
+A cdkd of state schema v11 or later also writes no positions for a record
+that has none, so the record may well be clean. That is why this finding
+alone does not make `--fail` exit `1`: it is a warning, and the stack is not
+reported clean. Check the record in the state file by hand. Running scrub
+again does not change the warning while the record is kept.
 
 ### A leftover output key was kept
 

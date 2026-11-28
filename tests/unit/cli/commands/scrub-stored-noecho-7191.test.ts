@@ -250,6 +250,21 @@ describe('cdkd scrub - NoEcho plaintext in an orphan or superseded record (go-to
     expect(state.noEchoAttributeNames).toEqual(['Out', 'Pw']);
   });
 
+  it('reports nothing for such a record holding no string leaf', async () => {
+    const { unverifiable } = await scrub(
+      stateWith({
+        orphans: [
+          {
+            logicalId: 'Gone',
+            orphanedAt: 1,
+            state: { physicalId: 'q', resourceType: 'AWS::SQS::Queue', properties: { VisibilityTimeout: 30 } },
+          },
+        ],
+      })
+    );
+    expect(unverifiable).toBe(0);
+  });
+
   it('a second scrub over the repaired state changes nothing', async () => {
     const { saved } = await scrub(
       stateWith({

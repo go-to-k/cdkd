@@ -1,6 +1,5 @@
 import { noEchoLeavesFor, noEchoPositionSources } from './noecho.js';
-import { isSingleDynamicReferenceToken, valueAtCoordinate } from '../secret-redaction.js';
-import { holdsMaskLeaf } from '../secret-redaction/recorded-secrecy.js';
+import { maskWholeValue, valueAtCoordinate } from '../secret-redaction.js';
 import type { DeployEngine } from '../deploy-engine.js';
 import type { StackState, SupersededResourceRecord } from '../../types/state.js';
 
@@ -40,14 +39,12 @@ export function carriedRecordsHoldNoEchoPlaintext(
       undefined,
       sources
     );
+    // Pending only where the save's mask would CHANGE the value: an empty
+    // list or object, a whole reference token or a mask stays as it is, and
+    // must not save on every unchanged deploy.
     return (leaves ?? []).some((coordinate) => {
       const value = valueAtCoordinate(record.properties, coordinate);
-      return (
-        value !== undefined &&
-        value !== null &&
-        !holdsMaskLeaf(value) &&
-        !(typeof value === 'string' && isSingleDynamicReferenceToken(value))
-      );
+      return JSON.stringify(maskWholeValue(value)) !== JSON.stringify(value);
     });
   });
 }

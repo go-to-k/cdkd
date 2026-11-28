@@ -182,6 +182,13 @@ describe('an unchanged deploy repairs a carried pre-v11 NoEcho plaintext (#7191)
     expect(saveState).not.toHaveBeenCalled();
   });
 
+  it('saves nothing for an empty list at the position, which the mask leaves as it is', async () => {
+    const empty = { ...preV11('db-old'), properties: { Password: [], Name: 'public' } };
+    load({ supersededResources: [{ logicalId: 'Db', supersededAt: 1, state: empty }] });
+    await makeEngine().deploy(STACK_NAME, template);
+    expect(saveState).not.toHaveBeenCalled();
+  });
+
   it('--dry-run saves nothing', async () => {
     load({ supersededResources: [{ logicalId: 'Db', supersededAt: 1, state: preV11('db-old') }] });
     await makeEngine(true).deploy(STACK_NAME, template);
