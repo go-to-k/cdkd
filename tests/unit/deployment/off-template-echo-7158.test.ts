@@ -68,6 +68,7 @@ type Form =
   | 'noecho'
   | 'noecho-embedded'
   | 'subfloor-embedded'
+  | 'subfloor'
   | 'whole'
   | 'embedded'
   | 'secretsmanager'
@@ -79,6 +80,7 @@ const FORMS: readonly Form[] = [
   'noecho',
   'noecho-embedded',
   'subfloor-embedded',
+  'subfloor',
   'whole',
   'embedded',
   'secretsmanager',
@@ -109,12 +111,12 @@ interface Seeded {
 }
 
 async function seeded(shape: string, form: Form, index: number): Promise<Seeded> {
-  const plaintext = form === 'subfloor-embedded' ? 'q7Z' : `s3cr3t-7158-${index}-${form}`;
+  const plaintext = form.startsWith('subfloor') ? 'q7Z' : `s3cr3t-7158-${index}-${form}`;
   const name = `/inv7158/${index}/${form}`;
   ssmValues.set(name, plaintext);
   ssmValues.set(`${name}/twin`, plaintext);
   const value: unknown = isNoEcho(form)
-    ? form === 'noecho'
+    ? form === 'noecho' || form === 'subfloor'
       ? { Ref: 'SecretParam' }
       : { 'Fn::Join': ['', ['pre-', { Ref: 'SecretParam' }, '-post']] }
     : form === 'embedded' || form === 'ssm-embedded'
@@ -283,7 +285,7 @@ describe('a secret echoed under a key the template lacks (go-to-k/cdkd#7158, #71
   );
 
   it('the generated population is the full product', () => {
-    expect(cases).toHaveLength(5 * 10 * 4 * 2);
+    expect(cases).toHaveLength(5 * 11 * 4 * 2);
   });
 
   it.each(cases.map((c, i) => [c.writer, c.shape, c.form, c.placement, i] as const))(
@@ -559,9 +561,29 @@ describe('a secret echoed under a key the template lacks (go-to-k/cdkd#7158, #71
       expect(out?.['Extra']).toBe('public-flag-value');
     });
 
-    it('a NoEcho value under the needle floor, echoed whole', () => {
-      const out = run({ Secret: '***' }, { Secret: 'q7Z', Extra: 'q7Z' }, { noEchoLeaves: [['Secret']] });
-      expect(out?.['Extra']).toBe('q7Z');
+    it('a public leaf that only CONTAINS a NoEcho value under the needle floor', () => {
+      const out = run(
+        { Secret: '***' },
+        { Secret: 'q7Z', Extra: 'xq7Zx', Tags: ['q7Z-public', 'public'] },
+        { noEchoLeaves: [['Secret']] }
+      );
+      expect(out?.['Extra']).toBe('xq7Zx');
+      expect(out?.['Tags']).toEqual(['q7Z-public', 'public']);
+    });
+
+    it('an empty NoEcho value', () => {
+      const out = run({ Secret: '***' }, { Secret: '', Extra: '' }, { noEchoLeaves: [['Secret']] });
+      expect(out?.['Extra']).toBe('');
+    });
+
+    it('a short value equal to the region or the stack name, which stay public', () => {
+      const out = withOffTemplateEchoesMasked(
+        { physicalId: 'p', properties: { Secret: '***' }, observedProperties: { Secret: 'S1', Extra: 'S1' }, noEchoLeaves: [['Secret']] },
+        { readback: { Secret: 'S1', Extra: 'S1' } },
+        new Set(['us-east-1', 'S1'])
+      );
+      expect(out.observedProperties?.['Extra']).toBe('S1');
+      expect(out.observedMaskedLeaves).toBeUndefined();
     });
 
     it('a template position is never treated as off-template', () => {
@@ -571,6 +593,63 @@ describe('a secret echoed under a key the template lacks (go-to-k/cdkd#7158, #71
         { noEchoLeaves: [['Secret']] }
       );
       expect(out?.['Other']).toBe('abcd-public');
+    });
+  });
+
+  describe('a value too short to scan for, or one the physical id contains, masks an EQUAL leaf (go-to-k/cdkd#7181)', () => {
+    const masked = (
+      readback: Record<string, unknown>,
+      physicalId = 'p'
+    ): ReturnType<typeof withOffTemplateEchoesMasked<OffTemplateEchoRecord>> =>
+      withOffTemplateEchoesMasked<OffTemplateEchoRecord>(
+        { physicalId, properties: { Secret: '***' }, observedProperties: readback, noEchoLeaves: [['Secret']] },
+        { readback },
+        new Set(['us-east-1', 'Stack7158'])
+      );
+
+    it('a NoEcho value under the needle floor, echoed whole, at the top, nested and in a list', () => {
+      const out = masked({ Secret: 'q7Z', Extra: 'q7Z', Deep: { Inner: 'q7Z' }, List: ['public', 'q7Z'] });
+      // The template position itself is the positional NoEcho arm's (`applyNoEchoPersist`).
+      const { Secret: _position, ...offTemplate } = out.observedProperties ?? {};
+      expect(JSON.stringify(offTemplate)).not.toContain('q7Z');
+      expect(out.observedMaskedLeaves).toEqual([['Deep', 'Inner'], ['Extra'], ['List', 1]]);
+    });
+
+    it('a NoEcho value the physical id contains, echoed whole; an ARN merely containing it stays', () => {
+      const out = masked(
+        { Secret: 'queue-name-7158', Name: 'queue-name-7158', Arn: 'arn:aws:sqs:us-east-1:1:queue-name-7158' },
+        'https://sqs/1/queue-name-7158'
+      );
+      expect(out.observedProperties?.['Name']).toBe('***');
+      expect(out.observedProperties?.['Arn']).toBe('arn:aws:sqs:us-east-1:1:queue-name-7158');
+      expect(out.observedMaskedLeaves).toEqual([['Name']]);
+    });
+
+    it('a short secret reference plaintext, from the readback and from the resolved bag', () => {
+      for (const raw of [
+        { readback: { Pin: 'Zq9', Extra: 'Zq9' } },
+        { properties: { Pin: 'Zq9' }, readback: { Extra: 'Zq9' } },
+      ]) {
+        const out = withOffTemplateEchoesMasked<OffTemplateEchoRecord>(
+          { physicalId: 'p', properties: { Pin: '{{resolve:ssm-secure:/pin}}' }, observedProperties: { Extra: 'Zq9' } },
+          raw
+        );
+        expect(out.observedProperties?.['Extra']).toBe('***');
+        expect(out.observedMaskedLeaves).toEqual([['Extra']]);
+      }
+    });
+
+    it('a stack whose secrets are all long enough to scan for gains no masked position', () => {
+      // Public off-template leaves equal to short substrings of the secret,
+      // to text of the physical id, and to short template literals.
+      const readback = { Secret: 'l0ng-s3cret-value', Short: 'l0n', Id: 'p', Count: '1', Flag: 'on', Region: 'us-east-1' };
+      const out = withOffTemplateEchoesMasked<OffTemplateEchoRecord>(
+        { physicalId: 'phys-1', properties: { Secret: '***', Mode: 'on' }, observedProperties: readback, noEchoLeaves: [['Secret']] },
+        { readback },
+        new Set(['us-east-1', 'Stack7158'])
+      );
+      expect(out.observedProperties).toEqual(readback);
+      expect(out.observedMaskedLeaves).toBeUndefined();
     });
   });
 
@@ -705,6 +784,45 @@ describe('a custom resource attribute KEY holding a secret (go-to-k/cdkd#7153)',
       templateGetAttNamesOf(t, 'Cr')
     );
     expect(Object.keys(out.attributes ?? {})).toEqual(['Generated', 'By-cr-1-name']);
+  });
+
+  describe('a value too short to scan for, or one the physical id contains, drops an EQUAL key (go-to-k/cdkd#7181)', () => {
+    const shortSecrets: RecordedSecretValues = new Map([['q7Z', '***']]);
+
+    it('drops a key equal to a short secret, and keeps one that only contains it', () => {
+      const t = template();
+      const out = withSecretAttributeKeysDropped(
+        record({ q7Z: 'v', 'Xq7Zx': 'w', Plain: 'ok' }),
+        {},
+        shortSecrets,
+        templateGetAttNamesOf(t, 'Cr')
+      );
+      expect(out.attributes).toEqual({ Xq7Zx: 'w', Plain: 'ok' });
+    });
+
+    it('keeps a key equal to a short secret that a template Fn::GetAtt spells', () => {
+      const t = template({ 'Fn::GetAtt': ['Cr', 'q7Z'] });
+      const input = record({ q7Z: 'v' });
+      expect(withSecretAttributeKeysDropped(input, {}, shortSecrets, templateGetAttNamesOf(t, 'Cr'))).toBe(input);
+    });
+
+    it('drops a key equal to a declared NoEcho value the physical id contains', () => {
+      const t = template();
+      const out = withSecretAttributeKeysDropped(
+        record({ Generated: '***', 'cr-1-name': 'x', 'By-cr-1-name': 'y' }, { physicalId: 'cr-1-name', noEchoAttributeNames: ['Generated'] }),
+        { attributes: { Generated: 'cr-1-name' } },
+        new Map(),
+        templateGetAttNamesOf(t, 'Cr')
+      );
+      expect(Object.keys(out.attributes ?? {})).toEqual(['Generated', 'By-cr-1-name']);
+    });
+
+    it('never drops a key equal to the region or the stack name, nor an empty key', () => {
+      const t = template();
+      const input = record({ S1: 'v', '': 'w' });
+      const secrets: RecordedSecretValues = new Map([['S1', '***'], ['', '***']]);
+      expect(withSecretAttributeKeysDropped(input, {}, secrets, templateGetAttNamesOf(t, 'Cr'), new Set(['S1']))).toBe(input);
+    });
   });
 
   it('leaves a non-custom resource, and a key holding no needle, alone', () => {

@@ -97,9 +97,10 @@ function templateGetAttReadsOf(template: unknown): Map<string, Set<string> | 'an
  * resource's pass knows (a key of `secrets`, or the in-memory value of an
  * attribute it declares `NoEcho`, from `raw`), unless `getAttNames` spells the
  * key. Only a custom resource's attributes, only with a template to read the
- * names from. A value under the needle floor, equal to a public token, or
- * contained in the physical id is no needle. Returns `record` by identity when
- * nothing is dropped.
+ * names from. A value equal to a public token (the region, the stack name) is
+ * no needle; one under the needle floor, or contained in the physical id,
+ * drops only a key EQUAL to it (as a substring it would match incidental
+ * key text). Returns `record` by identity when nothing is dropped.
  */
 export function withSecretAttributeKeysDropped<
   R extends {
@@ -120,12 +121,12 @@ export function withSecretAttributeKeysDropped<
   if (getAttNames === undefined || getAttNames === 'any') return record;
   const physicalId = typeof record.physicalId === 'string' ? record.physicalId : '';
   const needles = new Set<string>();
+  const exact = new Set<string>();
   const learn = (value: unknown): void => {
-    if (typeof value !== 'string' || value.length < MIN_NEEDLE_LENGTH || mentionsMask(value)) {
-      return;
-    }
-    if (publicTokens?.has(value) === true || physicalId.includes(value)) return;
-    needles.add(value);
+    if (typeof value !== 'string' || value === '' || mentionsMask(value)) return;
+    if (publicTokens?.has(value) === true) return;
+    if (value.length < MIN_NEEDLE_LENGTH || physicalId.includes(value)) exact.add(value);
+    else needles.add(value);
   };
   for (const plaintext of secrets?.keys() ?? []) learn(plaintext);
   const declared = record.noEchoAttributeNames;
@@ -136,9 +137,11 @@ export function withSecretAttributeKeysDropped<
       }
     }
   }
-  if (needles.size === 0) return record;
+  if (needles.size === 0 && exact.size === 0) return record;
+  const scanned = [...needles];
   const dropped = Object.keys(attributes).filter(
-    (key) => !getAttNames.has(key) && [...needles].some((needle) => key.includes(needle))
+    (key) =>
+      !getAttNames.has(key) && (exact.has(key) || scanned.some((needle) => key.includes(needle)))
   );
   if (dropped.length === 0) return record;
   const kept: Record<string, unknown> = {};
