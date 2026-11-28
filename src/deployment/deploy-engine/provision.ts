@@ -23,7 +23,7 @@ import { ProvisioningError, ResourceTimeoutError } from '../../utils/error-handl
 import { resourceDeadlineBudget } from './resource-budget.js';
 import { getLiveRenderer } from '../../utils/live-renderer.js';
 import { isReplacementCeiling } from '../deploy-value-equality.js';
-import { withResourceDeadline } from '../resource-deadline.js';
+import { formatWarnElapsed, withResourceDeadline } from '../resource-deadline.js';
 import {
   maskSecretsInError,
   maskSecretsInText,
@@ -342,8 +342,8 @@ export async function provisionResource(
           warnAfterMs,
           timeoutMs,
           onWarn: (elapsedMs) => {
-            const minutes = Math.max(1, Math.round(elapsedMs / 60_000));
-            const warnSuffix = ` [taking longer than expected, ${minutes}m+]`;
+            const elapsed = formatWarnElapsed(elapsedMs);
+            const warnSuffix = ` [taking longer than expected, ${elapsed}+]`;
             // Mutate the live renderer's task label in place (TTY mode)
             // and emit a warn line above the live area (non-TTY / verbose).
             const current = engine.liveTaskLabels.get(logicalId);
@@ -351,7 +351,7 @@ export async function provisionResource(
             renderer.updateTaskLabel(logicalId, `${current?.label ?? baseLabel}${warnSuffix}`);
             renderer.printAbove(() => {
               engine.logger.warn(
-                safeMsg`${logicalId} (${resourceType}) has been ${operationKind === 'CREATE' ? 'creating' : operationKind === 'DELETE' ? 'deleting' : 'updating'} for ${minutes}m — still waiting`
+                safeMsg`${logicalId} (${resourceType}) has been ${operationKind === 'CREATE' ? 'creating' : operationKind === 'DELETE' ? 'deleting' : 'updating'} for ${elapsed} — still waiting`
               );
             });
           },

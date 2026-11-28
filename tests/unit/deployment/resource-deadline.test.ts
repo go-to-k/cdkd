@@ -5,6 +5,7 @@ import {
   whileEnclosingDeadlinesPaused,
   enclosingDeadlineExpired,
   enclosingDeadlineRemainingMs,
+  formatWarnElapsed,
 } from '../../../src/deployment/resource-deadline.js';
 
 describe('withResourceDeadline', () => {
@@ -349,5 +350,21 @@ describe('enclosingDeadlineRemainingMs (issue #5155)', () => {
     release();
     await vi.advanceTimersByTimeAsync(0);
     expect(seen).toEqual([0]);
+  });
+});
+
+describe('formatWarnElapsed (go-to-k/cdkd#7197)', () => {
+  it('prints seconds below a minute instead of rounding up to 1m', () => {
+    expect(formatWarnElapsed(10_003)).toBe('10s');
+    expect(formatWarnElapsed(45_000)).toBe('45s');
+    expect(formatWarnElapsed(59_400)).toBe('59s');
+    expect(formatWarnElapsed(200)).toBe('1s');
+  });
+
+  it('prints whole minutes from a minute on', () => {
+    expect(formatWarnElapsed(59_600)).toBe('1m');
+    expect(formatWarnElapsed(60_000)).toBe('1m');
+    expect(formatWarnElapsed(5 * 60_000)).toBe('5m');
+    expect(formatWarnElapsed(12 * 60_000 + 10_000)).toBe('12m');
   });
 });

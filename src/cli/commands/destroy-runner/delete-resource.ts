@@ -32,7 +32,7 @@ import { slowCcOperationTimeoutMs } from '../../../provisioning/slow-cc-operatio
 import { shouldRetainResource, type ResourceState, type StackState } from '../../../types/state.js';
 import type { ResourceDeleteResult } from '../../../types/resource.js';
 import { extractDeploymentEventError } from '../../../types/deployment-events.js';
-import { withResourceDeadline } from '../../../deployment/resource-deadline.js';
+import { formatWarnElapsed, withResourceDeadline } from '../../../deployment/resource-deadline.js';
 import { recordedReferenceRegions } from '../../../deployment/reference-provenance-record.js';
 import {
   isMarkedNonRetryable,
@@ -525,14 +525,14 @@ export async function deleteStackResource(
         warnAfterMs,
         timeoutMs,
         onWarn: (elapsedMs) => {
-          const minutes = Math.max(1, Math.round(elapsedMs / 60_000));
+          const elapsed = formatWarnElapsed(elapsedMs);
           renderer.updateTaskLabel(
             logicalId,
-            `${baseLabel} [taking longer than expected, ${minutes}m+]`
+            `${baseLabel} [taking longer than expected, ${elapsed}+]`
           );
           renderer.printAbove(() => {
             logger.warn(
-              `${displaySafe(logicalId)} (${displaySafe(resource.resourceType)}) has been deleting for ${minutes}m — still waiting`
+              `${displaySafe(logicalId)} (${displaySafe(resource.resourceType)}) has been deleting for ${elapsed} — still waiting`
             );
           });
         },

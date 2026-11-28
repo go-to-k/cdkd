@@ -4,7 +4,11 @@ import type { Logger } from '../types/config.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { safeMsg } from '../utils/display-safe.js';
 import { ProvisioningError, ResourceTimeoutError } from '../utils/error-handler.js';
-import { outsideEnclosingDeadlines, withResourceDeadline } from './resource-deadline.js';
+import {
+  formatWarnElapsed,
+  outsideEnclosingDeadlines,
+  withResourceDeadline,
+} from './resource-deadline.js';
 
 /** What a {@link DeferredReadinessRun} reads from the deploy it serves. */
 export interface DeferredReadinessRunDeps {
@@ -236,7 +240,7 @@ export class DeferredReadinessRun {
         this.deps.logger.info(
           this.mask(
             logicalId,
-            safeMsg`Still waiting for ${logicalId} (${resourceType}) to be ready after ${Math.max(1, Math.round(elapsedMs / 60_000))}m`
+            safeMsg`Still waiting for ${logicalId} (${resourceType}) to be ready after ${formatWarnElapsed(elapsedMs)}`
           )
         ),
       onTimeout: (elapsedMs: number) =>
