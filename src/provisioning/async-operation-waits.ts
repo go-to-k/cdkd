@@ -667,8 +667,10 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
     ['FAILED', 'DETACHING / DETACHED / no policy after the stale-read grace'],
     "create and update; PENDING / ATTACHING for ~10-15 s; --no-wait skips it (docs/cli-deploy.md); CloudFormation's update completed with the policy ATTACHED (#7132)"
   ),
-  'rds:RegisterDBProxyTargets': unmeasured(
-    `${NO_WAIT}; targets answer UNAVAILABLE / PENDING_PROXY_CAPACITY, and a #7132 A/B target never reached AVAILABLE in 22 min (CloudFormation still in progress), so the terminal time is unknown`
+  'rds:RegisterDBProxyTargets': waits(
+    ['waitForProxyTargetsAvailable'],
+    ['UNAVAILABLE with CONNECTION_FAILED / AUTH_FAILURE / INVALID_REPLICATION_STATE after a grace'],
+    "create and update; REGISTERING / UNAVAILABLE (PENDING_PROXY_CAPACITY) for 11 s on a warm proxy, ~5.5 min on a new one; UNUSED counts as settled; --no-wait skips it (docs/cli-deploy.md); CloudFormation's create completed with the target AVAILABLE (#7132)"
   ),
   'route-53:UpdateHostedZoneComment': byDesign(
     'the call changes only the comment; the flagged feature statuses belong to UpdateHostedZoneFeatures'

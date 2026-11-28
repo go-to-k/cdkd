@@ -3,8 +3,8 @@
   "total": 173,
   "counts": {
     "no-wait-by-design": 51,
-    "waits": 119,
-    "unmeasured": 3
+    "waits": 120,
+    "unmeasured": 2
   },
   "rows": [
     {
@@ -5252,8 +5252,14 @@
         "src/provisioning/providers/rds-dbproxy-targetgroup-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B; targets answer UNAVAILABLE / PENDING_PROXY_CAPACITY, and a #7132 A/B target never reached AVAILABLE in 22 min (CloudFormation still in progress), so the terminal time is unknown"
+        "verdict": "waits",
+        "helpers": [
+          "waitForProxyTargetsAvailable"
+        ],
+        "failureStatuses": [
+          "UNAVAILABLE with CONNECTION_FAILED / AUTH_FAILURE / INVALID_REPLICATION_STATE after a grace"
+        ],
+        "note": "create and update; REGISTERING / UNAVAILABLE (PENDING_PROXY_CAPACITY) for 11 s on a warm proxy, ~5.5 min on a new one; UNUSED counts as settled; --no-wait skips it (docs/cli-deploy.md); CloudFormation's create completed with the target AVAILABLE (#7132)"
       }
     },
     {

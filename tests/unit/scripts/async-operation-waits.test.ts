@@ -38,7 +38,6 @@ const FIREHOSE_ROOT_ONLY = 'src/provisioning/providers/firehose-provider.ts';
 const FROZEN_UNMEASURED: ReadonlySet<string> = new Set([
   'codebuild:CreateWebhook',
   'codebuild:UpdateWebhook',
-  'rds:RegisterDBProxyTargets',
 ]);
 
 /**
