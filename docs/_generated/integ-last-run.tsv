@@ -409,7 +409,7 @@ pipes-input-template-removal	2026-11-13T18:07:10Z	PASS	115	verify.sh	rc ok, orph
 profile-region-default	2026-11-04T18:01:46Z	PASS	160	verify.sh	rc ok, orph clean (state keys + live resources, us-east-1/us-west-2/us-east-2; no Lambda log groups), own temp state bucket deleted; sweep batch 19 on test/integ-sweep-1104e
 propagation-races-2	2026-11-05T10:06:21Z	PASS	101	verify.sh	rc 0, 0 orphans, own state bucket, on cognito sms retry branch
 raw-cfn-conditions-params	2026-11-04T05:57:23Z	PASS	79	verify.sh	rc ok, orph clean
-rds-aurora	2026-11-28T11:10:40Z	FAIL	2756	verify.sh	PR7199 at 5f995b585: Phase 1a drift exit 2: notSupported 2x AWS::EC2::SecurityGroupIngress (#7198); destroy 0 errors, orph clean (us-east-1)
+rds-aurora	2026-11-28T14:38:54Z	PASS	5039	verify.sh	PR7199 at 2a50d8375: Phase 1a drift clean after the shared SecurityGroupIngress fix (#7198); rc 0, destroy 0 errors, orph clean (us-east-1)
 rds-dbcluster-pitr-restore	2026-11-13T12:45:42Z	PASS	501	verify.sh	rc ok, orph clean (#6212 RDS wait delegators to base class)
 rds-dbinstance-additional-storage-volumes	2026-11-12T04:20:11Z	PASS	2256	verify.sh	rc ok, orph clean; sqlserver-se us-east-1, 4 phases sdk route
 rds-dbinstance-backfill	2026-11-26T14:54:31Z	PASS	4860	verify.sh	rc ok, orph clean; #7057 phase 2c-az-legacy OK
