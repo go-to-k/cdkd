@@ -237,7 +237,13 @@ masked secret; its post-write capture
 and the rollback replay's baseline refresh never do. A resource whose rule
 another resource of the stack also declares, whose peer is named by group name,
 or whose recorded id is no longer live is still matched by protocol, ports and
-peer. Without that permission the group's rules are matched that way, the read
+peer. Two such resources declaring the same rule (an Aurora cluster's
+`addIngressRule(sg, Port.tcp(3306))` beside a `DatabaseProxy`'s rule on the
+cluster's port) share the one rule AWS keeps, under one recorded id, with the
+first one's description. Each compares against it, and reads clean while AWS
+holds either one's description; any other description is drift on both, and
+`--revert` restores it in place without revoking the rule. A second resource
+recording another id, or none, leaves the rule drift unknown. Without that permission the group's rules are matched that way, the read
 of such a resource fails (`cdkd drift` exits 2), and the group's `--revert`
 refuses rather than revoke anything. A group provisioned through Cloud Control
 is matched that way too; Cloud Control replaces a changed rule list whole, so

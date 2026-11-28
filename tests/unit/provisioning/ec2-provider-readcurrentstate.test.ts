@@ -1766,8 +1766,12 @@ describe('EC2Provider.readCurrentState', () => {
         expect(mockSend).toHaveBeenCalledTimes(1);
       });
 
-      it('keeps undefined when a sibling SecurityGroupIngress declares the same rule (#4492)', async () => {
-        mockSend.mockResolvedValueOnce(edited);
+      // go-to-k/cdkd#7198: the twin's create met this rule and recorded its id
+      // (Aurora's `addIngressRule(sg, 3306)` beside a DatabaseProxy's
+      // `Endpoint.Port` rule). AWS keeps the first writer's description, the
+      // twin's here, so this record reads in sync in its own.
+      it('reads a rule a sibling shares under the same recorded id clean, in its own description (#7198)', async () => {
+        mockSend.mockResolvedValueOnce(edited).mockResolvedValueOnce(byId());
 
         const result = bagOf(
           await provider.readCurrentState(PHYS, 'Logical', TYPE, declared, {
@@ -1783,8 +1787,7 @@ describe('EC2Provider.readCurrentState', () => {
           })
         );
 
-        expect(result).toBeUndefined();
-        expect(mockSend).toHaveBeenCalledTimes(1);
+        expect(result).toEqual(declared);
       });
 
       it('keeps undefined when a sibling declares the same rule under ANOTHER recorded id (#4492)', async () => {
@@ -1810,8 +1813,8 @@ describe('EC2Provider.readCurrentState', () => {
         expect(mockSend).toHaveBeenCalledTimes(1);
       });
 
-      it('keeps undefined when a sibling records the same rule id under another spelling (#4492)', async () => {
-        mockSend.mockResolvedValueOnce(edited);
+      it('reads a rule a sibling records under the same id in another spelling (#7198)', async () => {
+        mockSend.mockResolvedValueOnce(edited).mockResolvedValueOnce(byId());
 
         const result = bagOf(
           await provider.readCurrentState(PHYS, 'Logical', TYPE, declared, {
@@ -1828,8 +1831,8 @@ describe('EC2Provider.readCurrentState', () => {
           })
         );
 
-        expect(result).toBeUndefined();
-        expect(mockSend).toHaveBeenCalledTimes(1);
+        // Neither record declares AWS's description: an out-of-band edit.
+        expect(result).toEqual({ ...declared, Description: 'edited in the console' });
       });
 
       it('keeps undefined when the group’s own SecurityGroup record declares the rule inline (#4492)', async () => {
@@ -1876,6 +1879,162 @@ describe('EC2Provider.readCurrentState', () => {
         );
 
         expect(result).toMatchObject({ Description: 'edited in the console' });
+      });
+
+      // go-to-k/cdkd#7198: the rds-aurora shape. Two records share one
+      // self-referencing rule under one id; each read used to answer nothing,
+      // so `cdkd drift` exited 2 on a freshly deployed stack.
+      describe('a rule two records share under one recorded id (#7198)', () => {
+        const peerGroup = (
+          protocol: string,
+          ports: { FromPort?: number; ToPort?: number },
+          description: string
+        ): Record<string, unknown> => ({
+          SecurityGroups: [
+            {
+              GroupId: 'sg-1',
+              IpPermissions: [
+                {
+                  IpProtocol: protocol,
+                  ...ports,
+                  UserIdGroupPairs: [{ GroupId: 'sg-1', UserId: '111122223333', Description: description }],
+                },
+              ],
+            },
+          ],
+        });
+        const peerRuleById = (
+          protocol: string,
+          port: number,
+          description: string
+        ): Record<string, unknown> => ({
+          SecurityGroupRules: [
+            {
+              SecurityGroupRuleId: ID,
+              GroupId: 'sg-1',
+              IsEgress: false,
+              IpProtocol: protocol,
+              FromPort: port,
+              ToPort: port,
+              ReferencedGroupInfo: { GroupId: 'sg-1', UserId: '111122223333' },
+              Description: description,
+            },
+          ],
+        });
+        const mysql = {
+          GroupId: 'sg-1',
+          IpProtocol: 'tcp',
+          FromPort: 3306,
+          ToPort: 3306,
+          SourceSecurityGroupId: 'sg-1',
+          Description: 'Allow MySQL access from within security group',
+        };
+        // The proxy's rule: `Fn::GetAtt Cluster.Endpoint.Port` resolves to a string.
+        const proxy = {
+          ...mysql,
+          FromPort: '3306',
+          ToPort: '3306',
+          Description: 'Allow connections to the database Cluster from the Proxy',
+        };
+        const sibling = (properties: Record<string, unknown>) => ({
+          resourceType: TYPE,
+          physicalId: 'sg-1|tcp|3306|3306',
+          properties,
+          attributes: { Id: ID },
+        });
+        const tcpGroup = (description: string) =>
+          peerGroup('tcp', { FromPort: 3306, ToPort: 3306 }, description);
+
+        it.each([
+          ['the first writer', mysql, proxy],
+          ['the record whose description AWS did not keep', proxy, mysql],
+        ])('reads %s clean (tcp, a source group)', async (_label, self, twin) => {
+          mockSend
+            .mockResolvedValueOnce(tcpGroup(mysql.Description))
+            .mockResolvedValueOnce(peerRuleById('tcp', 3306, mysql.Description));
+
+          const result = await provider.readCurrentState('sg-1|tcp|3306|3306', 'Self', TYPE, self, {
+            ...own,
+            siblings: { Twin: sibling(twin) },
+          });
+
+          // The peer owner AWS reports rides along; drift compares declared keys.
+          expect(result).toEqual({ ...self, SourceSecurityGroupOwnerId: '111122223333' });
+        });
+
+        it('reads an all-protocols (-1) shared rule clean', async () => {
+          const all = {
+            GroupId: 'sg-1',
+            IpProtocol: '-1',
+            SourceSecurityGroupId: 'sg-1',
+            Description: 'self',
+          };
+          mockSend
+            .mockResolvedValueOnce(peerGroup('-1', {}, 'other'))
+            .mockResolvedValueOnce(peerRuleById('-1', -1, 'other'));
+
+          const result = await provider.readCurrentState('sg-1|-1|-1|-1', 'Self', TYPE, all, {
+            ...own,
+            siblings: { Twin: sibling({ ...all, Description: 'other' }) },
+          });
+
+          expect(result).toEqual({ ...all, SourceSecurityGroupOwnerId: '111122223333' });
+        });
+
+        it('reports a description neither record declares as drift', async () => {
+          mockSend
+            .mockResolvedValueOnce(tcpGroup('edited in the console'))
+            .mockResolvedValueOnce(peerRuleById('tcp', 3306, 'edited in the console'));
+
+          const result = await provider.readCurrentState('sg-1|tcp|3306|3306', 'Self', TYPE, proxy, {
+            ...own,
+            siblings: { Twin: sibling(mysql) },
+          });
+
+          expect(result).toEqual({
+            ...proxy,
+            SourceSecurityGroupOwnerId: '111122223333',
+            Description: 'edited in the console',
+          });
+        });
+
+        it('reads the rule gone when the group no longer holds it', async () => {
+          mockSend.mockResolvedValueOnce({ SecurityGroups: [{ GroupId: 'sg-1', IpPermissions: [] }] });
+
+          const result = await provider.readCurrentState('sg-1|tcp|3306|3306', 'Self', TYPE, mysql, {
+            ...own,
+            siblings: { Twin: sibling(proxy) },
+          });
+
+          expect(result).toBe(RESOURCE_NOT_FOUND);
+        });
+
+        it('rejects when the read by the recorded id fails', async () => {
+          mockSend
+            .mockResolvedValueOnce(tcpGroup(mysql.Description))
+            .mockRejectedValueOnce(
+              awsError('UnauthorizedOperation', 'You are not authorized to perform this operation.')
+            );
+
+          await expect(
+            provider.readCurrentState('sg-1|tcp|3306|3306', 'Self', TYPE, proxy, {
+              ...own,
+              siblings: { Twin: sibling(mysql) },
+            })
+          ).rejects.toMatchObject({ name: 'UnauthorizedOperation' });
+        });
+
+        it('keeps undefined when a sharing record holds a redacted description', async () => {
+          mockSend.mockResolvedValueOnce(tcpGroup(mysql.Description));
+
+          const result = await provider.readCurrentState('sg-1|tcp|3306|3306', 'Self', TYPE, proxy, {
+            ...own,
+            siblings: { Twin: sibling({ ...mysql, Description: '***' }) },
+          });
+
+          expect(result).toBeUndefined();
+          expect(mockSend).toHaveBeenCalledTimes(1);
+        });
       });
 
       it('matches a token-resolved string port numerically (FromPort: "443")', async () => {

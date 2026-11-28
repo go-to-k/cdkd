@@ -343,6 +343,46 @@ describe('drift --revert on a standalone SG ingress rule matched by identity (go
 
     expect(writes()).toEqual([]);
   });
+
+  // go-to-k/cdkd#7198: both reads answered nothing, so `cdkd drift` exited 2
+  // ("drift unknown") on every freshly deployed stack holding such a pair.
+  it('reads both records of a shared rule clean, so drift exits 0', async () => {
+    stubEc2(OUR_ID, 'first');
+    mockGetState.mockResolvedValue(
+      stackState({
+        First: ingressRecord('first', OUR_ID),
+        Second: ingressRecord('second', OUR_ID),
+      })
+    );
+
+    const verdict = await detect();
+
+    expect(verdict.clean.sort()).toEqual(['First', 'Second']);
+    expect(verdict.drifted).toEqual([]);
+    expect(verdict.notSupported).toEqual([]);
+    expect(verdict.thrown).toBeUndefined();
+  });
+
+  it('reports a description neither sharing record declares on both', async () => {
+    stubEc2(OUR_ID, 'edited in the console');
+    mockGetState.mockResolvedValue(
+      stackState({
+        First: ingressRecord('first', OUR_ID),
+        Second: ingressRecord('second', OUR_ID),
+      })
+    );
+
+    const verdict = await detect();
+
+    expect(verdict.drifted.sort()).toEqual(['First', 'Second']);
+    expect(verdict.notSupported).toEqual([]);
+
+    // The revert restores a sharing record's description in place and never
+    // revokes the shared rule; the last write leaves one both read clean.
+    await revert();
+    expect(writes().length).toBeGreaterThan(0);
+    expect(new Set(writes())).toEqual(new Set(['UpdateSecurityGroupRuleDescriptionsIngressCommand']));
+  });
 });
 
 describe('buildReadCurrentStateContext (go-to-k/cdkd#4447)', () => {
