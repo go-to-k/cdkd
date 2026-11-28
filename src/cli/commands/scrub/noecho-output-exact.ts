@@ -78,6 +78,49 @@ function segmentsOf(
 }
 
 /**
+ * Whether `stored` is the literals of `segments` in order with any text at
+ * each hole (a glob of `*` holes). Linear: a leading literal must be a prefix,
+ * a trailing one a suffix past it, and each middle one is taken at its first
+ * occurrence, which is never worse for the rest (a regex of `[\s\S]*` holes
+ * backtracks exponentially on a failing input).
+ */
+function matchesLiterals(stored: string, segments: readonly Segment[]): boolean {
+  // Adjacent literals (two string parts of a join) are one literal.
+  const parts: (string | undefined)[] = [];
+  for (const segment of segments) {
+    const last = parts.length - 1;
+    if ('literal' in segment) {
+      if (last >= 0 && parts[last] !== undefined) parts[last] += segment.literal;
+      else parts.push(segment.literal);
+    } else if (last < 0 || parts[last] !== undefined) parts.push(undefined);
+  }
+  let start = 0;
+  let end = stored.length;
+  let first = 0;
+  let lastIndex = parts.length - 1;
+  const head = parts[0];
+  if (head !== undefined) {
+    if (!stored.startsWith(head)) return false;
+    start = head.length;
+    first = 1;
+  }
+  const tail = parts[lastIndex];
+  if (tail !== undefined && lastIndex >= first) {
+    if (end - start < tail.length || !stored.endsWith(tail)) return false;
+    end -= tail.length;
+    lastIndex -= 1;
+  }
+  for (let i = first; i <= lastIndex; i++) {
+    const literal = parts[i];
+    if (literal === undefined) continue;
+    const at = stored.indexOf(literal, start);
+    if (at < 0 || at + literal.length > end) return false;
+    start = at + literal.length;
+  }
+  return true;
+}
+
+/**
  * The persisted form of a stored output that reads a `NoEcho` source
  * (go-to-k/cdkd#7190): the template's own literal text kept and each part
  * reading a `NoEcho` source replaced by the mask, as a deploy's value scan
@@ -104,10 +147,6 @@ export function exactNoEchoOutputMask(
   for (let i = 1; i < segments.length; i++) {
     if ('hole' in segments[i]! && 'hole' in segments[i - 1]!) return whole;
   }
-  const escape = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const pattern = segments
-    .map((segment) => ('literal' in segment ? escape(segment.literal) : '[\\s\\S]*'))
-    .join('');
-  if (!new RegExp(`^${pattern}$`).test(stored)) return whole;
+  if (!matchesLiterals(stored, segments)) return whole;
   return segments.map((segment) => ('literal' in segment ? segment.literal : SECRET_MASK)).join('');
 }

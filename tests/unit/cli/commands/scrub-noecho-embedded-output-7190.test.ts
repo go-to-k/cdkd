@@ -177,6 +177,16 @@ describe('cdkd scrub - an output embedding a NoEcho value keeps its literal text
     expect(saved!.outputs['Emb']).toBe('***-us-east-1-***');
   });
 
+  it('masks whole a long stored value that fails the match, without backtracking', async () => {
+    const started = Date.now();
+    const saved = await scrub(
+      stateWith({ Emb: '-'.repeat(4000) }),
+      template({ Emb: { Value: { 'Fn::Sub': '${Short}-${Short}-${Short}-${Short}!' } } })
+    );
+    expect(saved!.outputs['Emb']).toBe('***');
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
   it('masks whole a stored value the template text does not match', async () => {
     const saved = await scrub(stateWith({ Emb: `x${SHORT}` }), template({ Emb: { Value: JOIN } }));
     expect(saved!.outputs['Emb']).toBe('***');
