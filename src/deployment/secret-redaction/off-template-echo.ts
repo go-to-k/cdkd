@@ -419,22 +419,36 @@ export function maskOffTemplateEchoes(input: OffTemplateEchoInput): {
   // A sub-floor value embedded in a longer leaf is covered by the
   // noEchoLeaves arm, which learns that leaf whole.
   const exact = new Set<string>();
-  const learn = (value: unknown): void => {
+  // `whole: false` for a readback value that differs from the plaintext this
+  // write holds for the same position: a short one is then AWS's placeholder
+  // or normalized form, not the secret, and as a whole-leaf value it would
+  // only over-mask an equal public leaf.
+  const learn = (value: unknown, whole = true): void => {
     if (typeof value !== 'string' || value === '') return;
     // A readback or resolved leaf, never a record bag: one carrying the mask
     // already teaches nothing.
     if (mentionsMask(value)) return;
     if (publicTokens?.has(value) === true) return;
-    if (value.length < MIN_NEEDLE_LENGTH || physicalId.includes(value)) exact.add(value);
-    else needles.add(value);
+    if (value.length < MIN_NEEDLE_LENGTH || physicalId.includes(value)) {
+      if (whole) exact.add(value);
+    } else needles.add(value);
   };
+  const corroborated = (live: unknown, held: unknown): boolean =>
+    typeof held !== 'string' || mentionsMask(held) || held === live;
   for (const coordinate of noEchoLeavesOf({ noEchoLeaves: input.noEchoLeaves }) ?? []) {
-    learn(readbackValueAt(readback, resolved, coordinate, isSecretReference));
-    learn(valueAtCoordinate(resolved, coordinate));
+    const live = readbackValueAt(readback, resolved, coordinate, isSecretReference);
+    const held = valueAtCoordinate(resolved, coordinate);
+    learn(live, corroborated(live, held));
+    learn(held);
   }
   for (const { coordinate, text } of secretReferenceLeaves(properties, isSecretReference)) {
-    learn(plaintextFor(text, readbackValueAt(readback, properties, coordinate, isSecretReference)));
-    learn(plaintextFor(text, valueAtCoordinate(resolved, coordinate)));
+    const live = plaintextFor(
+      text,
+      readbackValueAt(readback, properties, coordinate, isSecretReference)
+    );
+    const held = plaintextFor(text, valueAtCoordinate(resolved, coordinate));
+    learn(live, held === undefined || held === live);
+    learn(held);
   }
   // A leaf whose one token is proven public teaches only a value other than the proven one.
   // Known limits (no leak, the pre-#7160 behaviour): a leaf with two proven tokens, and one

@@ -133,8 +133,9 @@ export function withSecretAttributeKeysDropped<
     else needles.add(value);
   };
   for (const plaintext of secrets?.keys() ?? []) learn(plaintext);
-  // go-to-k/cdkd#7181: a `NoEcho` value the resource was given; a stored
-  // record's `properties` hold the mask there, which teaches nothing.
+  // go-to-k/cdkd#7181: a `NoEcho` value the resource was given, of any length
+  // (a long one is usually in `secrets` too); a stored record's `properties`
+  // hold the mask there, which teaches nothing.
   for (const coordinate of noEchoLeavesOf(record) ?? []) {
     learn(valueAtCoordinate(raw.properties, coordinate));
   }

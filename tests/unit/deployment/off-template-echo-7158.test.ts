@@ -639,6 +639,30 @@ describe('a secret echoed under a key the template lacks (go-to-k/cdkd#7158, #71
       }
     });
 
+    it('a short readback placeholder at a NoEcho position whose held plaintext differs teaches no whole-leaf value', () => {
+      const raw = { properties: { Secret: 'LongSecretPw1' }, readback: { Secret: '0', Count: '0' } };
+      const out = withOffTemplateEchoesMasked<OffTemplateEchoRecord>(
+        { physicalId: 'p-1', properties: { Secret: '***' }, observedProperties: raw.readback, noEchoLeaves: [['Secret']] },
+        raw
+      );
+      expect(out.observedProperties?.['Count']).toBe('0');
+      expect(out.observedMaskedLeaves).toBeUndefined();
+      // Control: an unchanged record holds only the mask there, so its readback still teaches.
+      const unchanged = withOffTemplateEchoesMasked<OffTemplateEchoRecord>(
+        { physicalId: 'p-1', properties: { Secret: '***' }, observedProperties: raw.readback, noEchoLeaves: [['Secret']] },
+        { readback: raw.readback }
+      );
+      expect(unchanged.observedMaskedLeaves).toEqual([['Count']]);
+    });
+
+    it('a short reference plaintext the readback spells differently from the resolved bag teaches only the resolved one', () => {
+      const out = withOffTemplateEchoesMasked<OffTemplateEchoRecord>(
+        { physicalId: 'p', properties: { Pin: '{{resolve:ssm-secure:/pin}}' }, observedProperties: { Extra: '0', Other: 'Zq9' } },
+        { properties: { Pin: 'Zq9' }, readback: { Pin: '0', Extra: '0', Other: 'Zq9' } }
+      );
+      expect(out.observedProperties).toEqual({ Extra: '0', Other: '***' });
+    });
+
     it('a stack whose secrets are all long enough to scan for gains no masked position', () => {
       // Public off-template leaves equal to short substrings of the secret,
       // to text of the physical id, and to short template literals.
