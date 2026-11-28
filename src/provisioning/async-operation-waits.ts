@@ -259,7 +259,11 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
     ['terminated', 'shutting-down'],
     `${DEFERRED}; the restart of an instance cdkd stopped, and the best-effort restart after a failure, do not wait`
   ),
-  'ecs:CreateCluster': unmeasured(NO_WAIT),
+  'ecs:CreateCluster': waits(
+    ['waitForClusterSettled'],
+    ['FAILED', 'UPDATE_FAILED', 'INACTIVE / DEPROVISIONING'],
+    'only a ServiceConnectDefaults create (PROVISIONING / attachments UPDATE_IN_PROGRESS ~20 s) or an in-progress answer; --no-wait skips it (docs/cli-deploy.md); CloudFormation\'s create completed ACTIVE / UPDATE_COMPLETE (#7132)'
+  ),
   'ecs:CreateService': waits(
     ['settleService'],
     ['MISSING', 'DRAINING', 'INACTIVE', 'a FAILED deployment'],
@@ -280,16 +284,28 @@ export const ASYNC_OPERATION_CLASSIFICATION: Readonly<Record<string, AsyncOperat
   'ecs:RegisterTaskDefinition': byDesign(
     'settled once AWS answers: the revision is ACTIVE at once; DELETE_IN_PROGRESS belongs to DeleteTaskDefinitions (ECS API reference)'
   ),
-  'ecs:UpdateCluster': unmeasured(`${NO_WAIT} (it waits only before a refused write)`),
+  'ecs:UpdateCluster': waits(
+    ['sendWhenAttachmentsSettle', 'waitForClusterSettled'],
+    ['FAILED', 'UPDATE_FAILED after an in-progress read', 'INACTIVE / DEPROVISIONING'],
+    'waits before the send for an earlier attachment change, and after it only for a ServiceConnectDefaults change (~14 s) or an in-progress answer; settings-only updates read ACTIVE at once; --no-wait skips it (docs/cli-deploy.md) (#7132)'
+  ),
   'ecs:UpdateService': waits(
     ['settleService'],
     ['MISSING', 'DRAINING', 'INACTIVE', 'a FAILED deployment'],
     `${DEFERRED}; drift revert, a non-ECS controller and the scale-down before a delete skip it`
   ),
-  'efs:CreateAccessPoint': unmeasured(`${NO_WAIT} (the provider has no access-point waiter)`),
+  'efs:CreateAccessPoint': waits(
+    ['waitForAccessPointAvailable'],
+    ['error', 'deleting', 'deleted'],
+    'creating ~1-2 s; --no-wait skips it (docs/cli-deploy.md); CloudFormation\'s create completed with the access point available (#7132)'
+  ),
   'efs:CreateFileSystem': waits(['waitForFileSystemAvailable'], []),
   'efs:CreateMountTarget': waits(['waitForMountTargetAvailable'], []),
-  'efs:PutBackupPolicy': unmeasured(`${NO_WAIT} (the policy answers ENABLING / DISABLING)`),
+  'efs:PutBackupPolicy': waits(
+    ['waitForBackupPolicySettled'],
+    ['the opposite status after the stale-read grace'],
+    'ENABLING / DISABLING ~2 s, create and update; --no-wait skips it (docs/cli-deploy.md); CloudFormation\'s update read the new status right after (#7132)'
+  ),
   'efs:UpdateFileSystem': waits(['waitForFileSystemAvailable'], []),
   'elasticache:CreateCacheCluster': waits(
     ['waitForClusterAvailable'],

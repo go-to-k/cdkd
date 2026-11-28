@@ -3,8 +3,8 @@
   "total": 173,
   "counts": {
     "no-wait-by-design": 47,
-    "waits": 109,
-    "unmeasured": 17
+    "waits": 113,
+    "unmeasured": 13
   },
   "rows": [
     {
@@ -2051,8 +2051,16 @@
         "src/provisioning/providers/ecs-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "waits",
+        "helpers": [
+          "waitForClusterSettled"
+        ],
+        "failureStatuses": [
+          "FAILED",
+          "UPDATE_FAILED",
+          "INACTIVE / DEPROVISIONING"
+        ],
+        "note": "only a ServiceConnectDefaults create (PROVISIONING / attachments UPDATE_IN_PROGRESS ~20 s) or an in-progress answer; --no-wait skips it (docs/cli-deploy.md); CloudFormation's create completed ACTIVE / UPDATE_COMPLETE (#7132)"
       }
     },
     {
@@ -2282,8 +2290,17 @@
         "src/provisioning/providers/ecs-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (it waits only before a refused write)"
+        "verdict": "waits",
+        "helpers": [
+          "sendWhenAttachmentsSettle",
+          "waitForClusterSettled"
+        ],
+        "failureStatuses": [
+          "FAILED",
+          "UPDATE_FAILED after an in-progress read",
+          "INACTIVE / DEPROVISIONING"
+        ],
+        "note": "waits before the send for an earlier attachment change, and after it only for a ServiceConnectDefaults change (~14 s) or an in-progress answer; settings-only updates read ACTIVE at once; --no-wait skips it (docs/cli-deploy.md) (#7132)"
       }
     },
     {
@@ -2354,8 +2371,16 @@
         "src/provisioning/providers/efs-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (the provider has no access-point waiter)"
+        "verdict": "waits",
+        "helpers": [
+          "waitForAccessPointAvailable"
+        ],
+        "failureStatuses": [
+          "error",
+          "deleting",
+          "deleted"
+        ],
+        "note": "creating ~1-2 s; --no-wait skips it (docs/cli-deploy.md); CloudFormation's create completed with the access point available (#7132)"
       }
     },
     {
@@ -2423,8 +2448,14 @@
         "src/provisioning/providers/efs-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (the policy answers ENABLING / DISABLING)"
+        "verdict": "waits",
+        "helpers": [
+          "waitForBackupPolicySettled"
+        ],
+        "failureStatuses": [
+          "the opposite status after the stale-read grace"
+        ],
+        "note": "ENABLING / DISABLING ~2 s, create and update; --no-wait skips it (docs/cli-deploy.md); CloudFormation's update read the new status right after (#7132)"
       }
     },
     {
