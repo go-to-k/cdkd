@@ -9,6 +9,7 @@ import {
   type UserPoolConfig,
 } from '@aws-sdk/client-appsync';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
+import { safeMsg } from '../../../utils/display-safe.js';
 import { normalizeAwsTagsToCfn } from '../../import-helpers.js';
 import { type ResourceNotFound, RESOURCE_NOT_FOUND } from '../../../types/resource.js';
 import { graphQLSchemaApiId } from './shared.js';
@@ -275,7 +276,7 @@ export async function canonicalizeDriftPair(
   } catch (err) {
     const cause = err instanceof Error && err.cause instanceof Error ? err.cause : err;
     this.logger.debug(
-      `Could not read the declared GraphQL schema object (${
+      safeMsg`Could not read the declared GraphQL schema object (${
         cause instanceof Error ? cause.name : 'unknown error'
       }); comparing Definition against the recorded baseline`
     );
