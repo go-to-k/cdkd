@@ -48,6 +48,8 @@ import type { DynamoDBGlobalTableProvider } from '../dynamodb-globaltable-provid
 import {
   waitForContributorInsightsSettled,
   waitForKinesisEnableActive,
+  waitForKinesisPrecisionSettled,
+  waitForKinesisUpdatable,
 } from '../dynamodb-settle-waits.js';
 
 /**
@@ -313,17 +315,44 @@ export async function sendReplicaSettingOp(
       await this.waitForKinesisDisableSettled(client, tableName, op.streamArn, scope, maskSecrets);
       break;
     case 'kinesisPrecision':
-      await send(() =>
-        client.send(
-          new UpdateKinesisStreamingDestinationCommand({
-            TableName: tableName,
-            StreamArn: op.streamArn,
-            UpdateKinesisStreamingConfiguration: {
-              ApproximateCreationDateTimePrecision:
-                op.precision as ApproximateCreationDateTimePrecision,
-            },
-          })
-        )
+      // A destination a --no-wait deploy left UPDATING refuses the update.
+      await waitForKinesisUpdatable(client, tableName, op.streamArn, scope, settleWait);
+      try {
+        await send(() =>
+          client.send(
+            new UpdateKinesisStreamingDestinationCommand({
+              TableName: tableName,
+              StreamArn: op.streamArn,
+              UpdateKinesisStreamingConfiguration: {
+                ApproximateCreationDateTimePrecision:
+                  op.precision as ApproximateCreationDateTimePrecision,
+              },
+            })
+          )
+        );
+      } catch (error) {
+        // The op is planned from the recorded precision, not the live one: a
+        // re-run after a failed deploy whose update landed, or an out-of-band
+        // change, sends the precision AWS already holds. That is the goal, as
+        // on the Table side; the wait below still confirms it.
+        if (
+          !(error instanceof Error && error.name === 'ValidationException') ||
+          !/already set to the desired value/i.test(describeAwsFailure(error).detail)
+        ) {
+          throw error;
+        }
+        this.logger.debug(
+          maskSecrets(`Kinesis streaming precision on ${scope} is already ${op.precision}`)
+        );
+      }
+      // go-to-k/cdkd#7132: the destination stays UPDATING for minutes.
+      await waitForKinesisPrecisionSettled(
+        client,
+        tableName,
+        op.streamArn,
+        op.precision,
+        scope,
+        settleWait
       );
       break;
     case 'putTablePolicy':

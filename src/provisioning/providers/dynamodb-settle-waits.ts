@@ -19,6 +19,8 @@ import type { SecretMasker } from '../../types/resource.js';
  * `AWS::DynamoDB::Table` and `AWS::DynamoDB::GlobalTable` both send
  * (go-to-k/cdkd#7132): `UpdateContributorInsights` answers `ENABLING` /
  * `DISABLING`, and `EnableKinesisStreamingDestination` answers `ENABLING`.
+ * The GlobalTable path's `UpdateKinesisStreamingDestination` waits here too
+ * ({@link waitForKinesisPrecisionSettled}).
  * CloudFormation's create and update complete only once the change has
  * landed (measured us-east-1: a table's `UPDATE_COMPLETE` 9 s after
  * Contributor Insights read `ENABLED`, its `CREATE_COMPLETE` 5 s after the
@@ -80,7 +82,17 @@ export const SETTLE_STALE_READ_GRACE_POLLS = 5;
 async function pollUntilSettled<T>(
   what: string,
   opts: DynamoDBSettleWaitOptions,
-  defaults: { pollMs: number; maxPolls: number },
+  defaults: {
+    pollMs: number;
+    maxPolls: number;
+    runsUnderNoWait?: boolean;
+    /**
+     * A wait BEFORE the change is sent: its cap and deadline say the change
+     * was NOT sent, and the cap stays retryable, since a retry sends nothing
+     * twice.
+     */
+    beforeSend?: boolean;
+  },
   read: () => Promise<T>,
   /** `'settled'`, `'pending'`, or a failure message to throw. */
   judge: (value: T, poll: number) => 'settled' | 'pending' | Error,
@@ -89,10 +101,12 @@ async function pollUntilSettled<T>(
   const { maskSecrets } = opts;
   const pollMs = opts.pollMs ?? defaults.pollMs;
   const maxPolls = opts.maxPolls ?? defaults.maxPolls;
-  if (process.env['CDKD_NO_WAIT'] === 'true') {
+  if (process.env['CDKD_NO_WAIT'] === 'true' && defaults.runsUnderNoWait !== true) {
     opts.debug(maskSecrets(`Skipping the wait for ${what} (CDKD_NO_WAIT=true)`));
     return;
   }
+  const outcome =
+    defaults.beforeSend === true ? 'the change was NOT sent' : 'the change is not confirmed';
   const watch = startInterruptWatch(maskSecrets(what));
   let last: T | undefined;
   try {
@@ -105,7 +119,7 @@ async function pollUntilSettled<T>(
           new Error(
             maskSecrets(
               `The resource timeout expired while waiting for ${what} (last status: ` +
-                `${describeLast(last)}); the change is not confirmed`
+                `${describeLast(last)}); ${outcome}`
             )
           )
         );
@@ -132,14 +146,13 @@ async function pollUntilSettled<T>(
   } finally {
     watch.dispose();
   }
-  throw markNonRetryable(
-    new Error(
-      maskSecrets(
-        `Timed out waiting for ${what}: still ${describeLast(last)} after ` +
-          `${(maxPolls * pollMs) / 1000} seconds; the change is not confirmed`
-      )
+  const timedOut = new Error(
+    maskSecrets(
+      `Timed out waiting for ${what}: still ${describeLast(last)} after ` +
+        `${(maxPolls * pollMs) / 1000} seconds; ${outcome}`
     )
   );
+  throw defaults.beforeSend === true ? timedOut : markNonRetryable(timedOut);
 }
 
 /** A failure whose AWS reason goes to debug, with the `--verbose` pointer thrown. */
@@ -264,6 +277,111 @@ export async function waitForKinesisEnableActive(
         opts
       );
     },
+    (dest) => dest?.DestinationStatus ?? 'absent'
+  );
+}
+
+/**
+ * After `UpdateKinesisStreamingDestination` (an
+ * `ApproximateCreationDateTimePrecision` change): wait until the destination
+ * for `streamArn` reads `ACTIVE` at `precision`. AWS holds it `UPDATING` for
+ * minutes and refuses another update meanwhile ("Updates are only allowed in
+ * ACTIVE state"); CloudFormation's update completes only once it is `ACTIVE`
+ * at the new precision (measured us-east-1: ~3 min `UPDATING`,
+ * `UPDATE_COMPLETE` after 137 s). `AWS::DynamoDB::Table` waits the same way
+ * in `waitForKinesisDestinationSettled`. An `ACTIVE` read at another
+ * precision is read as the state from before the call, and any other status
+ * (`ENABLE_FAILED`, `DISABLED`, absent) as a stale read, for
+ * {@link SETTLE_STALE_READ_GRACE_POLLS} polls first; then either fails, with
+ * AWS's `DestinationStatusDescription`.
+ */
+export async function waitForKinesisPrecisionSettled(
+  client: DynamoDBClient,
+  tableName: string,
+  streamArn: string,
+  precision: string,
+  target: string,
+  opts: DynamoDBSettleWaitOptions
+): Promise<void> {
+  await pollUntilSettled(
+    `Kinesis streaming destination ${streamArn} on ${target} to read ACTIVE at ` +
+      `ApproximateCreationDateTimePrecision ${precision}`,
+    opts,
+    { pollMs: KINESIS_ENABLE_SETTLE_POLL_MS, maxPolls: KINESIS_ENABLE_SETTLE_POLLS },
+    async () =>
+      currentDestination(
+        (
+          await client.send(
+            new DescribeKinesisStreamingDestinationCommand({ TableName: tableName })
+          )
+        ).KinesisDataStreamDestinations ?? [],
+        streamArn
+      ),
+    (dest, poll) => {
+      const status = dest?.DestinationStatus;
+      if (status === 'ACTIVE' && dest?.ApproximateCreationDateTimePrecision === precision) {
+        return 'settled';
+      }
+      if (status === 'ENABLING' || status === 'UPDATING') return 'pending';
+      if (poll <= SETTLE_STALE_READ_GRACE_POLLS) return 'pending';
+      return settledFailure(
+        `Kinesis streaming destination ${streamArn} on ${target} settled as ` +
+          `${status ?? 'absent'} with ApproximateCreationDateTimePrecision ` +
+          `${dest?.ApproximateCreationDateTimePrecision ?? 'unset'}, expected ACTIVE / ${precision}`,
+        { message: dest?.DestinationStatusDescription },
+        opts
+      );
+    },
+    (dest) =>
+      dest === undefined
+        ? 'absent'
+        : `${dest.DestinationStatus ?? 'unknown'} / ${dest.ApproximateCreationDateTimePrecision ?? 'unset'}`
+  );
+}
+
+/** The pre-update wait re-reads every 2 s, for up to 5 minutes, as the Table side does. */
+export const KINESIS_PRE_UPDATE_POLLS = 150;
+
+/**
+ * Before `UpdateKinesisStreamingDestination` on the GlobalTable path: wait
+ * while the destination for `streamArn` reads `UPDATING` / `ENABLING`. AWS
+ * refuses the update until it is `ACTIVE` ("Updates are only allowed in
+ * ACTIVE state"), and a `--no-wait` deploy can leave it `UPDATING`, so this
+ * wait runs under `--no-wait` too, as the Table side's pre-update wait in
+ * `waitForKinesisDestinationSettled` does. Any other status ends the wait:
+ * the update itself decides. The update is not sent yet, so the cap says so
+ * (`the change was NOT sent`, the destination still `UPDATING`) and stays
+ * retryable: a retry re-reads before it sends.
+ */
+export async function waitForKinesisUpdatable(
+  client: DynamoDBClient,
+  tableName: string,
+  streamArn: string,
+  target: string,
+  opts: DynamoDBSettleWaitOptions
+): Promise<void> {
+  await pollUntilSettled(
+    `Kinesis streaming destination ${streamArn} on ${target} to accept an update`,
+    opts,
+    {
+      pollMs: KINESIS_ENABLE_SETTLE_POLL_MS,
+      maxPolls: KINESIS_PRE_UPDATE_POLLS,
+      runsUnderNoWait: true,
+      beforeSend: true,
+    },
+    async () =>
+      currentDestination(
+        (
+          await client.send(
+            new DescribeKinesisStreamingDestinationCommand({ TableName: tableName })
+          )
+        ).KinesisDataStreamDestinations ?? [],
+        streamArn
+      ),
+    (dest) =>
+      dest?.DestinationStatus === 'UPDATING' || dest?.DestinationStatus === 'ENABLING'
+        ? 'pending'
+        : 'settled',
     (dest) => dest?.DestinationStatus ?? 'absent'
   );
 }

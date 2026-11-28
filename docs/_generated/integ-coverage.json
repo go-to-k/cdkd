@@ -8168,6 +8168,7 @@
         "dynamodb-globaltable-replica-settings",
         "dynamodb-ondemand",
         "getatt-cache-kinesis-lambda-ec2",
+        "globaltable-stream-view-type",
         "kinesis-esm-filter",
         "kinesis-stream-mode-switch",
         "log-pipeline",
@@ -8200,6 +8201,9 @@
         "getatt-cache-kinesis-lambda-ec2": [
           "l1",
           "literal"
+        ],
+        "globaltable-stream-view-type": [
+          "l2"
         ],
         "kinesis-esm-filter": [
           "l2"

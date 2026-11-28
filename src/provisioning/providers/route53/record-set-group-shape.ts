@@ -268,3 +268,9 @@ export function isRecordNotFoundRefusal(error: unknown): boolean {
     /but it was not found/i.test(error.message)
   );
 }
+
+/** How a group names itself in a hosted-zone lookup's refusal. */
+export const groupSubject = {
+  noun: 'record set group',
+  remedy: 'set HostedZoneId explicitly',
+};

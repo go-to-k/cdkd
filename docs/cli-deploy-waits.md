@@ -1,6 +1,6 @@
 ---
 title: "cdkd deploy: wait mode details"
-description: "What cdkd deploy --no-wait leaves unfinished for each resource type, how the default waits for an ECS service, what --full-wait adds for CloudFront and RDS Multi-AZ DB clusters, and the waits a destroy always performs."
+description: "What cdkd deploy --no-wait leaves unfinished for each resource type, how the default waits for an ECS service, what --full-wait adds for CloudFront, RDS Multi-AZ DB clusters and Route 53 changes, and the waits a destroy always performs."
 ---
 
 # cdkd deploy: wait mode details
@@ -430,9 +430,10 @@ waits for a service whose `DeploymentController` is `CODE_DEPLOY` or
 
 ## What `--full-wait` adds
 
-`--full-wait` adds two waits that CloudFormation performs and cdkd skips by
-default: a CloudFront distribution reaching `Deployed`, and a Multi-AZ RDS DB
-cluster reaching `available` after an instance class or storage change.
+`--full-wait` adds three waits that CloudFormation performs and cdkd skips by
+default: a CloudFront distribution reaching `Deployed`, a Multi-AZ RDS DB
+cluster reaching `available` after an instance class or storage change, and a
+Route 53 change reaching `INSYNC`.
 
 ```bash
 cdkd deploy MyStack --full-wait
@@ -494,6 +495,41 @@ cdkd deploy MyStack --full-wait \
 
 A wait that runs out fails the update.
 
+An `AWS::DynamoDB::GlobalTable` update that changes a Kinesis streaming
+destination's `ApproximateCreationDateTimePrecision` first waits, in every
+mode, while that destination reads `UPDATING` or `ENABLING`: a `--no-wait`
+deploy can leave it so, and AWS refuses the update until it is `ACTIVE`
+(`Updates are only allowed in ACTIVE state`). A wait that runs out fails the
+update without sending it, and the deploy may retry it.
+
+The waits after a delete, such as a Bedrock AgentCore runtime's, are listed
+under [Destroy always waits](#destroy-always-waits); a deploy that deletes or
+replaces a resource runs them too.
+
+### Route 53: `INSYNC`
+
+Every hosted zone create and delete, record set and record set group change,
+and private-zone VPC association or disassociation returns a change that is
+`PENDING` until every Route 53 DNS server has it. By default cdkd returns while
+it is `PENDING`:
+
+| What | Usable at once | Time to `INSYNC` |
+| --- | --- | --- |
+| Hosted zone create | Yes: records can be added at once | 24-30 s (CloudFormation 42-51 s) |
+| Hosted zone delete | Yes: the zone is gone at once | 24-28 s (CloudFormation about 42 s) |
+| Record change | Yes: drift and later calls read it at once | 26-37 s (CloudFormation 32-43 s) |
+| Record delete | Yes | About 26 s (CloudFormation about 32 s) |
+| VPC association or disassociation | Yes | 78-81 s (CloudFormation's update about 103 s) |
+
+Route 53 has no failure state for a `PENDING` change, so the wait changes only
+when DNS resolvers see the change. Use `--full-wait` when a step right after
+the deploy resolves the name. Under `--full-wait`, a wait that runs out warns
+and the deploy continues, with the command to wait manually:
+
+```text
+aws route53 wait resource-record-sets-changed --id <change-id>
+```
+
 ## Destroy always waits
 
 `cdkd destroy` has no wait flags. These waits run on every destroy:
@@ -513,12 +549,17 @@ A wait that runs out fails the update.
 | Subnet whose CIDR came from an IPAM pool | Until the pool releases the subnet's allocation (about 19 minutes for an IPv4 block, about 25 for an IPv6 one) |
 | IPAM pool CIDR refused while deleted resources' allocations remain | Until the pool releases them, then delete again |
 | Bedrock AgentCore runtime still `CREATING` or `UPDATING` | Until it leaves that status, then delete (up to 30 minutes) |
+| Bedrock AgentCore runtime after its delete | Until it is gone (about 3 minutes) |
 
 Each wait is there for a reason:
 
 - A Bedrock AgentCore runtime that a `--no-wait` or interrupted deploy left
   `CREATING` or `UPDATING` is waited out before the delete. If the wait runs
   out, or the runtime cannot be read, cdkd sends the delete anyway.
+- A Bedrock AgentCore runtime stays `DELETING` for about 3 minutes and keeps
+  its name, so a deploy right after the destroy, or a replacement, would fail
+  with `ConflictException`. cdkd waits until it is gone, as CloudFormation
+  does, for up to 10 minutes. If this wait runs out, cdkd warns and moves on.
 - A NAT gateway that is still `deleting` blocks the deletes of its subnet,
   internet gateway and VPC with `DependencyViolation`.
 - A VPC endpoint that is still `deleting` keeps its network interfaces, which

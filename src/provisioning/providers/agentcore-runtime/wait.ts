@@ -26,6 +26,7 @@ import {
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import type { MaskerFn } from '../../masked-retry-logger.js';
 import { pasteableAwsCommand } from '../../replacement-protection-advice.js';
+import { waitForGoneAfterDelete } from '../../delete-gone-wait.js';
 
 /** The time between two status reads. */
 export const RUNTIME_WAIT_POLL_MS = 5_000;
@@ -183,6 +184,62 @@ export async function waitForRuntimeSettledBeforeDelete(
   } finally {
     watch.dispose();
   }
+}
+
+/** The longest {@link waitForRuntimeGoneAfterDelete} waits: a delete took ~3 min (#7132). */
+export const RUNTIME_DELETE_MAX_WAIT_MS = 10 * 60_000;
+
+/**
+ * Wait, after an accepted `DeleteAgentRuntime`, until the runtime is gone
+ * (go-to-k/cdkd#7132). The runtime reads `DELETING` for about 3 minutes and
+ * holds its NAME meanwhile: a `CreateAgentRuntime` of that name is refused
+ * with `ConflictException` ("An agent with the specified name already
+ * exists"), which a destroy-then-deploy or a delete-then-create replacement
+ * meets. CloudFormation reports the delete complete only once the runtime is
+ * gone (measured us-east-1: DELETE_COMPLETE one second after the runtime read
+ * not found). Runs in every mode, as every destroy wait does; the delete was
+ * accepted, so a cap, Ctrl-C or unreadable status warns and returns
+ * (`delete-gone-wait.ts`). `DELETE_FAILED` throws instead: AWS will not
+ * finish that delete, so returning would drop the record of a live runtime.
+ */
+export async function waitForRuntimeGoneAfterDelete(
+  deps: RuntimeWaitDeps & { logger: { debug(message: string): void; warn(message: string): void } },
+  agentRuntimeId: string,
+  logicalId: string,
+  resourceType: string
+): Promise<void> {
+  await waitForGoneAfterDelete({
+    what: `BedrockAgentCore Runtime ${agentRuntimeId}`,
+    resourceType,
+    describe: async () => {
+      try {
+        return (
+          (
+            (await deps.client.send(
+              new GetAgentRuntimeCommand({ agentRuntimeId })
+            )) as GetAgentRuntimeCommandOutput
+          ).status ?? 'DELETING'
+        );
+      } catch (error) {
+        if (error instanceof ResourceNotFoundException) return undefined;
+        throw error;
+      }
+    },
+    failedStatus: (status) =>
+      status === 'DELETE_FAILED'
+        ? new ProvisioningError(
+            `BedrockAgentCore Runtime ${logicalId} (${agentRuntimeId}) reached DELETE_FAILED after ` +
+              `its delete was accepted; AWS will not finish the delete on its own, so cdkd keeps its record`,
+            resourceType,
+            logicalId,
+            agentRuntimeId
+          )
+        : undefined,
+    logger: deps.logger,
+    pollIntervalMs: RUNTIME_WAIT_POLL_MS,
+    maxWaitMs: RUNTIME_DELETE_MAX_WAIT_MS,
+    sleep: deps.sleep,
+  });
 }
 
 /**

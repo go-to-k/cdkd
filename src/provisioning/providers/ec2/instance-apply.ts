@@ -42,6 +42,7 @@ import {
   refusedBeforeApplying,
 } from './instance-support.js';
 import type { EC2Provider } from '../ec2-provider.js';
+import type { MaskerFn } from '../../masked-retry-logger.js';
 
 /**
  * go-to-k/cdkd#5630: plan a `PrivateDnsNameOptions` change. What
@@ -303,7 +304,8 @@ export async function applyInstanceMemberUpdates(
   logicalId: string,
   physicalId: string,
   resourceType: string,
-  plan: InstanceMemberPlan
+  plan: InstanceMemberPlan,
+  maskSecrets?: MaskerFn
 ): Promise<void> {
   // What this update has already changed on the instance, for a warning
   // after a failure to name (never more than was sent).
@@ -319,7 +321,7 @@ export async function applyInstanceMemberUpdates(
   }
 
   if (plan.profile !== undefined) {
-    await this.applyInstanceProfileChange(logicalId, physicalId, plan.profile);
+    await this.applyInstanceProfileChange(logicalId, physicalId, plan.profile, maskSecrets);
     applied.push(
       plan.profile.kind === 'remove'
         ? 'the IamInstanceProfile removed'

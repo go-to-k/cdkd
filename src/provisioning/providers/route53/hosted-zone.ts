@@ -18,7 +18,7 @@ import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { CdkdError, ProvisioningError } from '../../../utils/error-handler.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../../auxiliary-failure.js';
 import { reportCreatedResource, retractCreatedResource } from '../../created-resource-sink.js';
-import { maskerOrIdentity } from '../../masked-retry-logger.js';
+import { createMaskedLogSinks, maskerOrIdentity } from '../../masked-retry-logger.js';
 import { readConfigString, replayWarn, requireConfigString } from '../../config-shape.js';
 import { acquireIdempotencyToken } from '../idempotency-token.js';
 import { canonicalizeRoute53QueryName as canonicalizeQueryName } from '../../composite-id.js';
@@ -34,6 +34,7 @@ import {
   VPCS_KEPT_ON_REMOVAL_NOTE,
   declaresNoVpcs,
 } from './shared.js';
+import { changeIdOf, waitForRoute53ChangeInsync } from './change-wait.js';
 
 // ─── AWS::Route53::HostedZone ──────────────────────────────────────
 export async function createHostedZone(
@@ -164,6 +165,9 @@ export async function createHostedZone(
     // go-to-k/cdkd#5511: reported before the VPC associations and later calls.
     reportCreatedResource(logicalId, resourceType, zoneId);
 
+    // go-to-k/cdkd#7132: the changes `--full-wait` waits on for INSYNC.
+    const changeIds: Array<string | undefined> = [changeIdOf(response)];
+
     // Associate additional VPCs (index 1+) after creation
     if (vpcs && vpcs.length > 1) {
       for (let i = 1; i < vpcs.length; i++) {
@@ -171,7 +175,7 @@ export async function createHostedZone(
         this.logger.debug(
           `Associating additional VPC ${String(additionalVpc['VPCId'])} with hosted zone ${zoneId}`
         );
-        await this.getClient().send(
+        const associated = await this.getClient().send(
           new AssociateVPCWithHostedZoneCommand({
             HostedZoneId: zoneId,
             VPC: {
@@ -180,6 +184,7 @@ export async function createHostedZone(
             },
           })
         );
+        changeIds.push(changeIdOf(associated));
       }
     }
 
@@ -275,6 +280,22 @@ export async function createHostedZone(
       );
     }
 
+    // Under --full-wait, as CloudFormation does: the zone and its VPC
+    // associations propagate in parallel, so waiting on each in turn costs
+    // about the slowest one. A Ctrl-C here leaves the zone live, which the
+    // catch below marks.
+    if (process.env['CDKD_FULL_WAIT'] === 'true') {
+      const log = createMaskedLogSinks(this.logger, mask);
+      for (const changeId of changeIds) {
+        await waitForRoute53ChangeInsync(
+          this.getClient(),
+          changeId,
+          `hosted zone ${logicalId}`,
+          log
+        );
+      }
+    }
+
     // Collect name servers
     const nameServers = response.DelegationSet?.NameServers ?? [];
 
@@ -342,7 +363,9 @@ export async function createOrAdoptHostedZone(
   this: Route53Provider,
   input: CreateHostedZoneCommandInput,
   mask?: (text: string) => string
-): Promise<Partial<Pick<CreateHostedZoneCommandOutput, 'HostedZone' | 'DelegationSet'>>> {
+): Promise<
+  Partial<Pick<CreateHostedZoneCommandOutput, 'HostedZone' | 'DelegationSet' | 'ChangeInfo'>>
+> {
   try {
     return await this.getClient().send(new CreateHostedZoneCommand(input));
   } catch (error) {

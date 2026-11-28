@@ -437,24 +437,42 @@ const GROUP_ID = 'ig-1';
 /**
  * AddInstanceGroups answers the group id, and ListInstanceGroups answers that
  * group RUNNING with the count the last AddInstanceGroups /
- * ModifyInstanceGroups sent running, so the wait (`waitForGroupReady`)
- * settles on its first poll.
+ * ModifyInstanceGroups sent running and a sent policy ATTACHED, so the waits
+ * (`waitForGroupReady`, `waitForAutoScalingPolicySettled`) settle on their
+ * first poll.
  */
 function armGroup(): void {
   let running = 0;
+  let policy = false;
   const sent = (groups: unknown): Record<string, unknown> => {
     running = ((groups as { InstanceCount?: number }[] | undefined)?.[0]?.InstanceCount ?? 0);
     return {};
   };
   setOutputOverrides({
-    AddInstanceGroupsCommand: (input) => ({
-      ...sent(input['InstanceGroups']),
-      InstanceGroupIds: [GROUP_ID],
-    }),
+    AddInstanceGroupsCommand: (input) => {
+      policy =
+        (input['InstanceGroups'] as { AutoScalingPolicy?: unknown }[] | undefined)?.[0]
+          ?.AutoScalingPolicy !== undefined;
+      return { ...sent(input['InstanceGroups']), InstanceGroupIds: [GROUP_ID] };
+    },
     ModifyInstanceGroupsCommand: (input) => sent(input['InstanceGroups']),
+    PutAutoScalingPolicyCommand: () => {
+      policy = true;
+      return {};
+    },
+    RemoveAutoScalingPolicyCommand: () => {
+      policy = false;
+      return {};
+    },
     ListInstanceGroupsCommand: () => ({
       InstanceGroups: [
-        { Id: GROUP_ID, Status: { State: 'RUNNING' }, RunningInstanceCount: running },
+        {
+          Id: GROUP_ID,
+          Status: { State: 'RUNNING' },
+          RunningInstanceCount: running,
+          // The policy wait after a Put (go-to-k/cdkd#7132) settles at once.
+          ...(policy && { AutoScalingPolicy: { Status: { State: 'ATTACHED' } } }),
+        },
       ],
     }),
   });
@@ -694,9 +712,37 @@ const TARGET_GROUP_ARN = `arn:aws:rds:us-east-1:${ACCOUNT}:target-group:prx-tg-1
 
 /** DescribeDBProxyTargetGroups answers the default group's ARN, which create records. */
 function armTargetGroup(): void {
+  const registered = { clusters: new Set<string>(), instances: new Set<string>() };
   setOutputOverrides({
     DescribeDBProxyTargetGroupsCommand: () => ({
       TargetGroups: [{ TargetGroupArn: TARGET_GROUP_ARN, TargetGroupName: 'default' }],
+    }),
+    // go-to-k/cdkd#7132: each target RegisterDBProxyTargets named reads
+    // AVAILABLE, as it does once the proxy health-checks it (a cluster
+    // through its member instance rows).
+    RegisterDBProxyTargetsCommand: (input) => {
+      for (const id of (input['DBClusterIdentifiers'] as string[] | undefined) ?? []) {
+        registered.clusters.add(id);
+      }
+      for (const id of (input['DBInstanceIdentifiers'] as string[] | undefined) ?? []) {
+        registered.instances.add(id);
+      }
+      return {};
+    },
+    DescribeDBProxyTargetsCommand: () => ({
+      Targets: [
+        ...[...registered.clusters].map((id) => ({
+          Type: 'RDS_INSTANCE',
+          RdsResourceId: `${id}-member`,
+          TrackedClusterId: id,
+          TargetHealth: { State: 'AVAILABLE' },
+        })),
+        ...[...registered.instances].map((id) => ({
+          Type: 'RDS_INSTANCE',
+          RdsResourceId: id,
+          TargetHealth: { State: 'AVAILABLE' },
+        })),
+      ],
     }),
   });
 }

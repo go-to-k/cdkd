@@ -37,6 +37,10 @@
 # Service's `taskDefinition` tracks the NEW revision ARN — i.e. the
 # replacement propagated to the Ref-only dependent and UpdateService ran.
 #
+# Phase 1b2 (go-to-k/cdkd#7132) moves the Cluster's ServiceConnectDefaults to
+# a second (HTTP) namespace under the default wait and asserts the cluster
+# reads ACTIVE with its attachments UPDATE_COMPLETE right after the deploy.
+#
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
 #   AWS_REGION   — defaults to us-east-1
@@ -140,6 +144,54 @@ fi
 
 echo "==> Pre-run cleanup"
 cleanup
+
+# go-to-k/cdkd#7132: Phase 1b2's HttpNamespace has a FIXED name
+# (cdkd-ecs-fargate-7132), and Cloud Map refuses a second namespace of that
+# name, so one an interrupted run left with no state record would fail every
+# later create. `cleanup` cannot see it (it destroys from state); delete it by
+# name. Only one at least an hour old: a younger one can be a parallel run's
+# between its create and its destroy. Best-effort: a failure warns, and the
+# create below then fails naming the duplicate.
+SECOND_NS_NAME="cdkd-ecs-fargate-7132"
+sweep_second_namespace() { (
+  set +eu
+  local listed ids id op status i
+  if ! listed=$(aws servicediscovery list-namespaces --region "${REGION}" \
+    --filters "Name=NAME,Values=${SECOND_NS_NAME},Condition=EQ" --output json); then
+    echo "WARN: could not list Cloud Map namespaces; a leftover ${SECOND_NS_NAME} would fail the create" >&2
+    return 0
+  fi
+  ids=$(node -e '
+    const cutoff = Date.now() - 3600 * 1000;
+    const { Namespaces = [] } = JSON.parse(require("fs").readFileSync(0, "utf8"));
+    for (const n of Namespaces) {
+      const at = Date.parse(n.CreateDate);
+      if (n.Name === process.argv[1] && Number.isFinite(at) && at < cutoff) console.log(n.Id);
+    }
+  ' "${SECOND_NS_NAME}" <<<"${listed}")
+  for id in ${ids}; do
+    echo "    deleting leftover Cloud Map namespace ${SECOND_NS_NAME} (${id})"
+    if ! op=$(aws servicediscovery delete-namespace --region "${REGION}" --id "${id}" \
+      --query OperationId --output text); then
+      echo "WARN: could not delete Cloud Map namespace ${id}; delete it by hand" >&2
+      continue
+    fi
+    # The delete is asynchronous; a create of the same name before it ends fails.
+    for i in $(seq 1 36); do
+      status=$(aws servicediscovery get-operation --region "${REGION}" --operation-id "${op}" \
+        --query Operation.Status --output text) || status=""
+      [ "${status}" = "SUCCESS" ] && break
+      if [ "${status}" = "FAIL" ]; then
+        echo "WARN: deleting Cloud Map namespace ${id} failed (operation ${op}); delete it by hand" >&2
+        break
+      fi
+      sleep 5
+    done
+    [ "${status}" = "SUCCESS" ] || [ "${status}" = "FAIL" ] \
+      || echo "WARN: deleting Cloud Map namespace ${id} did not finish in 180 s (operation ${op})" >&2
+  done
+) }
+sweep_second_namespace
 
 # --- Phase 0: --no-wait / --full-wait are mutually exclusive (issue #1275) ---
 # The two flags are opposite ends of one axis, so the pair is rejected before
@@ -530,6 +582,36 @@ if [ "$(echo "${NEW_TD_COMMAND}" | jq -c .)" != '["echo","hello-updated"]' ]; th
   exit 1
 fi
 echo "    OK: service taskDefinition tracks the new ACTIVE revision ${SERVICE_TD_AFTER} (replacement propagated — issue #807 CLOSED)"
+
+# --- Phase 1b2: a ServiceConnectDefaults change settles (go-to-k/cdkd#7132) ---
+# UpdateCluster with a new default namespace leaves the cluster's attachments
+# UPDATE_IN_PROGRESS for ~14 s (measured); CloudFormation's update completes
+# only once they settle. The default-wait deploy now waits too, so ONE read
+# right after it returns must show the settled cluster on the new namespace.
+echo "==> Phase 1b2: move the cluster's ServiceConnectDefaults to a second namespace (go-to-k/cdkd#7132)"
+P1B2_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
+SECOND_NS_ARN=$(echo "${P1B2_STATE}" | jq -r '.outputs.SecondNamespaceArn // ""')
+case "${SECOND_NS_ARN}" in
+  arn:*:servicediscovery:*:namespace/*) ;;
+  *) echo "FAIL: go-to-k/cdkd#7132 -- the SecondNamespaceArn output is '${SECOND_NS_ARN}'" >&2; exit 1 ;;
+esac
+if [ "${SECOND_NS_ARN}" = "${CLUSTER_SVC_CONNECT}" ]; then
+  echo "FAIL: go-to-k/cdkd#7132 -- the cluster already defaults to ${SECOND_NS_ARN}; the update would change nothing" >&2
+  exit 1
+fi
+CDKD_TEST_UPDATE=true CDKD_TEST_SC_7132=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+P1B2_CLUSTER=$(aws ecs describe-clusters --clusters "${CLUSTER_NAME}" --include ATTACHMENTS --region "${REGION}" \
+  --query 'clusters[0].[status, attachmentsStatus, serviceConnectDefaults.namespace]' --output text | tr '\t' '|')
+if [ "${P1B2_CLUSTER}" != "ACTIVE|UPDATE_COMPLETE|${SECOND_NS_ARN}" ]; then
+  echo "FAIL: go-to-k/cdkd#7132 -- right after the deploy returned the cluster reads '${P1B2_CLUSTER}' (status|attachmentsStatus|namespace), expected 'ACTIVE|UPDATE_COMPLETE|${SECOND_NS_ARN}'; the update returned before the Service Connect attachment settled" >&2
+  aws ecs describe-clusters --clusters "${CLUSTER_NAME}" --include ATTACHMENTS --region "${REGION}" \
+    --query 'clusters[0].attachments[].{type: type, status: status}' --output json >&2
+  exit 1
+fi
+echo "    OK: go-to-k/cdkd#7132 cluster ${CLUSTER_NAME} read ACTIVE / attachments UPDATE_COMPLETE on ${SECOND_NS_ARN} right after the deploy"
 
 # --- Phase 1c: drift reads the live ECS resources as present (issue #4272) ---
 # The negative control for Phase 3: with every ECS resource ACTIVE, `cdkd

@@ -2,9 +2,9 @@
   "issue": 7132,
   "total": 173,
   "counts": {
-    "unmeasured": 52,
-    "waits": 101,
-    "no-wait-by-design": 20
+    "no-wait-by-design": 51,
+    "waits": 120,
+    "unmeasured": 2
   },
   "rows": [
     {
@@ -24,8 +24,8 @@
         "src/provisioning/providers/apigateway-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "no-wait-by-design",
+        "reason": "settled when AWS answers: GetRestApi read apiStatus AVAILABLE on the first read, REGIONAL and EDGE (#7132)"
       }
     },
     {
@@ -45,8 +45,8 @@
         "src/provisioning/providers/apigateway-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (a cache cluster answers CREATE_IN_PROGRESS)"
+        "verdict": "no-wait-by-design",
+        "reason": "CloudFormation does not wait for the cache cluster either: its stage CREATE_COMPLETE came in 3.7 s while GetStage read cacheClusterStatus CREATE_IN_PROGRESS (AVAILABLE ~256 s later); a stage without a cache stays NOT_AVAILABLE (#7132)"
       }
     },
     {
@@ -66,8 +66,8 @@
         "src/provisioning/providers/apigateway-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "no-wait-by-design",
+        "reason": "settled when AWS answers: GetRestApi read apiStatus AVAILABLE on the first read after an OpenAPI import (2 of 2) (#7132)"
       }
     },
     {
@@ -87,8 +87,8 @@
         "src/provisioning/providers/apigateway-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "no-wait-by-design",
+        "reason": "settled when AWS answers: GetRestApi read apiStatus AVAILABLE on the first read after an OpenAPI put (#7132)"
       }
     },
     {
@@ -108,8 +108,8 @@
         "src/provisioning/providers/apigateway-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "no-wait-by-design",
+        "reason": "settled when AWS answers: GetRestApi read apiStatus AVAILABLE on the first read, an EDGE to REGIONAL endpoint change included (#7132)"
       }
     },
     {
@@ -129,8 +129,8 @@
         "src/provisioning/providers/apigateway-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (a CacheClusterEnabled change answers CREATE_IN_PROGRESS / DELETE_IN_PROGRESS)"
+        "verdict": "no-wait-by-design",
+        "reason": "CloudFormation does not wait for a cache-size change either (cacheClusterStatus CREATE_IN_PROGRESS ~196 s after the call); AWS refuses a second cache change meanwhile, and CloudFormation fails the same way (#7132)"
       }
     },
     {
@@ -150,8 +150,8 @@
         "src/provisioning/providers/appconfig-environment-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "no-wait-by-design",
+        "reason": "settled when AWS answers: GetEnvironment read State ReadyForDeployment on the first read, with and without Monitors (3 of 3); DEPLOYING follows only StartDeployment (#7132)"
       }
     },
     {
@@ -171,8 +171,8 @@
         "src/provisioning/providers/appconfig-environment-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "no-wait-by-design",
+        "reason": "settled when AWS answers: GetEnvironment read State ReadyForDeployment on the first read, with and without Monitors (3 of 3) (#7132)"
       }
     },
     {
@@ -282,8 +282,8 @@
         "src/provisioning/providers/agentcore-evaluator-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "no-wait-by-design",
+        "reason": "settled when AWS answers: the response carries status ACTIVE and GetEvaluator reads ACTIVE on the first read (3 of 3) (#7132)"
       }
     },
     {
@@ -304,8 +304,12 @@
         "src/provisioning/providers/agentcore-runtime-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (it waits only before the delete)"
+        "verdict": "waits",
+        "helpers": [
+          "waitForRuntimeGoneAfterDelete"
+        ],
+        "failureStatuses": [],
+        "note": "every mode; the runtime reads DELETING ~3 min and a same-name create is refused meanwhile; CloudFormation's delete completed once it read not found; a cap, Ctrl-C or unreadable status warns (delete-gone-wait.ts); the failed-create cleanup delete does not wait (#7132)"
       }
     },
     {
@@ -325,8 +329,8 @@
         "src/provisioning/providers/agentcore-evaluator-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "no-wait-by-design",
+        "reason": "settled when AWS answers: GetEvaluator answers not found on the first read and a same-name re-create succeeds at once (3 of 3) (#7132)"
       }
     },
     {
@@ -374,8 +378,8 @@
         "src/provisioning/providers/agentcore-evaluator-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "no-wait-by-design",
+        "reason": "settled when AWS answers: the response carries status ACTIVE and GetEvaluator reads ACTIVE on the first read (3 of 3) (#7132)"
       }
     },
     {
@@ -679,8 +683,8 @@
         "src/provisioning/providers/docdb-subnet-group-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "no-wait-by-design",
+        "reason": "settled when AWS answers: the create response and the first DescribeDBSubnetGroups read SubnetGroupStatus Complete (3 of 3); there is no transitional state (#7132)"
       }
     },
     {
@@ -798,7 +802,8 @@
         "helpers": [
           "waitForClusterPortApplied",
           "waitForSecurityGroupsApplied",
-          "waitForApplied"
+          "waitForApplied",
+          "waitForClusterAvailable"
         ],
         "failureStatuses": [
           "deleting",
@@ -811,7 +816,7 @@
           "incompatible-*",
           "*-failed"
         ],
-        "note": "only for a changed port, security groups or read-back setting, skipped under --no-wait; a DeletionProtection flip or re-enable around a delete does not wait after the call"
+        "note": "a restore follow-up waits for available; otherwise only for a changed port, security groups or read-back setting, skipped under --no-wait; a DeletionProtection flip or re-enable around a delete does not wait after the call"
       }
     },
     {
@@ -872,8 +877,8 @@
         "src/provisioning/providers/docdb-subnet-group-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "no-wait-by-design",
+        "reason": "settled when AWS answers: the response and the first DescribeDBSubnetGroups read SubnetGroupStatus Complete with the new subnets (3 of 3) (#7132)"
       }
     },
     {
@@ -1223,8 +1228,15 @@
         "src/provisioning/providers/dynamodb-table-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "AWS::DynamoDB::Table waits (waitForKinesisDestinationSettled); AWS::DynamoDB::GlobalTable does not"
+        "verdict": "waits",
+        "helpers": [
+          "waitForKinesisDestinationSettled",
+          "waitForKinesisPrecisionSettled"
+        ],
+        "failureStatuses": [
+          "ENABLE_FAILED / DISABLED / absent, or the old precision, after the stale-read grace"
+        ],
+        "note": "AWS::DynamoDB::Table and GlobalTable; UPDATING for ~3 min; the GlobalTable wait --no-wait skips it (docs/cli-deploy.md), and its pre-send wait for ACTIVE (waitForKinesisUpdatable) runs in every mode; CloudFormation's update completed with the new precision ACTIVE (#7132)"
       }
     },
     {
@@ -1309,8 +1321,15 @@
         "src/provisioning/providers/ec2-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "the create waits (isInstanceProfileAssociated, warns on its cap); the update does not"
+        "verdict": "waits",
+        "helpers": [
+          "isInstanceProfileAssociated",
+          "waitForInstanceProfileAssociationSettled"
+        ],
+        "failureStatuses": [
+          "the new association reads disassociated"
+        ],
+        "note": "the create polls isInstanceProfileAssociated and fails non-retryably (not confirmed) on its cap or the deadline; the update waits for associated, --no-wait skips it (docs/cli-deploy.md); CloudFormation's update step read the new profile associated (#7132)"
       }
     },
     {
@@ -1351,8 +1370,8 @@
         "src/provisioning/providers/ec2-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "no-wait-by-design",
+        "reason": "settled when AWS answers: AssociationState associated in the response and on the first DescribeRouteTables read (7 of 7) (#7132)"
       }
     },
     {
@@ -1558,8 +1577,8 @@
         "src/provisioning/providers/ec2-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (only an IPv6 association and attribute read-back wait)"
+        "verdict": "no-wait-by-design",
+        "reason": "settled when AWS answers: available in the response and on the first DescribeSubnets read (7 of 7); the IPv6 association and attribute read-back waits stay (#7132)"
       }
     },
     {
@@ -1587,8 +1606,8 @@
         "src/provisioning/providers/ec2-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "no-wait-by-design",
+        "reason": "settled when AWS answers: the response says pending, but DescribeVpcs read right after the call returns available (7 of 7, ~0.4 s read latency) (#7132)"
       }
     },
     {
@@ -1664,8 +1683,12 @@
         "src/provisioning/providers/ec2-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "waits",
+        "helpers": [
+          "waitForInstanceProfileAssociationSettled"
+        ],
+        "failureStatuses": [],
+        "note": "waits until the association is gone (~0.8 s); --no-wait skips it (docs/cli-deploy.md); CloudFormation's one instance update changing IamInstanceProfile + Monitoring + MetadataOptions took ~4 s and read the new, settled values right after UPDATE_COMPLETE (#7132)"
       }
     },
     {
@@ -1734,8 +1757,12 @@
         "src/provisioning/providers/ec2-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "waits",
+        "helpers": [
+          "waitForInstanceMetadataOptionsSettled"
+        ],
+        "failureStatuses": [],
+        "note": "waits for State applied (pending ~0.8 s in 1 of 8 trials); --no-wait skips it (docs/cli-deploy.md); CloudFormation's update step read applied (#7132)"
       }
     },
     {
@@ -1755,8 +1782,12 @@
         "src/provisioning/providers/ec2-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (monitoring answers pending)"
+        "verdict": "waits",
+        "helpers": [
+          "waitForInstanceMonitoringSettled"
+        ],
+        "failureStatuses": [],
+        "note": "DescribeInstances read disabled right after the call (4 of 4), enabled ~0.8 s later; --no-wait skips it (docs/cli-deploy.md); CloudFormation's update step read enabled (#7132)"
       }
     },
     {
@@ -1776,8 +1807,14 @@
         "src/provisioning/providers/ec2-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "waits",
+        "helpers": [
+          "waitForInstanceProfileAssociationSettled"
+        ],
+        "failureStatuses": [
+          "the new association reads disassociated"
+        ],
+        "note": "the new association reads associating ~0.8 s; --no-wait skips it (docs/cli-deploy.md); CloudFormation's update step read it associated (#7132)"
       }
     },
     {
@@ -1986,8 +2023,12 @@
         "src/provisioning/providers/ec2-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (monitoring answers disabling)"
+        "verdict": "waits",
+        "helpers": [
+          "waitForInstanceMonitoringSettled"
+        ],
+        "failureStatuses": [],
+        "note": "DescribeInstances read enabled right after the call (3 of 4), disabled ~0.8 s later; --no-wait skips it (docs/cli-deploy.md); CloudFormation's one instance update changing IamInstanceProfile + Monitoring + MetadataOptions took ~4 s and read the new, settled values right after UPDATE_COMPLETE (#7132)"
       }
     },
     {
@@ -2015,8 +2056,16 @@
         "src/provisioning/providers/ecs-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "waits",
+        "helpers": [
+          "waitForClusterSettled"
+        ],
+        "failureStatuses": [
+          "FAILED",
+          "UPDATE_FAILED",
+          "INACTIVE / DEPROVISIONING"
+        ],
+        "note": "only a ServiceConnectDefaults create (PROVISIONING / attachments UPDATE_IN_PROGRESS ~20 s) or an in-progress answer; --no-wait skips it (docs/cli-deploy.md); CloudFormation's create completed ACTIVE / UPDATE_COMPLETE (#7132)"
       }
     },
     {
@@ -2094,8 +2143,8 @@
         "src/provisioning/providers/ecs-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "no-wait-by-design",
+        "reason": "settled when AWS answers: DescribeClusters reads INACTIVE on the first read and a same-named cluster can be created at once (3 of 3) (#7132)"
       }
     },
     {
@@ -2246,8 +2295,17 @@
         "src/provisioning/providers/ecs-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (it waits only before a refused write)"
+        "verdict": "waits",
+        "helpers": [
+          "sendWhenAttachmentsSettle",
+          "waitForClusterSettled"
+        ],
+        "failureStatuses": [
+          "FAILED",
+          "UPDATE_FAILED after an in-progress read",
+          "INACTIVE / DEPROVISIONING"
+        ],
+        "note": "waits before the send for an earlier attachment change, and after it only for a ServiceConnectDefaults change (~14 s) or an in-progress answer; settings-only updates read ACTIVE at once; --no-wait skips it (docs/cli-deploy.md) (#7132)"
       }
     },
     {
@@ -2318,8 +2376,16 @@
         "src/provisioning/providers/efs-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (the provider has no access-point waiter)"
+        "verdict": "waits",
+        "helpers": [
+          "waitForAccessPointAvailable"
+        ],
+        "failureStatuses": [
+          "error",
+          "deleting",
+          "deleted"
+        ],
+        "note": "creating ~1-2 s; --no-wait skips it (docs/cli-deploy.md); CloudFormation's create completed with the access point available (#7132)"
       }
     },
     {
@@ -2387,8 +2453,14 @@
         "src/provisioning/providers/efs-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (the policy answers ENABLING / DISABLING)"
+        "verdict": "waits",
+        "helpers": [
+          "waitForBackupPolicySettled"
+        ],
+        "failureStatuses": [
+          "the opposite status after the stale-read grace"
+        ],
+        "note": "ENABLING / DISABLING ~2 s, create and update; --no-wait skips it (docs/cli-deploy.md); CloudFormation's update read the new status right after (#7132)"
       }
     },
     {
@@ -2660,8 +2732,15 @@
         "src/provisioning/providers/emr-instance-group-config-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (the policy answers PENDING / ATTACHING)"
+        "verdict": "waits",
+        "helpers": [
+          "waitForAutoScalingPolicySettled"
+        ],
+        "failureStatuses": [
+          "FAILED",
+          "DETACHING / DETACHED / no policy after the stale-read grace"
+        ],
+        "note": "create and update; PENDING / ATTACHING for ~10-15 s; --no-wait skips it (docs/cli-deploy.md); CloudFormation's update completed with the policy ATTACHED (#7132)"
       }
     },
     {
@@ -2936,8 +3015,8 @@
         "src/provisioning/providers/glue-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "no-wait-by-design",
+        "reason": "settled when AWS answers: GetConnection reads a JDBC or NETWORK connection with no Status on the first read (3 of 3 each); only managed connector types carry one (#7132)"
       }
     },
     {
@@ -2999,8 +3078,8 @@
         "src/provisioning/providers/glue-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (it waits only for the deactivation before)"
+        "verdict": "no-wait-by-design",
+        "reason": "settled when AWS answers: GetTrigger reads the new definition on the first read, and the StartTrigger after it reads ACTIVATED at once (#7132)"
       }
     },
     {
@@ -3073,8 +3152,8 @@
         "src/provisioning/providers/kms-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "no-wait-by-design",
+        "reason": "settled when AWS answers: DescribeKey reads KeyState Enabled on the first read, symmetric and RSA_2048 (3 of 3) (#7132)"
       }
     },
     {
@@ -3430,8 +3509,8 @@
         "src/provisioning/providers/lambda-eventsource-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "waits only after a ResourceInUseException refusal (#7011); an accepted delete returns while Deleting"
+        "verdict": "no-wait-by-design",
+        "reason": "CloudFormation does not wait either: DELETE_COMPLETE after 1.75 s while the mapping read Deleting for ~5-9 s; only a same function + source re-create is refused meanwhile, which create retries (#7011) (#7132)"
       }
     },
     {
@@ -3586,7 +3665,8 @@
         "verdict": "waits",
         "helpers": [
           "waitForFunctionUpdated",
-          "waitForBackingFunctionUpdated"
+          "waitForBackingFunctionUpdated",
+          "waitForLambdaUpdateCompleted"
         ],
         "failureStatuses": [
           "Failed"
@@ -3729,8 +3809,8 @@
         "src/provisioning/providers/neptune-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "no-wait-by-design",
+        "reason": "settled when AWS answers: the create response and the first DescribeDBSubnetGroups read SubnetGroupStatus Complete (3 of 3); there is no transitional state (#7132)"
       }
     },
     {
@@ -3954,8 +4034,8 @@
         "src/provisioning/providers/neptune-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "no-wait-by-design",
+        "reason": "settled when AWS answers: the response and the first DescribeDBSubnetGroups read SubnetGroupStatus Complete with the new subnets (3 of 3) (#7132)"
       }
     },
     {
@@ -4479,8 +4559,8 @@
         "src/provisioning/providers/rds-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "no-wait-by-design",
+        "reason": "settled when AWS answers: the create response and the first DescribeDBSubnetGroups read SubnetGroupStatus Complete (3 of 3); there is no transitional state (#7132)"
       }
     },
     {
@@ -4941,8 +5021,8 @@
         "src/provisioning/providers/rds-dbproxy-targetgroup-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "no-wait-by-design",
+        "reason": "settled when AWS answers: DescribeDBProxyTargetGroups reads Status available with the new ConnectionPoolConfig on the first read (1 trial) (#7132)"
       }
     },
     {
@@ -4966,8 +5046,8 @@
         "src/provisioning/providers/rds-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "no-wait-by-design",
+        "reason": "settled when AWS answers: the response and the first DescribeDBSubnetGroups read SubnetGroupStatus Complete with the new subnets (3 of 3) (#7132)"
       }
     },
     {
@@ -5174,8 +5254,14 @@
         "src/provisioning/providers/rds-dbproxy-targetgroup-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (targets answer REGISTERING)"
+        "verdict": "waits",
+        "helpers": [
+          "waitForProxyTargetsAvailable"
+        ],
+        "failureStatuses": [
+          "UNAVAILABLE with CONNECTION_FAILED / AUTH_FAILURE / INVALID_REPLICATION_STATE after a grace"
+        ],
+        "note": "create and update; REGISTERING / UNAVAILABLE (PENDING_PROXY_CAPACITY) for 11 s on a warm proxy, ~5.5 min on a new one; UNUSED counts as settled; --no-wait skips it (docs/cli-deploy.md); CloudFormation's create completed with the target AVAILABLE (#7132)"
       }
     },
     {
@@ -5646,8 +5732,12 @@
         "src/provisioning/providers/route53-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (the change answers PENDING; nothing reads GetChange)"
+        "verdict": "waits",
+        "helpers": [
+          "waitForRoute53ChangeInsync"
+        ],
+        "failureStatuses": [],
+        "note": "--full-wait only, by maintainer decision on #7132: the default and --no-wait return while PENDING, as for CloudFront Deployed (#1282) — drift reads the change at once, PENDING has no failure state, and dependent Route 53 calls are accepted meanwhile; a cap or deadline warns; PENDING ~78-81 s; CloudFormation's VPCs update waited ~103 s"
       }
     },
     {
@@ -5670,8 +5760,13 @@
         "src/provisioning/providers/route53-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (the change answers PENDING; nothing reads GetChange)"
+        "verdict": "waits",
+        "helpers": [
+          "waitForRoute53ChangeInsync",
+          "waitForCertificateIssued"
+        ],
+        "failureStatuses": [],
+        "note": "--full-wait only, by maintainer decision on #7132: the default and --no-wait return while PENDING, as for CloudFront Deployed (#1282) — drift reads the change at once, PENDING has no failure state, and dependent Route 53 calls are accepted meanwhile; a cap or deadline warns; PENDING ~26-37 s for a change (CloudFormation ~32-43 s) and ~26 s for a delete (CloudFormation ~32 s); an ACM DNS-validation record waits for ISSUED instead, which covers it"
       }
     },
     {
@@ -5699,8 +5794,12 @@
         "src/provisioning/providers/route53-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (the change answers PENDING; nothing reads GetChange)"
+        "verdict": "waits",
+        "helpers": [
+          "waitForRoute53ChangeInsync"
+        ],
+        "failureStatuses": [],
+        "note": "--full-wait only, by maintainer decision on #7132: the default and --no-wait return while PENDING, as for CloudFront Deployed (#1282) — drift reads the change at once, PENDING has no failure state, and dependent Route 53 calls are accepted meanwhile; a cap or deadline warns; PENDING ~24-30 s; CloudFormation waits for INSYNC (~42-51 s)"
       }
     },
     {
@@ -5721,8 +5820,12 @@
         "src/provisioning/providers/route53-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (the change answers PENDING; nothing reads GetChange)"
+        "verdict": "waits",
+        "helpers": [
+          "waitForRoute53ChangeInsync"
+        ],
+        "failureStatuses": [],
+        "note": "--full-wait only, by maintainer decision on #7132: the default and --no-wait return while PENDING, as for CloudFront Deployed (#1282) — drift reads the change at once, PENDING has no failure state, and dependent Route 53 calls are accepted meanwhile; a cap or deadline warns; PENDING ~24-28 s; CloudFormation waits for INSYNC (~42 s, measured on stack cdkd-7132-b2-rt-1); the failed-create cleanup delete does not wait"
       }
     },
     {
@@ -5742,8 +5845,12 @@
         "src/provisioning/providers/route53-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (the change answers PENDING; nothing reads GetChange)"
+        "verdict": "waits",
+        "helpers": [
+          "waitForRoute53ChangeInsync"
+        ],
+        "failureStatuses": [],
+        "note": "--full-wait only, by maintainer decision on #7132: the default and --no-wait return while PENDING, as for CloudFront Deployed (#1282) — drift reads the change at once, PENDING has no failure state, and dependent Route 53 calls are accepted meanwhile; a cap or deadline warns; PENDING ~78-81 s; CloudFormation's VPCs update waited ~103 s"
       }
     },
     {
@@ -5788,8 +5895,8 @@
         "src/provisioning/providers/s3-tables-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "no-wait-by-design",
+        "reason": "settled when AWS answers: the call returns status success and GetTableBucketReplication reads the new configuration on the next call, with no status field (3 of 3) (#7132)"
       }
     },
     {
@@ -5809,8 +5916,8 @@
         "src/provisioning/providers/secretsmanager-secret-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (replica regions answer InProgress)"
+        "verdict": "no-wait-by-design",
+        "reason": "CloudFormation does not wait for replication either: its create completed in 0.5 s while ReplicationStatus read InProgress (InSync ~2 s later); without ReplicaRegions there is no status (#7132)"
       }
     },
     {
@@ -5831,8 +5938,8 @@
         "src/provisioning/providers/secretsmanager-secret-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B"
+        "verdict": "no-wait-by-design",
+        "reason": "settled when AWS answers: DescribeSecret reads no ReplicationStatus on the first read, and a force delete of the primary right after succeeds (3 of 3) (#7132)"
       }
     },
     {
@@ -5852,8 +5959,8 @@
         "src/provisioning/providers/secretsmanager-secret-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (replica regions answer InProgress)"
+        "verdict": "no-wait-by-design",
+        "reason": "CloudFormation does not wait for replication either: adding a replica completed in 1.3 s while ReplicationStatus read InProgress (InSync ~2 s later) (#7132)"
       }
     },
     {
@@ -5881,8 +5988,8 @@
         "src/provisioning/providers/ec2-provider.ts"
       ],
       "classification": {
-        "verdict": "unmeasured",
-        "reason": "returns after the call; no code comment says why; needs a CloudFormation A/B (the association answers Pending)"
+        "verdict": "no-wait-by-design",
+        "reason": "CloudFormation does not wait for the first execution either: the association read Pending right after UPDATE_COMPLETE and Success 67-81 s later (3 of 3) (#7132)"
       }
     }
   ]

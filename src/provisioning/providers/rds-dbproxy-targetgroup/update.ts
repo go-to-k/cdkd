@@ -34,6 +34,8 @@ import {
   readProxyName,
   missingIdentifiers,
 } from './shared.js';
+import { createMaskedLogSinks } from '../../masked-retry-logger.js';
+import { waitForProxyTargetsAvailable } from './settle-wait.js';
 
 /**
  * In-place update support: target add/remove (DBClusterIdentifiers /
@@ -444,6 +446,26 @@ export async function update(
     } catch (error) {
       throw this.wrapError(error, 'UPDATE (register)', resourceType, logicalId, physicalId, mask);
     }
+    // go-to-k/cdkd#7132: the added targets read REGISTERING; CloudFormation
+    // completes only once they read AVAILABLE. Only the targets this update
+    // registered are waited on.
+    await waitForProxyTargetsAvailable(
+      client,
+      logicalId,
+      dbProxyName,
+      targetGroupName,
+      { clusters: clustersToAdd, instances: instancesToAdd },
+      createMaskedLogSinks(this.logger, context?.maskSecrets),
+      (error) =>
+        this.wrapError(
+          error,
+          'UPDATE (wait for targets)',
+          resourceType,
+          logicalId,
+          physicalId,
+          mask
+        )
+    );
   }
 
   // 3. Tags diff, addressed by the physicalId (the TargetGroupArn).

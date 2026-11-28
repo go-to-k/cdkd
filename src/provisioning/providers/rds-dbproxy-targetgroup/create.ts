@@ -18,6 +18,9 @@ import {
   refuseMalformedDesiredTags,
 } from '../../tag-list.js';
 import { readTargetLists, readProxyName, withoutKey } from './shared.js';
+import { createMaskedLogSinks } from '../../masked-retry-logger.js';
+import { isInterruptedWaitError } from '../../interrupt-watch.js';
+import { waitForProxyTargetsAvailable } from './settle-wait.js';
 
 export async function create(
   this: RDSDBProxyTargetGroupProvider,
@@ -184,6 +187,51 @@ export async function create(
   // describe; reported before the tagging call, when targets were registered.
   if (dbClusterIdentifiers.length > 0 || dbInstanceIdentifiers.length > 0) {
     reportCreatedResource(logicalId, resourceType, targetGroupArn);
+    // go-to-k/cdkd#7132: the targets read REGISTERING; CloudFormation
+    // completes only once they read AVAILABLE. Reported before the wait, so
+    // a failed or timed-out wait still journals the registration.
+    try {
+      await waitForProxyTargetsAvailable(
+        client,
+        logicalId,
+        dbProxyName,
+        targetGroupName,
+        { clusters: dbClusterIdentifiers, instances: dbInstanceIdentifiers },
+        createMaskedLogSinks(this.logger, context?.maskSecrets),
+        (error) =>
+          this.wrapError(
+            error,
+            'CREATE (wait for targets)',
+            resourceType,
+            logicalId,
+            undefined,
+            mask
+          )
+      );
+    } catch (error) {
+      // Ctrl-C stops here: the journal holds the registration, and a
+      // deregister would be one more call after the user asked to stop.
+      if (isInterruptedWaitError(error)) throw error;
+      const original =
+        error instanceof ProvisioningError
+          ? error
+          : new ProvisioningError(
+              (error as Error).message,
+              resourceType,
+              logicalId,
+              undefined,
+              error as Error
+            );
+      throw await this.retireRegistrationAfterFailedCreate(
+        original,
+        dbProxyName,
+        targetGroupName,
+        dbClusterIdentifiers,
+        dbInstanceIdentifiers,
+        context?.maskSecrets,
+        { logicalId, resourceType, physicalId: targetGroupArn }
+      );
+    }
   }
 
   if (tags.length > 0) {

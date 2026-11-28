@@ -1,7 +1,13 @@
 import { DescribeClustersCommand, type Cluster, type ECSClient } from '@aws-sdk/client-ecs';
 import { isDeepStrictEqual } from 'node:util';
 import { ProvisioningError } from '../../../utils/error-handler.js';
-import { markNonRetryable } from '../../../deployment/retryable-errors.js';
+import {
+  isThrottlingError,
+  isTransientServerError,
+  markNonRetryable,
+} from '../../../deployment/retryable-errors.js';
+import { enclosingDeadlineRemainingMs } from '../../../deployment/resource-deadline.js';
+import { describeAwsStatusReason } from '../../../utils/aws-failure-text.js';
 import { logicalIdShown } from '../../composite-id.js';
 import { commandHole } from '../../../utils/pasteable-command.js';
 import { resolvedResourceTimeoutMs } from '../../resource-timeout-registry.js';
@@ -235,6 +241,199 @@ export async function waitForOwnCapacityProviderPut(
       CLUSTER_TYPE,
       logicalId,
       cluster
+    )
+  );
+}
+
+/** `DescribeClusters` every second, for up to 10 minutes (the ECS waits' floor). */
+export const CLUSTER_SETTLE_POLL_MS = 1000;
+export const CLUSTER_SETTLE_POLLS = 600;
+/**
+ * Reads after an `UpdateCluster` that answered settled attachments which may
+ * still show the cluster from before the call, before a settled read counts.
+ */
+export const CLUSTER_STALE_READ_GRACE_POLLS = 3;
+
+/** Reads a cluster missing from `DescribeClusters` is read again (not yet visible). */
+const CLUSTER_NOT_VISIBLE_GRACE_POLLS = 5;
+
+export interface ClusterSettleOptions {
+  /**
+   * Polls a settled read before any in-progress one is taken as the cluster
+   * from before the call; 0 after a create, which has no earlier state.
+   */
+  readonly staleReadGracePolls?: number;
+  /** Overrides for tests. */
+  readonly pollMs?: number;
+  readonly maxPolls?: number;
+}
+
+function settling(cluster: Cluster | undefined): boolean {
+  return cluster?.status === 'PROVISIONING' || cluster?.attachmentsStatus === IN_PROGRESS;
+}
+
+/**
+ * Whether the cluster a `CreateCluster` / `UpdateCluster` answered still has
+ * to settle: the call carried `ServiceConnectDefaults` (its Cloud Map
+ * namespace attachment), or the response itself reports it settling.
+ */
+export function clusterWriteNeedsSettle(
+  sentServiceConnect: boolean,
+  answered: Cluster | undefined
+): boolean {
+  return sentServiceConnect || settling(answered);
+}
+
+/**
+ * After a `CreateCluster` or `UpdateCluster` that set up the Service Connect
+ * namespace (go-to-k/cdkd#7132): wait until the cluster reads `ACTIVE` with
+ * its attachments `UPDATE_COMPLETE` (or none). Measured us-east-1: a create
+ * carrying `ServiceConnectDefaults` read `PROVISIONING` / attachments
+ * `UPDATE_IN_PROGRESS` for ~20 s, an update changing it ~14 s, and
+ * CloudFormation's create (~41 s) and update completed only after both read
+ * settled; a `DeleteCluster` in that window fails `UpdateInProgressException`.
+ * A plain or Container Insights cluster reads `ACTIVE` at once, so the
+ * caller waits only where {@link clusterWriteNeedsSettle} says so.
+ *
+ * `FAILED` or `UPDATE_FAILED` attachments fail, naming the failed
+ * attachments at debug (their details can name the account); `INACTIVE`,
+ * `DEPROVISIONING` or any status ECS adds later fails too. After an update
+ * that never showed in-progress, an `UPDATE_FAILED` read past the grace is a
+ * previous write's (as {@link waitForOwnCapacityProviderPut} treats it):
+ * warned, not thrown.
+ *
+ * Performance gave way to CloudFormation parity here, as for the batch-1
+ * waits (maintainer decision on PR #7157); `--no-wait` (`CDKD_NO_WAIT=true`)
+ * skips it. Bounded by its poll cap and the enclosing per-resource deadline,
+ * and Ctrl-C-aware; running out of either throws a non-retryable error that
+ * says the change is not confirmed. A throttled or 5xx read is one more
+ * pending poll; any other read failure ends the wait, unchanged.
+ */
+export async function waitForClusterSettled(
+  client: ECSClient,
+  logicalId: string,
+  cluster: string,
+  log: MaskedLogSinks,
+  answered: Cluster | undefined,
+  opts: ClusterSettleOptions = {}
+): Promise<void> {
+  const pollMs = opts.pollMs ?? CLUSTER_SETTLE_POLL_MS;
+  const maxPolls = opts.maxPolls ?? CLUSTER_SETTLE_POLLS;
+  const gracePolls = opts.staleReadGracePolls ?? CLUSTER_STALE_READ_GRACE_POLLS;
+  const what = `ECS cluster ${logicalId} to settle`;
+  if (process.env['CDKD_NO_WAIT'] === 'true') {
+    log.debug(`Skipping the wait for ${what} (CDKD_NO_WAIT=true)`);
+    return;
+  }
+  const clusterSettleFailure = (head: string, failed: Cluster | undefined): Error => {
+    const attachments = (failed?.attachments ?? [])
+      .filter((a) => FAILED_ATTACHMENT.test(a.status ?? ''))
+      .map((a) => {
+        const details = (a.details ?? [])
+          .map((d) => `${d.name ?? '?'}=${d.value ?? ''}`)
+          .join(', ');
+        return `${a.type ?? 'attachment'} ${a.id ?? ''} ${a.status ?? ''}${details ? ` (${details})` : ''}`.trim();
+      });
+    const reason = describeAwsStatusReason({ message: attachments.join('; ') }, '');
+    if (reason.redacted) log.debug(`${head}: ${reason.detail}`);
+    return markNonRetryable(
+      new ProvisioningError(
+        log.mask(reason.redacted ? `${head}. ${reason.summary}` : head),
+        CLUSTER_TYPE,
+        logicalId,
+        cluster
+      )
+    );
+  };
+  const describeLast = (c: Cluster | undefined): string =>
+    c === undefined
+      ? 'none read'
+      : `${c.status ?? 'unknown'} / attachments ${c.attachmentsStatus ?? 'none'}`;
+  // A settled read counts at once only when the call itself answered a
+  // settling cluster: otherwise it can be the cluster from before the call.
+  let seenSettling = gracePolls === 0 || settling(answered);
+  const watch = startInterruptWatch(log.mask(what));
+  let last: Cluster | undefined;
+  try {
+    for (let poll = 1; poll <= maxPolls; poll++) {
+      if (watch.isInterrupted()) throw watch.onInterrupted();
+      // The engine's deadline does not cancel this call chain, so a wait that
+      // outlived it would keep polling with nobody waiting on it.
+      if (enclosingDeadlineRemainingMs() <= 0) {
+        throw markNonRetryable(
+          new Error(
+            log.mask(
+              `The resource timeout expired while waiting for ${what} (last status: ` +
+                `${describeLast(last)}); the change is not confirmed`
+            )
+          )
+        );
+      }
+      let read = false;
+      try {
+        last = await describeAttachments(client, cluster);
+        read = true;
+      } catch (error) {
+        if (!(isThrottlingError(error) || isTransientServerError(error))) throw error;
+        log.debug(
+          `A read while waiting for ${what} was throttled or failed server-side; reading again`
+        );
+      }
+      if (read) {
+        if (last === undefined) {
+          if (poll > CLUSTER_NOT_VISIBLE_GRACE_POLLS) {
+            throw clusterSettleFailure(
+              `ECS cluster ${logicalIdShown(logicalId)} (${log.value(cluster)}) could not be read back while settling`,
+              undefined
+            );
+          }
+        } else if (last.status === 'FAILED') {
+          // Before the attachments: a FAILED cluster can still list them in progress.
+          throw clusterSettleFailure(
+            `ECS cluster ${logicalIdShown(logicalId)} (${log.value(cluster)}) settled as ` +
+              `${describeLast(last)}, expected ACTIVE / attachments UPDATE_COMPLETE`,
+            last
+          );
+        } else if (settling(last)) {
+          seenSettling = true;
+        } else if (!seenSettling && poll <= gracePolls) {
+          // possibly the cluster from before the call
+        } else if (
+          last.status === 'ACTIVE' &&
+          (last.attachmentsStatus === undefined || last.attachmentsStatus === 'UPDATE_COMPLETE')
+        ) {
+          return;
+        } else if (
+          last.status === 'ACTIVE' &&
+          last.attachmentsStatus === 'UPDATE_FAILED' &&
+          !seenSettling
+        ) {
+          log.warn(
+            `ECS cluster ${log.value(cluster)} still reports UPDATE_FAILED attachments from before this update, which never showed UPDATE_IN_PROGRESS; continuing`
+          );
+          return;
+        } else {
+          throw clusterSettleFailure(
+            `ECS cluster ${logicalIdShown(logicalId)} (${log.value(cluster)}) settled as ` +
+              `${describeLast(last)}, expected ACTIVE / attachments UPDATE_COMPLETE`,
+            last
+          );
+        }
+      }
+      if (poll === maxPolls) break;
+      await clusterAttachmentsWait.sleep(
+        Math.max(0, Math.min(pollMs, enclosingDeadlineRemainingMs()))
+      );
+    }
+  } finally {
+    watch.dispose();
+  }
+  throw markNonRetryable(
+    new Error(
+      log.mask(
+        `Timed out waiting for ${what}: still ${describeLast(last)} after ` +
+          `${(maxPolls * pollMs) / 1000} seconds; the change is not confirmed`
+      )
     )
   );
 }

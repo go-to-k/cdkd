@@ -69,8 +69,14 @@ const POLICY = {
 
 const TAGS = [{ Key: 'Name', Value: 'fs' }];
 
+/**
+ * The writes sent. The backup-policy wait's `DescribeBackupPolicy` reads
+ * (go-to-k/cdkd#7132) are left out: this suite pins which writes a removal sends.
+ */
 function commands() {
-  return mockSend.mock.calls.map((c) => c[0] as { constructor: { name: string }; input: unknown });
+  return mockSend.mock.calls
+    .map((c) => c[0] as { constructor: { name: string }; input: unknown })
+    .filter((c) => c.constructor.name !== 'DescribeBackupPolicyCommand');
 }
 
 function update(previous: Record<string, unknown>, next: Record<string, unknown>) {
@@ -86,7 +92,19 @@ function update(previous: Record<string, unknown>, next: Record<string, unknown>
 describe('EFSProvider FileSystem control-plane removal resets (#1160)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockSend.mockResolvedValue({});
+    // A PutBackupPolicy lands at once: the wait's read answers the status put.
+    let backupStatus: string | undefined;
+    mockSend.mockImplementation(
+      async (cmd: { constructor: { name: string }; input: Record<string, unknown> }) => {
+        if (cmd.constructor.name === 'PutBackupPolicyCommand') {
+          backupStatus = (cmd.input['BackupPolicy'] as { Status?: string }).Status;
+        }
+        if (cmd.constructor.name === 'DescribeBackupPolicyCommand') {
+          return { BackupPolicy: { Status: backupStatus } };
+        }
+        return {};
+      }
+    );
   });
 
   it('a removed BackupPolicy sends PutBackupPolicy DISABLED', async () => {

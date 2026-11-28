@@ -218,10 +218,17 @@ cdkd deploy MyStack --full-wait   # wait as long as CloudFormation would
 
 The default skips a wait only when the outcome is settled once AWS accepts the
 call and the wait changes only when the resource starts serving. Today that is
-two waits: a CloudFront distribution reaching `Deployed`, and a Multi-AZ RDS DB
-cluster leaving `storage-optimization` after an instance class or storage
-change. The cluster already serves on its new class and storage while RDS
-optimizes the storage in the background, which can take hours.
+three waits:
+
+- a CloudFront distribution reaching `Deployed`;
+- a Multi-AZ RDS DB cluster leaving `storage-optimization` after an instance
+  class or storage change. The cluster already serves on its new class and
+  storage while RDS optimizes the storage in the background, which can take
+  hours;
+- a Route 53 change reaching `INSYNC`. The new zone, record or VPC association
+  is readable and usable by later calls at once; only its propagation to every
+  Route 53 DNS server takes 24-37 seconds (78-81 seconds for a VPC
+  association).
 [Choose a Wait Mode](wait-modes.md#why-the-default-waits-for-ecs-but-not-cloudfront)
 explains the rule.
 
@@ -264,9 +271,15 @@ per AWS call, whether cdkd waits for it at all.
 | `AWS::BedrockAgentCore::Runtime` | Return while `CREATING` / `UPDATING`; a runtime endpoint created or updated on it still waits for `READY`, which AWS requires | Wait for `READY`; a `CREATE_FAILED` or `UPDATE_FAILED` runtime fails the deploy | same as default | Waits | Waits |
 | `AWS::Events::Archive` | Return while `CREATING` / `UPDATING` | Wait for the archive to leave `CREATING` / `UPDATING` (`ENABLED` or `DISABLED`); a `CREATE_FAILED` or `UPDATE_FAILED` archive fails the deploy | same as default | Waits | Does not wait |
 | `AWS::Lambda::EventSourceMapping` | Return while `Creating` / `Updating` | Wait for the mapping to leave `Creating` / `Updating` (`Enabled`, or `Disabled` for `Enabled: false`); a mapping that settles opposite to the `Enabled` the call sent draws a warning, and one that reads `Deleting` fails the deploy | same as default | Waits | Waits |
-| `AWS::DynamoDB::Table` / `GlobalTable` with `KinesisStreamSpecification` or `ContributorInsightsSpecification` | Return while the Kinesis destination reads `ENABLING` and Contributor Insights `ENABLING` / `DISABLING` | Wait for the destination to read `ACTIVE` (15-20 s) and Contributor Insights `ENABLED` / `DISABLED` (1-2 s); `ENABLE_FAILED` or `FAILED` fails the deploy | same as default | Waits | Waits (separate `aws_dynamodb_kinesis_streaming_destination` / `aws_dynamodb_contributor_insights` resources) |
+| `AWS::DynamoDB::Table` / `GlobalTable` with `KinesisStreamSpecification` or `ContributorInsightsSpecification` | Return while the Kinesis destination reads `ENABLING` / `UPDATING` and Contributor Insights `ENABLING` / `DISABLING` | Wait for the destination to read `ACTIVE` (15-20 s; a GlobalTable precision change about 3 min) and Contributor Insights `ENABLED` / `DISABLED` (1-2 s); `ENABLE_FAILED` or `FAILED` fails the deploy | same as default | Waits | Waits (separate `aws_dynamodb_kinesis_streaming_destination` / `aws_dynamodb_contributor_insights` resources) |
 | `AWS::Connect::Instance` | Return while `CREATION_IN_PROGRESS`, once the instance accepts dependent calls (about 20 s after `CreateInstance`) and once the declared `Attributes` are written; only a `false` for a member the instance turns on by itself (`ContactLens`, `EarlyMedia` and six others) waits until those defaults land (about 40 s), since an earlier write would be overwritten; a `Fn::GetAtt` of `ServiceRole` still waits for `ACTIVE`, since the role exists only then | Wait for `ACTIVE` (about 55-85 s), then write again any declared attribute a late default overwrote; a `CREATION_FAILED` instance fails the deploy | same as default | Waits | Waits |
 | `AWS::Lambda::Alias` with `--update-policy` and `CodeDeployLambdaAliasUpdate` | Waits, as the default does | Wait for the CodeDeploy deployment that shifts the alias to the new version to succeed; a failed or stopped deployment fails the deploy | same as default | Waits | n/a |
+| `AWS::Route53::HostedZone` / `RecordSet` / `RecordSetGroup` | same as default | Return while the change is `PENDING` | Wait for `INSYNC` (24-37 s per zone or record change, 78-81 s per VPC association); a wait that runs out warns | Waits | Waits |
+| `AWS::EC2::Instance` monitoring, metadata options or IAM instance profile change | Return after the call | Wait for the change to read back (about 1 s) | same as default | Waits | Waits |
+| `AWS::ECS::Cluster` with `ServiceConnectDefaults` | Return while `PROVISIONING` | Wait for `ACTIVE` with its attachments `UPDATE_COMPLETE` (about 20 s); a failed attachment fails the deploy | same as default | Waits | Waits |
+| `AWS::EFS::AccessPoint` / `FileSystem` `BackupPolicy` | Return while `creating` / `ENABLING` / `DISABLING` | Wait for `available` / the requested status (1-2 s) | same as default | Waits | Waits |
+| `AWS::RDS::DBProxyTargetGroup` | Return while the targets read `REGISTERING` | Wait for every registered target to read `AVAILABLE` (about 10 s, up to about 6 min on a new proxy); a connection or authentication failure fails the deploy | same as default | Waits | Does not wait |
+| `AWS::EMR::InstanceGroupConfig` with `AutoScalingPolicy` | Return while `PENDING` / `ATTACHING` | Wait for `ATTACHED` (10-15 s); a `FAILED` policy fails the deploy | same as default | Waits | Waits |
 | `AWS::AutoScaling::AutoScalingGroup` with `--update-policy` | Start the instance refresh an `AutoScalingRollingUpdate` or `AutoScalingInstanceRefresh` asks for, then return; an `AutoScalingReplacingUpdate` still waits for the new group's instances before deleting the old group | Wait for the refresh to succeed; a failed or cancelled refresh fails the deploy | same as default | Waits | Starts a refresh (`instance_refresh`) and does not wait |
 
 Under `--no-wait`, a wait the table skips still runs when the deploy itself

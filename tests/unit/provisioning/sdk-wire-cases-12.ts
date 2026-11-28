@@ -568,12 +568,32 @@ const CLUSTER_ARN = `arn:aws:ecs:us-east-1:${ACCOUNT}:cluster/${CLUSTER_NAME}`;
 /**
  * `DescribeClusters` answers the cluster: `updateCluster` applies the tag diff
  * to the ARN it reads there and skips it on an empty answer
- * (`updateCluster` in ecs/cluster-task-definition.ts).
+ * (`updateCluster` in ecs/cluster-task-definition.ts). It answers it ACTIVE
+ * with its attachments UPDATE_COMPLETE, as ECS does once a Service Connect
+ * write settles, and `UpdateCluster` answers a Service Connect change with
+ * its attachments UPDATE_IN_PROGRESS, as ECS does, so `waitForClusterSettled`
+ * (go-to-k/cdkd#7132) counts the first settled read and ends at once.
  */
 const armCluster = (): void =>
   setOutputOverrides({
     DescribeClustersCommand: () => ({
-      clusters: [{ clusterArn: CLUSTER_ARN, clusterName: CLUSTER_NAME }],
+      clusters: [
+        {
+          clusterArn: CLUSTER_ARN,
+          clusterName: CLUSTER_NAME,
+          status: 'ACTIVE',
+          attachmentsStatus: 'UPDATE_COMPLETE',
+        },
+      ],
+    }),
+    UpdateClusterCommand: (input) => ({
+      cluster: {
+        clusterArn: CLUSTER_ARN,
+        clusterName: CLUSTER_NAME,
+        status: 'ACTIVE',
+        attachmentsStatus:
+          input['serviceConnectDefaults'] === undefined ? 'UPDATE_COMPLETE' : 'UPDATE_IN_PROGRESS',
+      },
     }),
   });
 

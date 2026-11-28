@@ -4,6 +4,7 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
 import * as efs from 'aws-cdk-lib/aws-efs';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as servicediscovery from 'aws-cdk-lib/aws-servicediscovery';
 
 /**
  * ECS Fargate example stack
@@ -50,6 +51,25 @@ export class EcsFargateStack extends cdk.Stack {
         // actually synthesize the property the backfill is meant to exercise.
         useForServiceConnect: true,
       },
+    });
+
+    // go-to-k/cdkd#7132 (verify.sh Phase 1b2): a second, cheap (HTTP, no
+    // hosted zone) namespace, always declared. CDKD_TEST_SC_7132=true points
+    // the Cluster's ServiceConnectDefaults at it: UpdateCluster answers
+    // attachments UPDATE_IN_PROGRESS (~14 s measured), which the update now
+    // waits out. The Service keeps naming the first namespace.
+    const secondNamespace = new servicediscovery.HttpNamespace(this, 'SecondNamespace7132', {
+      name: 'cdkd-ecs-fargate-7132',
+    });
+    if (process.env.CDKD_TEST_SC_7132 === 'true') {
+      (cluster.node.defaultChild as ecs.CfnCluster).addPropertyOverride(
+        'ServiceConnectDefaults.Namespace',
+        secondNamespace.namespaceArn
+      );
+    }
+    new cdk.CfnOutput(this, 'SecondNamespaceArn', {
+      value: secondNamespace.namespaceArn,
+      description: 'The namespace Phase 1b2 moves the cluster default to (go-to-k/cdkd#7132)',
     });
 
     // Create Fargate Task Definition

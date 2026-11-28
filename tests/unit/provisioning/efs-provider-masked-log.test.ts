@@ -109,15 +109,21 @@ type Handler = (input: Record<string, unknown>) => unknown;
 /**
  * A fake EFS answering by command name. A handler may throw; an absent one
  * answers `{}`. `DescribeFileSystems` defaults to an `available` file system
- * so the create/update waits return at once.
+ * and `DescribeBackupPolicy` to the status last put, so the create/update
+ * waits return at once.
  */
 function fakeEfs(handlers: Record<string, Handler | Handler[]>): void {
+  let backupStatus: string | undefined;
   const queues = new Map<string, Handler[]>();
   for (const [name, h] of Object.entries(handlers)) {
     queues.set(name, Array.isArray(h) ? [...h] : [h]);
   }
   mockSend.mockImplementation(async (command: { input: Record<string, unknown> }) => {
     const name = commandName(command);
+    // go-to-k/cdkd#7132: the backup-policy wait reads back the status put.
+    if (name === 'PutBackupPolicyCommand') {
+      backupStatus = (command.input['BackupPolicy'] as { Status?: string } | undefined)?.Status;
+    }
     const queue = queues.get(name);
     if (queue && queue.length > 0) {
       const handler = queue.length > 1 ? queue.shift()! : queue[0]!;
@@ -128,6 +134,12 @@ function fakeEfs(handlers: Record<string, Handler | Handler[]>): void {
     }
     if (name === 'DescribeFileSystemsCommand') {
       return { FileSystems: [{ LifeCycleState: 'available' }] };
+    }
+    if (name === 'PutBackupPolicyCommand') {
+      return { BackupPolicy: { Status: backupStatus } };
+    }
+    if (name === 'DescribeBackupPolicyCommand') {
+      return { BackupPolicy: { Status: backupStatus } };
     }
     return {};
   });

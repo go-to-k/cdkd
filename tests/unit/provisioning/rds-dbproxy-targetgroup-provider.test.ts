@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import {
   DBProxyNotFoundFault,
   DBProxyTargetGroupNotFoundFault,
@@ -78,6 +78,13 @@ describe('RDSDBProxyTargetGroupProvider', () => {
   beforeEach(() => {
     mockSend.mockReset();
     provider = new RDSDBProxyTargetGroupProvider();
+    // The wait for registered targets to read AVAILABLE (go-to-k/cdkd#7132)
+    // is covered by rds-dbproxy-targetgroup-settle-wait-7132.test.ts, so it
+    // is skipped here as `--no-wait` skips it.
+    vi.stubEnv('CDKD_NO_WAIT', 'true');
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   describe('handledProperties', () => {

@@ -11,6 +11,8 @@ import { assertRegionMatch, type DeleteContext } from '../../region-check.js';
 import { isPlainImportValue, VALUE_NOT_SHOWN } from '../../import-helpers.js';
 import { logicalIdShown } from '../../composite-id.js';
 import { pasteableAwsCommand } from '../../replacement-protection-advice.js';
+import { createMaskedLogSinks } from '../../masked-retry-logger.js';
+import { changeIdOf, waitForRoute53ChangeInsync } from './change-wait.js';
 
 export async function deleteHostedZone(
   this: Route53Provider,
@@ -24,6 +26,7 @@ export async function deleteHostedZone(
   // refused `DeleteHostedZone` is never read as a whole survivor.
   const progress: DeleteProgress = { stripped: false };
 
+  let changeId: string | undefined;
   try {
     // Delete query logging config before deleting hosted zone
     await this.deleteQueryLoggingConfigForZone(physicalId, logicalId, progress);
@@ -37,7 +40,9 @@ export async function deleteHostedZone(
     // BEFORE attempting the zone delete so the destroy path is closed.
     await this.ensureAcceleratedRecoveryDisabledForDelete(physicalId, logicalId, progress);
 
-    await this.getClient().send(new DeleteHostedZoneCommand({ Id: physicalId }));
+    changeId = changeIdOf(
+      await this.getClient().send(new DeleteHostedZoneCommand({ Id: physicalId }))
+    );
     this.logger.debug(`Successfully deleted hosted zone ${logicalId}`);
   } catch (error) {
     if (error instanceof Error && error.name === 'NoSuchHostedZone') {
@@ -70,6 +75,15 @@ export async function deleteHostedZone(
           );
     throw progress.stripped ? markDeleteStarted(failure) : failure;
   }
+
+  // go-to-k/cdkd#7132: under --full-wait, as CloudFormation's delete does
+  // (~42 s measured, us-east-1).
+  await waitForRoute53ChangeInsync(
+    this.getClient(),
+    changeId,
+    `hosted zone ${logicalId} deletion`,
+    createMaskedLogSinks(this.logger, context?.maskSecrets)
+  );
 }
 
 /**

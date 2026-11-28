@@ -47,6 +47,7 @@ import {
   sameStringSet,
   ssmAssociationsAwsRefusal,
 } from './instance-support.js';
+import * as settle from './instance-settle-wait.js';
 import type { EC2Provider } from '../ec2-provider.js';
 
 export async function updateInstance(
@@ -95,6 +96,7 @@ export async function updateInstance(
     context
   );
 
+  const mask = maskerOrIdentity(context?.maskSecrets);
   try {
     // Reads and refusals, before the first mutating call below.
     await this.prepareInstanceMemberUpdates(logicalId, physicalId, resourceType, memberPlan);
@@ -105,12 +107,15 @@ export async function updateInstance(
       logicalId,
       previousProperties['Tags'],
       properties['Tags'],
-      maskerOrIdentity(context?.maskSecrets)
+      mask
     );
 
-    await this.updateInstanceSecurityProps(physicalId, properties, previousProperties);
+    await this.updateInstanceSecurityProps(physicalId, properties, previousProperties, {
+      logicalId,
+      maskSecrets: mask,
+    });
 
-    await this.applyInstanceMemberUpdates(logicalId, physicalId, resourceType, memberPlan);
+    await this.applyInstanceMemberUpdates(logicalId, physicalId, resourceType, memberPlan, mask);
 
     // go-to-k/cdkd#5630: after the members above, an IamInstanceProfile
     // change included, which the association needs.
@@ -120,7 +125,7 @@ export async function updateInstance(
         physicalId,
         resourceType,
         memberPlan.ssmAssociation,
-        maskerOrIdentity(context?.maskSecrets),
+        mask,
         context?.expectedRegion
       );
     }
@@ -154,7 +159,7 @@ export async function updateInstance(
     if (error instanceof CdkdError || isInterruptedWaitError(error)) throw error;
     const cause = error instanceof Error ? error : undefined;
     throw this.wrapCaughtError(
-      maskerOrIdentity(context?.maskSecrets),
+      mask,
       error,
       (text) =>
         new ProvisioningError(
@@ -239,14 +244,22 @@ export function guardTerminationProtectionRemoval(
  * `CreditSpecification` (`HttpTokens: required` / hop limit 3 and
  * `CPUCredits: standard` stayed), so a removed one sends nothing. A removed
  * `DisableApiTermination` never reaches this method: see
- * `guardTerminationProtectionRemoval`.
+ * `guardTerminationProtectionRemoval`. go-to-k/cdkd#7132: the Monitoring and
+ * MetadataOptions calls answer `pending`, so each waits for its settled state.
  */
 export async function updateInstanceSecurityProps(
   this: EC2Provider,
   physicalId: string,
   properties: Record<string, unknown>,
-  previousProperties: Record<string, unknown>
+  previousProperties: Record<string, unknown>,
+  at: Pick<settle.InstanceSettleSite, 'logicalId' | 'maskSecrets'>
 ): Promise<void> {
+  const site = {
+    ...at,
+    client: this.ec2Client,
+    instanceId: physicalId,
+    debug: (m: string) => this.logger.debug(m),
+  };
   // DisableApiTermination — ModifyInstanceAttribute.
   const newDisableApiTermination = this.coerceBool(properties['DisableApiTermination']);
   const oldDisableApiTermination = this.coerceBool(previousProperties['DisableApiTermination']);
@@ -276,6 +289,7 @@ export async function updateInstanceSecurityProps(
     } else {
       await this.ec2Client.send(new UnmonitorInstancesCommand({ InstanceIds: [physicalId] }));
     }
+    await settle.waitForInstanceMonitoringSettled(site, newMonitoring);
   }
 
   // MetadataOptions — ModifyInstanceMetadataOptions. Diff the built request
@@ -290,6 +304,7 @@ export async function updateInstanceSecurityProps(
         ...newMetadata,
       })
     );
+    await settle.waitForInstanceMetadataOptionsSettled(site, newMetadata);
   }
 
   // CreditSpecification — ModifyInstanceCreditSpecification.

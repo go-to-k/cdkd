@@ -35,6 +35,7 @@ import { safeMsg } from '../../../utils/display-safe.js';
 import { refuseMalformedDesiredTags } from '../../tag-list.js';
 import type { ResourceUpdateResult } from '../../../types/resource.js';
 import { createMaskedLogSinks, type MaskedLogSinks } from '../../masked-retry-logger.js';
+import { waitForBackupPolicySettled } from './settle-waits.js';
 
 export async function updateFileSystem(
   this: EFSProvider,
@@ -318,7 +319,7 @@ export async function applyBackupPolicy(
   if (spec === undefined || spec === null) return;
   const status = (spec as { Status?: string }).Status;
   if (status === undefined) return;
-  await this.retryOnTransientControlPlane(
+  const answered = await this.retryOnTransientControlPlane(
     () =>
       this.getClient().send(
         new PutBackupPolicyCommand({
@@ -327,6 +328,15 @@ export async function applyBackupPolicy(
         })
       ),
     `set BackupPolicy on ${fileSystemId}`,
+    log
+  );
+  // go-to-k/cdkd#7132: the policy answers ENABLING / DISABLING; CloudFormation
+  // completes only once it reads the requested status.
+  await waitForBackupPolicySettled(
+    this.getClient(),
+    fileSystemId,
+    status,
+    answered?.BackupPolicy?.Status,
     log
   );
   log.debug(`Set BackupPolicy Status=${log.value(status)} on EFS FileSystem ${fileSystemId}`);

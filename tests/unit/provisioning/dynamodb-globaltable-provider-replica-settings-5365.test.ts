@@ -213,6 +213,8 @@ const regionDouble = (
   // A history entry stays listed for good once its stream was disabled.
   let historyStream: string | undefined;
   const indexCi = new Map<string, string>();
+  // The precision an update left, which the wait after it reads (#7132).
+  const kinesisPrecision = new Map<string, string>();
   return async (command: Sent): Promise<unknown> => {
     const name = command.constructor.name;
     const refusal = refuse(name, command.input);
@@ -259,12 +261,25 @@ const regionDouble = (
                     StreamArn: s,
                     DestinationStatus:
                       pending !== undefined && s === pending.streamArn ? status : 'ACTIVE',
+                    ...(kinesisPrecision.has(s) && {
+                      ApproximateCreationDateTimePrecision: kinesisPrecision.get(s),
+                    }),
                   },
                 ]
             ),
           ],
         };
       }
+      case UpdateKinesisStreamingDestinationCommand.name:
+        kinesisPrecision.set(
+          String(command.input['StreamArn']),
+          String(
+            command.input['UpdateKinesisStreamingConfiguration']?.[
+              'ApproximateCreationDateTimePrecision'
+            ]
+          )
+        );
+        return {};
       case GetResourcePolicyCommand.name: {
         const has =
           command.input['ResourceArn'] === stream ? live.streamPolicy : live.tablePolicy;
@@ -875,6 +890,9 @@ describe('DynamoDB GlobalTable replica settings writes (go-to-k/cdkd#5365)', () 
     });
 
     it('updates a precision-only Kinesis change in place', async () => {
+      // The destination the previous deploy enabled, which the wait after
+      // the update reads back at the new precision (#7132).
+      setLive({}, { kinesis: [REMOTE_KS] });
       await provider.update(
         'T',
         TABLE,

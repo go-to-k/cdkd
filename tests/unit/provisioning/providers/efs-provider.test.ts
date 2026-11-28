@@ -199,6 +199,10 @@ describe('EFSProvider', () => {
           if (cmd instanceof DescribeFileSystemsCommand) {
             return Promise.resolve({ FileSystems: [{ LifeCycleState: 'available' }] });
           }
+          // go-to-k/cdkd#7132: the backup-policy wait reads ENABLED at once.
+          if (cmd instanceof DescribeBackupPolicyCommand) {
+            return Promise.resolve({ BackupPolicy: { Status: 'ENABLED' } });
+          }
           return Promise.resolve({});
         });
       };
@@ -309,6 +313,9 @@ describe('EFSProvider', () => {
             }
             return Promise.resolve({});
           }
+          if (cmd instanceof DescribeBackupPolicyCommand) {
+            return Promise.resolve({ BackupPolicy: { Status: 'ENABLED' } });
+          }
           return Promise.resolve({});
         });
 
@@ -361,6 +368,9 @@ describe('EFSProvider', () => {
         mockSend.mockImplementation((cmd: unknown) => {
           if (cmd instanceof DescribeFileSystemsCommand) {
             return Promise.resolve({ FileSystems: [{ LifeCycleState: 'available' }] });
+          }
+          if (cmd instanceof DescribeBackupPolicyCommand) {
+            return Promise.resolve({ BackupPolicy: { Status: 'ENABLED' } });
           }
           return Promise.resolve({});
         });
@@ -587,6 +597,8 @@ describe('EFSProvider', () => {
           AccessPointId: 'fsap-abc123',
           AccessPointArn: 'arn:aws:elasticfilesystem:us-east-1:123456789012:access-point/fsap-abc123',
         });
+        // go-to-k/cdkd#7132: the settle wait reads it available.
+        mockSend.mockResolvedValueOnce({ AccessPoints: [{ LifeCycleState: 'available' }] });
 
         const result = await provider.create('MyAccessPoint', 'AWS::EFS::AccessPoint', {
           FileSystemId: 'fs-12345678',

@@ -8,6 +8,7 @@ import { ResourceNotFoundException } from '@aws-sdk/client-bedrock-agentcore-con
 
 const mockSend = vi.fn();
 const debug = vi.fn();
+const warn = vi.fn();
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
@@ -22,7 +23,7 @@ vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
     debug: (...args: unknown[]) => debug(...args),
     info: vi.fn(),
-    warn: vi.fn(),
+    warn: (...args: unknown[]) => warn(...args),
     error: vi.fn(),
     child: vi.fn(function (this: unknown) { return this; }),
   };
@@ -62,8 +63,16 @@ function sent(): string[] {
 }
 
 /** Answers each command by its class; GetAgentRuntime from `statuses` in turn. */
-function answer(statuses: (string | Error)[], extra: Record<string, unknown> = {}): void {
+function answer(
+  statuses: (string | Error)[],
+  extra: Record<string, unknown> = {},
+  afterDelete: (string | undefined)[] = []
+): void {
   const queue = [...statuses];
+  // go-to-k/cdkd#7132: after the delete, GetAgentRuntime answers
+  // `afterDelete` in turn, then not-found.
+  let deleted = false;
+  const deleting = [...afterDelete];
   mockSend.mockImplementation(async (cmd: object) => {
     switch (cmd.constructor.name) {
       case 'CreateAgentRuntimeCommand':
@@ -71,8 +80,17 @@ function answer(statuses: (string | Error)[], extra: Record<string, unknown> = {
       case 'UpdateAgentRuntimeCommand':
         return { agentRuntimeId: ID, agentRuntimeArn: ARN, status: 'UPDATING' };
       case 'DeleteAgentRuntimeCommand':
+        deleted = true;
         return { agentRuntimeId: ID, status: 'DELETING' };
       case 'GetAgentRuntimeCommand': {
+        if (deleted) {
+          if (deleting.length === 0) {
+            throw new ResourceNotFoundException({ $metadata: {}, message: 'gone' });
+          }
+          // An `undefined` entry is a read answering without a status.
+          const status = deleting.shift();
+          return { agentRuntimeId: ID, agentRuntimeArn: ARN, status };
+        }
         const next = queue.length > 1 ? queue.shift()! : queue[0]!;
         if (next instanceof Error) throw next;
         return { agentRuntimeId: ID, agentRuntimeArn: ARN, status: next, ...extra };
@@ -372,6 +390,7 @@ describe('AgentCoreRuntimeProvider status waits (go-to-k/cdkd#6490)', () => {
         'GetAgentRuntimeCommand',
         'GetAgentRuntimeCommand',
         'DeleteAgentRuntimeCommand',
+        'GetAgentRuntimeCommand',
       ]);
       expect(sleeps).toEqual([RUNTIME_WAIT_POLL_MS, RUNTIME_WAIT_POLL_MS]);
     });
@@ -379,14 +398,22 @@ describe('AgentCoreRuntimeProvider status waits (go-to-k/cdkd#6490)', () => {
     it('deletes at once when the runtime is settled', async () => {
       answer(['READY']);
       await provider.delete('Rt', ID, TYPE);
-      expect(sent()).toEqual(['GetAgentRuntimeCommand', 'DeleteAgentRuntimeCommand']);
+      expect(sent()).toEqual([
+        'GetAgentRuntimeCommand',
+        'DeleteAgentRuntimeCommand',
+        'GetAgentRuntimeCommand',
+      ]);
       expect(sleeps).toEqual([]);
     });
 
     it('still deletes when the pre-delete read fails', async () => {
       answer([new Error('AccessDeniedException')]);
       await provider.delete('Rt', ID, TYPE);
-      expect(sent()).toEqual(['GetAgentRuntimeCommand', 'DeleteAgentRuntimeCommand']);
+      expect(sent()).toEqual([
+        'GetAgentRuntimeCommand',
+        'DeleteAgentRuntimeCommand',
+        'GetAgentRuntimeCommand',
+      ]);
     });
 
     it('reaches the delete not-found arm when the read answers not-found', async () => {
@@ -402,9 +429,9 @@ describe('AgentCoreRuntimeProvider status waits (go-to-k/cdkd#6490)', () => {
       answer(['CREATING']);
       await provider.delete('Rt', ID, TYPE);
       expect(sent().filter((c) => c === 'GetAgentRuntimeCommand')).toHaveLength(
-        RUNTIME_WAIT_MAX_POLLS
+        RUNTIME_WAIT_MAX_POLLS + 1
       );
-      expect(sent().at(-1)).toBe('DeleteAgentRuntimeCommand');
+      expect(sent().at(-2)).toBe('DeleteAgentRuntimeCommand');
     });
 
     it('waits before a delete under --no-wait too', async () => {
@@ -415,7 +442,54 @@ describe('AgentCoreRuntimeProvider status waits (go-to-k/cdkd#6490)', () => {
         'GetAgentRuntimeCommand',
         'GetAgentRuntimeCommand',
         'DeleteAgentRuntimeCommand',
+        'GetAgentRuntimeCommand',
       ]);
+    });
+
+    it('waits after the delete until the runtime is gone, which holds its name while DELETING (go-to-k/cdkd#7132)', async () => {
+      answer(['READY'], {}, ['DELETING', 'DELETING']);
+      await provider.delete('Rt', ID, TYPE);
+      expect(sent()).toEqual([
+        'GetAgentRuntimeCommand',
+        'DeleteAgentRuntimeCommand',
+        'GetAgentRuntimeCommand',
+        'GetAgentRuntimeCommand',
+        'GetAgentRuntimeCommand',
+      ]);
+      expect(sleeps).toEqual([RUNTIME_WAIT_POLL_MS, RUNTIME_WAIT_POLL_MS]);
+      // The not-found answer is GONE, not an unreadable status that warns.
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('waits after the delete under --no-wait too (go-to-k/cdkd#7132)', async () => {
+      vi.stubEnv('CDKD_NO_WAIT', 'true');
+      answer(['READY'], {}, ['DELETING']);
+      await provider.delete('Rt', ID, TYPE);
+      expect(sent().slice(1)).toEqual([
+        'DeleteAgentRuntimeCommand',
+        'GetAgentRuntimeCommand',
+        'GetAgentRuntimeCommand',
+      ]);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('reads a status-less answer after the delete as still DELETING, not gone (go-to-k/cdkd#7132)', async () => {
+      answer(['READY'], {}, [undefined, 'DELETING']);
+      await provider.delete('Rt', ID, TYPE);
+      expect(sent().slice(1)).toEqual([
+        'DeleteAgentRuntimeCommand',
+        'GetAgentRuntimeCommand',
+        'GetAgentRuntimeCommand',
+        'GetAgentRuntimeCommand',
+      ]);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('throws, keeping the record, when the runtime reaches DELETE_FAILED after the delete (go-to-k/cdkd#7132)', async () => {
+      answer(['READY'], {}, ['DELETING', 'DELETE_FAILED']);
+      await expect(provider.delete('Rt', ID, TYPE)).rejects.toThrow(
+        /reached DELETE_FAILED after its delete was accepted/
+      );
     });
   });
 });

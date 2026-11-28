@@ -655,7 +655,13 @@ describe('calls that stay on the full-retry shared client (issue #4639)', () => 
       onTestFinished(() => {
         allowUnscopedCreateTokensForTests(prior);
       });
-      h.state.service = async (cmd) => (cmd.constructor.name === command ? response : {});
+      // The access point's settle wait (go-to-k/cdkd#7132) reads it available.
+      h.state.service = async (cmd) =>
+        cmd.constructor.name === command
+          ? response
+          : cmd.constructor.name === 'DescribeAccessPointsCommand'
+            ? { AccessPoints: [{ LifeCycleState: 'available' }] }
+            : {};
       const provider = new EFSProvider();
 
       await provider.create('Res', type, { ...props }).catch(() => undefined);

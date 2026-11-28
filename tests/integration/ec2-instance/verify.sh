@@ -100,6 +100,11 @@
 # The final #5630 slice: a c6a.xlarge launched with EnclaveOptions.Enabled
 # (EC2 refuses enclaves on t3), asserted on the SDK route, read back enabled,
 # and never replaced by a later phase.
+# Phases 1p-1q are the go-to-k/cdkd#7132 arm: Monitor / Unmonitor,
+# ModifyInstanceMetadataOptions and the IAM instance profile associate /
+# replace each answer a transitional state; the update now waits it out, so the
+# settled values are read (no poll) right after the deploy returns, and the
+# drift baseline the deploy recorded carries them.
 #
 # Authored against a RAW L1 `ec2.CfnInstance` because the L2 construct does not
 # expose the five #609 security-backfill props this fixture verifies -- see the
@@ -2341,6 +2346,93 @@ case "${P1O_OLD_STATE}" in
 esac
 echo "    OK: #5630 Phase 1o replaced ${SSM_INSTANCE_ID} with ${P1O_INSTANCE_ID} (no license, association ${SSM_ASSOC_ID}); the old instance and its association are gone"
 P1O_ASSOC="${SSM_ASSOC_ID}"
+
+# --- Phases 1p-1q: the asynchronous instance updates settle (go-to-k/cdkd#7132)
+# MonitorInstances answers `pending`, UnmonitorInstances `disabling`,
+# ModifyInstanceMetadataOptions `pending`, Associate / Replace
+# IamInstanceProfile `associating`; measured, the first DescribeInstances right
+# after still showed the old value. CloudFormation's update completes only once
+# each settled. So the reads below run ONCE, right after the deploy returns:
+# before #7132 they could read the transitional state, and the drift baseline
+# the deploy records (observedProperties) the old value.
+# `$1` = phase label, `$2` = Monitoring.State, `$3` = hop limit, `$4` = the
+# profile ARN the one live association must carry.
+assert_async_settled_7132() {
+  local phase="$1" want_mon="$2" want_hop="$3" want_arn="$4"
+  local state rec live assocs drift_json drift_rc compared drifted
+  state=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>&1) || {
+    echo "FAIL: go-to-k/cdkd#7132 -- could not read the state after ${phase}: $(sanitize_aws_output "${state}")" >&2
+    exit 1
+  }
+  rec=$(echo "${state}" | jq -r '.resources.Instance.physicalId // ""')
+  if [ "${rec}" != "${INSTANCE_ID}" ]; then
+    echo "FAIL: go-to-k/cdkd#7132 -- ${phase} replaced the instance (${INSTANCE_ID} -> '${rec}'); Monitoring / MetadataOptions / IamInstanceProfile update in place" >&2
+    exit 1
+  fi
+  live=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" --region "${REGION}" \
+    --query 'Reservations[0].Instances[0].[Monitoring.State, MetadataOptions.State, MetadataOptions.HttpPutResponseHopLimit, IamInstanceProfile.Arn]' \
+    --output text) || return 1  # the CLI's own error stays on stderr
+  live=$(printf '%s' "${live}" | tr '\t' '|')
+  if [ "${live}" != "${want_mon}|applied|${want_hop}|${want_arn}" ]; then
+    echo "FAIL: go-to-k/cdkd#7132 -- right after the ${phase} deploy returned, ${INSTANCE_ID} reads '${live}' (Monitoring|MetadataOptions.State|hop limit|profile), expected '${want_mon}|applied|${want_hop}|${want_arn}'; the update returned before the change settled" >&2
+    exit 1
+  fi
+  # Every association not yet `disassociated`: exactly the new one, settled.
+  assocs=$(aws ec2 describe-iam-instance-profile-associations \
+    --filters "Name=instance-id,Values=${INSTANCE_ID}" --region "${REGION}" \
+    --query "IamInstanceProfileAssociations[?State!='disassociated'].[State, IamInstanceProfile.Arn]" \
+    --output text) || return 1  # the CLI's own error stays on stderr
+  assocs=$(printf '%s' "${assocs}" | tr '\t' '|')
+  if [ "${assocs}" != "associated|${want_arn}" ]; then
+    echo "FAIL: go-to-k/cdkd#7132 -- right after the ${phase} deploy returned, ${INSTANCE_ID}'s profile associations read '${assocs}', expected exactly 'associated|${want_arn}'" >&2
+    exit 1
+  fi
+  # The drift baseline the deploy recorded carries the settled values.
+  rec=$(echo "${state}" | jq -r '.resources.Instance.observedProperties | "\(.Monitoring)|\(.MetadataOptions.HttpPutResponseHopLimit)|\(.IamInstanceProfile)"')
+  local want_obs_mon=false
+  [ "${want_mon}" = enabled ] && want_obs_mon=true
+  if [ "${rec}" != "${want_obs_mon}|${want_hop}|${want_arn}" ]; then
+    echo "FAIL: go-to-k/cdkd#7132 -- ${phase} recorded the drift baseline '${rec}' (Monitoring|hop limit|profile), expected '${want_obs_mon}|${want_hop}|${want_arn}'; the deploy-time readback saw the pre-settle value" >&2
+    exit 1
+  fi
+  drift_json="$(mktemp -t cdkd-ec2-instance-drift-7132.XXXXXX)"
+  set +e
+  node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json >"${drift_json}"
+  drift_rc=$?
+  set -e
+  compared=$(jq '[(.[].clean[], .[].drifted[]) | select(.logicalId == "Instance")] | length' "${drift_json}") || compared="?"
+  drifted=$(jq -r '[.[].drifted[] | select(.logicalId == "Instance") | .changes[].path | select(test("^(Monitoring|MetadataOptions|IamInstanceProfile)(\\.|$)"))] | join(",")' "${drift_json}") || drifted="?"
+  if [ "${compared}" != "1" ] || [ -n "${drifted}" ]; then
+    echo "FAIL: go-to-k/cdkd#7132 -- cdkd drift after ${phase}: Instance compared=${compared}, drifted paths under Monitoring / MetadataOptions / IamInstanceProfile='${drifted}' (rc=${drift_rc}):" >&2
+    cat "${drift_json}" >&2
+    rm -f "${drift_json}"
+    exit 1
+  fi
+  rm -f "${drift_json}"
+  echo "    OK: go-to-k/cdkd#7132 ${phase}: ${INSTANCE_ID} read ${want_mon} / applied hop ${want_hop} / associated ${want_arn} right after the deploy, recorded as such, no drift"
+}
+SSM_PROFILE_ARN=$(echo "${P1O_STATE}" | jq -r '.outputs.SsmProfileArn // ""')
+ASYNC_PROFILE_ARN=$(echo "${P1O_STATE}" | jq -r '.outputs.AsyncProfileArn // ""')
+case "${SSM_PROFILE_ARN}|${ASYNC_PROFILE_ARN}" in
+  arn:aws*:iam::*:instance-profile/*\|arn:aws*:iam::*:instance-profile/*) ;;
+  *) echo "FAIL: go-to-k/cdkd#7132 -- the profile ARN outputs read '${SSM_PROFILE_ARN}' / '${ASYNC_PROFILE_ARN}'" >&2; exit 1 ;;
+esac
+# Baseline: Phase 1d turned Monitoring off and kept hop limit 3; no profile.
+P1P_BEFORE=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" --region "${REGION}" \
+  --query 'Reservations[0].Instances[0].[Monitoring.State, MetadataOptions.HttpPutResponseHopLimit, IamInstanceProfile.Arn]' \
+  --output text 2>&1) || P1P_BEFORE="<describe-failed: $(sanitize_aws_output "${P1P_BEFORE}")>"
+P1P_BEFORE=$(printf '%s' "${P1P_BEFORE}" | tr '\t' '|')
+if [ "${P1P_BEFORE}" != "disabled|3|None" ]; then
+  echo "FAIL: go-to-k/cdkd#7132 -- before Phase 1p ${INSTANCE_ID} reads '${P1P_BEFORE}', expected 'disabled|3|None' (the arm would prove nothing)" >&2
+  exit 1
+fi
+P1PQ_ENV=(CDKD_TEST_REMOVAL=true CDKD_TEST_UPDATE_5446=true CDKD_TEST_IP_READER=true CDKD_TEST_DNS_5630=hostname CDKD_TEST_VOLUMES_5630=removed CDKD_TEST_SSM_5630=unlicensed)
+echo "==> Phase 1p: Monitoring on, hop limit 3 -> 4, profile associated; settled when the deploy returns (go-to-k/cdkd#7132)"
+removal_deploy P1P_OUTPUT ok "${P1PQ_ENV[@]}" CDKD_TEST_ASYNC_7132=on
+assert_async_settled_7132 "Phase 1p" enabled 4 "${SSM_PROFILE_ARN}"
+echo "==> Phase 1q: Monitoring off, hop limit 4 -> 5, profile association replaced; settled when the deploy returns (go-to-k/cdkd#7132)"
+removal_deploy P1Q_OUTPUT ok "${P1PQ_ENV[@]}" CDKD_TEST_ASYNC_7132=swap
+assert_async_settled_7132 "Phase 1q" disabled 5 "${ASYNC_PROFILE_ARN}"
 
 # --- Phase 2: destroy (--remove-protection required) ------------------
 echo "==> Phase 2: destroy with --remove-protection (instance is termination-protected)"

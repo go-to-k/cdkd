@@ -680,6 +680,9 @@ const MESSAGE_SINK_RECEIVERS: ReadonlySet<string> = new Set([
  * throws none today, so adding one lands inside the fence.
  */
 const MESSAGE_SINK_FACTORIES: ReadonlySet<string> = new Set([
+  // The #7132 settle waits' terminal-status failures (ECS cluster attachments, EMR scaling policy).
+  'clusterSettleFailure',
+  'scalingPolicyFailure',
   // EventBridgeBusProvider's has-rules refusal (go-to-k/cdkd#6479).
   'busHasRulesError',
   // Route53 RecordSetGroup's pre-call refusals (go-to-k/cdkd#6530).
