@@ -120,6 +120,15 @@ export interface ScrubStackResult {
    * so the stack is not reported clean and `--fail` exits 1.
    */
   unrepairedReadNames: number;
+  /**
+   * Orphan and superseded records no `NoEcho` evidence positions, in a stack
+   * with some (go-to-k/cdkd#7191, `planScrubStoredNoEcho`). A pre-v11 record
+   * may hold a `NoEcho` value in plaintext at a leaf scrub cannot name, so the
+   * stack is not reported clean. NOT a `--fail` finding: a current cdkd omits
+   * `noEchoLeaves` from a record with no position too, so such a record may be
+   * healthy, and no re-run of scrub could clear the exit.
+   */
+  unverifiableNoEchoRecords?: number;
   /** Output keys this run dropped (would drop, under `--dry-run`) (go-to-k/cdkd#4120). */
   droppedOutputKeys?: number;
   /**

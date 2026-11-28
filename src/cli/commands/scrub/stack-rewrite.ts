@@ -59,6 +59,12 @@ import {
   applyScrubNoEcho,
   noEchoFilledRowParameters,
 } from './noecho.js';
+import {
+  planScrubStoredNoEcho,
+  scrubStoredRecord,
+  storedNoEchoRows,
+  unverifiableNoEchoRecordWarning,
+} from './noecho-stored.js';
 
 /**
  * {@link scrubStack}'s rewrite pass, moved verbatim (go-to-k/cdkd#5835): from
@@ -163,6 +169,18 @@ export async function scrubStackRewritePass({
     nestedInput?.noEchoConditionalParameters ?? [],
     pseudoValues
   );
+  // go-to-k/cdkd#7191: the orphan and superseded records too, by their own
+  // evidence; one no evidence positions is reported, never called clean.
+  const storedNoEcho = planScrubStoredNoEcho(
+    state,
+    storedNoEchoRows(state.orphans, state.supersededResources),
+    stack.template,
+    noEchoPlans.sources,
+    noEchoPlans.needleSources
+  );
+  for (const record of storedNoEcho.unverifiable) {
+    logger.warn(unverifiableNoEchoRecordWarning(shownStack, record));
+  }
 
   // The nested children this stack deploys (go-to-k/cdkd#2252): every
   // `AWS::CloudFormation::Stack` row the template declares OR the record
@@ -355,7 +373,12 @@ export async function scrubStackRewritePass({
     // zero-needle branch below, returns `recordsChanged: 0`, and prints
     // "No plaintext secrets found" over the record it never examined.
     [...orphanSecrets.values()].reduce((n, m) => n + m.size, 0);
-  if (totalSecrets === 0 && !noEchoPlans.changesAny && !finishRepairsAny()) {
+  if (
+    totalSecrets === 0 &&
+    !noEchoPlans.changesAny &&
+    !storedNoEcho.changesAny &&
+    !finishRepairsAny()
+  ) {
     // NOT a blanket "nothing found": `unverifiableReads` is carried out even
     // here, because a stack whose only cross-stack read cdkd declined by
     // design has exactly this shape — zero needles — and reporting it clean
@@ -384,6 +407,9 @@ export async function scrubStackRewritePass({
       // with none recorded no performed read's spelling holds a token, so
       // `findUnrepairedCrossStackReadNames` has nothing to flag against.
       unrepairedReadNames: 0,
+      ...(storedNoEcho.unverifiable.length > 0 && {
+        unverifiableNoEchoRecords: storedNoEcho.unverifiable.length,
+      }),
       ...(malformedResources ? { malformedResources } : {}),
       ...(malformedResourceRows ? { malformedResourceRows } : {}),
       ...(malformedOutputs ? { malformedOutputs } : {}),
@@ -548,60 +574,48 @@ export async function scrubStackRewritePass({
   // Residual, stated rather than implied by a clean verdict: a record whose
   // logical id is gone from the template AND whose bag holds plaintext
   // matches neither source. Nothing in this run knows that plaintext.
-  const newOrphans = (state.orphans ?? []).map((record, orphanIndex) => {
-    const own = orphanSecrets.get(String(orphanIndex));
-    const needles = new Map(allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets));
-    for (const [plaintext, expression] of own ?? []) needles.set(plaintext, expression);
-    // go-to-k/cdkd#7188: what today's template resolves for its logical id.
-    const stored = storedInput(record.logicalId, record.state);
-    const scrubbed =
-      needles.size === 0
-        ? finishStored(record.state, needles, stored)
-        : finishStored(
-            keepHeldTokenProvenance(
-              scrubResourceRecord(record.state, needles, undefined, 'state-cross-generation', {
-                properties: 'unproven',
-                observed: 'unproven',
-              })
-            ),
-            needles,
-            stored
-          );
-    if (JSON.stringify(scrubbed) === JSON.stringify(record.state)) return record;
-    recordsChanged++;
-    return { ...record, state: withoutLapsedStaleShapeStamp(scrubbed) };
-  });
+  //
   // go-to-k/cdkd#5111: a superseded resource's record moved out of
   // `resources` verbatim, so it gets the same pass an orphan does: this run's
   // needles, and its own (go-to-k/cdkd#7167: the resolve pass resolves its
   // references under `superseded:<index>`), folded back as the orphan arm
   // does, since the union drops a value under the needle floor.
+  //
+  // go-to-k/cdkd#7191: then its `NoEcho` positions (`planScrubStoredNoEcho`),
+  // with the plaintext found there a needle of a second pass over that record
+  // alone, as the live arm's migration rule does.
+  const rewriteStoredRecord = <
+    R extends { logicalId: string; state: StackState['resources'][string] },
+  >(
+    key: string,
+    row: R
+  ): R => {
+    const needles = new Map(allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets));
+    for (const [plaintext, expression] of orphanSecrets.get(key) ?? []) {
+      needles.set(plaintext, expression);
+    }
+    // go-to-k/cdkd#7188: what today's template resolves for its logical id.
+    const stored = storedInput(row.logicalId, row.state);
+    const scrubbed = scrubStoredRecord(
+      row.state,
+      needles,
+      storedNoEcho.byKey.get(key),
+      noEchoPublicTokens,
+      (record, bag) => finishStored(record, bag, stored)
+    );
+    if (JSON.stringify(scrubbed) === JSON.stringify(row.state)) return row;
+    recordsChanged++;
+    return { ...row, state: withoutLapsedStaleShapeStamp(scrubbed) };
+  };
+  const newOrphans = (state.orphans ?? []).map((record, orphanIndex) =>
+    rewriteStoredRecord(String(orphanIndex), record)
+  );
   const newSuperseded = Array.isArray(state.supersededResources)
-    ? state.supersededResources.map((entry, supersededIndex) => {
-        if (!isSupersededResourceRecord(entry)) return entry;
-        const own = orphanSecrets.get(`superseded:${supersededIndex}`);
-        const needles = new Map(
-          allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets)
-        );
-        for (const [plaintext, expression] of own ?? []) needles.set(plaintext, expression);
-        const stored = storedInput(entry.logicalId, entry.state);
-        const scrubbed =
-          needles.size === 0
-            ? finishStored(entry.state, needles, stored)
-            : finishStored(
-                keepHeldTokenProvenance(
-                  scrubResourceRecord(entry.state, needles, undefined, 'state-cross-generation', {
-                    properties: 'unproven',
-                    observed: 'unproven',
-                  })
-                ),
-                needles,
-                stored
-              );
-        if (JSON.stringify(scrubbed) === JSON.stringify(entry.state)) return entry;
-        recordsChanged++;
-        return { ...entry, state: withoutLapsedStaleShapeStamp(scrubbed) };
-      })
+    ? state.supersededResources.map((entry, supersededIndex) =>
+        isSupersededResourceRecord(entry)
+          ? rewriteStoredRecord(`superseded:${supersededIndex}`, entry)
+          : entry
+      )
     : undefined;
   // --- CROSS-STACK READ NAMES (go-to-k/cdkd#3337): see `repairCrossStackReadNames`.
   const { newImports, newOutputReads, unrepairedReadNames, changed } = repairCrossStackReadNames({
@@ -943,6 +957,9 @@ export async function scrubStackRewritePass({
     unverifiableProducerRecords: prePassFindings.damagedProducerRecords.length,
     unverifiableLeaves,
     unrepairedReadNames: unrepairedReadNames.length,
+    ...(storedNoEcho.unverifiable.length > 0 && {
+      unverifiableNoEchoRecords: storedNoEcho.unverifiable.length,
+    }),
     ...(malformedResources ? { malformedResources } : {}),
     ...(malformedOutputs ? { malformedOutputs } : {}),
     ...(malformedOrphans ? { malformedOrphans } : {}),

@@ -14,7 +14,9 @@
 # 2 redeploy with a rotated NoEcho token (#2453), 3 the secret-echo arm
 # (go-to-k/cdkd#7182: secrets a handler echoes in its `Data` values and keys),
 # 3b `cdkd scrub` over a planted short echo an older binary left
-# (go-to-k/cdkd#7188), 4 destroy and sweep every state object version.
+# (go-to-k/cdkd#7188), 3c `cdkd scrub` over planted pre-v11 orphan and
+# superseded records (go-to-k/cdkd#7191), 4 destroy and sweep every state
+# object version.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -701,6 +703,92 @@ log_carries_secret "${SECRET_ECHO_LOG}" && secret_echo_fail "the redeploy after 
   || secret_echo_fail "the NO_CHANGE redeploy after cdkd scrub rewrote the repaired record" "${SECRET_ECHO_LOG}"
 echo "    OK: after cdkd scrub the diff is clean and the redeploy leaves the repaired record as it was"
 assert_no_secret_in_versions "after the redeploy following cdkd scrub"
+rm -f "${SECRET_ECHO_LOG}"
+SECRET_ECHO_LOG=""
+
+# --- Phase 3c: scrub masks NoEcho plaintext in pre-v11 orphan / superseded records (go-to-k/cdkd#7191) ---
+# A binary older than state schema v11 kept a NoEcho input in plaintext at its
+# `properties` position and wrote no `noEchoLeaves`. Planted here on a rollback
+# orphan and a superseded record of the secret-echo resource's logical id
+# (today's template still declares it as that type), holding the short value
+# (no needle can find it) and the long one. A third, an orphan whose logical id
+# has left the template, holds an inert placeholder there: scrub cannot know
+# its positions, so it must REPORT it and leave it unguessed. Each plant is
+# removed again before phase 4, so the redeploy and the destroy see the stack
+# as phase 3b left it.
+echo "==> Phase 3c: cdkd scrub masks NoEcho plaintext in pre-v11 orphan and superseded records (go-to-k/cdkd#7191)"
+SECRET_ECHO_LOG="$(mktemp)"
+SCRUB_PLANT="$(mktemp)"
+GONE_PLACEHOLDER="gone-7191-placeholder"
+STATE_PRE_3C=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null) || STATE_PRE_3C=""
+[ -n "${STATE_PRE_3C}" ] || secret_echo_fail "premise: could not read the state file before phase 3c"
+ECHO_ID="$(jq -r --arg t "${SECRET_ECHO_TYPE}" '[.resources | to_entries[] | select(.value.resourceType == $t) | .key] | if length == 1 then .[0] else "<\(length) matches>" end' <<<"${STATE_PRE_3C}")"
+case "${ECHO_ID}" in
+  '<'*) secret_echo_fail "premise: state holds ${ECHO_ID} ${SECRET_ECHO_TYPE} records before phase 3c, expected 1" ;;
+esac
+# The positions a v11+ deploy recorded for the inputs the plant puts back.
+for leaf in Short Echo; do
+  jq -e --arg id "${ECHO_ID}" --arg l "${leaf}" '.resources[$id].noEchoLeaves | any(.[]; . == [$l])' <<<"${STATE_PRE_3C}" >/dev/null \
+    || secret_echo_fail "premise: the live ${SECRET_ECHO_TYPE} record does not name properties.${leaf} in noEchoLeaves"
+done
+[ "$(jq -r '((.orphans // []) | length) + ((.supersededResources // []) | length)' <<<"${STATE_PRE_3C}")" = "0" ] \
+  || secret_echo_fail "premise: state already holds an orphan or superseded record before phase 3c"
+jq --arg id "${ECHO_ID}" --arg s "${SHORT_SECRET}" --arg e "${ECHO_SECRET}" --arg g "${GONE_PLACEHOLDER}" '
+  (.resources[$id] | del(.noEchoLeaves) | .properties.Short = $s | .properties.Echo = $e) as $old
+  | .orphans = [
+      {logicalId: $id, orphanedAt: 1, state: $old},
+      {logicalId: "Gone7191", orphanedAt: 1,
+       state: (.resources[$id] | del(.noEchoLeaves) | .properties.Short = $g)}
+    ]
+  | .supersededResources = [{logicalId: $id, supersededAt: 1, state: $old}]' \
+  <<<"${STATE_PRE_3C}" > "${SCRUB_PLANT}"
+aws s3 cp "${SCRUB_PLANT}" "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" --quiet
+rm -f "${SCRUB_PLANT}"
+STATE_PLANTED=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+[ "$(jq -r --arg s "${SHORT_SECRET}" --arg e "${ECHO_SECRET}" '[.orphans[0].state, .supersededResources[0].state] | all(.properties.Short == $s and .properties.Echo == $e and (has("noEchoLeaves") | not))' <<<"${STATE_PLANTED}")" = "true" ] \
+  || secret_echo_fail "premise: the pre-v11 plant did not land (orphan and superseded properties, value withheld)"
+set +e
+CDKD_TEST_NOECHO_SEED="${ROTATED_SEED}" CDKD_TEST_SECRET_ECHO=true node "${LOCAL_DIST}" scrub "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" > "${SECRET_ECHO_LOG}" 2>&1
+rc=$?
+set -e
+log_carries_secret "${SECRET_ECHO_LOG}" && secret_echo_fail "cdkd scrub printed a secret-echo value (value withheld)"
+[ "${rc}" -eq 0 ] || secret_echo_fail "cdkd scrub exited ${rc}" "${SECRET_ECHO_LOG}"
+STATE_SCRUBBED=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+[ -n "${STATE_SCRUBBED}" ] || secret_echo_fail "could not read the state file after the phase 3c scrub"
+for where in ".orphans[0].state" ".supersededResources[0].state"; do
+  for leaf in Short Echo; do
+    [ "$(jq -r "${where}.properties.${leaf}" <<<"${STATE_SCRUBBED}")" = "${SECRET_MASK}" ] \
+      || secret_echo_fail "after cdkd scrub ${where}.properties.${leaf} is not '${SECRET_MASK}' (value withheld): the pre-v11 NoEcho plaintext was not masked (go-to-k/cdkd#7191)" "${SECRET_ECHO_LOG}"
+  done
+  jq -e "${where}.noEchoLeaves | any(.[]; . == [\"Short\"])" <<<"${STATE_SCRUBBED}" >/dev/null \
+    || secret_echo_fail "after cdkd scrub ${where}.noEchoLeaves does not name Short (go-to-k/cdkd#7191)" "${SECRET_ECHO_LOG}"
+done
+[ "$(jq -r '.orphans[1].state.properties.Short' <<<"${STATE_SCRUBBED}")" = "${GONE_PLACEHOLDER}" ] \
+  || secret_echo_fail "cdkd scrub rewrote the gone-logical-id orphan's placeholder: it masked by guessing (go-to-k/cdkd#7191)" "${SECRET_ECHO_LOG}"
+grep -qF "orphan record Gone7191" "${SECRET_ECHO_LOG}" \
+  || secret_echo_fail "cdkd scrub did not report the gone-logical-id orphan it cannot position (go-to-k/cdkd#7191)" "${SECRET_ECHO_LOG}"
+echo "    OK: cdkd scrub masked the pre-v11 orphan and superseded plaintext and reported the gone-id orphan"
+assert_no_secret_in_versions "after the phase 3c scrub"
+# A second scrub finds nothing left to rewrite but the gone-id orphan, which
+# it must still not call clean. It is a warning, not a `--fail` finding (a
+# current cdkd writes the same shape for a record with no NoEcho position),
+# so `--fail` exits 0.
+set +e
+CDKD_TEST_NOECHO_SEED="${ROTATED_SEED}" CDKD_TEST_SECRET_ECHO=true node "${LOCAL_DIST}" scrub "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --dry-run --fail > "${SECRET_ECHO_LOG}" 2>&1
+rc=$?
+set -e
+log_carries_secret "${SECRET_ECHO_LOG}" && secret_echo_fail "the second cdkd scrub printed a secret-echo value (value withheld)"
+grep -qF "No plaintext secrets found in" "${SECRET_ECHO_LOG}" \
+  && secret_echo_fail "the second cdkd scrub called the stack clean over a record it cannot position (go-to-k/cdkd#7191)" "${SECRET_ECHO_LOG}"
+grep -qF "orphan record Gone7191" "${SECRET_ECHO_LOG}" \
+  || secret_echo_fail "the second cdkd scrub did not report the gone-logical-id orphan (go-to-k/cdkd#7191)" "${SECRET_ECHO_LOG}"
+[ "${rc}" -eq 0 ] || secret_echo_fail "the second cdkd scrub --fail exited ${rc}, expected 0: the unverifiable orphan is a warning (go-to-k/cdkd#7191)" "${SECRET_ECHO_LOG}"
+echo "    OK: a second cdkd scrub --fail reports the gone-id orphan without calling the stack clean"
+# The records were only plants: drop them, as phase 3b does.
+jq 'del(.orphans) | del(.supersededResources)' <<<"${STATE_SCRUBBED}" > "${SECRET_ECHO_LOG}"
+aws s3 cp "${SECRET_ECHO_LOG}" "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" --quiet
 rm -f "${SECRET_ECHO_LOG}"
 SECRET_ECHO_LOG=""
 

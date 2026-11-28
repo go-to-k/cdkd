@@ -97,6 +97,7 @@
       "integs": [
         "appsync",
         "cross-stack-secret-import",
+        "custom-resource-getatt-data",
         "dynamic-ref-cross-region",
         "export",
         "gc-custom-asset-names",

@@ -123,7 +123,12 @@ export function planScrubNoEcho(
       for (const [logicalId, record] of eligible) {
         const own = noEchoLeavesOf(record);
         const leaves = canonicalCoordinates(
-          own ?? noEchoCoordinatesOf(templateProps.get(logicalId), record.properties, from)
+          own ??
+            // go-to-k/cdkd#7189: a leaf embedding a declared `NoEcho` attribute,
+            // where the stored bag holds it wholly as the mask.
+            noEchoCoordinatesOf(templateProps.get(logicalId), record.properties, from, undefined, {
+              maskedAt: record.properties,
+            })
         );
         leavesOf.set(logicalId, leaves);
         for (const [name, attribute] of Object.entries(record.attributes ?? {})) {
@@ -360,7 +365,7 @@ export function applyScrubNoEcho(
 }
 
 /** `value` with every `Fn::If` node replaced by `null`. */
-function withoutFnIf(value: unknown): unknown {
+export function withoutFnIf(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(withoutFnIf);
   if (value === null || typeof value !== 'object') return value;
   if (Object.hasOwn(value, 'Fn::If')) return null;

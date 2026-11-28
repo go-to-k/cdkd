@@ -35,6 +35,8 @@ interface ScrubOutcomeInput {
   totalStacksWithUnverifiableReads: number;
   totalStacksWithUnverifiableLeaves: number;
   totalStacksWithUnrepairedReadNames: number;
+  /** go-to-k/cdkd#7191: stacks holding an orphan or superseded record no `NoEcho` evidence positions. */
+  totalStacksWithUnverifiableNoEchoRecords?: number;
   totalOutputKeysDropped: number;
   totalStacksWithReadOutputKeys: number;
   droppedReadersUnverifiedStacks: string[];
@@ -71,6 +73,7 @@ export async function reportScrubOutcome({
   totalStacksWithUnverifiableReads,
   totalStacksWithUnverifiableLeaves,
   totalStacksWithUnrepairedReadNames,
+  totalStacksWithUnverifiableNoEchoRecords = 0,
   totalOutputKeysDropped,
   totalStacksWithReadOutputKeys,
   droppedReadersUnverifiedStacks,
@@ -167,7 +170,12 @@ export async function reportScrubOutcome({
     );
   }
 
-  if (
+  // Every counter but the go-to-k/cdkd#7191 warning: an orphan or superseded
+  // record no evidence positions gates the clean line below, but is NOT a
+  // `--fail` finding (a current cdkd writes the same shape for a record with
+  // no position, so no run could clear the exit), and the `--dry-run --fail`
+  // arm below throws only when one of THESE pushed the run past the clean line.
+  const failingFindingsAbsent =
     totalStacksScrubbed === 0 &&
     totalStacksWithUnscrubbableKeys === 0 &&
     totalStacksWithUnverifiableReads === 0 &&
@@ -191,14 +199,14 @@ export async function reportScrubOutcome({
     malformedOutputRecords.length === 0 &&
     // The `orphans` half of the same (go-to-k/cdkd#3379): the repaired list is
     // empty, so no orphan row is reported and every counter stays zero.
-    malformedOrphanRecords.length === 0
-  ) {
+    malformedOrphanRecords.length === 0;
+  if (failingFindingsAbsent && totalStacksWithUnverifiableNoEchoRecords === 0) {
     // `totalIndexEntriesAbsent` and `totalIndexEntriesUnexamined` are
     // deliberately NOT in this condition (issue #2667). Past it, the `--dry-run
-    // --fail` arm below throws on `options.fail` alone, so adding either would
-    // redden the documented CI gate on a coverage report no run can clear —
-    // the outcome the locked direction refuses. Both were already logged per
-    // entry above.
+    // --fail` arm below throws on any counter in `failingFindingsAbsent`, so
+    // adding either there would redden the documented CI gate on a coverage
+    // report no run can clear — the outcome the locked direction refuses. Both
+    // were already logged per entry above.
     // "in any target stack state" would be a claim about stacks this run never
     // got through, which is the same false-success the refusal exists to
     // prevent — so the sentence narrows to the stacks it actually reached.
@@ -267,6 +275,11 @@ export async function reportScrubOutcome({
         `plaintext that scrub could NOT repair, most likely a secret's value from before a ` +
         `rotation — see the warnings above.`
       : '';
+  const storedNoEchoNote =
+    totalStacksWithUnverifiableNoEchoRecords > 0
+      ? ` ${totalStacksWithUnverifiableNoEchoRecords} stack(s) hold an orphan or superseded ` +
+        `record whose NoEcho positions scrub could NOT verify — see the warnings above.`
+      : '';
   const parentAttributeNote =
     totalParentAttributesUnmatched > 0
       ? ` ${totalParentAttributesUnmatched} nested-stack output attribute(s) in a parent record ` +
@@ -319,11 +332,11 @@ export async function reportScrubOutcome({
     if (totalStacksScrubbed > 0) {
       logger.info(
         `\nPlan: ${totalStacksScrubbed} stack(s) hold plaintext secrets and would be scrubbed ` +
-          `(--dry-run, no state written).${keyNote}${unverifiableNote}${readNameNote}${outputKeyNote}${parentAttributeNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret in Secrets Manager.`
+          `(--dry-run, no state written).${keyNote}${unverifiableNote}${readNameNote}${storedNoEchoNote}${outputKeyNote}${parentAttributeNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret in Secrets Manager.`
       );
     } else {
       logger.info(
-        `\nPlan: no state record can be rewritten.${keyNote}${unverifiableNote}${readNameNote}${outputKeyNote}${parentAttributeNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret.`
+        `\nPlan: no state record can be rewritten.${keyNote}${unverifiableNote}${readNameNote}${storedNoEchoNote}${outputKeyNote}${parentAttributeNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret.`
       );
     }
     // The refusal outranks the `--fail` gate: it is an ERROR (exit 2) about
@@ -368,7 +381,7 @@ export async function reportScrubOutcome({
     if (droppedReadersUnverifiedStacks.length > 0) {
       throw droppedOutputReadersUnverifiedError(droppedReadersUnverifiedStacks);
     }
-    if (options.fail) throw new ScrubNeededError();
+    if (options.fail && !failingFindingsAbsent) throw new ScrubNeededError();
     return;
   }
 
@@ -392,11 +405,11 @@ export async function reportScrubOutcome({
         `A value that was ` +
         `ever persisted must still be treated as compromised — ROTATE it in Secrets ` +
         `Manager (scrub matches the current value, so scrub BEFORE rotating); rotation is ` +
-        `what makes any copy cdkd cannot reach harmless.${historyNote()}${keyNote}${unverifiableNote}${readNameNote}${outputKeyNote}${parentAttributeNote}${leafNote}${indexNote}${failureNote}`
+        `what makes any copy cdkd cannot reach harmless.${historyNote()}${keyNote}${unverifiableNote}${readNameNote}${storedNoEchoNote}${outputKeyNote}${parentAttributeNote}${leafNote}${indexNote}${failureNote}`
     );
   } else {
     logger.info(
-      `\nNo state record was rewritten.${historyNote()}${keyNote}${unverifiableNote}${readNameNote}${outputKeyNote}${parentAttributeNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret.`
+      `\nNo state record was rewritten.${historyNote()}${keyNote}${unverifiableNote}${readNameNote}${storedNoEchoNote}${outputKeyNote}${parentAttributeNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret.`
     );
   }
   // `--fail` is documented as a --dry-run CI gate, but a REAL run over a
