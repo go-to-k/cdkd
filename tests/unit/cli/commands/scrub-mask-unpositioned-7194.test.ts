@@ -110,6 +110,8 @@ const unpositioned = (): ResourceState => ({
   },
   observedProperties: { Password: 'q9-secret-7194', Extra: 'obs-secret-7194', Count: 3 },
   attributes: { Arn: 'attr-secret-7194', Size: 7 },
+  // An attempted item name built from a value the option masks.
+  unsettledItems: { GlobalSecondaryIndexes: ['gsi-q9-secret-7194', 'plain-index'] },
 });
 
 function seed(rows: { orphans?: StackState['orphans']; superseded?: unknown[] }): void {
@@ -204,6 +206,8 @@ describe('cdkd scrub --mask-unpositioned (go-to-k/cdkd#7194)', () => {
     ]);
     expect(row.state.observedMaskedLeaves).toEqual([['Extra']]);
     expect(row.state.noEchoAttributeNames).toEqual(['Arn']);
+    expect(row.state.unsettledItems).toEqual({ GlobalSecondaryIndexes: ['***', 'plain-index'] });
+    expect(JSON.stringify(stored())).not.toContain('q9-secret-7194');
   });
 
   it('--fail fails over such a record, and passes once --mask-unpositioned masked it', async () => {

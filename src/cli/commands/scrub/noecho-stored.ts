@@ -320,7 +320,7 @@ export function unverifiableNoEchoRecordWarning(
  * the option, what it does and what it costs.
  */
 export const UNPOSITIONED_REMEDY =
-  'Re-run scrub with --mask-unpositioned to mask every string value in that record (its properties, observed properties and attributes) and record those positions as NoEcho, which clears this finding. The cost: those values are lost from state, so a later adoption of the record compares and re-sends without them.';
+  "Re-run scrub with --mask-unpositioned to mask every string value in that record (its properties, observed properties and attributes) and record those positions as NoEcho, which clears this finding. The cost: those values are lost from state, so a later adoption of the record compares and re-sends without them, and a custom resource's Delete handler would receive the mask, so cdkd skips that delete and keeps the record.";
 
 /** The `--dry-run --mask-unpositioned` line for one such record. Counts only, never a value or a key. */
 export function unpositionedMaskPlanNote(

@@ -156,10 +156,11 @@ For each such record, it replaces every string value in `properties`,
 those positions as `NoEcho` positions. It does not change keys, numbers,
 booleans, empty strings, a whole `{{resolve:...}}` reference, the resource
 type, the physical id or the logical id. It touches no live record and no
-record scrub could position. The cost: those values are gone from state, so a
-later adoption of the record compares and re-sends without them, and a custom
+record scrub could position. It also masks an attempted item name the record
+built from one of those values. The cost: those values are gone from state,
+so a later adoption of the record compares and re-sends without them. A custom
 resource's `Delete` handler would receive `***`, so cdkd skips that delete
-with a warning. With `--dry-run`, it prints how many values it would mask in
+with a warning and keeps the record. With `--dry-run`, it prints how many values it would mask in
 each record, never a value or a key, and writes nothing.
 
 ### A leftover output key was kept

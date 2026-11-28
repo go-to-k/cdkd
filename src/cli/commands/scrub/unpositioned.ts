@@ -6,7 +6,10 @@ import {
   observedMaskedLeavesOf,
   type NoEchoCoordinate,
 } from '../../../deployment/secret-redaction.js';
-import { noEchoAttributeNamesOf } from '../../../deployment/deploy-engine/noecho.js';
+import {
+  noEchoAttributeNamesOf,
+  withAttemptedItemsMasked,
+} from '../../../deployment/deploy-engine/noecho.js';
 import type { ResourceState } from '../../../types/state.js';
 import {
   unpositionedMaskDoneNote,
@@ -22,15 +25,19 @@ import {
  * `noEchoLeaves`, its logical id gone from the template or of another type
  * there, no live record to learn from). Nothing says which leaf a `NoEcho`
  * value sat at, so EVERY string leaf that may hold one is masked: in
- * `properties`, `observedProperties` and `attributes`, at any depth. Keys, the
- * type, the physical id and every other field stay as they are.
+ * `properties`, `observedProperties` and `attributes`, at any depth, and an
+ * attempted item name built from one of the masked `properties` values, as
+ * the deploy's `NoEcho` arm masks one. Keys, the type, the physical id and
+ * every other field stay as they are.
  *
  * The masked `properties` positions become the record's `noEchoLeaves`, so
  * the record reads as positioned (`--fail` passes) and every reader treats
  * the mask there as a `NoEcho` mask; an `observedProperties` position outside
  * them joins `observedMaskedLeaves`, and a masked top-level string attribute
  * joins `noEchoAttributeNames`. The cost: those values are gone from state, so
- * a later adoption of the record compares and re-sends without them.
+ * a later adoption of the record compares and re-sends without them, and a
+ * delete that reads one of them from the record (a custom resource's `Delete`
+ * payload) cannot use it.
  */
 
 /** A leaf the option masks: the same leaves the unverifiable finding counts. */
@@ -44,18 +51,24 @@ export function isUnpositionedStringLeaf(value: unknown): value is string {
 }
 
 /** `value` with every {@link isUnpositionedStringLeaf} masked, and where. */
-function maskStringLeaves(value: unknown, at: NoEchoCoordinate, out: NoEchoCoordinate[]): unknown {
+function maskStringLeaves(
+  value: unknown,
+  at: NoEchoCoordinate,
+  out: NoEchoCoordinate[],
+  values?: string[]
+): unknown {
   if (isUnpositionedStringLeaf(value)) {
     out.push([...at]);
+    values?.push(value);
     return SECRET_MASK;
   }
   if (Array.isArray(value)) {
-    return value.map((item, index) => maskStringLeaves(item, [...at, index], out));
+    return value.map((item, index) => maskStringLeaves(item, [...at, index], out, values));
   }
   if (value !== null && typeof value === 'object') {
     const next: Record<string, unknown> = {};
     for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-      next[key] = maskStringLeaves(item, [...at, key], out);
+      next[key] = maskStringLeaves(item, [...at, key], out, values);
     }
     return next;
   }
@@ -86,11 +99,14 @@ export function maskUnpositionedRecord(record: ResourceState): {
       observedProperties: maskStringLeaves(readback, [], observedLeaves) as typeof readback,
     }),
   };
+  const maskedValues: string[] = [];
   if (record.properties !== undefined) {
-    next.properties = maskStringLeaves(record.properties, [], propertyLeaves) as Record<
-      string,
-      unknown
-    >;
+    next.properties = maskStringLeaves(
+      record.properties,
+      [],
+      propertyLeaves,
+      maskedValues
+    ) as Record<string, unknown>;
   }
   if (record.attributes !== undefined) {
     next.attributes = maskStringLeaves(
@@ -116,7 +132,7 @@ export function maskUnpositionedRecord(record: ResourceState): {
   }
   if (names.size > 0) next.noEchoAttributeNames = [...names].sort();
   return {
-    record: next,
+    record: withAttemptedItemsMasked(next, maskedValues),
     counts: {
       properties: propertyLeaves.length,
       observed: observedLeaves.length,
