@@ -2,7 +2,8 @@
  * go-to-k/cdkd#7191: through `scrubCommand`, a rollback orphan whose logical
  * id has left the template, written before state schema v11 (no
  * `noEchoLeaves`), in a stack with a `NoEcho` parameter, is a FINDING: the
- * stack is not reported clean, and `--fail` exits through `ScrubNeededError`.
+ * stack is not reported clean, and a real run's `--fail` exits through
+ * `ScrubNeededError` with nothing left to rewrite.
  * The same stack with no such orphan is reported clean.
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
@@ -152,7 +153,7 @@ describe('cdkd scrub reports an orphan it cannot position (go-to-k/cdkd#7191)', 
         state: { physicalId: 'db-old', resourceType: TYPE, properties: { Password: 'x9' } },
       },
     ]);
-    const err = await run({ dryRun: true, fail: true });
+    const err = await run({ fail: true });
     expect(err).toBeInstanceOf(ScrubNeededError);
     const text = logLines.join('\n');
     expect(text).not.toContain('No plaintext secrets found');
@@ -162,7 +163,7 @@ describe('cdkd scrub reports an orphan it cannot position (go-to-k/cdkd#7191)', 
 
   it('control: the same stack without that orphan is reported clean', async () => {
     seed(undefined);
-    const err = await run({ dryRun: true, fail: true });
+    const err = await run({ fail: true });
     expect(err).toBeUndefined();
     expect(logLines.join('\n')).toContain('No plaintext secrets found');
   });

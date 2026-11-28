@@ -210,6 +210,46 @@ describe('cdkd scrub - NoEcho plaintext in an orphan or superseded record (go-to
     expect(unverifiable).toBe(0);
   });
 
+  it('positions by today\'s template when no live record names the positions', async () => {
+    const { saved } = await scrub(
+      stateWith({
+        resources: {},
+        supersededResources: [{ logicalId: 'Db', supersededAt: 1, state: preV11(SHORT) }],
+      })
+    );
+    const superseded = saved!.supersededResources![0]!.state;
+    expect(superseded.properties['Password']).toBe('***');
+    expect(superseded.noEchoLeaves).toEqual([['Password']]);
+  });
+
+  it('keeps the attribute names the stored-record finish declares beside the plan\'s', async () => {
+    const info = {
+      stackName: STACK,
+      template: {
+        Parameters: { Pw: { Type: 'String', NoEcho: true, Default: SHORT } },
+        Resources: {
+          Cr: { Type: 'Custom::Thing7191', Properties: { ServiceToken: 'arn', Pw: { Ref: 'Pw' } } },
+        },
+      } as unknown as CloudFormationTemplate,
+    };
+    const orphan: ResourceState = {
+      physicalId: 'cr-old',
+      resourceType: 'Custom::Thing7191',
+      properties: { ServiceToken: 'arn', Pw: SHORT },
+      noEchoLeaves: [['Pw']],
+      // `Pw` echoes the positioned property (the plan's); `Out` equals the
+      // input under a key no template reads (the finish's, #7188).
+      attributes: { Pw: SHORT, Out: SHORT, Count: '3' },
+    };
+    const { saved } = await scrub(
+      stateWith({ resources: {}, orphans: [{ logicalId: 'Gone', orphanedAt: 1, state: orphan }] }),
+      info
+    );
+    const state = saved!.orphans![0]!.state;
+    expect(state.attributes).toEqual({ Pw: '***', Out: '***', Count: '3' });
+    expect(state.noEchoAttributeNames).toEqual(['Out', 'Pw']);
+  });
+
   it('a second scrub over the repaired state changes nothing', async () => {
     const { saved } = await scrub(
       stateWith({

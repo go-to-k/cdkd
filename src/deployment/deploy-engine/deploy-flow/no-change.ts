@@ -131,14 +131,12 @@ export async function deployWithoutChanges(
   // go-to-k/cdkd#7191: a carried record holding a `NoEcho` value in the clear
   // (a pre-v11 binary wrote it) is saved, so the save's positioning masks it.
   // After the retry above, which may have dropped a superseded one.
-  const carriedNoEchoPending =
-    !engine.options.dryRun &&
-    carriedRecordsHoldNoEchoPlaintext(
-      engine,
-      currentState.resources,
-      currentState.orphans,
-      supersededResourcesOf(currentState)
-    );
+  const carriedNoEchoPending = carriedRecordsHoldNoEchoPlaintext(
+    engine,
+    currentState.resources,
+    currentState.orphans,
+    supersededResourcesOf(currentState)
+  );
 
   // The diff only inspects Resources, so an Outputs-only change (a new
   // Export added because a downstream stack now references this one — its
