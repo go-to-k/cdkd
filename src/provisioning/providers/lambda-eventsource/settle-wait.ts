@@ -3,7 +3,7 @@ import {
   ResourceNotFoundException,
   type LambdaClient,
 } from '@aws-sdk/client-lambda';
-import { describeAwsStatusReason } from '../../../utils/aws-failure-text.js';
+import { describeAwsStatusReason, verboseAwareText } from '../../../utils/aws-failure-text.js';
 import { startInterruptWatch } from '../../interrupt-watch.js';
 import {
   isThrottlingError,
@@ -165,7 +165,11 @@ export async function waitForMappingSettled(
           }
           log.warn(
             `Event source mapping ${logicalId} settled ${last}, but the template asks for ` +
-              `${expected}; Lambda's reason is in the --verbose output`
+              `${expected}; ` +
+              verboseAwareText(
+                "re-run with --verbose for Lambda's reason",
+                "Lambda's reason is in the debug output above"
+              )
           );
           return;
         }
