@@ -647,7 +647,12 @@ fails sends none of these deletes, and its rollback takes the old resources
 back. The exception is an old resource that still uses a resource its stack's
 template removed: it is deleted right before that removal, in the child's own
 deploy, and a rollback re-creates it (issue
-[#6977](https://github.com/go-to-k/cdkd/issues/6977)).
+[#6977](https://github.com/go-to-k/cdkd/issues/6977)). Not when the
+top-level stack holds its cleanup for consumers in the same run (below) and a
+consumer's records name that old resource, cannot be read, or the old resource
+has no superseded record: it then waits with the rest, and the removal it uses
+is kept for the next deploy (issue
+[#7204](https://github.com/go-to-k/cdkd/issues/7204)).
 
 A top-level stack whose outputs another stack of the same `cdkd deploy` run
 imports holds its cleanup phase, with its children's queued passes, in the

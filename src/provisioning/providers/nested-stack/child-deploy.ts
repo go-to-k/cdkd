@@ -145,7 +145,8 @@ export async function runChildDeploy(
       // export that this run deploys is exempt from the child's in-use export
       // refusal exactly as it is from the parent's. `consumerCleanupQueue`
       // (go-to-k/cdkd#7012) holds the top-level stack's cleanup; a child
-      // inherits it inert, as only a root engine reads it.
+      // inherits it, and reads it only to ask the top-level stack's consumers
+      // before an early delete of an old copy (go-to-k/cdkd#7204).
       ...(parentCtx.options ?? {}),
       // Always overwrite (never spread-inherit) parameters: the parent's
       // `--parameters Foo=Bar` CLI option lives in `parentCtx.options.parameters`,
