@@ -56,7 +56,9 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  * - `named`: inside the KEY `Named-<named>`, which a template `Fn::GetAtt`
  *   spells, so the key is template text and is kept;
  * - `short`: a 3-character value returned as a whole KEY (go-to-k/cdkd#7181),
- *   which must be dropped, beside a key that only CONTAINS it, which stays.
+ *   which must be dropped, beside a key that only CONTAINS it, which stays,
+ *   and as the VALUE of `Data.Other`, a key no template reads, which must be
+ *   masked and declared NoEcho (go-to-k/cdkd#7183).
  */
 export const SECRET_ECHO = {
   echo: 'offtpl-echo-secret-7182',
@@ -95,7 +97,7 @@ exports.handler = async (event) => {
     };
   }
   if (props.Mode === 'secret-echo') {
-    const data = { Echo: props.Echo, Public: 'public-secret-echo-value' };
+    const data = { Echo: props.Echo, Other: props.Short, Public: 'public-secret-echo-value' };
     data['Key-' + props.Echo] = 'k-echo';
     data['Named-' + props.Named] = 'k-named';
     data[props.Short] = 'k-short';

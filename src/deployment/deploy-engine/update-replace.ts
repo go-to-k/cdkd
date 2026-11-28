@@ -389,7 +389,8 @@ export async function updateByReplacement(
     logicalId,
     createResult,
     updateSecrets,
-    resolvedProps
+    resolvedProps,
+    stackName
   );
 
   // go-to-k/cdkd#4411: the new resource holds the old one's physical id, so

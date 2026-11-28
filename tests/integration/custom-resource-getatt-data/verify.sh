@@ -72,6 +72,10 @@ PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 # substring: the over-mask control key `Xq~7x` legitimately contains it.
 # NAMED_SECRET is spelled by a template Fn::GetAtt, so the key holding it is
 # template text and is kept by design.
+# The arm is deployed ONLY by phase 3, which sets CDKD_TEST_SECRET_ECHO on its
+# own commands; one exported by the caller would deploy it in phase 1 and void
+# phase 3's premise, so it is dropped here.
+unset CDKD_TEST_SECRET_ECHO
 ECHO_SECRET="offtpl-echo-secret-7182"
 NAMED_SECRET="offtpl-named-secret-7182"
 SHORT_SECRET="q~7"
@@ -117,6 +121,14 @@ cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
   if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
+    # With the secret-echo arm IN the template first: a custom resource whose
+    # record holds a NoEcho input as `***` is deleted only by a command that
+    # holds the template to re-resolve it (go-to-k/cdkd#4682); `state destroy`
+    # skips its Delete handler by design. A clean stack makes this a no-op.
+    CDKD_TEST_SECRET_ECHO=true node "${LOCAL_DIST}" destroy "${STACK}" \
+      --state-bucket "${STATE_BUCKET:-}" \
+      --region "${REGION}" \
+      --force
     node "${LOCAL_DIST}" state destroy "${STACK}" \
       --state-bucket "${STATE_BUCKET:-}" \
       --region "${REGION}" \
@@ -390,12 +402,20 @@ assert_service_token_addressable "${STATE_ROTATED}"
 # secret inside a key a template Fn::GetAtt spells, and the 3-character short
 # secret as a whole KEY (#7181) beside a key that only contains it.
 #
-# Known bound (go-to-k/cdkd#7183): a short NoEcho value returned as an attribute
-# VALUE under another key is not masked yet, so the handler returns none.
+# The short secret is also returned as the VALUE of `Data.Other`, a key no
+# template reads (go-to-k/cdkd#7183): masked and declared NoEcho.
 # `cdkd drift` skips custom resources (src/cli/commands/drift/detect.ts): a
 # custom resource has no readback, so the `maskedEcho` half of #7181 is unit
 # tested only; here drift and `drift --revert` must exit 0 and send nothing.
 echo "==> Phase 3: the secret-echo arm"
+# Premise: the arm is not deployed yet, so this phase's deploy is the one that
+# creates it and every assertion below reads what that deploy wrote.
+PRE_ECHO=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+if [ "$(jq --arg t "Custom::CdkdSecretEcho" '[.resources[] | select(.resourceType == $t)] | length' <<<"${PRE_ECHO}")" != "0" ]; then
+  echo "FAIL: premise: a Custom::CdkdSecretEcho resource is already deployed before phase 3." >&2
+  echo "    Only phase 3 may deploy the secret-echo arm (CDKD_TEST_SECRET_ECHO on its own commands)." >&2
+  exit 1
+fi
 SECRET_ECHO_LOG="$(mktemp)"
 # Each capture is printed on failure with the secrets replaced, so a FAIL line
 # never discloses the values it is about.
@@ -483,7 +503,7 @@ esac
 # The over-mask controls and the kept key resolve first, so the record is the
 # one this deploy wrote and the secret checks below are not vacuous.
 ATTR_KEYS="$(jq -c '.attributes | keys' <<<"${ECHO_RECORD}")"
-EXPECTED_KEYS="$(jq -cn --arg n "Named-${NAMED_SECRET}" --arg s "X${SHORT_SECRET}x" '[$n, $s, "Echo", "Public"] | sort')"
+EXPECTED_KEYS="$(jq -cn --arg n "Named-${NAMED_SECRET}" --arg s "X${SHORT_SECRET}x" '[$n, $s, "Echo", "Other", "Public"] | sort')"
 if [ "${ATTR_KEYS}" != "${EXPECTED_KEYS}" ]; then
   # A file, not a process substitution: `carries_secret` reads it twice.
   printf '%s\n' "${ATTR_KEYS}" > "${SECRET_ECHO_LOG}"
@@ -496,6 +516,12 @@ for prop in Echo Named Short; do
   [ "$(jq -r --arg p "${prop}" '.properties[$p]' <<<"${ECHO_RECORD}")" = "${SECRET_MASK}" ] \
     || secret_echo_fail "properties.${prop} is not '${SECRET_MASK}' (value withheld): a NoEcho input persisted at its position"
 done
+# go-to-k/cdkd#7183: `Data.Other` is the 3-character secret, under a key no
+# template Fn::GetAtt reads, so it is masked and declared NoEcho.
+[ "$(jq -r '.attributes.Other' <<<"${ECHO_RECORD}")" = "${SECRET_MASK}" ] \
+  || secret_echo_fail "attributes.Other is not '${SECRET_MASK}' (value withheld): a short NoEcho value under an unread key persisted (go-to-k/cdkd#7183)"
+jq -e '.noEchoAttributeNames | index("Other") != null' <<<"${ECHO_RECORD}" >/dev/null \
+  || secret_echo_fail "noEchoAttributeNames does not name Other (go-to-k/cdkd#7183)"
 [ "$(jq -r '.attributes.Echo' <<<"${ECHO_RECORD}")" = "${SECRET_MASK}" ] \
   || secret_echo_fail "attributes.Echo is not '${SECRET_MASK}' (value withheld): a NoEcho value under a template-absent key persisted (go-to-k/cdkd#7158)"
 [ "$(jq -r '.attributes.Public' <<<"${ECHO_RECORD}")" = "public-secret-echo-value" ] \
@@ -558,10 +584,26 @@ SECRET_ECHO_LOG=""
 
 # --- Phase 4: destroy -------------------------------------------------
 echo "==> Phase 4: destroy"
-node "${LOCAL_DIST}" destroy "${STACK}" \
+# With the secret-echo arm in the template: its record holds the NoEcho inputs
+# as `***`, and only a destroy holding the template re-resolves them for the
+# Delete handler (go-to-k/cdkd#4682). The handler must run, never be skipped.
+DESTROY_LOG="$(mktemp)"
+set +e
+CDKD_TEST_SECRET_ECHO=true node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
-  --force
+  --force > "${DESTROY_LOG}" 2>&1
+rc=$?
+set -e
+if [ "${rc}" -ne 0 ] || grep -qF "Delete handler not invoked" "${DESTROY_LOG}"; then
+  echo "FAIL: destroy exited ${rc} or skipped a custom resource's Delete handler; log (secrets replaced):" >&2
+  show_redacted "${DESTROY_LOG}"
+  rm -f "${DESTROY_LOG}"
+  exit 1
+fi
+log_carries_secret "${DESTROY_LOG}" && { rm -f "${DESTROY_LOG}"; echo "FAIL: the destroy log carries a secret-echo value (value withheld)" >&2; exit 1; }
+rm -f "${DESTROY_LOG}"
+echo "    OK: destroy ran every Delete handler and printed no secret-echo value"
 
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"

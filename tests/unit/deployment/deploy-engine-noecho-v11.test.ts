@@ -788,6 +788,63 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       expect(cr.attributes).toEqual({ xabcx: 'k-contains', Plain: 'ok' });
     });
 
+    describe('a custom resource attribute EQUAL to a 1-3 character NoEcho input under another name (go-to-k/cdkd#7183)', () => {
+      const CR = { Type: 'Custom::Thing', Properties: { ServiceToken: 'arn:aws:lambda:us-east-1:1:function:h', Pin: { Ref: 'Short' } } };
+      const crReturns = (attributes: Record<string, unknown>): void => {
+        provider.create.mockImplementation((logicalId: string) =>
+          Promise.resolve(logicalId === 'Cr' ? { physicalId: 'cr-1', attributes } : { physicalId: `${logicalId}-phys`, attributes: {} })
+        );
+      };
+      beforeEach(() => stateBackend.getState.mockResolvedValue({ state: null, etag: undefined }));
+
+      it('masks and declares one no template Fn::GetAtt reads; one that only CONTAINS the value is untouched', async () => {
+        crReturns({ Other: 'abc', Contains: 'xabcx', Plain: 'ok' });
+        await makeEngine().deploy(STACK, template(TOKEN, { Cr: CR }));
+        const cr = lastSaved().resources['Cr']!;
+        expect(cr.attributes).toEqual({ Other: '***', Contains: 'xabcx', Plain: 'ok' });
+        expect(cr.noEchoAttributeNames).toEqual(['Other']);
+      });
+
+      it.each([
+        ['an Fn::GetAtt', { 'Fn::GetAtt': ['Cr', 'Other'] }],
+        ['an Fn::Sub ${X.Attr}', { 'Fn::Sub': '${Cr.Other}' }],
+      ])('keeps one %s reads in the clear, undeclared, and never refuses its reader later', async (_label, value) => {
+        crReturns({ Other: 'abc' });
+        const reader = (name: string) => ({ Type: 'AWS::SSM::Parameter', Properties: { Name: '/app/r', Type: 'String', Description: name, Value: value } });
+        await makeEngine().deploy(STACK, template(TOKEN, { Cr: CR, Reader: reader('d1') }));
+        const first = lastSaved();
+        expect(first.resources['Cr']!.attributes).toEqual({ Other: 'abc' });
+        expect(first.resources['Cr']!.noEchoAttributeNames).toBeUndefined();
+        // A later deploy changes only the reader. The producer's update returns no `Data`, so the
+        // reader resolves the attribute the record CARRIED, and is not refused.
+        stateBackend.getState.mockResolvedValue({ state: first, etag: 'etag-1' });
+        await makeEngine().deploy(STACK, template(TOKEN, { Cr: CR, Reader: reader('d2') }));
+        expect(callsFor(provider.update, 'Reader')).toHaveLength(1);
+        expect(lastSaved().resources['Reader']!.properties['Description']).toBe('d2');
+        expect(callsFor(provider.update, 'Reader')[0]![3]).toMatchObject({ Value: 'abc' });
+      });
+
+      it('declares nothing on equality when a template names an attribute through an expression', async () => {
+        crReturns({ Other: 'abc' });
+        await makeEngine().deploy(
+          STACK,
+          template(TOKEN, {
+            Cr: CR,
+            Reader: { Type: 'AWS::SSM::Parameter', Properties: { Name: '/app/r', Type: 'String', Value: { 'Fn::GetAtt': ['Cr', { Ref: 'Plain' }] } } },
+          })
+        );
+        expect(lastSaved().resources['Cr']!.noEchoAttributeNames).toBeUndefined();
+      });
+
+      it('never declares one equal to the stack name, which is public', async () => {
+        crReturns({ Other: 'abc' });
+        await makeEngine().deploy('abc', template(TOKEN, { Cr: CR }));
+        const cr = lastSaved().resources['Cr']!;
+        expect(cr.attributes).toEqual({ Other: 'abc' });
+        expect(cr.noEchoAttributeNames).toBeUndefined();
+      });
+    });
+
     it('declares and masks an attribute that ECHOES a NoEcho parameter value, in the producer and its same-run reader', async () => {
       stateBackend.getState.mockResolvedValue({ state: null, etag: undefined });
       provider.create.mockImplementation((logicalId: string) =>

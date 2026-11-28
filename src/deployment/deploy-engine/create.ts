@@ -384,7 +384,8 @@ export async function provisionCreate(
     logicalId,
     result,
     createSecrets,
-    resolvedProps
+    resolvedProps,
+    stackName
   );
 
   // Extract ALL dependencies from template (Ref, Fn::GetAtt, DependsOn)
