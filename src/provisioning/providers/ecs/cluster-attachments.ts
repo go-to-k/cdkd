@@ -325,7 +325,7 @@ export async function waitForClusterSettled(
     log.debug(`Skipping the wait for ${what} (CDKD_NO_WAIT=true)`);
     return;
   }
-  const fail = (head: string, failed: Cluster | undefined): Error => {
+  const clusterSettleFailure = (head: string, failed: Cluster | undefined): Error => {
     const attachments = (failed?.attachments ?? [])
       .filter((a) => FAILED_ATTACHMENT.test(a.status ?? ''))
       .map((a) => {
@@ -382,14 +382,14 @@ export async function waitForClusterSettled(
       if (read) {
         if (last === undefined) {
           if (poll > CLUSTER_NOT_VISIBLE_GRACE_POLLS) {
-            throw fail(
+            throw clusterSettleFailure(
               `ECS cluster ${logicalIdShown(logicalId)} (${log.value(cluster)}) could not be read back while settling`,
               undefined
             );
           }
         } else if (last.status === 'FAILED') {
           // Before the attachments: a FAILED cluster can still list them in progress.
-          throw fail(
+          throw clusterSettleFailure(
             `ECS cluster ${logicalIdShown(logicalId)} (${log.value(cluster)}) settled as ` +
               `${describeLast(last)}, expected ACTIVE / attachments UPDATE_COMPLETE`,
             last
@@ -413,7 +413,7 @@ export async function waitForClusterSettled(
           );
           return;
         } else {
-          throw fail(
+          throw clusterSettleFailure(
             `ECS cluster ${logicalIdShown(logicalId)} (${log.value(cluster)}) settled as ` +
               `${describeLast(last)}, expected ACTIVE / attachments UPDATE_COMPLETE`,
             last

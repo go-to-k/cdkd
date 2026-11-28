@@ -12,6 +12,19 @@ const ATTACHING_STATES: ReadonlySet<string> = new Set(['PENDING', 'ATTACHING']);
 /** `ListInstanceGroups` every 2 s, for up to 10 minutes. */
 export const SCALING_POLICY_SETTLE_POLL_MS = 2000;
 export const SCALING_POLICY_SETTLE_POLLS = 300;
+
+/**
+ * The poll cap that keeps the wait inside the provider's own `maxWaitMs`, the
+ * budget an `AWS::EMR::Cluster` update hands its delegate (#7132).
+ */
+export function scalingPolicyWaitBudget(maxWaitMs: number): { maxPolls: number } {
+  return {
+    maxPolls: Math.max(
+      1,
+      Math.min(SCALING_POLICY_SETTLE_POLLS, Math.ceil(maxWaitMs / SCALING_POLICY_SETTLE_POLL_MS))
+    ),
+  };
+}
 /**
  * Reads right after the call that may still show the state from before it
  * (the previous policy `ATTACHED`, or no policy yet) before the wait reads
@@ -75,7 +88,7 @@ export async function waitForAutoScalingPolicySettled(
     this.logger.debug(m(`Skipping the wait for ${what} (CDKD_NO_WAIT=true)`));
     return;
   }
-  const fail = (message: string, cause?: Error): ProvisioningError =>
+  const scalingPolicyFailure = (message: string, cause?: Error): ProvisioningError =>
     markNonRetryable(new ProvisioningError(m(message), resourceType, logicalId, groupId, cause));
   // An ATTACHED read only counts once the policy was seen attaching, when the
   // call itself answered an attaching state: before that it can be the
@@ -90,7 +103,7 @@ export async function waitForAutoScalingPolicySettled(
       // The engine's deadline does not cancel this call chain, so a wait that
       // outlived it would keep polling with nobody waiting on it.
       if (enclosingDeadlineRemainingMs() <= 0) {
-        throw fail(
+        throw scalingPolicyFailure(
           `The resource timeout expired while waiting for ${what} (last state: ${last}); ` +
             'the change is not confirmed'
         );
@@ -110,15 +123,15 @@ export async function waitForAutoScalingPolicySettled(
           return;
         } else if (poll > SCALING_POLICY_STALE_READ_GRACE_POLLS) {
           const head = `The automatic scaling policy of EMR instance group ${logicalId} settled as ${last}, expected ATTACHED`;
-          if (status?.State !== 'FAILED') throw fail(head);
+          if (status?.State !== 'FAILED') throw scalingPolicyFailure(head);
           const reason = describeAwsStatusReason(
             { code: status.StateChangeReason?.Code, message: status.StateChangeReason?.Message },
             ''
           );
-          if (!reason.redacted) throw fail(head);
+          if (!reason.redacted) throw scalingPolicyFailure(head);
           this.logger.debug(m(`${head}: ${reason.detail}`));
           const cause = new Error(reason.detail);
-          throw markRedactedCause(fail(`${head}. ${reason.summary}`, cause));
+          throw markRedactedCause(scalingPolicyFailure(`${head}. ${reason.summary}`, cause));
         }
       }
       this.logger.debug(m(`Waiting for ${what} (state: ${last})`));
@@ -130,7 +143,7 @@ export async function waitForAutoScalingPolicySettled(
   } finally {
     watch.dispose();
   }
-  throw fail(
+  throw scalingPolicyFailure(
     `Timed out waiting for ${what}: still ${last} after ${(maxPolls * pollMs) / 1000} seconds; ` +
       'the change is not confirmed'
   );

@@ -49,7 +49,10 @@ import { safeMsg } from '../../utils/display-safe.js';
 import { removeScalingPolicyForDelete } from './emr-instance-group-config/remove-scaling-policy.js';
 import { readCurrentState as readGroupState } from './emr-instance-group-config/read-state.js';
 import { findGroupForPoll } from './emr-instance-group-config/find-group.js';
-import { waitForAutoScalingPolicySettled } from './emr-instance-group-config/scaling-policy-wait.js';
+import {
+  scalingPolicyWaitBudget,
+  waitForAutoScalingPolicySettled,
+} from './emr-instance-group-config/scaling-policy-wait.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import {
@@ -427,7 +430,8 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
           groupId,
           logicalId,
           resourceType,
-          context?.maskSecrets
+          context?.maskSecrets,
+          scalingPolicyWaitBudget(this.maxWaitMs)
         );
       }
 
@@ -643,7 +647,10 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
             logicalId,
             resourceType,
             context?.maskSecrets,
-            answered !== undefined ? { answeredState: answered } : {}
+            {
+              ...scalingPolicyWaitBudget(this.maxWaitMs),
+              ...(answered !== undefined ? { answeredState: answered } : {}),
+            }
           );
         } else {
           // DETACHING -> DETACHED is not waited on (unmeasured, #7132).
