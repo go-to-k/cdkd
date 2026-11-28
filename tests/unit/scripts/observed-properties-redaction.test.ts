@@ -105,7 +105,7 @@ describe('check-observed-properties-redaction (go-to-k/cdkd#6765)', () => {
     expect(rewrite.replace(/\s+/g, ' ')).toContain('withObservedTwinsPositioned( scrubResourceRecord(positioned,');
     const twins = readFileSync(join(REPO_ROOT, 'src/cli/commands/scrub/twin-references.ts'), 'utf8');
     expect(twins).toContain('return provenTemplateText(s, t, secrets, plaintexts) ? t : p;');
-    expect(twins).toContain('if (!corroborates(s[i], t[i])) return item;');
+    expect(twins).toContain('if (!corroborates(s[i], t[i], ri, plaintexts)) return item;');
   });
 
   describe('roots', () => {
