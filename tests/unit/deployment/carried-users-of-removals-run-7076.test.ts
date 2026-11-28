@@ -162,5 +162,19 @@ describe('deleteCarriedUsersOfRemovalsFirst (#7076)', () => {
       );
       expect([...held]).toEqual([['Vpc', 'Group']]);
     });
+
+    it('releases no row another row still held for consumers uses', async () => {
+      const released: SupersededResourceRecord = { ...row, heldForConsumers: true };
+      const user: SupersededResourceRecord = {
+        logicalId: 'Eni',
+        supersededAt: 1,
+        heldForConsumers: true,
+        state: record('eni-old', 'AWS::EC2::NetworkInterface', ['Group']),
+      };
+      state.supersededResources = [released, user];
+
+      await deleteCarriedUsersOfRemovalsFirst(runOf(), [released, user], new Map());
+      expect(retry.fn).not.toHaveBeenCalled();
+    });
   });
 });

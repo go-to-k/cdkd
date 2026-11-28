@@ -224,5 +224,17 @@ async function holdRemovalsOfNamedRows(
       released.add(row);
     }
   }
+  // A released row another row still held for consumers uses (transitively)
+  // stays for the cleanup, which deletes dependents first.
+  const stays = carried.filter((row) => row.heldForConsumers === true && !released.has(row));
+  while (stays.length > 0) {
+    const deps: unknown = stays.pop()!.state.dependencies;
+    if (!Array.isArray(deps)) continue;
+    for (const row of [...released]) {
+      if (!deps.includes(row.logicalId)) continue;
+      released.delete(row);
+      stays.push(row);
+    }
+  }
   return released;
 }
