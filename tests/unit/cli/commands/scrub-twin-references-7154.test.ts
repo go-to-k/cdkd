@@ -81,6 +81,28 @@ describe('scrub twin references (go-to-k/cdkd#7154)', () => {
     }
   });
 
+  it('never pairs a reordered list by index, keyed by Name or not', () => {
+    const secrets = passSecrets();
+    for (const field of ['Name', 'Label']) {
+      const template = { L: [{ [field]: 'a', Value: OWN }, { [field]: 'b', Value: TWIN }] };
+      const stored = { L: [{ [field]: 'b', Value: PLAIN }, { [field]: 'a', Value: PLAIN }] };
+      const positioned = redactForState(stored, { provenance: 'template-sourced', secrets, source: template, generation: 'unproven' });
+      expect(positionTwinReferences(stored, positioned, template, secrets), field).toBe(positioned);
+    }
+  });
+
+  it('keeps a null-prototype bag null-prototype, and a __proto__ key a key', () => {
+    const secrets = passSecrets();
+    const template = JSON.parse(`{"__proto__": [{"V": "x"}, {"V": "${OWN}"}]}`) as Record<string, unknown>;
+    const stored = JSON.parse(`{"__proto__": [{"V": "x"}, {"V": "${PLAIN}"}]}`) as Record<string, unknown>;
+    const positioned = Object.create(null) as Record<string, unknown>;
+    Object.defineProperty(positioned, '__proto__', { value: [{ V: 'x' }, { V: TWIN }], enumerable: true, writable: true, configurable: true });
+    const out = positionTwinReferences(stored, positioned, template, secrets) as Record<string, unknown>;
+    expect(Object.getPrototypeOf(out)).toBeNull();
+    expect(Object.hasOwn(out, '__proto__')).toBe(true);
+    expect(JSON.stringify(out)).toBe(JSON.stringify(template));
+  });
+
   it('keeps the masked leaf when the token resolved to a plaintext the map does not hold', () => {
     // A map the resolver did not populate this way: the pair survives, the entry does not.
     const secrets = passSecrets();

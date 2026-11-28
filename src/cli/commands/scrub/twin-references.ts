@@ -19,11 +19,16 @@ import { dynamicReferenceSpans } from '../../../deployment/secret-redaction/reda
  *
  * This walk pairs the three bags by TEMPLATE POSITION: an array only when the
  * stored bag, the positioned bag and the template all hold an array of the
- * same length there, an object by the keys all three hold. At a string leaf it
+ * same length there, and an element only when the template element
+ * CORROBORATES the stored one (the same keys and lengths, every literal leaf
+ * equal: a reordered list, keyed by `Name` or not, never pairs a value with
+ * another element's reference); an object by the keys all three hold. At a
+ * string leaf it
  * writes the template's own text, and only when that is PROVEN to be what the
  * stored leaf is:
- * - every `{{resolve:...}}` token of the template text is one THIS pass resolved (its own pair table, so a twin that lost
- *   the collapsed map's slot still answers), to a plaintext the map records;
+ * - every `{{resolve:...}}` token of the template text is one THIS pass
+ *   resolved (its own pair table, so a twin that lost the collapsed map's slot
+ *   still answers), to a plaintext the map records;
  * - substituting each token by its plaintext gives the STORED leaf exactly, so
  *   the stored value is this pass's resolution of that very text (a leaf that
  *   already holds an expression, a rotated value or an edited template never
@@ -53,6 +58,7 @@ export function positionTwinReferences(
         return p;
       let changed = false;
       const out = p.map((item, i) => {
+        if (!corroborates(s[i], t[i])) return item;
         const next = walk(s[i], item, t[i]);
         if (next !== item) changed = true;
         return next;
@@ -65,13 +71,48 @@ export function positionTwinReferences(
       if (!Object.hasOwn(s, key) || !Object.hasOwn(p, key)) continue;
       const next = walk(s[key], p[key], t[key]);
       if (next !== p[key]) {
-        out ??= { ...p };
-        out[key] = next;
+        // The bag's own prototype (a null one included, go-to-k/cdkd#1943),
+        // and a defined property, so a `__proto__` key stays a key.
+        out ??= Object.defineProperties(
+          Object.create(Object.getPrototypeOf(p) as object | null) as Record<string, unknown>,
+          Object.getOwnPropertyDescriptors(p)
+        );
+        Object.defineProperty(out, key, {
+          value: next,
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
       }
     }
     return out ?? p;
   };
   return walk(stored, positioned, template);
+}
+
+/**
+ * Does template element `t` describe stored element `s`: the same shape, every
+ * string leaf without a token equal, every other leaf equal? A string leaf
+ * holding a token stands for any stored string, which the leaf proof checks.
+ */
+function corroborates(s: unknown, t: unknown): boolean {
+  if (typeof t === 'string') {
+    return typeof s === 'string' && (dynamicReferenceSpans(t).length > 0 || s === t);
+  }
+  if (Array.isArray(t)) {
+    return (
+      Array.isArray(s) && s.length === t.length && t.every((item, i) => corroborates(s[i], item))
+    );
+  }
+  if (isPlainRecord(t)) {
+    if (!isPlainRecord(s)) return false;
+    const keys = Object.keys(t);
+    return (
+      keys.length === Object.keys(s).length &&
+      keys.every((key) => Object.hasOwn(s, key) && corroborates(s[key], t[key]))
+    );
+  }
+  return Object.is(s, t);
 }
 
 /** Is `text` (a template leaf) proven to be the expression of the stored `value`? */
