@@ -410,8 +410,12 @@ assert_service_token_addressable "${STATE_ROTATED}"
 echo "==> Phase 3: the secret-echo arm"
 # Premise: the arm is not deployed yet, so this phase's deploy is the one that
 # creates it and every assertion below reads what that deploy wrote.
-PRE_ECHO=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
-if [ "$(jq --arg t "Custom::CdkdSecretEcho" '[.resources[] | select(.resourceType == $t)] | length' <<<"${PRE_ECHO}")" != "0" ]; then
+PRE_ECHO=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null) || PRE_ECHO=""
+if [ -z "${PRE_ECHO}" ]; then
+  echo "FAIL: premise: could not read s3://${STATE_BUCKET}/${STATE_KEY} before phase 3" >&2
+  exit 1
+fi
+if [ "$(jq --arg t "Custom::CdkdSecretEcho" '[(.resources // {})[] | select(.resourceType == $t)] | length' <<<"${PRE_ECHO}")" != "0" ]; then
   echo "FAIL: premise: a Custom::CdkdSecretEcho resource is already deployed before phase 3." >&2
   echo "    Only phase 3 may deploy the secret-echo arm (CDKD_TEST_SECRET_ECHO on its own commands)." >&2
   exit 1

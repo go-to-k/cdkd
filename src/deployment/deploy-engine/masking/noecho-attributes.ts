@@ -127,16 +127,19 @@ export function registerNoEchoAttributes(
  * PARAMETER positions (a `Number`, a value under the needle floor).
  *
  * go-to-k/cdkd#7183: a CUSTOM RESOURCE attribute EQUAL to a string `NoEcho`
- * input under the needle floor, or one its physical id contains, under ANY
- * name, when no template `Fn::GetAtt` (or `Fn::Sub` `${X.Attr}`) reads that
- * attribute. A handler's `Data` is its own text, so such a value is the
- * secret echoed back. Declaring it refuses a later reader while the handler
- * does not run again; an attribute nothing reads has no reader to refuse,
- * and one the template reads keeps resolving in the clear. A template that
- * names an attribute through an expression may read any, so nothing is
- * declared on equality alone there. The region and the stack name are public
- * and never declared. The cost is an over-mask of an unread public attribute
- * that happens to equal such a value.
+ * input under the needle floor, under ANY name, when no template `Fn::GetAtt`
+ * (or `Fn::Sub` `${X.Attr}`) reads that attribute. (A value of needle length
+ * is a `fresh` needle: equal or embedded, under any name, physical id or not.)
+ * A handler's `Data` is its own text, so such a value is the secret echoed
+ * back. One the template reads keeps resolving in the clear, undeclared. A
+ * template that names an attribute through an expression may read any, so
+ * nothing is declared on equality alone there. The stack name is public and
+ * never declared (a region is never under the floor).
+ *
+ * The cost: an UNREAD public attribute that happens to equal such a value is
+ * declared, so a reader a LATER template adds, while the custom resource does
+ * not run, is refused with the remedy `refuseRedactedAttributeReads` names
+ * (change one of its properties so its handler runs in the same deploy).
  */
 function echoedNoEchoAttributes(
   run: SecretsRunState,
@@ -163,11 +166,10 @@ function echoedNoEchoAttributes(
   const positioned = new Map<string, Set<string>>();
   // go-to-k/cdkd#7183: the string inputs no needle covers, matched whole.
   const wholeOnly = new Set<string>();
-  const id = typeof physicalId === 'string' ? physicalId : '';
   const noteWholeOnly = (value: unknown): void => {
     if (typeof value !== 'string' || value === '' || value.includes(SECRET_MASK)) return;
-    if (value === deps.stackRegion || value === stackName) return;
-    if (value.length < MIN_NEEDLE_LENGTH || id.includes(value)) wholeOnly.add(value);
+    if (value === stackName) return;
+    if (value.length < MIN_NEEDLE_LENGTH) wholeOnly.add(value);
   };
   if (templateProps !== undefined && ownProperties !== undefined && sources !== undefined) {
     for (const coordinate of noEchoCoordinatesOf(templateProps, ownProperties, {
